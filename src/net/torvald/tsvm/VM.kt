@@ -1,0 +1,104 @@
+package net.torvald.tsvm
+
+import net.torvald.UnsafeHelper
+import net.torvald.UnsafePtr
+import net.torvald.tsvm.peripheral.IOSpace
+import net.torvald.tsvm.peripheral.PeriBase
+
+/**
+ * 1 byte = 2 pixels
+ *
+ * 560x448@4bpp = 125 440 bytes
+ * 560x448@8bpp = 250 880 bytes
+ *
+ * -> 262144 bytes (256 kB)
+ *
+ * [USER AREA | HW AREA]
+ *  Number of pheripherals = 8, of which the computer itself is considered as a peri.
+ *
+ * HW AREA = [Peripherals | MMIO | INTVEC]
+ *
+ * User area: 8 MB, hardware area: 8 MB
+ *
+ * 8192 kB
+ *  User Space
+ * 1024 kB
+ *  Peripheral #8
+ * 1024 kB
+ *  Peripheral #7
+ * ...
+ * 1024 kB
+ *  MMIO and Interrupt Vectors
+ *  128 kB
+ *   MMIO for Peri #8
+ *  128 kB
+ *   MMIO for Peri #7
+ *  ...
+ *  128 kB
+ *   MMIO for the computer
+ *   130816 bytes
+ *    MMIO for Ports, etc.
+ *   256 bytes
+ *    Vectors for 64 interrupts
+ *
+ *
+ */
+
+class VM(
+    _memsize: Int
+) {
+
+    val memsize = minOf(USER_SPACE_SIZE, _memsize.toLong())
+
+    internal val usermem = UnsafeHelper.allocate(memsize)
+
+    val peripheralTable = Array(8) { PeripheralEntry() }
+
+    init {
+        peripheralTable[0] = PeripheralEntry(
+            "io",
+            IOSpace(),
+            HW_RESERVE_SIZE,
+            MMIO_SIZE.toInt() - 256,
+            64
+        )
+    }
+
+
+    fun findPeribyType(searchTerm: String): Int? {
+        for (i in 0..7) {
+            if (peripheralTable[i].type == searchTerm) return i
+        }
+        return null
+    }
+
+    fun dispose() {
+        usermem.destroy()
+        peripheralTable.forEach { it.peripheral?.dispose() }
+    }
+
+    /*
+    NOTE: re-fill peripheralTable whenever the VM cold-boots!
+          you are absolutely not supposed to hot-swap peripheral cards when the computer is on
+     */
+
+
+    companion object {
+        val MMIO_SIZE = 128.kB()
+        val HW_RESERVE_SIZE = 1024.kB()
+        val USER_SPACE_SIZE = 8192.kB()
+
+        const val PERITYPE_GRAPHICS = "gpu"
+    }
+
+}
+
+data class PeripheralEntry(
+    val type: String = "null",
+    val peripheral: PeriBase? = null,
+    val memsize: Long = 0,
+    val mmioSize: Int = 0,
+    val interruptCount: Int = 0 // max: 4
+)
+
+fun Int.kB() = this * 1024L

@@ -1,0 +1,92 @@
+1 byte = 2 pixels
+
+560x448@4bpp = 125 440 bytes
+560x448@8bpp = 250 880 bytes
+
+-> 262144 bytes (256 kB)
+
+[USER AREA | HW AREA]
+
+    Number of pheripherals = 8, of which the computer itself is considered as
+     a peripheral.
+
+HW AREA = [Peripherals | MMIO | INTVEC]
+
+User area: 8 MB, hardware area: 8 MB
+
+8192 kB
+    User Space
+1024 kB
+    Peripheral #8
+1024 kB
+    Peripheral #7
+...
+1024 kB
+    MMIO and Interrupt Vectors
+    128 kB
+        MMIO for Peri #8
+    128 kB
+        MMIO for Peri #7
+    ...
+    128 kB
+        MMIO for the computer
+        130816 bytes
+            MMIO for Ports, etc.
+        256 bytes
+            Vectors for 64 interrupts
+
+--------------------------------------------------------------------------------
+
+VRAM Bank 0 (256 kB)
+
+From the end of the memory space:
+512 bytes
+    Stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
+IF graphics_mode THEN
+    (41 sprites : 260 bytes each -> 10660 bytes)
+        0th sprite is always the GUI cursor
+    256 bytes
+        16x16 texture for the sprite
+    2 bytes
+        0b rr0000xx xxxxxxxx (r: rotation, x: x-position)
+    2 bytes
+        Ob hv0000xy yyyyyyyy (h: horizontal flip, v: vertical flip, x: show/hide, y: y-position)
+ELSE
+    2240 bytes
+        Text buffer of 70x32 (8x14 character size)
+    2240 bytes
+        Text background colours
+    2240 bytes
+        Text foreground colours
+    2 bytes
+        Cursor position in: (y*32 + x)
+    3938 bytes
+        *Unused*
+FI
+From the start of the memory space:
+250880 bytes
+    Framebuffer
+92 bytes
+    *Unused*
+
+MMIO
+
+2 bytes RO
+    Framebuffer width in pixels
+2 bytes RO
+    Framebuffer height in pixels
+1 bytes RO
+    Text mode columns
+1 bytes RO
+    Text mode rows
+1 bytes RW
+    Text-mode attributes
+    0b 0000 000c (c: Cursor blink)
+1 bytes RW
+    Graphics-mode attributes
+    0b 0000 000g (g: Use sprites(wipes out text buffer))
+1 bytes RO
+    Last used colour (set by poking at the framebuffer)
+
+Text-mode-font-ROM is immutable and does not belong to VRAM
+Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it

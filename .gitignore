@@ -1,0 +1,44 @@
+# Build-related
+out/*
+bin/*
+build/*
+.gradle/*
+TerrarumBuild.jar
+
+# Java native errors
+hs_err_pid*
+replay_pid*
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+.directory
+*/.directory
+
+# Resources that should not be tracked
+assets/mods/basegame/demoworld
+external_resource_packs
+#assets/mods/basegame/demoworld.gz
+external_resource_packs.zip
+
+# IntelliJ
+workspace.xml
+
+# Temporary files
+.tmp*
+tmp_*
+## Microsoft Office
+~$*
+## Generic temp files in Linux
+*~
+## Vim temp files
+*.swp
+*.swo
+
+# Eclipse MAT heap files
+*.hprof
+*.bin
+*.index
+*.threads
+*_Leak_Suspects.zip

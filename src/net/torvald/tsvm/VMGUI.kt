@@ -1,0 +1,119 @@
+package net.torvald.tsvm
+
+import com.badlogic.gdx.ApplicationAdapter
+import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
+import com.badlogic.gdx.graphics.OrthographicCamera
+import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import net.torvald.tsvm.peripheral.GraphicsAdapter
+import kotlin.math.roundToInt
+
+class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
+
+    val vm = VM(8192)
+    lateinit var gpu: GraphicsAdapter
+
+    lateinit var batch: SpriteBatch
+    lateinit var camera: OrthographicCamera
+
+    override fun create() {
+        super.create()
+
+        gpu = GraphicsAdapter()
+
+        vm.peripheralTable[1] = PeripheralEntry(
+            VM.PERITYPE_GRAPHICS,
+            gpu,
+            256.kB(),
+            16,
+            0
+        )
+
+        batch = SpriteBatch()
+        camera = OrthographicCamera(appConfig.width.toFloat(), appConfig.height.toFloat())
+        camera.setToOrtho(false)
+        camera.update()
+        batch.projectionMatrix = camera.combined
+        Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
+    }
+
+    private var updateAkku = 0.0
+    private var updateRate = 1f / 60f
+
+    override fun render() {
+        Gdx.graphics.setTitle("${AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond}")
+
+        super.render()
+
+        val dt = Gdx.graphics.rawDeltaTime
+        updateAkku += dt
+
+        var i = 0L
+        while (updateAkku >= updateRate) {
+            updateGame(updateRate)
+            updateAkku -= updateRate
+            i += 1
+        }
+
+        renderGame()
+    }
+
+    private fun updateGame(delta: Float) {
+        paintTestPalette()
+    }
+
+    private fun paintTestPalette() {
+        for (y in 0 until 360) {
+            for (x in 0 until GraphicsAdapter.WIDTH) {
+                val palnum = 20 * (y / (360 / 12)) + (x / (GraphicsAdapter.WIDTH / 20))
+                gpu.poke(y.toLong() * GraphicsAdapter.WIDTH + x, palnum.toByte())
+            }
+        }
+
+        for (y in 360 until GraphicsAdapter.HEIGHT) {
+            for (x in 0 until GraphicsAdapter.WIDTH) {
+                val palnum = 240 + (x / (GraphicsAdapter.WIDTH / 16))
+                gpu.poke(y.toLong() * GraphicsAdapter.WIDTH + x, palnum.toByte())
+            }
+        }
+
+        gpu.poke(262142L, Math.random().times(255.0).toByte())
+        gpu.poke(262143L, Math.random().times(255.0).toByte())
+
+        /*
+local vm = require("rawmemoryaccess")
+local w = 560
+local h = 448
+local peripheral_slot = 1
+
+for y = 0, 359 do
+    for x = 0, w - 1 do
+        palnum = 20 * (y / (360 / 12)) + (x / (w / 20))
+        vm.poke(-(y * w + x + 1) - 1048576 * peripheral_slot, palnum)
+    end
+end
+
+for y = 360, h - 1 do
+    for x = 0, w - 1 do
+        palnum = 240 + (x / (w / 16))
+        vm.poke(-(y * w + x + 1) - 1048576 * peripheral_slot, palnum)
+    end
+end
+
+vm.poke(-262143 - 1048576 * peripheral_slot, math.floor(math.random() * 255.0))
+vm.poke(-262144 - 1048576 * peripheral_slot, math.floor(math.random() * 255.0))
+         */
+    }
+
+    private fun renderGame() {
+        gpu.render(batch, 0f, 0f)
+
+    }
+
+
+    override fun dispose() {
+        super.dispose()
+    }
+}
+
+const val EMDASH = 0x2014.toChar()
