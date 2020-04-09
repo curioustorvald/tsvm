@@ -1,9 +1,7 @@
 package net.torvald.tsvm.firmware
 
-import net.torvald.UnsafePtr
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
-import net.torvald.tsvm.peripheral.PeriBase
 import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
 import org.luaj.vm2.lib.OneArgFunction

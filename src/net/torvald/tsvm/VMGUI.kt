@@ -37,6 +37,9 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         batch.projectionMatrix = camera.combined
         Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
+
+        // TEST LUA PRG
+        vmLua.lua.load(gpuTestPalette).call()
     }
 
     private var updateAkku = 0.0
@@ -61,30 +64,29 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     }
 
     private fun updateGame(delta: Float) {
-        paintTestPalette()
-
-        //vmLua.lua.load(gpuTestPalette).call()
+        //paintTestPalette()
     }
 
     private fun paintTestPalette() {
         val peripheralSlot = vm.findPeribyType(VM.PERITYPE_GRAPHICS)!!
+        val hwoff = VM.HW_RESERVE_SIZE * peripheralSlot
 
         for (y in 0 until 360) {
             for (x in 0 until GraphicsAdapter.WIDTH) {
-                val palnum = 20 * (y / (360 / 12)) + (x / (GraphicsAdapter.WIDTH / 20))
-                vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - VM.HW_RESERVE_SIZE * peripheralSlot, palnum.toByte())
+                val palnum = 20 * (y / 30) + (x / (GraphicsAdapter.WIDTH / 20))
+                vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - hwoff, palnum.toByte())
             }
         }
 
         for (y in 360 until GraphicsAdapter.HEIGHT) {
             for (x in 0 until GraphicsAdapter.WIDTH) {
-                val palnum = 240 + (x / (GraphicsAdapter.WIDTH / 16))
-                vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - VM.HW_RESERVE_SIZE * peripheralSlot, palnum.toByte())
+                val palnum = 240 + (x / 35)
+                vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - hwoff, palnum.toByte())
             }
         }
 
-        vm.poke(-262143L - VM.HW_RESERVE_SIZE * peripheralSlot, Math.random().times(255.0).toByte())
-        vm.poke(-262144L - VM.HW_RESERVE_SIZE * peripheralSlot, Math.random().times(255.0).toByte())
+        vm.poke(-262143L - hwoff, Math.random().times(255.0).toByte())
+        vm.poke(-262144L - hwoff, Math.random().times(255.0).toByte())
 
     }
 
@@ -92,24 +94,24 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         local vm = require("rawmem")
         local w = 560
         local h = 448
-        local peripheral_slot = 1
+        local hwoff = 1048576
 
         for y = 0, 359 do
             for x = 0, w - 1 do
-                palnum = 20 * (y / (360 / 12)) + (x / (w / 20))
-                vm.poke(-(y * w + x + 1) - 1048576 * peripheral_slot, palnum)
+                palnum = 20 * math.floor(y / 30) + math.floor(x / 28)
+                vm.poke(-(y * w + x + 1) - hwoff, palnum)
             end
         end
 
         for y = 360, h - 1 do
             for x = 0, w - 1 do
-                palnum = 240 + (x / (w / 16))
-                vm.poke(-(y * w + x + 1) - 1048576 * peripheral_slot, palnum)
+                palnum = 240 + (x / 35)
+                vm.poke(-(y * w + x + 1) - hwoff, palnum)
             end
         end
 
-        vm.poke(-262143 - 1048576 * peripheral_slot, math.floor(math.random() * 255.0))
-        vm.poke(-262144 - 1048576 * peripheral_slot, math.floor(math.random() * 255.0))
+        vm.poke(-262143 - hwoff, math.floor(math.random() * 255.0))
+        vm.poke(-262144 - hwoff, math.floor(math.random() * 255.0))
     """.trimIndent()
 
     private fun renderGame() {
