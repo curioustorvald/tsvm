@@ -2,8 +2,11 @@ package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
+import net.torvald.tsvm.firmware.Firmware
+import net.torvald.tsvm.firmware.Firmware.Companion.toLuaValue
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
+import org.luaj.vm2.LuaValue
 
 /**
  * 1 byte = 2 pixels
@@ -90,6 +93,44 @@ class VM(
 
         const val PERITYPE_GRAPHICS = "gpu"
     }
+
+    internal fun translateAddr(addr: Long): Pair<Any?, Long> {
+        return when (addr) {
+            // DO note that numbers in Lua are double precision floats (ignore Lua 5.3 for now)
+            in 0..8192.kB() - 1 -> usermem to addr
+            in -1024.kB()..-1 -> peripheralTable[0].peripheral to (-addr - 1)
+            in -2048.kB()..-1024.kB() - 1 -> peripheralTable[1].peripheral to (-addr - 1 - 1024.kB())
+            in -3072.kB()..-2048.kB() - 1 -> peripheralTable[2].peripheral to (-addr - 1 - 2048.kB())
+            in -4096.kB()..-3072.kB() - 1 -> peripheralTable[3].peripheral to (-addr - 1 - 3072.kB())
+            in -5120.kB()..-4096.kB() - 1 -> peripheralTable[4].peripheral to (-addr - 1 - 4096.kB())
+            in -6144.kB()..-5120.kB() - 1 -> peripheralTable[5].peripheral to (-addr - 1 - 5120.kB())
+            in -7168.kB()..-6144.kB() - 1 -> peripheralTable[6].peripheral to (-addr - 1 - 6144.kB())
+            in -8192.kB()..-7168.kB() - 1 -> peripheralTable[7].peripheral to (-addr - 1 - 7168.kB())
+            else -> null to addr
+        }
+    }
+
+    fun poke(addr: Long, value: Byte) {
+        val (memspace, offset) = translateAddr(addr)
+        if (memspace == null)
+            Firmware.errorIllegalAccess(addr)
+        else if (memspace is UnsafePtr)
+            memspace.set(offset, value)
+        else
+            (memspace as PeriBase).poke(offset, value)
+    }
+
+    fun peek(addr:Long): Byte? {
+        val (memspace, offset) = translateAddr(addr)
+        return if (memspace == null)
+            null
+        else if (memspace is UnsafePtr)
+            memspace.get(offset)
+        else
+            (memspace as PeriBase).peek(offset)
+    }
+
+    fun Byte.toLuaValue() = LuaValue.valueOf(this.toInt())
 
 }
 

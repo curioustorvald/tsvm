@@ -31,14 +31,6 @@ class GraphicsAdapter : PeriBase {
         framebuffer.blending = Pixmap.Blending.None
         framebuffer.setColor(-1)
         framebuffer.fill()
-
-        for (k in 0..1023) {
-            if (k != 0 && k % 4 == 0)
-                println()
-
-            print(paletteOfFloats[k])
-            print(" ")
-        }
     }
 
     override fun peek(addr: Long): Byte? {
