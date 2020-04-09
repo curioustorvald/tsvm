@@ -98,14 +98,14 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
         for y = 0, 359 do
             for x = 0, w - 1 do
-                palnum = 20 * math.floor(y / 30) + math.floor(x / 28)
+                palnum = 20 * int(y / 30) + int(x / 28)
                 vm.poke(-(y * w + x + 1) - hwoff, palnum)
             end
         end
 
         for y = 360, h - 1 do
             for x = 0, w - 1 do
-                palnum = 240 + (x / 35)
+                palnum = 240 + int(x / 35)
                 vm.poke(-(y * w + x + 1) - hwoff, palnum)
             end
         end

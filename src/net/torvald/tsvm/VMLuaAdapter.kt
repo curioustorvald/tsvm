@@ -9,6 +9,7 @@ class VMLuaAdapter(val vm: VM) {
 
     init {
         lua.load(Firmware(vm))
+        lua.load("_G.int = function(n) if n > 0 then return math.floor(n) else return math.ceil(n) end end").call()
     }
 
 }
