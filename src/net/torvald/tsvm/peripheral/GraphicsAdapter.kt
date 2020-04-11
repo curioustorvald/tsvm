@@ -5,9 +5,12 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Pixmap
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import net.torvald.UnsafeHelper
+import net.torvald.terrarumsansbitmap.gdx.TextureRegionPack
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
+import kotlin.experimental.and
 
 class GraphicsAdapter : PeriBase {
 
@@ -18,27 +21,55 @@ class GraphicsAdapter : PeriBase {
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
+    private val chrrom0 = Texture("./EGA8x14.png")
+    private val faketex: Texture
+
+    private val spriteAndTextArea = UnsafeHelper.allocate(10660L)
+    private val unusedArea = ByteArray(92)
 
     private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, DRAW_SHADER_FRAG)
+    private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, TEXT_TILING_SHADER)
 
     private var textmodeBlinkCursor = true
-
     private var graphicsUseSprites = false
-
     private var lastUsedColour = (-1).toByte()
+    private var currentChrRom = 0
+
+
+    private val textForePixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
+    private val textBackPixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
+    private val textPixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
+
+    private var textForeTex = Texture(textForePixmap)
+    private var textBackTex = Texture(textBackPixmap)
+    private var textTex = Texture(textPixmap)
+
+
 
     init {
         framebuffer.blending = Pixmap.Blending.None
+        textForePixmap.blending = Pixmap.Blending.None
+        textBackPixmap.blending = Pixmap.Blending.None
         framebuffer.setColor(-1)
         framebuffer.fill()
+
+        val pm = Pixmap(1, 1, Pixmap.Format.RGBA8888)
+        pm.drawPixel(0, 0, -1)
+        faketex = Texture(pm)
+        pm.dispose()
     }
 
     override fun peek(addr: Long): Byte? {
         val adi = addr.toInt()
         return when (addr) {
             in 0 until 250880 -> framebuffer.getPixel(adi % WIDTH, adi / WIDTH).toByte()
+            in 250880 until 250972 -> unusedArea[adi - 250880]
+            in 250972 until 261632 -> spriteAndTextArea[addr - 250972]
             in 261632 until 262144 -> peekPalette(adi - 261632)
-            in 0 until VM.HW_RESERVE_SIZE -> peek(addr % VRAM_SIZE) // HW mirroring
+            in 0 until VM.HW_RESERVE_SIZE -> {
+                println("[GraphicsAdapter] mirroring with input address $addr")
+                peek(addr % VRAM_SIZE)
+            } // HW mirroring
             else -> null
         }
     }
@@ -51,9 +82,27 @@ class GraphicsAdapter : PeriBase {
                 lastUsedColour = byte
                 framebuffer.drawPixel(adi % WIDTH, adi / WIDTH, bi.shl(24))
             }
+            in 250880 until 250972 -> unusedArea[adi - 250880] = byte
+            in 250972 until 261632 -> spriteAndTextArea[addr - 250972] = byte
             in 261632 until 262144 -> pokePalette(adi - 261632, byte)
-            in 0 until VM.HW_RESERVE_SIZE -> poke(addr % VRAM_SIZE, byte) // HW mirroring
+            in 0 until VM.HW_RESERVE_SIZE -> {
+                println("[GraphicsAdapter] mirroring with input address $addr")
+                poke(addr % VRAM_SIZE, byte)
+            } // HW mirroring
         }
+    }
+
+    private fun getTextmodeAttirbutes(): Byte = (currentChrRom.and(15).shl(4) or textmodeBlinkCursor.toInt()).toByte()
+
+    private fun getGraphicsAttributes(): Byte = graphicsUseSprites.toInt().toByte()
+
+    private fun setTextmodeAttributes(rawbyte: Byte) {
+        currentChrRom = rawbyte.toInt().and(0b11110000).ushr(4)
+        textmodeBlinkCursor = rawbyte.and(1) == 1.toByte()
+    }
+
+    private fun setGraphicsAttributes(rawbyte: Byte) {
+        graphicsUseSprites = rawbyte.and(1) == 1.toByte()
     }
 
     override fun mmio_read(addr: Long): Byte? {
@@ -62,10 +111,10 @@ class GraphicsAdapter : PeriBase {
             1L -> (WIDTH / 256).toByte()
             2L -> (HEIGHT % 256).toByte()
             3L -> (HEIGHT / 256).toByte()
-            4L -> 70
-            5L -> 32
-            6L -> textmodeBlinkCursor.toInt().toByte()
-            7L -> graphicsUseSprites.toInt().toByte()
+            4L -> TEXT_COLS.toByte()
+            5L -> TEXT_ROWS.toByte()
+            6L -> getTextmodeAttirbutes()
+            7L -> getGraphicsAttributes()
             8L -> lastUsedColour
 
             in 0 until VM.MMIO_SIZE -> -1
@@ -80,19 +129,104 @@ class GraphicsAdapter : PeriBase {
     override fun dispose() {
         framebuffer.dispose()
         rendertex.dispose()
+        spriteAndTextArea.destroy()
+        textForePixmap.dispose()
+        textBackPixmap.dispose()
+        textPixmap.dispose()
+        paletteShader.dispose()
+        textShader.dispose()
+        faketex.dispose()
+
+        try { textForeTex.dispose() } catch (_: Throwable) {}
+        try { textBackTex.dispose() } catch (_: Throwable) {}
+
+        chrrom0.dispose()
     }
 
     fun render(batch: SpriteBatch, x: Float, y: Float) {
         rendertex.dispose()
         rendertex = Texture(framebuffer)
 
+
         batch.begin()
+
+        // initiialise draw
         batch.color = Color.WHITE
         batch.shader = paletteShader
-        paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+
+        // feed palette data
         // must be done every time the shader is "actually loaded"
         // try this: if above line precedes 'batch.shader = paletteShader', it won't work
+        paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+
+        // draw framebuffer
         batch.draw(rendertex, x, y)
+
+        batch.end()
+
+
+        // draw texts or sprites
+        batch.begin()
+
+        batch.color = Color.WHITE
+
+        if (!graphicsUseSprites) {
+            // draw texts
+
+            // prepare char buffer texture
+            for (y in 0 until TEXT_ROWS) {
+                for (x in 0 until TEXT_COLS) {
+                    val addr = y.toLong() * TEXT_COLS + x
+                    val char = spriteAndTextArea[3940 + 2240 + 2240 + addr].toInt().and(255)
+                    val back = spriteAndTextArea[3940 + 2240 + addr].toInt().and(255)
+                    val fore = spriteAndTextArea[3940 + addr].toInt().and(255)
+
+                    textPixmap.setColor(Color(paletteOfFloats[4 * char], paletteOfFloats[4 * char + 1], paletteOfFloats[4 * char + 2], paletteOfFloats[4 * char + 3]))
+                    textPixmap.drawPixel(x, y)
+                    textBackPixmap.setColor(Color(paletteOfFloats[4 * back], paletteOfFloats[4 * back + 1], paletteOfFloats[4 * back + 2], paletteOfFloats[4 * back + 3]))
+                    textBackPixmap.drawPixel(x, y)
+                    textForePixmap.setColor(Color(paletteOfFloats[4 * fore], paletteOfFloats[4 * fore + 1], paletteOfFloats[4 * fore + 2], paletteOfFloats[4 * fore + 3]))
+                    textForePixmap.drawPixel(x, y)
+                }
+            }
+
+            // bake char buffer texture
+            textForeTex.dispose()
+            textBackTex.dispose()
+            textTex.dispose()
+            textForeTex = Texture(textForePixmap)
+            textBackTex = Texture(textBackPixmap)
+            textTex = Texture(textPixmap)
+
+            textForeTex.bind(4)
+            textBackTex.bind(3)
+            textTex.bind(2)
+            chrrom0.bind(1)
+            faketex.bind(0)
+
+            batch.shader = textShader
+            textShader.setUniformi("tilesAtlas", 1)
+            textShader.setUniformi("foreColours", 4)
+            textShader.setUniformi("backColours", 3)
+            textShader.setUniformi("tilemap", 2)
+            textShader.setUniformi("u_texture", 0)
+            textShader.setUniformf("tilesInAxes", TEXT_COLS.toFloat(), TEXT_ROWS.toFloat())
+            textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
+
+            batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+        }
+        else {
+            // draw sprites
+            batch.shader = paletteShader
+
+            // feed palette data
+            // must be done every time the shader is "actually loaded"
+            // try this: if above line precedes 'batch.shader = paletteShader', it won't work
+            paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+            TODO("sprite draw")
+        }
+
+
         batch.end()
 
         batch.shader = null
@@ -118,44 +252,141 @@ class GraphicsAdapter : PeriBase {
     companion object {
         const val WIDTH = 560
         const val HEIGHT = 448
+        const val TEXT_COLS = 70
+        const val TEXT_ROWS = 32
         val VRAM_SIZE = 256.kB()
 
         val DRAW_SHADER_FRAG = """
-            #version 120
-            
-            varying vec4 v_color;
-            varying vec2 v_texCoords;
-            uniform sampler2D u_texture;
-            uniform vec4 pal[256];
-            
-            float rand(vec2 co){
-                return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
-            }
-            
-            void main(void) {
-                gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).r * 255.0)];
-                //gl_FragColor = vec4(texture2D(u_texture, v_texCoords).rrr, 1.0);
-            }
+#version 120
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
+uniform vec4 pal[256];
+
+float rand(vec2 co){
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+void main(void) {
+    gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).r * 255.0)];
+    //gl_FragColor = vec4(texture2D(u_texture, v_texCoords).rrr, 1.0);
+}
         """.trimIndent()
 
         val DRAW_SHADER_VERT = """
-            #version 120
-            
-            attribute vec4 a_position;
-            attribute vec4 a_color;
-            attribute vec2 a_texCoord0;
+#version 120
 
-            uniform mat4 u_projTrans;
+attribute vec4 a_position;
+attribute vec4 a_color;
+attribute vec2 a_texCoord0;
 
-            varying vec4 v_color;
-            varying vec2 v_texCoords;
+uniform mat4 u_projTrans;
 
-            void main() {
-                v_color = a_color;
-                v_texCoords = a_texCoord0;
-                gl_Position = u_projTrans * a_position;
-            }
+varying vec4 v_color;
+varying vec2 v_texCoords;
+
+void main() {
+    v_color = a_color;
+    v_texCoords = a_texCoord0;
+    gl_Position = u_projTrans * a_position;
+}
         """.trimIndent()
+
+        val TEXT_TILING_SHADER = """
+#version 120
+#ifdef GL_ES
+precision mediump float;
+#endif
+#extension GL_EXT_gpu_shader4 : enable
+
+//layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
+// gl_FragCoord is origin to bottom-left
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
+
+
+uniform vec2 screenDimension;
+uniform vec2 tilesInAxes; // basically a screen dimension; vec2(tiles_in_horizontal, tiles_in_vertical)
+
+uniform sampler2D tilesAtlas;
+uniform sampler2D foreColours;
+uniform sampler2D backColours;
+uniform sampler2D tilemap;
+
+uniform ivec2 tilesInAtlas = ivec2(16, 16);
+uniform ivec2 atlasTexSize = ivec2(128, 224);
+ivec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
+
+ivec2 getTileXY(int tileNumber) {
+    return ivec2(tileNumber % int(tilesInAtlas.x), tileNumber / int(tilesInAtlas.x));
+}
+
+// return: int=0xaarrggbb
+int _colToInt(vec4 color) {
+    return int(color.b * 255) | (int(color.g * 255) << 8) | (int(color.r * 255) << 16) | (int(color.a * 255) << 24);
+}
+
+// 0x0rggbb where int=0xaarrggbb
+// return: [0..1048575]
+int getTileFromColor(vec4 color) {
+    return _colToInt(color) & 0xFFFFF;
+}
+
+void main() {
+
+    // READ THE FUCKING MANUAL, YOU DONKEY !! //
+    // This code purposedly uses flipped fragcoord. //
+    // Make sure you don't use gl_FragCoord unknowingly! //
+    // Remember, if there's a compile error, shader SILENTLY won't do anything //
+
+
+    // default gl_FragCoord takes half-integer (represeting centre of the pixel) -- could be useful for phys solver?
+    // This one, however, takes exact integer by rounding down. //
+    vec2 flippedFragCoord = vec2(gl_FragCoord.x, screenDimension.y - gl_FragCoord.y); // NO IVEC2!!; this flips Y
+
+    // get required tile numbers //
+
+    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / tilesInAxes); // raw tile number
+    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / tilesInAxes);
+    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / tilesInAxes);
+
+    int tile = getTileFromColor(tileFromMap);
+    ivec2 tileXY = getTileXY(tile);
+
+    // cauculate the UV coord value for texture sampling //
+
+    vec2 coordInTile = mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx; // 0..1 regardless of tile position in atlas
+
+    // don't really need highp here; read the GLES spec
+    vec2 singleTileSizeInUV = vec2(1) / tilesInAtlas; // constant 0.00390625 for unmodified default uniforms
+
+    vec2 uvCoordForTile = coordInTile * singleTileSizeInUV; // 0..0.00390625 regardless of tile position in atlas
+
+    vec2 uvCoordOffsetTile = tileXY * singleTileSizeInUV; // where the tile starts in the atlas, using uv coord (0..1)
+
+    // get final UV coord for the actual sampling //
+
+    vec2 finalUVCoordForTile = (uvCoordForTile + uvCoordOffsetTile);// where we should be actually looking for in atlas, using UV coord (0..1)
+
+    // blending a breakage tex with main tex //
+
+    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+
+    // apply colour
+    if (tileCol.a > 0.1) {
+        gl_FragColor = foreColFromMap;
+    }
+    else {
+        gl_FragColor = backColFromMap;
+    }
+
+}
+
+
+""".trimIndent()
 
         val DEFAULT_PALETTE = intArrayOf( // 0b rrrrrrrr gggggggg bbbbbbbb aaaaaaaa
             255,

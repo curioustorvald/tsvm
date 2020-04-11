@@ -39,35 +39,34 @@ User area: 8 MB, hardware area: 8 MB
 
 VRAM Bank 0 (256 kB)
 
-From the end of the memory space:
-512 bytes
-    Stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
-IF graphics_mode THEN
-    (41 sprites : 260 bytes each -> 10660 bytes)
-        0th sprite is always the GUI cursor
-    256 bytes
-        16x16 texture for the sprite
-    2 bytes
-        0b rr0000xx xxxxxxxx (r: rotation, x: x-position)
-    2 bytes
-        Ob hv0000xy yyyyyyyy (h: horizontal flip, v: vertical flip, x: show/hide, y: y-position)
-ELSE
-    2240 bytes
-        Text buffer of 70x32 (8x14 character size)
-    2240 bytes
-        Text background colours
-    2240 bytes
-        Text foreground colours
-    2 bytes
-        Cursor position in: (y*32 + x)
-    3938 bytes
-        *Unused*
-FI
 From the start of the memory space:
 250880 bytes
     Framebuffer
 92 bytes
     *Unused*
+IF graphics_mode THEN
+    (41 sprites : 260 bytes each -> 10660 bytes)
+        0th sprite is always the GUI cursor
+    2 bytes
+        Ob hv0000xy yyyyyyyy (h: horizontal flip, v: vertical flip, x: show/hide, y: y-position)
+    2 bytes
+        0b rr0000xx xxxxxxxx (r: rotation, x: x-position)
+    256 bytes
+        16x16 texture for the sprite
+ELSE
+    3938 bytes
+        *Unused*
+    2 bytes
+        Cursor position in: (y*32 + x)
+    2240 bytes
+        Text foreground colours
+    2240 bytes
+        Text background colours
+    2240 bytes
+        Text buffer of 70x32 (8x14 character size, and yes: actual character data is on the bottom)
+FI
+512 bytes
+    Palette stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
 
 MMIO
 
@@ -81,7 +80,7 @@ MMIO
     Text mode rows
 1 bytes RW
     Text-mode attributes
-    0b 0000 000c (c: Cursor blink)
+    0b kkkk 000c (k: currently using character rom, c: Cursor blink)
 1 bytes RW
     Graphics-mode attributes
     0b 0000 000g (g: Use sprites(wipes out text buffer))

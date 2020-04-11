@@ -39,7 +39,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
 
         // TEST LUA PRG
-        vmLua.lua.load(gpuTestPalette).call()
+        //vmLua.lua.load(gpuTestPalette).call()
     }
 
     private var updateAkku = 0.0
@@ -64,7 +64,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     }
 
     private fun updateGame(delta: Float) {
-        //paintTestPalette()
+        paintTestPalette()
     }
 
     private fun paintTestPalette() {
@@ -85,9 +85,17 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
             }
         }
 
-        vm.poke(-262143L - hwoff, Math.random().times(255.0).toByte())
-        vm.poke(-262144L - hwoff, Math.random().times(255.0).toByte())
+        //vm.poke(-262143L - hwoff, Math.random().times(255.0).toByte())
+        //vm.poke(-262144L - hwoff, Math.random().times(255.0).toByte())
 
+        for (k in 0 until 2240) {
+            // text foreground
+            vm.poke(-(254820 + k + 1) - hwoff, 239.toByte()) // white
+            // text background
+            vm.poke(-(257060 + k + 1) - hwoff, -1) // transparent
+            // texts
+            vm.poke(-(259300 + k + 1) - hwoff, k.toByte())
+        }
     }
 
     private val gpuTestPalette = """
