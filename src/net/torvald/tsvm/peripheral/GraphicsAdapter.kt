@@ -148,7 +148,13 @@ class GraphicsAdapter : PeriBase {
         rendertex = Texture(framebuffer)
 
 
+        batch.shader = null
         batch.begin()
+
+        // clear screen
+        batch.color = Color.BLACK
+        batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+
 
         // initiialise draw
         batch.color = Color.WHITE
@@ -181,7 +187,7 @@ class GraphicsAdapter : PeriBase {
                     val back = spriteAndTextArea[3940 + 2240 + addr].toInt().and(255)
                     val fore = spriteAndTextArea[3940 + addr].toInt().and(255)
 
-                    textPixmap.setColor(Color(paletteOfFloats[4 * char], paletteOfFloats[4 * char + 1], paletteOfFloats[4 * char + 2], paletteOfFloats[4 * char + 3]))
+                    textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
                     textPixmap.drawPixel(x, y)
                     textBackPixmap.setColor(Color(paletteOfFloats[4 * back], paletteOfFloats[4 * back + 1], paletteOfFloats[4 * back + 2], paletteOfFloats[4 * back + 3]))
                     textBackPixmap.drawPixel(x, y)
@@ -205,13 +211,15 @@ class GraphicsAdapter : PeriBase {
             faketex.bind(0)
 
             batch.shader = textShader
-            textShader.setUniformi("tilesAtlas", 1)
             textShader.setUniformi("foreColours", 4)
             textShader.setUniformi("backColours", 3)
             textShader.setUniformi("tilemap", 2)
+            textShader.setUniformi("tilesAtlas", 1)
             textShader.setUniformi("u_texture", 0)
             textShader.setUniformf("tilesInAxes", TEXT_COLS.toFloat(), TEXT_ROWS.toFloat())
             textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
+            textShader.setUniformf("tilesInAtlas", 16f, 16f)
+            textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
 
             batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
         }
@@ -233,17 +241,22 @@ class GraphicsAdapter : PeriBase {
     }
 
     private fun peekPalette(offset: Int): Byte {
+        if (offset == 255) return 0 // palette 255 is always transparent
+
         val highvalue = paletteOfFloats[offset * 2] // R, B
         val lowvalue = paletteOfFloats[offset * 2 + 1] // G, A
         return (highvalue.div(15f).toInt().shl(4) or lowvalue.div(15f).toInt()).toByte()
     }
 
     private fun pokePalette(offset: Int, byte: Byte) {
-        val highvalue = byte.toInt().and(0xF0).ushr(4) / 15f
-        val lowvalue  = byte.toInt().and(0x0F) / 15f
+        // palette 255 is always transparent
+        if (offset < 255) {
+            val highvalue = byte.toInt().and(0xF0).ushr(4) / 15f
+            val lowvalue = byte.toInt().and(0x0F) / 15f
 
-        paletteOfFloats[offset * 2] = highvalue
-        paletteOfFloats[offset * 2 + 1] = lowvalue
+            paletteOfFloats[offset * 2] = highvalue
+            paletteOfFloats[offset * 2 + 1] = lowvalue
+        }
     }
 
 
@@ -316,9 +329,9 @@ uniform sampler2D foreColours;
 uniform sampler2D backColours;
 uniform sampler2D tilemap;
 
-uniform ivec2 tilesInAtlas = ivec2(16, 16);
-uniform ivec2 atlasTexSize = ivec2(128, 224);
-ivec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
+uniform vec2 tilesInAtlas = ivec2(16.0, 16.0);
+uniform vec2 atlasTexSize = ivec2(128.0, 224.0);
+vec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
 
 ivec2 getTileXY(int tileNumber) {
     return ivec2(tileNumber % int(tilesInAtlas.x), tileNumber / int(tilesInAtlas.x));
@@ -345,44 +358,39 @@ void main() {
 
     // default gl_FragCoord takes half-integer (represeting centre of the pixel) -- could be useful for phys solver?
     // This one, however, takes exact integer by rounding down. //
+    vec2 overscannedScreenDimension = tilesInAxes * tileSizeInPx; // how many tiles will fit into a screen; one used by the tileFromMap
     vec2 flippedFragCoord = vec2(gl_FragCoord.x, screenDimension.y - gl_FragCoord.y); // NO IVEC2!!; this flips Y
 
     // get required tile numbers //
 
-    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / tilesInAxes); // raw tile number
-    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / tilesInAxes);
-    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / tilesInAxes);
+    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / overscannedScreenDimension); // raw tile number
+    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / overscannedScreenDimension);
+    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / overscannedScreenDimension);
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);
 
-    // cauculate the UV coord value for texture sampling //
-
-    vec2 coordInTile = mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx; // 0..1 regardless of tile position in atlas
+    // calculate the UV coord value for texture sampling //
 
     // don't really need highp here; read the GLES spec
-    vec2 singleTileSizeInUV = vec2(1) / tilesInAtlas; // constant 0.00390625 for unmodified default uniforms
-
-    vec2 uvCoordForTile = coordInTile * singleTileSizeInUV; // 0..0.00390625 regardless of tile position in atlas
-
-    vec2 uvCoordOffsetTile = tileXY * singleTileSizeInUV; // where the tile starts in the atlas, using uv coord (0..1)
+    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
 
     // get final UV coord for the actual sampling //
 
-    vec2 finalUVCoordForTile = (uvCoordForTile + uvCoordOffsetTile);// where we should be actually looking for in atlas, using UV coord (0..1)
+    vec2 finalUVCoordForTile = uvCoordForTile + uvCoordOffsetTile;// where we should be actually looking for in atlas, using UV coord (0..1)
 
     // blending a breakage tex with main tex //
 
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour
-    if (tileCol.a > 0.1) {
+    if (tileCol.r > 0) {
         gl_FragColor = foreColFromMap;
     }
     else {
         gl_FragColor = backColFromMap;
     }
-
 }
 
 

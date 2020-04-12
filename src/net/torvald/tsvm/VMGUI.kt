@@ -90,11 +90,11 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
         for (k in 0 until 2240) {
             // text foreground
-            vm.poke(-(254820 + k + 1) - hwoff, 239.toByte()) // white
+            vm.poke(-(254912 + k + 1) - hwoff, (Math.random().times(255f).roundToInt()).toByte()) // white
             // text background
-            vm.poke(-(257060 + k + 1) - hwoff, -1) // transparent
+            vm.poke(-(254912 + 2240 + k + 1) - hwoff, (Math.random().times(255f).roundToInt()).toByte()) // transparent
             // texts
-            vm.poke(-(259300 + k + 1) - hwoff, k.toByte())
+            vm.poke(-(254912 + 2240*2 + k + 1) - hwoff, (Math.random().times(255f).roundToInt()).toByte())
         }
     }
 

@@ -67,6 +67,7 @@ ELSE
 FI
 512 bytes
     Palette stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
+    Palette number 255 is always full transparent (bits being all zero)
 
 MMIO
 
