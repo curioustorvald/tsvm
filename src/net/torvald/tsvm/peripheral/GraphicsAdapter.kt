@@ -16,7 +16,7 @@ class GraphicsAdapter : PeriBase {
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     private var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
-    private val paletteOfFloats = FloatArray(1024) {
+    internal val paletteOfFloats = FloatArray(1024) {
         val rgba = DEFAULT_PALETTE[it / 4]
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
@@ -34,7 +34,11 @@ class GraphicsAdapter : PeriBase {
     private var graphicsUseSprites = false
     private var lastUsedColour = (-1).toByte()
     private var currentChrRom = 0
+    private var chrWidth = 8f
+    private var chrHeight = 14f
 
+    private var ttyFore = 254
+    private var ttyBack = 255
 
     private val textForePixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
     private val textBackPixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
@@ -44,7 +48,7 @@ class GraphicsAdapter : PeriBase {
     private var textBackTex = Texture(textBackPixmap)
     private var textTex = Texture(textPixmap)
 
-
+    private fun getTtyCursorPos() = spriteAndTextArea.getShort(3938L) % TEXT_COLS to spriteAndTextArea.getShort(3938L) / TEXT_COLS
 
     init {
         framebuffer.blending = Pixmap.Blending.None
@@ -57,6 +61,8 @@ class GraphicsAdapter : PeriBase {
         pm.drawPixel(0, 0, -1)
         faketex = Texture(pm)
         pm.dispose()
+
+        spriteAndTextArea.fillWith(0)
     }
 
     override fun peek(addr: Long): Byte? {
@@ -143,7 +149,11 @@ class GraphicsAdapter : PeriBase {
         chrrom0.dispose()
     }
 
-    fun render(batch: SpriteBatch, x: Float, y: Float) {
+    private var textCursorBlinkTimer = 0f
+    private val textCursorBlinkInterval = 0.5f
+    private var textCursorIsOn = true
+
+    fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {
         rendertex.dispose()
         rendertex = Texture(framebuffer)
 
@@ -163,16 +173,13 @@ class GraphicsAdapter : PeriBase {
         // feed palette data
         // must be done every time the shader is "actually loaded"
         // try this: if above line precedes 'batch.shader = paletteShader', it won't work
-        paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+        batch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
 
         // draw framebuffer
         batch.draw(rendertex, x, y)
 
-        batch.end()
-
 
         // draw texts or sprites
-        batch.begin()
 
         batch.color = Color.WHITE
 
@@ -222,6 +229,19 @@ class GraphicsAdapter : PeriBase {
             textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
 
             batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+
+            batch.shader = null
+
+            if (textCursorIsOn) {
+                batch.color = Color(
+                    paletteOfFloats[4 * ttyFore],
+                    paletteOfFloats[4 * ttyFore + 1],
+                    paletteOfFloats[4 * ttyFore + 2],
+                    paletteOfFloats[4 * ttyFore + 3]
+                )
+                val (cursorx, cursory) = getTtyCursorPos()
+                batch.draw(faketex, cursorx * chrWidth, (TEXT_ROWS - cursory - 1) * chrHeight, chrWidth, chrHeight)
+            }
         }
         else {
             // draw sprites
@@ -238,10 +258,18 @@ class GraphicsAdapter : PeriBase {
         batch.end()
 
         batch.shader = null
+
+        textCursorBlinkTimer += delta
+        if (textCursorBlinkTimer > textCursorBlinkInterval) {
+            textCursorBlinkTimer -= 0.5f
+            textCursorIsOn = !textCursorIsOn
+        }
     }
 
     private fun peekPalette(offset: Int): Byte {
         if (offset == 255) return 0 // palette 255 is always transparent
+
+        // FIXME always return zero?
 
         val highvalue = paletteOfFloats[offset * 2] // R, B
         val lowvalue = paletteOfFloats[offset * 2 + 1] // G, A
@@ -322,7 +350,7 @@ uniform sampler2D u_texture;
 
 
 uniform vec2 screenDimension;
-uniform vec2 tilesInAxes; // basically a screen dimension; vec2(tiles_in_horizontal, tiles_in_vertical)
+uniform vec2 tilesInAxes; // size of the tilemap texture; vec2(tiles_in_horizontal, tiles_in_vertical)
 
 uniform sampler2D tilesAtlas;
 uniform sampler2D foreColours;
@@ -358,14 +386,13 @@ void main() {
 
     // default gl_FragCoord takes half-integer (represeting centre of the pixel) -- could be useful for phys solver?
     // This one, however, takes exact integer by rounding down. //
-    vec2 overscannedScreenDimension = tilesInAxes * tileSizeInPx; // how many tiles will fit into a screen; one used by the tileFromMap
     vec2 flippedFragCoord = vec2(gl_FragCoord.x, screenDimension.y - gl_FragCoord.y); // NO IVEC2!!; this flips Y
 
     // get required tile numbers //
 
-    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / overscannedScreenDimension); // raw tile number
-    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / overscannedScreenDimension);
-    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / overscannedScreenDimension);
+    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / screenDimension);
+    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / screenDimension);
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);

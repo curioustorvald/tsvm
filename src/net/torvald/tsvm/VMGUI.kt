@@ -11,11 +11,12 @@ import kotlin.math.roundToInt
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
     val vm = VM(8192)
-    val vmLua = VMLuaAdapter(vm)
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch
     lateinit var camera: OrthographicCamera
+
+    lateinit var vmRunner: VMRunner
 
     override fun create() {
         super.create()
@@ -37,9 +38,11 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         batch.projectionMatrix = camera.combined
         Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
+        vmRunner = VMRunnerFactory(vm, "lua")
 
         // TEST LUA PRG
         //vmLua.lua.load(gpuTestPalette).call()
+        vmRunner.executeCommand(gpuTestPalette)
     }
 
     private var updateAkku = 0.0
@@ -60,18 +63,19 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
             i += 1
         }
 
-        renderGame()
+        renderGame(dt)
     }
 
+
     private fun updateGame(delta: Float) {
-        paintTestPalette()
+
     }
 
     private fun paintTestPalette() {
         val peripheralSlot = vm.findPeribyType(VM.PERITYPE_GRAPHICS)!!
         val hwoff = VM.HW_RESERVE_SIZE * peripheralSlot
 
-        for (y in 0 until 360) {
+        /*for (y in 0 until 360) {
             for (x in 0 until GraphicsAdapter.WIDTH) {
                 val palnum = 20 * (y / 30) + (x / (GraphicsAdapter.WIDTH / 20))
                 vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - hwoff, palnum.toByte())
@@ -83,47 +87,57 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
                 val palnum = 240 + (x / 35)
                 vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - hwoff, palnum.toByte())
             }
-        }
+        }*/
 
         //vm.poke(-262143L - hwoff, Math.random().times(255.0).toByte())
         //vm.poke(-262144L - hwoff, Math.random().times(255.0).toByte())
 
         for (k in 0 until 2240) {
             // text foreground
-            vm.poke(-(254912 + k + 1) - hwoff, (Math.random().times(255f).roundToInt()).toByte()) // white
+            vm.poke(-(254912 + k + 1) - hwoff, -2) // white
             // text background
-            vm.poke(-(254912 + 2240 + k + 1) - hwoff, (Math.random().times(255f).roundToInt()).toByte()) // transparent
+            vm.poke(-(254912 + 2240 + k + 1) - hwoff, -1) // transparent
             // texts
-            vm.poke(-(254912 + 2240*2 + k + 1) - hwoff, (Math.random().times(255f).roundToInt()).toByte())
+            vm.poke(-(254912 + 2240*2 + k + 1) - hwoff, if (k == 0) 0x30 else 0x40)
         }
     }
-
     private val gpuTestPalette = """
-        local vm = require("rawmem")
-        local w = 560
-        local h = 448
-        local hwoff = 1048576
+local vm = require("rawmem")
+local w = 560
+local h = 448
+local hwoff = 1048576
 
-        for y = 0, 359 do
-            for x = 0, w - 1 do
-                palnum = 20 * int(y / 30) + int(x / 28)
-                vm.poke(-(y * w + x + 1) - hwoff, palnum)
-            end
+while true do
+    local tstart = os.clock()
+
+    for y = 0, 359 do
+        for x = 0, w - 1 do
+            palnum = 20 * int(y / 30) + int(x / 28)
+            vm.poke(-(y * w + x + 1) - hwoff, palnum)
         end
+    end
 
-        for y = 360, h - 1 do
-            for x = 0, w - 1 do
-                palnum = 240 + int(x / 35)
-                vm.poke(-(y * w + x + 1) - hwoff, palnum)
-            end
+    for y = 360, h - 1 do
+        for x = 0, w - 1 do
+            palnum = 240 + int(x / 35)
+            vm.poke(-(y * w + x + 1) - hwoff, palnum)
         end
+    end
 
-        vm.poke(-262143 - hwoff, math.floor(math.random() * 255.0))
-        vm.poke(-262144 - hwoff, math.floor(math.random() * 255.0))
+    for k = 0, 2239 do
+        vm.poke(-(254912 + k + 1) - hwoff, 254)
+        vm.poke(-(254912 + 2240 + k + 1) - hwoff, 255)
+        vm.poke(-(254912 + 2240*2 + k + 1) - hwoff, math.floor(math.random() * 255.0))
+    end
+    
+    local tend = os.clock()
+    
+    print("Apparent FPS: "..tostring(1.0 / (tend - tstart)))
+end
     """.trimIndent()
 
-    private fun renderGame() {
-        gpu.render(batch, 0f, 0f)
+    private fun renderGame(delta: Float) {
+        gpu.render(delta, batch, 0f, 0f)
 
     }
 

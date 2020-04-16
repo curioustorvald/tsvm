@@ -114,6 +114,11 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
         return UnsafeHelper.unsafe.getInt(ptr + index)
     }
 
+    fun getShort(index: Long): Short {
+        checkNullPtr(index)
+        return UnsafeHelper.unsafe.getShort(ptr + index)
+    }
+
     fun setFloat(index: Long, value: Float) {
         checkNullPtr(index)
         UnsafeHelper.unsafe.putFloat(ptr + index, value)
@@ -122,6 +127,11 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
     fun setInt(index: Long, value: Int) {
         checkNullPtr(index)
         UnsafeHelper.unsafe.putInt(ptr + index, value)
+    }
+
+    fun setShort(index: Long, value: Short) {
+        checkNullPtr(index)
+        UnsafeHelper.unsafe.putShort(ptr + index, value)
     }
 
     fun fillWith(byte: Byte) {

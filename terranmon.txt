@@ -39,6 +39,8 @@ User area: 8 MB, hardware area: 8 MB
 
 VRAM Bank 0 (256 kB)
 
+Endianness: little
+
 From the start of the memory space:
 250880 bytes
     Framebuffer
@@ -87,6 +89,10 @@ MMIO
     0b 0000 000g (g: Use sprites(wipes out text buffer))
 1 bytes RO
     Last used colour (set by poking at the framebuffer)
+1 bytes RW
+    current TTY foreground colour (useful for print() function)
+1 bytes RW
+    current TTY background colour (useful for print() function)
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it

@@ -7,6 +7,7 @@ import net.torvald.tsvm.firmware.Firmware.Companion.toLuaValue
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
 import org.luaj.vm2.LuaValue
+import kotlin.random.Random
 
 /**
  * 1 byte = 2 pixels
@@ -51,6 +52,8 @@ class VM(
     _memsize: Int
 ) {
 
+    val id = java.util.Random().nextInt()
+
     val memsize = minOf(USER_SPACE_SIZE, _memsize.toLong())
 
     internal val usermem = UnsafeHelper.allocate(memsize)
@@ -65,6 +68,8 @@ class VM(
             MMIO_SIZE.toInt() - 256,
             64
         )
+
+        println("[VM] Creating new VM with ID of $id, memesize $memsize")
     }
 
 
