@@ -6,6 +6,7 @@ import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
 import org.luaj.vm2.lib.OneArgFunction
 import org.luaj.vm2.lib.TwoArgFunction
+import org.luaj.vm2.lib.ZeroArgFunction
 
 internal class Firmware(val vm: VM) : TwoArgFunction() {
 
@@ -52,6 +53,11 @@ internal class Firmware(val vm: VM) : TwoArgFunction() {
         val t = LuaTable()
         t["poke"] = Poke(vm)
         t["peek"] = Peek(vm)
+        t["nanotime"] = object : ZeroArgFunction() {
+            override fun call(): LuaValue {
+                return LuaValue.valueOf(System.nanoTime().toDouble())
+            }
+        }
         if (!env["package"].isnil()) env["package"]["loaded"]["rawmem"] = t
         return t
     }

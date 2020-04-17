@@ -6,7 +6,6 @@ import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.tsvm.peripheral.GraphicsAdapter
-import kotlin.math.roundToInt
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
@@ -43,8 +42,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         //vmRunner = VMRunnerFactory(vm, "lua")
         //vmRunner.executeCommand(gpuTestPalette)
         // TEST KTS PRG
-        vmRunner = VMRunnerFactory(vm, "js")
-        vmRunner.executeCommand(gpuTestPaletteJs)
+        vmRunner = VMRunnerFactory(vm, "kts")
+        vmRunner.executeCommand(gpuTestPaletteKt)
     }
 
     private var updateAkku = 0.0
@@ -86,35 +85,54 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
     private fun paintTestPalette() {
-        val peripheralSlot = vm.findPeribyType(VM.PERITYPE_GRAPHICS)!!
-        val hwoff = VM.HW_RESERVE_SIZE * peripheralSlot
+    }
 
-        for (y in 0 until 360) {
-            for (x in 0 until GraphicsAdapter.WIDTH) {
-                val palnum = 20 * (y / 30) + (x / (GraphicsAdapter.WIDTH / 20))
-                vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - hwoff, palnum.toByte())
-            }
-        }
+    private val gpuTestPaletteKt = """
+val w = 560
+val h = 448
+val hwoff = 1048576
 
-        for (y in 360 until GraphicsAdapter.HEIGHT) {
-            for (x in 0 until GraphicsAdapter.WIDTH) {
-                val palnum = 240 + (x / 35)
-                vm.poke(-(y.toLong() * GraphicsAdapter.WIDTH + x + 1) - hwoff, palnum.toByte())
-            }
-        }
+fun inthash(x: Int): Int {
+    var x = (x.shr(16) xor x) * 0x45d9f3b
+    x = (x.shr(16) xor x) * 0x45d9f3b
+    x = (x.shr(16) xor x)
+    return x
+}
 
-        //vm.poke(-262143L - hwoff, Math.random().times(255.0).toByte())
-        //vm.poke(-262144L - hwoff, Math.random().times(255.0).toByte())
+var rng = (Math.floor(Math.random() * 2147483647) + 1).toInt()
 
-        for (k in 0 until 2240) {
-            // text foreground
-            vm.poke(-(254912 + k + 1) - hwoff, -2) // white
-            // text background
-            vm.poke(-(254912 + 2240 + k + 1) - hwoff, -1) // transparent
-            // texts
-            vm.poke(-(254912 + 2240*2 + k + 1) - hwoff, Math.random().times(255).roundToInt().toByte())
+bindings.forEach {
+    println(it)
+}
+
+println(zzz)
+
+while (true) {
+    val tstart: Long = System.nanoTime()
+    for (y1 in 0..359) {
+        for (x1 in 0 until w) {
+            val palnum = 20 * (y1 / 30) + (x1 / 28)
+            vm.poke(-(y1 * w + x1 + 1L) - hwoff, inthash(palnum + rng).toByte())
         }
     }
+    for (y2 in 360 until h) {
+        for (x2 in 0 until w) {
+            val palnum = 240 + x2 / 35
+            vm.poke(-(y2 * w + x2 + 1L) - hwoff, palnum.toByte())
+        }
+    }
+    for (k in 0..2239) {
+        vm.poke(-(254912L + k + 1) - hwoff, -2) // white
+        vm.poke(-(254912L + 2240 + k + 1) - hwoff, -1) // transparent
+        vm.poke(-(254912L + 2240 * 2 + k + 1) - hwoff, Math.round(Math.random() * 255).toByte())
+    }
+    
+    rng = inthash(rng)
+    val tend: Long = System.nanoTime()
+    println("Apparent FPS: " + 1000000000.0 / (tend - tstart))
+}
+    """.trimIndent()
+
     private val gpuTestPalette = """
 local vm = require("rawmem")
 local bit = require("bit32")
@@ -132,7 +150,7 @@ end
 local rng = math.floor(math.random() * 2147483647)
 
 while true do
-    local tstart = os.clock()
+    local tstart = vm.nanotime()
 
     for y = 0, 359 do
         for x = 0, w - 1 do
@@ -156,41 +174,10 @@ while true do
     
     rng = inthash(rng)
     
-    local tend = os.clock()
+    local tend = vm.nanotime()
     
-    print("Apparent FPS: "..tostring(1.0 / (tend - tstart)))
+    print("Apparent FPS: "..tostring(1000000000.0 / (tend - tstart)))
 end
-    """.trimIndent()
-
-    private val gpuTestPaletteKt = """
-import kotlin.math.roundToInt
-
-
-local w = 560
-local h = 448
-val hwoff = 1048576
-
-while (true) {
-    for (y in 0 until 360) {
-        for (x in 0 until w) {
-            val palnum = 20 * (y / 30) + (x / 28)
-            poke(-(y.toLong() * w + x + 1) - hwoff, palnum.toByte())
-        }
-    }
-    
-    for (y in 360 until h) {
-        for (x in 0 until w) {
-            val palnum = 240 + (x / 35)
-            poke(-(y.toLong() * w + x + 1) - hwoff, palnum.toByte())
-        }
-    }
-    
-    for (k in 0 until 2240) {
-        poke(-(254912 + k + 1) - hwoff, -2) // white
-        poke(-(254912 + 2240 + k + 1) - hwoff, -1) // transparent
-        poke(-(254912 + 2240*2 + k + 1) - hwoff, Math.random().times(255).roundToInt().toByte())
-    }
-}
     """.trimIndent()
 
     private val gpuTestPaletteJs = """
@@ -208,7 +195,7 @@ function inthash(x) {
     return x
 }
 
-var rng = Math.floor(Math.random() * 2147483647)
+var rng = Math.floor(Math.random() * 2147483647) + 1
 
 while (true) {
 
@@ -243,6 +230,101 @@ while (true) {
 
     """.trimIndent()
 
+    private val gpuTestPaletteJava = """
+int w = 560;
+int h = 448;
+int hwoff = 1048576;
+
+int inthash(double x) {
+    return inthash((int) x);
+}
+
+int inthash(int x) {
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return x;
+}
+
+int rng = Math.floor(Math.random() * 2147483647) + 1;
+
+while (true) {
+
+    long tstart = nanotime.invoke();
+
+    for (int y1 = 0; y1 < 360; y1++) {
+        for (int x1 = 0; x1 < w; x1++) {
+            int palnum = 20 * (y1 / 30) + (x1 / 28);
+            poke.invoke(-(y1 * w + x1 + 1) - hwoff, inthash(palnum + rng));
+        }
+    }
+    
+    for (int y2 = 360; y2 < h; y2++) {
+        for (int x2 = 0; x2 < w; x2++) {
+            int palnum = 240 + x2 / 35;
+            poke.invoke(-(y2 * w + x2 + 1) - hwoff, palnum);
+        }
+    }
+    
+    for (int k = 0; k < 2240; k++) {
+        poke.invoke(-(254912 + k + 1) - hwoff, -2); // white
+        poke.invoke(-(254912 + 2240 + k + 1) - hwoff, -1); // transparent
+        poke.invoke(-(254912 + 2240*2 + k + 1) - hwoff, Math.round(Math.random() * 255));
+    }
+    
+    rng = inthash(rng);
+    
+    long tend = nanotime.invoke();
+    
+    System.out.println("Apparent FPS: " + (1000000000.0 / (tend - tstart)));
+}
+
+    """.trimIndent()
+
+
+    private val gpuTestPalettePy = """
+import math
+import random
+        
+w = 560
+h = 448
+hwoff = 1048576
+
+
+def inthash(x):
+    x = ((x >> 16) ^ x) * 0x45d9f3b
+    x = ((x >> 16) ^ x) * 0x45d9f3b
+    x = (x >> 16) ^ x
+    return x
+
+rng = random.randint(1, 2147483647)
+
+while True:
+
+    tstart = nanotime.invoke()
+
+    for y1 in range(0, 360):
+        for x1 in range(0, w):
+            palnum = 20 * int(y1 / 30) + int(x1 / 28)
+            poke.invoke(-(y1 * w + x1 + 1) - hwoff, inthash(palnum + rng))
+        
+    for y2 in range(360, h):
+        for x2 in range(0, w):
+            palnum = 240 + int(x2 / 35)
+            poke.invoke(-(y2 * w + x2 + 1) - hwoff, palnum)
+    
+    for k in range(0, 2240):
+        poke.invoke(-(254912 + k + 1) - hwoff, -2)
+        poke.invoke(-(254912 + 2240 + k + 1) - hwoff, -1)
+        poke.invoke(-(254912 + 2240*2 + k + 1) - hwoff, random.randint(0, 255))
+    
+    rng = inthash(rng)
+    
+    tend = nanotime.invoke()
+    
+    print("Apparent FPS: " + str(1000000000.0 / (tend - tstart)))
+
+    """.trimIndent()
 
 
     private fun renderGame(delta: Float) {

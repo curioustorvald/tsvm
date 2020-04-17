@@ -1,8 +1,10 @@
 package net.torvald.tsvm
 
+import javax.script.Compilable
 import javax.script.ScriptContext
 import javax.script.ScriptEngineManager
 import javax.script.SimpleScriptContext
+import kotlin.test.assertNotNull
 
 abstract class VMRunner(val extension: String) {
 
@@ -13,7 +15,17 @@ abstract class VMRunner(val extension: String) {
 
 object VMRunnerFactory {
 
+    private var firstTime = true
+
     operator fun invoke(vm: VM, extension: String): VMRunner {
+
+        if (firstTime) {
+            firstTime = false
+            ScriptEngineManager().engineFactories.forEach {
+                println("[VMRunnerFactory] ext: ${it.extensions}, name: ${it.engineName}")
+            }
+        }
+
         return when (extension) {
             "lua" -> {
                 object : VMRunner(extension) {
@@ -28,40 +40,34 @@ object VMRunnerFactory {
                     }
                 }
             }
-            "kt", "kts" -> {
+            else -> {
                 object : VMRunner(extension) {
+                    private val engine = ScriptEngineManager().getEngineByExtension(extension)
+
                     init {
-                        TODO()
+                        assertNotNull(engine, "Script engine for extension $extension not found")
                     }
 
-                    override fun executeCommand(command: String) {
-                        TODO()
-                    }
-                }
-            }
-            "js" -> {
-                object : VMRunner(extension) {
-                    private val engine = ScriptEngineManager().getEngineByExtension("js")!!
                     private val context = SimpleScriptContext()
                     private val bind = context.getBindings(ScriptContext.ENGINE_SCOPE)
 
                     init {
-                        engine.eval("true") as Boolean // init the engine here
-
-                        bind.put("poke", { a: Long, b: Byte -> vm.poke(a, b) })
+                        bind.put("zzz", 42)
+                        bind.put("vm", vm) // TODO use delegator class to access peripheral (do not expose VM itself)
+                        bind.put("poke", { a: Long, b: Byte -> vm.poke(a, b) }) // kts: lambda does not work...
                         bind.put("nanotime", { System.nanoTime() })
                     }
 
                     override fun executeCommand(command: String) {
                         thread = Thread {
+                            //(engine as Compilable).compile(command).eval(context) // compiling does not work with bindings in kts
                             engine.eval(command, context)
                         }
                         thread.start()
                     }
                 }
             }
-            else -> throw UnsupportedOperationException("Unsupported script extension: $extension")
+            //else -> throw UnsupportedOperationException("Unsupported script extension: $extension")
         }
     }
-
 }

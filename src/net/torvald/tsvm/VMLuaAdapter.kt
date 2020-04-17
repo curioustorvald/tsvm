@@ -1,6 +1,9 @@
 package net.torvald.tsvm
 
 import net.torvald.tsvm.firmware.Firmware
+import org.luaj.vm2.LuaTable
+import org.luaj.vm2.LuaValue
+import org.luaj.vm2.lib.ZeroArgFunction
 import org.luaj.vm2.lib.jse.JsePlatform
 
 class VMLuaAdapter(val vm: VM) {
