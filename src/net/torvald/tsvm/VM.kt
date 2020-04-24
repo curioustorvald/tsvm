@@ -115,7 +115,7 @@ class VM(
         }
     }
 
-    fun poke(addr: Long, value: Byte) {
+    internal fun poke(addr: Long, value: Byte) {
         val (memspace, offset) = translateAddr(addr)
         if (memspace == null)
             Firmware.errorIllegalAccess(addr)
@@ -125,7 +125,7 @@ class VM(
             (memspace as PeriBase).poke(offset, value)
     }
 
-    fun peek(addr:Long): Byte? {
+    internal fun peek(addr:Long): Byte? {
         val (memspace, offset) = translateAddr(addr)
         return if (memspace == null)
             null

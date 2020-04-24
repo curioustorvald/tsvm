@@ -44,7 +44,16 @@ Endianness: little
 From the start of the memory space:
 250880 bytes
     Framebuffer
-92 bytes
+3 bytes
+    *reserved for future use*
+1 byte
+    command (writing to this memory address changes the status)
+        1: reset palette to default
+        2: fill framebuffer with given colour (arg1)
+2 bytes
+    argument for "command" (arg1: Byte, arg2: Byte)
+    write to this address FIRST and then write to "command" to execute the command
+86 bytes
     *Unused*
 IF graphics_mode THEN
     (41 sprites : 260 bytes each -> 10660 bytes)
@@ -56,15 +65,15 @@ IF graphics_mode THEN
     256 bytes
         16x16 texture for the sprite
 ELSE
-    3938 bytes
+    2978 bytes
         *Unused*
     2 bytes
         Cursor position in: (y*32 + x)
-    2240 bytes
+    2560 bytes
         Text foreground colours
-    2240 bytes
+    2560 bytes
         Text background colours
-    2240 bytes
+    2560 bytes
         Text buffer of 70x32 (8x14 character size, and yes: actual character data is on the bottom)
 FI
 512 bytes

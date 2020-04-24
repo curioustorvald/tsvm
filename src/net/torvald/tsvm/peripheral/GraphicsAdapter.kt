@@ -1,15 +1,14 @@
 package net.torvald.tsvm.peripheral
 
-import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Pixmap
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.UnsafeHelper
-import net.torvald.terrarumsansbitmap.gdx.TextureRegionPack
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
+import sun.nio.ch.DirectBuffer
 import kotlin.experimental.and
 
 class GraphicsAdapter : PeriBase {
@@ -21,7 +20,7 @@ class GraphicsAdapter : PeriBase {
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    private val chrrom0 = Texture("./EGA8x14.png")
+    private val chrrom0 = Texture("./FontROM7x14.png")
     private val faketex: Texture
 
     private val spriteAndTextArea = UnsafeHelper.allocate(10660L)
@@ -34,11 +33,11 @@ class GraphicsAdapter : PeriBase {
     private var graphicsUseSprites = false
     private var lastUsedColour = (-1).toByte()
     private var currentChrRom = 0
-    private var chrWidth = 8f
+    private var chrWidth = 7f
     private var chrHeight = 14f
 
-    private var ttyFore = 254
-    private var ttyBack = 255
+    private var ttyFore: Int = 254 // cannot be Byte
+    private var ttyBack: Int = 255 // cannot be Byte
 
     private val textForePixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
     private val textBackPixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
@@ -48,7 +47,13 @@ class GraphicsAdapter : PeriBase {
     private var textBackTex = Texture(textBackPixmap)
     private var textTex = Texture(textPixmap)
 
-    private fun getTtyCursorPos() = spriteAndTextArea.getShort(3938L) % TEXT_COLS to spriteAndTextArea.getShort(3938L) / TEXT_COLS
+    private val memTextCursorPosOffset = 2978L
+    private val memTextForeOffset = 2980L
+    private val memTextBackOffset = 2980L + 2560
+    private val memTextOffset = 2980L + 2560 + 2560
+
+    private fun getTtyCursorPos() = spriteAndTextArea.getShort(memTextCursorPosOffset) % TEXT_COLS to spriteAndTextArea.getShort(3938L) / TEXT_COLS
+    private fun toTtyTextOffset(x: Int, y: Int) = y * TEXT_COLS + x
 
     init {
         framebuffer.blending = Pixmap.Blending.None
@@ -62,7 +67,10 @@ class GraphicsAdapter : PeriBase {
         faketex = Texture(pm)
         pm.dispose()
 
-        spriteAndTextArea.fillWith(0)
+        // initialise with NONZERO value; value zero corresponds with opaque black, and it will paint the whole screen black
+        // when in text mode, and that's undesired behaviour
+        // -1 is preferred because it points to the colour CLEAR, and it's constant.
+        spriteAndTextArea.fillWith(-1)
     }
 
     override fun peek(addr: Long): Byte? {
@@ -87,6 +95,10 @@ class GraphicsAdapter : PeriBase {
             in 0 until 250880 -> {
                 lastUsedColour = byte
                 framebuffer.drawPixel(adi % WIDTH, adi / WIDTH, bi.shl(24))
+            }
+            250883L -> {
+                unusedArea[adi - 250880] = byte
+                runCommand(byte)
             }
             in 250880 until 250972 -> unusedArea[adi - 250880] = byte
             in 250972 until 261632 -> spriteAndTextArea[addr - 250972] = byte
@@ -130,6 +142,64 @@ class GraphicsAdapter : PeriBase {
 
     override fun mmio_write(addr: Long, byte: Byte) {
         TODO("Not yet implemented")
+    }
+
+    private fun runCommand(opcode: Byte) {
+        val arg1 = unusedArea[4].toInt().and(255)
+        val arg2 = unusedArea[5].toInt().and(255)
+
+        when (opcode.toInt()) {
+            1 -> {
+                for (it in 0 until 1024) {
+                    val rgba = DEFAULT_PALETTE[it / 4]
+                    val channel = it % 4
+                    rgba.shr((3 - channel) * 8).and(255) / 255f
+                }
+            }
+            2 -> {
+                framebuffer.setColor(
+                    paletteOfFloats[arg1 * 4],
+                    paletteOfFloats[arg1 * 4 + 1],
+                    paletteOfFloats[arg1 * 4 + 2],
+                    paletteOfFloats[arg1 * 4 + 3]
+                )
+                framebuffer.fill()
+            }
+        }
+    }
+
+    /**
+     * @param from memory address (pointer) on the VM's user memory. Because of how the VM is coded, only the user space is eligible for move.
+     * @param to memory "offset" in Graphics Adapter's memory space, starts from zero.
+     * @param length how many bytes should be moved
+     */
+    fun bulkLoad(vm: VM, from: Long, to: Long, length: Long) {
+        UnsafeHelper.unsafe.copyMemory(null, vm.usermem.ptr + from, (framebuffer.pixels as DirectBuffer).address(), to, length)
+    }
+
+    private fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte()) {
+        val textOff = toTtyTextOffset(x, y)
+        spriteAndTextArea[memTextForeOffset + textOff] = foreColour
+        spriteAndTextArea[memTextBackOffset + textOff] = backColour
+        spriteAndTextArea[memTextOffset + textOff] = text
+    }
+
+    private fun advanceCursor() {
+        spriteAndTextArea.setShort(
+            memTextCursorPosOffset,
+            ((spriteAndTextArea.getShort(memTextCursorPosOffset) + 1) % (TEXT_COLS * TEXT_ROWS)).toShort()
+        )
+    }
+
+    // how TTY should work with all those ASCII control characters
+    fun print(char: Byte) {
+        val (cx, cy) = getTtyCursorPos()
+        when (char) {
+            in 0x20..0x7E, in 0x80..0xFF -> {
+                putChar(cx, cy, char)
+                advanceCursor()
+            }
+        }
     }
 
     override fun dispose() {
@@ -178,7 +248,6 @@ class GraphicsAdapter : PeriBase {
         // draw framebuffer
         batch.draw(rendertex, x, y)
 
-
         // draw texts or sprites
 
         batch.color = Color.WHITE
@@ -190,9 +259,9 @@ class GraphicsAdapter : PeriBase {
             for (y in 0 until TEXT_ROWS) {
                 for (x in 0 until TEXT_COLS) {
                     val addr = y.toLong() * TEXT_COLS + x
-                    val char = spriteAndTextArea[3940 + 2240 + 2240 + addr].toInt().and(255)
-                    val back = spriteAndTextArea[3940 + 2240 + addr].toInt().and(255)
-                    val fore = spriteAndTextArea[3940 + addr].toInt().and(255)
+                    val char = spriteAndTextArea[memTextOffset + addr].toInt().and(255)
+                    val back = spriteAndTextArea[memTextBackOffset + addr].toInt().and(255)
+                    val fore = spriteAndTextArea[memTextForeOffset + addr].toInt().and(255)
 
                     textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
                     textPixmap.drawPixel(x, y)
@@ -232,7 +301,7 @@ class GraphicsAdapter : PeriBase {
 
             batch.shader = null
 
-            if (textCursorIsOn) {
+            /*if (textCursorIsOn) {
                 batch.color = Color(
                     paletteOfFloats[4 * ttyFore],
                     paletteOfFloats[4 * ttyFore + 1],
@@ -241,7 +310,7 @@ class GraphicsAdapter : PeriBase {
                 )
                 val (cursorx, cursory) = getTtyCursorPos()
                 batch.draw(faketex, cursorx * chrWidth, (TEXT_ROWS - cursory - 1) * chrHeight, chrWidth, chrHeight)
-            }
+            }*/
         }
         else {
             // draw sprites
@@ -293,7 +362,7 @@ class GraphicsAdapter : PeriBase {
     companion object {
         const val WIDTH = 560
         const val HEIGHT = 448
-        const val TEXT_COLS = 70
+        const val TEXT_COLS = 80
         const val TEXT_ROWS = 32
         val VRAM_SIZE = 256.kB()
 
