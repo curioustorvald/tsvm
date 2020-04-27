@@ -11,7 +11,7 @@ import net.torvald.tsvm.kB
 import sun.nio.ch.DirectBuffer
 import kotlin.experimental.and
 
-class GraphicsAdapter : PeriBase {
+class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     private var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
@@ -26,8 +26,8 @@ class GraphicsAdapter : PeriBase {
     private val spriteAndTextArea = UnsafeHelper.allocate(10660L)
     private val unusedArea = ByteArray(92)
 
-    private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, DRAW_SHADER_FRAG)
-    private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, TEXT_TILING_SHADER)
+    private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
+    private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
 
     private var textmodeBlinkCursor = true
     private var graphicsUseSprites = false
@@ -232,7 +232,7 @@ class GraphicsAdapter : PeriBase {
         batch.begin()
 
         // clear screen
-        batch.color = Color.BLACK
+        batch.color = if (lcdMode) LCD_BASE_COL else Color.BLACK
         batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
 
@@ -244,6 +244,7 @@ class GraphicsAdapter : PeriBase {
         // must be done every time the shader is "actually loaded"
         // try this: if above line precedes 'batch.shader = paletteShader', it won't work
         batch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+        if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
         // draw framebuffer
         batch.draw(rendertex, x, y)
@@ -296,6 +297,7 @@ class GraphicsAdapter : PeriBase {
             textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
             textShader.setUniformf("tilesInAtlas", 16f, 16f)
             textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
+            if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
             batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
@@ -366,6 +368,8 @@ class GraphicsAdapter : PeriBase {
         const val TEXT_ROWS = 32
         val VRAM_SIZE = 256.kB()
 
+        private val LCD_BASE_COL = Color(0xa1a99cff.toInt())
+
         val DRAW_SHADER_FRAG = """
 #version 120
 
@@ -380,7 +384,31 @@ float rand(vec2 co){
 
 void main(void) {
     gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).r * 255.0)];
-    //gl_FragColor = vec4(texture2D(u_texture, v_texCoords).rrr, 1.0);
+}
+        """.trimIndent()
+
+        val DRAW_SHADER_FRAG_LCD = """
+#version 120
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
+uniform vec4 pal[256];
+
+float intensitySteps = 4.0;
+uniform vec4 lcdBaseCol;
+
+float rand(vec2 co){
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+void main(void) {
+    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).r * 255.0)];
+    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+    vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
+
+    // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
+    gl_FragColor = lcdBaseCol * outIntensity;
 }
         """.trimIndent()
 
@@ -488,8 +516,103 @@ void main() {
         gl_FragColor = backColFromMap;
     }
 }
+""".trimIndent()
+
+        val TEXT_TILING_SHADER_LCD = """
+#version 120
+#ifdef GL_ES
+precision mediump float;
+#endif
+#extension GL_EXT_gpu_shader4 : enable
+
+//layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
+// gl_FragCoord is origin to bottom-left
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
 
 
+uniform vec2 screenDimension;
+uniform vec2 tilesInAxes; // size of the tilemap texture; vec2(tiles_in_horizontal, tiles_in_vertical)
+
+uniform sampler2D tilesAtlas;
+uniform sampler2D foreColours;
+uniform sampler2D backColours;
+uniform sampler2D tilemap;
+
+uniform vec2 tilesInAtlas = ivec2(16.0, 16.0);
+uniform vec2 atlasTexSize = ivec2(128.0, 224.0);
+vec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
+
+ivec2 getTileXY(int tileNumber) {
+    return ivec2(tileNumber % int(tilesInAtlas.x), tileNumber / int(tilesInAtlas.x));
+}
+
+// return: int=0xaarrggbb
+int _colToInt(vec4 color) {
+    return int(color.b * 255) | (int(color.g * 255) << 8) | (int(color.r * 255) << 16) | (int(color.a * 255) << 24);
+}
+
+// 0x0rggbb where int=0xaarrggbb
+// return: [0..1048575]
+int getTileFromColor(vec4 color) {
+    return _colToInt(color) & 0xFFFFF;
+}
+
+float intensitySteps = 4.0;
+uniform vec4 lcdBaseCol;
+
+void main() {
+
+    // READ THE FUCKING MANUAL, YOU DONKEY !! //
+    // This code purposedly uses flipped fragcoord. //
+    // Make sure you don't use gl_FragCoord unknowingly! //
+    // Remember, if there's a compile error, shader SILENTLY won't do anything //
+
+
+    // default gl_FragCoord takes half-integer (represeting centre of the pixel) -- could be useful for phys solver?
+    // This one, however, takes exact integer by rounding down. //
+    vec2 flippedFragCoord = vec2(gl_FragCoord.x, screenDimension.y - gl_FragCoord.y); // NO IVEC2!!; this flips Y
+
+    // get required tile numbers //
+
+    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / screenDimension);
+    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / screenDimension);
+
+    int tile = getTileFromColor(tileFromMap);
+    ivec2 tileXY = getTileXY(tile);
+
+    // calculate the UV coord value for texture sampling //
+
+    // don't really need highp here; read the GLES spec
+    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
+
+    // get final UV coord for the actual sampling //
+
+    vec2 finalUVCoordForTile = uvCoordForTile + uvCoordOffsetTile;// where we should be actually looking for in atlas, using UV coord (0..1)
+
+    // blending a breakage tex with main tex //
+
+    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+
+    vec4 palCol = vec4(1.0);
+    // apply colour
+    if (tileCol.r > 0) {
+        palCol = foreColFromMap;
+    }
+    else {
+        palCol = backColFromMap;
+    }
+    
+    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+    vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
+
+    // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
+    gl_FragColor = lcdBaseCol * outIntensity;
+}
 """.trimIndent()
 
         val DEFAULT_PALETTE = intArrayOf( // 0b rrrrrrrr gggggggg bbbbbbbb aaaaaaaa

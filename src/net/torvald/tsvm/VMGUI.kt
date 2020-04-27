@@ -5,7 +5,10 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import kotlinx.coroutines.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.suspendCoroutine
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
@@ -17,10 +20,12 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
     lateinit var vmRunner: VMRunner
 
+    lateinit var coroutineJob: Job
+
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter()
+        gpu = GraphicsAdapter(lcdMode = true)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GRAPHICS,
@@ -43,7 +48,11 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         //vmRunner.executeCommand(gpuTestPalette)
         // TEST KTS PRG
         vmRunner = VMRunnerFactory(vm, "kts")
-        vmRunner.executeCommand(gpuTestPaletteKt)
+        //vmRunner.executeCommand(gpuTestPaletteKt)
+        //launch { vmRunner.executeCommand(gpuTestPaletteKt) } }
+        coroutineJob = GlobalScope.launch {
+            vmRunner.executeCommand(gpuTestPaletteKt)
+        }
     }
 
     private var updateAkku = 0.0
@@ -70,6 +79,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     private var latch = true
 
     private fun updateGame(delta: Float) {
+
+
     }
 
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
@@ -357,6 +368,8 @@ while True:
 
     override fun dispose() {
         super.dispose()
+        batch.dispose()
+        coroutineJob.cancel()
     }
 }
 

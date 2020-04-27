@@ -8,8 +8,7 @@ import kotlin.test.assertNotNull
 
 abstract class VMRunner(val extension: String) {
 
-    var thread = Thread()
-    abstract fun executeCommand(command: String)
+    abstract suspend fun executeCommand(command: String)
 
 }
 
@@ -32,11 +31,8 @@ object VMRunnerFactory {
 
                     private val vmLua = VMLuaAdapter(vm)
 
-                    override fun executeCommand(command: String) {
-                        thread = Thread {
-                            vmLua.lua.load(command).call()
-                        }
-                        thread.start()
+                    override suspend fun executeCommand(command: String) {
+                        vmLua.lua.load(command).call()
                     }
                 }
             }
@@ -58,12 +54,9 @@ object VMRunnerFactory {
                         //bind.put("nanotime", { System.nanoTime() })
                     }
 
-                    override fun executeCommand(command: String) {
-                        thread = Thread {
-                            //(engine as Compilable).compile(command).eval(context) // compiling does not work with bindings in kts
-                            engine.eval(command, context)
-                        }
-                        thread.start()
+                    override suspend fun executeCommand(command: String) {
+                        //(engine as Compilable).compile(command).eval(context) // compiling does not work with bindings in kts
+                        engine.eval(command, context)
                     }
                 }
             }
