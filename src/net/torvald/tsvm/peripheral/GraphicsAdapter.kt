@@ -11,9 +11,9 @@ import net.torvald.tsvm.kB
 import sun.nio.ch.DirectBuffer
 import kotlin.experimental.and
 
-class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
+class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
 
-    internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
+    internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
     private var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
         val rgba = DEFAULT_PALETTE[it / 4]
@@ -29,15 +29,16 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
     private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
     private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
 
-    private var textmodeBlinkCursor = true
+    override var blinkCursor = true
+    override var ttyRawMode = false
     private var graphicsUseSprites = false
     private var lastUsedColour = (-1).toByte()
     private var currentChrRom = 0
     private var chrWidth = 7f
     private var chrHeight = 14f
 
-    private var ttyFore: Int = 254 // cannot be Byte
-    private var ttyBack: Int = 255 // cannot be Byte
+    override var ttyFore: Int = 254 // cannot be Byte
+    override var ttyBack: Int = 255 // cannot be Byte
 
     private val textForePixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
     private val textBackPixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
@@ -52,7 +53,14 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
     private val memTextBackOffset = 2980L + 2560
     private val memTextOffset = 2980L + 2560 + 2560
 
-    private fun getTtyCursorPos() = spriteAndTextArea.getShort(memTextCursorPosOffset) % TEXT_COLS to spriteAndTextArea.getShort(3938L) / TEXT_COLS
+    override var rawCursorPos: Int
+        get() = spriteAndTextArea.getShort(memTextCursorPosOffset).toInt()
+        set(value) { spriteAndTextArea.setShort(memTextCursorPosOffset, value.toShort()) }
+
+    override fun getCursorPos() = rawCursorPos % TEXT_COLS to rawCursorPos / TEXT_COLS
+    override fun setCursorPos(x: Int, y: Int) {
+        rawCursorPos = toTtyTextOffset(x, y)
+    }
     private fun toTtyTextOffset(x: Int, y: Int) = y * TEXT_COLS + x
 
     init {
@@ -71,12 +79,15 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
         // when in text mode, and that's undesired behaviour
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
         spriteAndTextArea.fillWith(-1)
+
+
+        println(framebuffer.pixels.limit())
     }
 
     override fun peek(addr: Long): Byte? {
         val adi = addr.toInt()
         return when (addr) {
-            in 0 until 250880 -> framebuffer.getPixel(adi % WIDTH, adi / WIDTH).toByte()
+            in 0 until 250880 -> framebuffer.pixels.get(adi)//framebuffer.getPixel(adi % WIDTH, adi / WIDTH).toByte()
             in 250880 until 250972 -> unusedArea[adi - 250880]
             in 250972 until 261632 -> spriteAndTextArea[addr - 250972]
             in 261632 until 262144 -> peekPalette(adi - 261632)
@@ -94,7 +105,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
         when (addr) {
             in 0 until 250880 -> {
                 lastUsedColour = byte
-                framebuffer.drawPixel(adi % WIDTH, adi / WIDTH, bi.shl(24))
+                framebuffer.pixels.put(adi, byte)
             }
             250883L -> {
                 unusedArea[adi - 250880] = byte
@@ -110,13 +121,16 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
         }
     }
 
-    private fun getTextmodeAttirbutes(): Byte = (currentChrRom.and(15).shl(4) or textmodeBlinkCursor.toInt()).toByte()
+    private fun getTextmodeAttirbutes(): Byte = (currentChrRom.and(15).shl(4) or
+            ttyRawMode.toInt().shl(1) or
+            blinkCursor.toInt()).toByte()
 
     private fun getGraphicsAttributes(): Byte = graphicsUseSprites.toInt().toByte()
 
     private fun setTextmodeAttributes(rawbyte: Byte) {
         currentChrRom = rawbyte.toInt().and(0b11110000).ushr(4)
-        textmodeBlinkCursor = rawbyte.and(1) == 1.toByte()
+        blinkCursor = rawbyte.and(0b0001) != 0.toByte()
+        ttyRawMode =  rawbyte.and(0b0010) != 0.toByte()
     }
 
     private fun setGraphicsAttributes(rawbyte: Byte) {
@@ -173,33 +187,15 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
      * @param to memory "offset" in Graphics Adapter's memory space, starts from zero.
      * @param length how many bytes should be moved
      */
-    fun bulkLoad(vm: VM, from: Long, to: Long, length: Long) {
+    /*fun bulkLoad(vm: VM, from: Long, to: Long, length: Long) {
         UnsafeHelper.unsafe.copyMemory(null, vm.usermem.ptr + from, (framebuffer.pixels as DirectBuffer).address(), to, length)
-    }
+    }*/
 
-    private fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte()) {
+    override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
         val textOff = toTtyTextOffset(x, y)
         spriteAndTextArea[memTextForeOffset + textOff] = foreColour
         spriteAndTextArea[memTextBackOffset + textOff] = backColour
         spriteAndTextArea[memTextOffset + textOff] = text
-    }
-
-    private fun advanceCursor() {
-        spriteAndTextArea.setShort(
-            memTextCursorPosOffset,
-            ((spriteAndTextArea.getShort(memTextCursorPosOffset) + 1) % (TEXT_COLS * TEXT_ROWS)).toShort()
-        )
-    }
-
-    // how TTY should work with all those ASCII control characters
-    fun print(char: Byte) {
-        val (cx, cy) = getTtyCursorPos()
-        when (char) {
-            in 0x20..0x7E, in 0x80..0xFF -> {
-                putChar(cx, cy, char)
-                advanceCursor()
-            }
-        }
     }
 
     override fun dispose() {
@@ -225,7 +221,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : PeriBase {
 
     fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {
         rendertex.dispose()
-        rendertex = Texture(framebuffer)
+        rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
 
         batch.shader = null
@@ -383,7 +379,7 @@ float rand(vec2 co){
 }
 
 void main(void) {
-    gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).r * 255.0)];
+    gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
 }
         """.trimIndent()
 
@@ -403,7 +399,7 @@ float rand(vec2 co){
 }
 
 void main(void) {
-    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).r * 255.0)];
+    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
     float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
 

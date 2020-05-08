@@ -10,13 +10,7 @@ class VMJSR223Delegate(val vm: VM) {
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
     fun peek(addr: Int) = vm.peek(addr.toLong())
     fun nanoTime() = System.nanoTime()
-    fun dmagload(from: Int, to: Int, length: Int) {
-        val periid = vm.findPeribyType("gpu")
-        if (periid == null)
-            throw IllegalStateException("GPU not found")
-        else {
-            (vm.peripheralTable[periid].peripheral as GraphicsAdapter).bulkLoad(vm, from.toLong(), to.toLong(), length.toLong())
-        }
-    }
+    fun malloc(size: Int) = vm.malloc(size)
+    fun free(ptr: Int) = vm.free(ptr)
 
 }

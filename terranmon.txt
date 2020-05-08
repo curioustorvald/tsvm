@@ -92,7 +92,7 @@ MMIO
     Text mode rows
 1 bytes RW
     Text-mode attributes
-    0b kkkk 000c (k: currently using character rom, c: Cursor blink)
+    0b kkkk 00rc (k: currently using character rom, r: TTY Raw mode, c: Cursor blink)
 1 bytes RW
     Graphics-mode attributes
     0b 0000 000g (g: Use sprites(wipes out text buffer))

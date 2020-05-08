@@ -7,6 +7,8 @@ import net.torvald.tsvm.firmware.Firmware.Companion.toLuaValue
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
 import org.luaj.vm2.LuaValue
+import java.util.*
+import kotlin.math.ceil
 import kotlin.random.Random
 
 /**
@@ -55,6 +57,8 @@ class VM(
     val id = java.util.Random().nextInt()
 
     val memsize = minOf(USER_SPACE_SIZE, _memsize.toLong())
+    private val MALLOC_UNIT = 64
+    private val mallocBlockSize = (memsize / MALLOC_UNIT).toInt()
 
     internal val usermem = UnsafeHelper.allocate(memsize)
 
@@ -135,8 +139,55 @@ class VM(
             (memspace as PeriBase).peek(offset)
     }
 
-    fun Byte.toLuaValue() = LuaValue.valueOf(this.toInt())
+    private val mallocMap = BitSet(mallocBlockSize)
+    private val mallocSizes = HashMap<Int, Int>() // HashMap<Block Index, Block Count>
 
+    private fun findEmptySpace(blockSize: Int): Int? {
+        var cursorHead = 0
+        var cursorTail: Int
+        val cursorHeadMaxInclusive = mallocBlockSize - blockSize
+        while (cursorHead <= cursorHeadMaxInclusive) {
+            cursorHead = mallocMap.nextClearBit(cursorHead)
+            cursorTail = cursorHead + blockSize - 1
+            if (cursorTail > mallocBlockSize) return null
+            if (mallocMap.get(cursorTail) == false) {
+                var isNotEmpty = false
+                for (k in cursorHead..cursorTail) {
+                    isNotEmpty = isNotEmpty or mallocMap[k]
+                }
+
+                if (!isNotEmpty) {
+                    mallocMap.set(cursorHead, cursorTail + 1)
+                    return cursorHead
+                }
+            }
+            cursorHead = cursorTail + 1
+        }
+        return null
+    }
+
+    internal fun malloc(size: Int): Int {
+        val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
+        val blockStart = findEmptySpace(allocBlocks)
+        if (blockStart == null) throw OutOfMemoryError()
+
+        mallocSizes[blockStart] = allocBlocks
+        return blockStart * MALLOC_UNIT
+    }
+
+    internal fun free(ptr: Int) {
+        val index = ptr / MALLOC_UNIT
+        val count = mallocSizes[index]
+        if (count == null) throw OutOfMemoryError()
+
+        mallocMap.set(index, index + count, false)
+        mallocSizes.remove(index)
+    }
+
+    //fun Byte.toLuaValue() = LuaValue.valueOf(this.toInt())
+
+
+    internal data class VMNativePtr(val address: Int, val size: Int)
 }
 
 data class PeripheralEntry(

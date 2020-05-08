@@ -25,7 +25,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(lcdMode = true)
+        gpu = GraphicsAdapter(lcdMode = false)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GRAPHICS,
@@ -43,15 +43,10 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
 
-        // TEST LUA PRG
-        //vmRunner = VMRunnerFactory(vm, "lua")
-        //vmRunner.executeCommand(gpuTestPalette)
-        // TEST KTS PRG
-        vmRunner = VMRunnerFactory(vm, "kts")
-        //vmRunner.executeCommand(gpuTestPaletteKt)
-        //launch { vmRunner.executeCommand(gpuTestPaletteKt) } }
+        // TEST PRG
+        vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(gpuTestPaletteKt)
+            vmRunner.executeCommand(gpuTestPaletteJs)
         }
     }
 
@@ -166,6 +161,7 @@ while (true) {
 }
     """.trimIndent()
 
+
     private val gpuTestPalette = """
 local vm = require("rawmem")
 local bit = require("bit32")
@@ -213,55 +209,54 @@ while true do
 end
     """.trimIndent()
 
-    private val gpuTestPaletteJs = """
-var w = 560
-var h = 448
-var hwoff = 1048576
-
-print(typeof print) //function
-print(typeof vm.poke) //function
+    private val jscode = """
+var w = 560;
+var h = 448;
+var hwoff = 1048576;
 
 function inthash(x) {
-    x = ((x >> 16) ^ x) * 0x45d9f3b
-    x = ((x >> 16) ^ x) * 0x45d9f3b
-    x = (x >> 16) ^ x
-    return x
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return x;
 }
 
-var rng = Math.floor(Math.random() * 2147483647) + 1
+var rng = Math.floor(Math.random() * 2147483647) + 1;
 
 while (true) {
 
-    var tstart = vm.nanoTime()
+    var tstart = vm.nanoTime();
 
     for (var y = 0; y < 360; y++) {
         for (var x = 0; x < w; x++) {
-            var palnum = 20 * Math.floor(y / 30) + Math.floor(x / 28)
-            vm.poke(-(y * w + x + 1) - hwoff, inthash(palnum + rng))
+            var palnum = 20 * Math.floor(y / 30) + Math.floor(x / 28);
+            vm.poke(-(y * w + x + 1) - hwoff, inthash(palnum + rng));
         }
     }
     
     for (var y = 360; y < h; y++) {
         for (var x = 0; x < w; x++) {
-            var palnum = 240 + Math.floor(x / 35)
-            vm.poke(-(y * w + x + 1) - hwoff, palnum)
+            var palnum = 240 + Math.floor(x / 35);
+            vm.poke(-(y * w + x + 1) - hwoff, palnum);
         }
     }
     
     for (var k = 0; k < 2560; k++) {
-        vm.poke(-(253952 + k + 1) - hwoff, -2) // white
-        vm.poke(-(253952 + 2560 + k + 1) - hwoff, -1) // transparent
-        vm.poke(-(253952 + 2560*2 + k + 1) - hwoff, Math.round(Math.random() * 255))
+        vm.poke(-(253952 + k + 1) - hwoff, -2); // transparent
+        vm.poke(-(253952 + 2560 + k + 1) - hwoff, -1); // white
+        vm.poke(-(253952 + 2560*2 + k + 1) - hwoff, Math.round(Math.random() * 255));
     }
     
-    rng = inthash(rng)
+    rng = inthash(rng);
     
-    var tend = vm.nanoTime()
+    var tend = vm.nanoTime();
     
-    print("Apparent FPS: " + (1000000000 / (tend - tstart)))
+    print("Apparent FPS: " + (1000000000 / (tend - tstart)));
 }
+""".trimIndent()
 
-    """.trimIndent()
+    private val gpuTestPaletteJs = "eval('${jscode.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')}')"
+
 
     private val gpuTestPaletteJava = """
 int w = 560;
@@ -370,6 +365,7 @@ while True:
         super.dispose()
         batch.dispose()
         coroutineJob.cancel()
+        vm.dispose()
     }
 }
 

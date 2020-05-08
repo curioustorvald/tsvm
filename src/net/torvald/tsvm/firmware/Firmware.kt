@@ -53,7 +53,7 @@ internal class Firmware(val vm: VM) : TwoArgFunction() {
         val t = LuaTable()
         t["poke"] = Poke(vm)
         t["peek"] = Peek(vm)
-        t["nanotime"] = object : ZeroArgFunction() {
+        t["nanoTime"] = object : ZeroArgFunction() {
             override fun call(): LuaValue {
                 return LuaValue.valueOf(System.nanoTime().toDouble())
             }
