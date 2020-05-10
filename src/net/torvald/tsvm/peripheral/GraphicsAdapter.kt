@@ -23,7 +23,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
     private val chrrom0 = Texture("./FontROM7x14.png")
     private val faketex: Texture
 
-    private val spriteAndTextArea = UnsafeHelper.allocate(10660L)
+    internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
     private val unusedArea = ByteArray(92)
 
     private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)

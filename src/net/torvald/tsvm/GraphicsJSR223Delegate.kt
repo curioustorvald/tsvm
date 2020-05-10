@@ -33,17 +33,43 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
-    private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
-        if (toAddr < 250880) {
-            UnsafeHelper.memcpy(
-                vm.usermem.ptr + fromAddr,
-                (this.framebuffer.pixels as DirectBuffer).address() + toAddr,
-                length.toLong()
-            )
-        }
-        else if (toAddr < 250972) {
-
+    fun storeBulk(fromAddr: Int, toAddr: Int, length: Int) {
+        getFirstGPU()?.let {
+            it._storebulk(fromAddr, toAddr, length)
         }
     }
+
+    private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
+        UnsafeHelper.memcpy(
+            vm.usermem.ptr + fromAddr,
+            (this.framebuffer.pixels as DirectBuffer).address() + toAddr,
+            length.toLong()
+        )
+    }
+
+    private fun GraphicsAdapter._storebulk(fromAddr: Int, toAddr: Int, length: Int) {
+        UnsafeHelper.memcpy(
+            (this.framebuffer.pixels as DirectBuffer).address() + fromAddr,
+            vm.usermem.ptr + toAddr,
+            length.toLong()
+        )
+    }
+
+    private fun GraphicsAdapter._loadSprite(spriteNum: Int, ptr: Int) {
+        UnsafeHelper.memcpy(
+            vm.usermem.ptr + ptr,
+            (this.spriteAndTextArea).ptr + (260 * spriteNum) + 4,
+            256
+        )
+    }
+
+    private fun GraphicsAdapter._storeSprite(spriteNum: Int, ptr: Int) {
+        UnsafeHelper.memcpy(
+            (this.spriteAndTextArea).ptr + (260 * spriteNum) + 4,
+            vm.usermem.ptr + ptr,
+            256
+        )
+    }
+
 
 }

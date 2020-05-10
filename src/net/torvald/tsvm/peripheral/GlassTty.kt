@@ -1,6 +1,6 @@
 package net.torvald.tsvm.peripheral
 
-import com.badlogic.gdx.utils.Queue
+import java.util.*
 
 /**
  * Implements standard TTY that can interpret some of the ANSI escape sequences
@@ -19,8 +19,8 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
 
     abstract fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte())
 
-    private var ttyMode = Queue<Byte>() // stores escape sequences like: <ESC> [
-
+    private var ttyEscState = TTY_ESC_STATE.INITIAL
+    private val ttyEscArguments = Stack<Int>()
     /**
      * ONLY accepts a character to either process the escape sequence, or say the input character is allowed to print.
      * This function will alter the internal state of the TTY intepreter (aka this very class)
@@ -31,39 +31,163 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
      * @return true if character should be printed as-is
      */
     private fun acceptChar(char: Byte): Boolean {
-        TODO()
-
-        if (ESC == char) {
-            // beginning of the escape sequence
-            if (ttyMode.isEmpty) {
-                ttyMode.addLast(char)
-            }
-            else {
-                return true
-            }
+        fun reject(): Boolean {
+            ttyEscState = TTY_ESC_STATE.INITIAL
+            ttyEscArguments.clear()
+            return true
         }
-        // Any escape sequences
-        else if (ttyMode.size >= 1) {
-            // make a state machine; if the machine should move into accepting state: accept a char, and return false;
-            //   for a rejecting state (sequence not in the transition table): clear the ttyMode, and return false;
-            //   for a terminating state (escape sequence is terminated successfully): run interpretCSI(), and return false.
-
-
+        fun accept(execute: () -> Unit): Boolean {
+            ttyEscState = TTY_ESC_STATE.INITIAL
+            execute.invoke()
+            ttyEscArguments.clear()
             return false
         }
+        fun registerNewNumberArg(newnum: Byte, newState: TTY_ESC_STATE) {
+            ttyEscArguments.push(char.toInt() - 0x30)
+            ttyEscState = newState
+        }
+        fun appendToExistingNumber(newnum: Byte) {
+            ttyEscArguments.push(ttyEscArguments.pop() * 10 + (newnum.toInt() - 0x30))
+        }
+
+        //TODO()
+
+        when (ttyEscState) {
+            TTY_ESC_STATE.INITIAL -> {
+                if (char == ESC) {
+                    ttyEscState = TTY_ESC_STATE.ESC
+                }
+                else {
+                    return true
+                }
+            }
+            TTY_ESC_STATE.ESC -> {
+                when (char.toChar()) {
+                    'c' -> return accept { resetTtyStatus() }
+                    '[' -> ttyEscState = TTY_ESC_STATE.CSI
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.CSI -> {
+                when (char.toChar()) {
+                    'A' -> return accept { cursorUp() }
+                    'B' -> return accept { cursorDown() }
+                    'C' -> return accept { cursorFwd() }
+                    'D' -> return accept { cursorBack() }
+                    'E' -> return accept { cursorNextLine() }
+                    'F' -> return accept { cursorPrevLine() }
+                    'G' -> return accept { cursorX() }
+                    'J' -> return accept { eraseInDisp() }
+                    'K' -> return accept { eraseInLine() }
+                    'S' -> return accept { scrollUp() }
+                    'T' -> return accept { scrollDown() }
+                    'm' -> return accept { sgrOneArg() }
+                    ';' -> {
+                        ttyEscArguments.push(0)
+                        ttyEscState = TTY_ESC_STATE.SEP1
+                    }
+                    in '0'..'9' -> registerNewNumberArg(char, TTY_ESC_STATE.NUM1)
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.NUM1 -> {
+                when (char.toChar()) {
+                    'A' -> return accept { cursorUp(ttyEscArguments.pop()) }
+                    'B' -> return accept { cursorDown(ttyEscArguments.pop()) }
+                    'C' -> return accept { cursorFwd(ttyEscArguments.pop()) }
+                    'D' -> return accept { cursorBack(ttyEscArguments.pop()) }
+                    'E' -> return accept { cursorNextLine(ttyEscArguments.pop()) }
+                    'F' -> return accept { cursorPrevLine(ttyEscArguments.pop()) }
+                    'G' -> return accept { cursorX(ttyEscArguments.pop()) }
+                    'J' -> return accept { eraseInDisp(ttyEscArguments.pop()) }
+                    'K' -> return accept { eraseInLine(ttyEscArguments.pop()) }
+                    'S' -> return accept { scrollUp(ttyEscArguments.pop()) }
+                    'T' -> return accept { scrollDown(ttyEscArguments.pop()) }
+                    'm' -> return accept { sgrOneArg(ttyEscArguments.pop()) }
+                    ';' -> ttyEscState = TTY_ESC_STATE.SEP1
+                    in '0'..'9' -> appendToExistingNumber(char)
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.NUM2 -> {
+                when (char.toChar()) {
+                    in '0'..'9' -> appendToExistingNumber(char)
+                    'H' -> return accept {
+                        val arg2 = ttyEscArguments.pop()
+                        val arg1 = ttyEscArguments.pop()
+                        cursorXY(arg1, arg2)
+                    }
+                    ';' -> ttyEscState = TTY_ESC_STATE.SEP2
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.NUM3 -> {
+                when (char.toChar()) {
+                    in '0'..'9' -> appendToExistingNumber(char)
+                    'm' -> return accept {
+                        val arg3 = ttyEscArguments.pop()
+                        val arg2 = ttyEscArguments.pop()
+                        val arg1 = ttyEscArguments.pop()
+                        sgrThreeArg(arg1, arg2, arg3)
+                    }
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.SEP1 -> {
+                when (char.toChar()) {
+                    in '0'..'9' -> registerNewNumberArg(char, TTY_ESC_STATE.NUM2)
+                    'H' -> return accept {
+                        val arg1 = ttyEscArguments.pop()
+                        cursorXY(arg1, 0)
+                    }
+                    ';' -> {
+                        ttyEscArguments.push(0)
+                        ttyEscState = TTY_ESC_STATE.SEP2
+                    }
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.SEP2 -> {
+                when (char.toChar()) {
+                    'm' -> return accept {
+                        val arg2 = ttyEscArguments.pop()
+                        val arg1 = ttyEscArguments.pop()
+                        sgrThreeArg(arg1, arg2, 0)
+                    }
+                    in '0'..'9' -> registerNewNumberArg(char, TTY_ESC_STATE.NUM3)
+                    else -> return reject()
+                }
+            }
+        }
+
+        return false
     }
 
-    private fun interpretEscapeSequence() {
-        TODO()
-    }
-
-
+    abstract fun resetTtyStatus()
+    abstract fun cursorUp(arg: Int = 1)
+    abstract fun cursorDown(arg: Int = 1)
+    abstract fun cursorFwd(arg: Int = 1)
+    abstract fun cursorBack(arg: Int = 1)
+    abstract fun cursorNextLine(arg: Int = 1)
+    abstract fun cursorPrevLine(arg: Int = 1)
+    abstract fun cursorX(arg: Int = 1) // aka Cursor Horizintal Absolute
+    abstract fun eraseInDisp(arg: Int = 0)
+    abstract fun eraseInLine(arg: Int = 0)
+    abstract fun scrollUp(arg: Int = 1)
+    abstract fun scrollDown(arg: Int = 1)
+    abstract fun sgrOneArg(arg: Int = 0)
+    abstract fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int)
+    abstract fun cursorXY(arg1: Int, arg2: Int)
 
     private val ESC = 0x1B.toByte()
-    private val LBRACKET = 0x5B.toByte()
 
     private val FORE_DEFAULT = 254
     private val BACK_DEFAULT = 255
+
+
+    private enum class TTY_ESC_STATE {
+        INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3
+    }
 
 }
 
@@ -82,11 +206,13 @@ digraph G {
   CSI -> CursorBack [label="D"]
   CSI -> CursorNextLine [label="E"]
   CSI -> CursorPrevLine [label="F"]
-  CSI -> CursorY [label="G"]
-  CSI -> EraseDisp [label="J"]
-  CSI -> EraseLine [label="K"]
+  CSI -> CursorX [label="G"]
+  CSI -> EraseInDisp [label="J"]
+  CSI -> EraseInLine [label="K"]
   CSI -> ScrollUp [label="S"]
   CSI -> ScrollDown [label="T"]
+  CSI -> SGR [label="m"]
+  CSI -> separator1 [label="; (zero)"]
 
   numeral -> numeral [label="0..9"]
   numeral -> CursorUp [label="A"]
@@ -95,25 +221,29 @@ digraph G {
   numeral -> CursorBack [label="D"]
   numeral -> CursorNextLine [label="E"]
   numeral -> CursorPrevLine [label="F"]
-  numeral -> CursorY [label="G"]
-  numeral -> EraseDisp [label="J"]
-  numeral -> EraseLine [label="K"]
+  numeral -> CursorX [label="G"]
+  numeral -> EraseInDisp [label="J"]
+  numeral -> EraseInLine [label="K"]
   numeral -> ScrollUp [label="S"]
   numeral -> ScrollDown [label="T"]
 
-  numeral -> SGR [label="(any unacceptable char)"]
+  numeral -> SGR [label="m"]
 
   numeral -> separator1 [label=";"]
+
   separator1 -> numeral2 [label="0..9"]
+  separator1 -> separator2 [label="; (zero)"]
+  separator1 -> CursorPos [label="H (zero)"]
+
   numeral2 -> numeral2 [label="0..9"]
   numeral2 -> CursorPos [label="H"]
-
   numeral2 -> separator2 [label=";"]
 
   separator2 -> numeral3 [label="0..9"]
   numeral3 -> numeral3 [label="0..9"]
 
-  numeral3 -> "SGR-Colour" [label="(any unacceptable char)"]
+  separator2 -> "SGR-Colour" [label="m (zero)"]
+  numeral3 -> "SGR-Colour" [label="m"]
 
   ESC [shape=Mdiamond]
   Reset -> end
@@ -123,9 +253,9 @@ digraph G {
   CursorBack -> end
   CursorNextLine -> end
   CursorPrevLine -> end
-  CursorY -> end
-  EraseDisp -> end
-  EraseLine -> end
+  CursorX -> end
+  EraseInDisp -> end
+  EraseInLine -> end
   ScrollUp -> end
   ScrollDown -> end
   CursorPos -> end
