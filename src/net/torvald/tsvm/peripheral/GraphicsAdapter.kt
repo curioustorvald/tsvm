@@ -37,8 +37,8 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
     private var chrWidth = 7f
     private var chrHeight = 14f
 
-    override var ttyFore: Int = 254 // cannot be Byte
-    override var ttyBack: Int = 255 // cannot be Byte
+    override var ttyFore: Int = TTY_FORE_DEFAULT // cannot be Byte
+    override var ttyBack: Int = TTY_BACK_DEFAULT // cannot be Byte
 
     private val textForePixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
     private val textBackPixmap = Pixmap(TEXT_COLS, TEXT_ROWS, Pixmap.Format.RGBA8888)
@@ -182,14 +182,10 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
         }
     }
 
-    /**
-     * @param from memory address (pointer) on the VM's user memory. Because of how the VM is coded, only the user space is eligible for move.
-     * @param to memory "offset" in Graphics Adapter's memory space, starts from zero.
-     * @param length how many bytes should be moved
-     */
-    /*fun bulkLoad(vm: VM, from: Long, to: Long, length: Long) {
-        UnsafeHelper.unsafe.copyMemory(null, vm.usermem.ptr + from, (framebuffer.pixels as DirectBuffer).address(), to, length)
-    }*/
+    override fun resetTtyStatus() {
+        ttyFore = TTY_FORE_DEFAULT
+        ttyBack = TTY_BACK_DEFAULT
+    }
 
     override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
         val textOff = toTtyTextOffset(x, y)
@@ -363,6 +359,9 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
         const val TEXT_COLS = 80
         const val TEXT_ROWS = 32
         val VRAM_SIZE = 256.kB()
+
+        const val TTY_FORE_DEFAULT = 254
+        const val TTY_BACK_DEFAULT = 255
 
         private val LCD_BASE_COL = Color(0xa1a99cff.toInt())
 

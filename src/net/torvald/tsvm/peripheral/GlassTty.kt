@@ -50,8 +50,6 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
             ttyEscArguments.push(ttyEscArguments.pop() * 10 + (newnum.toInt() - 0x30))
         }
 
-        //TODO()
-
         when (ttyEscState) {
             TTY_ESC_STATE.INITIAL -> {
                 if (char == ESC) {
@@ -117,6 +115,11 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
                         val arg1 = ttyEscArguments.pop()
                         cursorXY(arg1, arg2)
                     }
+                    'm' -> return accept {
+                        val arg2 = ttyEscArguments.pop()
+                        val arg1 = ttyEscArguments.pop()
+                        sgrTwoArg(arg1, arg2)
+                    }
                     ';' -> ttyEscState = TTY_ESC_STATE.SEP2
                     else -> return reject()
                 }
@@ -139,6 +142,10 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
                     'H' -> return accept {
                         val arg1 = ttyEscArguments.pop()
                         cursorXY(arg1, 0)
+                    }
+                    'm' -> return accept {
+                        val arg1 = ttyEscArguments.pop()
+                        sgrTwoArg(arg1, 0)
                     }
                     ';' -> {
                         ttyEscArguments.push(0)
@@ -176,14 +183,13 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract fun scrollUp(arg: Int = 1)
     abstract fun scrollDown(arg: Int = 1)
     abstract fun sgrOneArg(arg: Int = 0)
+    abstract fun sgrTwoArg(arg1: Int, arg2: Int)
     abstract fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int)
     abstract fun cursorXY(arg1: Int, arg2: Int)
+    abstract fun ringBell()
+    abstract fun insertTab()
 
     private val ESC = 0x1B.toByte()
-
-    private val FORE_DEFAULT = 254
-    private val BACK_DEFAULT = 255
-
 
     private enum class TTY_ESC_STATE {
         INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3
@@ -234,16 +240,18 @@ digraph G {
   separator1 -> numeral2 [label="0..9"]
   separator1 -> separator2 [label="; (zero)"]
   separator1 -> CursorPos [label="H (zero)"]
+  separator1 -> SGR2 [label="m (zero)"]
 
   numeral2 -> numeral2 [label="0..9"]
   numeral2 -> CursorPos [label="H"]
-  numeral2 -> separator2 [label=";"]
+  numeral2 -> SGR2 [label="m"]
+  numeral2 -> separator2 [label="; (zero)"]
 
   separator2 -> numeral3 [label="0..9"]
   numeral3 -> numeral3 [label="0..9"]
 
-  separator2 -> "SGR-Colour" [label="m (zero)"]
-  numeral3 -> "SGR-Colour" [label="m"]
+  separator2 -> SGR3 [label="m (zero)"]
+  numeral3 -> SGR3 [label="m"]
 
   ESC [shape=Mdiamond]
   Reset -> end
@@ -260,7 +268,8 @@ digraph G {
   ScrollDown -> end
   CursorPos -> end
   SGR -> end
-  "SGR-Colour" -> end
+  SGR2 -> end
+  SGR3 -> end
   end [shape=Msquare]
 }
 
