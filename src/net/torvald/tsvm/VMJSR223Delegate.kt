@@ -13,4 +13,13 @@ class VMJSR223Delegate(val vm: VM) {
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
 
+    fun print(s: String) {
+        //println("[Nashorn] $s")
+        vm.printStream.write((s + '\n').toByteArray())
+    }
+
+}
+
+class VMSerialDebugger(val vm: VM) {
+    fun print(s: String) = System.out.println(s)
 }

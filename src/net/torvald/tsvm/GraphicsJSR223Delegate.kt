@@ -7,7 +7,7 @@ import sun.nio.ch.DirectBuffer
 class GraphicsJSR223Delegate(val vm: VM) {
 
     private fun getFirstGPU(): GraphicsAdapter? {
-        return vm.peripheralTable[vm.findPeribyType("gpu") ?: return null].peripheral as? GraphicsAdapter
+        return vm.findPeribyType(VM.PERITYPE_TERM)?.peripheral as? GraphicsAdapter
     }
 
     fun resetPalette() {

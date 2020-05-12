@@ -1,13 +1,27 @@
 package net.torvald.tsvm.peripheral
 
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.*
 
 /**
  * Implements standard TTY that can interpret some of the ANSI escape sequences
+ *
+ * A paper tty must be able to implemented by extending this class (and butchering some of the features), of which it
+ * sets limits on some of the functions (notably 'setCursorPos')
  */
 abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
 
+    /**
+     * (x, y)
+     */
     abstract fun getCursorPos(): Pair<Int, Int>
+
+    /**
+     * Think of it as a real paper tty;
+     * setCursorPos must "wrap" the cursor properly when x-value goes out of screen bound.
+     * For y-value, only when y < 0, set y to zero and don't care about the y-value goes out of bound.
+     */
     abstract fun setCursorPos(x: Int, y: Int)
 
     abstract var rawCursorPos: Int
@@ -18,6 +32,23 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract var ttyRawMode: Boolean
 
     abstract fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte())
+
+    fun writeOut(char: Byte) {
+        val printable = acceptChar(char)
+
+        if (printable) {
+            val (x, y) = getCursorPos()
+            putChar(x, y, char)
+            setCursorPos(x + 1, y) // should automatically wrap and advance a line for out-of-bound x-value
+        }
+
+        // deal with y-axis out-of-bounds
+        val (cx, cy) = getCursorPos()
+        if (cy >= TEXT_ROWS) {
+            scrollUp(cy - TEXT_ROWS + 1)
+            setCursorPos(cx, TEXT_ROWS - 1)
+        }
+    }
 
     private var ttyEscState = TTY_ESC_STATE.INITIAL
     private val ttyEscArguments = Stack<Int>()
@@ -52,11 +83,14 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
 
         when (ttyEscState) {
             TTY_ESC_STATE.INITIAL -> {
-                if (char == ESC) {
-                    ttyEscState = TTY_ESC_STATE.ESC
-                }
-                else {
-                    return true
+                when (char) {
+                    ESC -> ttyEscState = TTY_ESC_STATE.ESC
+                    LF -> crlf()
+                    BS -> backspace()
+                    TAB -> insertTab()
+                    BEL -> ringBell()
+                    in 0x00.toByte()..0x1F.toByte() -> return false
+                    else -> return true
                 }
             }
             TTY_ESC_STATE.ESC -> {
@@ -170,6 +204,8 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
         return false
     }
 
+
+
     abstract fun resetTtyStatus()
     abstract fun cursorUp(arg: Int = 1)
     abstract fun cursorDown(arg: Int = 1)
@@ -180,15 +216,31 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract fun cursorX(arg: Int = 1) // aka Cursor Horizintal Absolute
     abstract fun eraseInDisp(arg: Int = 0)
     abstract fun eraseInLine(arg: Int = 0)
+    /** New lines are added at the bottom */
     abstract fun scrollUp(arg: Int = 1)
+    /** New lines are added at the top */
     abstract fun scrollDown(arg: Int = 1)
     abstract fun sgrOneArg(arg: Int = 0)
     abstract fun sgrTwoArg(arg1: Int, arg2: Int)
     abstract fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int)
+    /** The values are one-based
+     * @param arg1 y-position (row)
+     * @param arg2 x-position (column) */
     abstract fun cursorXY(arg1: Int, arg2: Int)
     abstract fun ringBell()
     abstract fun insertTab()
+    abstract fun crlf()
+    abstract fun backspace()
 
+    abstract fun getPrintStream(): OutputStream
+    abstract fun getErrorStream(): OutputStream
+    abstract fun getInputStream(): InputStream
+
+    private val CR = 0x0D.toByte()
+    private val LF = 0x0A.toByte()
+    private val TAB = 0x09.toByte()
+    private val BS = 0x08.toByte()
+    private val BEL = 0x07.toByte()
     private val ESC = 0x1B.toByte()
 
     private enum class TTY_ESC_STATE {

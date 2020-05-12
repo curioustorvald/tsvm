@@ -9,6 +9,9 @@ import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import sun.nio.ch.DirectBuffer
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.PrintStream
 import kotlin.experimental.and
 
 class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
@@ -58,8 +61,28 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
         set(value) { spriteAndTextArea.setShort(memTextCursorPosOffset, value.toShort()) }
 
     override fun getCursorPos() = rawCursorPos % TEXT_COLS to rawCursorPos / TEXT_COLS
+    /**
+     * Think of it as a real paper tty;
+     * setCursorPos must "wrap" the cursor properly when x-value goes out of screen bound.
+     * For y-value, only when y < 0, set y to zero and don't care about the y-value goes out of bound.
+     */
     override fun setCursorPos(x: Int, y: Int) {
-        rawCursorPos = toTtyTextOffset(x, y)
+        var newx = x
+        var newy = y
+
+        if (newx >= TEXT_COLS) {
+            newx = 0
+            newy += 1
+        }
+        else if (newx < 0) {
+            newx = 0
+        }
+
+        if (newy < 0) {
+            newy = 0 // DON'T SCROLL when cursor goes ABOVE the screen
+        }
+
+        rawCursorPos = toTtyTextOffset(newx, newy)
     }
     private fun toTtyTextOffset(x: Int, y: Int) = y * TEXT_COLS + x
 
@@ -80,6 +103,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
         spriteAndTextArea.fillWith(-1)
 
+        setCursorPos(0, 0)
 
         println(framebuffer.pixels.limit())
     }
@@ -192,6 +216,157 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
         spriteAndTextArea[memTextForeOffset + textOff] = foreColour
         spriteAndTextArea[memTextBackOffset + textOff] = backColour
         spriteAndTextArea[memTextOffset + textOff] = text
+    }
+
+    override fun cursorUp(arg: Int) {
+        val (x, y) = getCursorPos()
+        setCursorPos(x, y - arg)
+    }
+
+    override fun cursorDown(arg: Int) {
+        val (x, y) = getCursorPos()
+        val newy = y + arg
+        setCursorPos(x, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
+    }
+
+    override fun cursorFwd(arg: Int) {
+        val (x, y) = getCursorPos()
+        setCursorPos(x + arg, y)
+    }
+
+    override fun cursorBack(arg: Int) {
+        val (x, y) = getCursorPos()
+        setCursorPos(x - arg, y)
+    }
+
+    override fun cursorNextLine(arg: Int) {
+        val (_, y) = getCursorPos()
+        val newy = y + arg
+        setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
+        if (newy >= TEXT_ROWS) {
+            scrollUp(newy - TEXT_ROWS + 1)
+        }
+    }
+
+    override fun cursorPrevLine(arg: Int) {
+        val (_, y) = getCursorPos()
+        setCursorPos(0, y - arg)
+    }
+
+    override fun cursorX(arg: Int) {
+        val (_, y) = getCursorPos()
+        setCursorPos(arg, y)
+    }
+
+    override fun eraseInDisp(arg: Int) {
+        when (arg) {
+            else -> TODO()
+        }
+    }
+
+    override fun eraseInLine(arg: Int) {
+        when (arg) {
+            else -> TODO()
+        }    }
+
+    /** New lines are added at the bottom */
+    override fun scrollUp(arg: Int) {
+        //TODO("Not yet implemented")
+    }
+
+    /** New lines are added at the top */
+    override fun scrollDown(arg: Int) {
+        TODO("Not yet implemented")
+    }
+
+    override fun sgrOneArg(arg: Int) {
+        TODO("Not yet implemented")
+    }
+
+    override fun sgrTwoArg(arg1: Int, arg2: Int) {
+        TODO("Not yet implemented")
+    }
+
+    override fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int) {
+        TODO("Not yet implemented")
+    }
+
+    /** The values are one-based
+     * @param arg1 y-position (row)
+     * @param arg2 x-position (column) */
+    override fun cursorXY(arg1: Int, arg2: Int) {
+        TODO("Not yet implemented")
+    }
+
+    override fun ringBell() {
+        TODO("Not yet implemented")
+    }
+
+    override fun insertTab() {
+        TODO("Not yet implemented")
+    }
+
+    override fun crlf() {
+        val (_, y) = getCursorPos()
+        val newy = y + 1
+        setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
+        if (newy >= TEXT_ROWS) scrollUp(1)
+    }
+
+    override fun backspace() {
+        val (x, y) = getCursorPos()
+        putChar(x, y, 0x20.toByte())
+        setCursorPos(x - 1, y)
+    }
+
+    private lateinit var PRINTSTREAM_INSTANCE: OutputStream
+    private lateinit var ERRORSTREAM_INSTANCE: OutputStream
+    private lateinit var INPUTSTREAM_INSTANCE: InputStream
+
+    override fun getPrintStream(): OutputStream {
+        try {
+            return PRINTSTREAM_INSTANCE
+        }
+        catch (e: UninitializedPropertyAccessException) {
+            PRINTSTREAM_INSTANCE = object : OutputStream() {
+                override fun write(p0: Int) {
+                    writeOut(p0.toByte())
+                }
+            }
+
+            return PRINTSTREAM_INSTANCE
+        }
+
+    }
+
+    override fun getErrorStream(): OutputStream {
+        try {
+            return ERRORSTREAM_INSTANCE
+        }
+        catch (e: UninitializedPropertyAccessException) {
+            ERRORSTREAM_INSTANCE = object : OutputStream() {
+                private val SGI_RED = byteArrayOf(0x1B, 0x5B, 0x33, 0x31, 0x6D)
+                private val SGI_RESET = byteArrayOf(0x1B, 0x5B, 0x6D)
+
+                override fun write(p0: Int) {
+                    SGI_RED.forEach { writeOut(it) }
+                    writeOut(p0.toByte())
+                    SGI_RESET.forEach { writeOut(it) }
+                }
+
+                override fun write(p0: ByteArray) {
+                    SGI_RED.forEach { writeOut(it) }
+                    p0.forEach { writeOut(it) }
+                    SGI_RESET.forEach { writeOut(it) }
+                }
+            }
+
+            return ERRORSTREAM_INSTANCE
+        }
+    }
+
+    override fun getInputStream(): InputStream {
+        TODO("Not yet implemented")
     }
 
     override fun dispose() {

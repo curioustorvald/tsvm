@@ -7,6 +7,8 @@ import net.torvald.tsvm.firmware.Firmware.Companion.toLuaValue
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
 import org.luaj.vm2.LuaValue
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.*
 import kotlin.math.ceil
 import kotlin.random.Random
@@ -64,6 +66,10 @@ class VM(
 
     val peripheralTable = Array(8) { PeripheralEntry() }
 
+    lateinit var printStream: OutputStream
+    lateinit var errorStream: OutputStream
+    lateinit var inputStream: InputStream
+
     init {
         peripheralTable[0] = PeripheralEntry(
             "io",
@@ -77,9 +83,9 @@ class VM(
     }
 
 
-    fun findPeribyType(searchTerm: String): Int? {
+    fun findPeribyType(searchTerm: String): PeripheralEntry? {
         for (i in 0..7) {
-            if (peripheralTable[i].type == searchTerm) return i
+            if (peripheralTable[i].type == searchTerm) return peripheralTable[i]
         }
         return null
     }
@@ -100,7 +106,7 @@ class VM(
         val HW_RESERVE_SIZE = 1024.kB()
         val USER_SPACE_SIZE = 8192.kB()
 
-        const val PERITYPE_GRAPHICS = "gpu"
+        const val PERITYPE_TERM = "gpu"
     }
 
     internal fun translateAddr(addr: Long): Pair<Any?, Long> {

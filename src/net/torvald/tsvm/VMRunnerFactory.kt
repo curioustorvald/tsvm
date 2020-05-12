@@ -52,6 +52,7 @@ object VMRunnerFactory {
                         bind.put("graphics", GraphicsJSR223Delegate(vm))
                         //bind.put("poke", { a: Long, b: Byte -> vm.poke(a, b) }) // kts: lambda does not work...
                         //bind.put("nanotime", { System.nanoTime() })
+                        bind.put("serial", VMSerialDebugger(vm))
                     }
 
                     override suspend fun executeCommand(command: String) {

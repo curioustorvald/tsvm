@@ -7,8 +7,8 @@ import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.suspendCoroutine
+import java.io.InputStream
+import java.io.OutputStream
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
@@ -28,9 +28,9 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         gpu = GraphicsAdapter(lcdMode = false)
 
         vm.peripheralTable[1] = PeripheralEntry(
-            VM.PERITYPE_GRAPHICS,
+            VM.PERITYPE_TERM,
             gpu,
-            256.kB(),
+            GraphicsAdapter.VRAM_SIZE,
             16,
             0
         )
@@ -42,6 +42,9 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         batch.projectionMatrix = camera.combined
         Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
+        vm.printStream = gpu.getPrintStream()
+        vm.errorStream = gpu.getErrorStream()
+        //inputStream = gpu.getInputStream()
 
         // TEST PRG
         vmRunner = VMRunnerFactory(vm, "js")
@@ -244,7 +247,7 @@ while (true) {
     for (var k = 0; k < 2560; k++) {
         vm.poke(-(253952 + k + 1) - hwoff, -2); // transparent
         vm.poke(-(253952 + 2560 + k + 1) - hwoff, -1); // white
-        vm.poke(-(253952 + 2560*2 + k + 1) - hwoff, Math.round(Math.random() * 255));
+        /*vm.poke(-(253952 + 2560*2 + k + 1) - hwoff, Math.round(Math.random() * 255));*/
     }
     
     rng = inthash(rng);
@@ -255,7 +258,7 @@ while (true) {
 }
 """.trimIndent()
 
-    private val gpuTestPaletteJs = "eval('${jscode.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')}')"
+    private val gpuTestPaletteJs = "function print(s){vm.print(s)}eval('${jscode.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')}')"
 
 
     private val gpuTestPaletteJava = """
