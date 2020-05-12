@@ -34,19 +34,19 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte())
 
     fun writeOut(char: Byte) {
-        val printable = acceptChar(char)
-
-        if (printable) {
-            val (x, y) = getCursorPos()
-            putChar(x, y, char)
-            setCursorPos(x + 1, y) // should automatically wrap and advance a line for out-of-bound x-value
-        }
-
         // deal with y-axis out-of-bounds
-        val (cx, cy) = getCursorPos()
+        var (cx, cy) = getCursorPos()
         if (cy >= TEXT_ROWS) {
             scrollUp(cy - TEXT_ROWS + 1)
             setCursorPos(cx, TEXT_ROWS - 1)
+            cy = TEXT_ROWS - 1
+        }
+
+        val printable = acceptChar(char) // this function processes the escape codes and CRLFs
+
+        if (printable) {
+            putChar(cx, cy, char)
+            setCursorPos(cx + 1, cy) // should automatically wrap and advance a line for out-of-bound x-value
         }
     }
 

@@ -55,6 +55,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
     private val memTextForeOffset = 2980L
     private val memTextBackOffset = 2980L + 2560
     private val memTextOffset = 2980L + 2560 + 2560
+    private val TEXT_AREA_SIZE = TEXT_COLS * TEXT_ROWS
 
     override var rawCursorPos: Int
         get() = spriteAndTextArea.getShort(memTextCursorPosOffset).toInt()
@@ -271,12 +272,52 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
 
     /** New lines are added at the bottom */
     override fun scrollUp(arg: Int) {
-        //TODO("Not yet implemented")
+        val displacement = arg.toLong() * TEXT_COLS
+        UnsafeHelper.memcpy(
+            spriteAndTextArea.ptr + memTextOffset + displacement,
+            spriteAndTextArea.ptr + memTextOffset,
+            TEXT_AREA_SIZE - displacement
+        )
+        UnsafeHelper.memcpy(
+            spriteAndTextArea.ptr + memTextBackOffset + displacement,
+            spriteAndTextArea.ptr + memTextBackOffset,
+            TEXT_AREA_SIZE - displacement
+        )
+        UnsafeHelper.memcpy(
+            spriteAndTextArea.ptr + memTextForeOffset + displacement,
+            spriteAndTextArea.ptr + memTextForeOffset,
+            TEXT_AREA_SIZE - displacement
+        )
+        for (i in 0 until displacement) {
+            spriteAndTextArea[memTextOffset + TEXT_AREA_SIZE - displacement + i] = 0
+            spriteAndTextArea[memTextBackOffset + TEXT_AREA_SIZE - displacement + i] = ttyBack.toByte()
+            spriteAndTextArea[memTextForeOffset + TEXT_AREA_SIZE - displacement + i] = ttyFore.toByte()
+        }
     }
 
     /** New lines are added at the top */
     override fun scrollDown(arg: Int) {
-        TODO("Not yet implemented")
+        val displacement = arg.toLong() * TEXT_COLS
+        UnsafeHelper.memcpy(
+            spriteAndTextArea.ptr + memTextOffset,
+            spriteAndTextArea.ptr + memTextOffset + displacement,
+            TEXT_AREA_SIZE - displacement
+        )
+        UnsafeHelper.memcpy(
+            spriteAndTextArea.ptr + memTextBackOffset,
+            spriteAndTextArea.ptr + memTextBackOffset + displacement,
+            TEXT_AREA_SIZE - displacement
+        )
+        UnsafeHelper.memcpy(
+            spriteAndTextArea.ptr + memTextForeOffset,
+            spriteAndTextArea.ptr + memTextForeOffset + displacement,
+            TEXT_AREA_SIZE - displacement
+        )
+        for (i in 0 until displacement) {
+            spriteAndTextArea[memTextOffset + TEXT_AREA_SIZE + i] = 0
+            spriteAndTextArea[memTextBackOffset + TEXT_AREA_SIZE + i] = ttyBack.toByte()
+            spriteAndTextArea[memTextForeOffset + TEXT_AREA_SIZE + i] = ttyFore.toByte()
+        }
     }
 
     override fun sgrOneArg(arg: Int) {
@@ -295,7 +336,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
      * @param arg1 y-position (row)
      * @param arg2 x-position (column) */
     override fun cursorXY(arg1: Int, arg2: Int) {
-        TODO("Not yet implemented")
+        setCursorPos(arg2, arg1)
     }
 
     override fun ringBell() {
@@ -303,7 +344,8 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
     }
 
     override fun insertTab() {
-        TODO("Not yet implemented")
+        val (x, y) = getCursorPos()
+        setCursorPos((x / 8) + 8, y)
     }
 
     override fun crlf() {
