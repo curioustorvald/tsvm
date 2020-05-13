@@ -18,6 +18,5 @@ class IOSpace : PeriBase {
     }
 
     override fun dispose() {
-        TODO("Not yet implemented")
     }
 }

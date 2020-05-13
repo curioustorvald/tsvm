@@ -14,6 +14,10 @@ class VMJSR223Delegate(val vm: VM) {
     fun free(ptr: Int) = vm.free(ptr)
 
     fun print(s: String) {
+        //print("[Nashorn] $s")
+        vm.printStream.write(s.toByteArray())
+    }
+    fun println(s: String) {
         //println("[Nashorn] $s")
         vm.printStream.write((s + '\n').toByteArray())
     }

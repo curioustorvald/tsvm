@@ -25,7 +25,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(lcdMode = false)
+        gpu = GraphicsAdapter(lcdMode = true)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_TERM,
@@ -49,7 +49,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         // TEST PRG
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(gpuTestPaletteJs)
+            vmRunner.executeCommand(sanitiseJS(gpuTestPaletteJs))
         }
     }
 
@@ -212,7 +212,7 @@ while true do
 end
     """.trimIndent()
 
-    private val jscode = """
+    private val gpuTestPaletteJs = """
 var w = 560;
 var h = 448;
 var hwoff = 1048576;
@@ -254,12 +254,18 @@ while (true) {
     
     var tend = vm.nanoTime();
     
-    print("Apparent FPS: " + (1000000000 / (tend - tstart)));
+    println("Apparent FPS: " + (1000000000 / (tend - tstart)));
 }
 """.trimIndent()
 
-    private val gpuTestPaletteJs = "function print(s){vm.print(s)}eval('${jscode.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')}')"
-
+    private val shitcode = """
+println("064 KB OK");
+println("");
+println("Starting TVDOS...");
+println("TSVM Disk Operating System, version 1.20");
+println("");
+print("C:\\\\>");
+    """.trimIndent()
 
     private val gpuTestPaletteJava = """
 int w = 560;

@@ -1,5 +1,6 @@
 package net.torvald.tsvm
 
+import java.io.FileReader
 import javax.script.Compilable
 import javax.script.ScriptContext
 import javax.script.ScriptEngineManager
@@ -53,6 +54,10 @@ object VMRunnerFactory {
                         //bind.put("poke", { a: Long, b: Byte -> vm.poke(a, b) }) // kts: lambda does not work...
                         //bind.put("nanotime", { System.nanoTime() })
                         bind.put("serial", VMSerialDebugger(vm))
+
+                        if (extension == "js") {
+                            engine.eval(toSingleLine(JS_INIT), context)
+                        }
                     }
 
                     override suspend fun executeCommand(command: String) {
@@ -64,4 +69,16 @@ object VMRunnerFactory {
             //else -> throw UnsupportedOperationException("Unsupported script extension: $extension")
         }
     }
+
+    private val JS_INIT = """
+function print(s) {
+    vm.print(s)
 }
+function println(s) {
+    vm.println(s)
+}
+    """
+}
+
+fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')
+fun sanitiseJS(code: String) = "eval('${toSingleLine(code)}')"

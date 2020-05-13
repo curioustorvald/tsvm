@@ -464,14 +464,16 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
 
         if (!graphicsUseSprites) {
             // draw texts
+            val (cx, cy) = getCursorPos()
 
             // prepare char buffer texture
             for (y in 0 until TEXT_ROWS) {
                 for (x in 0 until TEXT_COLS) {
+                    val drawCursor = textCursorIsOn && cx == x && cy == y
                     val addr = y.toLong() * TEXT_COLS + x
-                    val char = spriteAndTextArea[memTextOffset + addr].toInt().and(255)
-                    val back = spriteAndTextArea[memTextBackOffset + addr].toInt().and(255)
-                    val fore = spriteAndTextArea[memTextForeOffset + addr].toInt().and(255)
+                    val char = if (drawCursor) 0xDB else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
+                    val back = if (drawCursor) ttyBack else spriteAndTextArea[memTextBackOffset + addr].toInt().and(255)
+                    val fore = if (drawCursor) ttyFore else spriteAndTextArea[memTextForeOffset + addr].toInt().and(255)
 
                     textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
                     textPixmap.drawPixel(x, y)
@@ -519,7 +521,7 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
                     paletteOfFloats[4 * ttyFore + 2],
                     paletteOfFloats[4 * ttyFore + 3]
                 )
-                val (cursorx, cursory) = getTtyCursorPos()
+                val (cursorx, cursory) = getCursorPos()
                 batch.draw(faketex, cursorx * chrWidth, (TEXT_ROWS - cursory - 1) * chrHeight, chrWidth, chrHeight)
             }*/
         }
