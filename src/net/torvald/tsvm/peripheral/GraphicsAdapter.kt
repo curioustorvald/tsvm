@@ -8,13 +8,18 @@ import net.torvald.UnsafeHelper
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
+import net.torvald.util.CircularArray
 import sun.nio.ch.DirectBuffer
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.PrintStream
 import kotlin.experimental.and
 
-class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
+class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
+
+    override fun getVM(): VM {
+        return vm
+    }
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
     private var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
@@ -569,6 +574,16 @@ class GraphicsAdapter(val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_RO
         }
     }
 
+    override fun putKey(key: Int) {
+        vm.poke(-39, key.toByte())
+    }
+
+    /**
+     * @return key code in 0..255 (TODO: JInput Keycode or ASCII-Code?)
+     */
+    override fun takeKey(): Int {
+        return vm.peek(-38)!!.toInt().and(255)
+    }
 
     private fun Boolean.toInt() = if (this) 1 else 0
 

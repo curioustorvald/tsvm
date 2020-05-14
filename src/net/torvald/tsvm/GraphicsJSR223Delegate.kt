@@ -39,6 +39,14 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
+    fun plotPixel(x: Int, y: Int, color: Byte) {
+        getFirstGPU()?.let {
+            if (x in 0 until GraphicsAdapter.WIDTH && y in 0 until GraphicsAdapter.HEIGHT) {
+                it.poke(y.toLong() * GraphicsAdapter.WIDTH + x, color)
+            }
+        }
+    }
+
     private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
         UnsafeHelper.memcpy(
             vm.usermem.ptr + fromAddr,

@@ -1,5 +1,7 @@
 package net.torvald.tsvm.peripheral
 
+import net.torvald.tsvm.VM
+
 interface PeriBase {
 
     /**
@@ -16,4 +18,6 @@ interface PeriBase {
     fun mmio_write(addr: Long, byte: Byte)
 
     fun dispose()
+
+    fun getVM(): VM
 }

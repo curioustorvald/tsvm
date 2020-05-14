@@ -8,7 +8,7 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter
 class VMJSR223Delegate(val vm: VM) {
 
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
-    fun peek(addr: Int) = vm.peek(addr.toLong())
+    fun peek(addr: Int) = vm.peek(addr.toLong())!!.toInt().and(255)
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)

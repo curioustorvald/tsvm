@@ -66,6 +66,8 @@ class VM(
 
     val peripheralTable = Array(8) { PeripheralEntry() }
 
+    internal fun getIO(): IOSpace = peripheralTable[0].peripheral as IOSpace
+
     lateinit var printStream: OutputStream
     lateinit var errorStream: OutputStream
     lateinit var inputStream: InputStream
@@ -73,7 +75,7 @@ class VM(
     init {
         peripheralTable[0] = PeripheralEntry(
             "io",
-            IOSpace(),
+            IOSpace(this),
             HW_RESERVE_SIZE,
             MMIO_SIZE.toInt() - 256,
             64
@@ -88,6 +90,10 @@ class VM(
             if (peripheralTable[i].type == searchTerm) return peripheralTable[i]
         }
         return null
+    }
+
+    fun update(delta: Float) {
+        getIO().update(delta)
     }
 
     fun dispose() {

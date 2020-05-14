@@ -2,11 +2,13 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.InputProcessor
 import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.peripheral.IOSpace
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -25,7 +27,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(lcdMode = true)
+        gpu = GraphicsAdapter(vm, lcdMode = false)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_TERM,
@@ -49,8 +51,11 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         // TEST PRG
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(sanitiseJS(gpuTestPaletteJs))
+            vmRunner.executeCommand(sanitiseJS(shitcode))
         }
+
+
+        Gdx.input.inputProcessor = vm.getIO()
     }
 
     private var updateAkku = 0.0
@@ -77,15 +82,10 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     private var latch = true
 
     private fun updateGame(delta: Float) {
-
-
+        vm.update(delta)
     }
 
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
-
-    private fun paintTestPalette() {
-
-    }
 
     private val gpuTestPaletteKt = """
 val w = 560
@@ -265,6 +265,13 @@ println("Starting TVDOS...");
 println("TSVM Disk Operating System, version 1.20");
 println("");
 print("C:\\\\>");
+
+while (true) {
+    var mx = vm.peek(-33) + vm.peek(-34) * 256;
+    var my = vm.peek(-35) + vm.peek(-36) * 256;
+    println("mx: "+mx+", my: "+my);
+    graphics.plotPixel(mx, my, (mx + my) % 255);
+}
     """.trimIndent()
 
     private val gpuTestPaletteJava = """

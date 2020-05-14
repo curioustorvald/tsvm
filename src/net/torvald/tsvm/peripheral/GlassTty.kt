@@ -204,8 +204,6 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
         return false
     }
 
-
-
     abstract fun resetTtyStatus()
     abstract fun cursorUp(arg: Int = 1)
     abstract fun cursorDown(arg: Int = 1)
@@ -246,6 +244,17 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     private enum class TTY_ESC_STATE {
         INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3
     }
+
+
+    /**
+     * Puts a key into a keyboard buffer
+     */
+    abstract fun putKey(key: Int)
+
+    /**
+     * Takes a key from a keyboard buffer
+     */
+    abstract fun takeKey(): Int
 
 }
 
