@@ -362,8 +362,8 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
 
     override fun backspace() {
         val (x, y) = getCursorPos()
-        putChar(x, y, 0x20.toByte())
         setCursorPos(x - 1, y)
+        putChar(x - 1, y, 0x20.toByte())
     }
 
     private lateinit var PRINTSTREAM_INSTANCE: OutputStream
@@ -427,7 +427,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
                         key = vm.getIO().mmio_read(37L)!!
                     } while (key == (-1).toByte())
 
-                    println("[stdin] key = $key")
+                    //println("[stdin] key = $key")
                     return key.toInt().and(255)
                 }
             }

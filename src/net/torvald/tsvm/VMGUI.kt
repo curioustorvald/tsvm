@@ -267,7 +267,8 @@ println("");
 print("C:\\\\>");
 
 while (true) {
-    print(String.fromCharCode(vm.readKey()));
+    var s = read();
+    println("String read: " + s + "@");
 }
     """.trimIndent()
 

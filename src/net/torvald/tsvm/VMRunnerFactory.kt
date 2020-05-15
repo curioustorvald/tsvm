@@ -72,12 +72,15 @@ object VMRunnerFactory {
 
     private val JS_INIT = """
 function print(s) {
-    vm.print(s)
+    return vm.print(s)
 }
 function println(s) {
-    vm.println(s)
+    return vm.println(s)
 }
-    """
+function read() {
+    return vm.read()
+}
+"""
 }
 
 fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')

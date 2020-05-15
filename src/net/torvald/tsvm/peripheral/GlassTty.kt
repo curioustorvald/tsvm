@@ -81,6 +81,8 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
             ttyEscArguments.push(ttyEscArguments.pop() * 10 + (newnum.toInt() - 0x30))
         }
 
+        //println("[tty] accepting char $char, state: $ttyEscState")
+
         when (ttyEscState) {
             TTY_ESC_STATE.INITIAL -> {
                 when (char) {
