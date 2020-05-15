@@ -22,6 +22,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     private var mouseY: Short = 0
     private var mouseDown = false
 
+    private var keyboardInputRequested = false
+
     override fun peek(addr: Long): Byte? {
         return mmio_read(addr)
     }
@@ -37,7 +39,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 32..33 -> (mouseX.toInt() shr (adi - 32).times(8)).toByte()
             in 34..35 -> (mouseY.toInt() shr (adi - 34).times(8)).toByte()
             36L -> if (mouseDown) 1 else 0
-            37L -> keyboardBuffer.removeHead() ?: -1
+            37L -> keyboardBuffer.removeTail() ?: -1
+            38L -> if (keyboardInputRequested) 1 else 0
             else -> -1
         }
     }
@@ -46,6 +49,11 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         val adi = addr.toInt()
         val bi = byte.toInt().and(255)
         when (addr) {
+            37L -> keyboardBuffer.appendHead(byte)
+            38L -> {
+                keyboardInputRequested = (byte != 0.toByte())
+                if (keyboardInputRequested) keyboardBuffer.clear()
+            }
         }
     }
 
@@ -67,11 +75,13 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     }
 
     override fun keyTyped(p0: Char): Boolean {
-        try {
-            keyboardBuffer.appendTail(p0.toByte())
+        if (keyboardInputRequested) {
+            keyboardBuffer.appendHead(p0.toByte())
+            return true
         }
-        catch (e: StackOverflowError) { /* if stack overflow, simply stop reading more keys */ }
-        return true
+        else {
+            return false
+        }
     }
 
     override fun scrolled(p0: Int): Boolean {

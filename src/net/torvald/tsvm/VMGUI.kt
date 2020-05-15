@@ -44,9 +44,9 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         batch.projectionMatrix = camera.combined
         Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
-        vm.printStream = gpu.getPrintStream()
-        vm.errorStream = gpu.getErrorStream()
-        vm.inputStream = gpu.getInputStream()
+        vm.getPrintStream = { gpu.getPrintStream() }
+        vm.getErrorStream = { gpu.getErrorStream() }
+        vm.getInputStream = { gpu.getInputStream() }
 
         // TEST PRG
         vmRunner = VMRunnerFactory(vm, "js")

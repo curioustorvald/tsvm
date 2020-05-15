@@ -43,13 +43,16 @@ Endianness: little
 
 MMIO
 
-0..31: Raw Keyboard Buffer read. Won't shift the key buffer
-32..33: Mouse X pos
-34..35: Mouse Y pos
-36: Mouse down? (1 for TRUE, 0 for FALSE)
-37: Read/Write single key input. Key buffer will be shifted. Manual writing is
+0..31 RO: Raw Keyboard Buffer read. Won't shift the key buffer
+32..33 RO: Mouse X pos
+34..35 RO: Mouse Y pos
+36 RO: Mouse down? (1 for TRUE, 0 for FALSE)
+37 RW: Read/Write single key input. Key buffer will be shifted. Manual writing is
     usually unnecessary as such action must be automatically managed via LibGDX
     input processing.
+38 RW: Request keyboard input be read. Write nonzero value to enable, write zero to
+    close it. Keyboard buffer will be cleared whenever request is received, so
+    MAKE SURE YOU REQUEST THE KEY INPUT ONLY ONCE!
 
 
 --------------------------------------------------------------------------------

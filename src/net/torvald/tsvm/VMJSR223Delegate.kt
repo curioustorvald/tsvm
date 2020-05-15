@@ -15,24 +15,25 @@ class VMJSR223Delegate(val vm: VM) {
 
     fun print(s: String) {
         //print("[Nashorn] $s")
-        vm.printStream.write(s.toByteArray())
+        vm.getPrintStream().write(s.toByteArray())
     }
     fun println(s: String) {
         //println("[Nashorn] $s")
-        vm.printStream.write((s + '\n').toByteArray())
+        vm.getPrintStream().write((s + '\n').toByteArray())
     }
     fun println() = print('\n')
 
-    fun readKey() = vm.inputStream.read()
+    //fun readKey() = vm.inputStream.read()
 
     /**
      * Read series of key inputs until Enter/Return key is pressed
      */
     fun read(): String {
+        val inputStream = vm.getInputStream()
         val sb = StringBuilder()
         var key: Int
         do {
-            key = readKey()
+            key = inputStream.read()
 
             if ((key == 8 && sb.isNotEmpty()) || key in 0x20..0x7E) {
                 this.print("${key.toChar()}")
@@ -45,6 +46,7 @@ class VMJSR223Delegate(val vm: VM) {
         } while (key != 13 && key != 10)
         this.println()
 
+        inputStream.close()
         return sb.toString()
     }
 }

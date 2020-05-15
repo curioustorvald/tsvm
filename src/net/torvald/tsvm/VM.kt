@@ -9,6 +9,7 @@ import net.torvald.tsvm.peripheral.PeriBase
 import org.luaj.vm2.LuaValue
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.PrintStream
 import java.util.*
 import kotlin.math.ceil
 import kotlin.random.Random
@@ -68,9 +69,14 @@ class VM(
 
     internal fun getIO(): IOSpace = peripheralTable[0].peripheral as IOSpace
 
-    lateinit var printStream: OutputStream
-    lateinit var errorStream: OutputStream
-    lateinit var inputStream: InputStream
+    //lateinit var printStream: OutputStream
+    //lateinit var errorStream: OutputStream
+    //lateinit var inputStream: InputStream // InputStream should not be a singleton, as it HAS TO open and close the stream.
+    // Printstreams don't need that so they're singleton.
+
+    var getPrintStream: () -> OutputStream = { TODO() }
+    var getErrorStream: () -> OutputStream = { TODO() }
+    var getInputStream: () -> InputStream = { TODO() }
 
     init {
         peripheralTable[0] = PeripheralEntry(

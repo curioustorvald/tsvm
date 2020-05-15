@@ -84,6 +84,7 @@ class CircularArray<T>(val size: Int, val overwriteOnOverflow: Boolean): Iterabl
         // even if overflowing is enabled, appending at tail causes head element to be altered, therefore such action
         // must be blocked by throwing overflow error
 
+        // if you think this behaviour is wrong, you're confusing appendHead() with appendTail(). Use appendHead() and removeTail()
         if (overflow) {
             throw StackOverflowError()
         }
