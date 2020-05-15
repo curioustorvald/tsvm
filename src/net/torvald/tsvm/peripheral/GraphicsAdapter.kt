@@ -413,7 +413,27 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     }
 
     override fun getInputStream(): InputStream {
-        TODO("Not yet implemented")
+        try {
+            return INPUTSTREAM_INSTANCE
+        }
+        catch (e: UninitializedPropertyAccessException) {
+            INPUTSTREAM_INSTANCE = object : InputStream() {
+
+                override fun read(): Int {
+                    var key: Byte
+                    do {
+                        Thread.sleep(4L) // if spinning rate is too fast, this function fail.
+                        // Possible cause: Input event handling of GDX is done on separate thread
+                        key = vm.getIO().mmio_read(37L)!!
+                    } while (key == (-1).toByte())
+
+                    println("[stdin] key = $key")
+                    return key.toInt().and(255)
+                }
+            }
+
+            return INPUTSTREAM_INSTANCE
+        }
     }
 
     override fun dispose() {

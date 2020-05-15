@@ -67,8 +67,10 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     }
 
     override fun keyTyped(p0: Char): Boolean {
-        keyboardBuffer.appendTail(p0.toByte())
-        println("[IO] Key typed: $p0")
+        try {
+            keyboardBuffer.appendTail(p0.toByte())
+        }
+        catch (e: StackOverflowError) { /* if stack overflow, simply stop reading more keys */ }
         return true
     }
 

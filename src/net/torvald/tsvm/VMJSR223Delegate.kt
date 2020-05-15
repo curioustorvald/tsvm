@@ -22,6 +22,7 @@ class VMJSR223Delegate(val vm: VM) {
         vm.printStream.write((s + '\n').toByteArray())
     }
 
+    fun readKey() = vm.inputStream.read()
 }
 
 class VMSerialDebugger(val vm: VM) {

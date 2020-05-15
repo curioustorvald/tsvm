@@ -46,7 +46,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
         vm.printStream = gpu.getPrintStream()
         vm.errorStream = gpu.getErrorStream()
-        //inputStream = gpu.getInputStream()
+        vm.inputStream = gpu.getInputStream()
 
         // TEST PRG
         vmRunner = VMRunnerFactory(vm, "js")
@@ -267,10 +267,7 @@ println("");
 print("C:\\\\>");
 
 while (true) {
-    var mx = vm.peek(-33) + vm.peek(-34) * 256;
-    var my = vm.peek(-35) + vm.peek(-36) * 256;
-    println("mx: "+mx+", my: "+my);
-    graphics.plotPixel(mx, my, (mx + my) % 255);
+    print(String.fromCharCode(vm.readKey()));
 }
     """.trimIndent()
 
