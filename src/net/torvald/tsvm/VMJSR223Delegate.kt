@@ -52,5 +52,5 @@ class VMJSR223Delegate(val vm: VM) {
 }
 
 class VMSerialDebugger(val vm: VM) {
-    fun print(s: String) = System.out.println(s)
+    fun println(s: String) = System.out.println(s)
 }

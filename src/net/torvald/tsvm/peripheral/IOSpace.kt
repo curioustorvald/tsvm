@@ -41,6 +41,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             36L -> if (mouseDown) 1 else 0
             37L -> keyboardBuffer.removeTail() ?: -1
             38L -> if (keyboardInputRequested) 1 else 0
+            in 64..67 -> vm.memsize.shr((adi - 64) * 8).toByte()
             else -> -1
         }
     }

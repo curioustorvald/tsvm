@@ -1,18 +1,18 @@
 package net.torvald.tsvm.peripheral
 
+import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.Color
+import com.badlogic.gdx.graphics.GL20
 import com.badlogic.gdx.graphics.Pixmap
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
-import net.torvald.util.CircularArray
-import sun.nio.ch.DirectBuffer
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.PrintStream
 import kotlin.experimental.and
 
 class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
@@ -55,6 +55,8 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     private var textForeTex = Texture(textForePixmap)
     private var textBackTex = Texture(textBackPixmap)
     private var textTex = Texture(textPixmap)
+
+    private val outFBOs = Array(2) { FrameBuffer(Pixmap.Format.RGBA8888, WIDTH, HEIGHT, false) }
 
     private val memTextCursorPosOffset = 2978L
     private val memTextForeOffset = 2980L
@@ -273,7 +275,8 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     override fun eraseInLine(arg: Int) {
         when (arg) {
             else -> TODO()
-        }    }
+        }
+    }
 
     /** New lines are added at the bottom */
     override fun scrollUp(arg: Int) {
@@ -451,6 +454,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
         paletteShader.dispose()
         textShader.dispose()
         faketex.dispose()
+        outFBOs.forEach { it.dispose() }
 
         try { textForeTex.dispose() } catch (_: Throwable) {}
         try { textBackTex.dispose() } catch (_: Throwable) {}
@@ -461,121 +465,159 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     private var textCursorBlinkTimer = 0f
     private val textCursorBlinkInterval = 0.5f
     private var textCursorIsOn = true
+    private var glowDecay = if (lcdMode) 0.69f else 0.25f
+    private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
     fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {
         rendertex.dispose()
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
-
-        batch.shader = null
-        batch.begin()
-
-        // clear screen
-        batch.color = if (lcdMode) LCD_BASE_COL else Color.BLACK
-        batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
-
-
-        // initiialise draw
-        batch.color = Color.WHITE
-        batch.shader = paletteShader
-
-        // feed palette data
-        // must be done every time the shader is "actually loaded"
-        // try this: if above line precedes 'batch.shader = paletteShader', it won't work
-        batch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
-        if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
-
-        // draw framebuffer
-        batch.draw(rendertex, x, y)
-
-        // draw texts or sprites
-
-        batch.color = Color.WHITE
-
-        if (!graphicsUseSprites) {
-            // draw texts
-            val (cx, cy) = getCursorPos()
-
-            // prepare char buffer texture
-            for (y in 0 until TEXT_ROWS) {
-                for (x in 0 until TEXT_COLS) {
-                    val drawCursor = textCursorIsOn && cx == x && cy == y
-                    val addr = y.toLong() * TEXT_COLS + x
-                    val char = if (drawCursor) 0xDB else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
-                    val back = if (drawCursor) ttyBack else spriteAndTextArea[memTextBackOffset + addr].toInt().and(255)
-                    val fore = if (drawCursor) ttyFore else spriteAndTextArea[memTextForeOffset + addr].toInt().and(255)
-
-                    textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
-                    textPixmap.drawPixel(x, y)
-                    textBackPixmap.setColor(Color(paletteOfFloats[4 * back], paletteOfFloats[4 * back + 1], paletteOfFloats[4 * back + 2], paletteOfFloats[4 * back + 3]))
-                    textBackPixmap.drawPixel(x, y)
-                    textForePixmap.setColor(Color(paletteOfFloats[4 * fore], paletteOfFloats[4 * fore + 1], paletteOfFloats[4 * fore + 2], paletteOfFloats[4 * fore + 3]))
-                    textForePixmap.drawPixel(x, y)
-                }
+        outFBOs[1].inUse {
+            batch.shader = null
+            batch.inUse {
+                batch.color = decayColor
+                batch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
+        }
 
-            // bake char buffer texture
-            textForeTex.dispose()
-            textBackTex.dispose()
-            textTex.dispose()
-            textForeTex = Texture(textForePixmap)
-            textBackTex = Texture(textBackPixmap)
-            textTex = Texture(textPixmap)
 
-            textForeTex.bind(4)
-            textBackTex.bind(3)
-            textTex.bind(2)
-            chrrom0.bind(1)
-            faketex.bind(0)
+        outFBOs[0].inUse {
+            Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
+            Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
-            batch.shader = textShader
-            textShader.setUniformi("foreColours", 4)
-            textShader.setUniformi("backColours", 3)
-            textShader.setUniformi("tilemap", 2)
-            textShader.setUniformi("tilesAtlas", 1)
-            textShader.setUniformi("u_texture", 0)
-            textShader.setUniformf("tilesInAxes", TEXT_COLS.toFloat(), TEXT_ROWS.toFloat())
-            textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
-            textShader.setUniformf("tilesInAtlas", 16f, 16f)
-            textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
-            if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+            batch.shader = null
+            batch.inUse {
 
-            batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+                // clear screen
+                batch.color = if (lcdMode) LCD_BASE_COL else Color.BLACK
+                batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+
+
+                // initiialise draw
+                batch.color = Color.WHITE
+                batch.shader = paletteShader
+
+                // feed palette data
+                // must be done every time the shader is "actually loaded"
+                // try this: if above line precedes 'batch.shader = paletteShader', it won't work
+                batch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+                if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+
+                // draw framebuffer
+                batch.draw(rendertex, x, y)
+
+                // draw texts or sprites
+
+                batch.color = Color.WHITE
+
+                if (!graphicsUseSprites) {
+                    // draw texts
+                    val (cx, cy) = getCursorPos()
+
+                    // prepare char buffer texture
+                    for (y in 0 until TEXT_ROWS) {
+                        for (x in 0 until TEXT_COLS) {
+                            val drawCursor = textCursorIsOn && cx == x && cy == y
+                            val addr = y.toLong() * TEXT_COLS + x
+                            val char =
+                                if (drawCursor) 0xDB else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
+                            val back =
+                                if (drawCursor) ttyBack else spriteAndTextArea[memTextBackOffset + addr].toInt()
+                                    .and(255)
+                            val fore =
+                                if (drawCursor) ttyFore else spriteAndTextArea[memTextForeOffset + addr].toInt()
+                                    .and(255)
+
+                            textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
+                            textPixmap.drawPixel(x, y)
+                            textBackPixmap.setColor(
+                                Color(
+                                    paletteOfFloats[4 * back],
+                                    paletteOfFloats[4 * back + 1],
+                                    paletteOfFloats[4 * back + 2],
+                                    paletteOfFloats[4 * back + 3]
+                                )
+                            )
+                            textBackPixmap.drawPixel(x, y)
+                            textForePixmap.setColor(
+                                Color(
+                                    paletteOfFloats[4 * fore],
+                                    paletteOfFloats[4 * fore + 1],
+                                    paletteOfFloats[4 * fore + 2],
+                                    paletteOfFloats[4 * fore + 3]
+                                )
+                            )
+                            textForePixmap.drawPixel(x, y)
+                        }
+                    }
+
+                    // bake char buffer texture
+                    textForeTex.dispose()
+                    textBackTex.dispose()
+                    textTex.dispose()
+                    textForeTex = Texture(textForePixmap)
+                    textBackTex = Texture(textBackPixmap)
+                    textTex = Texture(textPixmap)
+
+                    textForeTex.bind(4)
+                    textBackTex.bind(3)
+                    textTex.bind(2)
+                    chrrom0.bind(1)
+                    faketex.bind(0)
+
+                    batch.shader = textShader
+                    textShader.setUniformi("foreColours", 4)
+                    textShader.setUniformi("backColours", 3)
+                    textShader.setUniformi("tilemap", 2)
+                    textShader.setUniformi("tilesAtlas", 1)
+                    textShader.setUniformi("u_texture", 0)
+                    textShader.setUniformf("tilesInAxes", TEXT_COLS.toFloat(), TEXT_ROWS.toFloat())
+                    textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
+                    textShader.setUniformf("tilesInAtlas", 16f, 16f)
+                    textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
+                    if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+
+                    batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+
+                    batch.shader = null
+                } else {
+                    // draw sprites
+                    batch.shader = paletteShader
+
+                    // feed palette data
+                    // must be done every time the shader is "actually loaded"
+                    // try this: if above line precedes 'batch.shader = paletteShader', it won't work
+                    paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+                    TODO("sprite draw")
+                }
+
+            }
 
             batch.shader = null
 
-            /*if (textCursorIsOn) {
-                batch.color = Color(
-                    paletteOfFloats[4 * ttyFore],
-                    paletteOfFloats[4 * ttyFore + 1],
-                    paletteOfFloats[4 * ttyFore + 2],
-                    paletteOfFloats[4 * ttyFore + 3]
-                )
-                val (cursorx, cursory) = getCursorPos()
-                batch.draw(faketex, cursorx * chrWidth, (TEXT_ROWS - cursory - 1) * chrHeight, chrWidth, chrHeight)
-            }*/
-        }
-        else {
-            // draw sprites
-            batch.shader = paletteShader
-
-            // feed palette data
-            // must be done every time the shader is "actually loaded"
-            // try this: if above line precedes 'batch.shader = paletteShader', it won't work
-            paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
-            TODO("sprite draw")
         }
 
-
-        batch.end()
+        outFBOs[1].inUse {
+            batch.shader = null
+            batch.inUse {
+                batch.color = decayColor
+                batch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+            }
+        }
 
         batch.shader = null
+        batch.inUse {
+            batch.color = Color.WHITE
+            batch.draw(outFBOs[1].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+        }
+
 
         textCursorBlinkTimer += delta
         if (textCursorBlinkTimer > textCursorBlinkInterval) {
             textCursorBlinkTimer -= 0.5f
             textCursorIsOn = !textCursorIsOn
         }
+
     }
 
     private fun peekPalette(offset: Int): Byte {
@@ -1127,5 +1169,17 @@ void main() {
             -286331137,
             0
         )
+    }
+
+    private fun FrameBuffer.inUse(action: () -> Unit) {
+        this.begin()
+        action()
+        this.end()
+    }
+
+    private fun SpriteBatch.inUse(action: () -> Unit) {
+        this.begin()
+        action()
+        this.end()
     }
 }

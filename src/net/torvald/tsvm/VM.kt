@@ -78,6 +78,8 @@ class VM(
     var getErrorStream: () -> OutputStream = { TODO() }
     var getInputStream: () -> InputStream = { TODO() }
 
+    val startTime: Long
+
     init {
         peripheralTable[0] = PeripheralEntry(
             "io",
@@ -88,6 +90,8 @@ class VM(
         )
 
         println("[VM] Creating new VM with ID of $id, memesize $memsize")
+
+        startTime = System.nanoTime()
     }
 
 
@@ -106,6 +110,8 @@ class VM(
         usermem.destroy()
         peripheralTable.forEach { it.peripheral?.dispose() }
     }
+
+    open fun getUptime() = System.nanoTime() - startTime
 
     /*
     NOTE: re-fill peripheralTable whenever the VM cold-boots!

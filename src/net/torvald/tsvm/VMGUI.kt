@@ -9,8 +9,10 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.IOSpace
+import java.io.FileReader
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.StringReader
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
@@ -27,7 +29,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, lcdMode = false)
+        gpu = GraphicsAdapter(vm, lcdMode = true)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_TERM,
@@ -49,9 +51,14 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         vm.getInputStream = { gpu.getInputStream() }
 
         // TEST PRG
+        val fr = FileReader("./assets/tvdos/command.js")
+        val prg = fr.readText()
+        fr.close()
+
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(sanitiseJS(shitcode))
+            //vmRunner.executeCommand(sanitiseJS(gpuTestPaletteJs))
+            vmRunner.executeCommand(sanitiseJS(prg))
         }
 
 

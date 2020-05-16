@@ -72,13 +72,16 @@ object VMRunnerFactory {
 
     private val JS_INIT = """
 function print(s) {
-    return vm.print(s)
+    vm.print(s);
 }
 function println(s) {
-    return vm.println(s)
+    if (typeof s == "undefined")
+        vm.print("\n");
+    else
+        vm.println(s);
 }
 function read() {
-    return vm.read()
+    return vm.read();
 }
 """
 }
