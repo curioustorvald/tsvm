@@ -57,6 +57,28 @@ MMIO
 
 64..67 RO: User area memory size in bytes
 
+4092..4095 RW: Block transfer control for Port 1 through 4
+    0b 00ms abcd
+
+    m-readonly: device in master setup
+    s-readonly: device in slave setup
+
+    a: 1 for send, 0 for receive
+
+    b-write: 1 to start sending if a-bit is set; if f-bit is unset, make other device to start sending
+    b-read: if this bit is set, you're currently receiving something (aka busy)
+
+    c-write: I'm ready to receive
+    c-read: Are you ready to receive?
+
+    d-read: Are you there? (if the other device's recipient is myself)
+
+    NOTE: not ready AND not busy (bits b and d set when read) means the device is not connected to the port
+
+4096..8191 RW: Buffer for block transfer lane #1
+8192..12287 RW: Buffer for block transfer lane #2
+12288..16383 RW: Buffer for block transfer lane #3
+16384..20479 RW: Buffer for block transfer lane #4
 
 --------------------------------------------------------------------------------
 
@@ -125,6 +147,7 @@ MMIO
     current TTY foreground colour (useful for print() function)
 10 RW
     current TTY background colour (useful for print() function)
+
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it

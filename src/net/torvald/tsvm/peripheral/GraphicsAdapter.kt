@@ -180,6 +180,9 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
             6L -> getTextmodeAttirbutes()
             7L -> getGraphicsAttributes()
             8L -> lastUsedColour
+            9L -> ttyFore.toByte()
+            10L -> ttyBack.toByte()
+            11L -> 1
 
             in 0 until VM.MMIO_SIZE -> -1
             else -> null
@@ -348,7 +351,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     }
 
     override fun ringBell() {
-        TODO("Not yet implemented")
+
     }
 
     override fun insertTab() {
@@ -429,7 +432,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
             override fun read(): Int {
                 var key: Byte
                 do {
-                    Thread.sleep(4L) // if spinning rate is too fast, this function fail.
+                    Thread.sleep(4L) // if spinning rate is too fast, this function will fail.
                     // Possible cause: Input event handling of GDX is done on separate thread
                     key = vm.getIO().mmio_read(37L)!!
                 } while (key == (-1).toByte())
@@ -465,7 +468,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     private var textCursorBlinkTimer = 0f
     private val textCursorBlinkInterval = 0.5f
     private var textCursorIsOn = true
-    private var glowDecay = if (lcdMode) 0.69f else 0.25f
+    private var glowDecay = if (lcdMode) 0.63f else 0.32f
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
     fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {

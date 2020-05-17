@@ -22,9 +22,16 @@ println("Starting TVDOS...");
 
 greet();
 
-while (true) {
+/*while (true) {
     print(get_prompt_text());
     var s = read();
     println();
     println("String read: " + s + "@");
+}*/
+
+println(vm.peek(-4093)); // expecting an odd number
+vm.poke(-4093, 6);
+for (i = 0; i < 4096; i++) {
+    print(String.fromCharCode(vm.peek(-4097 - i)));
 }
+println();
