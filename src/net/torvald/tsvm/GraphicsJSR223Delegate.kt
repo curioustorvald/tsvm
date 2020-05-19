@@ -47,6 +47,35 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
+    fun getPixelDimension(): IntArray {
+        getFirstGPU()?.let { return intArrayOf(it.framebuffer.width, it.framebuffer.height) }
+        return intArrayOf(-1, -1)
+    }
+
+    fun getTermDimension(): IntArray {
+        getFirstGPU()?.let { return intArrayOf(it.TEXT_ROWS, it.TEXT_COLS) }
+        return intArrayOf(-1, -1)
+    }
+
+    fun getCursorYX(): IntArray {
+        getFirstGPU()?.let {
+            val (cx, cy) = it.getCursorPos()
+            return intArrayOf(cy + 1, cx + 1)
+        }
+        return intArrayOf(-1, -1)
+    }
+
+    /**
+     * prints a char as-is; won't interpret them as an escape sequence
+     */
+    fun putSymbol(char: Byte) {
+        getFirstGPU()?.let {
+            val (cx, cy) = it.getCursorPos()
+            it.putChar(cx, cy, char)
+            it.setCursorPos(cx + 1, cy)
+        }
+    }
+
     private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
         UnsafeHelper.memcpy(
             vm.usermem.ptr + fromAddr,

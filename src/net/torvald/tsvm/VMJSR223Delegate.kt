@@ -50,11 +50,35 @@ class VMJSR223Delegate(val vm: VM) {
                 in 0x20..0x7E -> sb.append(key.toChar())
             }
         } while (key != 13 && key != 10)
-        this.println()
+        this.print("\n") // printout \n
 
         inputStream.close()
         return sb.toString()
     }
+
+    /**
+     * Read series of key inputs until Enter/Return key is pressed. Backspace will work but any other non-printable
+     * characters (e.g. arrow keys) won't work.
+     */
+    fun readNoEcho(): String {
+        val inputStream = vm.getInputStream()
+        val sb = StringBuilder()
+        var key: Int
+        do {
+            key = inputStream.read()
+
+            when (key) {
+                8 -> if (sb.isNotEmpty()) sb.deleteCharAt(sb.lastIndex)
+                in 0x20..0x7E -> sb.append(key.toChar())
+            }
+        } while (key != 13 && key != 10)
+        this.println() // printout \n
+
+        inputStream.close()
+        return sb.toString()
+    }
+
+
 }
 
 class VMSerialDebugger(val vm: VM) {

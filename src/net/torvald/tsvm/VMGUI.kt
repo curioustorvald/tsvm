@@ -16,7 +16,7 @@ import java.io.StringReader
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
-    val vm = VM(8192)
+    val vm = VM(1024.kB())
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch
@@ -52,7 +52,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
         // TEST PRG
         //val fr = FileReader("./assets/tvdos/command.js")
-        val fr = FileReader("./assets/jscon.js")
+        //val fr = FileReader("./assets/jscon.js")
+        val fr = FileReader("./assets/tbas/basic.js")
         val prg = fr.readText()
         fr.close()
 

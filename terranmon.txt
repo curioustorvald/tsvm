@@ -56,6 +56,11 @@ MMIO
     usually unnecessary as such action must be automatically managed via LibGDX
     input processing.
     Stores ASCII code representing the character, plus:
+   (1..26: Ctrl+[alph])
+    3 : Ctrl+C
+    4 : Ctrl+D
+    8 : Backspace
+   (13: Return)
     19: Up arrow
     20: Down arrow
     21: Left arrow

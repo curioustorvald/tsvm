@@ -1,5 +1,6 @@
 package net.torvald.tsvm
 
+import java.io.FileInputStream
 import java.io.FileReader
 import javax.script.Compilable
 import javax.script.ScriptContext
@@ -56,13 +57,16 @@ object VMRunnerFactory {
                         bind.put("serial", VMSerialDebugger(vm))
 
                         if (extension == "js") {
-                            engine.eval(toSingleLine(JS_INIT), context)
+                            val fr = FileReader("./assets/JS_INIT.js")
+                            val prg = fr.readText()
+                            fr.close()
+                            engine.eval(toSingleLine(prg), context)
                         }
                     }
 
                     override suspend fun executeCommand(command: String) {
                         //(engine as Compilable).compile(command).eval(context) // compiling does not work with bindings in kts
-                        engine.eval(command, context)
+                        engine.eval("\"use strict\";{$command}", context)
                     }
                 }
             }
@@ -70,20 +74,6 @@ object VMRunnerFactory {
         }
     }
 
-    private val JS_INIT = """
-function print(s) {
-    vm.print(s);
-}
-function println(s) {
-    if (typeof s == "undefined")
-        vm.print("\n");
-    else
-        vm.println(s);
-}
-function read() {
-    return vm.read();
-}
-"""
 }
 
 fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')

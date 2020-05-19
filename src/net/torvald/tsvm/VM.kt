@@ -54,7 +54,7 @@ import kotlin.random.Random
  */
 
 class VM(
-    _memsize: Int
+    _memsize: Long
 ) {
 
     val id = java.util.Random().nextInt()

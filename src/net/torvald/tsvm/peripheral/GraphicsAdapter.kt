@@ -336,6 +336,18 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     }
 
     override fun sgrTwoArg(arg1: Int, arg2: Int) {
+        /*
+        Color table for default palette
+
+        Black   240
+        Red     160
+        Green   30
+        Yellow  230
+        Blue    19
+        Magenta 199
+        Cyan    74
+        White   254
+         */
         TODO("Not yet implemented")
     }
 
@@ -347,7 +359,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
      * @param arg1 y-position (row)
      * @param arg2 x-position (column) */
     override fun cursorXY(arg1: Int, arg2: Int) {
-        setCursorPos(arg2, arg1)
+        setCursorPos(arg2 - 1, arg1 - 1)
     }
 
     override fun ringBell() {

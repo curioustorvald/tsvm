@@ -1,68 +1,70 @@
 println("JS Console");
-var cmdHistory = []; // zeroth element is the oldest
-var cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
+var _cmdHistory = []; // zeroth element is the oldest
+var _cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
 while (true) {
     print("JS> ");
 
-    var cmdbuf = "";
+    var _cmdbuf = "";
 
     while (true) {
-        var key = vm.readKey();
+        var key = con.getch();
 
         // printable chars
         if (key >= 32 && key <= 126) {
-            var s = String.fromCharCode(key);
-            cmdbuf += s;
-            print(s);
+            var __sss = String.fromCharCode(key);
+            _cmdbuf += __sss;
+            print(__sss);
         }
         // backspace
-        else if (key === 8 && cmdbuf.length > 0) {
-            cmdbuf = cmdbuf.substring(0, cmdbuf.length - 1);
+        else if (key === 8 && _cmdbuf.length > 0) {
+            _cmdbuf = _cmdbuf.substring(0, _cmdbuf.length - 1);
             print(String.fromCharCode(key));
         }
         // enter
         else if (key === 10 || key === 13) {
             println();
             try {
-                println(eval(cmdbuf));
+                println(eval(_cmdbuf));
             }
             catch (e) {
                 println(e);
             }
             finally {
-                if (cmdbuf.trim().length > 0)
-                    cmdHistory.push(cmdbuf);
+                if (_cmdbuf.trim().length > 0)
+                    _cmdHistory.push(_cmdbuf);
 
-                cmdHistoryScroll = 0;
+                _cmdHistoryScroll = 0;
                 break;
             }
         }
         // up arrow
-        else if (key === 19 && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
-            cmdHistoryScroll += 1;
+        else if (key === 19 && _cmdHistory.length > 0 && _cmdHistoryScroll < _cmdHistory.length) {
+            _cmdHistoryScroll += 1;
 
             // back the cursor in order to type new cmd
-            for (xx = 0; xx < cmdbuf.length; xx++) print(String.fromCharCode(8));
-            cmdbuf = cmdHistory[cmdHistory.length - cmdHistoryScroll];
+            var __xx = 0;
+            for (__xx = 0; __xx < _cmdbuf.length; __xx++) print(String.fromCharCode(8));
+            _cmdbuf = _cmdHistory[_cmdHistory.length - _cmdHistoryScroll];
             // re-type the new command
-            print(cmdbuf);
+            print(_cmdbuf);
 
         }
         // down arrow
         else if (key === 20) {
-            if (cmdHistoryScroll > 0) {
+            if (_cmdHistoryScroll > 0) {
                 // back the cursor in order to type new cmd
-                for (xx = 0; xx < cmdbuf.length; xx++) print(String.fromCharCode(8));
-                cmdbuf = cmdHistory[cmdHistory.length - cmdHistoryScroll];
+                var __xx = 0;
+                for (__xx = 0; __xx < _cmdbuf.length; __xx++) print(String.fromCharCode(8));
+                _cmdbuf = _cmdHistory[_cmdHistory.length - _cmdHistoryScroll];
                 // re-type the new command
-                print(cmdbuf);
+                print(_cmdbuf);
 
-                cmdHistoryScroll -= 1;
+                _cmdHistoryScroll -= 1;
             }
             else {
                 // back the cursor in order to type new cmd
-                for (xx = 0; xx < cmdbuf.length; xx++) print(String.fromCharCode(8));
-                cmdbuf = "";
+                for (__xx = 0; __xx < _cmdbuf.length; __xx++) print(String.fromCharCode(8));
+                _cmdbuf = "";
             }
         }
     }
