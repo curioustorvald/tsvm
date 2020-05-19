@@ -18,6 +18,8 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         super.startSend { it.writeout(msg) }
     }
 
+    override fun hasNext(): Boolean = false
+
     override fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)?) {
     }
 

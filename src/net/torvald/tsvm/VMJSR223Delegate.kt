@@ -23,10 +23,16 @@ class VMJSR223Delegate(val vm: VM) {
     }
     fun println() = print('\n')
 
-    //fun readKey() = vm.inputStream.read()
+    fun readKey(): Int {
+        val inputStream = vm.getInputStream()
+        var key: Int = inputStream.read()
+        inputStream.close()
+        return key
+    }
 
     /**
-     * Read series of key inputs until Enter/Return key is pressed
+     * Read series of key inputs until Enter/Return key is pressed. Backspace will work but any other non-printable
+     * characters (e.g. arrow keys) won't work.
      */
     fun read(): String {
         val inputStream = vm.getInputStream()

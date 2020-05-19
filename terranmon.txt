@@ -42,6 +42,10 @@ IO Device
 Endianness: little
 Note: Always takes up the peripheral slot of zero
 
+Latching: latching is used to "lock" the fluctuating values when you attempt to read them so you would get
+          reliable values when you try to read them, especially the multibyte values where another byte would
+          change after you read one byte, e.g. System uptime in nanoseconds
+
 MMIO
 
 0..31 RO: Raw Keyboard Buffer read. Won't shift the key buffer
@@ -51,11 +55,37 @@ MMIO
 37 RW: Read/Write single key input. Key buffer will be shifted. Manual writing is
     usually unnecessary as such action must be automatically managed via LibGDX
     input processing.
-38 RW: Request keyboard input be read. Write nonzero value to enable, write zero to
+    Stores ASCII code representing the character, plus:
+    19: Up arrow
+    20: Down arrow
+    21: Left arrow
+    22: Right arrow
+38 RW: Request keyboard input be read (TTY Function). Write nonzero value to enable, write zero to
     close it. Keyboard buffer will be cleared whenever request is received, so
     MAKE SURE YOU REQUEST THE KEY INPUT ONLY ONCE!
+39 WO: Latch Key/Mouse Input (Raw Input function). Write nonzero value to latch.
+    Stores LibGDX Key code
+40..47 RO: Key Press buffer
+    stores keys that are held down. Can accomodate 8-key rollover (in keyboard geeks' terms)
 
 64..67 RO: User area memory size in bytes
+68 WO: Counter latch
+    0b 0000 00ba
+    a: System uptime
+    b: RTC
+72..79 RO: System uptime in nanoseconds
+80..87 RO: RTC in microseconds
+
+4084..4091 RO: Block transfer status
+    0b nnnnnnnn a000 mmmm
+
+    n-read: size of the block from the other device, LSB (4096-full block size is zero)
+    m-read: size of the block from the other device, MSB (4096-full block size is zero)
+    a-read: if the other device hasNext (doYouHaveNext), false if device not present
+
+    n-write: size of the block I'm sending, LSB (4096-full block size is zero)
+    m-write: size of the block I'm sending, MSB (4096-full block size is zero)
+    a-write: if there's more to send (hasNext)
 
 4092..4095 RW: Block transfer control for Port 1 through 4
     0b 00ms abcd

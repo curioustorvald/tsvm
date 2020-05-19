@@ -8,19 +8,22 @@ import net.torvald.tsvm.VM
  */
 internal class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInterface(true, false) {
 
+    internal var hasNext = false
 
     override fun startSend(sendfun: ((BlockTransferInterface) -> Unit)?) {
         super.startSend { recipient ->
-            val ba = ByteArray(4096) { vm.getIO().blockTransforBlock[portno][it.toLong()] }
+            val ba = ByteArray(BLOCK_SIZE) { vm.getIO().blockTransferRx[portno][it.toLong()] }
             recipient.writeout(ba)
         }
     }
 
+    override fun hasNext(): Boolean = hasNext
+
     override fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)?) {
         super.writeout(inputData) {
-            val copySize = minOf(4096, inputData.size).toLong()
+            val copySize = minOf(BLOCK_SIZE, inputData.size).toLong()
             val arrayOffset = UnsafeHelper.getArrayOffset(inputData).toLong()
-            UnsafeHelper.memcpyRaw(inputData, arrayOffset, null, vm.getIO().blockTransforBlock[portno].ptr, copySize)
+            UnsafeHelper.memcpyRaw(inputData, arrayOffset, null, vm.getIO().blockTransferRx[portno].ptr, copySize)
         }
     }
 

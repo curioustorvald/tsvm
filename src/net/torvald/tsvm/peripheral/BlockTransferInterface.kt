@@ -8,6 +8,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     open var busy = false
 
     protected var sendmode = false; private set
+    open var blockSize = 0
 
     open fun attachDevice(device: BlockTransferInterface?) {
         recipient = device
@@ -39,10 +40,14 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     open fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)? = null) {
         busy = true
         ready = false
+        blockSize = minOf(inputData.size, BLOCK_SIZE)
         writeoutfun?.invoke()
         busy = false
         ready = true
     }
+    abstract fun hasNext(): Boolean
+    open fun doYouHaveNext(): Boolean = recipient?.hasNext() ?: false
+    open fun yourBlockSize(): Int = recipient?.blockSize ?: 0
 
     /** @param sendmode TRUE for send, FALSE for receive */
     open fun setMode(sendmode: Boolean) {
@@ -52,4 +57,8 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     open fun getMode(): Boolean = sendmode
 
     open fun cableConnected(): Boolean = recipient?.recipient == this
+
+    companion object {
+        const val BLOCK_SIZE = 4096
+    }
 }

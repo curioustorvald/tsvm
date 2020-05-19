@@ -51,7 +51,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         vm.getInputStream = { gpu.getInputStream() }
 
         // TEST PRG
-        val fr = FileReader("./assets/tvdos/command.js")
+        //val fr = FileReader("./assets/tvdos/command.js")
+        val fr = FileReader("./assets/jscon.js")
         val prg = fr.readText()
         fr.close()
 
