@@ -72,6 +72,7 @@ MMIO
     Stores LibGDX Key code
 40..47 RO: Key Press buffer
     stores keys that are held down. Can accomodate 8-key rollover (in keyboard geeks' terms)
+    0x0 is written for the empty area; numbers are always sorted
 
 64..67 RO: User area memory size in bytes
 68 WO: Counter latch
@@ -125,7 +126,7 @@ From the start of the memory space:
 250880 bytes
     Framebuffer
 3 bytes
-    *reserved for future use*
+    Initial background colour RGB, of which only the lower 4 bits per each channel are used
 1 byte
     command (writing to this memory address changes the status)
         1: reset palette to default

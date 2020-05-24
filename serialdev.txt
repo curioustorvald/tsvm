@@ -1,0 +1,137 @@
+All peripherals using serial connection must follow these standards
+
+0. How to communicate
+
+0.1 Master-to-Slave mode
+
+- Master device must send enquiry query, and when slave device report READY, master must pull the answer from the slave
+
+0.2 Master-to-Master mode
+
+- One peer sends enquiry, and other peer writes the answer into the requester device. You know the transaction is done
+  when other peer reports READY, NOT READY, and READY again.
+
+1. ENQUIRY commands
+
+1.0 All ENQUIRY commands have following syntax:
+
+    0x05 <COMMAND-STRING> 0x1E <ARGUMENTS-STRINGS SEPARATED BY 0x1F> 0x17
+    0x05 <ANSWER-STRINGS SEPARATED BY 0x1F> 0x17
+
+1.1 WHO-ARE-YOU commands
+
+    DEVTYP
+
+Description: type of the device
+Returns: type of the device, of which but not exhaustive:
+
+- PRNT: Printer
+- STOR: Storage device (floppy drive, etc.)
+- COMM: Modem (slave-mode device)
+- COMP: Modem (master-mode device, typically an other computer connected though a null-modem)
+
+    DEVNAM
+
+Description: enquires canonical device name
+Returns: canonical device name in ASCII, maximum 4094 bytes
+
+Note: non-standard device types must have LONGER THAN 4 characters of DEVTYP
+
+1.2 CONTROL commands
+
+    DEVRST
+
+Description: resets the device
+Returns: none
+
+2. Device-specific commands
+
+2.0 Command formats
+
+    Device-specific commands does NOT have any header nor footer
+
+2.1 STORage devices
+
+2.1.0 NOTE
+
+    comma-followed-by-drive-number can be omitted; drive number 1 will be substituted
+
+2.1.1 File Control
+
+    OPENR"<path to file>",<drive number>
+
+Description: opens the file for reading
+
+    OPENW"<path to file>",<drive number>
+
+Description: opens the file for writing
+
+    OPENA"<path to file>",<drive number>
+
+Description: opens the file for appending (a variant of write)
+
+    WRITE<number of bytes to write>
+
+Description: puts the device to WRITE mode. Any subsequent bytes will be interpreted as-is for writing
+
+    FLUSH
+
+Description: flushes any internal output buffer and no longer puts the device to WRITE mode
+
+    READ<number of bytes to read>
+
+Description: reads specified number of bytes. Any subsequent reading operation will return bytes stored into the file
+             until the specified number of bytes reached
+
+    CLOSE
+
+Description: closes any file that is open.
+
+    LOAD"<path to file>",<drive number>
+
+Description: loads an executable file for running. Will throw an error if the file is not executable.
+
+    CHTYPE,<file type>,<drive number>
+
+Description: changes the file's file type (or its extension)
+
+    CHDIR"<path>"
+
+Description: changes the working directory of the filesystem to given path. Disk with non-hierarchical filesystem should
+             ignore this command.
+
+    LIST,<drive number>
+    LIST"<path>",<drive number>
+
+Description: lists contents of the given directory in READABLE FORMAT. If no path is given, current working directory
+             will be used instead. Non-hierarchical system should ignore PATH argument, and raw filesystem (e.g. EPROM)
+             should return first 4096 bytes of its contents.
+
+    USAGE,<drive number>
+
+Description: returns following values: TOTAL_SPACE 0x1E USED_SPACE 0x1D TOTAL_FILE_COUNT 0x1E TOTAL_DIRECTORY_COUNT in
+             ASCII string.
+             For non-hierarchical system, TOTAL_DIRECTORY_COUNT is always 0x30 (ASCII string "0")
+
+    FSTYPE,<drive number>
+
+Description: returns filesystem type in plain string, of which but not limited to:
+
+    - TREE: any generic filesystem with recursive directories and multiple files.
+            When emulators use filesystem of running OS for the disk implementation (and not use proprietary binary
+            file), this type should be returned.
+    - FLAT: filesystem without directories and can hold multiple files. E.g. Commodore 64
+    - RAW: no filesystem is used. E.g. EPROM
+
+    When disk image is used for emulation, their identifier should be returned. E.g. FAT, TEVD
+
+2.1.2 File type dictionary
+
+    - PRG: executable
+    - TXT: text document
+    - BIN: binary data
+    - SEC: pseudo-type used by an pseudo-file called "!BOOTSEC", which is a boot sector
+
+    File type is independent of the "extension", but just a marker for an auto-execution (firstmost PRG file will be
+    auto-run). If your file is neither PRG nor TXT, use BIN.
+    Operation system may choose to ignore this feature and handle the "extension" by itself
