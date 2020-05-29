@@ -18,7 +18,10 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     open fun areYouReady(): Boolean = recipient?.ready ?: false
     open fun areYouBusy(): Boolean = recipient?.busy ?: false
 
-    open fun startSend(sendfun: ((BlockTransferInterface) -> Unit)? = null) {
+    /** A method exposed to outside of the box */
+    abstract fun startSend()
+    /** The actual implementation */
+    protected fun startSend(sendfun: ((BlockTransferInterface) -> Unit)? = null) {
         if (areYouReady()) {
             busy = true
             ready = false
@@ -36,8 +39,10 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         recipient?.startSend(null)
     }
 
-    /** must be called by a sender class */
-    open fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)? = null) {
+    /** A method exposed to outside of the box */
+    abstract fun writeout(inputData: ByteArray)
+    /** The actual implementation; must be called by a sender class */
+    protected fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)? = null) {
         busy = true
         ready = false
         blockSize = minOf(inputData.size, BLOCK_SIZE)

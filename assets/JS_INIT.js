@@ -31,10 +31,21 @@ con.getmaxyx = function() {
 con.getyx = function() {
     return graphics.getCursorYX();
 };
+con.hitterminate = function() { // ^C
+    vm.poke(-40, 1);
+    return (vm.peek(-41) == 31 && (vm.peek(-41) == 129 || vm.peek(-41) == 130));
+};
+con.hiteof = function() { // ^D
+    vm.poke(-40, 1);
+    return (vm.peek(-41) == 32 && (vm.peek(-41) == 129 || vm.peek(-41) == 130));
+};
 Object.freeze(con);
 // system management  function
 var sys = new Object();
 sys.maxmem = function() {
     return vm.peek(-65) | (vm.peek(-66) << 8) | (vm.peek(-67) << 16) | (vm.peek(-68) << 24);
+};
+sys.halt = function() {
+    exit();
 };
 Object.freeze(sys);

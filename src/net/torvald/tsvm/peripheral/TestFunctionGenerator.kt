@@ -2,7 +2,7 @@ package net.torvald.tsvm.peripheral
 
 class TestFunctionGenerator : BlockTransferInterface(true, false) {
 
-    val msg = """Lorem ipsum dolor sit amet, consectetur adipiscing elit. Morbi ipsum magna, ultrices eu leo eu, consequat eleifend arcu. Nam tempor nunc aliquam mi cursus mollis. Aenean dictum iaculis dolor eget porttitor. Fusce vulputate dui id mauris ultricies, non aliquet nulla pulvinar. Integer consectetur nulla at cursus cursus. Nullam enim nisl, elementum a fermentum sed, suscipit id sapien. Duis eget enim lacinia, aliquam sapien ac, commodo risus. Morbi at enim sem. Aenean sollicitudin purus et sem porttitor, convallis ultricies nulla posuere. Suspendisse euismod sagittis vestibulum. Mauris lorem nisl, placerat et finibus non, cursus non ex. Interdum et malesuada fames ac ante ipsum primis in faucibus. Suspendisse finibus non dui vel tempor. Nam rhoncus ligula et massa sagittis fringilla. Cras convallis pellentesque nulla in rutrum.
+    val filecontent_lorem = """Lorem ipsum dolor sit amet, consectetur adipiscing elit. Morbi ipsum magna, ultrices eu leo eu, consequat eleifend arcu. Nam tempor nunc aliquam mi cursus mollis. Aenean dictum iaculis dolor eget porttitor. Fusce vulputate dui id mauris ultricies, non aliquet nulla pulvinar. Integer consectetur nulla at cursus cursus. Nullam enim nisl, elementum a fermentum sed, suscipit id sapien. Duis eget enim lacinia, aliquam sapien ac, commodo risus. Morbi at enim sem. Aenean sollicitudin purus et sem porttitor, convallis ultricies nulla posuere. Suspendisse euismod sagittis vestibulum. Mauris lorem nisl, placerat et finibus non, cursus non ex. Interdum et malesuada fames ac ante ipsum primis in faucibus. Suspendisse finibus non dui vel tempor. Nam rhoncus ligula et massa sagittis fringilla. Cras convallis pellentesque nulla in rutrum.
 
 Quisque ac orci sodales, semper neque eu, consequat lacus. Nulla suscipit orci felis, id tempor quam ultrices quis. Integer eu vulputate risus. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Maecenas posuere sem sed erat tristique laoreet. Sed in ante est. Fusce nec est ut nunc aliquam condimentum viverra non ex. Pellentesque nisi ante, efficitur id neque sit amet, convallis tincidunt sapien. Nunc condimentum rutrum nisi, eu lobortis libero tempor non. Morbi euismod venenatis tincidunt. Nulla facilisi. Ut interdum nec nisi pharetra pretium.
 
@@ -14,13 +14,50 @@ Nam in aliquet velit, vitae aliquam sapien. Phasellus imperdiet nulla augue, fer
 
 Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iaculis, felis ut auctor porta, ipsum diam laoreet ex, sed egestas lacus est at neque. Aenean venenatis blandit arcu at porta. Nunc sed est magna. Duis pulvinar, nulla eu tristique mattis, dui diam malesuada sem, ac condimentum turpis nunc iaculis urna. Nam et ligula aliquet, fermentum lectus nec, consectetur ipsum. Proin convallis, mi id consectetur lobortis, urna nulla pellentesque odio, a finibus tortor nisl nec tortor. Suspendisse blandit nisl in magna hendrerit tristique. Cras sit amet metus et lacus rutrum tempus. In sapien elit, facilisis quis tristique a, vestibulum a massa. Donec ligula diam, posuere ac velit eget, lobortis tincidunt ante. Orci varius natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Nullam lectus massa, egestas eu urna id, tempor pulvinar odio. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Aliquam in suscipit mauris, quis faucibus dui. Cras tincidunt turpe es.""".toByteArray(Charsets.US_ASCII)
 
-    override fun startSend(sendfun: ((BlockTransferInterface) -> Unit)?) {
-        super.startSend { it.writeout(msg) }
+    private var fileOpen = false
+
+    private var readModeLength = -1
+
+    fun composeSerialAns(vararg msg: String): ByteArray {
+        val sb = ArrayList<Byte>()
+        sb.addAll(msg[0].toByteArray().toTypedArray())
+        for (k in 1 until msg.lastIndex) {
+            sb.add(0x1F)
+            sb.addAll(msg[k].toByteArray().toTypedArray())
+        }
+        sb.add(0x17)
+        return sb.toByteArray()
+    }
+
+    override fun startSend() {
+        if (readModeLength > 0) {
+            readModeLength = 0
+            startSend { it.writeout(filecontent_lorem) }
+        }
     }
 
     override fun hasNext(): Boolean = false
 
-    override fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)?) {
+    override fun writeout(inputData: ByteArray) {
+        val inputString = inputData.toString()
+
+        if (inputString.startsWith("DEVRST\u0017")) {
+            readModeLength = -1
+            fileOpen = false
+        }
+        else if (inputString.startsWith("DEVTYP\u0017"))
+            startSend { it.writeout(composeSerialAns("STOR")) }
+        else if (inputString.startsWith("DEVNAM\u0017"))
+            startSend { it.writeout(composeSerialAns("Testtec Virtual Disk Drive")) }
+        else if (inputString.startsWith("OPENR\""))
+            fileOpen = true
+        else if (inputString.startsWith("CLOSE"))
+            fileOpen = false
+        else if (inputString.startsWith("READ"))
+            readModeLength = inputString.substring(4 until inputString.length).toInt()
+        else if (inputString.startsWith("LIST"))
+            startSend { it.writeout("\"LOREM.TXT\"            TXT\nTotal 1 files on the disk".toByteArray()) }
+
     }
 
     override fun setMode(sendmode: Boolean) {

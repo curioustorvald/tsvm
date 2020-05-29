@@ -15,8 +15,12 @@ All peripherals using serial connection must follow these standards
 
 1.0 All ENQUIRY commands have following syntax:
 
-    0x05 <COMMAND-STRING> 0x1E <ARGUMENTS-STRINGS SEPARATED BY 0x1F> 0x17
-    0x05 <ANSWER-STRINGS SEPARATED BY 0x1F> 0x17
+    <COMMAND-STRING> 0x17
+    <COMMAND-STRING> 0x1E <ARGUMENTS-STRINGS SEPARATED BY 0x1F> 0x17
+    <ANSWER-STRINGS SEPARATED BY 0x1F> 0x17
+
+    All ENQUIRY commands are RECOMMENDED to be no larger than 4096 bytes
+    STRINGs only consists with printable ASCII subset
 
 1.1 WHO-ARE-YOU commands
 
@@ -33,7 +37,7 @@ Returns: type of the device, of which but not exhaustive:
     DEVNAM
 
 Description: enquires canonical device name
-Returns: canonical device name in ASCII, maximum 4094 bytes
+Returns: canonical device name in ASCII, maximum 4095 bytes
 
 Note: non-standard device types must have LONGER THAN 4 characters of DEVTYP
 
@@ -103,9 +107,9 @@ Description: changes the working directory of the filesystem to given path. Disk
     LIST,<drive number>
     LIST"<path>",<drive number>
 
-Description: lists contents of the given directory in READABLE FORMAT. If no path is given, current working directory
-             will be used instead. Non-hierarchical system should ignore PATH argument, and raw filesystem (e.g. EPROM)
-             should return first 4096 bytes of its contents.
+Description: lists contents of the given directory in READABLE FORMAT (no 0x17 at the end, terminates string with zero)
+             If no path is given, current working directory will be used instead. Non-hierarchical system should ignore
+             PATH argument, and raw filesystem (e.g. EPROM) should return first 4096 bytes of its contents.
 
     USAGE,<drive number>
 

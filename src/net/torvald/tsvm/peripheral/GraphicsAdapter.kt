@@ -15,7 +15,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
 
-class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
+class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boolean = true) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
 
     override fun getVM(): VM {
         return vm
@@ -34,8 +34,8 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
     private val unusedArea = ByteArray(92)
 
-    private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
-    private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
+    private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) DRAW_SHADER_FRAG_LCD_NOINV else if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
+    private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) TEXT_TILING_SHADER_LCD_NOINV else if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
 
     override var blinkCursor = true
     override var ttyRawMode = false
@@ -110,6 +110,10 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
         // when in text mode, and that's undesired behaviour
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
         spriteAndTextArea.fillWith(-1)
+
+        unusedArea[0] = 0
+        unusedArea[1] = 2
+        unusedArea[2] = 14
 
         setCursorPos(0, 0)
 
@@ -331,28 +335,57 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
         }
     }
 
+    /*
+    Color table for default palette
+
+    Black   240
+    Red     160
+    Green   30
+    Yellow  230
+    Blue    19
+    Magenta 199
+    Cyan    74
+    White   254
+     */
+    private val sgrDefault8ColPal = intArrayOf(240,160,30,230,19,199,74,254)
+
     override fun sgrOneArg(arg: Int) {
-        TODO("Not yet implemented")
+
+        if (arg in 30..37) {
+            ttyFore = sgrDefault8ColPal[arg - 30]
+        }
+        else if (arg in 40..47) {
+            ttyBack = sgrDefault8ColPal[arg - 40]
+        }
+        else if (arg == 0) {
+            ttyFore = TTY_FORE_DEFAULT
+            ttyBack = TTY_BACK_DEFAULT
+        }
     }
 
     override fun sgrTwoArg(arg1: Int, arg2: Int) {
-        /*
-        Color table for default palette
-
-        Black   240
-        Red     160
-        Green   30
-        Yellow  230
-        Blue    19
-        Magenta 199
-        Cyan    74
-        White   254
-         */
         TODO("Not yet implemented")
     }
 
     override fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int) {
-        TODO("Not yet implemented")
+        if (arg1 == 38 && arg2 == 5) {
+            ttyFore = arg3
+        }
+        else if (arg1 == 48 && arg2 == 5) {
+            ttyBack = arg3
+        }
+    }
+
+    override fun privateSeqH(arg: Int) {
+        when (arg) {
+            25 -> blinkCursor = true
+        }
+    }
+
+    override fun privateSeqL(arg: Int) {
+        when (arg) {
+            25 -> blinkCursor = false
+        }
     }
 
     /** The values are one-based
@@ -497,6 +530,9 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
 
 
         outFBOs[0].inUse {
+            val clearCol = Color(unusedArea[0].toInt().and(15).toFloat() / 15f,
+                unusedArea[1].toInt().and(15).toFloat() / 15f,
+                unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
             Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
@@ -504,7 +540,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
             batch.inUse {
 
                 // clear screen
-                batch.color = if (lcdMode) LCD_BASE_COL else Color.BLACK
+                batch.color = if (lcdMode) LCD_BASE_COL else clearCol
                 batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
 
@@ -532,7 +568,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false) : GlassTty(Compa
                     // prepare char buffer texture
                     for (y in 0 until TEXT_ROWS) {
                         for (x in 0 until TEXT_COLS) {
-                            val drawCursor = textCursorIsOn && cx == x && cy == y
+                            val drawCursor = blinkCursor && textCursorIsOn && cx == x && cy == y
                             val addr = y.toLong() * TEXT_COLS + x
                             val char =
                                 if (drawCursor) 0xDB else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
@@ -709,14 +745,31 @@ uniform vec4 pal[256];
 float intensitySteps = 4.0;
 uniform vec4 lcdBaseCol;
 
-float rand(vec2 co){
-    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
-}
-
 void main(void) {
     vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
     float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
+
+    // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
+    gl_FragColor = lcdBaseCol * outIntensity;
+}
+        """.trimIndent()
+
+        val DRAW_SHADER_FRAG_LCD_NOINV = """
+#version 120
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
+uniform vec4 pal[256];
+
+float intensitySteps = 4.0;
+uniform vec4 lcdBaseCol;
+
+void main(void) {
+    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
+    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+    vec4 outIntensity = vec4(vec3(lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
     gl_FragColor = lcdBaseCol * outIntensity;
@@ -920,6 +973,103 @@ void main() {
     
     float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
+
+    // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
+    gl_FragColor = lcdBaseCol * outIntensity;
+}
+""".trimIndent()
+
+        val TEXT_TILING_SHADER_LCD_NOINV = """
+#version 120
+#ifdef GL_ES
+precision mediump float;
+#endif
+#extension GL_EXT_gpu_shader4 : enable
+
+//layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
+// gl_FragCoord is origin to bottom-left
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
+
+
+uniform vec2 screenDimension;
+uniform vec2 tilesInAxes; // size of the tilemap texture; vec2(tiles_in_horizontal, tiles_in_vertical)
+
+uniform sampler2D tilesAtlas;
+uniform sampler2D foreColours;
+uniform sampler2D backColours;
+uniform sampler2D tilemap;
+
+uniform vec2 tilesInAtlas = ivec2(16.0, 16.0);
+uniform vec2 atlasTexSize = ivec2(128.0, 224.0);
+vec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
+
+ivec2 getTileXY(int tileNumber) {
+    return ivec2(tileNumber % int(tilesInAtlas.x), tileNumber / int(tilesInAtlas.x));
+}
+
+// return: int=0xaarrggbb
+int _colToInt(vec4 color) {
+    return int(color.b * 255) | (int(color.g * 255) << 8) | (int(color.r * 255) << 16) | (int(color.a * 255) << 24);
+}
+
+// 0x0rggbb where int=0xaarrggbb
+// return: [0..1048575]
+int getTileFromColor(vec4 color) {
+    return _colToInt(color) & 0xFFFFF;
+}
+
+float intensitySteps = 4.0;
+uniform vec4 lcdBaseCol;
+
+void main() {
+
+    // READ THE FUCKING MANUAL, YOU DONKEY !! //
+    // This code purposedly uses flipped fragcoord. //
+    // Make sure you don't use gl_FragCoord unknowingly! //
+    // Remember, if there's a compile error, shader SILENTLY won't do anything //
+
+
+    // default gl_FragCoord takes half-integer (represeting centre of the pixel) -- could be useful for phys solver?
+    // This one, however, takes exact integer by rounding down. //
+    vec2 flippedFragCoord = vec2(gl_FragCoord.x, screenDimension.y - gl_FragCoord.y); // NO IVEC2!!; this flips Y
+
+    // get required tile numbers //
+
+    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / screenDimension);
+    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / screenDimension);
+
+    int tile = getTileFromColor(tileFromMap);
+    ivec2 tileXY = getTileXY(tile);
+
+    // calculate the UV coord value for texture sampling //
+
+    // don't really need highp here; read the GLES spec
+    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
+
+    // get final UV coord for the actual sampling //
+
+    vec2 finalUVCoordForTile = uvCoordForTile + uvCoordOffsetTile;// where we should be actually looking for in atlas, using UV coord (0..1)
+
+    // blending a breakage tex with main tex //
+
+    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+
+    vec4 palCol = vec4(1.0);
+    // apply colour
+    if (tileCol.r > 0) {
+        palCol = foreColFromMap;
+    }
+    else {
+        palCol = backColFromMap;
+    }
+    
+    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+    vec4 outIntensity = vec4(vec3(lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
     gl_FragColor = lcdBaseCol * outIntensity;

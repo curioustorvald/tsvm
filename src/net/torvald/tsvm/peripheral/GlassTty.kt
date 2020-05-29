@@ -116,11 +116,26 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
                     'S' -> return accept { scrollUp() }
                     'T' -> return accept { scrollDown() }
                     'm' -> return accept { sgrOneArg() }
+                    '?' -> ttyEscState = TTY_ESC_STATE.PRIVATESEQ
                     ';' -> {
                         ttyEscArguments.push(0)
                         ttyEscState = TTY_ESC_STATE.SEP1
                     }
                     in '0'..'9' -> registerNewNumberArg(char, TTY_ESC_STATE.NUM1)
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.PRIVATESEQ -> {
+                when (char.toChar()) {
+                    in '0'..'9' -> registerNewNumberArg(char, TTY_ESC_STATE.PRIVATENUM)
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.PRIVATENUM -> {
+                when (char.toChar()) {
+                    'h' -> return accept { privateSeqH(ttyEscArguments.pop()) }
+                    'l' -> return accept { privateSeqL(ttyEscArguments.pop()) }
+                    in '0'..'9' -> appendToExistingNumber(char)
                     else -> return reject()
                 }
             }
@@ -231,6 +246,8 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract fun insertTab()
     abstract fun crlf()
     abstract fun backspace()
+    abstract fun privateSeqH(arg: Int)
+    abstract fun privateSeqL(arg: Int)
 
     abstract fun getPrintStream(): OutputStream
     abstract fun getErrorStream(): OutputStream
@@ -244,7 +261,7 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     private val ESC = 0x1B.toByte()
 
     private enum class TTY_ESC_STATE {
-        INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3
+        INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3, PRIVATESEQ, PRIVATENUM
     }
 
 
@@ -282,6 +299,13 @@ digraph G {
   CSI -> ScrollDown [label="T"]
   CSI -> SGR [label="m"]
   CSI -> separator1 [label="; (zero)"]
+
+  CSI -> privateseq [label="?"]
+
+  privateseq -> privatenum [label="0..9"]
+
+  privatenum -> privateSeqH [label=h]
+  privatenum -> privateSeqL [label=l]
 
   numeral -> numeral [label="0..9"]
   numeral -> CursorUp [label="A"]

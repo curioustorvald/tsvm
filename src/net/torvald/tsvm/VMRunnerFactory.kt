@@ -65,7 +65,6 @@ object VMRunnerFactory {
                     }
 
                     override suspend fun executeCommand(command: String) {
-                        //(engine as Compilable).compile(command).eval(context) // compiling does not work with bindings in kts
                         engine.eval("\"use strict\";{$command}", context)
                     }
                 }

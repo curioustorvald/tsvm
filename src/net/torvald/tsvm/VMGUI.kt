@@ -29,7 +29,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, lcdMode = true)
+        gpu = GraphicsAdapter(vm, lcdMode = false)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_TERM,
@@ -53,13 +53,20 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         // TEST PRG
         //val fr = FileReader("./assets/tvdos/command.js")
         //val fr = FileReader("./assets/jscon.js")
+
+        //val fr1 = FileReader("./assets/bios1.js")
+        val fr1 = FileReader("./assets/phototest.js")
+        val bios = fr1.readText()
+        fr1.close()
+
+        //val fr = FileReader("./assets/tvdos/command.js")
         val fr = FileReader("./assets/tbas/basic.js")
         val prg = fr.readText()
         fr.close()
 
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            //vmRunner.executeCommand(sanitiseJS(gpuTestPaletteJs))
+            vmRunner.executeCommand(sanitiseJS(bios))
             vmRunner.executeCommand(sanitiseJS(prg))
         }
 

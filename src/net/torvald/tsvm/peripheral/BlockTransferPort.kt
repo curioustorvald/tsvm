@@ -10,8 +10,8 @@ internal class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInt
 
     internal var hasNext = false
 
-    override fun startSend(sendfun: ((BlockTransferInterface) -> Unit)?) {
-        super.startSend { recipient ->
+    override fun startSend() {
+        startSend { recipient ->
             val ba = ByteArray(BLOCK_SIZE) { vm.getIO().blockTransferRx[portno][it.toLong()] }
             recipient.writeout(ba)
         }
@@ -19,8 +19,8 @@ internal class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInt
 
     override fun hasNext(): Boolean = hasNext
 
-    override fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)?) {
-        super.writeout(inputData) {
+    override fun writeout(inputData: ByteArray) {
+        writeout(inputData) {
             val copySize = minOf(BLOCK_SIZE, inputData.size).toLong()
             val arrayOffset = UnsafeHelper.getArrayOffset(inputData).toLong()
             UnsafeHelper.memcpyRaw(inputData, arrayOffset, null, vm.getIO().blockTransferRx[portno].ptr, copySize)
