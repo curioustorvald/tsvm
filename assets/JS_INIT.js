@@ -39,6 +39,22 @@ con.hiteof = function() { // ^D
     vm.poke(-40, 1);
     return (vm.peek(-41) == 32 && (vm.peek(-41) == 129 || vm.peek(-41) == 130));
 };
+con.color_fore = function(n) { // 0..7; -1 for transparent
+    if (n < 0)
+        print(String.fromCharCode(27,91)+"38;5;255m");
+    else
+        print(String.fromCharCode(27,91)+((n % 8)+30)+"m");
+};
+con.color_back = function(n) { // 0..7; -1 for transparent
+    if (n < 0)
+        print(String.fromCharCode(27,91)+"48;5;255m");
+    else
+        print(String.fromCharCode(27,91)+((n % 8)+40)+"m");
+};
+con.color_pair = function(fore, back) { // 0..255
+    print(String.fromCharCode(27,91)+"38;5;"+fore+"m");
+    print(String.fromCharCode(27,91)+"48;5;"+back+"m");
+};
 Object.freeze(con);
 // system management  function
 var sys = new Object();

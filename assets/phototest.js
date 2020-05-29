@@ -454,5 +454,4 @@ for (var y = 0; y < 448; y++) {
     }
 }
 
-print(String.fromCharCode(27,91)+"30m");
-con.move(1,1);
+con.color_fore(0);
