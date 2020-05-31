@@ -192,8 +192,7 @@ class VM(
 
     internal fun malloc(size: Int): Int {
         val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
-        val blockStart = findEmptySpace(allocBlocks)
-        if (blockStart == null) throw OutOfMemoryError()
+        val blockStart = findEmptySpace(allocBlocks) ?: throw OutOfMemoryError()
 
         mallocSizes[blockStart] = allocBlocks
         return blockStart * MALLOC_UNIT
@@ -201,8 +200,7 @@ class VM(
 
     internal fun free(ptr: Int) {
         val index = ptr / MALLOC_UNIT
-        val count = mallocSizes[index]
-        if (count == null) throw OutOfMemoryError()
+        val count = mallocSizes[index] ?: throw OutOfMemoryError()
 
         mallocMap.set(index, index + count, false)
         mallocSizes.remove(index)

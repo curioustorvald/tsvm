@@ -1,4 +1,8 @@
-var vmemsize = 60300;
+/*
+NOTE: do not allow concatenation of commands!
+*/
+
+var vmemsize = sys.maxmem() - 5236;
 var vmemused = 0;
 var cmdbuf = []; // index: line number
 var prompt = "Ok";
@@ -14,7 +18,7 @@ var reHex = /^(0[Xx][0-9A-Fa-f_]+?)$/;
 var reBin = /(0[Bb][01_]+)$/;
 var reBool = /true|false/;
 
-var charsetNum = /[0-9]+/;
+var reNum = /[0-9]+/;
 var charsetNumMeta = /[.BbFfXx_]/;
 var charsetOp = /[()\/|&,]+/;
 var tbasexit = false;
@@ -24,24 +28,29 @@ println(prompt);
 
 var basicFunctions = new Object();
 basicFunctions._isNumber = function(code) {
-
+    return (code >= 0x30 && code <= 0x39) || code == 0x2E;
 };
 basicFunctions._isOperator = function(code) {
-
+    return (code == 0x21 || code == 0x23 || code == 0x25 || (code >= 0x2A && code <= 0x2D) || code == 0x2F || (code >= 0x3A && code <= 0x3E) || code == 0x5E || code == 0x7C);
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
+    var _debugprintStateTransition = false;
     var tokens = [];
     var sb = "";
     var mode = "literal"; // literal, escape, number, quote, quote_end, operator, limbo
+
+    if (_debugprintStateTransition) println("Ln "+lnum+" cmd "+cmd);
 
     // TOKENISE
     for (var k = 0; k < cmd.length; k++) {
         var char = cmd.charAt(k);
         var charCode = cmd.charCodeAt(k);
 
+        if (_debugprintStateTransition) print("Char: "+char+"("+charCode+"), state: "+mode);
+
         if (mode == "literal") {
-            if (charCode == 0x22) { // "
+            if (0x22 == charCode) { // "
                 tokens.push(sb); sb = "";
                 mode = "quote";
             }
@@ -53,7 +62,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 tokens.push(sb); sb = "" + char;
                 mode = "operator";
             }
-            else if (char == " ") {
+            else if (" " == char) {
                 tokens.push(sb); sb = "";
                 mode = "limbo";
             }
@@ -61,27 +70,27 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 sb += char;
             }
         }
-        else if (mode == "escape") {
-            if (charCode == 0x5C) // reverse solidus
+        else if ("escape" == mode) {
+            if (0x5C == charCode) // reverse solidus
                 sb += String.fromCharCode(0x5C);
-            else if (char == "n")
+            else if ("n" == char)
                 sb += String.fromCharCode(0x0A);
-            else if (char == "t")
+            else if ("t" == char)
                 sb += String.fromCharCode(0x09);
-            else if (charCode == 0x22) // "
+            else if (0x22 == charCode) // "
                 sb += String.fromCharCode(0x22);
-            else if (charCode == 0x27)
+            else if (0x27 == charCode)
                 sb += String.fromCharCode(0x27);
-            else if (char == "e")
+            else if ("e" == char)
                 sb += String.fromCharCode(0x1B);
-            else if (char == "a")
+            else if ("a" == char)
                 sb += String.fromCharCode(0x07);
-            else if (char == "b")
+            else if ("b" == char)
                 sb += String.fromCharCode(0x08);
             mode = "quote"; // ESCAPE is only legal when used inside of quote
         }
-        else if (mode == "quote") {
-            if (charCode = 0x22) {
+        else if ("quote" == mode) {
+            if (0x22 == charCode) {
                 tokens.push(sb); sb = "";
                 mode = "quote_end";
             }
@@ -89,7 +98,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 sb += char;
             }
         }
-        else if (mode == "quote_end") {
+        else if ("quote_end" == mode) {
             if (basicFunctions._isNumber(charCode)) {
                 mode = "number";
             }
@@ -100,11 +109,11 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 mode = "limbo";
             }
         }
-        else if (mode == "number") {
+        else if ("number" == mode) {
             if (basicFunctions._isNumber(charCode)) {
                 sb += char;
             }
-            else if (char == " ") {
+            else if (" " == char) {
                 tokens.push(sb); sb = "";
                 mode = "limbo";
             }
@@ -112,7 +121,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 tokens.push(sb); sb = "" + char;
                 mode = "operator";
             }
-            else if (charCode == 0x22) {
+            else if (0x22 == charCode) {
                 tokens.push(sb); sb = "" + char;
                 mode = "quote";
             }
@@ -121,7 +130,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 mode = "literal";
             }
         }
-        else if (mode == "operator") {
+        else if ("operator" == mode) {
             if (basicFunctions._isOperator(charCode)) {
                 sb += char;
             }
@@ -129,7 +138,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 tokens.push(sb); sb = "" + char;
                 mode = "number";
             }
-            else if (char == " ") {
+            else if (" " == char) {
                 tokens.push(sb); sb = "";
                 mode = "limbo";
             }
@@ -138,7 +147,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 mode = "lteral";
             }
         }
-        else if (mode == "limbo") {
+        else if ("limbo" == mode) {
             if (char == " ") {
                 /* do nothing */
             }
@@ -150,8 +159,8 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 sb = "" + char;
                 mode = "operator"
             }
-            else if (charCode == 0x22) {
-                sb = "" + char;
+            else if (0x22 == charCode) {
+                sb = "";
                 mode = "quote"
             }
             else {
@@ -162,10 +171,17 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         else {
             throw "Unknown parser state: " + mode;
         }
+
+        if (_debugprintStateTransition) println("->"+mode);
     }
+
+    if (sb.length > 0) {
+        tokens.push(sb);
+    }
+
     // END TOKENISE
 
-    println(tokens);
+    println(tokens.join("|"));
 
     return lnum + 1;
 };
@@ -201,19 +217,41 @@ basicFunctions.system = function(args) { // SYSTEM function
 basicFunctions.new = function(args) { // NEW function
     cmdbuf = [];
 };
+basicFunctions.renum = function(args) { // RENUM function
+    var newcmdbuf = [];
+    var linenumRelation = [[]];
+    var cnt = 10;
+    for (var k = 0; k < cmdbuf.length; k++) {
+        if (typeof cmdbuf[k] != "undefined") {
+            newcmdbuf[cnt] = cmdbuf[k];
+            linenumRelation[k] = cnt;
+            cnt += 10;
+        }
+    }
+    // deal with goto/gosub line numbers
+    for (k = 0; k < newcmdbuf.length; k++) {
+        if (typeof newcmdbuf[k] != "undefined" && newcmdbuf[k].toLowerCase().startsWith("goto ")) {
+            newcmdbuf[k] = "goto " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
+        }
+        else if (typeof newcmdbuf[k] != "undefined" && newcmdbuf[k].toLowerCase().startsWith("gosub ")) {
+            newcmdbuf[k] = "gosub " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
+        }
+    }
+    cmdbuf = newcmdbuf.slice();
+};
 basicFunctions.run = function(args) { // RUN function
     var linenumber = 1;
     var oldnum = 1;
     do {
-        if (typeof cmd != "undefined") {
+        if (typeof cmdbuf[linenumber] != "undefined") {
             oldnum = linenumber;
             linenumber = basicFunctions._interpretLine(linenumber, cmdbuf[linenumber]);
         }
         else {
             linenumber += 1;
         }
-        if (con.hitterminate) {
-            println("Break in "+oldlnum);
+        if (con.hitterminate()) {
+            println("Break in "+oldnum);
             break;
         }
     } while (linenumber < cmdbuf.length)
