@@ -1,20 +1,20 @@
 // standard print functions
 function print(s) {
-    vm.print(s);
+    sys.print(s);
 }
 function println(s) {
     if (typeof s == "undefined")
-        vm.print("\n");
+        sys.print("\n");
     else
-        vm.println(s);
+        sys.println(s);
 }
 function read() {
-    return vm.read();
+    return sys.read();
 }
 // ncurses-like terminal control
-var con = new Object();
+var con = {};
 con.getch = function() {
-    return vm.readKey();
+    return sys.readKey();
 };
 con.move = function(y, x) {
     print(String.fromCharCode(27,91)+y+";"+x+"H");
@@ -32,12 +32,12 @@ con.getyx = function() {
     return graphics.getCursorYX();
 };
 con.hitterminate = function() { // ^C
-    vm.poke(-40, 1);
-    return (vm.peek(-41) == 31 && (vm.peek(-41) == 129 || vm.peek(-41) == 130));
+    sys.poke(-40, 1);
+    return (sys.peek(-41) == 31 && (sys.peek(-41) == 129 || sys.peek(-41) == 130));
 };
 con.hiteof = function() { // ^D
-    vm.poke(-40, 1);
-    return (vm.peek(-41) == 32 && (vm.peek(-41) == 129 || vm.peek(-41) == 130));
+    sys.poke(-40, 1);
+    return (sys.peek(-41) == 32 && (sys.peek(-41) == 129 || sys.peek(-41) == 130));
 };
 con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
@@ -57,11 +57,11 @@ con.color_pair = function(fore, back) { // 0..255
 };
 Object.freeze(con);
 // system management  function
-var sys = new Object();
-sys.maxmem = function() {
-    return vm.peek(-65) | (vm.peek(-66) << 8) | (vm.peek(-67) << 16) | (vm.peek(-68) << 24);
+var system = {};
+system.maxmem = function() {
+    return sys.peek(-65) | (sys.peek(-66) << 8) | (sys.peek(-67) << 16) | (sys.peek(-68) << 24);
 };
-sys.halt = function() {
+system.halt = function() {
     exit();
 };
-Object.freeze(sys);
+Object.freeze(system);

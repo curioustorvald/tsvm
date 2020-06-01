@@ -176,7 +176,7 @@ for (var frames = 0; frames < height * divisor; frames++) {
     }
 }
 
-var memstring = "USER RAM: " + ((vm.peek(-66) >> 2) + (vm.peek(-67) << 6) + (vm.peek(-68) << 14));
+var memstring = "USER RAM: " + ((sys.peek(-66) >> 2) + (sys.peek(-67) << 6) + (sys.peek(-68) << 14));
 if (memstring.length % 2 == 0) memstring += "  Kbytes"; else memstring += " Kbytes";
 var cy = Math.floor((yoff + height + 14) / 14);
 var cx = Math.floor(((560 - 7*(memstring.length)) / 2) / 7);

@@ -50,7 +50,7 @@ object VMRunnerFactory {
                     private val bind = context.getBindings(ScriptContext.ENGINE_SCOPE)
 
                     init {
-                        bind.put("vm", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
+                        bind.put("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
                         bind.put("graphics", GraphicsJSR223Delegate(vm))
                         //bind.put("poke", { a: Long, b: Byte -> vm.poke(a, b) }) // kts: lambda does not work...
                         //bind.put("nanotime", { System.nanoTime() })
