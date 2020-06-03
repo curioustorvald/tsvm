@@ -77,6 +77,14 @@ function BasicArr() {
         this.dimsize = dimsize;
     }
 }
+// Abstract Syntax Tree
+// creates empty tree node
+function BasicAST() {
+    this.depth = 0;
+    this.leaves = [];
+    this.value = undefined;
+    this.type = "null"; // literal, operator, variable, function
+}
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
@@ -107,6 +115,38 @@ basicFunctions._isSeparator = function(code) {
 };
 basicFunctions._isOperator = function(code) {
     return (code == 0x21 || code == 0x23 || code == 0x25 || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2E || code == 0x2F || (code >= 0x3C && code <= 0x3E) || code == 0x5E || code == 0x7C);
+};
+basicFunctions._parseTokens = function(tokens, states) {
+    // a line has one of these forms:
+    // VARIABLE = LITERAL
+    // VARIABLE = FUNCTION ARGUMENTS
+    // FUNCTION
+    // FUNCTION ARGUMENTS --arguments may contain another function call
+    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT
+    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT "STEP" ARGUMENT
+    // "IF" EXPRESSION "THEN" EXPRESSION
+    // "IF" EXPRESSION "THEN" EXPRESSION "ELSE" EXPRESSION
+    // "IF" EXPRESSION "GOTO" ARGUMENT
+    // "IF" EXPRESSION "GOTO" ARGUMENT "ELSE" EXPRESSION
+    // "WHILE" EXPRESSION
+
+    var i, j, k;
+    var headWord = tokens[0].toLowerCase();
+    var treeHead = BasicAST();
+
+    // is this a builtin function?
+    if (typeof basicInterpreterStatus.builtin[headWord] != "undefined") {
+        treeHead.value = headWord;
+        treeHead.type = "function";
+
+        // find and mark position of separators
+        var separators = [];
+        for (i = 1; i < tokens.length; i++) if (states[i] == "sep") separators.push(i);
+
+        // parse and populate leaves
+        // TODO
+    }
+
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
@@ -349,6 +389,11 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     }
 
     // END TOKENISE
+
+    // PARSING (SYNTAX ANALYSIS)
+    var syntaxTree = basicFunctions._parseTokens(tokens, modes);
+    // END PARSING
+
 
     println(tokens.join("~"));
     println(modes.join(" "));
