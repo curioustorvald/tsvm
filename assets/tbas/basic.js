@@ -161,7 +161,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     // TOKENISE
     // TODO add separator
     for (var k = 0; k < cmd.length; k++) {
-        var char = cmd.charAt(k);
+        var char = cmd[k];
         var charCode = cmd.charCodeAt(k);
 
         if (_debugprintStateTransition) print("Char: "+char+"("+charCode+"), state: "+mode);
