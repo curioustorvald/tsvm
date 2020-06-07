@@ -76,4 +76,4 @@ object VMRunnerFactory {
 }
 
 fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')
-fun sanitiseJS(code: String) = "eval('${toSingleLine(code)}')"
+fun sanitiseJS(code: String) = "eval('${toSingleLine(code).replace("\\", "\\\\")}')"

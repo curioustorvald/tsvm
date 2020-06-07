@@ -7,7 +7,7 @@ var shell_pwd = [""];
 var welcome_text = "TSVM Disk Operating System, version " + DOS_VERSION;
 
 function get_prompt_text() {
-    return CURRENT_DRIVE + ":\\\\" + shell_pwd.join("\\\\") + PROMPT_TEXT;
+    return CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT;
 }
 
 function greet() {

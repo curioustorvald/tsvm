@@ -80,10 +80,24 @@ function BasicArr() {
 // Abstract Syntax Tree
 // creates empty tree node
 function BasicAST() {
+    this.lnum = 0;
     this.depth = 0;
     this.leaves = [];
     this.value = undefined;
     this.type = "null"; // literal, operator, variable, function
+
+    this.toString = function() {
+        var sb = "";
+        var marker = ("literal" == this.type) ? ">" : ("operator" == this.type) ? "=" : "#";
+        sb += "| ".repeat(this.depth) + marker+" Line "+this.lnum+" ("+this.type+")\n";
+        sb += "| ".repeat(this.depth+1) + "leaves: "+(this.leaves.length)+"\n";
+        sb += "| ".repeat(this.depth+1) + "value: "+this.value+"\n";
+        for (var k = 0; k < this.leaves.length; k++) {
+            sb += this.leaves[k].toString(); + "\n";
+        }
+        sb += "| ".repeat(this.depth+1) + "----------------\n";
+        return sb;
+    };
 }
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
@@ -116,7 +130,10 @@ basicFunctions._isSeparator = function(code) {
 basicFunctions._isOperator = function(code) {
     return (code == 0x21 || code == 0x23 || code == 0x25 || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2E || code == 0x2F || (code >= 0x3C && code <= 0x3E) || code == 0x5E || code == 0x7C);
 };
-basicFunctions._parseTokens = function(tokens, states) {
+basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
+    // DO NOT PERFORM SEMANTIC ANALYSIS HERE
+    // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
+
     // a line has one of these forms:
     // VARIABLE = LITERAL
     // VARIABLE = FUNCTION ARGUMENTS
@@ -129,23 +146,68 @@ basicFunctions._parseTokens = function(tokens, states) {
     // "IF" EXPRESSION "GOTO" ARGUMENT
     // "IF" EXPRESSION "GOTO" ARGUMENT "ELSE" EXPRESSION
     // "WHILE" EXPRESSION
+    // additionally, sub-line also has one of these:
+    // LITERAL (leaf node)
+    // VARIABLE (leaf node)
+    // {VARIABLE, LITERAL} COMPARISON_OP {VARIABLE, LITERAL}
+
+    println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
+
+    if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
+    if (tokens.length == 0) throw "InternalError: empty tokens (line: "+lnum+", recursion depth: "+recDepth+")";
 
     var i, j, k;
     var headWord = tokens[0].toLowerCase();
-    var treeHead = BasicAST();
+    var treeHead = new BasicAST();
+    treeHead.depth = recDepth;
+    treeHead.lnum = lnum;
 
-    // is this a builtin function?
-    if (typeof basicInterpreterStatus.builtin[headWord] != "undefined") {
+    // IF statement
+    if ("IF" == tokens[0].toUpperCase()) {
+        throw "TODO";
+    }
+    // LEAF: is this a literal?
+    else if (recDepth > 0 && ("quote" == states[0] || "number" == states[0])) {
+        treeHead.value = tokens[0];
+        treeHead.type = "literal";
+    }
+    // is this a function?
+    else {
         treeHead.value = headWord;
         treeHead.type = "function";
 
         // find and mark position of separators
+        // properly deal with the nested function calls
         var separators = [];
-        for (i = 1; i < tokens.length; i++) if (states[i] == "sep") separators.push(i);
+        var sepInit = (tokens.length > 1 && "paren" == states[1]) ? 2 : 1;
+        var parenCount = 1;
+        for (k = sepInit; k < tokens.length; k++) {
+            if ("(" == tokens[k]) parenCount += 1;
+            else if (")" == tokens[k]) parenCount -= 1;
+
+            if (parenCount == 1 && states[k] == "sep") separators.push(k);
+
+            if (parenCount < 0) throw lang.syntaxfehler(lnum);
+        }
+        separators.push(tokens.length - (sepInit == 1 ? 0 : 1));
+
+        println("sep ("+sepInit+")["+separators.join(",")+"]");
 
         // parse and populate leaves
-        // TODO
+        var leaves = [];
+        if (sepInit < separators[0]) {
+            for (k = 0; k < separators.length; k++) {
+                var subtkn = tokens.slice((k == 0) ? sepInit : separators[k - 1] + 1, separators[k]);
+                var substa = states.slice((k == 0) ? sepInit : separators[k - 1] + 1, separators[k]);
+
+                leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+            }
+        }
+        treeHead.leaves = leaves;
     }
+
+
+    return treeHead;
 
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
@@ -166,7 +228,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
 
         if (_debugprintStateTransition) print("Char: "+char+"("+charCode+"), state: "+mode);
 
-        if (mode == "literal") {
+        if ("literal" == mode) {
             if (0x22 == charCode) { // "
                 tokens.push(sb); sb = ""; modes.push(mode);
                 mode = "quote";
@@ -225,13 +287,32 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         }
         else if ("quote_end" == mode) {
             if (basicFunctions._isNumber(charCode)) {
+                sb = "" + char;
                 mode = "number";
             }
+            else if (" " == char) {
+                sb = "";
+                mode = "limbo";
+            }
             else if (basicFunctions._isOperator(charCode)) {
+                sb = "" + char;
                 mode = "operator";
             }
+            else if (0x22 == charCode) {
+                sb = "" + char;
+                mode = "quote";
+            }
+            else if (basicFunctions._isParen(charCode)) {
+                sb = "" + char;
+                mode = "paren";
+            }
+            else if (basicFunctions._isSeparator(charCode)) {
+                sb = "" + char;
+                mode = "sep";
+            }
             else {
-                mode = "limbo";
+                sb = "" + char;
+                mode = "literal";
             }
         }
         else if ("number" == mode) {
@@ -319,7 +400,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         }
         else if ("paren" == mode) {
             if (char == " ") {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = ""; modes.push(mode);
                 mode = "limbo";
             }
             else if (basicFunctions._isNumber(charCode)) {
@@ -331,7 +412,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 mode = "operator"
             }
             else if (0x22 == charCode) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = ""; modes.push(mode);
                 mode = "quote"
             }
             else if (basicFunctions._isParen(charCode)) {
@@ -349,7 +430,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         }
         else if ("sep" == mode) {
             if (char == " ") {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = ""; modes.push(mode);
                 mode = "limbo";
             }
             else if (basicFunctions._isNumber(charCode)) {
@@ -361,7 +442,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 mode = "operator"
             }
             else if (0x22 == charCode) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = ""; modes.push(mode);
                 mode = "quote"
             }
             else if (basicFunctions._isParen(charCode)) {
@@ -391,7 +472,9 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     // END TOKENISE
 
     // PARSING (SYNTAX ANALYSIS)
-    var syntaxTree = basicFunctions._parseTokens(tokens, modes);
+    var syntaxTree = basicFunctions._parseTokens(lnum, tokens, modes, 0);
+    println("k bye");
+    serial.println(syntaxTree.toString());
     // END PARSING
 
 
