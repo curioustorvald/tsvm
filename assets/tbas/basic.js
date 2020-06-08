@@ -84,7 +84,7 @@ function BasicAST() {
     this.depth = 0;
     this.leaves = [];
     this.value = undefined;
-    this.type = "null"; // literal, operator, variable, function
+    this.type = "null"; // literal, operator, variable, function, null
 
     this.toString = function() {
         var sb = "";
@@ -162,6 +162,10 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     treeHead.depth = recDepth;
     treeHead.lnum = lnum;
 
+    // TODO ability to parse arbitrary parentheses
+    // test string: print((minus(plus(3,2),times(8,7))))
+    //                   ^                             ^ these extra parens break your parser
+
     // IF statement
     if ("IF" == tokens[0].toUpperCase()) {
         throw "TODO";
@@ -173,32 +177,57 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     }
     // is this a function?
     else {
-        treeHead.value = headWord;
-        treeHead.type = "function";
-
-        // find and mark position of separators
+        // find and mark position of separators and parentheses
         // properly deal with the nested function calls
+        var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
+        var parenDepth = 0;
+        var parenStart = 0;
+        var parenEnd = -1;
         var separators = [];
-        var sepInit = (tokens.length > 1 && "paren" == states[1]) ? 2 : 1;
-        var parenCount = 1;
-        for (k = sepInit; k < tokens.length; k++) {
-            if ("(" == tokens[k]) parenCount += 1;
-            else if (")" == tokens[k]) parenCount -= 1;
 
-            if (parenCount == 1 && states[k] == "sep") separators.push(k);
+        treeHead.value = currentFunction;
+        treeHead.type = (typeof currentFunction == "undefined") ? "null" : "function";
 
-            if (parenCount < 0) throw lang.syntaxfehler(lnum);
+        for (k = 0; k < tokens.length; k++) {
+            if (tokens[k] == "(") {
+                parenDepth += 1;
+                if (parenDepth == 1) parenStart = k;
+            }
+            else if (tokens[k] == ")") {
+                if (parenDepth == 1) parenEnd = k;
+                parenDepth -= 1;
+            }
+
+            if (parenDepth == 1 && states[k] == "sep") {
+                separators.push(k);
+            }
         }
-        separators.push(tokens.length - (sepInit == 1 ? 0 : 1));
 
-        println("sep ("+sepInit+")["+separators.join(",")+"]");
+        if (parenDepth != 0) throw "Unmatched brackets";
 
-        // parse and populate leaves
         var leaves = [];
-        if (sepInit < separators[0]) {
-            for (k = 0; k < separators.length; k++) {
-                var subtkn = tokens.slice((k == 0) ? sepInit : separators[k - 1] + 1, separators[k]);
-                var substa = states.slice((k == 0) ? sepInit : separators[k - 1] + 1, separators[k]);
+
+        // if there is no paren
+        if (parenStart == 0 && parenEnd == -1 && tokens.length > 1) {
+            var subtkn = tokens.slice(1, tokens.length);
+            var substa = states.slice(1, tokens.length);
+
+            leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+        }
+        else if (parenEnd > parenStart) {
+            separators = [parenStart].concat(separators, [parenEnd]);
+            // recursively parse comma-separated arguments
+
+            // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
+            //       s                ^                 e
+            // separators = [1,8,15]
+            //         plus ( 3 , 2 ) / times ( 8 , 7 )
+            //              s   ^   e         s   ^   e
+            // separators = [1,5] ; [1,5]
+            //                3 / 2   /         8 / 7
+            for (k = 1; k < separators.length; k++) {
+                var subtkn = tokens.slice(separators[k - 1] + 1, separators[k]);
+                var substa = states.slice(separators[k - 1] + 1, separators[k]);
 
                 leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
             }
