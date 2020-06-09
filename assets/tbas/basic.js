@@ -18,7 +18,7 @@ var prompt = "Ok";
 
 var lang = {};
 lang.syntaxfehler = function(line) {
-    if (typeof line == "undefined")
+    if (line === undefined)
         return "Syntax error";
     return "Syntax error in " + line;
 };
@@ -29,15 +29,16 @@ function getUsedMemSize() {
 
 
 var reLineNum = /^[0-9]+ +[^0-9]/;
-var reFloat = /^([\-+]?[0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[\-+]?[0-9]+[.eEfF][0-9+\-]*[fF]?)$/;
-var reDec = /^([\-+]?[0-9_]+)$/;
-var reHex = /^(0[Xx][0-9A-Fa-f_]+?)$/;
-var reBin = /(0[Bb][01_]+)$/;
-var reBool = /true|false/;
+//var reFloat = /^([\-+]?[0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[\-+]?[0-9]+[.eEfF][0-9+\-]*[fF]?)$/;
+//var reDec = /^([\-+]?[0-9_]+)$/;
+//var reHex = /^(0[Xx][0-9A-Fa-f_]+)$/;
+//var reBin = /^(0[Bb][01_]+)$/;
+
+// must match partial
+var reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/g;
+var reOps = /\^|\*|\/|\+|\-|[<>=]{1,2}/g;
 
 var reNum = /[0-9]+/;
-var charsetNumMeta = /[.BbFfXx_]/;
-var charsetOp = /[()\/|&,]+/;
 var tbasexit = false;
 
 println("Terran BASIC 1.0  "+vmemsize+" bytes free");
@@ -127,8 +128,27 @@ basicFunctions._isParen = function(code) {
 basicFunctions._isSeparator = function(code) {
     return code == 0x2C;
 };
-basicFunctions._isOperator = function(code) {
-    return (code == 0x21 || code == 0x23 || code == 0x25 || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2E || code == 0x2F || (code >= 0x3C && code <= 0x3E) || code == 0x5E || code == 0x7C);
+basicFunctions._operatorPrecedence = {
+    // function call in itself has highest precedence
+    "^":13,
+    "POSITIVE":12,"NEGATIVE":12,"NOT":12,
+    "*":11,"/":11,
+    "MOD":10,
+    "+":9,"-":9,
+    "<<":8,">>":8,
+    "==":7,"<>":7,"><":7,"!=":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
+    "BAND":6,
+    "BXOR":5,
+    "BOR":4,
+    "AND":3,
+    "OR":2,
+    "=":1
+};
+basicFunctions._isOperatorWord = function(word) {
+    return (basicFunctions._operatorPrecedence[word] !== undefined) // force the return type to be a boolean
+};
+basicFunctions._keywords = {
+
 };
 basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // DO NOT PERFORM SEMANTIC ANALYSIS HERE
@@ -156,7 +176,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
     if (tokens.length == 0) throw "InternalError: empty tokens (line: "+lnum+", recursion depth: "+recDepth+")";
 
-    var i, j, k;
+    var k;
     var headWord = tokens[0].toLowerCase();
     var treeHead = new BasicAST();
     treeHead.depth = recDepth;
@@ -186,7 +206,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
         var separators = [];
 
         treeHead.value = currentFunction;
-        treeHead.type = (typeof currentFunction == "undefined") ? "null" : "function";
+        treeHead.type = (currentFunction === undefined) ? "null" : "function";
 
         for (k = 0; k < tokens.length; k++) {
             if (tokens[k] == "(") {
@@ -241,17 +261,17 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
+    var k;
     var _debugprintStateTransition = false;
     var tokens = [];
-    var modes = [];
+    var states = [];
     var sb = "";
-    var mode = "literal"; // literal, escape, number, quote, quote_end, operator, paren, sep, limbo
+    var mode = "literal"; // literal, escape, quote, quote_end, paren, sep, limbo; additionally: number, bool, operator
 
     if (_debugprintStateTransition) println("Ln "+lnum+" cmd "+cmd);
 
     // TOKENISE
-    // TODO add separator
-    for (var k = 0; k < cmd.length; k++) {
+    for (k = 0; k < cmd.length; k++) {
         var char = cmd[k];
         var charCode = cmd.charCodeAt(k);
 
@@ -259,27 +279,23 @@ basicFunctions._interpretLine = function(lnum, cmd) {
 
         if ("literal" == mode) {
             if (0x22 == charCode) { // "
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote";
             }
             /*else if (charCode == 0x5C) { // reverse solidus
                 tokens.push(sb); sb = "";
                 mode = "escape";
             }*/
-            else if (basicFunctions._isOperator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "operator";
-            }
             else if (basicFunctions._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
             }
             else if (" " == char) {
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "limbo";
             }
             else if (basicFunctions._isSeparator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
             else {
@@ -307,7 +323,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         }
         else if ("quote" == mode) {
             if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote_end";
             }
             else {
@@ -315,18 +331,10 @@ basicFunctions._interpretLine = function(lnum, cmd) {
             }
         }
         else if ("quote_end" == mode) {
-            if (basicFunctions._isNumber(charCode)) {
-                sb = "" + char;
-                mode = "number";
-            }
-            else if (" " == char) {
+            if (" " == char) {
                 sb = "";
                 mode = "limbo";
             }
-            else if (basicFunctions._isOperator(charCode)) {
-                sb = "" + char;
-                mode = "operator";
-            }
             else if (0x22 == charCode) {
                 sb = "" + char;
                 mode = "quote";
@@ -341,74 +349,12 @@ basicFunctions._interpretLine = function(lnum, cmd) {
             }
             else {
                 sb = "" + char;
-                mode = "literal";
-            }
-        }
-        else if ("number" == mode) {
-            if (basicFunctions._isNumber(charCode)) {
-                sb += char;
-            }
-            else if (" " == char) {
-                tokens.push(sb); sb = ""; modes.push(mode);
-                mode = "limbo";
-            }
-            else if (basicFunctions._isOperator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "operator";
-            }
-            else if (0x22 == charCode) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "quote";
-            }
-            else if (basicFunctions._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "paren";
-            }
-            else if (basicFunctions._isSeparator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "sep";
-            }
-            else {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "literal";
-            }
-        }
-        else if ("operator" == mode) {
-            if (basicFunctions._isOperator(charCode)) {
-                sb += char;
-            }
-            else if (basicFunctions._isNumber(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "number";
-            }
-            else if (" " == char) {
-                tokens.push(sb); sb = ""; modes.push(mode);
-                mode = "limbo";
-            }
-            else if (basicFunctions._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "paren";
-            }
-            else if (basicFunctions._isSeparator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "sep";
-            }
-            else {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
                 mode = "literal";
             }
         }
         else if ("limbo" == mode) {
             if (char == " ") {
                 /* do nothing */
-            }
-            else if (basicFunctions._isNumber(charCode)) {
-                sb = "" + char;
-                mode = "number"
-            }
-            else if (basicFunctions._isOperator(charCode)) {
-                sb = "" + char;
-                mode = "operator"
             }
             else if (0x22 == charCode) {
                 sb = "";
@@ -429,61 +375,45 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         }
         else if ("paren" == mode) {
             if (char == " ") {
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "limbo";
             }
-            else if (basicFunctions._isNumber(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "number"
-            }
-            else if (basicFunctions._isOperator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "operator"
-            }
             else if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote"
             }
             else if (basicFunctions._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
             }
             else if (basicFunctions._isSeparator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
             else {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "literal";
             }
         }
         else if ("sep" == mode) {
             if (char == " ") {
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "limbo";
             }
-            else if (basicFunctions._isNumber(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "number"
-            }
-            else if (basicFunctions._isOperator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
-                mode = "operator"
-            }
             else if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; modes.push(mode);
+                tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote"
             }
             else if (basicFunctions._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
             }
             else if (basicFunctions._isSeparator(charCode)) {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
             else {
-                tokens.push(sb); sb = "" + char; modes.push(mode);
+                tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "literal";
             }
         }
@@ -495,20 +425,107 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     }
 
     if (sb.length > 0) {
-        tokens.push(sb); modes.push(mode);
+        tokens.push(sb); states.push(mode);
     }
-
+    if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+")";
     // END TOKENISE
 
+    // ELABORATION : distinguish numbers and operators from literals
+    k = 0;
+    while (k < states.length) { // using while loop because array size will change during the execution
+        serial.println("k="+k+" of "+states.length);
+
+        if ("quote" == states[k] | "paren" == states[k]) {
+            k += 1;
+            continue;
+        }
+        if ("REM" == tokens[0].toUpperCase()) break;
+        // if the tokeniser worked as intended, anything left would be one of those:
+        //  compound of numbers and operators
+        //  a number
+        //  an operator
+
+        println("token="+tokens[k]+", type="+typeof tokens[k]);
+
+        var reMatchNumbers = [];
+        while (true) {
+            var match = reNumber.exec(tokens[k]);
+            if (match === null) break;
+            reMatchNumbers.push(match);
+        }
+
+        var reMatchOps = [];
+        while (true) {
+            var match = reOps.exec(tokens[k]);
+            if (match === null) break;
+            reMatchOps.push(match);
+        }
+
+
+        if (reMatchOps[0] === undefined && reMatchNumbers[0] === undefined)
+            ;/* do nothing */
+        else if (reMatchOps[0] === undefined)
+            states[k] = "number";
+        else if (reMatchNumbers[0] === undefined)
+            states[k] = "operators";
+        else { // this is where the fun begins
+            reMatchNumbers = reMatchNumbers.map(function(it) { return it[0]; });
+            reMatchOps = reMatchOps.map(function(it) { return it[0]; });
+
+            var midTokens = [];
+            var midStates = [];
+            var tokenReadCursor = 0;
+            var numMatchCursor = 0;
+            var opsMatchCursor = 0;
+
+            serial.println("token="+tokens[k]);
+            serial.println("state="+states[k]);
+            serial.println("reMatchNumbers="+reMatchNumbers.join(","));
+            serial.println("reMatchOps="+reMatchOps.join(","));
+
+            while (tokenReadCursor < tokens[k].length) {
+                serial.println("c="+tokenReadCursor+",n="+numMatchCursor+",o="+opsMatchCursor);
+
+                if (reMatchOps[opsMatchCursor] !== undefined &&
+                     tokens[k][tokenReadCursor] === reMatchOps[opsMatchCursor][0]) {
+                    midTokens.push(reMatchOps[opsMatchCursor]);
+                    midStates.push("operators");
+                    tokenReadCursor += reMatchOps[opsMatchCursor].length;
+                    opsMatchCursor += 1;
+                }
+                else if (reMatchNumbers[numMatchCursor] !== undefined &&
+                          tokens[k][tokenReadCursor] === reMatchNumbers[numMatchCursor][0]) {
+                    midTokens.push(reMatchNumbers[numMatchCursor]);
+                    midStates.push("numbers");
+                    tokenReadCursor += reMatchNumbers[numMatchCursor].length;
+                    numMatchCursor += 1;
+                }
+                else {
+                    throw "InternalError: c="+tokenReadCursor+",n="+numMatchCursor+",o="+opsMatchCursor+"\n"+
+                          "reMatchNumbers="+reMatchNumbers.join(",")+"\n"+
+                          "reMatchOps="+reMatchOps.join(",");
+                }
+            }
+
+            tokens = [].concat(tokens.slice(0, k), midTokens, tokens.slice(k + 1, tokens.length));
+            states = [].concat(states.slice(0, k), midStates, states.slice(k + 1, states.length));
+
+            k += (midTokens.length - 1);
+        }
+
+        k += 1;
+    }
+    // END ELABORATION
+
     // PARSING (SYNTAX ANALYSIS)
-    var syntaxTree = basicFunctions._parseTokens(lnum, tokens, modes, 0);
+    var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
     println("k bye");
     serial.println(syntaxTree.toString());
     // END PARSING
 
 
     println(tokens.join("~"));
-    println(modes.join(" "));
+    println(states.join(" "));
 
 
 
@@ -526,7 +543,7 @@ basicFunctions.list = function(args) { // LIST function
         cmdbuf.forEach(basicFunctions._basicList);
     }
     else if (args.length == 2) {
-        if (typeof cmdbuf[args[1]] != "undefined")
+        if (cmdbuf[args[1]] !== undefined)
             basicFunctions._basicList(cmdbuf[args[1]], args[1], undefined);
     }
     else {
@@ -534,7 +551,7 @@ basicFunctions.list = function(args) { // LIST function
         var i = 0;
         for (i = args[1]; i <= lastIndex; i++) {
             var cmd = cmdbuf[i];
-            if (typeof cmd != "undefined") {
+            if (cmd !== undefined) {
                 basicFunctions._basicList(cmd, i, cmdbuf);
             }
         }
@@ -551,7 +568,7 @@ basicFunctions.renum = function(args) { // RENUM function
     var linenumRelation = [[]];
     var cnt = 10;
     for (var k = 0; k < cmdbuf.length; k++) {
-        if (typeof cmdbuf[k] != "undefined") {
+        if (cmdbuf[k] !== undefined) {
             newcmdbuf[cnt] = cmdbuf[k];
             linenumRelation[k] = cnt;
             cnt += 10;
@@ -559,10 +576,10 @@ basicFunctions.renum = function(args) { // RENUM function
     }
     // deal with goto/gosub line numbers
     for (k = 0; k < newcmdbuf.length; k++) {
-        if (typeof newcmdbuf[k] != "undefined" && newcmdbuf[k].toLowerCase().startsWith("goto ")) {
+        if (newcmdbuf[k] !== undefined && newcmdbuf[k].toLowerCase().startsWith("goto ")) {
             newcmdbuf[k] = "goto " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
         }
-        else if (typeof newcmdbuf[k] != "undefined" && newcmdbuf[k].toLowerCase().startsWith("gosub ")) {
+        else if (newcmdbuf[k] !== undefined && newcmdbuf[k].toLowerCase().startsWith("gosub ")) {
             newcmdbuf[k] = "gosub " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
         }
     }
@@ -581,7 +598,7 @@ basicFunctions.run = function(args) { // RUN function
     var linenumber = 1;
     var oldnum = 1;
     do {
-        if (typeof cmdbuf[linenumber] != "undefined") {
+        if (cmdbuf[linenumber] !== undefined) {
             oldnum = linenumber;
             linenumber = basicFunctions._interpretLine(linenumber, cmdbuf[linenumber]);
         }
