@@ -357,15 +357,14 @@ basicFunctions._interpretLine = function(lnum, cmd) {
                 /* do nothing */
             }
             else if (0x22 == charCode) {
-                sb = "";
                 mode = "quote"
             }
             else if (basicFunctions._isParen(charCode)) {
-                sb = "";
+                sb = "" + char;
                 mode = "paren";
             }
             else if (basicFunctions._isSeparator(charCode)) {
-                sb = "";
+                sb = "" + char;
                 mode = "sep";
             }
             else {
@@ -429,6 +428,9 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     }
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+")";
     // END TOKENISE
+
+    println(tokens.join("~"));
+    println(states.join(" "));
 
     // ELABORATION : distinguish numbers and operators from literals
     k = 0;
@@ -517,15 +519,16 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     }
     // END ELABORATION
 
+
+    println(tokens.join("~"));
+    println(states.join(" "));
+
+
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
     println("k bye");
     serial.println(syntaxTree.toString());
     // END PARSING
-
-
-    println(tokens.join("~"));
-    println(states.join(" "));
 
 
 
