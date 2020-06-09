@@ -150,124 +150,15 @@ basicFunctions._isOperatorWord = function(word) {
 basicFunctions._keywords = {
 
 };
-basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
-    // DO NOT PERFORM SEMANTIC ANALYSIS HERE
-    // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
-
-    // a line has one of these forms:
-    // VARIABLE = LITERAL
-    // VARIABLE = FUNCTION ARGUMENTS
-    // FUNCTION
-    // FUNCTION ARGUMENTS --arguments may contain another function call
-    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT
-    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT "STEP" ARGUMENT
-    // "IF" EXPRESSION "THEN" EXPRESSION
-    // "IF" EXPRESSION "THEN" EXPRESSION "ELSE" EXPRESSION
-    // "IF" EXPRESSION "GOTO" ARGUMENT
-    // "IF" EXPRESSION "GOTO" ARGUMENT "ELSE" EXPRESSION
-    // "WHILE" EXPRESSION
-    // additionally, sub-line also has one of these:
-    // LITERAL (leaf node)
-    // VARIABLE (leaf node)
-    // {VARIABLE, LITERAL} COMPARISON_OP {VARIABLE, LITERAL}
-
-    println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
-
-    if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
-    if (tokens.length == 0) throw "InternalError: empty tokens (line: "+lnum+", recursion depth: "+recDepth+")";
-
-    var k;
-    var headWord = tokens[0].toLowerCase();
-    var treeHead = new BasicAST();
-    treeHead.depth = recDepth;
-    treeHead.lnum = lnum;
-
-    // TODO ability to parse arbitrary parentheses
-    // test string: print((minus(plus(3,2),times(8,7))))
-    //                   ^                             ^ these extra parens break your parser
-
-    // IF statement
-    if ("IF" == tokens[0].toUpperCase()) {
-        throw "TODO";
-    }
-    // LEAF: is this a literal?
-    else if (recDepth > 0 && ("quote" == states[0] || "number" == states[0])) {
-        treeHead.value = tokens[0];
-        treeHead.type = "literal";
-    }
-    // is this a function?
-    else {
-        // find and mark position of separators and parentheses
-        // properly deal with the nested function calls
-        var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
-        var parenDepth = 0;
-        var parenStart = 0;
-        var parenEnd = -1;
-        var separators = [];
-
-        treeHead.value = currentFunction;
-        treeHead.type = (currentFunction === undefined) ? "null" : "function";
-
-        for (k = 0; k < tokens.length; k++) {
-            if (tokens[k] == "(") {
-                parenDepth += 1;
-                if (parenDepth == 1) parenStart = k;
-            }
-            else if (tokens[k] == ")") {
-                if (parenDepth == 1) parenEnd = k;
-                parenDepth -= 1;
-            }
-
-            if (parenDepth == 1 && states[k] == "sep") {
-                separators.push(k);
-            }
-        }
-
-        if (parenDepth != 0) throw "Unmatched brackets";
-
-        var leaves = [];
-
-        // if there is no paren
-        if (parenStart == 0 && parenEnd == -1 && tokens.length > 1) {
-            var subtkn = tokens.slice(1, tokens.length);
-            var substa = states.slice(1, tokens.length);
-
-            leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
-        }
-        else if (parenEnd > parenStart) {
-            separators = [parenStart].concat(separators, [parenEnd]);
-            // recursively parse comma-separated arguments
-
-            // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
-            //       s                ^                 e
-            // separators = [1,8,15]
-            //         plus ( 3 , 2 ) / times ( 8 , 7 )
-            //              s   ^   e         s   ^   e
-            // separators = [1,5] ; [1,5]
-            //                3 / 2   /         8 / 7
-            for (k = 1; k < separators.length; k++) {
-                var subtkn = tokens.slice(separators[k - 1] + 1, separators[k]);
-                var substa = states.slice(separators[k - 1] + 1, separators[k]);
-
-                leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
-            }
-        }
-        treeHead.leaves = leaves;
-    }
-
-
-    return treeHead;
-
-};
-// @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
-basicFunctions._interpretLine = function(lnum, cmd) {
-    var k;
+basicFunctions._tokenise = function(lnum, cmd) {
     var _debugprintStateTransition = false;
+    var k;
     var tokens = [];
     var states = [];
     var sb = "";
     var mode = "literal"; // literal, escape, quote, quote_end, paren, sep, limbo; additionally: number, bool, operator
 
+    if (_debugprintStateTransition) println("@@ TOKENISE @@");
     if (_debugprintStateTransition) println("Ln "+lnum+" cmd "+cmd);
 
     // TOKENISE
@@ -427,17 +318,17 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         tokens.push(sb); states.push(mode);
     }
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+")";
-    // END TOKENISE
 
-    println(tokens.join("~"));
-    println(states.join(" "));
-
-    // ELABORATION : distinguish numbers and operators from literals
-    k = 0;
+    return { "tokens": tokens, "states": states };
+};
+basicFunctions._parserElaboration = function(lnum, tokens, states) {
+    var _debugprintElaboration = false;
+    if (_debugprintElaboration) println("@@ ELABORATION @@");
+    var k = 0;
     while (k < states.length) { // using while loop because array size will change during the execution
-        serial.println("k="+k+" of "+states.length);
+        if (_debugprintElaboration) serial.println("k="+k+" of "+states.length);
 
-        if ("quote" == states[k] | "paren" == states[k]) {
+        if ("quote" == states[k] | "paren" == states[k] | "sep" == states[k]) {
             k += 1;
             continue;
         }
@@ -447,7 +338,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
         //  a number
         //  an operator
 
-        println("token="+tokens[k]+", type="+typeof tokens[k]);
+        if (_debugprintElaboration) println("token="+tokens[k]+", type="+typeof tokens[k]);
 
         var reMatchNumbers = [];
         while (true) {
@@ -480,10 +371,10 @@ basicFunctions._interpretLine = function(lnum, cmd) {
             var numMatchCursor = 0;
             var opsMatchCursor = 0;
 
-            serial.println("token="+tokens[k]);
-            serial.println("state="+states[k]);
-            serial.println("reMatchNumbers="+reMatchNumbers.join(","));
-            serial.println("reMatchOps="+reMatchOps.join(","));
+            if (_debugprintElaboration) serial.println("token="+tokens[k]);
+            if (_debugprintElaboration) serial.println("state="+states[k]);
+            if (_debugprintElaboration) serial.println("reMatchNumbers="+reMatchNumbers.join(","));
+            if (_debugprintElaboration) serial.println("reMatchOps="+reMatchOps.join(","));
 
             while (tokenReadCursor < tokens[k].length) {
                 serial.println("c="+tokenReadCursor+",n="+numMatchCursor+",o="+opsMatchCursor);
@@ -517,22 +408,191 @@ basicFunctions._interpretLine = function(lnum, cmd) {
 
         k += 1;
     }
-    // END ELABORATION
+};
+basicFunctions._parserLukasiewiczation = function(lnum, tokens, states) {
+    // for the test input string of: cin(tan(2-5),4+sin(32))+cin(-2)
+    // tokens: cin ( tan ( 2 - 5 ) , 4 + sin ( 32 ) ) + cin ( - 2 )
+    //
+    // cin(tan(2-5),4+sin(32))+cin(-2)
+    // cin(tan(2-5),4+sin(32)) cin(-2)
+    //     tan(2-5) 4+sin(32)      -2
+    //         2-5  4 sin(32)       2
+    //         2 5  4     32
+    //
+    //
+    //                    2 5        4     32
+    //              minus(2,5)       4 sin(32)                  2
+    //          tan(minus(2,5)) plus(4,sin(32))      unaryMinus(2)
+    //      cin(tan(minus(2,5)),plus(4,sin(32))) cin(unaryMinus(2))
+    // plus(cin(tan(minus(2,5)),plus(4,sin(32))),cin(unaryMinus(2)))
+
+    var _debugprintLuka = true;
+
+    if (_debugprintLuka) println("@@ LUKASIEWICZATION @@")
+};
+basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
+    // DO NOT PERFORM SEMANTIC ANALYSIS HERE
+    // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
+
+    // a line has one of these forms:
+    // VARIABLE = LITERAL
+    // VARIABLE = FUNCTION ARGUMENTS
+    // FUNCTION
+    // FUNCTION ARGUMENTS --arguments may contain another function call
+    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT
+    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT "STEP" ARGUMENT
+    // "IF" EXPRESSION "THEN" EXPRESSION
+    // "IF" EXPRESSION "THEN" EXPRESSION "ELSE" EXPRESSION
+    // "IF" EXPRESSION "GOTO" ARGUMENT
+    // "IF" EXPRESSION "GOTO" ARGUMENT "ELSE" EXPRESSION
+    // "WHILE" EXPRESSION
+    // additionally, sub-line also has one of these:
+    // LITERAL (leaf node)
+    // VARIABLE (leaf node)
+    // {VARIABLE, LITERAL} COMPARISON_OP {VARIABLE, LITERAL}
+
+    // THIS FUNCTION CANNOT PARSE ANY OPERATORS, THEY MUST BE CONVERTED TO POLISH NOTATION BEFOREHAND!
+    // providing a test string:
+    //     cin(tan(2-5),4+sin(32))+cin(-2)
+    // must be converted to:
+    //     plus(cin(tan(minus(2,5)),plus(4,sin(32))),cin(unaryMinus(2)))
+    // prior to the calling of this function
+
+    var _debugSyntaxAnalysis = true;
+
+    if (_debugSyntaxAnalysis) println("@@ SYNTAX ANALYSIS @@");
+
+    if (_debugSyntaxAnalysis) println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
+
+    if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
+    if (tokens.length == 0) throw "InternalError: empty tokens";
+
+    var k;
+    var headWord = tokens[0].toLowerCase();
+    var treeHead = new BasicAST();
+    treeHead.depth = recDepth;
+    treeHead.lnum = lnum;
+
+    // TODO ability to parse arbitrary parentheses
+    // test string: print((minus(plus(3,2),times(8,7))))
+    //                   ^                             ^ these extra parens break your parser
+
+    // IF statement
+    if ("IF" == tokens[0].toUpperCase()) {
+        throw "TODO";
+    }
+    // LEAF: is this a literal?
+    else if (recDepth > 0 && ("quote" == states[0] || "number" == states[0])) {
+        treeHead.value = tokens[0];
+        treeHead.type = "literal";
+    }
+    // is this a function/operators?
+    else {
+        // find and mark position of separators and parentheses
+        // properly deal with the nested function calls
+        var parenDepth = 0;
+        var parenStart = 0;
+        var parenEnd = -1;
+        var separators = [];
+
+        for (k = 0; k < tokens.length; k++) {
+            if (tokens[k] == "(") {
+                parenDepth += 1;
+                if (parenDepth == 1) parenStart = k;
+            }
+            else if (tokens[k] == ")") {
+                if (parenDepth == 1) parenEnd = k;
+                parenDepth -= 1;
+            }
+
+            if (parenDepth == 1 && states[k] == "sep") {
+                separators.push(k);
+            }
+        }
+
+        if (parenDepth != 0) throw "Unmatched brackets";
+
+        var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
+        treeHead.value = currentFunction;
+        treeHead.type = (currentFunction === undefined) ? "null" : "function";
+        var leaves = [];
+
+        // if there is no paren
+        if (parenStart == 0 && parenEnd == -1 && tokens.length > 1) {
+            var subtkn = tokens.slice(1, tokens.length);
+            var substa = states.slice(1, tokens.length);
+
+            if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
+
+            leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+        }
+        else if (parenEnd > parenStart) {
+            separators = [parenStart].concat(separators, [parenEnd]);
+            // recursively parse comma-separated arguments
+
+            // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
+            //       s                ^                 e
+            // separators = [1,8,15]
+            //         plus ( 3 , 2 ) / times ( 8 , 7 )
+            //              s   ^   e         s   ^   e
+            // separators = [1,5] ; [1,5]
+            //                3 / 2   /         8 / 7
+            for (k = 1; k < separators.length; k++) {
+                var subtkn = tokens.slice(separators[k - 1] + 1, separators[k]);
+                var substa = states.slice(separators[k - 1] + 1, separators[k]);
+
+                if (_debugSyntaxAnalysis) println("subtokenB: "+subtkn.join("/"));
+
+                leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+            }
+        }
+        treeHead.leaves = leaves;//.filter(function(__v) { return __v !== undefined; });
+    }
 
 
-    println(tokens.join("~"));
-    println(states.join(" "));
+    return treeHead;
+
+};
+// @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
+basicFunctions._interpretLine = function(lnum, cmd) {
+    var _debugprintHighestLevel = true;
+
+    // TOKENISE
+    var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
+    var tokens = tokenisedObject.tokens;
+    var states = tokenisedObject.states;
+
+    if (_debugprintHighestLevel) println(tokens.join("~"));
+    if (_debugprintHighestLevel) println(states.join(" "));
+
+
+    // ELABORATION : distinguish numbers and operators from literals
+    basicFunctions._parserElaboration(lnum, tokens, states);
+
+
+    if (_debugprintHighestLevel) println(tokens.join("~"));
+    if (_debugprintHighestLevel) println(states.join(" "));
+
+
+    // ŁUKASIEWICZATION : turn infix notation into polish notation
+    basicFunctions._parserLukasiewiczation(lnum, tokens, states);
+
+
+    if (_debugprintHighestLevel) println(tokens.join("~"));
+    if (_debugprintHighestLevel) println(states.join(" "));
 
 
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
-    println("k bye");
+
+
     serial.println(syntaxTree.toString());
-    // END PARSING
 
 
-
+    // EXECUTO
     return lnum + 1;
+
+
 }; // end INTERPRETLINE
 basicFunctions._basicList = function(v, i, arr) {
     if (i < 10) print(" ");

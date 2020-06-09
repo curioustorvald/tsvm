@@ -54,8 +54,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         //val fr = FileReader("./assets/tvdos/command.js")
         //val fr = FileReader("./assets/jscon.js")
 
-        //val fr1 = FileReader("./assets/bios1.js")
-        val fr1 = FileReader("./assets/phototest.js")
+        val fr1 = FileReader("./assets/bios1.js")
+        //val fr1 = FileReader("./assets/phototest.js")
         val bios = fr1.readText()
         fr1.close()
 
