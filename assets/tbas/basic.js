@@ -114,7 +114,16 @@ basicInterpreterStatus.builtin.print = function() {
 Object.freeze(basicInterpreterStatus.builtin);
 var basicFunctions = {};
 basicFunctions._isNumber = function(code) {
-    return (code >= 0x30 && code <= 0x39) || code == 0x2E;
+    return (code >= 0x30 && code <= 0x39) || code == 0x5F;
+};
+basicFunctions._isNumberSep = function(code) {
+    return code == 0x2E || code == 0x42 || code == 0x58 || code == 0x62 || code == 0x78;
+};
+basicFunctions._isFirstOp = function(code) {
+    return (code >= 0x3C && code <= 0x3E) || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2F || code == 0x5E;
+};
+basicFunctions._isSecondOp = function(code) {
+    return (code >= 0x3C && code <= 0x3E);
 };
 basicFunctions._isParenOpen = function(code) {
     return (code == 0x28 || code == 0x5B);
@@ -131,12 +140,12 @@ basicFunctions._isSeparator = function(code) {
 basicFunctions._operatorPrecedence = {
     // function call in itself has highest precedence
     "^":13,
-    "POSITIVE":12,"NEGATIVE":12,"NOT":12,
+    "UNARYPLUS":12,"UNARYMINUS":12,"NOT":12,
     "*":11,"/":11,
     "MOD":10,
     "+":9,"-":9,
     "<<":8,">>":8,
-    "==":7,"<>":7,"><":7,"!=":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
+    "==":7,"<>":7,"><":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
     "BAND":6,
     "BXOR":5,
     "BOR":4,
@@ -156,7 +165,9 @@ basicFunctions._tokenise = function(lnum, cmd) {
     var tokens = [];
     var states = [];
     var sb = "";
-    var mode = "literal"; // literal, escape, quote, quote_end, paren, sep, limbo; additionally: number, bool, operator
+    var mode = "literal"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
+
+    // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error in the second pass
 
     if (_debugprintStateTransition) println("@@ TOKENISE @@");
     if (_debugprintStateTransition) println("Ln "+lnum+" cmd "+cmd);
@@ -173,10 +184,6 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote";
             }
-            /*else if (charCode == 0x5C) { // reverse solidus
-                tokens.push(sb); sb = "";
-                mode = "escape";
-            }*/
             else if (basicFunctions._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
@@ -188,6 +195,160 @@ basicFunctions._tokenise = function(lnum, cmd) {
             else if (basicFunctions._isSeparator(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
+            }
+            else if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "number";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "operator";
+            }
+            else {
+                sb += char;
+            }
+        }
+        else if ("number" == mode) {
+            if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+            }
+            else if (basicFunctions._isNumberSep(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "numbersep";
+            }
+            else if (0x22 == charCode) {
+                tokens.push(sb); sb = ""; states.push(mode);
+                mode = "quote";
+            }
+            else if (" " == char) {
+                tokens.push(sb); sb = ""; states.push(mode);
+                mode = "limbo";
+            }
+            else if (basicFunctions._isParen(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "paren"
+            }
+            else if (basicFunctions._isSeparator(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "sep";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "operator";
+            }
+            else {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "literal";
+            }
+        }
+        else if ("numbersep" == mode) {
+            if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "number2";
+            }
+            else {
+                throw lang.syntaxfehler(lnum);
+            }
+        }
+        else if ("number2" == mode) {
+            if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("number");
+            }
+            else if (0x22 == charCode) {
+                tokens.push(sb); sb = ""; states.push("number");
+                mode = "quote";
+            }
+            else if (" " == char) {
+                tokens.push(sb); sb = ""; states.push("number");
+                mode = "limbo";
+            }
+            else if (basicFunctions._isParen(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("number");
+                mode = "paren"
+            }
+            else if (basicFunctions._isSeparator(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("number");
+                mode = "sep";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("number");
+                mode = "operator";
+            }
+            else {
+                tokens.push(sb); sb = "" + char; states.push("number");
+                mode = "literal";
+            }
+        }
+        else if ("operator" == mode) {
+            if (basicFunctions._isSecondOp(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "operator2";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                throw lang.syntaxfehler(lnum);
+            }
+            if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "number";
+            }
+            else if (0x22 == charCode) {
+                tokens.push(sb); sb = ""; states.push(mode);
+                mode = "quote";
+            }
+            else if (" " == char) {
+                tokens.push(sb); sb = ""; states.push(mode);
+                mode = "limbo";
+            }
+            else if (basicFunctions._isParen(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "paren"
+            }
+            else if (basicFunctions._isSeparator(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "sep";
+            }
+            else {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "literal";
+            }
+        }
+        else if ("operator2" == mode) {
+            if (basicFunctions._isFirstOp(charCode)) {
+                throw lang.syntaxfehler(lnum);
+            }
+            if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("operator");
+                mode = "number";
+            }
+            else if (0x22 == charCode) {
+                tokens.push(sb); sb = ""; states.push("operator");
+                mode = "quote";
+            }
+            else if (" " == char) {
+                tokens.push(sb); sb = ""; states.push("operator");
+                mode = "limbo";
+            }
+            else if (basicFunctions._isParen(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("operator");
+                mode = "paren"
+            }
+            else if (basicFunctions._isSeparator(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push("operator");
+                mode = "sep";
+            }
+            else {
+                tokens.push(sb); sb = "" + char; states.push("operator");
+                mode = "literal";
+            }
+        }
+        else if ("quote" == mode) {
+            if (0x22 == charCode) {
+                tokens.push(sb); sb = ""; states.push(mode);
+                mode = "quote_end";
+            }
+            else if (charCode == 0x5C) { // reverse solidus
+                tokens.push(sb); sb = "";
+                mode = "escape";
             }
             else {
                 sb += char;
@@ -212,15 +373,6 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 sb += String.fromCharCode(0x08);
             mode = "quote"; // ESCAPE is only legal when used inside of quote
         }
-        else if ("quote" == mode) {
-            if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; states.push(mode);
-                mode = "quote_end";
-            }
-            else {
-                sb += char;
-            }
-        }
         else if ("quote_end" == mode) {
             if (" " == char) {
                 sb = "";
@@ -237,6 +389,14 @@ basicFunctions._tokenise = function(lnum, cmd) {
             else if (basicFunctions._isSeparator(charCode)) {
                 sb = "" + char;
                 mode = "sep";
+            }
+            else if (basicFunctions._isNumber(charCode)) {
+                sb = "" + char;
+                mode = "number";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                sb = "" + char;
+                mode = "operator"
             }
             else {
                 sb = "" + char;
@@ -257,6 +417,14 @@ basicFunctions._tokenise = function(lnum, cmd) {
             else if (basicFunctions._isSeparator(charCode)) {
                 sb = "" + char;
                 mode = "sep";
+            }
+            else if (basicFunctions._isNumber(charCode)) {
+                sb = "" + char;
+                mode = "number";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                sb = "" + char;
+                mode = "operator"
             }
             else {
                 sb = "" + char;
@@ -280,6 +448,14 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
+            else if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "number";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "operator"
+            }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "literal";
@@ -302,6 +478,14 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
+            else if (basicFunctions._isNumber(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "number";
+            }
+            else if (basicFunctions._isFirstOp(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "operator"
+            }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "literal";
@@ -322,109 +506,40 @@ basicFunctions._tokenise = function(lnum, cmd) {
     return { "tokens": tokens, "states": states };
 };
 basicFunctions._parserElaboration = function(lnum, tokens, states) {
-    var _debugprintElaboration = false;
+    var _debugprintElaboration = true;
     if (_debugprintElaboration) println("@@ ELABORATION @@");
     var k = 0;
+
+    // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error
+
     while (k < states.length) { // using while loop because array size will change during the execution
-        if (_debugprintElaboration) serial.println("k="+k+" of "+states.length);
-
-        if ("quote" == states[k] | "paren" == states[k] | "sep" == states[k]) {
-            k += 1;
-            continue;
-        }
-        if ("REM" == tokens[0].toUpperCase()) break;
-        // if the tokeniser worked as intended, anything left would be one of those:
-        //  compound of numbers and operators
-        //  a number
-        //  an operator
-
-        if (_debugprintElaboration) println("token="+tokens[k]+", type="+typeof tokens[k]);
-
-        var reMatchNumbers = [];
-        while (true) {
-            var match = reNumber.exec(tokens[k]);
-            if (match === null) break;
-            reMatchNumbers.push(match);
-        }
-
-        var reMatchOps = [];
-        while (true) {
-            var match = reOps.exec(tokens[k]);
-            if (match === null) break;
-            reMatchOps.push(match);
-        }
-
-
-        if (reMatchOps[0] === undefined && reMatchNumbers[0] === undefined)
-            ;/* do nothing */
-        else if (reMatchOps[0] === undefined)
-            states[k] = "number";
-        else if (reMatchNumbers[0] === undefined)
-            states[k] = "operators";
-        else { // this is where the fun begins
-            reMatchNumbers = reMatchNumbers.map(function(it) { return it[0]; });
-            reMatchOps = reMatchOps.map(function(it) { return it[0]; });
-
-            var midTokens = [];
-            var midStates = [];
-            var tokenReadCursor = 0;
-            var numMatchCursor = 0;
-            var opsMatchCursor = 0;
-
-            if (_debugprintElaboration) serial.println("token="+tokens[k]);
-            if (_debugprintElaboration) serial.println("state="+states[k]);
-            if (_debugprintElaboration) serial.println("reMatchNumbers="+reMatchNumbers.join(","));
-            if (_debugprintElaboration) serial.println("reMatchOps="+reMatchOps.join(","));
-
-            while (tokenReadCursor < tokens[k].length) {
-                serial.println("c="+tokenReadCursor+",n="+numMatchCursor+",o="+opsMatchCursor);
-
-                if (reMatchOps[opsMatchCursor] !== undefined &&
-                     tokens[k][tokenReadCursor] === reMatchOps[opsMatchCursor][0]) {
-                    midTokens.push(reMatchOps[opsMatchCursor]);
-                    midStates.push("operators");
-                    tokenReadCursor += reMatchOps[opsMatchCursor].length;
-                    opsMatchCursor += 1;
-                }
-                else if (reMatchNumbers[numMatchCursor] !== undefined &&
-                          tokens[k][tokenReadCursor] === reMatchNumbers[numMatchCursor][0]) {
-                    midTokens.push(reMatchNumbers[numMatchCursor]);
-                    midStates.push("numbers");
-                    tokenReadCursor += reMatchNumbers[numMatchCursor].length;
-                    numMatchCursor += 1;
-                }
-                else {
-                    throw "InternalError: c="+tokenReadCursor+",n="+numMatchCursor+",o="+opsMatchCursor+"\n"+
-                          "reMatchNumbers="+reMatchNumbers.join(",")+"\n"+
-                          "reMatchOps="+reMatchOps.join(",");
-                }
-            }
-
-            tokens = [].concat(tokens.slice(0, k), midTokens, tokens.slice(k + 1, tokens.length));
-            states = [].concat(states.slice(0, k), midStates, states.slice(k + 1, states.length));
-
-            k += (midTokens.length - 1);
-        }
+        if (states[k] == "number" && !reNumber.test(tokens[k]))
+            states[k] = "literal";
+        else if (states[k] == "literal" && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] !== undefined)
+            states[k] = "operator";
+        else if (tokens[k].toUpperCase() == "TRUE" || tokens[k].toUpperCase() == "FALSE")
+            states[k] = "bool";
 
         k += 1;
     }
 };
 basicFunctions._parserLukasiewiczation = function(lnum, tokens, states) {
-    // for the test input string of: cin(tan(2-5),4+sin(32))+cin(-2)
-    // tokens: cin ( tan ( 2 - 5 ) , 4 + sin ( 32 ) ) + cin ( - 2 )
-    //
-    // cin(tan(2-5),4+sin(32))+cin(-2)
-    // cin(tan(2-5),4+sin(32)) cin(-2)
-    //     tan(2-5) 4+sin(32)      -2
-    //         2-5  4 sin(32)       2
-    //         2 5  4     32
+    // for the test input string of:
+    // cin(tan(getch() MOD 5),4+sin(32 AND 7))+cin(-2)
     //
     //
-    //                    2 5        4     32
-    //              minus(2,5)       4 sin(32)                  2
-    //          tan(minus(2,5)) plus(4,sin(32))      unaryMinus(2)
-    //      cin(tan(minus(2,5)),plus(4,sin(32))) cin(unaryMinus(2))
-    // plus(cin(tan(minus(2,5)),plus(4,sin(32))),cin(unaryMinus(2)))
+    // cin(tan(getch() MOD 5),4+sin(32 AND 7))+cin(-2)
+    // cin(tan(getch() MOD 5),4+sin(32 AND 7)) cin(-2)
+    //     tan(getch() MOD 5) 4+sin(32 AND 7)      -2
+    //         getch() MOD 5  4 sin(32 AND 7)       2
+    //         getch()     5        32 AND 7
+    //                              32     7
+    //                                             32 7
+    //                  getch() 5              and(32,7)
+    //              MOD(getch(),5)       4 sin(and(32,7))                  2
+    //          tan(MOD(getch(),5)) plus(4,sin(and(32,7)))      unaryMinus(2)
+    //      cin(tan(MOD(getch(),5)),plus(4,sin(and(32,7)))) cin(unaryMinus(2))
+    // plus(cin(tan(MOD(getch(),5)),plus(4,sin(and(32,7)))),cin(unaryMinus(2)))
 
     var _debugprintLuka = true;
 
@@ -698,84 +813,3 @@ while (!tbasexit) {
         println(prompt);
     }
 }
-
-
-/*
-digraph G {
-  start -> LITERAL
-  start -> LINENUMBER [label="reDec"]
-
-  LINENUMBER -> LINENUMBER [label="numbers"]
-  LINENUMBER -> limbo [label="space"]
-  LINENUMBER -> LITERAL [label="otherwise"]
-
-  LITERAL -> limbo [label="space"]
-  LITERAL -> OPERATOR [label="reOps"]
-  LITERAL -> ESCAPE [label="\\"]
-  LITERAL -> QUOTE [label="\""]
-  LITERAL -> PAREN [label="()[]"]
-  LITERAL -> SEP [label=","]
-  LITERAL -> LITERAL [label="otherwise"]
-
-  limbo -> NUMBER [label="numbers"]
-  limbo -> OPERATOR [label="reOps"]
-  limbo -> QUOTE [label="\""]
-  limbo -> LITERAL [label="otherwise"]
-  limbo -> PAREN [label="()[]"]
-  limbo -> SEP [label=","]
-  limbo -> limbo [label="space"]
-
-  ESCAPE -> LITERAL
-  QUOTE -> QUOTE_END [label="\""]
-  QUOTE -> QUOTE [label="otherwise"]
-
-  QUOTE_END -> limbo [label="space"]
-  QUOTE_END -> NUMBER [label="numbers"]
-  QUOTE_END -> OPERATOR [label="reOps"]
-  QUOTE_END -> PAREN [label="()[]"]
-  QUOTE_END -> SEP [label=","]
-  QUOTE_END -> LITERAL [label="otherwise"]
-
-  OPERATOR -> NUMBER [label="numbers"]
-  OPERATOR -> limbo [label="space"]
-  OPERATOR -> OPERATOR [label="reOps"]
-  OPERATOR -> PAREN [label="()[]"]
-  OPERATOR -> SEP [label=","]
-  OPERATOR -> LITERAL [label="otherwise"]
-
-  NUMBER -> NUMBER [label="numbers"]
-  NUMBER -> OPERATOR [label="reOps"]
-  NUMBER -> QUOTE [label="\""]
-  NUMBER -> limbo [label="space"]
-  NUMBER -> PAREN [label="()[]"]
-  NUMBER -> SEP [label=","]
-  NUMBER -> LITERAL [label="otherwise"]
-
-  PAREN -> PUSH_AND_PAREN [label="()[]"]
-  PAREN -> NUMBER [label="numbers"]
-  PAREN -> OPERATOR [label="reOps"]
-  PAREN -> QUOTE [label="\""]
-  PAREN -> limbo [label="space"]
-  PAREN -> SEP [label=","]
-  PAREN -> LITERAL [label="otherwise"]
-
-  SEP -> PAREN [label="()[]"]
-  SEP -> NUMBER [label="numbers"]
-  SEP -> OPERATOR [label="reOps"]
-  SEP -> QUOTE [label="\""]
-  SEP -> limbo [label="space"]
-  SEP -> PUSH_AND_SEP [label=","]
-  SEP -> LITERAL [label="otherwise"]
-
-  LITERAL -> end [label="\\n"]
-  NUMBER -> end [label="\\n"]
-  QUOTE_END -> end  [label="\\n"]
-  OPERATOR -> end [label="\\n"]
-  PAREN -> end [label="\\n"]
-
-  start [shape=Mdiamond];
-  end [shape=Msquare];
-
-  concentrate=true;
-}
-*/
