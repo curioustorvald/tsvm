@@ -523,27 +523,22 @@ basicFunctions._parserElaboration = function(lnum, tokens, states) {
         k += 1;
     }
 };
-basicFunctions._parserLukasiewiczation = function(lnum, tokens, states) {
-    // for the test input string of:
-    // cin(tan(getch() MOD 5),4+sin(32 AND 7))+cin(-2)
-    //
-    //
-    // cin(tan(getch() MOD 5),4+sin(32 AND 7))+cin(-2)
-    // cin(tan(getch() MOD 5),4+sin(32 AND 7)) cin(-2)
-    //     tan(getch() MOD 5) 4+sin(32 AND 7)      -2
-    //         getch() MOD 5  4 sin(32 AND 7)       2
-    //         getch()     5        32 AND 7
-    //                              32     7
-    //                                             32 7
-    //                  getch() 5              and(32,7)
-    //              MOD(getch(),5)       4 sin(and(32,7))                  2
-    //          tan(MOD(getch(),5)) plus(4,sin(and(32,7)))      unaryMinus(2)
-    //      cin(tan(MOD(getch(),5)),plus(4,sin(and(32,7)))) cin(unaryMinus(2))
-    // plus(cin(tan(MOD(getch(),5)),plus(4,sin(and(32,7)))),cin(unaryMinus(2)))
+basicFunctions._unaryToBinary = function(lnum, tokens, states) {
+    // turn some + and - into unary ops
+    // + 2
+    // 5 * + 2
+    // + 7 - - 4
+    // 
+    // ( 0 + 2 )
+    // 5 * ( 0 + 2 )
+    // ( 0 + 7 ) - ( 0 - 4 )
 
     var _debugprintLuka = true;
 
-    if (_debugprintLuka) println("@@ LUKASIEWICZATION @@")
+    if (_debugprintLuka) println("@@ UNARY-TO-BINARY @@")
+    
+    
+    
 };
 basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // DO NOT PERFORM SEMANTIC ANALYSIS HERE
@@ -582,7 +577,10 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
     if (tokens.length == 0) {
         if (_debugSyntaxAnalysis) println("*empty tokens*");
-        return new BasicAST();
+        var retTreeHead = new BasicAST();
+        retTreeHead.depth = recDepth;
+        retTreeHead.lnum = lnum;
+        return retTreeHead;
     }
 
     var k;
@@ -600,12 +598,18 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
         throw "TODO";
     }
     // LEAF: is this a literal?
-    else if (recDepth > 0 && ("quote" == states[0] || "number" == states[0])) {
-        treeHead.value = tokens[0];
+    else if (tokens.length == 1 && ("quote" == states[0] || "number" == states[0] || "bool" == states[0])) {
+        if (_debugSyntaxAnalysis) println("literal/number: "+tokens[0]);
+        treeHead.value = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
         treeHead.type = "literal";
     }
     // is this a function/operators?
     else {
+        // scan for operators with highest precedence, use rightmost one if multiple were found
+        var topmostOp;
+        var topmostOpPrc = 0;
+        var operatorPos = -1;
+
         // find and mark position of separators and parentheses
         // properly deal with the nested function calls
         var parenDepth = 0;
@@ -626,45 +630,62 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
             if (parenDepth == 1 && states[k] == "sep") {
                 separators.push(k);
             }
+            if (parenDepth == 0 && states[k] == "operator" && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] >= topmostOpPrc) {
+                topmostOp = tokens[k].toUpperCase();
+                topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
+                operatorPos = k;
+            }
         }
 
         if (parenDepth != 0) throw "Unmatched brackets";
 
-        var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
-        treeHead.value = currentFunction;
-        treeHead.type = (currentFunction === undefined) ? "null" : "function";
-        var leaves = [];
+        // if there is an operator, split using it
+        if (topmostOp !== undefined) {
+            if (_debugSyntaxAnalysis) println("operator: "+topmostOp+", pos: "+operatorPos);
 
-        // if there is no paren
-        if (parenStart == 0 && parenEnd == -1 && tokens.length > 1) {
-            var subtkn = tokens.slice(1, tokens.length);
-            var substa = states.slice(1, tokens.length);
-
-            if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
-
-            leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+            treeHead.value = topmostOp;
+            treeHead.type = "operator";
+            treeHead.leaves[0] = basicFunctions._parseTokens(lnum, tokens.slice(0, operatorPos), states.slice(0, operatorPos), recDepth + 1);
+            treeHead.leaves[1] = basicFunctions._parseTokens(lnum, tokens.slice(operatorPos + 1, tokens.length), states.slice(operatorPos + 1, tokens.length), recDepth + 1);
         }
-        else if (parenEnd > parenStart) {
-            separators = [parenStart].concat(separators, [parenEnd]);
-            // recursively parse comma-separated arguments
+        else {
+            if (_debugSyntaxAnalysis) println("function call");
+            var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
+            treeHead.value = currentFunction;
+            treeHead.type = (currentFunction === undefined) ? "null" : "function";
+            var leaves = [];
 
-            // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
-            //       s                ^                 e
-            // separators = [1,8,15]
-            //         plus ( 3 , 2 ) / times ( 8 , 7 )
-            //              s   ^   e         s   ^   e
-            // separators = [1,5] ; [1,5]
-            //                3 / 2   /         8 / 7
-            for (k = 1; k < separators.length; k++) {
-                var subtkn = tokens.slice(separators[k - 1] + 1, separators[k]);
-                var substa = states.slice(separators[k - 1] + 1, separators[k]);
+            // if there is no paren
+            if (parenStart == 0 && parenEnd == -1 && tokens.length > 1) {
+                var subtkn = tokens.slice(1, tokens.length);
+                var substa = states.slice(1, tokens.length);
 
-                if (_debugSyntaxAnalysis) println("subtokenB: "+subtkn.join("/"));
+                if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
 
                 leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
             }
+            else if (parenEnd > parenStart) {
+                separators = [parenStart].concat(separators, [parenEnd]);
+                // recursively parse comma-separated arguments
+
+                // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
+                //       s                ^                 e
+                // separators = [1,8,15]
+                //         plus ( 3 , 2 ) / times ( 8 , 7 )
+                //              s   ^   e         s   ^   e
+                // separators = [1,5] ; [1,5]
+                //                3 / 2   /         8 / 7
+                for (k = 1; k < separators.length; k++) {
+                    var subtkn = tokens.slice(separators[k - 1] + 1, separators[k]);
+                    var substa = states.slice(separators[k - 1] + 1, separators[k]);
+
+                    if (_debugSyntaxAnalysis) println("subtokenB: "+subtkn.join("/"));
+
+                    leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+                }
+            }
+            treeHead.leaves = leaves;//.filter(function(__v) { return __v !== undefined; });
         }
-        treeHead.leaves = leaves;//.filter(function(__v) { return __v !== undefined; });
     }
 
 
@@ -693,7 +714,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
 
 
     // ŁUKASIEWICZATION : turn infix notation into polish notation
-    basicFunctions._parserLukasiewiczation(lnum, tokens, states);
+    basicFunctions._unaryToBinary(lnum, tokens, states);
 
 
     if (_debugprintHighestLevel) println(tokens.join("~"));
