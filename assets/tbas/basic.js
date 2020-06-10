@@ -35,8 +35,8 @@ var reLineNum = /^[0-9]+ +[^0-9]/;
 //var reBin = /^(0[Bb][01_]+)$/;
 
 // must match partial
-var reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/g;
-var reOps = /\^|\*|\/|\+|\-|[<>=]{1,2}/g;
+var reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/;
+var reOps = /\^|\*|\/|\+|\-|[<>=]{1,2}/;
 
 var reNum = /[0-9]+/;
 var tbasexit = false;
@@ -210,7 +210,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
         }
         else if ("number" == mode) {
             if (basicFunctions._isNumber(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push(mode);
+                sb += char;
             }
             else if (basicFunctions._isNumberSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
@@ -252,7 +252,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
         }
         else if ("number2" == mode) {
             if (basicFunctions._isNumber(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("number");
+                sb += char;
             }
             else if (0x22 == charCode) {
                 tokens.push(sb); sb = ""; states.push("number");
@@ -281,7 +281,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
         }
         else if ("operator" == mode) {
             if (basicFunctions._isSecondOp(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push(mode);
+                sb += char;
                 mode = "operator2";
             }
             else if (basicFunctions._isFirstOp(charCode)) {
@@ -580,7 +580,10 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     if (_debugSyntaxAnalysis) println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
 
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
-    if (tokens.length == 0) throw "InternalError: empty tokens";
+    if (tokens.length == 0) {
+        if (_debugSyntaxAnalysis) println("*empty tokens*");
+        return new BasicAST();
+    }
 
     var k;
     var headWord = tokens[0].toLowerCase();

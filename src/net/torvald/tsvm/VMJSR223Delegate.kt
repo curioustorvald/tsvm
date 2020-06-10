@@ -18,7 +18,7 @@ class VMJSR223Delegate(val vm: VM) {
         vm.getPrintStream().write(s.toByteArray())
     }
     fun println(s: String) {
-        //System.out.println("[Nashorn] $s")
+        System.out.println("[Nashorn] $s")
         vm.getPrintStream().write((s + '\n').toByteArray())
     }
     fun println() = print('\n')
