@@ -96,14 +96,14 @@ function BasicAST() {
 
     this.toString = function() {
         var sb = "";
-        var marker = ("literal" == this.type) ? ">" : ("operator" == this.type) ? "=" : "#";
+        var marker = ("literal" == this.type) ? "i" : ("operator" == this.type) ? "+" : "f";
         sb += "| ".repeat(this.depth) + marker+" Line "+this.lnum+" ("+this.type+")\n";
         sb += "| ".repeat(this.depth+1) + "leaves: "+(this.leaves.length)+"\n";
         sb += "| ".repeat(this.depth+1) + "value: "+this.value+"\n";
         for (var k = 0; k < this.leaves.length; k++) {
             sb += this.leaves[k].toString(); + "\n";
         }
-        sb += "| ".repeat(this.depth+1) + "----------------\n";
+        sb += "| ".repeat(this.depth) + "`-----------------\n";
         return sb;
     };
 }
@@ -552,27 +552,66 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
 
     // a line has one of these forms:
-    // EXPRESSION -> LITERAL
-    //               BINARY_OP
-    //               UNARY_OP
-    //               FOR_LOOP
-    //               IF_STMT
-    //               WHILE_LOOP
-    //               FUNCTION_CALL
+    // EXPRESSION -> LITERAL |
+    //               BINARY_OP |
+    //               UNARY_OP |
+    //               FOR_LOOP |
+    //               IF_STMT |
+    //               WHILE_LOOP |
+    //               FUNCTION_CALL |
     //               GROUPING
     //
     // LITERAL -> NUMBERS | FUNCTION_OR_VARIABLE_NAME | BOOLS | QUOTES
+    // IF_STMT -> "IF" EXPRESSION "THEN" EXPRESSION "ELSE" EXPRESSION |
+    //            "IF" EXPRESSION "GOTO" NUMBERS "ELSE" NUMBERS |
+    //            "IF" EXPRESSION "THEN" EXPRESSION |
+    //            "IF" EXPRESSION "GOTO" NUMBERS
+    // FOR_LOOP -> "FOR" FUNCTION_OR_VARIABLE_NAME "=" EXPRESSION "TO" EXPRESSION "STEP" EXPRESSION |
+    //             "FOR" FUNCTION_OR_VARIABLE_NAME "=" EXPRESSION "TO" EXPRESSION
+    // WHILE_LOOP -> "WHILE" EXPERSSION
     // BINARY_OP -> EXPRSSION OPERATOR EXPRESSION
     // UNARY_OP -> OPERATOR EXPRESSION
     // FUNCTION_CALL -> LITERAL GROUPING
     // GROUPING -> "(" EXPRESSION ")"
 
-    // THIS FUNCTION CANNOT PARSE ANY OPERATORS, THEY MUST BE CONVERTED TO POLISH NOTATION BEFOREHAND!
-    // providing a test string:
-    //     cin(tan(2-5),4+sin(32))+cin(-2)
-    // must be converted to:
-    //     plus(cin(tan(minus(2,5)),plus(4,sin(32))),cin(unaryMinus(2)))
-    // prior to the calling of this function
+/*
+for DEF*s, you might be able to go away with BINARY_OP, as the parsing tree would be:
+
++ Line 10 (operator)
+| leaves: 2
+| value: =
+| f Line 10 (function)
+| | leaves: 1
+| | value: DEFUN
+| | f Line 10 (function)
+| | | leaves: 1
+| | | value: sinc
+| | | i Line 10 (literal)
+| | | | leaves: 0
+| | | | value: X
+| | | `-----------------
+| | `-----------------
+| `-----------------
+| + Line 10 (operator)
+| | leaves: 2
+| | value: /
+| | f Line 10 (function)
+| | | leaves: 1
+| | | value: sin
+| | | i Line 10 (literal)
+| | | | leaves: 0
+| | | | value: X
+| | | `-----------------
+| | `-----------------
+| | i Line 10 (literal)
+| | | leaves: 0
+| | | value: X
+| | `-----------------
+| `-----------------
+`-----------------
+
+for input "DEFUN sinc(x) = sin(x) / x"
+ */
 
     function isSemanticLiteral(token, state) {
         return "]" == token || ")" == token ||
