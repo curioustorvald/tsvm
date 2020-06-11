@@ -139,8 +139,8 @@ basicFunctions._isSeparator = function(code) {
 };
 basicFunctions._operatorPrecedence = {
     // function call in itself has highest precedence
-    "^":13,
-    "UNARYPLUS":12,"UNARYMINUS":12,"NOT":12,
+    "NOT":13,
+    "^":12,
     "*":11,"/":11,
     "MOD":10,
     "+":9,"-":9,
@@ -152,6 +152,9 @@ basicFunctions._operatorPrecedence = {
     "AND":3,
     "OR":2,
     "=":1
+};
+basicFunctions._isUnaryOp = function(word) {
+    return 13 == basicFunctions._operatorPrecedence[word];
 };
 basicFunctions._isOperatorWord = function(word) {
     return (basicFunctions._operatorPrecedence[word] !== undefined) // force the return type to be a boolean
@@ -545,21 +548,20 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
 
     // a line has one of these forms:
-    // VARIABLE = LITERAL
-    // VARIABLE = FUNCTION ARGUMENTS
-    // FUNCTION
-    // FUNCTION ARGUMENTS --arguments may contain another function call
-    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT
-    // "FOR" VARIABLE "=" ARGUMENT "TO" ARGUMENT "STEP" ARGUMENT
-    // "IF" EXPRESSION "THEN" EXPRESSION
-    // "IF" EXPRESSION "THEN" EXPRESSION "ELSE" EXPRESSION
-    // "IF" EXPRESSION "GOTO" ARGUMENT
-    // "IF" EXPRESSION "GOTO" ARGUMENT "ELSE" EXPRESSION
-    // "WHILE" EXPRESSION
-    // additionally, sub-line also has one of these:
-    // LITERAL (leaf node)
-    // VARIABLE (leaf node)
-    // {VARIABLE, LITERAL} COMPARISON_OP {VARIABLE, LITERAL}
+    // EXPRESSION -> LITERAL
+    //               BINARY_OP
+    //               UNARY_OP
+    //               FOR_LOOP
+    //               IF_STMT
+    //               WHILE_LOOP
+    //               FUNCTION_CALL
+    //               GROUPING
+    //
+    // LITERAL -> NUMBERS | FUNCTION_OR_VARIABLE_NAME | BOOLS | QUOTES
+    // BINARY_OP -> EXPRSSION OPERATOR EXPRESSION
+    // UNARY_OP -> OPERATOR EXPRESSION
+    // FUNCTION_CALL -> LITERAL GROUPING
+    // GROUPING -> "(" EXPRESSION ")"
 
     // THIS FUNCTION CANNOT PARSE ANY OPERATORS, THEY MUST BE CONVERTED TO POLISH NOTATION BEFOREHAND!
     // providing a test string:
@@ -567,6 +569,10 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // must be converted to:
     //     plus(cin(tan(minus(2,5)),plus(4,sin(32))),cin(unaryMinus(2)))
     // prior to the calling of this function
+
+    function isSemanticLiteral(state) {
+        return "quote" == state || "number" == state || "bool" == state || "literal" == state; // technically, closing quote also counts
+    }
 
     var _debugSyntaxAnalysis = true;
 
@@ -593,17 +599,12 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // test string: print((minus(plus(3,2),times(8,7))))
     //                   ^                             ^ these extra parens break your parser
 
-    // IF statement
-    if ("IF" == tokens[0].toUpperCase()) {
-        throw "TODO";
-    }
-    // LEAF: is this a literal?
-    else if (tokens.length == 1 && ("quote" == states[0] || "number" == states[0] || "bool" == states[0])) {
+    // LITERAL
+    if (tokens.length == 1 && (isSemanticLiteral(states[0]))) {
         if (_debugSyntaxAnalysis) println("literal/number: "+tokens[0]);
         treeHead.value = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
         treeHead.type = "literal";
     }
-    // is this a function/operators?
     else {
         // scan for operators with highest precedence, use rightmost one if multiple were found
         var topmostOp;
@@ -630,28 +631,46 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
             if (parenDepth == 1 && states[k] == "sep") {
                 separators.push(k);
             }
-            if (parenDepth == 0 && states[k] == "operator" && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] >= topmostOpPrc) {
-                topmostOp = tokens[k].toUpperCase();
-                topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
-                operatorPos = k;
+            if (parenDepth == 0) {
+                if (states[k] == "operator" && isSemanticLiteral(states[k - 1]) && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] > topmostOpPrc) {
+                    topmostOp = tokens[k].toUpperCase();
+                    topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
+                    operatorPos = k;
+                }
             }
         }
 
         if (parenDepth != 0) throw "Unmatched brackets";
 
-        // if there is an operator, split using it
+        // BINARY_OP/UNARY_OP
         if (topmostOp !== undefined) {
             if (_debugSyntaxAnalysis) println("operator: "+topmostOp+", pos: "+operatorPos);
 
-            treeHead.value = topmostOp;
-            treeHead.type = "operator";
-            treeHead.leaves[0] = basicFunctions._parseTokens(lnum, tokens.slice(0, operatorPos), states.slice(0, operatorPos), recDepth + 1);
-            treeHead.leaves[1] = basicFunctions._parseTokens(lnum, tokens.slice(operatorPos + 1, tokens.length), states.slice(operatorPos + 1, tokens.length), recDepth + 1);
+            var subtknL = tokens.slice(0, operatorPos);
+            var subtknR = tokens.slice(operatorPos + 1, tokens.length);
+            var substaL = states.slice(0, operatorPos);
+            var substaR = states.slice(operatorPos + 1, tokens.length);
+
+            // BINARY_OP?
+            if (operatorPos > 0) {
+                treeHead.value = topmostOp;
+                treeHead.type = "operator";
+                treeHead.leaves[0] = basicFunctions._parseTokens(lnum, subtknL, substaL, recDepth + 1);
+                treeHead.leaves[1] = basicFunctions._parseTokens(lnum, subtknR, substaR, recDepth + 1);
+            }
+            else { // TODO do I ever reach this branch?
+                // this also takes care of nested unary ops (e.g. "- NOT 43")
+                treeHead.value = (topmostOp == "+") ? "UNARYPLUS" : (topmostOp == "-") ? "UNARYMINUS" : topmostOp;
+                treeHead.type = "operator";
+                treeHead.leaves[0] = basicFunctions._parseTokens(lnum, subtknR, substaR, recDepth + 1);
+            }
         }
+        // FUNCTION CALL
         else {
             if (_debugSyntaxAnalysis) println("function call");
             var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
             treeHead.value = currentFunction;
+
             treeHead.type = (currentFunction === undefined) ? "null" : "function";
             var leaves = [];
 
@@ -685,6 +704,10 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
                 }
             }
             treeHead.leaves = leaves;//.filter(function(__v) { return __v !== undefined; });
+
+            // after-the-fact fix for some unary ops
+            if (treeHead.value == "-" && treeHead.leaves.length == 1) treeHead.value = "UNARYMINUS";
+            else if (treeHead.value == "+" && treeHead.leaves.length == 1) treeHead.value = "UNARYPLUS";
         }
     }
 
