@@ -123,6 +123,9 @@ var basicFunctions = {};
 basicFunctions._isNumber = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
+basicFunctions._isNumber2 = function(code) {
+    return (code >= 0x30 && code <= 0x39) || code == 0x5F || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66);
+};
 basicFunctions._isNumberSep = function(code) {
     return code == 0x2E || code == 0x42 || code == 0x58 || code == 0x62 || code == 0x78;
 };
@@ -222,7 +225,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 sb += char;
             }
             else if (basicFunctions._isNumberSep(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push(mode);
+                sb += char;
                 mode = "numbersep";
             }
             else if (0x22 == charCode) {
@@ -251,8 +254,8 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("numbersep" == mode) {
-            if (basicFunctions._isNumber(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push(mode);
+            if (basicFunctions._isNumber2(charCode)) {
+                sb += char;
                 mode = "number2";
             }
             else {
@@ -260,7 +263,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("number2" == mode) {
-            if (basicFunctions._isNumber(charCode)) {
+            if (basicFunctions._isNumber2(charCode)) {
                 sb += char;
             }
             else if (0x22 == charCode) {
@@ -296,7 +299,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
             else if (basicFunctions._isFirstOp(charCode)) {
                 throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
-            if (basicFunctions._isNumber(charCode)) {
+            else if (basicFunctions._isNumber(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "number";
             }
@@ -325,7 +328,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
             if (basicFunctions._isFirstOp(charCode)) {
                 throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
-            if (basicFunctions._isNumber(charCode)) {
+            else if (basicFunctions._isNumber(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("operator");
                 mode = "number";
             }
@@ -516,6 +519,11 @@ basicFunctions._tokenise = function(lnum, cmd) {
         tokens = tokens.slice(1, tokens.length);
         states = states.slice(1, states.length);
     }
+    // clean up operator2 and number2
+    for (k = 0; k < states.length; k++) {
+        if (states[k] == "operator2") states[k] = "operator";
+        else if (states[k] == "number2" || states[k] == "numbersep") states[k] = "number";
+    }
 
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+")";
 
@@ -611,7 +619,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
         // find and mark position of separators and parentheses
         // properly deal with the nested function calls
         var parenDepth = 0;
-        var parenStart = 0;
+        var parenStart = -1;
         var parenEnd = -1;
         var separators = [];
 
@@ -673,15 +681,23 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
             var leaves = [];
 
             // if there is no paren or paren does NOT start index 1
-            if (parenStart >= 2) {
-                var subtkn = tokens.slice(1, tokens.length);
-                var substa = states.slice(1, tokens.length);
+            // e.g. negative three should NOT require to be written as "-(3)"
+            if (parenStart > 1 || parenStart == -1) {
+                // make a paren!
+                tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
+                states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
+                parenStart = 1;
+                parenEnd = states.length - 1;
+                // increment position of separators by one
+                for (k = 0; k < separators.length; k++) {
+                    separators[k] = separators[k] + 1;
+                }
 
-                if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
-
-                leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+                if (_debugSyntaxAnalysis) println("inserting paren at right place");
+                if (_debugSyntaxAnalysis) println(tokens.join(","));
             }
-            else if (parenEnd > parenStart) {
+
+            if (parenEnd > parenStart) {
                 separators = [parenStart].concat(separators, [parenEnd]);
                 if (_debugSyntaxAnalysis) println("separators: "+separators.join(","));
                 // recursively parse comma-separated arguments
