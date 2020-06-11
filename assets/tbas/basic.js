@@ -28,7 +28,7 @@ function getUsedMemSize() {
 }
 
 
-var reLineNum = /^[0-9]+ +[^0-9]/;
+var reLineNum = /^[0-9]+ /;
 //var reFloat = /^([\-+]?[0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[\-+]?[0-9]+[.eEfF][0-9+\-]*[fF]?)$/;
 //var reDec = /^([\-+]?[0-9_]+)$/;
 //var reHex = /^(0[Xx][0-9A-Fa-f_]+)$/;
@@ -504,6 +504,13 @@ basicFunctions._tokenise = function(lnum, cmd) {
     if (sb.length > 0) {
         tokens.push(sb); states.push(mode);
     }
+
+    // filter off initial empty token if the statement does NOT start with literal (e.g. "-3+5")
+    if (tokens[0].length == 0) {
+        tokens = tokens.slice(1, tokens.length);
+        states = states.slice(1, states.length);
+    }
+
     if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+")";
 
     return { "tokens": tokens, "states": states };
@@ -525,23 +532,6 @@ basicFunctions._parserElaboration = function(lnum, tokens, states) {
 
         k += 1;
     }
-};
-basicFunctions._unaryToBinary = function(lnum, tokens, states) {
-    // turn some + and - into unary ops
-    // + 2
-    // 5 * + 2
-    // + 7 - - 4
-    // 
-    // ( 0 + 2 )
-    // 5 * ( 0 + 2 )
-    // ( 0 + 7 ) - ( 0 - 4 )
-
-    var _debugprintLuka = true;
-
-    if (_debugprintLuka) println("@@ UNARY-TO-BINARY @@")
-    
-    
-    
 };
 basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     // DO NOT PERFORM SEMANTIC ANALYSIS HERE
@@ -570,8 +560,9 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     //     plus(cin(tan(minus(2,5)),plus(4,sin(32))),cin(unaryMinus(2)))
     // prior to the calling of this function
 
-    function isSemanticLiteral(state) {
-        return "quote" == state || "number" == state || "bool" == state || "literal" == state; // technically, closing quote also counts
+    function isSemanticLiteral(token, state) {
+        return "]" == token || ")" == token ||
+               "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
     var _debugSyntaxAnalysis = true;
@@ -600,7 +591,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
     //                   ^                             ^ these extra parens break your parser
 
     // LITERAL
-    if (tokens.length == 1 && (isSemanticLiteral(states[0]))) {
+    if (tokens.length == 1 && (isSemanticLiteral(tokens[0], states[0]))) {
         if (_debugSyntaxAnalysis) println("literal/number: "+tokens[0]);
         treeHead.value = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
         treeHead.type = "literal";
@@ -632,7 +623,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
                 separators.push(k);
             }
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(states[k - 1]) && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] > topmostOpPrc) {
+                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] > topmostOpPrc) {
                     topmostOp = tokens[k].toUpperCase();
                     topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
                     operatorPos = k;
@@ -685,6 +676,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
             }
             else if (parenEnd > parenStart) {
                 separators = [parenStart].concat(separators, [parenEnd]);
+                if (_debugSyntaxAnalysis) println("separators: "+separators.join(","));
                 // recursively parse comma-separated arguments
 
                 // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
@@ -730,14 +722,6 @@ basicFunctions._interpretLine = function(lnum, cmd) {
 
     // ELABORATION : distinguish numbers and operators from literals
     basicFunctions._parserElaboration(lnum, tokens, states);
-
-
-    if (_debugprintHighestLevel) println(tokens.join("~"));
-    if (_debugprintHighestLevel) println(states.join(" "));
-
-
-    // ŁUKASIEWICZATION : turn infix notation into polish notation
-    basicFunctions._unaryToBinary(lnum, tokens, states);
 
 
     if (_debugprintHighestLevel) println(tokens.join("~"));
