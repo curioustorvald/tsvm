@@ -17,10 +17,17 @@ var cmdbufMemFootPrint = 0;
 var prompt = "Ok";
 
 var lang = {};
-lang.syntaxfehler = function(line) {
+lang.badNumberFormat = "Bad number format";
+lang.badOperatorFormat = "Bad number format";
+lang.badFunctionCallFormat = "Bad function call format";
+lang.unmatchedBrackets = "Unmatched brackets";
+lang.syntaxfehler = function(line, reason) {
     if (line === undefined)
         return "Syntax error";
-    return "Syntax error in " + line;
+    else if (reason === undefined)
+        return "Syntax error in " + line;
+    else
+        return "Syntax error in " + line + ": " + reason;
 };
 
 function getUsedMemSize() {
@@ -139,19 +146,18 @@ basicFunctions._isSeparator = function(code) {
 };
 basicFunctions._operatorPrecedence = {
     // function call in itself has highest precedence
-    "NOT":13,
-    "^":12,
-    "*":11,"/":11,
-    "MOD":10,
-    "+":9,"-":9,
-    "<<":8,">>":8,
+    "^":2,
+    "*":3,"/":3,
+    "MOD":4,
+    "+":5,"-":5,
+    "<<":6,">>":6,
     "==":7,"<>":7,"><":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
-    "BAND":6,
-    "BXOR":5,
-    "BOR":4,
-    "AND":3,
-    "OR":2,
-    "=":1
+    "BAND":8,
+    "BXOR":9,
+    "BOR":10,
+    "AND":11,
+    "OR":12,
+    "=":13
 };
 basicFunctions._isUnaryOp = function(word) {
     return 13 == basicFunctions._operatorPrecedence[word];
@@ -250,7 +256,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 mode = "number2";
             }
             else {
-                throw lang.syntaxfehler(lnum);
+                throw lang.syntaxfehler(lnum, lang.badNumberFormat);
             }
         }
         else if ("number2" == mode) {
@@ -288,7 +294,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 mode = "operator2";
             }
             else if (basicFunctions._isFirstOp(charCode)) {
-                throw lang.syntaxfehler(lnum);
+                throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
             if (basicFunctions._isNumber(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
@@ -317,7 +323,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
         }
         else if ("operator2" == mode) {
             if (basicFunctions._isFirstOp(charCode)) {
-                throw lang.syntaxfehler(lnum);
+                throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
             if (basicFunctions._isNumber(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("operator");
@@ -631,7 +637,7 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
             }
         }
 
-        if (parenDepth != 0) throw "Unmatched brackets";
+        if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
 
         // BINARY_OP/UNARY_OP
         if (topmostOp !== undefined) {
@@ -660,13 +666,14 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
         else {
             if (_debugSyntaxAnalysis) println("function call");
             var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
-            treeHead.value = currentFunction;
-
+            treeHead.value = ("-" == currentFunction) ? "UNARYMINUS" : ("+" == currentFunction) ? "UNARYPLUS" : currentFunction;
             treeHead.type = (currentFunction === undefined) ? "null" : "function";
+            if (_debugSyntaxAnalysis) println("function name: "+treeHead.value);
+
             var leaves = [];
 
-            // if there is no paren
-            if (parenStart == 0 && parenEnd == -1 && tokens.length > 1) {
+            // if there is no paren or paren does NOT start index 1
+            if (parenStart >= 2) {
                 var subtkn = tokens.slice(1, tokens.length);
                 var substa = states.slice(1, tokens.length);
 
@@ -695,11 +702,8 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
                     leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
                 }
             }
+            else throw lang.syntaxfehler(lnum, lang.badFunctionCallFormat);
             treeHead.leaves = leaves;//.filter(function(__v) { return __v !== undefined; });
-
-            // after-the-fact fix for some unary ops
-            if (treeHead.value == "-" && treeHead.leaves.length == 1) treeHead.value = "UNARYMINUS";
-            else if (treeHead.value == "+" && treeHead.leaves.length == 1) treeHead.value = "UNARYPLUS";
         }
     }
 
