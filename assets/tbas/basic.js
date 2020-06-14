@@ -720,12 +720,48 @@ for input "DEFUN sinc(x) = sin(x) / x"
         var parenEnd = -1;
         var separators = [];
 
+        // initial scan
         for (k = 0; k < tokens.length; k++) {
-            if (tokens[k] == "(") {
+            if (tokens[k] == "(" && states[k] != "quote") {
                 parenDepth += 1;
                 if (parenDepth == 1) parenStart = k;
             }
-            else if (tokens[k] == ")") {
+            else if (tokens[k] == ")" && states[k] != "quote") {
+                if (parenDepth == 1) parenEnd = k;
+                parenDepth -= 1;
+            }
+
+            if (parenDepth == 0) {
+                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] > topmostOpPrc) {
+                    topmostOp = tokens[k].toUpperCase();
+                    topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
+                    operatorPos = k;
+                }
+            }
+        }
+
+        if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
+
+        // if there is no paren or paren does NOT start index 1
+        // e.g. negative three should NOT require to be written as "-(3)"
+        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0)) {
+            // make a paren!
+            tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
+            states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
+
+            if (_debugSyntaxAnalysis) println("inserting paren at right place");
+            if (_debugSyntaxAnalysis) println(tokens.join(","));
+
+            return basicFunctions._parseTokens(lnum, tokens, states, recDepth);
+        }
+
+        // get the position of parens and separators
+        for (k = 0; k < tokens.length; k++) {
+            if (tokens[k] == "(" && states[k] != "quote") {
+                parenDepth += 1;
+                if (parenDepth == 1) parenStart = k;
+            }
+            else if (tokens[k] == ")" && states[k] != "quote") {
                 if (parenDepth == 1) parenEnd = k;
                 parenDepth -= 1;
             }
@@ -779,20 +815,32 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
             // if there is no paren or paren does NOT start index 1
             // e.g. negative three should NOT require to be written as "-(3)"
-            if (parenStart > 1 || parenStart == -1) {
+            /*if (parenStart > 1 || parenStart == -1) {
                 // make a paren!
                 tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
                 states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
                 parenStart = 1;
                 parenEnd = states.length - 1;
-                // increment position of separators by one
-                for (k = 0; k < separators.length; k++) {
-                    separators[k] = separators[k] + 1;
+
+                // get the position of parens and separators AGAIN
+                for (k = 0; k < tokens.length; k++) {
+                    if (tokens[k] == "(") {
+                        parenDepth += 1;
+                        if (parenDepth == 1) parenStart = k;
+                    }
+                    else if (tokens[k] == ")") {
+                        if (parenDepth == 1) parenEnd = k;
+                        parenDepth -= 1;
+                    }
+
+                    if (parenDepth == 1 && states[k] == "sep") {
+                        separators.push(k);
+                    }
                 }
 
                 if (_debugSyntaxAnalysis) println("inserting paren at right place");
                 if (_debugSyntaxAnalysis) println(tokens.join(","));
-            }
+            }*/
 
             if (parenEnd > parenStart) {
                 separators = [parenStart].concat(separators, [parenEnd]);
