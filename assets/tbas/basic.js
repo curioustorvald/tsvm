@@ -29,6 +29,13 @@ lang.syntaxfehler = function(line, reason) {
     else
         return "Syntax error in " + line + ": " + reason;
 };
+lang.illegalType = function(line) {
+   if (line === undefined)
+       return "Type mismatch";
+   else
+       return "Type mismatch in " + line;
+};
+Object.freeze(lang);
 
 function getUsedMemSize() {
     return cmdbufMemFootPrint; // + array's dimsize * 8 + variables' sizeof literal + functions' expression length
@@ -52,12 +59,12 @@ println("Terran BASIC 1.0  "+vmemsize+" bytes free");
 println(prompt);
 
 // variable object constructor
-function BasicVar(linenum, literal, type) {
+function BasicVar(literal, type) {
     this.literal = literal;
     this.type = type;
 }
 // DEFUN (GW-BASIC equiv. of DEF FN) constructor
-function BasicFun(linenum, params, expression) {
+function BasicFun(params, expression) {
     this.params = params;
     this.expression = expression;
 }
@@ -98,7 +105,7 @@ function BasicAST() {
         var marker = ("literal" == this.type) ? "i" : ("operator" == this.type) ? "+" : "f";
         sb += "| ".repeat(this.depth) + marker+" Line "+this.lnum+" ("+this.type+")\n";
         sb += "| ".repeat(this.depth+1) + "leaves: "+(this.leaves.length)+"\n";
-        sb += "| ".repeat(this.depth+1) + "value: "+this.value+"\n";
+        sb += "| ".repeat(this.depth+1) + "value: "+this.value+" (type: "+typeof this.value+")\n";
         for (var k = 0; k < this.leaves.length; k++) {
             sb += this.leaves[k].toString(); + "\n";
         }
@@ -106,16 +113,44 @@ function BasicAST() {
         return sb;
     };
 }
+function parseSigil(s) {
+    var rettype;
+    if (s.endsWith("$"))
+        rettype = "string";
+    else if (s.endsWith("%"))
+        rettype = "integer";
+    else if (s.endsWith("!") || s.endsWith("#"))
+        rettype = "float";
+
+    return {name:(rettype === undefined) ? s : s.substring(0, s.length - 1), type:rettype};
+}
 var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
 basicInterpreterStatus.builtin = {};
-basicInterpreterStatus.builtin.PRINT = function(args) {
+basicInterpreterStatus.builtin["="] = function(lnum, args) {
+    var parsed = parseSigil(args[0].value);
+    basicInterpreterStatus.variables[parsed.name] = new BasicVar(args[1].value, (parsed.type === undefined) ? "float" : parsed.type);
+};
+basicInterpreterStatus.builtin["+"] = function(lnum, args) {
+    // TODO read from variables
+    return args[0].value + args[1].value;
+};
+basicInterpreterStatus.builtin["-"] = function(lnum, args) {
+    // TODO read from variables
+    if (args[0].type != "number" || args[1].type != "number") throw lang.illegalType(lnum);
+    return args[0].value - args[1].value;
+};
+basicInterpreterStatus.builtin.PRINT = function(lnum, args) {
     if (args.length == 0)
         println();
     else
-        println(args.join("\t"));
+        println(args.map(function(it) {
+            return (it.type == "literal")
+                    ? basicInterpreterStatus.variables[parseSigil(it.value).name].literal
+                    : args.value;
+        } ).join("\t"));
 };
 Object.freeze(basicInterpreterStatus.builtin);
 var basicFunctions = {};
@@ -577,12 +612,12 @@ basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
 /*
 for DEF*s, you might be able to go away with BINARY_OP, as the parsing tree would be:
 
-+ Line 10 (operator)
-| leaves: 2
-| value: =
-| f Line 10 (function)
-| | leaves: 1
-| | value: DEFUN
+f Line 10 (function)
+| leaves: 1
+| value: defun
+| + Line 10 (operator)
+| | leaves: 2
+| | value: =
 | | f Line 10 (function)
 | | | leaves: 1
 | | | value: sinc
@@ -591,21 +626,21 @@ for DEF*s, you might be able to go away with BINARY_OP, as the parsing tree woul
 | | | | value: X
 | | | `-----------------
 | | `-----------------
-| `-----------------
-| + Line 10 (operator)
-| | leaves: 2
-| | value: /
-| | f Line 10 (function)
-| | | leaves: 1
-| | | value: sin
+| | + Line 10 (operator)
+| | | leaves: 2
+| | | value: /
+| | | f Line 10 (function)
+| | | | leaves: 1
+| | | | value: sin
+| | | | i Line 10 (literal)
+| | | | | leaves: 0
+| | | | | value: X
+| | | | `-----------------
+| | | `-----------------
 | | | i Line 10 (literal)
 | | | | leaves: 0
 | | | | value: X
 | | | `-----------------
-| | `-----------------
-| | i Line 10 (literal)
-| | | leaves: 0
-| | | value: X
 | | `-----------------
 | `-----------------
 `-----------------
@@ -724,10 +759,10 @@ for input "DEFUN sinc(x) = sin(x) / x"
         for (k = 0; k < tokens.length; k++) {
             if (tokens[k] == "(" && states[k] != "quote") {
                 parenDepth += 1;
-                if (parenDepth == 1) parenStart = k;
+                if (parenStart == -1 && parenDepth == 1) parenStart = k;
             }
             else if (tokens[k] == ")" && states[k] != "quote") {
-                if (parenDepth == 1) parenEnd = k;
+                if (parenEnd == -1 && parenDepth == 1) parenEnd = k;
                 parenDepth -= 1;
             }
 
@@ -741,6 +776,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
+        if (_debugSyntaxAnalysis) println("Paren position: "+parenStart+", "+parenEnd);
 
         // if there is no paren or paren does NOT start index 1
         // e.g. negative three should NOT require to be written as "-(3)"
@@ -756,13 +792,14 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         // get the position of parens and separators
+        parenStart = -1; parenEnd = -1; parenDepth = 0;
         for (k = 0; k < tokens.length; k++) {
             if (tokens[k] == "(" && states[k] != "quote") {
                 parenDepth += 1;
-                if (parenDepth == 1) parenStart = k;
+                if (parenStart == -1 && parenDepth == 1) parenStart = k;
             }
             else if (tokens[k] == ")" && states[k] != "quote") {
-                if (parenDepth == 1) parenEnd = k;
+                if (parenEnd == -1 && parenDepth == 1) parenEnd = k;
                 parenDepth -= 1;
             }
 
@@ -779,6 +816,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
+        if (_debugSyntaxAnalysis) println("NEW Paren position: "+parenStart+", "+parenEnd);
 
         // BINARY_OP/UNARY_OP
         if (topmostOp !== undefined) {
@@ -872,32 +910,33 @@ for input "DEFUN sinc(x) = sin(x) / x"
     return treeHead;
 
 };
-// @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._executeSyntaxTree = function(lnum, syntaxTree) {
     var _debugExec = true;
 
     if (_debugExec) serial.println("@@ EXECUTE @@");
     if (_debugExec) serial.println(syntaxTree.toString());
 
-    if (syntaxTree.type == "function") {
+    if (syntaxTree === undefined)
+        throw "InternalError: tree is undefined";
+    else if (syntaxTree.type == "function" || syntaxTree.type == "operator") {
         var func = basicInterpreterStatus.builtin[syntaxTree.value.toUpperCase()];
         var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it); });
-        if (_debugExec) serial.println("fn call args: "+args.join(" "));
-        func(args);
+        if (_debugExec)
+            serial.println("fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
+
+        return func(lnum, args);
     }
     else if (syntaxTree.type == "number") {
-        return +(syntaxTree.value);
+        return {type:syntaxTree.type, value:+(syntaxTree.value)};
     }
-    else if (syntaxTree.type == "string") {
-        return syntaxTree.value;
+    else if (syntaxTree.type == "string" || syntaxTree.type == "literal") {
+        return {type:syntaxTree.type, value:syntaxTree.value};
     }
     else {
-        serial.println("Parse error at line "+lnum);
-        serial.println(syntaxTree.toString);
+        serial.println("Parse error in "+lnum);
+        serial.println(syntaxTree.toString());
         throw "Parse error";
     }
-
-    return lnum + 1;
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
@@ -923,13 +962,13 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
 
-    var nextLine = basicFunctions._executeSyntaxTree(lnum, syntaxTree);
+    basicFunctions._executeSyntaxTree(lnum, syntaxTree);
 
     serial.println(syntaxTree.toString());
 
 
     // EXECUTE
-    return nextLine;
+    return lnum + 1;
 
 
 }; // end INTERPRETLINE
