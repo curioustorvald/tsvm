@@ -22,19 +22,10 @@ lang.badOperatorFormat = "Bad number format";
 lang.badFunctionCallFormat = "Bad function call format";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.syntaxfehler = function(line, reason) {
-    if (line === undefined)
-        return "Syntax error";
-    else if (reason === undefined)
-        return "Syntax error in " + line;
-    else
-        return "Syntax error in " + line + ": " + reason;
+    return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + (reason !== undefined) ? (": "+reason) : "";
 };
-lang.illegalType = function(line) {
-   if (line === undefined)
-       return "Type mismatch";
-   else
-       return "Type mismatch in " + line;
-};
+lang.illegalType = function(line) { return "Type mismatch" + (line !== undefined) ? (" in "+line) : ""; };
+lang.refError = function(line) { return "Unresolved reference" + (line !== undefined) ? (" in "+line) : ""; };
 Object.freeze(lang);
 
 function getUsedMemSize() {
@@ -122,35 +113,147 @@ function parseSigil(s) {
     else if (s.endsWith("!") || s.endsWith("#"))
         rettype = "float";
 
-    return {name:(rettype === undefined) ? s : s.substring(0, s.length - 1), type:rettype};
+    return {name:(rettype === undefined) ? s.toUpperCase() : s.substring(0, s.length - 1).toUpperCase(), type:rettype};
+}
+/*
+@param variable object in following structure: {type: (String), value: (String}. The type is defined in BasicAST.
+@return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
+        BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
+*/
+function resolve(variable) {
+    if (variable.type == "string" || variable.type == "number")
+        return variable.value;
+    else if (variable.type == "literal") {
+        return basicInterpreterStatus.variables[parseSigil(variable.value).name].literal;
+    }
+    else {
+        throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
+    }
 }
 var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
-basicInterpreterStatus.builtin = {};
-basicInterpreterStatus.builtin["="] = function(lnum, args) {
+basicInterpreterStatus.builtin = {
+"=" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
     var parsed = parseSigil(args[0].value);
-    basicInterpreterStatus.variables[parsed.name] = new BasicVar(args[1].value, (parsed.type === undefined) ? "float" : parsed.type);
-};
-basicInterpreterStatus.builtin["+"] = function(lnum, args) {
-    // TODO read from variables
-    return args[0].value + args[1].value;
-};
-basicInterpreterStatus.builtin["-"] = function(lnum, args) {
-    // TODO read from variables
-    if (args[0].type != "number" || args[1].type != "number") throw lang.illegalType(lnum);
-    return args[0].value - args[1].value;
-};
-basicInterpreterStatus.builtin.PRINT = function(lnum, args) {
+    var rh = resolve(args[1]);
+
+    if (rh === undefined) throw lang.refError(lnum);
+
+    basicInterpreterStatus.variables[parsed.name] = new BasicVar(rh, (parsed.type === undefined) ? "float" : parsed.type);
+},
+"UNARYMINUS" : function(lnum, args) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+
+    if (lh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh)) throw lang.illegalType(lnum);
+
+    return -lh;
+},
+"UNARYPLUS" : function(lnum, args) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+
+    if (lh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh)) throw lang.illegalType(lnum);
+
+    return +lh;
+},
+"+" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+
+    //serial.println("BASIC func: + -- LH="+lh+", RH="+rh+", return="+(lh + rh));
+
+    return lh + rh;
+},
+"-" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+
+    return lh - rh;
+},
+"*" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+
+    return lh * rh;
+},
+"/" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+
+    return lh / rh;
+},
+"MOD" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+
+    return lh % rh;
+},
+"^" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+
+    return Math.pow(lh, rh);
+},
+"PRINT" : function(lnum, args) {
+    //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
+
     if (args.length == 0)
         println();
     else
         println(args.map(function(it) {
-            return (it.type == "literal")
-                    ? basicInterpreterStatus.variables[parseSigil(it.value).name].literal
-                    : args.value;
-        } ).join("\t"));
+            var it2 = resolve(it);
+            return ((!isNaN(it2)) ? " " : "") + it2; // BASIC always put a space before a number
+        }).join("\t"));
+},
+"POKE" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+
+    sys.poke(lh, rh);
+}
 };
 Object.freeze(basicInterpreterStatus.builtin);
 var basicFunctions = {};
@@ -910,31 +1013,45 @@ for input "DEFUN sinc(x) = sin(x) / x"
     return treeHead;
 
 };
-basicFunctions._executeSyntaxTree = function(lnum, syntaxTree) {
+// @return is defined in BasicAST
+function JStoBASICtype(object) {
+    if (!isNaN(object)) return "number";
+    else if (typeof object === "string" || object instanceof String) return "string";
+    else if (object === undefined) return "null";
+    else throw "InternalError: un-translatable object with typeof "+(typeof object)+"\n"+object;
+}
+basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     var _debugExec = true;
+    var recWedge = "> ".repeat(recDepth);
 
-    if (_debugExec) serial.println("@@ EXECUTE @@");
-    if (_debugExec) serial.println(syntaxTree.toString());
+    if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
 
     if (syntaxTree === undefined)
         throw "InternalError: tree is undefined";
     else if (syntaxTree.type == "function" || syntaxTree.type == "operator") {
+        if (_debugExec) serial.println(recWedge+"function|operator");
+        if (_debugExec) serial.println(recWedge+syntaxTree.toString());
         var func = basicInterpreterStatus.builtin[syntaxTree.value.toUpperCase()];
-        var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it); });
-        if (_debugExec)
-            serial.println("fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
+        var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it, recDepth + 1); });
+        if (_debugExec) {
+            serial.println(recWedge+"fn call name: "+syntaxTree.value.toUpperCase());
+            serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
+        }
 
-        return func(lnum, args);
+        var funcCallResult = func(lnum, args);
+        return { type:JStoBASICtype(funcCallResult), value:funcCallResult };
     }
     else if (syntaxTree.type == "number") {
-        return {type:syntaxTree.type, value:+(syntaxTree.value)};
+        if (_debugExec) serial.println(recWedge+"number");
+        return { type:syntaxTree.type, value:+(syntaxTree.value) };
     }
     else if (syntaxTree.type == "string" || syntaxTree.type == "literal") {
-        return {type:syntaxTree.type, value:syntaxTree.value};
+        if (_debugExec) serial.println(recWedge+"string|operator");
+        return { type:syntaxTree.type, value:syntaxTree.value };
     }
     else {
-        serial.println("Parse error in "+lnum);
-        serial.println(syntaxTree.toString());
+        serial.println(recWedge+"Parse error in "+lnum);
+        serial.println(recWedge+syntaxTree.toString());
         throw "Parse error";
     }
 };
@@ -962,7 +1079,7 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
 
-    basicFunctions._executeSyntaxTree(lnum, syntaxTree);
+    basicFunctions._executeSyntaxTree(lnum, syntaxTree, 0);
 
     serial.println(syntaxTree.toString());
 
