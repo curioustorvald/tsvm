@@ -649,6 +649,64 @@ for input "DEFUN sinc(x) = sin(x) / x"
         treeHead.value = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
         treeHead.type = "literal";
     }
+    else if (tokens[0].toUpperCase() == "IF" && states[0] != "quote") {
+        // find ELSE and THEN
+        var indexElse = undefined;
+        var indexThen = undefined;
+        for (k = tokens.length - 1; k >= 1; k--) {
+            if (indexElse === undefined && tokens[k].toUpperCase() == "ELSE" && states[k] != "quote") {
+                indexElse = k;
+            }
+            else if (indexThen === undefined && tokens[k].toUpperCase() == "THEN" && states[k] != "quote") {
+                indexThen = k;
+            }
+        }
+        // find GOTO and use it as THEN
+        var useGoto = false;
+        if (indexThen === undefined) {
+            for (k = (indexElse !== undefined) ? indexElse - 1 : tokens.length - 1; k >= 1; k--) {
+                if (indexThen == undefined && tokens[k].toUpperCase() == "GOTO" && states[k] != "quote") {
+                    useGoto = true;
+                    indexThen = k;
+                    break;
+                }
+            }
+        }
+
+        // generate tree
+        if (indexThen === undefined) throw lang.syntaxfehler(lnum);
+
+        treeHead.value = "if";
+        treeHead.type = "function";
+        treeHead.leaves[0] = basicFunctions._parseTokens(
+                lnum,
+                tokens.slice(1, indexThen),
+                states.slice(1, indexThen),
+                recDepth + 1
+        );
+        if (!useGoto)
+            treeHead.leaves[1] = basicFunctions._parseTokens(
+                    lnum,
+                    tokens.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length),
+                    states.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length),
+                    recDepth + 1
+            );
+        else
+            treeHead.leaves[1] = basicFunctions._parseTokens(
+                    lnum,
+                    [].concat("goto", tokens.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
+                    [].concat("literal", states.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
+                    recDepth + 1
+            );
+        if (indexElse !== undefined) {
+            treeHead.leaves[2] = basicFunctions._parseTokens(
+                    lnum,
+                    tokens.slice(indexElse + 1, tokens.length),
+                    states.slice(indexElse + 1, tokens.length),
+                    recDepth + 1
+            );
+        }
+    }
     else {
         // scan for operators with highest precedence, use rightmost one if multiple were found
         var topmostOp;
