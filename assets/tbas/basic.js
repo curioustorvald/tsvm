@@ -43,7 +43,7 @@ var reLineNum = /^[0-9]+ /;
 
 // must match partial
 var reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/;
-var reOps = /\^|\*|\/|\+|\-|[<>=]{1,2}/;
+var reOps = /\^|;|\*|\/|\+|\-|[<>=]{1,2}/;
 
 var reNum = /[0-9]+/;
 var tbasexit = false;
@@ -51,7 +51,6 @@ var tbasexit = false;
 println("Terran BASIC 1.0  "+vmemsize+" bytes free");
 println(prompt);
 
-var basicInterpreterStatus = {};
 // variable object constructor
 function BasicVar(linenum, literal, type) {
     this.literal = literal;
@@ -92,7 +91,7 @@ function BasicAST() {
     this.depth = 0;
     this.leaves = [];
     this.value = undefined;
-    this.type = "null"; // literal, operator, variable, function, null
+    this.type = "null"; // literal, operator, string, number, function, null
 
     this.toString = function() {
         var sb = "";
@@ -107,12 +106,12 @@ function BasicAST() {
         return sb;
     };
 }
+var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
 basicInterpreterStatus.builtin = {};
-basicInterpreterStatus.builtin.print = function() {
-    var args = Array.from(arguments);
+basicInterpreterStatus.builtin.PRINT = function(args) {
     if (args.length == 0)
         println();
     else
@@ -149,10 +148,11 @@ basicFunctions._isSeparator = function(code) {
 };
 basicFunctions._operatorPrecedence = {
     // function call in itself has highest precedence
-    "^":2,
-    "*":3,"/":3,
-    "MOD":4,
-    "+":5,"-":5,
+    "^":1,
+    "*":2,"/":2,
+    "MOD":3,
+    "+":4,"-":4,
+    ";":5,
     "<<":6,">>":6,
     "==":7,"<>":7,"><":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
     "BAND":8,
@@ -163,7 +163,7 @@ basicFunctions._operatorPrecedence = {
     "=":13
 };
 basicFunctions._isUnaryOp = function(word) {
-    return 13 == basicFunctions._operatorPrecedence[word];
+    return 5 == basicFunctions._operatorPrecedence[word];
 };
 basicFunctions._isOperatorWord = function(word) {
     return (basicFunctions._operatorPrecedence[word] !== undefined) // force the return type to be a boolean
@@ -530,7 +530,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
     return { "tokens": tokens, "states": states };
 };
 basicFunctions._parserElaboration = function(lnum, tokens, states) {
-    var _debugprintElaboration = true;
+    var _debugprintElaboration = false;
     if (_debugprintElaboration) println("@@ ELABORATION @@");
     var k = 0;
 
@@ -618,7 +618,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
-    var _debugSyntaxAnalysis = true;
+    var _debugSyntaxAnalysis = false;
 
     if (_debugSyntaxAnalysis) println("@@ SYNTAX ANALYSIS @@");
 
@@ -647,7 +647,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
     if (tokens.length == 1 && (isSemanticLiteral(tokens[0], states[0]))) {
         if (_debugSyntaxAnalysis) println("literal/number: "+tokens[0]);
         treeHead.value = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
-        treeHead.type = "literal";
+        treeHead.type = ("quote" == states[0]) ? "string" : ("number" == states[0]) ? "number" : "literal";
     }
     else if (tokens[0].toUpperCase() == "IF" && states[0] != "quote") {
         // find ELSE and THEN
@@ -873,8 +873,35 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
+basicFunctions._executeSyntaxTree = function(lnum, syntaxTree) {
+    var _debugExec = true;
+
+    if (_debugExec) serial.println("@@ EXECUTE @@");
+    if (_debugExec) serial.println(syntaxTree.toString());
+
+    if (syntaxTree.type == "function") {
+        var func = basicInterpreterStatus.builtin[syntaxTree.value.toUpperCase()];
+        var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it); });
+        if (_debugExec) serial.println("fn call args: "+args.join(" "));
+        func(args);
+    }
+    else if (syntaxTree.type == "number") {
+        return +(syntaxTree.value);
+    }
+    else if (syntaxTree.type == "string") {
+        return syntaxTree.value;
+    }
+    else {
+        serial.println("Parse error at line "+lnum);
+        serial.println(syntaxTree.toString);
+        throw "Parse error";
+    }
+
+    return lnum + 1;
+};
+// @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = true;
+    var _debugprintHighestLevel = false;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
@@ -896,12 +923,13 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
 
+    var nextLine = basicFunctions._executeSyntaxTree(lnum, syntaxTree);
 
     serial.println(syntaxTree.toString());
 
 
-    // EXECUTO
-    return lnum + 1;
+    // EXECUTE
+    return nextLine;
 
 
 }; // end INTERPRETLINE
