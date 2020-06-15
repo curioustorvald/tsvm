@@ -286,7 +286,8 @@ basicFunctions._isSeparator = function(code) {
 };
 basicFunctions._operatorPrecedence = {
     // function call in itself has highest precedence
-    "^":1,
+    "^":0,
+    // precedence of 1 are unary plus/minus which are pre-parenthesized
     "*":2,"/":2,
     "MOD":3,
     "+":4,"-":4,
@@ -756,7 +757,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
-    var _debugSyntaxAnalysis = false;
+    var _debugSyntaxAnalysis = true;
 
     if (_debugSyntaxAnalysis) println("@@ SYNTAX ANALYSIS @@");
 
@@ -883,7 +884,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
         // if there is no paren or paren does NOT start index 1
         // e.g. negative three should NOT require to be written as "-(3)"
-        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0)) {
+        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0) && states[0] != "operator") {
             // make a paren!
             tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
             states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
@@ -925,23 +926,34 @@ for input "DEFUN sinc(x) = sin(x) / x"
         if (topmostOp !== undefined) {
             if (_debugSyntaxAnalysis) println("operator: "+topmostOp+", pos: "+operatorPos);
 
-            var subtknL = tokens.slice(0, operatorPos);
-            var subtknR = tokens.slice(operatorPos + 1, tokens.length);
-            var substaL = states.slice(0, operatorPos);
-            var substaR = states.slice(operatorPos + 1, tokens.length);
-
             // BINARY_OP?
             if (operatorPos > 0) {
+                var subtknL = tokens.slice(0, operatorPos);
+                var subtknR = tokens.slice(operatorPos + 1, tokens.length);
+                var substaL = states.slice(0, operatorPos);
+                var substaR = states.slice(operatorPos + 1, tokens.length);
+
                 treeHead.value = topmostOp;
                 treeHead.type = "operator";
                 treeHead.leaves[0] = basicFunctions._parseTokens(lnum, subtknL, substaL, recDepth + 1);
                 treeHead.leaves[1] = basicFunctions._parseTokens(lnum, subtknR, substaR, recDepth + 1);
             }
-            else { // TODO do I ever reach this branch?
-                // this also takes care of nested unary ops (e.g. "- NOT 43")
-                treeHead.value = (topmostOp == "+") ? "UNARYPLUS" : (topmostOp == "-") ? "UNARYMINUS" : topmostOp;
-                treeHead.type = "operator";
-                treeHead.leaves[0] = basicFunctions._parseTokens(lnum, subtknR, substaR, recDepth + 1);
+            else {
+                if (_debugSyntaxAnalysis) println("re-parenthesising unary op");
+
+                // parenthesize the unary op
+                var unaryParenEnd = 1;
+                while (unaryParenEnd < tokens.length) {
+                    if (states[unaryParenEnd] == "operator" && basicFunctions._operatorPrecedence[tokens[unaryParenEnd]] > 1)
+                        break;
+
+                    unaryParenEnd += 1;
+                }
+
+                var newTokens = [].concat("(", tokens.slice(0, unaryParenEnd), ")", tokens.slice(unaryParenEnd, tokens.length));
+                var newStates = [].concat("paren", states.slice(0, unaryParenEnd), "paren", states.slice(unaryParenEnd, tokens.length));
+
+                return basicFunctions._parseTokens(lnum, newTokens, newStates, recDepth + 1);
             }
         }
         // FUNCTION CALL
@@ -954,36 +966,16 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
             var leaves = [];
 
-            // if there is no paren or paren does NOT start index 1
-            // e.g. negative three should NOT require to be written as "-(3)"
-            /*if (parenStart > 1 || parenStart == -1) {
-                // make a paren!
-                tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
-                states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
-                parenStart = 1;
-                parenEnd = states.length - 1;
+            // if there is no paren (this part deals with unary ops ONLY!)
+            if (parenStart == -1 && parenEnd == -1) {
+                var subtkn = tokens.slice(1, tokens.length);
+                var substa = states.slice(1, tokens.length);
 
-                // get the position of parens and separators AGAIN
-                for (k = 0; k < tokens.length; k++) {
-                    if (tokens[k] == "(") {
-                        parenDepth += 1;
-                        if (parenDepth == 1) parenStart = k;
-                    }
-                    else if (tokens[k] == ")") {
-                        if (parenDepth == 1) parenEnd = k;
-                        parenDepth -= 1;
-                    }
+                if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
 
-                    if (parenDepth == 1 && states[k] == "sep") {
-                        separators.push(k);
-                    }
-                }
-
-                if (_debugSyntaxAnalysis) println("inserting paren at right place");
-                if (_debugSyntaxAnalysis) println(tokens.join(","));
-            }*/
-
-            if (parenEnd > parenStart) {
+                leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1))
+            }
+            else if (parenEnd > parenStart) {
                 separators = [parenStart].concat(separators, [parenEnd]);
                 if (_debugSyntaxAnalysis) println("separators: "+separators.join(","));
                 // recursively parse comma-separated arguments
@@ -1049,6 +1041,9 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
         if (_debugExec) serial.println(recWedge+"string|operator");
         return { type:syntaxTree.type, value:syntaxTree.value };
     }
+    else if (syntaxTree.type == "null") {
+        return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
+    }
     else {
         serial.println(recWedge+"Parse error in "+lnum);
         serial.println(recWedge+syntaxTree.toString());
@@ -1057,31 +1052,24 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    var _debugprintHighestLevel = true;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
     var tokens = tokenisedObject.tokens;
     var states = tokenisedObject.states;
 
-    if (_debugprintHighestLevel) println(tokens.join("~"));
-    if (_debugprintHighestLevel) println(states.join(" "));
-
 
     // ELABORATION : distinguish numbers and operators from literals
     basicFunctions._parserElaboration(lnum, tokens, states);
 
-
-    if (_debugprintHighestLevel) println(tokens.join("~"));
-    if (_debugprintHighestLevel) println(states.join(" "));
-
-
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
+    if (_debugprintHighestLevel) serial.println("Final syntax tree:");
+    if (_debugprintHighestLevel) serial.println(syntaxTree.toString());
 
     basicFunctions._executeSyntaxTree(lnum, syntaxTree, 0);
 
-    serial.println(syntaxTree.toString());
 
 
     // EXECUTE
