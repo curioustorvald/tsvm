@@ -253,6 +253,21 @@ basicInterpreterStatus.builtin = {
     if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
 
     sys.poke(lh, rh);
+},
+"GOTO" : function(lnum, args) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum);
+    var lh = resolve(args[0]);
+    if (lh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh)) throw lang.illegalType(lnum);
+    return lh;
+},
+"GOSUB" : function(lnum, args) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum);
+    var lh = resolve(args[0]);
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (isNaN(lh)) throw lang.illegalType(lnum);
+    basicInterpreterStatus.gosubStack.push(lnum + 1);
+    return lh;
 }
 };
 Object.freeze(basicInterpreterStatus.builtin);
@@ -757,7 +772,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
-    var _debugSyntaxAnalysis = true;
+    var _debugSyntaxAnalysis = false;
 
     if (_debugSyntaxAnalysis) println("@@ SYNTAX ANALYSIS @@");
 
@@ -1012,8 +1027,14 @@ function JStoBASICtype(object) {
     else if (object === undefined) return "null";
     else throw "InternalError: un-translatable object with typeof "+(typeof object)+"\n"+object;
 }
+function SyntaxTreeReturnObj(type, value, nextLine) {
+    this.type = type;
+    this.value = value;
+    this.nextLine = nextLine;
+}
+basicFunctions._gotoCmds = { GOTO:1, GOSUB:1 };
 basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = true;
+    var _debugExec = false;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
@@ -1023,26 +1044,32 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     else if (syntaxTree.type == "function" || syntaxTree.type == "operator") {
         if (_debugExec) serial.println(recWedge+"function|operator");
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());
-        var func = basicInterpreterStatus.builtin[syntaxTree.value.toUpperCase()];
+        var funcName = syntaxTree.value.toUpperCase();
+        var func = basicInterpreterStatus.builtin[funcName];
         var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it, recDepth + 1); });
         if (_debugExec) {
-            serial.println(recWedge+"fn call name: "+syntaxTree.value.toUpperCase());
+            serial.println(recWedge+"fn call name: "+funcName);
             serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
         }
 
         var funcCallResult = func(lnum, args);
-        return { type:JStoBASICtype(funcCallResult), value:funcCallResult };
+
+        return new SyntaxTreeReturnObj(
+                JStoBASICtype(funcCallResult),
+                funcCallResult,
+                (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1
+        );
     }
     else if (syntaxTree.type == "number") {
         if (_debugExec) serial.println(recWedge+"number");
-        return { type:syntaxTree.type, value:+(syntaxTree.value) };
+        return new SyntaxTreeReturnObj(syntaxTree.type, +(syntaxTree.value), lnum + 1);
     }
     else if (syntaxTree.type == "string" || syntaxTree.type == "literal") {
-        if (_debugExec) serial.println(recWedge+"string|operator");
-        return { type:syntaxTree.type, value:syntaxTree.value };
+        if (_debugExec) serial.println(recWedge+"string|literal");
+        return new SyntaxTreeReturnObj(syntaxTree.type, syntaxTree.value, lnum + 1);
     }
     else if (syntaxTree.type == "null") {
-        return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
+        return new basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
     }
     else {
         serial.println(recWedge+"Parse error in "+lnum);
@@ -1052,7 +1079,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = true;
+    var _debugprintHighestLevel = false;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
@@ -1068,12 +1095,12 @@ basicFunctions._interpretLine = function(lnum, cmd) {
     if (_debugprintHighestLevel) serial.println("Final syntax tree:");
     if (_debugprintHighestLevel) serial.println(syntaxTree.toString());
 
-    basicFunctions._executeSyntaxTree(lnum, syntaxTree, 0);
+    var execResult = basicFunctions._executeSyntaxTree(lnum, syntaxTree, 0);
 
 
 
     // EXECUTE
-    return lnum + 1;
+    return execResult.nextLine;
 
 
 }; // end INTERPRETLINE
@@ -1143,6 +1170,9 @@ basicFunctions.fre = function(args) {
 basicFunctions.run = function(args) { // RUN function
     var linenumber = 1;
     var oldnum = 1;
+
+    var countup = 0;
+
     do {
         if (cmdbuf[linenumber] !== undefined) {
             oldnum = linenumber;
@@ -1151,7 +1181,8 @@ basicFunctions.run = function(args) { // RUN function
         else {
             linenumber += 1;
         }
-        if (con.hitterminate()) {
+        countup += 1;
+        if (con.hitterminate() || countup >= 100) {
             println("Break in "+oldnum);
             break;
         }
