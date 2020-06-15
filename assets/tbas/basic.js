@@ -17,9 +17,9 @@ var cmdbufMemFootPrint = 0;
 var prompt = "Ok";
 
 var lang = {};
-lang.badNumberFormat = "Bad number format";
-lang.badOperatorFormat = "Bad number format";
-lang.badFunctionCallFormat = "Bad function call format";
+lang.badNumberFormat = "Illegal number format";
+lang.badOperatorFormat = "Illegal number format";
+lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.syntaxfehler = function(line, reason) {
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + (reason !== undefined) ? (": "+reason) : "";
@@ -1170,9 +1170,6 @@ basicFunctions.fre = function(args) {
 basicFunctions.run = function(args) { // RUN function
     var linenumber = 1;
     var oldnum = 1;
-
-    var countup = 0;
-
     do {
         if (cmdbuf[linenumber] !== undefined) {
             oldnum = linenumber;
@@ -1181,8 +1178,7 @@ basicFunctions.run = function(args) { // RUN function
         else {
             linenumber += 1;
         }
-        countup += 1;
-        if (con.hitterminate() || countup >= 100) {
+        if (con.hitterminate()) {
             println("Break in "+oldnum);
             break;
         }

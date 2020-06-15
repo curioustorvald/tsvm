@@ -33,11 +33,11 @@ con.getyx = function() {
 };
 con.hitterminate = function() { // ^C
     sys.poke(-40, 1);
-    return (sys.peek(-41) == 31 && (sys.peek(-41) == 129 || sys.peek(-41) == 130));
+    return (sys.peek(-41) == 31 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
 };
 con.hiteof = function() { // ^D
     sys.poke(-40, 1);
-    return (sys.peek(-41) == 32 && (sys.peek(-41) == 129 || sys.peek(-41) == 130));
+    return (sys.peek(-41) == 32 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
 };
 con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
