@@ -123,12 +123,12 @@ function parseSigil(s) {
 function resolve(variable) {
     if (variable.type == "string" || variable.type == "number")
         return variable.value;
-    else if (variable.type == "literal") {
+    else if (variable.type == "literal")
         return basicInterpreterStatus.variables[parseSigil(variable.value).name].literal;
-    }
-    else {
+    else if (variable.type == "null")
+        return undefined;
+    else
         throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
-    }
 }
 var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
@@ -237,11 +237,33 @@ basicInterpreterStatus.builtin = {
 
     if (args.length == 0)
         println();
-    else
-        println(args.map(function(it) {
-            var it2 = resolve(it);
-            return ((!isNaN(it2)) ? " " : "") + it2; // BASIC always put a space before a number
-        }).join("\t"));
+    else {
+        if (args[args.length - 1].type == "null") {
+            print(args.slice(0, args.length - 1).map(function(it) {
+                var it2 = resolve(it);
+                return ((!isNaN(it2)) ? " " : "") + it2; // BASIC always put a space before a number
+            }).join("\t"));
+        }
+        else {
+            println(args.map(function(it) {
+                var it2 = resolve(it);
+                return ((!isNaN(it2)) ? " " : "") + it2; // BASIC always put a space before a number
+            }).join("\t"));
+        }
+    }
+},
+"EMIT" : function(lnum, args) {
+    if (args.length > 0) {
+        for (var llll = 0; llll < args.length; llll++) {
+            var lvalll = resolve(args[llll]);
+            if (isNaN(lvalll)) {
+                print(lvalll);
+            }
+            else {
+                con.addch(lvalll);
+            }
+        }
+    }
 },
 "POKE" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum);
@@ -1040,7 +1062,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
 
     if (syntaxTree === undefined)
-        throw "InternalError: tree is undefined";
+        return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
     else if (syntaxTree.type == "function" || syntaxTree.type == "operator") {
         if (_debugExec) serial.println(recWedge+"function|operator");
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());

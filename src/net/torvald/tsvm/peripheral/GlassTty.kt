@@ -34,13 +34,7 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte())
 
     fun writeOut(char: Byte) {
-        // deal with y-axis out-of-bounds
-        var (cx, cy) = getCursorPos()
-        if (cy >= TEXT_ROWS) {
-            scrollUp(cy - TEXT_ROWS + 1)
-            setCursorPos(cx, TEXT_ROWS - 1)
-            cy = TEXT_ROWS - 1
-        }
+        val (cx, cy) = getCursorPos()
 
         val printable = acceptChar(char) // this function processes the escape codes and CRLFs
 

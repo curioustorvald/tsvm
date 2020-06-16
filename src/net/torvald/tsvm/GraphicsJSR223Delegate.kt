@@ -71,6 +71,8 @@ class GraphicsJSR223Delegate(val vm: VM) {
     fun putSymbol(char: Byte) {
         getFirstGPU()?.let {
             val (cx, cy) = it.getCursorPos()
+
+
             it.putChar(cx, cy, char)
             it.setCursorPos(cx + 1, cy)
         }

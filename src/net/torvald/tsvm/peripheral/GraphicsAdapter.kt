@@ -69,11 +69,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
         set(value) { spriteAndTextArea.setShort(memTextCursorPosOffset, value.toShort()) }
 
     override fun getCursorPos() = rawCursorPos % TEXT_COLS to rawCursorPos / TEXT_COLS
-    /**
-     * Think of it as a real paper tty;
-     * setCursorPos must "wrap" the cursor properly when x-value goes out of screen bound.
-     * For y-value, only when y < 0, set y to zero and don't care about the y-value goes out of bound.
-     */
+
     override fun setCursorPos(x: Int, y: Int) {
         var newx = x
         var newy = y
@@ -88,6 +84,11 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
 
         if (newy < 0) {
             newy = 0 // DON'T SCROLL when cursor goes ABOVE the screen
+        }
+        else if (newy >= TEXT_ROWS) {
+            scrollUp(newy - TEXT_ROWS + 1)
+            setCursorPos(newy, TEXT_ROWS - 1)
+            newy = TEXT_ROWS - 1
         }
 
         rawCursorPos = toTtyTextOffset(newx, newy)
