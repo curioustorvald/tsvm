@@ -151,78 +151,57 @@ function resolve(variable) {
 }
 function oneArgNonNull(lnum, args, predicate) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
-        if (v === undefined) throw lang.refError(lnum, v.value);
-    });
-    var argum = resolvedargs.map(function(it) {
-        if (it === undefined) throw lang.refError(lnum, it.value);
-        return it;
-    });
-    return predicate(argum[0]);
+    var resolvedargs0 = resolve(args[0]);
+    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
+    return predicate(resolvedargs0);
 }
 function oneArgNonNullNumeric(lnum, args, predicate) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
-        if (v === undefined) throw lang.refError(lnum, v.value);
-        if (isNaN(v)) throw lang.illegalType(lnum, v.value);
-    });
-    var argum = resolvedargs.map(function(it) {
-        if (it === undefined) throw lang.refError(lnum, it.value);
-        return it;
-    });
-    return predicate(argum[0]);
+    var resolvedargs0 = resolve(args[0]);
+    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
+    if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
+    return predicate(resolvedargs0);
 }
 function twoArgNonNull(lnum, args, predicate) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
-        if (v === undefined) throw lang.refError(lnum, v.value);
-    });
-    var argum = resolvedargs.map(function(it) {
-        if (it === undefined) throw lang.refError(lnum, it.value);
-        return it;
-    });
-    return predicate(argum[0], argum[1]);
+    var resolvedargs0 = resolve(args[0]);
+    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
+    var resolvedargs1 = resolve(args[1]);
+    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
+    return predicate(resolvedargs0, resolvedargs1);
 }
 function twoArgNonNullNumeric(lnum, args, predicate) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
-        if (v === undefined) throw lang.refError(lnum, v.value);
-        if (isNaN(v)) throw lang.illegalType(lnum, v.value);
-    });
-    var argum = resolvedargs.map(function(it) {
-        if (it === undefined) throw lang.refError(lnum, it.value);
-        return it;
-    });
-    return predicate(argum[0], argum[1]);
+    var resolvedargs0 = resolve(args[0]);
+    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
+    if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
+    var resolvedargs1 = resolve(args[1]);
+    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
+    if (isNaN(resolvedargs1)) throw lang.illegalType(lnum, resolvedargs1.value);
+    return predicate(resolvedargs0, resolvedargs1);
 }
 function threeArgNonNull(lnum, args, predicate) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
-        if (v === undefined) throw lang.refError(lnum, v.value);
-    });
-    var argum = resolvedargs.map(function(it) {
-        if (it === undefined) throw lang.refError(lnum, it.value);
-        return it;
-    });
-    return predicate(argum[0], argum[1], argum[2]);
+    var resolvedargs0 = resolve(args[0]);
+    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
+    var resolvedargs1 = resolve(args[1]);
+    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
+    var resolvedargs2 = resolve(args[2]);
+    if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
+    return predicate(resolvedargs0, resolvedargs1, resolvedargs2);
 }
 function threeArgNonNullNumeric(lnum, args, predicate) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
-        if (v === undefined) throw lang.refError(lnum, v.value);
-        if (isNaN(v)) throw lang.illegalType(lnum, v.value);
-    });
-    var argum = resolvedargs.map(function(it) {
-        if (it === undefined) throw lang.refError(lnum, it.value);
-        return it;
-    });
-    return predicate(argum[0], argum[1], argum[2]);
+    var resolvedargs0 = resolve(args[0]);
+    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
+    if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
+    var resolvedargs1 = resolve(args[1]);
+    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
+    if (isNaN(resolvedargs1)) throw lang.illegalType(lnum, resolvedargs1.value);
+    var resolvedargs2 = resolve(args[2]);
+    if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
+    if (isNaN(resolvedargs2)) throw lang.illegalType(lnum, resolvedargs2.value);
+    return predicate(resolvedargs0, resolvedargs1, resolvedargs2);
 }
 var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
