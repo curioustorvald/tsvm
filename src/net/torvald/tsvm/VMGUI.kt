@@ -26,10 +26,12 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
     lateinit var coroutineJob: Job
 
+    lateinit var memvwr: Memvwr
+
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, lcdMode = true)
+        gpu = GraphicsAdapter(vm, lcdMode = false)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_TERM,
@@ -49,6 +51,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         vm.getPrintStream = { gpu.getPrintStream() }
         vm.getErrorStream = { gpu.getErrorStream() }
         vm.getInputStream = { gpu.getInputStream() }
+
+        memvwr = Memvwr(vm)
 
         // TEST PRG
         //val fr = FileReader("./assets/tvdos/command.js")
@@ -80,6 +84,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
     override fun render() {
         Gdx.graphics.setTitle("${AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond}")
+
+        memvwr.update()
 
         super.render()
 

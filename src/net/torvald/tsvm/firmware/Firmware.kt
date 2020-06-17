@@ -7,14 +7,15 @@ import org.luaj.vm2.LuaValue
 import org.luaj.vm2.lib.OneArgFunction
 import org.luaj.vm2.lib.TwoArgFunction
 import org.luaj.vm2.lib.ZeroArgFunction
+import java.lang.RuntimeException
 
 internal class Firmware(val vm: VM) : TwoArgFunction() {
 
+    class ErrorIllegalAccess(val addr: Long) : RuntimeException() {
+
+    }
+
     companion object {
-        fun errorIllegalAccess(addr: Long) {
-
-        }
-
         internal fun translateAddr(vm : VM, addr: LuaValue): Pair<Any?, Long> {
             val addr = addr.checklong()
             return when (addr) {

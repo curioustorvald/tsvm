@@ -39,6 +39,11 @@ con.hiteof = function() { // ^D
     sys.poke(-40, 1);
     return (sys.peek(-41) == 32 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
 };
+con.resetkeybuf = function() {
+    sys.poke(-40, 0);
+    sys.poke(-41, 0); sys.poke(-42, 0); sys.poke(-43, 0); sys.poke(-44, 0);
+    sys.poke(-45, 0); sys.poke(-46, 0); sys.poke(-47, 0); sys.poke(-48, 0);
+};
 con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
         print(String.fromCharCode(27,91)+"38;5;255m");

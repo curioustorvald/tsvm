@@ -94,7 +94,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             4088L -> (blockTransferPorts[2].yourBlockSize().toByte())
             4089L -> (blockTransferPorts[2].doYouHaveNext().toInt().shl(7) or blockTransferPorts[2].yourBlockSize().ushr(8).and(15)).toByte()
             4090L -> (blockTransferPorts[3].yourBlockSize().toByte())
-            4091L -> (blockTransferPorts[4].doYouHaveNext().toInt().shl(7) or blockTransferPorts[3].yourBlockSize().ushr(8).and(15)).toByte()
+            4091L -> (blockTransferPorts[3].doYouHaveNext().toInt().shl(7) or blockTransferPorts[3].yourBlockSize().ushr(8).and(15)).toByte()
 
             in 4092..4095 -> composeBlockTransferStatus(adi - 4092).toByte()
 

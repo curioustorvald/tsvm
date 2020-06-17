@@ -18,14 +18,14 @@ var prompt = "Ok";
 
 var lang = {};
 lang.badNumberFormat = "Illegal number format";
-lang.badOperatorFormat = "Illegal number format";
+lang.badOperatorFormat = "Illegal operator format";
 lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.syntaxfehler = function(line, reason) {
-    return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + (reason !== undefined) ? (": "+reason) : "";
+    return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
-lang.illegalType = function(line) { return "Type mismatch" + (line !== undefined) ? (" in "+line) : ""; };
-lang.refError = function(line) { return "Unresolved reference" + (line !== undefined) ? (" in "+line) : ""; };
+lang.illegalType = function(line) { return "Type mismatch" + ((line !== undefined) ? (" in "+line) : ""); };
+lang.refError = function(line) { return "Unresolved reference" + ((line !== undefined) ? (" in "+line) : ""); };
 Object.freeze(lang);
 
 function getUsedMemSize() {
@@ -144,6 +144,16 @@ basicInterpreterStatus.builtin = {
     if (rh === undefined) throw lang.refError(lnum);
 
     basicInterpreterStatus.variables[parsed.name] = new BasicVar(rh, (parsed.type === undefined) ? "float" : parsed.type);
+},
+"==" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum);
+
+    var lh = resolve(args[0]);
+    var rh = resolve(args[1]);
+
+    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+
+    return (lh == rh);
 },
 "UNARYMINUS" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum);
@@ -1074,13 +1084,18 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
         }
 
-        var funcCallResult = func(lnum, args);
+        try {
+            var funcCallResult = func(lnum, args);
 
-        return new SyntaxTreeReturnObj(
-                JStoBASICtype(funcCallResult),
-                funcCallResult,
-                (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1
-        );
+            return new SyntaxTreeReturnObj(
+                    JStoBASICtype(funcCallResult),
+                    funcCallResult,
+                    (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1
+            );
+        }
+        catch (_) {
+            throw lang.syntaxfehler(lnum, funcName + " is not defined");
+        }
     }
     else if (syntaxTree.type == "number") {
         if (_debugExec) serial.println(recWedge+"number");
@@ -1205,6 +1220,7 @@ basicFunctions.run = function(args) { // RUN function
             break;
         }
     } while (linenumber < cmdbuf.length)
+    con.resetkeybuf();
 };
 Object.freeze(basicFunctions);
 while (!tbasexit) {

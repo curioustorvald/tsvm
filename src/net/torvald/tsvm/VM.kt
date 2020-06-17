@@ -89,7 +89,7 @@ class VM(
             64
         )
 
-        println("[VM] Creating new VM with ID of $id, memesize $memsize")
+        println("[VM] Creating new VM with ID of $id, memsize $memsize")
 
         startTime = System.nanoTime()
     }
@@ -146,9 +146,13 @@ class VM(
     internal fun poke(addr: Long, value: Byte) {
         val (memspace, offset) = translateAddr(addr)
         if (memspace == null)
-            Firmware.errorIllegalAccess(addr)
-        else if (memspace is UnsafePtr)
-            memspace.set(offset, value)
+            throw Firmware.ErrorIllegalAccess(addr)
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw Firmware.ErrorIllegalAccess(addr)
+            else
+                memspace.set(offset, value)
+        }
         else
             (memspace as PeriBase).poke(offset, value)
     }
@@ -157,8 +161,12 @@ class VM(
         val (memspace, offset) = translateAddr(addr)
         return if (memspace == null)
             null
-        else if (memspace is UnsafePtr)
-            memspace.get(offset)
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw Firmware.ErrorIllegalAccess(addr)
+            else
+                memspace.get(offset)
+        }
         else
             (memspace as PeriBase).peek(offset)
     }
