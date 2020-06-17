@@ -37,7 +37,12 @@ lang.refError = function(line, obj) {
     return "Unresolved reference" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
-lang.errorinline = function(line, stmt, errobj) { return "Error on statement \""+stmt+"\": " + errobj; };
+lang.errorinline = function(line, stmt, errobj) {
+    return "Error on statement \""+stmt+"\": " + errobj;
+};
+lang.parserError = function(line, errorobj) {
+    return "Parser error in " + line + ": " + errorobj;
+};
 Object.freeze(lang);
 
 function getUsedMemSize() {
@@ -1163,7 +1168,7 @@ function SyntaxTreeReturnObj(type, value, nextLine) {
 }
 basicFunctions._gotoCmds = { GOTO:1, GOSUB:1 };
 basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = true;
+    var _debugExec = false;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
@@ -1180,10 +1185,12 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             if (syntaxTree.leaves.length != 2 && syntaxTree.leaves.length != 3) throw lang.syntaxfehler(lnum);
             var testedval = basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
 
-            serial.println(recWedge+"testedval:");
-            serial.println(recWedge+"type="+testedval.type);
-            serial.println(recWedge+"value="+testedval.value);
-            serial.println(recWedge+"nextLine="+testedval.nextLine);
+            if (_debugExec) {
+                serial.println(recWedge+"testedval:");
+                serial.println(recWedge+"type="+testedval.type);
+                serial.println(recWedge+"value="+testedval.value);
+                serial.println(recWedge+"nextLine="+testedval.nextLine);
+            }
 
             try {
                 var iftest = basicInterpreterStatus.builtin["TEST"](lnum, [testedval]);
@@ -1192,6 +1199,8 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                     return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[2], recDepth + 1);
                 else if (iftest)
                     return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[1], recDepth + 1);
+                else
+                    return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
             }
             catch (eeeee) {
                 throw lang.errorinline(lnum, "TEST", eeeee);
@@ -1244,7 +1253,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = true;
+    var _debugprintHighestLevel = false;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
@@ -1265,7 +1274,12 @@ basicFunctions._interpretLine = function(lnum, cmd) {
 
 
     // EXECUTE
-    return execResult.nextLine;
+    try {
+        return execResult.nextLine;
+    }
+    catch (e) {
+        throw lang.parserError(lnum, e);
+    }
 
 
 }; // end INTERPRETLINE
