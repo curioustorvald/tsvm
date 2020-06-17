@@ -112,9 +112,9 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
         spriteAndTextArea.fillWith(-1)
 
-        unusedArea[0] = 0
-        unusedArea[1] = 2
-        unusedArea[2] = 14
+        unusedArea[0] = 2
+        unusedArea[1] = 3
+        unusedArea[2] = 4
 
         setCursorPos(0, 0)
 
