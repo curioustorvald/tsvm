@@ -22,10 +22,22 @@ lang.badOperatorFormat = "Illegal operator format";
 lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.syntaxfehler = function(line, reason) {
+    //serial.printerr("Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : ""));
+    //serial.printerr(new Error().stack);
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
-lang.illegalType = function(line) { return "Type mismatch" + ((line !== undefined) ? (" in "+line) : ""); };
-lang.refError = function(line) { return "Unresolved reference" + ((line !== undefined) ? (" in "+line) : ""); };
+lang.illegalType = function(line, obj) {
+    //serial.printerr("Type mismatch" + ((line !== undefined) ? (" in "+line) : ""));
+    //serial.printerr(new Error().stack);
+    return "Type mismatch" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
+ };
+lang.refError = function(line, obj) {
+    //serial.printerr("Unresolved reference" + ((line !== undefined) ? (" in "+line) : ""));
+    //serial.printerr(new Error().stack);
+    return "Unresolved reference" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
+};
+lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
+lang.errorinline = function(line, stmt, errobj) { return "Error on statement \""+stmt+"\": " + errobj; };
 Object.freeze(lang);
 
 function getUsedMemSize() {
@@ -121,10 +133,12 @@ function parseSigil(s) {
         BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
 */
 function resolve(variable) {
-    if (variable.type == "string" || variable.type == "number")
+    if (variable.type == "string" || variable.type == "number" || variable.type == "bool")
         return variable.value;
-    else if (variable.type == "literal")
-        return basicInterpreterStatus.variables[parseSigil(variable.value).name].literal;
+    else if (variable.type == "literal") {
+        var basicvar = basicInterpreterStatus.variables[parseSigil(variable.value).name];
+        return (basicvar !== undefined) ? basicvar.literal : undefined;
+    }
     else if (variable.type == "null")
         return undefined;
     else
@@ -134,111 +148,99 @@ var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
+/*
+@param lnum line number
+@param args instance of the SyntaxTreeReturnObj
+*/
 basicInterpreterStatus.builtin = {
 "=" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var parsed = parseSigil(args[0].value);
-    var rh = resolve(args[1]);
-
-    if (rh === undefined) throw lang.refError(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var parsed = parseSigil(args[0].value); var rh = resolve(args[1]);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
 
     basicInterpreterStatus.variables[parsed.name] = new BasicVar(rh, (parsed.type === undefined) ? "float" : parsed.type);
 },
 "==" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
 
     return (lh == rh);
 },
 "UNARYMINUS" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum);
-
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var lh = resolve(args[0]);
-
-    if (lh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh)) throw lang.illegalType(lnum);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
 
     return -lh;
 },
 "UNARYPLUS" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum);
-
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var lh = resolve(args[0]);
-
-    if (lh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh)) throw lang.illegalType(lnum);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
 
     return +lh;
 },
 "+" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
 
     //serial.println("BASIC func: + -- LH="+lh+", RH="+rh+", return="+(lh + rh));
 
     return lh + rh;
 },
 "-" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
 
     return lh - rh;
 },
 "*" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
 
     return lh * rh;
 },
 "/" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
 
     return lh / rh;
 },
 "MOD" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
 
     return lh % rh;
 },
 "^" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
 
     return Math.pow(lh, rh);
 },
@@ -276,30 +278,52 @@ basicInterpreterStatus.builtin = {
     }
 },
 "POKE" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum);
-
-    var lh = resolve(args[0]);
-    var rh = resolve(args[1]);
-
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh) || isNaN(rh)) throw lang.illegalType(lnum);
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var lh = resolve(args[0]); var rh = resolve(args[1]);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (rh === undefined) throw lang.refError(lnum, args[1].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
 
     sys.poke(lh, rh);
 },
 "GOTO" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum);
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var lh = resolve(args[0]);
-    if (lh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh)) throw lang.illegalType(lnum);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
     return lh;
 },
 "GOSUB" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum);
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var lh = resolve(args[0]);
-    if (lh === undefined || rh === undefined) throw lang.refError(lnum);
-    if (isNaN(lh)) throw lang.illegalType(lnum);
+    if (lh === undefined) throw lang.refError(lnum, args[0].value);
+    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
     basicInterpreterStatus.gosubStack.push(lnum + 1);
     return lh;
+},
+"RETURN" : function(lnum, args) {
+    var r =  basicInterpreterStatus.gosubStack.pop();
+    if (r === undefined) throw lang.nowhereToReturn(lnum);
+    return r;
+},
+"CLEAR" : function(lnum, args) {
+    basicInterpreterStatus.variables = {};
+},
+"PLOT" : function(lnum, args) {
+    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var xpos = resolve(args[0]); var ypos = resolve(args[1]); var color = resolve(args[2]);
+    if (xpos === undefined) throw lang.refError(lnum, args[0].value);
+    if (ypos === undefined) throw lang.refError(lnum, args[1].value);
+    if (color === undefined) throw lang.refError(lnum, args[2].value);
+    if (isNaN(xpos)) throw lang.illegalType(lnum, args[0].value);
+    if (isNaN(ypos)) throw lang.illegalType(lnum, args[1].value);
+    if (isNaN(color)) throw lang.illegalType(lnum, args[2].value);
+    graphics.plotPixel(xpos, ypos, color);
+},
+"TEST" : function(lnum, args) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    return resolve(args[0]);
 }
 };
 Object.freeze(basicInterpreterStatus.builtin);
@@ -1054,7 +1078,8 @@ for input "DEFUN sinc(x) = sin(x) / x"
 };
 // @return is defined in BasicAST
 function JStoBASICtype(object) {
-    if (!isNaN(object)) return "number";
+    if (typeof object === "boolean") return "bool";
+    else if (!isNaN(object)) return "number";
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
     else throw "InternalError: un-translatable object with typeof "+(typeof object)+"\n"+object;
@@ -1066,7 +1091,7 @@ function SyntaxTreeReturnObj(type, value, nextLine) {
 }
 basicFunctions._gotoCmds = { GOTO:1, GOSUB:1 };
 basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = false;
+    var _debugExec = true;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
@@ -1078,31 +1103,62 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());
         var funcName = syntaxTree.value.toUpperCase();
         var func = basicInterpreterStatus.builtin[funcName];
-        var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it, recDepth + 1); });
-        if (_debugExec) {
-            serial.println(recWedge+"fn call name: "+funcName);
-            serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
-        }
 
-        try {
-            var funcCallResult = func(lnum, args);
+        if (funcName == "IF") {
+            if (syntaxTree.leaves.length != 2 && syntaxTree.leaves.length != 3) throw lang.syntaxfehler(lnum);
+            var testedval = basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
 
-            return new SyntaxTreeReturnObj(
-                    JStoBASICtype(funcCallResult),
-                    funcCallResult,
-                    (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1
-            );
+            serial.println(recWedge+"testedval:");
+            serial.println(recWedge+"type="+testedval.type);
+            serial.println(recWedge+"value="+testedval.value);
+            serial.println(recWedge+"nextLine="+testedval.nextLine);
+
+            try {
+                var iftest = basicInterpreterStatus.builtin["TEST"](lnum, [testedval]);
+
+                if (!iftest && syntaxTree.leaves[2] !== undefined)
+                    return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[2], recDepth + 1);
+                else if (iftest)
+                    return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[1], recDepth + 1);
+            }
+            catch (eeeee) {
+                throw lang.errorinline(lnum, "TEST", eeeee);
+            }
         }
-        catch (_) {
-            throw lang.syntaxfehler(lnum, funcName + " is not defined");
+        else {
+            var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it, recDepth + 1); });
+
+            if (_debugExec) {
+                serial.println(recWedge+"fn call name: "+funcName);
+                serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
+            }
+
+            if (func === undefined) {
+                serial.printerr(lang.syntaxfehler(lnum, funcName + " is not defined"));
+                throw lang.syntaxfehler(line, funcName + " is not defined");
+            }
+            else {
+                try {
+                    var funcCallResult = func(lnum, args);
+
+                    return new SyntaxTreeReturnObj(
+                            JStoBASICtype(funcCallResult),
+                            funcCallResult,
+                            (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1
+                    );
+                }
+                catch (eeeee) {
+                    throw lang.errorinline(lnum, funcName, eeeee);
+                }
+            }
         }
     }
     else if (syntaxTree.type == "number") {
         if (_debugExec) serial.println(recWedge+"number");
         return new SyntaxTreeReturnObj(syntaxTree.type, +(syntaxTree.value), lnum + 1);
     }
-    else if (syntaxTree.type == "string" || syntaxTree.type == "literal") {
-        if (_debugExec) serial.println(recWedge+"string|literal");
+    else if (syntaxTree.type == "string" || syntaxTree.type == "literal" || syntaxTree.type == "bool") {
+        if (_debugExec) serial.println(recWedge+"string|literal|bool");
         return new SyntaxTreeReturnObj(syntaxTree.type, syntaxTree.value, lnum + 1);
     }
     else if (syntaxTree.type == "null") {
@@ -1116,7 +1172,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    var _debugprintHighestLevel = true;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
