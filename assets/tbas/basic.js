@@ -144,6 +144,81 @@ function resolve(variable) {
     else
         throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
 }
+function oneArgNonNull(lnum, args, predicate) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return predicate(argum[0]);
+}
+function oneArgNonNullNumeric(lnum, args, predicate) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+        if (isNaN(v)) throw lang.illegalType(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return predicate(argum[0]);
+}
+function twoArgNonNull(lnum, args, predicate) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return predicate(argum[0], argum[1]);
+}
+function twoArgNonNullNumeric(lnum, args, predicate) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+        if (isNaN(v)) throw lang.illegalType(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return predicate(argum[0], argum[1]);
+}
+function threeArgNonNull(lnum, args, predicate) {
+    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return predicate(argum[0], argum[1], argum[2]);
+}
+function threeArgNonNullNumeric(lnum, args, predicate) {
+    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+        if (isNaN(v)) throw lang.illegalType(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return predicate(argum[0], argum[1], argum[2]);
+}
 var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
@@ -161,88 +236,70 @@ basicInterpreterStatus.builtin = {
     basicInterpreterStatus.variables[parsed.name] = new BasicVar(rh, (parsed.type === undefined) ? "float" : parsed.type);
 },
 "==" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-
-    return (lh == rh);
+    return twoArgNonNull(lnum, args, function(lh, rh) { return lh == rh; });
+},
+"<>" : function(lnum, args) {
+    return twoArgNonNull(lnum, args, function(lh, rh) { return lh != rh; });
+},
+"><" : function(lnum, args) {
+    return twoArgNonNull(lnum, args, function(lh, rh) { return lh != rh; });
+},
+"<=" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh <= rh; });
+},
+"=<" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh <= rh; });
+},
+">=" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh >= rh; });
+},
+"=>" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh >= rh; });
+},
+"<" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh < rh; });
+},
+">" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh > rh; });
+},
+"<<" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh << rh; });
+},
+">>" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh >> rh; });
 },
 "UNARYMINUS" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-
-    return -lh;
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return -lh; });
 },
 "UNARYPLUS" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-
-    return +lh;
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return +lh; });
+},
+"BAND" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh & rh; });
+},
+"BOR" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh | rh; });
+},
+"BXOR" : function(lnum, args) {
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh ^ rh; });
 },
 "+" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-
-    //serial.println("BASIC func: + -- LH="+lh+", RH="+rh+", return="+(lh + rh));
-
-    return lh + rh;
+    return twoArgNonNull(lnum, args, function(lh, rh) { return lh + rh; });
 },
 "-" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
-
-    return lh - rh;
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh - rh; });
 },
 "*" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
-
-    return lh * rh;
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh * rh; });
 },
 "/" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
-
-    return lh / rh;
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh / rh; });
 },
 "MOD" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
-
-    return lh % rh;
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh % rh; });
 },
 "^" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
-
-    return Math.pow(lh, rh);
+    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { Math.pow(lh, rh); });
 },
 "PRINT" : function(lnum, args) {
     //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
@@ -278,32 +335,22 @@ basicInterpreterStatus.builtin = {
     }
 },
 "POKE" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]); var rh = resolve(args[1]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (rh === undefined) throw lang.refError(lnum, args[1].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(rh)) throw lang.illegalType(lnum, args[1].value);
-
-    sys.poke(lh, rh);
+    twoArgNonNullNumeric(lnum, args, function(lh, rh) { sys.poke(lh, rh); });
+},
+"PEEK" : function(lnum, args) {
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return sys.peek(lh); });
 },
 "GOTO" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    return lh;
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return lh; });
 },
 "GOSUB" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var lh = resolve(args[0]);
-    if (lh === undefined) throw lang.refError(lnum, args[0].value);
-    if (isNaN(lh)) throw lang.illegalType(lnum, args[0].value);
-    basicInterpreterStatus.gosubStack.push(lnum + 1);
-    return lh;
+    return oneArgNonNullNumeric(lnum, args, function(lh) {
+        basicInterpreterStatus.gosubStack.push(lnum + 1);
+        return lh;
+    });
 },
 "RETURN" : function(lnum, args) {
-    var r =  basicInterpreterStatus.gosubStack.pop();
+    var r = basicInterpreterStatus.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
     return r;
 },
@@ -311,15 +358,33 @@ basicInterpreterStatus.builtin = {
     basicInterpreterStatus.variables = {};
 },
 "PLOT" : function(lnum, args) {
-    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var xpos = resolve(args[0]); var ypos = resolve(args[1]); var color = resolve(args[2]);
-    if (xpos === undefined) throw lang.refError(lnum, args[0].value);
-    if (ypos === undefined) throw lang.refError(lnum, args[1].value);
-    if (color === undefined) throw lang.refError(lnum, args[2].value);
-    if (isNaN(xpos)) throw lang.illegalType(lnum, args[0].value);
-    if (isNaN(ypos)) throw lang.illegalType(lnum, args[1].value);
-    if (isNaN(color)) throw lang.illegalType(lnum, args[2].value);
-    graphics.plotPixel(xpos, ypos, color);
+    threeArgNonNullNumeric(lnum, args, function(xpos, ypos, color) { graphics.plotPixel(xpos, ypos, color); });
+},
+"AND" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+        if (typeof v !== "boolean") throw lang.illegalType(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return argum[0] && argum[1];
+},
+"OR" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var resolvedargs = args.map(function(it) { return resolve(it); });
+    resolvedargs.forEach(function(v) {
+        if (v === undefined) throw lang.refError(lnum, v.value);
+        if (typeof v !== "boolean") throw lang.illegalType(lnum, v.value);
+    });
+    var argum = resolvedargs.map(function(it) {
+        if (it === undefined) throw lang.refError(lnum, it.value);
+        return it;
+    });
+    return argum[0] || argum[1];
 },
 "TEST" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
@@ -753,6 +818,13 @@ basicFunctions._parserElaboration = function(lnum, tokens, states) {
             states[k] = "operator";
         else if (tokens[k].toUpperCase() == "TRUE" || tokens[k].toUpperCase() == "FALSE")
             states[k] = "bool";
+
+        // decimalise hex/bin numbers (because Nashorn does not support binary literal)
+        if (states[k] == "number") {
+            if (tokens[k].toUpperCase().startsWith("0B")) {
+                tokens[k] = parseInt(tokens[k].substring(2, tokens[k].length), 2) + "";
+            }
+        }
 
         k += 1;
     }
