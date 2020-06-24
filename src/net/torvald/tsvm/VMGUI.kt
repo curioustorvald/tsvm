@@ -16,7 +16,7 @@ import java.io.StringReader
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
-    val vm = VM(1024.kB())
+    val vm = VM(64.kB())
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch

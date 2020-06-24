@@ -9,6 +9,10 @@ Operators
 + - Just as in JS; concatenates two strings
 
 */
+if (system.maxmem() < 8192) {
+    println("Out of memory. BASIC requires 8K or more User RAM");
+    throw new Error("Out of memory");
+}
 
 var vmemsize = system.maxmem() - 5236;
 
@@ -42,6 +46,9 @@ lang.errorinline = function(line, stmt, errobj) {
 };
 lang.parserError = function(line, errorobj) {
     return "Parser error in " + line + ": " + errorobj;
+};
+lang.outOfMem = function(line) {
+    return "Out of memory in " + line;
 };
 Object.freeze(lang);
 
@@ -105,6 +112,7 @@ function BasicAST() {
     this.lnum = 0;
     this.depth = 0;
     this.leaves = [];
+    this.seps = [];
     this.value = undefined;
     this.type = "null"; // literal, operator, string, number, function, null
 
@@ -115,6 +123,8 @@ function BasicAST() {
         sb += "| ".repeat(this.depth+1) + "leaves: "+(this.leaves.length)+"\n";
         sb += "| ".repeat(this.depth+1) + "value: "+this.value+" (type: "+typeof this.value+")\n";
         for (var k = 0; k < this.leaves.length; k++) {
+            if (k > 0)
+                sb += "| ".repeat(this.depth+1) + " " + this.seps[k - 1] + "\n";
             sb += this.leaves[k].toString(); + "\n";
         }
         sb += "| ".repeat(this.depth) + "`-----------------\n";
@@ -402,7 +412,7 @@ basicFunctions._isParen = function(code) {
     return basicFunctions._isParenOpen(code) || basicFunctions._isParenClose(code);
 };
 basicFunctions._isSeparator = function(code) {
-    return code == 0x2C;
+    return code == 0x2C || code == 0x3B;
 };
 basicFunctions._operatorPrecedence = {
     // function call in itself has highest precedence
@@ -411,7 +421,7 @@ basicFunctions._operatorPrecedence = {
     "*":2,"/":2,
     "MOD":3,
     "+":4,"-":4,
-    ";":5,
+    //";":5,
     "<<":6,">>":6,
     "==":7,"<>":7,"><":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
     "BAND":8,
@@ -1092,6 +1102,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
             if (_debugSyntaxAnalysis) println("function name: "+treeHead.value);
 
             var leaves = [];
+            var seps = [];
 
             // if there is no paren (this part deals with unary ops ONLY!)
             if (parenStart == -1 && parenEnd == -1) {
@@ -1122,9 +1133,11 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
                     leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
                 }
+                separators.slice(1, separators.length - 1).forEach(function(v) { if (v !== undefined) seps.push(tokens[v]); });
             }
             else throw lang.syntaxfehler(lnum, lang.badFunctionCallFormat);
             treeHead.leaves = leaves;//.filter(function(__v) { return __v !== undefined; });
+            treeHead.seps = seps;
         }
     }
 
@@ -1232,7 +1245,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    var _debugprintHighestLevel = true;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
