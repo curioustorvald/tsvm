@@ -159,28 +159,28 @@ function resolve(variable) {
     else
         throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
 }
-function oneArgNonNull(lnum, args, predicate) {
+function oneArgNonNull(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    return predicate(resolvedargs0);
+    return action(resolvedargs0);
 }
-function oneArgNonNullNumeric(lnum, args, predicate) {
+function oneArgNonNullNumeric(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
     if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
-    return predicate(resolvedargs0);
+    return action(resolvedargs0);
 }
-function twoArgNonNull(lnum, args, predicate) {
+function twoArgNonNull(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
     var resolvedargs1 = resolve(args[1]);
     if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
-    return predicate(resolvedargs0, resolvedargs1);
+    return action(resolvedargs0, resolvedargs1);
 }
-function twoArgNonNullNumeric(lnum, args, predicate) {
+function twoArgNonNullNumeric(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -188,9 +188,9 @@ function twoArgNonNullNumeric(lnum, args, predicate) {
     var resolvedargs1 = resolve(args[1]);
     if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
     if (isNaN(resolvedargs1)) throw lang.illegalType(lnum, resolvedargs1.value);
-    return predicate(resolvedargs0, resolvedargs1);
+    return action(resolvedargs0, resolvedargs1);
 }
-function threeArgNonNull(lnum, args, predicate) {
+function threeArgNonNull(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -198,9 +198,9 @@ function threeArgNonNull(lnum, args, predicate) {
     if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
     var resolvedargs2 = resolve(args[2]);
     if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
-    return predicate(resolvedargs0, resolvedargs1, resolvedargs2);
+    return action(resolvedargs0, resolvedargs1, resolvedargs2);
 }
-function threeArgNonNullNumeric(lnum, args, predicate) {
+function threeArgNonNullNumeric(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -211,7 +211,7 @@ function threeArgNonNullNumeric(lnum, args, predicate) {
     var resolvedargs2 = resolve(args[2]);
     if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
     if (isNaN(resolvedargs2)) throw lang.illegalType(lnum, resolvedargs2.value);
-    return predicate(resolvedargs0, resolvedargs1, resolvedargs2);
+    return action(resolvedargs0, resolvedargs1, resolvedargs2);
 }
 var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
@@ -295,25 +295,30 @@ basicInterpreterStatus.builtin = {
 "^" : function(lnum, args) {
     return twoArgNonNullNumeric(lnum, args, function(lh, rh) { Math.pow(lh, rh); });
 },
-"PRINT" : function(lnum, args) {
+"PRINT" : function(lnum, args, seps) {
     //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
 
     if (args.length == 0)
         println();
     else {
-        if (args[args.length - 1].type == "null") {
-            print(args.slice(0, args.length - 1).map(function(it) {
-                var it2 = resolve(it);
-                return ((!isNaN(it2)) ? " " : "") + it2; // BASIC always put a space before a number
-            }).join("\t"));
-        }
-        else {
-            println(args.map(function(it) {
-                var it2 = resolve(it);
-                return ((!isNaN(it2)) ? " " : "") + it2; // BASIC always put a space before a number
-            }).join("\t"));
+        for (var llll = 0; llll < args.length; llll++) {
+            // parse separators.
+            // ; - concat
+            // , - tab
+            // numbers always surrounded by 1 whitespace
+            if (llll >= 1) {
+                if (seps[llll - 1] == ",") print("\t");
+            }
+
+            var resolvedargs = resolve(args[llll]);
+            if (args[llll].type == "number")
+                print(" "+resolvedargs+" ");
+            else
+                print(resolvedargs);
         }
     }
+
+    if (args[args.length - 1].type != "null") println();
 },
 "EMIT" : function(lnum, args) {
     if (args.length > 0) {
@@ -1212,12 +1217,13 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
             else {
                 try {
-                    var funcCallResult = func(lnum, args);
+                    var funcCallResult = func(lnum, args, syntaxTree.seps);
 
                     return new SyntaxTreeReturnObj(
                             JStoBASICtype(funcCallResult),
                             funcCallResult,
-                            (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1
+                            (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1,
+                            syntaxTree.seps
                     );
                 }
                 catch (eeeee) {
