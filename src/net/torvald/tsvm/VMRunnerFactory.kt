@@ -1,8 +1,7 @@
 package net.torvald.tsvm
 
-import java.io.FileInputStream
+import net.torvald.tsvm.peripheral.GraphicsAdapter
 import java.io.FileReader
-import javax.script.Compilable
 import javax.script.ScriptContext
 import javax.script.ScriptEngineManager
 import javax.script.SimpleScriptContext
@@ -35,6 +34,16 @@ object VMRunnerFactory {
 
                     override suspend fun executeCommand(command: String) {
                         vmLua.lua.load(command).call()
+                    }
+                }
+            }
+            "vt2" -> {
+                object : VMRunner(extension) {
+
+                    val engine = Videotron2K(vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)!!.peripheral!! as GraphicsAdapter)
+
+                    override suspend fun executeCommand(command: String) {
+                        engine.eval(command)
                     }
                 }
             }

@@ -217,6 +217,7 @@ var basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
+basicInterpreterStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
 /*
 @param lnum line number
 @param args instance of the SyntaxTreeReturnObj
@@ -311,6 +312,8 @@ basicInterpreterStatus.builtin = {
             }
 
             var resolvedargs = resolve(args[llll]);
+            if (resolvedargs === undefined) resolvedargs = "";
+
             if (args[llll].type == "number")
                 print(" "+resolvedargs+" ");
             else
@@ -384,6 +387,12 @@ basicInterpreterStatus.builtin = {
         return it;
     });
     return argum[0] || argum[1];
+},
+"RND" : function(lnum, args) {
+    if (!(args.length > 0 && args[0].value === 0))
+        basicInterpreterStatus.rnd = (basicInterpreterStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
+
+    return (basicInterpreterStatus.rnd) / 16777216;
 },
 "TEST" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
@@ -1163,7 +1172,7 @@ function SyntaxTreeReturnObj(type, value, nextLine) {
     this.value = value;
     this.nextLine = nextLine;
 }
-basicFunctions._gotoCmds = { GOTO:1, GOSUB:1 };
+basicFunctions._gotoCmds = { GOTO:1, GOSUB:1 }; // put nonzero (truthy) value here
 basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     var _debugExec = false;
     var recWedge = "> ".repeat(recDepth);

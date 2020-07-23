@@ -2,17 +2,12 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
-import com.badlogic.gdx.InputProcessor
 import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
-import net.torvald.tsvm.peripheral.IOSpace
 import java.io.FileReader
-import java.io.InputStream
-import java.io.OutputStream
-import java.io.StringReader
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
@@ -34,7 +29,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         gpu = GraphicsAdapter(vm, lcdMode = false)
 
         vm.peripheralTable[1] = PeripheralEntry(
-            VM.PERITYPE_TERM,
+            VM.PERITYPE_GPU_AND_TERM,
             gpu,
             GraphicsAdapter.VRAM_SIZE,
             16,

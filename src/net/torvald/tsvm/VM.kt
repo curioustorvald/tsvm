@@ -124,7 +124,7 @@ class VM(
         val HW_RESERVE_SIZE = 1024.kB()
         val USER_SPACE_SIZE = 8192.kB()
 
-        const val PERITYPE_TERM = "gpu"
+        const val PERITYPE_GPU_AND_TERM = "gpu"
     }
 
     internal fun translateAddr(addr: Long): Pair<Any?, Long> {
