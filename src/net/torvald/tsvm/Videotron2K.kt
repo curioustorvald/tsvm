@@ -1,6 +1,7 @@
 package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
+import net.torvald.random.HQRNG
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import java.lang.NumberFormatException
 
@@ -9,49 +10,162 @@ import java.lang.NumberFormatException
  */
 class Videotron2K(val gpu: GraphicsAdapter) {
 
+    private val screenfiller = """
+        DEFINE RATEF 60
+        DEFINE height 448
+        DEFINE width 560
+
+        SCENE fill_line
+          @ mov 0 px
+            plot c1 ; will auto-increment px by one
+            inc c1
+            cmp c1 251 r3
+            movzr r3 c3 0     ; mov (-zr r3) c3 0 -- first, the comparison is made with r3 then runs 'mov c3 0' if r3 == 0
+            cmp px 560 r1
+            exitzr r1
+        END SCENE
+        
+        SCENE loop_frame
+          @ mov 0 py
+            perform fill_line
+            inc py
+            next
+            ; there's no EXIT command so this scene will make the program to go loop indefinitely
+        END SCENE
+        
+        perform loop_frame
+        
+    """.trimIndent()
+
     private var regs = UnsafeHelper.allocate(16 * 8)
     private var internalMem = UnsafeHelper.allocate(16384)
 
-    private var scenes = HashMap<String, Array<VT2Statement>>()
-    private var varIdTable = HashMap<String, Long>()
+    private var scenes = HashMap<Long, Array<VT2Statement>>()
+    private var varIdTable = HashMap<String, Long>() // String is always uppercase, Long always has VARIABLE_PREFIX added
+    private var currentScene: Long? = null // if it's named_scene, VARIABLE_PREFIX is added; indexed_scene does not.
 
     private val reComment = Regex(""";[^\n]*""")
     private val reTokenizer = Regex(""" +""")
 
-    private val conditional = arrayOf("ZR", "NZ", "GT", "LS", "GE", "LE")
+    private val debugPrint = true
+    private val rng = HQRNG()
 
     fun eval(command: String) {
-        var command = command.replace(reComment, "")
-    }
+        val rootStatements = ArrayList<VT2Statement>()
+        val sceneStatements = ArrayList<VT2Statement>()
 
-    private fun translateLine(lnum: Int, line: String): VT2Statement? {
-        val tokens = line.split(reTokenizer)
-        if (tokens.isEmpty()) return null
+        command.replace(reComment, "").split('\n')
+            .mapIndexed { index, s -> index to s }.filter { it.second.isNotBlank() }
+            .forEach { (lnum, stmt) ->
+                val stmtUpper = stmt.toUpperCase()
+                val wordsUpper = stmtUpper.split(reTokenizer)
 
-        val isInit = tokens[0] == "@"
-        val cmdstr = tokens[isInit.toInt()].toUpperCase()
-        val cmdcond = (conditional.linearSearch { it == cmdstr.substring(cmdstr.length - 2, cmdstr.length) } ?: -1) + 1
-        val realcmd = if (cmdcond > 0) cmdstr.substring(0, cmdstr.length - 2) else cmdstr
+                if (stmtUpper.startsWith("SCENE_")) { // indexed scene
+                    val scenenumStr = stmt.substring(6)
+                    try {
+                        val scenenum = scenenumStr.toLong()
 
-        val cmd: Int = Command.dict[realcmd] ?: throw RuntimeException("Syntax Error at line $lnum")
-        val args = tokens.subList(1 + isInit.toInt(), tokens.size).map { parseArgString(it) }
+                        currentScene = scenenum
+                    }
+                    catch (e: NumberFormatException) {
+                        throw IllegalArgumentException("Line $lnum: Illegal scene numeral on $scenenumStr")
+                    }
+                }
+                else if (stmtUpper.startsWith("SCENE ")) { // named scene
+                    val sceneName = wordsUpper[1]
+                    if (sceneName.isNullOrBlank()) {
+                        throw IllegalArgumentException("Line $lnum: Illegal scene name on $stmt")
+                    }
+                    else if (hasVar(sceneName)) {
+                        throw IllegalArgumentException("Line $lnum: Scene name or variable '$sceneName' already exists")
+                    }
 
-        return VT2Statement(if (isInit) StatementPrefix.INIT else StatementPrefix.NONE, cmd or cmdcond, args.toLongArray())
-    }
+                    currentScene = registerNewVariable(sceneName)
+                }
+                else if (wordsUpper[0] == "END" && wordsUpper[1] == "SCENE") { // END SCENE
+                    if (currentScene == null) {
+                        throw IllegalArgumentException("Line $lnum: END SCENE is called without matching SCENE definition")
+                    }
 
-    private fun parseArgString(token: String): Long {
-        if (token.toIntOrNull() != null)
-            return token.toLong().and(0xFFFFFFFF)
-        else if (token.endsWith('h') && token.substring(0, token.lastIndex).toIntOrNull() != null)
-            return token.substring(0, token.lastIndex).toInt(16).toLong().and(0xFFFFFFFF)
-        else if (token.startsWith('r') && token.substring(1, token.length).toIntOrNull() != null)
-            return REGISTER_PREFIX or token.substring(1, token.length).toLong().and(0xFFFFFFFF)
-        else {
-            TODO("variable assignation and utilisation")
+                    scenes[currentScene!!] = sceneStatements.toTypedArray()
+
+                    sceneStatements.clear()
+                    currentScene = null
+                }
+                else {
+                    val cmdBuffer = if (currentScene != null) sceneStatements else rootStatements
+
+                    cmdBuffer.add(translateLine(lnum, stmt))
+                }
+            }
+
+
+        if (debugPrint) {
+            scenes.forEach { id, statements ->
+                println("SCENE #$id")
+                statements.forEach { println("    $it") }
+                println("END SCENE\n")
+            }
+
+            rootStatements.forEach { println(it) }
         }
     }
 
-    private class VT2Statement(val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray)
+    private fun translateLine(lnum: Int, line: String): VT2Statement {
+        val tokens = line.split(reTokenizer)
+        if (tokens.isEmpty()) throw InternalError("Line $lnum: empty line not filtered!")
+
+        val isInit = tokens[0] == "@"
+        val cmdstr = tokens[isInit.toInt()].toUpperCase()
+
+        val cmd: Int = Command.dict[cmdstr] ?: throw RuntimeException("Syntax Error at line $lnum") // conditional code is pre-added on dict
+        val args = tokens.subList(1 + isInit.toInt(), tokens.size).map { parseArgString(it) }
+
+        return VT2Statement(if (isInit) StatementPrefix.INIT else StatementPrefix.NONE, cmd, args.toLongArray())
+    }
+
+    private fun parseArgString(token: String): Long {
+        if (token.toIntOrNull() != null) // number literal
+            return token.toLong().and(0xFFFFFFFF)
+        else if (token.endsWith('h') && token.substring(0, token.lastIndex).toIntOrNull() != null) // hex literal
+            return token.substring(0, token.lastIndex).toInt(16).toLong().and(0xFFFFFFFF)
+        else if (token.startsWith('r') && token.substring(1, token.length).toIntOrNull() != null) // r-registers
+            return REGISTER_PREFIX or token.substring(1, token.length).toLong().minus(1).and(0xFFFFFFFF)
+        else if (token.startsWith('c') && token.substring(1, token.length).toIntOrNull() != null) // c-registers
+            return REGISTER_PREFIX or token.substring(1, token.length).toLong().plus(5).and(0xFFFFFFFF)
+        else {
+            val varId = varIdTable[token.toUpperCase()] ?: throw IllegalArgumentException("Undefined variable: $token")
+
+            return varId
+        }
+    }
+
+    private fun registerNewVariable(varName: String): Long {
+        var id: Long
+        do {
+            id = VARIABLE_PREFIX or rng.nextLong().and(0xFFFFFFFFL)
+        } while (varIdTable.containsValue(id))
+
+        varIdTable[varName.toUpperCase()] = id
+        return id
+    }
+
+    private fun hasVar(name: String) = (varIdTable.containsKey(name.toUpperCase()))
+
+
+    private class VT2Statement(val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray) {
+        override fun toString(): String {
+            return StatementPrefix.toString(prefix) + " " + Command.reverseDict[command] + " " + (args.map { argsToString(it) + " " })
+        }
+
+        private fun argsToString(i: Long): String {
+            if (i and REGISTER_PREFIX != 0L) {
+                val regnum = i and 0xFFFFFFFFL
+                return if (regnum < 6) "r${regnum + 1}" else "c${regnum - 5}"
+            }
+            else return i.toInt().toString()
+        }
+    }
 
     fun dispose() {
         regs.destroy()
@@ -70,15 +184,54 @@ class Videotron2K(val gpu: GraphicsAdapter) {
     companion object {
         private const val REGISTER_PREFIX = 0x7FFFFFFF_00000000L
         private const val VARIABLE_PREFIX = 0x3FFFFFFF_00000000L
+
+        private const val REG_PX = REGISTER_PREFIX or 12
+        private const val REG_PY = REGISTER_PREFIX or 13
+        private const val REG_FRM = REGISTER_PREFIX or 14
+        private const val REG_TMR = REGISTER_PREFIX or 15
+
+        private const val REG_R1 = REGISTER_PREFIX
+        private const val REG_C1 = REGISTER_PREFIX + 6
+
+        /*
+        Registers internal variable ID:
+
+        r1 = REGISTER_PREFIX + 0
+        r2 = REGISTER_PREFIX + 1
+        r3 = REGISTER_PREFIX + 2
+        r4 = REGISTER_PREFIX + 3
+        r5 = REGISTER_PREFIX + 4
+        r6 = REGISTER_PREFIX + 5
+
+        c1 = REGISTER_PREFIX + 6
+        c2 = REGISTER_PREFIX + 7
+        c3 = REGISTER_PREFIX + 8
+        c4 = REGISTER_PREFIX + 9
+        c5 = REGISTER_PREFIX + 10
+        c6 = REGISTER_PREFIX + 11
+
+        px = REGISTER_PREFIX + 12
+        py = REGISTER_PREFIX + 13
+
+        frm = REGISTER_PREFIX + 14
+        tmr = REGISTER_PREFIX + 15
+         */
     }
 }
 
 object StatementPrefix {
     const val NONE = 0
     const val INIT = 1
+
+    fun toString(key: Int) = when(key) {
+        INIT -> "@"
+        else -> " "
+    }
 }
 
 object Command {
+    val conditional = arrayOf("ZR", "NZ", "GT", "LS", "GE", "LE")
+
     const val NOP = 0
     const val ADD = 0x8
     const val SUB = 0x10
@@ -154,4 +307,15 @@ object Command {
 
         "DEFINE" to DEFINE
     )
+
+    // fill in conditionals to dict
+    init {
+        dict.entries.forEach { (command, opcode) ->
+            conditional.forEachIndexed { i, cond ->
+                dict[command + cond] = opcode + i + 1
+            }
+        }
+    }
+
+    val reverseDict = HashMap<Int, String>(dict.entries.associate { (k,v)-> v to k })
 }

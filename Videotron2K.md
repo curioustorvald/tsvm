@@ -80,9 +80,22 @@ Commands can have "conditional postfix" used to execute the command conditionall
 - ge r : if r >= 0
 - le r : if r <= 0
 
+## Programming Guidelines
+
+### Scene
+
+* A scene will always need one or more `exit` command; scenes are infini-loop object and without `exit`, there will be no way to terminate the scene.
+
+### Program
+
+* A program will not infini-loop on its own; you need to explicitly enter the `loop` command.
+
+
 ## Available Commands
 
 ### Arithmetic
+
+NOTE : immediates and variables can substitute registers
 
 * add rA rB rC : rC = rA + rB
 * sub rA rB rC : rC = rA - rB
@@ -95,13 +108,14 @@ Commands can have "conditional postfix" used to execute the command conditionall
 * shr rA rB rC : rC = rA >> rB
 * ushr rA rB rC : rC = rA >>> rB
 
-* inc rA rB : rC = rA + 1
-* dec rA rB : rC = rA - 1
-
+* inc R : R = R + 1
+* dec R : R = R - 1
 * not R : R = !R (ones' complement of R)
 * neg R : R = -R (twos' complement of R)
 
 ### Conditional
+
+NOTE : immediates and variables can substitute registers
 
 * cmp rA rB rC : compares rA and rB and stores result to rC. 1 if rA > rB, -1 if rA < rB, 0 if rA == rB.
 
@@ -109,7 +123,7 @@ Commands can have "conditional postfix" used to execute the command conditionall
 
 NOTE: Any drawing command will clobber internal memory starting from address zero.
 
-* mov rA rB/I : assignes R with contents of rB/constant I
+* mov rA rB/I : assignes rA with contents of rB/constant I
 * data rA/I bytes : writes bytes to the internal memory of address starting from rA/I
 * mcp from y x len : copies part of the internal memory to the framebuffer, from the internal memory address `from`,
                         to scanline `y`, horizontal position `x`, with copying length of `len`.
@@ -117,17 +131,19 @@ NOTE: Any drawing command will clobber internal memory starting from address zer
 ### Flow Control
 
 * perform scenename : gosub into the scenename
+* jumpto label_name : goto the label name. JUMPTO only works when the label is within the same scope.
 * next : advance a frame counter (frm) and sleeps until it is time to draw next frame
-* exit : terminates current scene. System will error out if this command is used outside of a scene
+* loop : will jump to the beginning of the current scope (scene). @-padded line will NOT be executed. The opposite of EXIT
+* exit : terminates current scene. System will error out if this command is used outside of a scene. The opposite of LOOP
 * exeunt : completely terminates the program
 
 ### Drawing
 
 NOTE: Any drawing command will clobber internal memory starting from address zero.
 
-* fillin byte y x-start y-end-exclusive : fills entire scanline of `y` from the horizontal position `x-start` through
+* fillin byte y x-start y-end-exclusive : fills entire scanline of `y` with `byte` from the horizontal position `x-start` through
                                           `y-end-exclusive` MINUS ONE. final (px,py) will be (scanline,x-end-exclusive)
-* plot byte... : writes bytes into the framebuffer
+* plot byte... : writes bytes into the framebuffer. The `px` register will auto-increment but `py` won't!
 * fillscr byte : fills entire screen with a given byte
 * goto x y : writes `x` to px and `y` to py (use `mov px <something>` to write to px/py only)
 * border r g b : sets border colour
@@ -147,3 +163,11 @@ NOTE: Any drawing command will clobber internal memory starting from address zer
 
 * RATET : framerate defined by miliseconds between each frame. Mutually exclusive with RATEF.
 * RATEF : framerate defined by how many frames must be shown in one second. Mutually exclusive with RATET.
+
+### Auto-incrementation
+
+Some instructions will cause a register to auto-increment. Auto-increment rule is as follows:
+
+* `px` : px = (px + 1 fmod width)
+* `py` : py = (py + 1 fmod height)
+* If an arithmetic command is used against `px` or `py` register, above rules will apply to the registers.
