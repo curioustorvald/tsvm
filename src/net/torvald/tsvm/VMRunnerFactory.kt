@@ -1,6 +1,7 @@
 package net.torvald.tsvm
 
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.vdc.Videotron2K
 import java.io.FileReader
 import javax.script.ScriptContext
 import javax.script.ScriptEngineManager
@@ -40,7 +41,8 @@ object VMRunnerFactory {
             "vt2" -> {
                 object : VMRunner(extension) {
 
-                    val engine = Videotron2K(vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)!!.peripheral!! as GraphicsAdapter)
+                    val engine =
+                        Videotron2K(vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)!!.peripheral!! as GraphicsAdapter)
 
                     override suspend fun executeCommand(command: String) {
                         engine.eval(command)

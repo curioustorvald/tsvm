@@ -1,4 +1,4 @@
-package net.torvald.tsvm
+package net.torvald.tsvm.vdc
 
 import net.torvald.UnsafeHelper
 import net.torvald.random.HQRNG
@@ -7,179 +7,12 @@ import java.lang.NumberFormatException
 
 /**
  * See ./Videotron2K.md for documentation
+ *
+ * ## Variable Namespace
+ * - Scenes and Variables use same namespace
+ *
  */
-class Videotron2K(val gpu: GraphicsAdapter) {
-
-    private val screenfiller = """
-        DEFINE RATEF 60
-        DEFINE height 448
-        DEFINE width 560
-
-        SCENE fill_line
-          @ mov 0 px
-            plot c1 ; will auto-increment px by one
-            inc c1
-            cmp c1 251 r3
-            movzr r3 c3 0     ; mov (-zr r3) c3 0 -- first, the comparison is made with r3 then runs 'mov c3 0' if r3 == 0
-            cmp px 560 r1
-            exitzr r1
-        END SCENE
-        
-        SCENE loop_frame
-          @ mov 0 py
-            perform fill_line
-            inc py
-            next
-            ; there's no EXIT command so this scene will make the program to go loop indefinitely
-        END SCENE
-        
-        perform loop_frame
-        
-    """.trimIndent()
-
-    private var regs = UnsafeHelper.allocate(16 * 8)
-    private var internalMem = UnsafeHelper.allocate(16384)
-
-    private var scenes = HashMap<Long, Array<VT2Statement>>()
-    private var varIdTable = HashMap<String, Long>() // String is always uppercase, Long always has VARIABLE_PREFIX added
-    private var currentScene: Long? = null // if it's named_scene, VARIABLE_PREFIX is added; indexed_scene does not.
-
-    private val reComment = Regex(""";[^\n]*""")
-    private val reTokenizer = Regex(""" +""")
-
-    private val debugPrint = true
-    private val rng = HQRNG()
-
-    fun eval(command: String) {
-        val rootStatements = ArrayList<VT2Statement>()
-        val sceneStatements = ArrayList<VT2Statement>()
-
-        command.replace(reComment, "").split('\n')
-            .mapIndexed { index, s -> index to s }.filter { it.second.isNotBlank() }
-            .forEach { (lnum, stmt) ->
-                val stmtUpper = stmt.toUpperCase()
-                val wordsUpper = stmtUpper.split(reTokenizer)
-
-                if (stmtUpper.startsWith("SCENE_")) { // indexed scene
-                    val scenenumStr = stmt.substring(6)
-                    try {
-                        val scenenum = scenenumStr.toLong()
-
-                        currentScene = scenenum
-                    }
-                    catch (e: NumberFormatException) {
-                        throw IllegalArgumentException("Line $lnum: Illegal scene numeral on $scenenumStr")
-                    }
-                }
-                else if (stmtUpper.startsWith("SCENE ")) { // named scene
-                    val sceneName = wordsUpper[1]
-                    if (sceneName.isNullOrBlank()) {
-                        throw IllegalArgumentException("Line $lnum: Illegal scene name on $stmt")
-                    }
-                    else if (hasVar(sceneName)) {
-                        throw IllegalArgumentException("Line $lnum: Scene name or variable '$sceneName' already exists")
-                    }
-
-                    currentScene = registerNewVariable(sceneName)
-                }
-                else if (wordsUpper[0] == "END" && wordsUpper[1] == "SCENE") { // END SCENE
-                    if (currentScene == null) {
-                        throw IllegalArgumentException("Line $lnum: END SCENE is called without matching SCENE definition")
-                    }
-
-                    scenes[currentScene!!] = sceneStatements.toTypedArray()
-
-                    sceneStatements.clear()
-                    currentScene = null
-                }
-                else {
-                    val cmdBuffer = if (currentScene != null) sceneStatements else rootStatements
-
-                    cmdBuffer.add(translateLine(lnum, stmt))
-                }
-            }
-
-
-        if (debugPrint) {
-            scenes.forEach { id, statements ->
-                println("SCENE #$id")
-                statements.forEach { println("    $it") }
-                println("END SCENE\n")
-            }
-
-            rootStatements.forEach { println(it) }
-        }
-    }
-
-    private fun translateLine(lnum: Int, line: String): VT2Statement {
-        val tokens = line.split(reTokenizer)
-        if (tokens.isEmpty()) throw InternalError("Line $lnum: empty line not filtered!")
-
-        val isInit = tokens[0] == "@"
-        val cmdstr = tokens[isInit.toInt()].toUpperCase()
-
-        val cmd: Int = Command.dict[cmdstr] ?: throw RuntimeException("Syntax Error at line $lnum") // conditional code is pre-added on dict
-        val args = tokens.subList(1 + isInit.toInt(), tokens.size).map { parseArgString(it) }
-
-        return VT2Statement(if (isInit) StatementPrefix.INIT else StatementPrefix.NONE, cmd, args.toLongArray())
-    }
-
-    private fun parseArgString(token: String): Long {
-        if (token.toIntOrNull() != null) // number literal
-            return token.toLong().and(0xFFFFFFFF)
-        else if (token.endsWith('h') && token.substring(0, token.lastIndex).toIntOrNull() != null) // hex literal
-            return token.substring(0, token.lastIndex).toInt(16).toLong().and(0xFFFFFFFF)
-        else if (token.startsWith('r') && token.substring(1, token.length).toIntOrNull() != null) // r-registers
-            return REGISTER_PREFIX or token.substring(1, token.length).toLong().minus(1).and(0xFFFFFFFF)
-        else if (token.startsWith('c') && token.substring(1, token.length).toIntOrNull() != null) // c-registers
-            return REGISTER_PREFIX or token.substring(1, token.length).toLong().plus(5).and(0xFFFFFFFF)
-        else {
-            val varId = varIdTable[token.toUpperCase()] ?: throw IllegalArgumentException("Undefined variable: $token")
-
-            return varId
-        }
-    }
-
-    private fun registerNewVariable(varName: String): Long {
-        var id: Long
-        do {
-            id = VARIABLE_PREFIX or rng.nextLong().and(0xFFFFFFFFL)
-        } while (varIdTable.containsValue(id))
-
-        varIdTable[varName.toUpperCase()] = id
-        return id
-    }
-
-    private fun hasVar(name: String) = (varIdTable.containsKey(name.toUpperCase()))
-
-
-    private class VT2Statement(val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray) {
-        override fun toString(): String {
-            return StatementPrefix.toString(prefix) + " " + Command.reverseDict[command] + " " + (args.map { argsToString(it) + " " })
-        }
-
-        private fun argsToString(i: Long): String {
-            if (i and REGISTER_PREFIX != 0L) {
-                val regnum = i and 0xFFFFFFFFL
-                return if (regnum < 6) "r${regnum + 1}" else "c${regnum - 5}"
-            }
-            else return i.toInt().toString()
-        }
-    }
-
-    fun dispose() {
-        regs.destroy()
-    }
-
-    private fun Boolean.toInt() = if (this) 1 else 0
-
-    private fun <T> Array<T>.linearSearch(selector: (T) -> Boolean): Int? {
-        this.forEachIndexed { index, it ->
-            if (selector.invoke(it)) return index
-        }
-
-        return null
-    }
+class Videotron2K(var gpu: GraphicsAdapter?) {
 
     companion object {
         private const val REGISTER_PREFIX = 0x7FFFFFFF_00000000L
@@ -192,6 +25,17 @@ class Videotron2K(val gpu: GraphicsAdapter) {
 
         private const val REG_R1 = REGISTER_PREFIX
         private const val REG_C1 = REGISTER_PREFIX + 6
+
+        private const val INDEXED_SCENE_MAX = 1048575
+
+        private val specialRegs = hashMapOf(
+            "px" to REG_PX,
+            "py" to REG_PY,
+            "frm" to REG_FRM,
+            "tmr" to REG_TMR
+        )
+
+        private val reverseSpecialRegs = HashMap(specialRegs.entries.associate { (k, v) -> v to k })
 
         /*
         Registers internal variable ID:
@@ -216,6 +60,197 @@ class Videotron2K(val gpu: GraphicsAdapter) {
         frm = REGISTER_PREFIX + 14
         tmr = REGISTER_PREFIX + 15
          */
+
+        val screenfiller = """
+        DEFINE RATEF 60
+        DEFINE height 448
+        DEFINE width 560
+
+        SCENE fill_line
+          @ mov 0 px
+            plot c1 ; will auto-increment px by one
+            inc c1
+            cmp c1 251 r3
+            movzr r3 c3 0     ; mov (-zr r3) c3 0 -- first, the comparison is made with r3 then runs 'mov c3 0' if r3 == 0
+            cmp px 560 r1
+            exitzr r1
+        END SCENE
+        
+        SCENE loop_frame
+          @ mov 0 py
+            perform fill_line
+            inc py
+            next
+            ; there's no EXIT command so this scene will make the program to go loop indefinitely
+        END SCENE
+        
+        perform loop_frame
+        
+        """.trimIndent()
+    }
+
+    private var regs = UnsafeHelper.allocate(16 * 8)
+    private var internalMem = UnsafeHelper.allocate(16384)
+
+    private var scenes = HashMap<Long, Array<VT2Statement>>() // Long can have either SCENE_PREFIX- or INDEXED_SCENE_PREFIX-prefixed value
+    private var varIdTable = HashMap<String, Long>() // String is always uppercase, Long always has VARIABLE_PREFIX added
+    private var sceneIdTable = HashMap<String, Long>() // String is always uppercase, Long always has SCENE_PREFIX added
+    private var currentScene: Long? = null // if it's named_scene, VARIABLE_PREFIX is added; indexed_scene does not.
+
+    private val reComment = Regex(""";[^\n]*""")
+    private val reTokenizer = Regex(""" +""")
+    private val reGeneralReg = Regex("""[rR][0-9]""")
+    private val reCountReg = Regex("""[cC][0-9]""")
+
+    private val debugPrint = true
+    private val rng = HQRNG()
+
+    fun eval(command: String) {
+        val rootStatements = ArrayList<VT2Statement>()
+        val sceneStatements = ArrayList<VT2Statement>()
+
+        command.replace(reComment, "").split('\n')
+            .mapIndexed { index, s -> index to s }.filter { it.second.isNotBlank() }
+            .forEach { (lnum, stmt) ->
+                val stmt = stmt.trim()
+                val stmtUpper = stmt.toUpperCase()
+                val wordsUpper = stmtUpper.split(reTokenizer)
+
+                if (stmtUpper.startsWith("SCENE_")) { // indexed scene
+                    val scenenumStr = stmt.substring(6)
+                    try {
+                        val scenenum = scenenumStr.toLong()
+
+                        currentScene = scenenum
+                    }
+                    catch (e: NumberFormatException) {
+                        throw IllegalArgumentException("Line $lnum: Illegal scene numeral on $scenenumStr")
+                    }
+                }
+                else if (stmtUpper.startsWith("SCENE ")) { // named scene
+                    val sceneName = wordsUpper[1]
+                    if (sceneName.isNullOrBlank()) {
+                        throw IllegalArgumentException("Line $lnum: Illegal scene name on $stmt")
+                    }
+                    else if (hasVar(sceneName)) {
+                        throw IllegalArgumentException("Line $lnum: Scene name or variable '$sceneName' already exists")
+                    }
+
+                    currentScene = registerNewVariable(sceneName) // scenes use same addr space as vars, to make things easier on the backend
+                }
+                else if (wordsUpper[0] == "END" && wordsUpper[1] == "SCENE") { // END SCENE
+                    if (currentScene == null) {
+                        throw IllegalArgumentException("Line $lnum: END SCENE is called without matching SCENE definition")
+                    }
+
+                    scenes[currentScene!!] = sceneStatements.toTypedArray()
+
+                    sceneStatements.clear()
+                    currentScene = null
+                }
+                else {
+                    val cmdBuffer = if (currentScene != null) sceneStatements else rootStatements
+
+                    cmdBuffer.add(translateLine(lnum + 1, stmt))
+                }
+            }
+
+
+        if (debugPrint) {
+            scenes.forEach { id, statements ->
+                println("SCENE #${id and 0xFFFFFFFFL}")
+                statements.forEach { println("    $it") }
+                println("END SCENE\n")
+            }
+
+            rootStatements.forEach { println(it) }
+        }
+    }
+
+    private fun translateLine(lnum: Int, line: String): VT2Statement {
+        val tokens = line.split(reTokenizer)
+        if (tokens.isEmpty()) throw InternalError("Line $lnum: empty line not filtered!")
+
+        //println(tokens)
+
+        val isInit = tokens[0] == "@"
+        val cmdstr = tokens[isInit.toInt()].toUpperCase()
+
+        val cmd: Int = Command.dict[cmdstr] ?: throw RuntimeException("Undefined instruction on line $lnum: $cmdstr ($line)") // conditional code is pre-added on dict
+        val args = tokens.subList(1 + isInit.toInt(), tokens.size).map { parseArgString(cmdstr, lnum, it) }
+
+        return VT2Statement(
+            if (isInit) StatementPrefix.INIT else StatementPrefix.NONE,
+            cmd,
+            args.toLongArray()
+        )
+    }
+
+    private fun parseArgString(parentCmd: String, lnum: Int, token: String): Long {
+        if (token.toIntOrNull() != null) // number literal
+            return token.toLong().and(0xFFFFFFFF)
+        else if (token.endsWith('h') && token.substring(0, token.lastIndex).toIntOrNull() != null) // hex literal
+            return token.substring(0, token.lastIndex).toInt(16).toLong().and(0xFFFFFFFF)
+        else if (specialRegs.contains(token.toLowerCase())) // special registers
+            return specialRegs[token.toLowerCase()]!!
+        else if (token.matches(reGeneralReg)) // r-registers
+            return REGISTER_PREFIX or token.substring(1, token.length).toLong().minus(1).and(0xFFFFFFFF)
+        else if (token.matches(reCountReg)) // c-registers
+            return REGISTER_PREFIX or token.substring(1, token.length).toLong().plus(5).and(0xFFFFFFFF)
+        else {
+            val varId = varIdTable[token.toUpperCase()] ?: (
+                    if (parentCmd in Command.varDefiningCommands) registerNewVariable(token)
+                    else throw NullPointerException("Undefined variable '$token' in line $lnum")
+                    )
+
+            return varId
+        }
+    }
+
+    private fun registerNewVariable(varName: String): Long {
+        var id: Long
+        do {
+            id = VARIABLE_PREFIX or rng.nextLong().and(0xFFFFFFFFL)
+        } while (varIdTable.containsValue(id) || (id and 0xFFFFFFFFL) <= INDEXED_SCENE_MAX)
+
+        varIdTable[varName.toUpperCase()] = id
+        return id
+    }
+
+    private fun hasVar(name: String) = (varIdTable.containsKey(name.toUpperCase()))
+
+
+    private class VT2Statement(val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray) {
+        override fun toString(): String {
+            return StatementPrefix.toString(prefix) + " " + Command.reverseDict[command] + " " + (args.map { argsToString(it) })
+        }
+
+        private fun argsToString(i: Long): String {
+            if (reverseSpecialRegs.contains(i))
+                return reverseSpecialRegs[i]!!
+            else if (i and REGISTER_PREFIX == REGISTER_PREFIX) {
+                val regnum = i and 0xFFFFFFFFL
+                return if (regnum < 6) "r${regnum + 1}" else "c${regnum - 5}"
+            }
+            else if (i and VARIABLE_PREFIX == VARIABLE_PREFIX) {
+                return "var:${i and 0xFFFFFFFF}"
+            }
+            else return i.toInt().toString()
+        }
+    }
+
+    fun dispose() {
+        regs.destroy()
+    }
+
+    private fun Boolean.toInt() = if (this) 1 else 0
+
+    private fun <T> Array<T>.linearSearch(selector: (T) -> Boolean): Int? {
+        this.forEachIndexed { index, it ->
+            if (selector.invoke(it)) return index
+        }
+
+        return null
     }
 }
 
@@ -269,50 +304,65 @@ object Command {
 
     const val DEFINE = 0xFFF8
 
-    val dict = hashMapOf(
-        "NOP" to NOP,
-        "ADD" to ADD,
-        "SUB" to SUB,
-        "MUL" to MUL,
-        "DIV" to DIV,
-        "AND" to AND,
-        "OR" to OR,
-        "XOR" to XOR,
-        "SHL" to SHL,
-        "SHR" to SHR,
-        "USHR" to USHR,
-        "INC" to INC,
-        "DEC" to DEC,
-        "NOT" to NOT,
-        "NEG" to NEG,
+    val dict = HashMap<String, Int>()
 
-        "CMP" to CMP,
+    val varDefiningCommands = HashSet<String>()
 
-        "MOV" to MOV,
-        "DATA" to DATA,
-        "MCP" to MCP,
-
-        "PERFORM" to PERFORM,
-        "NEXT" to NEXT,
-        "EXIT" to EXIT,
-        "EXEUNT" to EXEUNT,
-
-        "FILLIN" to FILLIN,
-        "PLOT" to PLOT,
-        "FILLSCR" to FILLSCR,
-        "GOTO" to GOTO,
-        "BORDER" to BORDER,
-
-        "WAIT" to WAIT,
-
-        "DEFINE" to DEFINE
-    )
 
     // fill in conditionals to dict
     init {
-        dict.entries.forEach { (command, opcode) ->
+        /* dict = */hashMapOf(
+            "NOP" to NOP,
+            "ADD" to ADD,
+            "SUB" to SUB,
+            "MUL" to MUL,
+            "DIV" to DIV,
+            "AND" to AND,
+            "OR" to OR,
+            "XOR" to XOR,
+            "SHL" to SHL,
+            "SHR" to SHR,
+            "USHR" to USHR,
+            "INC" to INC,
+            "DEC" to DEC,
+            "NOT" to NOT,
+            "NEG" to NEG,
+
+            "CMP" to CMP,
+
+            "MOV" to MOV,
+            "DATA" to DATA,
+            "MCP" to MCP,
+
+            "PERFORM" to PERFORM,
+            "NEXT" to NEXT,
+            "EXIT" to EXIT,
+            "EXEUNT" to EXEUNT,
+
+            "FILLIN" to FILLIN,
+            "PLOT" to PLOT,
+            "FILLSCR" to FILLSCR,
+            "GOTO" to GOTO,
+            "BORDER" to BORDER,
+
+            "WAIT" to WAIT,
+
+            "DEFINE" to DEFINE
+        ).entries.forEach { (command, opcode) ->
+            dict[command] = opcode
+
             conditional.forEachIndexed { i, cond ->
                 dict[command + cond] = opcode + i + 1
+            }
+        }
+
+        /* varDefiningCommands = */hashSetOf(
+            "DEFINE"
+        ).forEach { command ->
+            varDefiningCommands.add(command)
+
+            conditional.forEach { cond ->
+                varDefiningCommands.add(command + cond)
             }
         }
     }
