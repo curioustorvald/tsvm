@@ -92,10 +92,14 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
     private var regs = UnsafeHelper.allocate(16 * 8)
     private var internalMem = UnsafeHelper.allocate(16384)
 
+    /* Compile-time variables */
     private var scenes = HashMap<Long, Array<VT2Statement>>() // Long can have either SCENE_PREFIX- or INDEXED_SCENE_PREFIX-prefixed value
     private var varIdTable = HashMap<String, Long>() // String is always uppercase, Long always has VARIABLE_PREFIX added
-    private var sceneIdTable = HashMap<String, Long>() // String is always uppercase, Long always has SCENE_PREFIX added
+    //private var sceneIdTable = HashMap<String, Long>() // String is always uppercase, Long always has SCENE_PREFIX added
     private var currentScene: Long? = null // if it's named_scene, VARIABLE_PREFIX is added; indexed_scene does not.
+
+    /* Run-time variables */
+    private var variableMap = HashMap<Long, Int>() // VarId, Integer-value
 
     private val reComment = Regex(""";[^\n]*""")
     private val reTokenizer = Regex(""" +""")
@@ -106,6 +110,37 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
     private val rng = HQRNG()
 
     fun eval(command: String) {
+        val rootStatements = parseCommands(command)
+
+
+        if (debugPrint) {
+            scenes.forEach { id, statements ->
+                println("SCENE #${id and 0xFFFFFFFFL}")
+                statements.forEach { println("$it") }
+                println("END SCENE\n")
+            }
+
+            rootStatements.forEach { println(it) }
+        }
+    }
+
+    private fun execute(rootStatements: ArrayList<VT2Statement>) {
+        variableMap.clear()
+
+        rootStatements.forEach {
+
+        }
+    }
+
+    /**
+     * Clobbers scenes, varIdTable, sceneIdTable and temporary variable sceneIdTable
+     *
+     * @return root statements; scene statements are stored in 'scenes'
+     */
+    private fun parseCommands(command: String): ArrayList<VT2Statement> {
+        scenes.clear()
+        varIdTable.clear()
+        //sceneIdTable.clear()
         val rootStatements = ArrayList<VT2Statement>()
         val sceneStatements = ArrayList<VT2Statement>()
 
@@ -155,16 +190,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
                 }
             }
 
-
-        if (debugPrint) {
-            scenes.forEach { id, statements ->
-                println("SCENE #${id and 0xFFFFFFFFL}")
-                statements.forEach { println("    $it") }
-                println("END SCENE\n")
-            }
-
-            rootStatements.forEach { println(it) }
-        }
+        return rootStatements
     }
 
     private fun translateLine(lnum: Int, line: String): VT2Statement {
@@ -180,6 +206,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
         val args = tokens.subList(1 + isInit.toInt(), tokens.size).map { parseArgString(cmdstr, lnum, it) }
 
         return VT2Statement(
+            lnum,
             if (isInit) StatementPrefix.INIT else StatementPrefix.NONE,
             cmd,
             args.toLongArray()
@@ -220,9 +247,9 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
     private fun hasVar(name: String) = (varIdTable.containsKey(name.toUpperCase()))
 
 
-    private class VT2Statement(val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray) {
+    private class VT2Statement(val lnum: Int, val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray) {
         override fun toString(): String {
-            return StatementPrefix.toString(prefix) + " " + Command.reverseDict[command] + " " + (args.map { argsToString(it) })
+            return "L ${lnum.toString().padEnd(5, ' ')}" + StatementPrefix.toString(prefix) + " " + Command.reverseDict[command] + " " + (args.map { argsToString(it) })
         }
 
         private fun argsToString(i: Long): String {

@@ -38,12 +38,12 @@ SCENE initialise
                          ; if next line is not there, it goes to the first non-@ line
 END SCENE
 
-SCENE 0     ; indexed scene
+SCENE_0     ; indexed scene
     goto 100 100         ; moves pixel cursor to (x,y) = (100,100)   
     plot 1 54 231 7 82 64 22 5 ; writes following bytes into the framebuffer
 END SCENE
 
-SCENE 1     ; indexed scene
+SCENE_1     ; indexed scene
     goto 100 102         ; moves pixel cursor to (x,y) = (100,102)   
     plot 231 1 54 17 182 62 2 35 ; writes following bytes into the framebuffer
 END SCENE
@@ -52,8 +52,8 @@ SCENE anim
   @ define cnt 2      ; definition of the local constant
   @ mov c1 0
     perform c1        ; accessing the indexed scene
-    inc c1            ; slightly inefficient way to make comparision
-    cmp c1 cnt r1     ; slightly inefficient way to make comparision
+    inc c1            ; slightly inefficient way to make comparison
+    cmp c1 cnt r1     ; slightly inefficient way to make comparison
     exitzr r1
 END SCENE
 
