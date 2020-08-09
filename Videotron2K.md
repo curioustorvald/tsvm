@@ -24,8 +24,8 @@ Consider the following code snippet:
 
 ```
 DEFINE RATEF 60  ; 60 fps
-DEFINE height 448
-DEFINE width 560
+DEFINE HEIGHT 448
+DEFINE WIDTH 560
 
 SCENE initialise
   @ mov r1 height     ; this line runs only once when the SCENE is called
@@ -144,6 +144,7 @@ NOTE: Any drawing command will clobber internal memory starting from address zer
 * fillin byte y x-start y-end-exclusive : fills entire scanline of `y` with `byte` from the horizontal position `x-start` through
                                           `y-end-exclusive` MINUS ONE. final (px,py) will be (scanline,x-end-exclusive)
 * plot byte... : writes bytes into the framebuffer. The `px` register will auto-increment but `py` won't!
+* plotp byte... : same as `plot` but treats bytes as PackBits-compressed payload
 * fillscr byte : fills entire screen with a given byte
 * goto x y : writes `x` to px and `y` to py (use `mov px <something>` to write to px/py only)
 * border r g b : sets border colour
@@ -162,7 +163,7 @@ NOTE: Any drawing command will clobber internal memory starting from address zer
 #### Predefined Constants
 
 * RATET : framerate defined by miliseconds between each frame. Mutually exclusive with RATEF.
-* RATEF : framerate defined by how many frames must be shown in one second. Mutually exclusive with RATET.
+* RATEF : framerate defined by how many frames must be shown in one second. Mutually exclusive with RATET
 
 ### Auto-incrementation
 

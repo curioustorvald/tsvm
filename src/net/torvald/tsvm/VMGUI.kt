@@ -105,6 +105,19 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
+    private fun renderGame(delta: Float) {
+        gpu.render(delta, batch, 0f, 0f)
+
+    }
+
+
+    override fun dispose() {
+        super.dispose()
+        batch.dispose()
+        coroutineJob.cancel()
+        vm.dispose()
+    }
+
     private val gpuTestPaletteKt = """
 val w = 560
 val h = 448
@@ -385,20 +398,6 @@ while True:
     print("Apparent FPS: " + str(1000000000.0 / (tend - tstart)))
 
     """.trimIndent()
-
-
-    private fun renderGame(delta: Float) {
-        gpu.render(delta, batch, 0f, 0f)
-
-    }
-
-
-    override fun dispose() {
-        super.dispose()
-        batch.dispose()
-        coroutineJob.cancel()
-        vm.dispose()
-    }
 }
 
 const val EMDASH = 0x2014.toChar()

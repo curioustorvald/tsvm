@@ -4,6 +4,10 @@ import net.torvald.UnsafeHelper
 import net.torvald.random.HQRNG
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import java.lang.NumberFormatException
+import java.util.*
+import kotlin.collections.ArrayList
+import kotlin.collections.HashMap
+import kotlin.collections.HashSet
 
 /**
  * See ./Videotron2K.md for documentation
@@ -15,18 +19,24 @@ import java.lang.NumberFormatException
 class Videotron2K(var gpu: GraphicsAdapter?) {
 
     companion object {
-        private const val REGISTER_PREFIX = 0x7FFFFFFF_00000000L
-        private const val VARIABLE_PREFIX = 0x3FFFFFFF_00000000L
+        const val REGISTER_PREFIX = 0x7FFFFFFF_00000000L
+        const val VARIABLE_PREFIX = 0x3FFFFFFF_00000000L
+        const val PREFIX_MASK = (0xFFFFFFFFL).shl(32)
 
-        private const val REG_PX = REGISTER_PREFIX or 12
-        private const val REG_PY = REGISTER_PREFIX or 13
-        private const val REG_FRM = REGISTER_PREFIX or 14
-        private const val REG_TMR = REGISTER_PREFIX or 15
+        const val REG_PX = REGISTER_PREFIX or 12
+        const val REG_PY = REGISTER_PREFIX or 13
+        const val REG_FRM = REGISTER_PREFIX or 14
+        const val REG_TMR = REGISTER_PREFIX or 15
 
-        private const val REG_R1 = REGISTER_PREFIX
-        private const val REG_C1 = REGISTER_PREFIX + 6
+        const val REG_R1 = REGISTER_PREFIX
+        const val REG_C1 = REGISTER_PREFIX + 6
 
-        private const val INDEXED_SCENE_MAX = 1048575
+        const val INDEXED_SCENE_MAX = 1048575
+
+        const val VARIABLE_RATET = VARIABLE_PREFIX or 0
+        const val VARIABLE_RATEF = VARIABLE_PREFIX or 1
+        const val VARIABLE_WIDTH = VARIABLE_PREFIX or 2
+        const val VARIABLE_HEIGHT = VARIABLE_PREFIX or 3
 
         private val specialRegs = hashMapOf(
             "px" to REG_PX,
@@ -67,20 +77,22 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
         DEFINE width 560
 
         SCENE fill_line
-          @ mov 0 px
+          @ mov px 0
             plot c1 ; will auto-increment px by one
             inc c1
-            cmp c1 251 r3
-            movzr r3 c3 0     ; mov (-zr r3) c3 0 -- first, the comparison is made with r3 then runs 'mov c3 0' if r3 == 0
-            cmp px 560 r1
-            exitzr r1
+            cmp c1 251 r1
+            movzr r1 c1 0     ; mov (-zr r1) c1 0 -- first, the comparison is made with r1 then runs 'mov c1 0' if r1 == 0
+            exitzr px
         END SCENE
         
         SCENE loop_frame
-          @ mov 0 py
+          @ mov py 0
             perform fill_line
             inc py
+            cmp py 448 r1
+            movzr r1 py 0
             next
+            ; exeunt
             ; there's no EXIT command so this scene will make the program to go loop indefinitely
         END SCENE
         
@@ -89,47 +101,94 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
         """.trimIndent()
     }
 
-    private var regs = UnsafeHelper.allocate(16 * 8)
-    private var internalMem = UnsafeHelper.allocate(16384)
+    internal var regs = UnsafeHelper.allocate(16 * 4)
+    internal var internalMem = UnsafeHelper.allocate(16384)
+    internal var callStack = Stack<Pair<Long, Int>>() // Pair of Scene-ID (has SCENE_PREFIX; 0 with no prefix for root scene) and ProgramCounter
 
     /* Compile-time variables */
     private var scenes = HashMap<Long, Array<VT2Statement>>() // Long can have either SCENE_PREFIX- or INDEXED_SCENE_PREFIX-prefixed value
     private var varIdTable = HashMap<String, Long>() // String is always uppercase, Long always has VARIABLE_PREFIX added
     //private var sceneIdTable = HashMap<String, Long>() // String is always uppercase, Long always has SCENE_PREFIX added
-    private var currentScene: Long? = null // if it's named_scene, VARIABLE_PREFIX is added; indexed_scene does not.
+    internal var currentScene = 0L // VARIABLE_PREFIX is normally added but ROOT scene is just zero. Used by both parser and executor
+    internal var currentLineIndex = 0
 
-    /* Run-time variables */
-    private var variableMap = HashMap<Long, Int>() // VarId, Integer-value
+    internal var pcLoopedBack = false
+    internal var exeunt = false
+
+    /* Run-time variables and status */
+    internal var variableMap = HashMap<Long, Int>() // VarId with VARIABLE_PREFIX, Integer-value
+    internal var sleepLatch = false
+
+    internal var performanceCounterTmr = 0L
+
+    fun resetVarIdTable() {
+        varIdTable.clear()
+        varIdTable["RATET"] = VARIABLE_RATET
+        varIdTable["RATEF"] = VARIABLE_RATEF
+        varIdTable["WIDTH"] = VARIABLE_WIDTH
+        varIdTable["HEIGHT"] = VARIABLE_HEIGHT
+    }
 
     private val reComment = Regex(""";[^\n]*""")
     private val reTokenizer = Regex(""" +""")
     private val reGeneralReg = Regex("""[rR][0-9]""")
     private val reCountReg = Regex("""[cC][0-9]""")
 
-    private val debugPrint = true
+    private val infoPrint = true
+    private val debugPrint = false
     private val rng = HQRNG()
 
     fun eval(command: String) {
         val rootStatements = parseCommands(command)
 
 
-        if (debugPrint) {
+        if (infoPrint) {
             scenes.forEach { id, statements ->
                 println("SCENE #${id and 0xFFFFFFFFL}")
-                statements.forEach { println("$it") }
+                statements.forEachIndexed { i, it -> println("I ${i.toString().padEnd(5, ' ')}$it") }
                 println("END SCENE\n")
             }
 
-            rootStatements.forEach { println(it) }
+            rootStatements.forEachIndexed { i, it -> println("I ${i.toString().padEnd(5, ' ')}$it") }
         }
+
+        execute(rootStatements)
     }
 
-    private fun execute(rootStatements: ArrayList<VT2Statement>) {
+    private fun execute(rootStatements: Array<VT2Statement>) {
         variableMap.clear()
+        currentScene = 0
+        regs.fillWith(0)
 
-        rootStatements.forEach {
+        while (!exeunt) {
+            val scene = if (currentScene == 0L) rootStatements else scenes[currentScene]!!
+            val it = scene[currentLineIndex]
+            val oldSceneNo = currentScene
 
+            if (it.prefix != StatementPrefix.INIT || it.prefix == StatementPrefix.INIT && !pcLoopedBack) {
+                if (debugPrint) println("Run-Scene: ${currentScene and 0xFFFFFFFFL}, Lindex: $currentLineIndex, Inst: $it")
+                Command.checkConditionAndRun(it.command, this, it.args)
+                if (debugPrint) println("Reg-r1: ${regs.getInt((REG_R1 and 0xF) * 4)}, c1: ${regs.getInt((REG_C1 and 0xF) * 4)}, px: ${regs.getInt((REG_PX and 0xF) * 4)}")
+            }
+
+
+
+
+            // increment PC
+            currentLineIndex += 1
+            //// check if PC should loop back into the beginning of the scene
+            if (currentScene == oldSceneNo && currentLineIndex == scene.size) {
+                currentLineIndex = 0
+                pcLoopedBack = true
+            }
+            if (currentScene != oldSceneNo) {
+                pcLoopedBack = false
+            }
         }
+        exeunt = false
+
+
+        if (infoPrint) println("Ende")
     }
 
     /**
@@ -137,9 +196,9 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
      *
      * @return root statements; scene statements are stored in 'scenes'
      */
-    private fun parseCommands(command: String): ArrayList<VT2Statement> {
+    private fun parseCommands(command: String): Array<VT2Statement> {
         scenes.clear()
-        varIdTable.clear()
+        resetVarIdTable()
         //sceneIdTable.clear()
         val rootStatements = ArrayList<VT2Statement>()
         val sceneStatements = ArrayList<VT2Statement>()
@@ -156,7 +215,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
                     try {
                         val scenenum = scenenumStr.toLong()
 
-                        currentScene = scenenum
+                        currentScene = VARIABLE_PREFIX or scenenum
                     }
                     catch (e: NumberFormatException) {
                         throw IllegalArgumentException("Line $lnum: Illegal scene numeral on $scenenumStr")
@@ -174,23 +233,23 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
                     currentScene = registerNewVariable(sceneName) // scenes use same addr space as vars, to make things easier on the backend
                 }
                 else if (wordsUpper[0] == "END" && wordsUpper[1] == "SCENE") { // END SCENE
-                    if (currentScene == null) {
+                    if (currentScene == 0L) {
                         throw IllegalArgumentException("Line $lnum: END SCENE is called without matching SCENE definition")
                     }
 
-                    scenes[currentScene!!] = sceneStatements.toTypedArray()
+                    scenes[currentScene] = sceneStatements.toTypedArray()
 
                     sceneStatements.clear()
-                    currentScene = null
+                    currentScene = 0L
                 }
                 else {
-                    val cmdBuffer = if (currentScene != null) sceneStatements else rootStatements
+                    val cmdBuffer = if (currentScene != 0L) sceneStatements else rootStatements
 
                     cmdBuffer.add(translateLine(lnum + 1, stmt))
                 }
             }
 
-        return rootStatements
+        return rootStatements.toTypedArray()
     }
 
     private fun translateLine(lnum: Int, line: String): VT2Statement {
@@ -310,30 +369,32 @@ object Command {
     const val NOT = 0x68
     const val NEG = 0x70
 
-    const val CMP = 0x100
+    const val CMP = 0x80
+    const val MOV = 0x88
+    const val DATA = 0x90
+    const val MCP = 0x98
 
-    const val MOV = 0x200
-    const val DATA = 0x208
-    const val MCP = 0x210
+    const val PERFORM = 0x100
+    const val NEXT = 0x108
+    const val EXIT = 0x110
+    const val EXEUNT = 0x118
 
-    const val PERFORM = 0x300
-    const val NEXT = 0x308
-    const val EXIT = 0x310
-    const val EXEUNT = 0x318
+    const val FILLIN = 0x200
+    const val PLOT = 0x208
+    const val FILLSCR = 0x210
+    const val GOTO = 0x218
+    const val BORDER = 0x220
+    const val PLOTP = 0x228
 
-    const val FILLIN = 0x400
-    const val PLOT = 0x408
-    const val FILLSCR = 0x410
-    const val GOTO = 0x418
-    const val BORDER = 0x420
+    const val WAIT = 0x700
+    const val DEFINE = 0x708
 
-    const val WAIT = 0x600
-
-    const val DEFINE = 0xFFF8
+    const val INST_ID_MAX = 0x800 // 256 if divided by 8
 
     val dict = HashMap<String, Int>()
 
     val varDefiningCommands = HashSet<String>()
+    val transferInst = HashSet<Int>()
 
 
     // fill in conditionals to dict
@@ -368,6 +429,7 @@ object Command {
 
             "FILLIN" to FILLIN,
             "PLOT" to PLOT,
+            "PLOTP" to PLOTP,
             "FILLSCR" to FILLSCR,
             "GOTO" to GOTO,
             "BORDER" to BORDER,
@@ -392,7 +454,149 @@ object Command {
                 varDefiningCommands.add(command + cond)
             }
         }
+
+        /* transferInst = */hashSetOf(
+            PERFORM, EXIT, EXEUNT
+        ).forEach { command ->
+            transferInst.add(command)
+
+            conditional.forEachIndexed { cond, _ ->
+                transferInst.add(command + cond)
+            }
+        }
     }
 
     val reverseDict = HashMap<Int, String>(dict.entries.associate { (k,v)-> v to k })
+
+    /**
+     * function (instance: Videotron2K, args: LongArray)
+     */
+    val instSet = Array<(Videotron2K, LongArray) -> Unit>(256) { { _, _ -> TODO("Instruction ID $it (${reverseDict[it * 8]})") } }
+
+    init {
+        instSet[NOP] = { _, _ -> }
+        instSet[DEFINE shr 3] = { instance, args -> // DEFINE variable value
+            if (args.size != 2) throw ArgsCountMismatch(2, args)
+
+            instance.variableMap[args[0]] = if (args[1] and Videotron2K.VARIABLE_PREFIX == Videotron2K.VARIABLE_PREFIX) {
+                instance.variableMap[args[1]] ?: throw NullVar()
+            }
+            else if (args[1] and Videotron2K.PREFIX_MASK == 0L) {
+                args[1].toInt()
+            }
+            else {
+                throw UnknownVariableType(args[1])
+            }
+        }
+        instSet[MOV shr 3] = { instance, args -> // MOV register value
+            if (args.size != 2) throw ArgsCountMismatch(2, args)
+            checkRegisterLH(args[0])
+            instance.regs.setInt((args[0] and 0xF) * 4, resolveVar(instance, args[1]))
+        }
+        instSet[INC shr 3] = { instance, args -> // INC register
+            if (args.size != 1) throw ArgsCountMismatch(1, args)
+            checkRegisterLH(args[0])
+            instance.regs.setInt((args[0] and 0xF) * 4, 1 + instance.regs.getInt((args[0] and 0xF) * 4))
+        }
+        instSet[DEC shr 3] = { instance, args -> // DEC register
+            if (args.size != 1) throw ArgsCountMismatch(1, args)
+            checkRegisterLH(args[0])
+            instance.regs.setInt((args[0] and 0xF) * 4, 1 - instance.regs.getInt((args[0] and 0xF) * 4))
+        }
+        instSet[NEXT shr 3] = { instance, _ ->
+            instance.regs.setInt((Videotron2K.REG_FRM and 0xF) * 4, 1 + instance.regs.getInt((Videotron2K.REG_FRM and 0xF) * 4))
+            instance.sleepLatch = true
+
+            val timeTook = (System.nanoTime() - instance.performanceCounterTmr).toDouble()
+            println("Frame time: ${timeTook / 1000000.0} ms (fps: ${1000000000.0 / timeTook})")
+            instance.performanceCounterTmr = System.nanoTime()
+        }
+        instSet[CMP shr 3] = { instance, args -> // CMP rA rB rC
+            if (args.size != 3) throw ArgsCountMismatch(3, args)
+            val v1 = resolveVar(instance, args[0])
+            val v2 = resolveVar(instance, args[1])
+            val cmpvar = if (v1 > v2) 1 else if (v1 < v2) -1 else 0
+            instance.regs.setInt((args[2] and 0xF) * 4, cmpvar)
+        }
+        instSet[PLOT shr 3] = { instance, args -> // PLOT vararg-bytes
+            if (args.isNotEmpty()) {
+                val px = instance.regs.getInt((Videotron2K.REG_PX and 0xF) * 4)
+                val py = instance.regs.getInt((Videotron2K.REG_PY and 0xF) * 4)
+                val width = instance.variableMap[Videotron2K.VARIABLE_WIDTH]!!
+                val memAddr = py * width + px
+
+                args.forEachIndexed { index, value ->
+                    instance.gpu?.poke(memAddr.toLong() + index, value.toByte())
+                }
+
+                // write back auto-incremented value
+                instance.regs.setInt((Videotron2K.REG_PX and 0xF) * 4, (px + args.size) fmod width)
+            }
+        }
+        instSet[PERFORM shr 3] = { instance, args -> // PERFORM scene
+            instance.callStack.push(instance.currentScene to instance.currentLineIndex)
+            instance.currentScene = args[0]
+            instance.currentLineIndex = -1
+        }
+        instSet[EXIT shr 3] = { instance, _ ->
+            val (scene, line) = instance.callStack.pop()
+            instance.currentScene = scene
+            instance.currentLineIndex = line
+            //println("EXIT!")
+            //Thread.sleep(1000L)
+        }
+        instSet[EXEUNT shr 3] = { instance, _ ->
+            instance.exeunt = true
+        }
+    }
+
+    fun checkConditionAndRun(inst: Int, instance: Videotron2K, args: LongArray) {
+        val opcode = inst shr 3
+        val condCode = inst and 7
+
+        if (condCode == 0) {
+            //if (inst !in transferInst) instance.currentLineIndex += 1
+            instSet[opcode].invoke(instance, args)
+            return
+        }
+
+        val condition = when (condCode) {
+            1 -> resolveVar(instance, args[0]) == 0
+            2 -> resolveVar(instance, args[0]) != 0
+            3 -> resolveVar(instance, args[0]) > 0
+            4 -> resolveVar(instance, args[0]) < 0
+            5 -> resolveVar(instance, args[0]) >= 0
+            6 -> resolveVar(instance, args[0]) <= 0
+            else -> throw InternalError()
+        }
+
+        if (condition) {
+            //if (inst !in transferInst) instance.currentLineIndex += 1
+            instSet[opcode].invoke(instance, args.sliceArray(1 until args.size))
+        }
+    }
+
+    private fun resolveVar(instance: Videotron2K, arg: Long): Int {
+        return if (arg and Videotron2K.REGISTER_PREFIX == Videotron2K.REGISTER_PREFIX) {
+            instance.regs.getInt((arg and 0xF) * 4)
+        }
+        else if (arg and Videotron2K.VARIABLE_PREFIX == Videotron2K.VARIABLE_PREFIX) {
+            instance.variableMap[arg] ?: throw NullVar()
+        }
+        else arg.toInt()
+    }
+
+    private fun checkRegisterLH(arg: Long) {
+        if (arg and Videotron2K.REGISTER_PREFIX != Videotron2K.REGISTER_PREFIX) {
+            throw BadLeftHand("register")
+        }
+    }
+
+    private infix fun Int.fmod(other: Int) = Math.floorMod(this, other)
 }
+
+internal class ArgsCountMismatch(expected: Int, args: LongArray) : RuntimeException("Argument count mismatch: expected $expected, got ${args.size}")
+internal class UnknownVariableType(arg: Long) : RuntimeException("Unknown variable type: ${arg.ushr(32).toString(16)}")
+internal class NullVar : RuntimeException("Variable is undeclared")
+internal class BadLeftHand(type: String) : RuntimeException("Left-hand argument is not $type")
+internal class BadRightHand(type: String) : RuntimeException("Right-hand argument is not $type")
