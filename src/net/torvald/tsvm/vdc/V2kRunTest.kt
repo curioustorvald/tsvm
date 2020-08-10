@@ -65,7 +65,7 @@ class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdap
     private var updateRate = 1f / 60f
 
     override fun render() {
-        Gdx.graphics.setTitle("${AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond}")
+        Gdx.graphics.setTitle("${AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond} $EMDASH VF: ${(1.0 / vdc.statsFrameTime).toInt()}")
 
         super.render()
 

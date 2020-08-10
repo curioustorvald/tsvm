@@ -119,7 +119,10 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
     internal var variableMap = HashMap<Long, Int>() // VarId with VARIABLE_PREFIX, Integer-value
     internal var sleepLatch = false
 
+    // statistics stuffs
     internal var performanceCounterTmr = 0L
+    var statsFrameTime = 0.0 // in seconds
+        internal set
 
     fun resetVarIdTable() {
         varIdTable.clear()
@@ -508,7 +511,7 @@ object Command {
             instance.sleepLatch = true
 
             val timeTook = (System.nanoTime() - instance.performanceCounterTmr).toDouble()
-            println("Frame time: ${timeTook / 1000000.0} ms (fps: ${1000000000.0 / timeTook})")
+            instance.statsFrameTime = timeTook / 1000000000.0
             instance.performanceCounterTmr = System.nanoTime()
         }
         instSet[CMP shr 3] = { instance, args -> // CMP rA rB rC
@@ -525,8 +528,9 @@ object Command {
                 val width = instance.variableMap[Videotron2K.VARIABLE_WIDTH]!!
                 val memAddr = py * width + px
 
-                args.forEachIndexed { index, value ->
-                    instance.gpu?.poke(memAddr.toLong() + index, value.toByte())
+                args.forEachIndexed { index, variable ->
+                    val value = resolveVar(instance, variable).toByte()
+                    instance.gpu?.poke(memAddr.toLong() + index, value)
                 }
 
                 // write back auto-incremented value
