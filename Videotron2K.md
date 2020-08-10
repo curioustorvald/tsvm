@@ -97,16 +97,17 @@ Commands can have "conditional postfix" used to execute the command conditionall
 
 NOTE : immediates and variables can substitute registers
 
-* add rA rB rC : rC = rA + rB
-* sub rA rB rC : rC = rA - rB
-* mul rA rB rC : rC = rA * rB
-* div rA rB rC : rC = rA / rB
-* and rA rB rC : rC = rA & rB
-* or rA rB rC : rC = rA | rB
-* xor rA rB rC : rC = rA ^ rB
-* shl rA rB rC : rC = rA << rB
-* shr rA rB rC : rC = rA >> rB
-* ushr rA rB rC : rC = rA >>> rB
+* add rA rB rC : rA = rB + rC
+* sub rA rB rC : rA = rB - rC
+* mul rA rB rC : rA = rB * rC
+* div rA rB rC : rA = rB / rC
+* mod rA rB rC : rA = rB % rC
+* and rA rB rC : rA = rB & rC
+* or rA rB rC : rA = rB | rC
+* xor rA rB rC : rA = rB ^ rC
+* shl rA rB rC : rA = rB << rC
+* shr rA rB rC : rA = rB >> rC
+* ushr rA rB rC : rA = rB >>> rC
 
 * inc R : R = R + 1
 * dec R : R = R - 1
@@ -117,7 +118,7 @@ NOTE : immediates and variables can substitute registers
 
 NOTE : immediates and variables can substitute registers
 
-* cmp rA rB rC : compares rA and rB and stores result to rC. 1 if rA > rB, -1 if rA < rB, 0 if rA == rB.
+* cmp rA rB rC : compares rB and rC and stores result to rA. 1 if rB > rC, -1 if rB < rC, 0 if rB == rC.
 
 ### Data Control
 

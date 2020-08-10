@@ -76,12 +76,22 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
         DEFINE height 448
         DEFINE width 560
 
+        mov r6 12345
+
+        SCENE rng ; r6 is RNG value
+            mul r6 r6 48271
+            mod r6 r6 2147483647
+            exit
+        END SCENE
+
         SCENE fill_line
           @ mov px 0
-            plot c1 ; will auto-increment px by one
-            inc c1
-            cmp c1 251 r1
-            movzr r1 c1 0     ; mov (-zr r1) c1 0 -- first, the comparison is made with r1 then runs 'mov c1 0' if r1 == 0
+            perform rng
+            plot r6
+            ; plot c1 ; will auto-increment px by one
+            ; inc c1
+            ; cmp r1 c1 251
+            ; movzr r1 c1 0     ; mov (-zr r1) c1 0 -- first, the comparison is made with r1 then runs 'mov c1 0' if r1 == 0
             exitzr px
         END SCENE
         
@@ -89,7 +99,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
           @ mov py 0
             perform fill_line
             inc py
-            cmp py 448 r1
+            cmp r1 py 448
             movzr r1 py 0
             next
             ; exeunt
@@ -371,6 +381,7 @@ object Command {
     const val DEC = 0x60
     const val NOT = 0x68
     const val NEG = 0x70
+    const val MOD = 0x78
 
     const val CMP = 0x80
     const val MOV = 0x88
@@ -418,6 +429,7 @@ object Command {
             "DEC" to DEC,
             "NOT" to NOT,
             "NEG" to NEG,
+            "MOD" to MOD,
 
             "CMP" to CMP,
 
@@ -496,6 +508,15 @@ object Command {
             checkRegisterLH(args[0])
             instance.regs.setInt((args[0] and 0xF) * 4, resolveVar(instance, args[1]))
         }
+        instSet[MUL shr 3] = { instance, args -> // MUL ACC LH RH
+            twoArgArithmetic(instance, args) { a,b -> a*b }
+        }
+        instSet[ADD shr 3] = { instance, args -> // ADD ACC LH RH
+            twoArgArithmetic(instance, args) { a,b -> a+b }
+        }
+        instSet[MOD shr 3] = { instance, args -> // MOD ACC LH RH
+            twoArgArithmetic(instance, args) { a,b -> a fmod b }
+        }
         instSet[INC shr 3] = { instance, args -> // INC register
             if (args.size != 1) throw ArgsCountMismatch(1, args)
             checkRegisterLH(args[0])
@@ -515,11 +536,7 @@ object Command {
             instance.performanceCounterTmr = System.nanoTime()
         }
         instSet[CMP shr 3] = { instance, args -> // CMP rA rB rC
-            if (args.size != 3) throw ArgsCountMismatch(3, args)
-            val v1 = resolveVar(instance, args[0])
-            val v2 = resolveVar(instance, args[1])
-            val cmpvar = if (v1 > v2) 1 else if (v1 < v2) -1 else 0
-            instance.regs.setInt((args[2] and 0xF) * 4, cmpvar)
+            twoArgArithmetic(instance, args) { a,b -> if (a>b) 1 else if (a<b) -1 else 0 }
         }
         instSet[PLOT shr 3] = { instance, args -> // PLOT vararg-bytes
             if (args.isNotEmpty()) {
@@ -552,6 +569,14 @@ object Command {
         instSet[EXEUNT shr 3] = { instance, _ ->
             instance.exeunt = true
         }
+    }
+
+    private inline fun twoArgArithmetic(instance: Videotron2K, args: LongArray, operation: (Int, Int) -> Int) {
+        if (args.size != 3) throw ArgsCountMismatch(3, args)
+        checkRegisterLH(args[0])
+        val lh = resolveVar(instance, args[1])
+        val rh = resolveVar(instance, args[2])
+        instance.regs.setInt((args[0] and 0xF) * 4, operation(lh, rh))
     }
 
     fun checkConditionAndRun(inst: Int, instance: Videotron2K, args: LongArray) {
