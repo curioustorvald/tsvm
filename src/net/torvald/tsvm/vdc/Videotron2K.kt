@@ -224,6 +224,8 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
                 val wordsUpper = stmtUpper.split(reTokenizer)
 
                 if (stmtUpper.startsWith("SCENE_")) { // indexed scene
+                    if (currentScene != 0L) throw IllegalStateException("Line $lnum: Scenes cannot be nested")
+
                     val scenenumStr = stmt.substring(6)
                     try {
                         val scenenum = scenenumStr.toLong()
@@ -235,6 +237,8 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
                     }
                 }
                 else if (stmtUpper.startsWith("SCENE ")) { // named scene
+                    if (currentScene != 0L) throw IllegalStateException("Line $lnum: Scenes cannot be nested")
+
                     val sceneName = wordsUpper[1]
                     if (sceneName.isNullOrBlank()) {
                         throw IllegalArgumentException("Line $lnum: Illegal scene name on $stmt")
@@ -246,9 +250,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
                     currentScene = registerNewVariable(sceneName) // scenes use same addr space as vars, to make things easier on the backend
                 }
                 else if (wordsUpper[0] == "END" && wordsUpper[1] == "SCENE") { // END SCENE
-                    if (currentScene == 0L) {
-                        throw IllegalArgumentException("Line $lnum: END SCENE is called without matching SCENE definition")
-                    }
+                    if (currentScene == 0L) throw IllegalArgumentException("Line $lnum: END SCENE is called without matching SCENE definition")
 
                     scenes[currentScene] = sceneStatements.toTypedArray()
 
@@ -532,7 +534,7 @@ object Command {
             instance.sleepLatch = true
 
             val timeTook = (System.nanoTime() - instance.performanceCounterTmr).toDouble()
-            instance.statsFrameTime = timeTook / 1000000000.0
+            instance.statsFrameTime = timeTook * 0.000001
             instance.performanceCounterTmr = System.nanoTime()
         }
         instSet[CMP shr 3] = { instance, args -> // CMP rA rB rC

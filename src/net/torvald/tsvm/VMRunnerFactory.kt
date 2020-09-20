@@ -11,6 +11,7 @@ import kotlin.test.assertNotNull
 abstract class VMRunner(val extension: String) {
 
     abstract suspend fun executeCommand(command: String)
+    abstract suspend fun evalGlobal(command: String)
 
 }
 
@@ -36,6 +37,10 @@ object VMRunnerFactory {
                     override suspend fun executeCommand(command: String) {
                         vmLua.lua.load(command).call()
                     }
+
+                    override suspend fun evalGlobal(command: String) {
+                        TODO("Not yet implemented")
+                    }
                 }
             }
             "vt2" -> {
@@ -46,6 +51,10 @@ object VMRunnerFactory {
 
                     override suspend fun executeCommand(command: String) {
                         engine.eval(command)
+                    }
+
+                    override suspend fun evalGlobal(command: String) {
+                        TODO("Not yet implemented")
                     }
                 }
             }
@@ -76,7 +85,11 @@ object VMRunnerFactory {
                     }
 
                     override suspend fun executeCommand(command: String) {
-                        engine.eval("\"use strict\";{$command}", context)
+                        engine.eval("\"use strict\";" + sanitiseJS(toSingleLine(command)), context)
+                    }
+
+                    override suspend fun evalGlobal(command: String) {
+                        engine.eval("\"use strict\";" + toSingleLine(command), context)
                     }
                 }
             }
@@ -84,7 +97,8 @@ object VMRunnerFactory {
         }
     }
 
-}
 
-fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')
-fun sanitiseJS(code: String) = "eval('${toSingleLine(code).replace("\\", "\\\\")}')"
+    private fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')
+    private fun sanitiseJS(code: String) = "eval('${toSingleLine(code).replace("\\", "\\\\")}')"
+
+}

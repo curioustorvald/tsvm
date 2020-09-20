@@ -60,6 +60,12 @@ con.color_pair = function(fore, back) { // 0..255
     print(String.fromCharCode(27,91)+"38;5;"+fore+"m");
     print(String.fromCharCode(27,91)+"48;5;"+back+"m");
 };
+con.clear = function() {
+    print(String.fromCharCode(27,91)+"2J");
+};
+con.curs_set = function(arg) {
+    print(String.fromCharCode(27,91)+"?25"+((arg == 0) ? "l" : "h"));
+};
 Object.freeze(con);
 // system management  function
 var system = {};

@@ -136,15 +136,15 @@ From the start of the memory space:
     write to this address FIRST and then write to "command" to execute the command
 86 bytes
     *Unused*
-IF graphics_mode THEN
-    (41 sprites : 260 bytes each -> 10660 bytes)
-        0th sprite is always the GUI cursor
+IF hires_text THEN
+    418 bytes
+        *Unused*
     2 bytes
-        Ob hv0000xy yyyyyyyy (h: horizontal flip, v: vertical flip, x: show/hide, y: y-position)
-    2 bytes
-        0b rr0000xx xxxxxxxx (r: rotation, x: x-position)
-    256 bytes
-        16x16 texture for the sprite
+        Cursor position in: (y*64 + x)
+    5120 bytes
+        Text fore/back colours, 16 colours, LSB is foreground
+    5120 bytes
+        Text buffer of 80x64 (7x7 character size)
 ELSE
     2978 bytes
         *Unused*
@@ -155,11 +155,23 @@ ELSE
     2560 bytes
         Text background colours
     2560 bytes
-        Text buffer of 70x32 (8x14 character size, and yes: actual character data is on the bottom)
+        Text buffer of 80x32 (7x14 character size, and yes: actual character data is on the bottom)
 FI
 512 bytes
     Palette stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
     Palette number 255 is always full transparent (bits being all zero)
+
+Optional Sprite Card
+16 bytes
+    Reserved
+65520 bytes:
+    (0th sprite is always the GUI cursor, thus 251 sprites)
+    2 bytes
+        Ob hv000pxy yyyyyyyy (p: 0 for above-text, 1 for below-text, h: horizontal flip, v: vertical flip, x: show/hide, y: y-position)
+    2 bytes
+        0b rr0000xx xxxxxxxx (r: rotation, x: x-position)
+    256 bytes
+        16x16 texture for the sprite
 
 MMIO
 

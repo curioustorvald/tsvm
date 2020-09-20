@@ -65,6 +65,20 @@ class GraphicsJSR223Delegate(val vm: VM) {
         return intArrayOf(-1, -1)
     }
 
+    fun setBackground(r: Int, g: Int, b: Int) {
+        getFirstGPU()?.let {
+            it.poke(250880, r.toByte())
+            it.poke(250881, g.toByte())
+            it.poke(250882, b.toByte())
+        }
+    }
+
+    fun clearText() {
+        getFirstGPU()?.let {
+            it.eraseInDisp(2)
+        }
+    }
+
     /**
      * prints a char as-is; won't interpret them as an escape sequence
      */

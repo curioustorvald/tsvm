@@ -58,16 +58,23 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         val bios = fr1.readText()
         fr1.close()
 
+
+        val fr2 = FileReader("./assets/tvdos/gl.js")
+        val tvgl = fr2.readText()
+        fr2.close()
+
+
         //val fr = FileReader("./assets/tvdos/command.js")
-        val fr = FileReader("./assets/tbas/basic.js")
+        val fr = FileReader("./assets/tvdos/fsh.js")
+        //val fr = FileReader("./assets/tbas/basic.js")
         //val fr = FileReader("./assets/jscon.js")
         val prg = fr.readText()
         fr.close()
 
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(sanitiseJS(bios))
-            vmRunner.executeCommand(sanitiseJS(prg))
+            vmRunner.evalGlobal(bios + "\n" + tvgl)
+            vmRunner.executeCommand(prg)
         }
 
 

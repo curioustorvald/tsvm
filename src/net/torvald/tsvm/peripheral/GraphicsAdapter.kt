@@ -276,6 +276,16 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
 
     override fun eraseInDisp(arg: Int) {
         when (arg) {
+            2 -> {
+                val foreBits = ttyFore or ttyFore.shl(8) or ttyFore.shl(16) or ttyFore.shl(24)
+                val backBits = ttyBack or ttyBack.shl(8) or ttyBack.shl(16) or ttyBack.shl(24)
+                for (i in 0 until TEXT_COLS * TEXT_ROWS step 4) {
+                    spriteAndTextArea.setInt(memTextForeOffset + i, foreBits)
+                    spriteAndTextArea.setInt(memTextBackOffset + i, backBits)
+                    spriteAndTextArea.setInt(memTextOffset + i, -1)
+                }
+                spriteAndTextArea.setShort(memTextCursorPosOffset, 0)
+            }
             else -> TODO()
         }
     }
