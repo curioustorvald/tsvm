@@ -11,7 +11,7 @@ import java.io.FileReader
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
-    val vm = VM(64.kB())
+    val vm = VM(64.kB(), TheRealWorld())
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch

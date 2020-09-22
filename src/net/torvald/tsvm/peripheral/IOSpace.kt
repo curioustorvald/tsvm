@@ -209,7 +209,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
 
         if (RTClatched) {
             RTClatched = false
-            rtc = System.currentTimeMillis()
+            rtc = vm.worldInterface.currentTimeInMills()
         }
     }
 

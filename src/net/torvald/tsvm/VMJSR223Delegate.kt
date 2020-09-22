@@ -1,6 +1,6 @@
 package net.torvald.tsvm
 
-import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
@@ -12,6 +12,23 @@ class VMJSR223Delegate(val vm: VM) {
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
+
+    fun uptime(): Long {
+        vm.poke(-69, -1)
+        var r = 0L
+        for (i in 0L..7L) {
+            r = r or vm.peek(-73 - i)!!.toUlong().shl(8 * i.toInt())
+        }
+        return r
+    }
+    fun currentTimeInMills(): Long {
+        vm.poke(-69, -1)
+        var r = 0L
+        for (i in 0L..7L) {
+            r = r or vm.peek(-81 - i)!!.toUlong().shl(8 * i.toInt())
+        }
+        return r
+    }
 
     fun print(s: String) {
         //System.out.print("[Nashorn] $s")
