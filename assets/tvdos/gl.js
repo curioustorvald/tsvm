@@ -20,7 +20,23 @@ GL.drawTexPattern = function(tex, x, y, width, height) {
         }
     }
 };
+/*
+ * Draws a texture verbatim - color of 255 will be written to the screen buffer
+ */
 GL.drawTexImage = function(tex, x, y) {
     GL.drawTexPattern(tex, x, y, tex.width, tex.height);
+};
+/*
+ * Draws texture with blitting - color of 255 will pass-thru what's already on the screen buffer
+ */
+GL.drawTexImageOver = function(tex, x, y) {
+    for (var ty = 0; ty < tex.height; ty++) {
+        for (var tx = 0; tx < tex.width; tx++) {
+            var c = tex.texData[ty * tex.width + tx];
+            if (c != 255) {
+                graphics.plotPixel(x + tx, y + ty, c);
+            }
+        }
+    }
 };
 Object.freeze(GL);

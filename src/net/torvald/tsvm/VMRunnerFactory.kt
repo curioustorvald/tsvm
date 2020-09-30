@@ -80,12 +80,19 @@ object VMRunnerFactory {
                             val fr = FileReader("./assets/JS_INIT.js")
                             val prg = fr.readText()
                             fr.close()
-                            engine.eval(toSingleLine(prg), context)
+                            engine.eval(sanitiseJS(prg), context)
                         }
                     }
 
                     override suspend fun executeCommand(command: String) {
-                        engine.eval("\"use strict\";" + encapsulateJS(sanitiseJS(command)), context)
+                        try {
+                            engine.eval("\"use strict\";" + encapsulateJS(sanitiseJS(command)), context)
+                        }
+                        catch (e: javax.script.ScriptException) {
+                            System.err.println("ScriptException from the script:")
+                            System.err.println(command.substring(0, minOf(1024, command.length)))
+                            System.err.println(e)
+                        }
                     }
 
                     override suspend fun evalGlobal(command: String) {
@@ -98,8 +105,7 @@ object VMRunnerFactory {
     }
 
 
-    private fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')
-    private fun sanitiseJS(code: String) = toSingleLine(code).replace("\\", "\\\\")
-    private fun encapsulateJS(code: String) = "eval('$code')"
+    private fun sanitiseJS(code: String) = code//.replace("\\", "\\\\")
+    private fun encapsulateJS(code: String) = "(function(){$code})()"
 
 }

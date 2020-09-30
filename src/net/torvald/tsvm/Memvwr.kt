@@ -100,7 +100,7 @@ class Memvwr(val vm: VM) : JFrame() {
                     }
 
                     if (x + 15 in intArrayOf(3, 7, 11))
-                        sb.append('|')
+                        sb.append(' ')
                 }
 
                 sb.append("|\n")

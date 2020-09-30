@@ -17,13 +17,13 @@ con.getch = function() {
     return sys.readKey();
 };
 con.move = function(y, x) {
-    print(String.fromCharCode(27,91)+y+";"+x+"H");
+    print(String.fromCharCode(27,91)+(y|0)+";"+(x|0)+"H");
 };
 con.addch = function(c) {
-    graphics.putSymbol(c);
+    graphics.putSymbol(c|0);
 };
 con.mvaddch = function(y, x, c) {
-    move(y, x); addch(c);
+    con.move(y, x); con.addch(c);
 };
 con.getmaxyx = function() {
     return graphics.getTermDimension();
@@ -48,13 +48,13 @@ con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
         print(String.fromCharCode(27,91)+"38;5;255m");
     else
-        print(String.fromCharCode(27,91)+((n % 8)+30)+"m");
+        print(String.fromCharCode(27,91)+(((n|0) % 8)+30)+"m");
 };
 con.color_back = function(n) { // 0..7; -1 for transparent
     if (n < 0)
         print(String.fromCharCode(27,91)+"48;5;255m");
     else
-        print(String.fromCharCode(27,91)+((n % 8)+40)+"m");
+        print(String.fromCharCode(27,91)+(((n|0) % 8)+40)+"m");
 };
 con.color_pair = function(fore, back) { // 0..255
     print(String.fromCharCode(27,91)+"38;5;"+fore+"m");
@@ -64,7 +64,7 @@ con.clear = function() {
     print(String.fromCharCode(27,91)+"2J");
 };
 con.curs_set = function(arg) {
-    print(String.fromCharCode(27,91)+"?25"+((arg == 0) ? "l" : "h"));
+    print(String.fromCharCode(27,91)+"?25"+(((arg|0) == 0) ? "l" : "h"));
 };
 Object.freeze(con);
 // system management  function

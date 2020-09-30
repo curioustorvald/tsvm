@@ -1,11 +1,14 @@
 package net.torvald.tsvm
 
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
+import java.nio.charset.Charset
 
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
  */
 class VMJSR223Delegate(val vm: VM) {
+
+    private val SYSTEM_CHARSET = Charsets.ISO_8859_1
 
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
     fun peek(addr: Int) = vm.peek(addr.toLong())!!.toInt().and(255)
@@ -32,11 +35,11 @@ class VMJSR223Delegate(val vm: VM) {
 
     fun print(s: String) {
         //System.out.print("[Nashorn] $s")
-        vm.getPrintStream().write(s.toByteArray())
+        vm.getPrintStream().write(s.toByteArray(SYSTEM_CHARSET))
     }
     fun println(s: String) {
         System.out.println("[Nashorn] $s")
-        vm.getPrintStream().write((s + '\n').toByteArray())
+        vm.getPrintStream().write((s + '\n').toByteArray(SYSTEM_CHARSET))
     }
     fun println() = print('\n')
 
