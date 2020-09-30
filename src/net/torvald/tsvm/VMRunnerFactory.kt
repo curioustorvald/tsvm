@@ -85,11 +85,11 @@ object VMRunnerFactory {
                     }
 
                     override suspend fun executeCommand(command: String) {
-                        engine.eval("\"use strict\";" + sanitiseJS(toSingleLine(command)), context)
+                        engine.eval("\"use strict\";" + encapsulateJS(sanitiseJS(command)), context)
                     }
 
                     override suspend fun evalGlobal(command: String) {
-                        engine.eval("\"use strict\";" + toSingleLine(command), context)
+                        engine.eval("\"use strict\";" + sanitiseJS(command), context)
                     }
                 }
             }
@@ -99,6 +99,7 @@ object VMRunnerFactory {
 
 
     private fun toSingleLine(code: String) = code.replace(Regex("//[^\\n]*"), "").replace('\n', ' ')
-    private fun sanitiseJS(code: String) = "eval('${toSingleLine(code).replace("\\", "\\\\")}')"
+    private fun sanitiseJS(code: String) = toSingleLine(code).replace("\\", "\\\\")
+    private fun encapsulateJS(code: String) = "eval('$code')"
 
 }
