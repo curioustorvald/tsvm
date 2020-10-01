@@ -91,7 +91,7 @@ object VMRunnerFactory {
                         catch (e: javax.script.ScriptException) {
                             System.err.println("ScriptException from the script:")
                             System.err.println(command.substring(0, minOf(1024, command.length)))
-                            System.err.println(e)
+                            throw e
                         }
                     }
 
