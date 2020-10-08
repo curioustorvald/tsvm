@@ -6,7 +6,7 @@ Has no affiliation with OpenGL by Khronos Group
 
 var GL = {};
 
-GL.Tex = function(w, h, bytes) {
+GL.Texture = function(w, h, bytes) {
     this.width = w;
     this.height = h;
     this.texData = bytes;
@@ -17,41 +17,41 @@ GL.Tex = function(w, h, bytes) {
 };
 GL.SpriteSheet = function(tilew, tileh, tex) {
     this.tileWidth = tilew;
-    this.tileHeight = tile;
+    this.tileHeight = tileh;
     this.texture = tex;
 
-    if (!tex instanceof GL.Tex) {
-        throw "Texture is not an instance of GL.Tex";
+    if (!tex instanceof GL.Texture) {
+        throw "Texture is not an instance of GL.Texture";
     }
 
     this.getOffX = function(x) { // THIS, or: GL.SpriteSheet.prototype.getOffX
-        var tx = tileWidth * x;
-        if (tx + tileWidth > tex.width) throw "Sprite x-offset of "+tx+" is greater than sprite width "+tex.width;
+        var tx = this.tileWidth * x;
+        if (tx + this.tileWidth > this.texture.width) throw "Sprite x-offset of "+tx+" is greater than sprite width "+this.texture.width;
         return tx;
     };
 
     this.getOffY = function(y) {
-        var ty = tileHeight * y;
-        if (ty + tileHeight > tex.height) throw "Sprite y-offset of "+ty+" is greater than sprite height "+tex.height;
+        var ty = this.tileHeight * y;
+        if (ty + this.tileHeight > this.texture.height) throw "Sprite y-offset of "+ty+" is greater than sprite height "+this.texture.height;
         return ty;
     };
 };
-GL.drawTexPattern = function(tex, x, y, width, height) {
+GL.drawTexPattern = function(texture, x, y, width, height) {
     for (var yy = 0; yy < height; yy++) {
         for (var xx = 0; xx < width; xx++) {
-            var tx = xx % tex.width;
-            var ty = yy % tex.height;
-            var c = tex.texData[ty * tex.width + tx];
+            var tx = xx % texture.width;
+            var ty = yy % texture.height;
+            var c = texture.texData[ty * texture.width + tx];
             graphics.plotPixel(x + xx, y + yy, c);
         }
     }
 };
-GL.drawTexPatternOver = function(tex, x, y, width, height) {
+GL.drawTexPatternOver = function(texture, x, y, width, height) {
     for (var yy = 0; yy < height; yy++) {
         for (var xx = 0; xx < width; xx++) {
-            var tx = xx % tex.width;
-            var ty = yy % tex.height;
-            var c = tex.texData[ty * tex.width + tx];
+            var tx = xx % texture.width;
+            var ty = yy % texture.height;
+            var c = texture.texData[ty * texture.width + tx];
             if (c != 255) {
                 graphics.plotPixel(x + xx, y + yy, c);
             }
@@ -61,16 +61,16 @@ GL.drawTexPatternOver = function(tex, x, y, width, height) {
 /*
  * Draws a texture verbatim - color of 255 will be written to the screen buffer
  */
-GL.drawTexImage = function(tex, x, y) {
-    GL.drawTexPattern(tex, x, y, tex.width, tex.height);
+GL.drawTexImage = function(texture, x, y) {
+    GL.drawTexPattern(texture, x, y, texture.width, texture.height);
 };
 /*
  * Draws texture with blitting - color of 255 will pass-thru what's already on the screen buffer
  */
-GL.drawTexImageOver = function(tex, x, y) {
-    for (var ty = 0; ty < tex.height; ty++) {
-        for (var tx = 0; tx < tex.width; tx++) {
-            var c = tex.texData[ty * tex.width + tx];
+GL.drawTexImageOver = function(texture, x, y) {
+    for (var ty = 0; ty < texture.height; ty++) {
+        for (var tx = 0; tx < texture.width; tx++) {
+            var c = texture.texData[ty * texture.width + tx];
             if (c != 255) {
                 graphics.plotPixel(x + tx, y + ty, c);
             }
@@ -82,7 +82,7 @@ GL.drawSprite = function(sheet, xi, yi, x, y) {
     var offy = sheet.getOffY(yi);
     for (var ty = 0; ty < sheet.tileHeight; ty++) {
         for (var tx = 0; tx < sheet.tileWidth; tx++) {
-            var c = sheet.tex.texData[(ty + offy) * tex.width + (tx + offx)];
+            var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
             graphics.plotPixel(x + tx, y + ty, c);
         }
     }
@@ -92,7 +92,7 @@ GL.drawSpriteOver = function(sheet, xi, yi, x, y) {
     var offy = sheet.getOffY(yi);
     for (var ty = 0; ty < sheet.tileHeight; ty++) {
         for (var tx = 0; tx < sheet.tileWidth; tx++) {
-            var c = sheet.tex.texData[(ty + offy) * tex.width + (tx + offx)];
+            var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
             if (c != 255) {
                 graphics.plotPixel(x + tx, y + ty, c);
             }

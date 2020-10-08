@@ -729,7 +729,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
         private val LCD_BASE_COL = Color(0xa1a99cff.toInt())
 
         val DRAW_SHADER_FRAG = """
-#version 120
+#version 130
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -746,7 +746,7 @@ void main(void) {
         """.trimIndent()
 
         val DRAW_SHADER_FRAG_LCD = """
-#version 120
+#version 130
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -767,7 +767,7 @@ void main(void) {
         """.trimIndent()
 
         val DRAW_SHADER_FRAG_LCD_NOINV = """
-#version 120
+#version 130
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -788,7 +788,7 @@ void main(void) {
         """.trimIndent()
 
         val DRAW_SHADER_VERT = """
-#version 120
+#version 130
 
 attribute vec4 a_position;
 attribute vec4 a_color;
@@ -807,7 +807,7 @@ void main() {
         """.trimIndent()
 
         val TEXT_TILING_SHADER = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -894,7 +894,7 @@ void main() {
 """.trimIndent()
 
         val TEXT_TILING_SHADER_LCD = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -991,7 +991,7 @@ void main() {
 """.trimIndent()
 
         val TEXT_TILING_SHADER_LCD_NOINV = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
