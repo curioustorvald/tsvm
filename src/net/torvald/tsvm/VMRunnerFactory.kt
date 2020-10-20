@@ -76,9 +76,9 @@ object VMRunnerFactory {
                     init {
                         bind.put("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
                         bind.put("graphics", GraphicsJSR223Delegate(vm))
-                        //bind.put("poke", { a: Long, b: Byte -> vm.poke(a, b) }) // kts: lambda does not work...
-                        //bind.put("nanotime", { System.nanoTime() })
                         bind.put("serial", VMSerialDebugger(vm))
+                        bind.put("gzip", CompressorDelegate())
+                        bind.put("base64", Base64Delegate())
 
                         if (extension == "js") {
                             val fr = FileReader("./assets/JS_INIT.js")
