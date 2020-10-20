@@ -53,7 +53,7 @@ GL.drawTexPatternOver = function(texture, x, y, width, height) {
             var tx = xx % texture.width;
             var ty = yy % texture.height;
             var c = texture.texData[ty * texture.width + tx];
-            if (c != -1) {
+            if ((c & 255) != 255) {
                 graphics.plotPixel(x + xx, y + yy, c);
             }
         }
@@ -72,7 +72,7 @@ GL.drawTexImageOver = function(texture, x, y) {
     for (var ty = 0; ty < texture.height; ty++) {
         for (var tx = 0; tx < texture.width; tx++) {
             var c = texture.texData[ty * texture.width + tx];
-            if (c != -1) {
+            if ((c & 255) != 255) {
                 graphics.plotPixel(x + tx, y + ty, c);
             }
         }
@@ -94,7 +94,7 @@ GL.drawSpriteOver = function(sheet, xi, yi, x, y) {
     for (var ty = 0; ty < sheet.tileHeight; ty++) {
         for (var tx = 0; tx < sheet.tileWidth; tx++) {
             var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
-            if (c != -1) {
+            if ((c & 255) != 255) {
                 graphics.plotPixel(x + tx, y + ty, c);
             }
         }
