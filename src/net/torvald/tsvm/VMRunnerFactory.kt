@@ -1,9 +1,11 @@
 package net.torvald.tsvm
 
+import jdk.nashorn.api.scripting.NashornScriptEngineFactory
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.vdc.Videotron2K
 import java.io.FileReader
 import javax.script.ScriptContext
+import javax.script.ScriptEngine
 import javax.script.ScriptEngineManager
 import javax.script.SimpleScriptContext
 import kotlin.test.assertNotNull
@@ -58,11 +60,13 @@ object VMRunnerFactory {
                     }
                 }
             }
-            else -> {
+            "js" -> {
                 object : VMRunner(extension) {
-                    private val engine = ScriptEngineManager().getEngineByExtension(extension)
+                    private val engine: ScriptEngine// = ScriptEngineManager().getEngineByExtension(extension)
 
                     init {
+                        val engineFactory = NashornScriptEngineFactory()
+                        engine = engineFactory.getScriptEngine("-strict", "--no-java", "--no-syntax-extensions", "--language=es6")
                         assertNotNull(engine, "Script engine for extension $extension not found")
                     }
 
@@ -100,7 +104,7 @@ object VMRunnerFactory {
                     }
                 }
             }
-            //else -> throw UnsupportedOperationException("Unsupported script extension: $extension")
+            else -> throw UnsupportedOperationException("Unsupported script extension: $extension")
         }
     }
 
