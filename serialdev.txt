@@ -17,7 +17,10 @@ All peripherals using serial connection must follow these standards
 
     <COMMAND-STRING> 0x17
     <COMMAND-STRING> 0x1E <ARGUMENTS-STRINGS SEPARATED BY 0x1F> 0x17
-    <ANSWER-STRINGS SEPARATED BY 0x1F> 0x17
+    In case of positive acknowledge:
+        0x06 <ANSWER-STRINGS SEPARATED BY 0x1F> 0x17
+    In case of negative acknowledge (e.g. error messages):
+        0x15 <ANSWER-STRINGS SEPARATED BY 0x1F> 0x17
 
     All ENQUIRY commands are RECOMMENDED to be no larger than 4096 bytes
     STRINGs only consists with printable ASCII subset

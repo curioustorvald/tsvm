@@ -1,5 +1,7 @@
 package net.torvald.tsvm.peripheral
 
+import java.util.ArrayList
+
 class TestFunctionGenerator : BlockTransferInterface(true, false) {
 
     val filecontent_lorem = """Lorem ipsum dolor sit amet, consectetur adipiscing elit. Morbi ipsum magna, ultrices eu leo eu, consequat eleifend arcu. Nam tempor nunc aliquam mi cursus mollis. Aenean dictum iaculis dolor eget porttitor. Fusce vulputate dui id mauris ultricies, non aliquet nulla pulvinar. Integer consectetur nulla at cursus cursus. Nullam enim nisl, elementum a fermentum sed, suscipit id sapien. Duis eget enim lacinia, aliquam sapien ac, commodo risus. Morbi at enim sem. Aenean sollicitudin purus et sem porttitor, convallis ultricies nulla posuere. Suspendisse euismod sagittis vestibulum. Mauris lorem nisl, placerat et finibus non, cursus non ex. Interdum et malesuada fames ac ante ipsum primis in faucibus. Suspendisse finibus non dui vel tempor. Nam rhoncus ligula et massa sagittis fringilla. Cras convallis pellentesque nulla in rutrum.
@@ -20,6 +22,7 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
 
     fun composeSerialAns(vararg msg: String): ByteArray {
         val sb = ArrayList<Byte>()
+        sb.add(0x06) // always positive ans
         sb.addAll(msg[0].toByteArray().toTypedArray())
         for (k in 1 until msg.lastIndex) {
             sb.add(0x1F)
