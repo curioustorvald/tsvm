@@ -13,10 +13,7 @@ object SerialHelper {
 
     fun sendMessageGetBytes(vm: VM, portNo: Int, message: ByteArray): ByteArray {
         sendMessage(vm, portNo, message)
-
-        // wait until it is ready
-        while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
-
+        waitUntilReady(vm, portNo)
         return getMessage(vm, portNo)
     }
 
@@ -53,6 +50,10 @@ object SerialHelper {
         } while (getBlockTransferStatus(vm, portNo).second)
 
         return msgBuffer.toByteArray()
+    }
+
+    fun waitUntilReady(vm: VM, portNo: Int) {
+        while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
     }
 
 

@@ -11,11 +11,13 @@ class VmFilesystemDelegate(val vm: VM, val portNo: Int) {
 
 class DiskDriveFileInputStream(vm: VM, portNo: Int, path: String) : InputStream() {
 
-    private val contents = SerialHelper.sendMessageGetBytes(vm, portNo, "OPENR\"$path\"".toByteArray(VM.CHARSET))
+    private val contents: ByteArray
     private var readCursor = 0
 
     init {
-        contents.toString() // meaningless statement to NOT lazy eval the property
+        SerialHelper.sendMessage(vm, portNo, "OPENR\"$path\"".toByteArray(VM.CHARSET))
+        SerialHelper.waitUntilReady(vm, portNo)
+        contents = SerialHelper.sendMessageGetBytes(vm, portNo, "READ".toByteArray(VM.CHARSET))
     }
 
     override fun markSupported() = true
@@ -61,3 +63,4 @@ class DiskDriveFileInputStream(vm: VM, portNo: Int, path: String) : InputStream(
         TODO()
     }
 }
+
