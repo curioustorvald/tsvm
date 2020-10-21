@@ -3,6 +3,7 @@ package net.torvald.tsvm
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.BlockTransferInterface.Companion.BLOCK_SIZE
+import net.torvald.tsvm.peripheral.BlockTransferInterface.Companion.END_OF_SEND_BLOCK
 import java.io.ByteArrayOutputStream
 import kotlin.experimental.and
 import kotlin.experimental.or
@@ -52,6 +53,15 @@ object SerialHelper {
         return msgBuffer.toByteArray()
     }
 
+    fun getDeviceStatus(vm: VM, portNo: Int): DeviceStatus {
+        val msgStr = sendMessageGetBytes(vm, portNo, "DEVSTU$END_OF_SEND_BLOCK".toByteArray(VM.CHARSET))
+        return DeviceStatus(
+            msgStr[0] == 0x06.toByte(),
+            msgStr[1].toUint(),
+            msgStr.sliceArray(3 until msgStr.size - 1).toString(VM.CHARSET)
+        )
+    }
+
     fun waitUntilReady(vm: VM, portNo: Int) {
         while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
     }
@@ -87,4 +97,6 @@ object SerialHelper {
 
 
     private fun Boolean.toInt() = if (this) 1 else 0
+
+    data class DeviceStatus(val isError: Boolean, val code: Int, val message: String)
 }

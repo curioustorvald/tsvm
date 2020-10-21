@@ -9,7 +9,7 @@ class VmFilesystemDelegate(val vm: VM, val portNo: Int) {
 
 }
 
-class DiskDriveFileInputStream(vm: VM, portNo: Int, path: String) : InputStream() {
+class DiskDriveFileInputStream(val vm: VM, val portNo: Int, val path: String) : InputStream() {
 
     private val contents: ByteArray
     private var readCursor = 0
@@ -60,7 +60,7 @@ class DiskDriveFileInputStream(vm: VM, portNo: Int, path: String) : InputStream(
     }
 
     override fun close() {
-        TODO()
+        SerialHelper.sendMessage(vm, portNo, "CLOSE".toByteArray(VM.CHARSET))
     }
 }
 

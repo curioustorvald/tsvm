@@ -57,7 +57,7 @@ Description: reads status of the device, if applicable
 Returns:
     0x06 <status code> <0x1F> <message string> 0x17
     0x15 <status code> <0x1F> <message string> 0x17
-(see section 1.0)
+Status Code is single byte number. Also see section 1.0
 
 2. Device-specific commands
 

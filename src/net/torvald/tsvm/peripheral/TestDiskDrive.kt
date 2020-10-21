@@ -12,6 +12,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         const val STATE_CODE_STANDBY = 0
         const val STATE_CODE_ILLEGAL_COMMAND = 128
         const val STATE_CODE_FILE_NOT_FOUND = 129
+        const val STATE_CODE_FILE_ALREADY_OPENED = 130
         const val STATE_CODE_SYSTEM_IO_ERROR = 192
 
 
@@ -21,6 +22,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             errorMsgs[STATE_CODE_STANDBY] = "READY"
             errorMsgs[STATE_CODE_ILLEGAL_COMMAND] = "SYNTAX ERROR"
             errorMsgs[STATE_CODE_FILE_NOT_FOUND] = "FILE NOT FOUND"
+            errorMsgs[STATE_CODE_FILE_ALREADY_OPENED] = "FILE ALREADY OPENED"
             errorMsgs[STATE_CODE_SYSTEM_IO_ERROR] = "IO ERROR ON SIMULATED DRIVE"
         }
     }
@@ -139,6 +141,10 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             //startSend { it.writeout(composePositiveAns("Testtec Virtual Disk Drive")) }
             recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
         else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
+            if (file != null) {
+                stateCode = STATE_CODE_FILE_ALREADY_OPENED
+                return
+            }
 
             val openMode = inputString[4]
 
