@@ -6,7 +6,7 @@ import net.torvald.tsvm.VM
 /**
  * Implementation of single COM port
  */
-internal class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInterface(true, false) {
+class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInterface(true, false) {
 
     internal var hasNext = false
 
@@ -22,7 +22,7 @@ internal class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInt
     override fun writeout(inputData: ByteArray) {
         writeout(inputData) {
             val copySize = minOf(BLOCK_SIZE, inputData.size).toLong()
-            val arrayOffset = UnsafeHelper.getArrayOffset(inputData).toLong()
+            val arrayOffset = UnsafeHelper.getArrayOffset(inputData)
             UnsafeHelper.memcpyRaw(inputData, arrayOffset, null, vm.getIO().blockTransferRx[portno].ptr, copySize)
         }
     }

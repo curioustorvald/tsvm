@@ -121,6 +121,8 @@ class VM(
 
 
     companion object {
+        val CHARSET = Charsets.ISO_8859_1
+
         val MMIO_SIZE = 128.kB()
         val HW_RESERVE_SIZE = 1024.kB()
         val USER_SPACE_SIZE = 8192.kB()

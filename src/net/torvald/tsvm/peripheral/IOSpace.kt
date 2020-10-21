@@ -112,7 +112,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 786432..917503 -> vm.peripheralTable[6].peripheral?.mmio_read(addr - 786432)
             in 917504..1048575 -> vm.peripheralTable[7].peripheral?.mmio_read(addr - 917504)
 
-            else -> -1
+            else -> null
         }
     }
 

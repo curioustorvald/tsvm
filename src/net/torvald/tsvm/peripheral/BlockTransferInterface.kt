@@ -4,8 +4,8 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
 
     protected var recipient: BlockTransferInterface? = null
 
-    open var ready = true
-    open var busy = false
+    open @Volatile var ready = true
+    open @Volatile var busy = false
 
     protected var sendmode = false; private set
     open var blockSize = 0
@@ -68,5 +68,9 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
 
     companion object {
         const val BLOCK_SIZE = 4096
+        const val GOOD_NEWS = 0x06.toByte()
+        const val BAD_NEWS = 0x15.toByte()
+        const val UNIT_SEP = 0x1F.toByte()
+        const val END_OF_SEND_BLOCK = 0x17.toByte()
     }
 }
