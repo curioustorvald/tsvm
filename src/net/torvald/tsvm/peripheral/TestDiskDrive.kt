@@ -79,7 +79,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     override fun hasNext(): Boolean {
 
 
-        return (blockSendCount * BLOCK_SIZE <= blockSendBuffer.size)
+        return (blockSendCount * BLOCK_SIZE < blockSendBuffer.size)
     }
 
     /** Computer's attempt to startRead() will result in calling this very function.
@@ -93,7 +93,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             }
 
             recipient.writeout(ByteArray(BLOCK_SIZE) {
-                val i = (blockSendCount + 1) * BLOCK_SIZE
+                val i = blockSendCount * BLOCK_SIZE
                 if (i + it >= blockSendBuffer.size) {
                     0.toByte()
                 }

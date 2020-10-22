@@ -33,7 +33,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         UnsafeHelper.allocate(4096),
         UnsafeHelper.allocate(4096)
     )
-    private val blockTransferPorts = Array(4) { BlockTransferPort(vm, it) }
+    /*private*/ val blockTransferPorts = Array(4) { BlockTransferPort(vm, it) }
 
     private val keyEventBuffers = ByteArray(8)
 
@@ -56,11 +56,11 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         blockTransferPorts[portno].ready = bits.and(0b0000_0010) != 0.toByte()
         if (bits.and(0b0000_0100) != 0.toByte()) {
             if (blockTransferPorts[portno].getMode()) {
-                println("[IOSpace] startSend()")
+                //println("[IOSpace] startSend()")
                 blockTransferPorts[portno].startSend()
             }
             else {
-                println("[IOSpace] startRead()")
+                //println("[IOSpace] startRead()")
                 blockTransferPorts[portno].startRead()
             }
         }

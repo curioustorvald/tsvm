@@ -84,8 +84,6 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
 
     private var fileOpen = false
 
-    private var readModeLength = -1
-
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
 
@@ -102,8 +100,6 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
     }
 
     override fun startSend() {
-        println("[TestFunctionGenerator] startSend()")
-
         recipient?.let { recipient ->
             if (blockSendCount == 0) {
                 //blockSendBuffer = messageComposeBuffer.toByteArray()
@@ -111,7 +107,7 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
             }
 
             recipient.writeout(ByteArray(BLOCK_SIZE) {
-                val i = (blockSendCount + 1) * BLOCK_SIZE
+                val i = blockSendCount * BLOCK_SIZE
                 if (i + it >= blockSendBuffer.size) {
                     0.toByte()
                 }
@@ -121,37 +117,37 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
             })
 
             blockSendCount += 1
-        }
 
-        println("[TestFunctionGenerator] startSend() end")
+        }
     }
 
-    override fun hasNext(): Boolean = false
+    override fun hasNext(): Boolean {
 
+
+        return (blockSendCount * BLOCK_SIZE < blockSendBuffer.size)
+    }
     override fun writeout(inputData: ByteArray) {
         val inputString = inputData.toString(VM.CHARSET)
 
-        println("InputString: $inputString")
-
         if (inputString.startsWith("DEVRST\u0017")) {
-            readModeLength = -1
             fileOpen = false
+            blockSendCount = 0
         }
         else if (inputString.startsWith("DEVTYP\u0017"))
-            startSend { it.writeout(composeSerialAns("STOR")) }
-        else if (inputString.startsWith("DEVNAM\u0017")) {
-            println("Device name?")
-            startSend { it.writeout(composeSerialAns("Testtec Virtual Disk Drive")) }
-        }
+            recipient?.writeout(composeSerialAns("STOR"))
+        else if (inputString.startsWith("DEVNAM\u0017"))
+            recipient?.writeout(composeSerialAns("Testtec Virtual Disk Drive"))
         else if (inputString.startsWith("OPENR\""))
             fileOpen = true
         else if (inputString.startsWith("CLOSE"))
             fileOpen = false
-        else if (inputString.startsWith("READ"))
-            readModeLength = inputString.substring(4 until inputString.length).toInt()
+        //else if (inputString.startsWith("READ"))
+        //    readModeLength = inputString.substring(4 until inputString.length).toInt()
         else if (inputString.startsWith("LIST"))
-            startSend { it.writeout("\"LOREM.TXT\"            TXT\nTotal 1 files on the disk".toByteArray()) }
+            recipient?.writeout("\"LOREM.TXT\"            TXT\nTotal 1 files on the disk".toByteArray())
 
+
+        blockSendCount = 0
     }
 
     override fun setMode(sendmode: Boolean) {

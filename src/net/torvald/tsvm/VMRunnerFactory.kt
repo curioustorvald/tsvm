@@ -1,6 +1,8 @@
 package net.torvald.tsvm
 
 import jdk.nashorn.api.scripting.NashornScriptEngineFactory
+import jdk.nashorn.api.scripting.ScriptUtils
+import jdk.nashorn.internal.runtime.regexp.joni.Syntax.Java
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.vdc.Videotron2K
 import java.io.FileReader

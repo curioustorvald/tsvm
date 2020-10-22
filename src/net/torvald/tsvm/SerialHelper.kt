@@ -61,15 +61,11 @@ object SerialHelper {
             waitUntilReady(vm, portNo)
 
             val transStat = getBlockTransferStatus(vm, portNo)
-            val incomingMsg = ByteArray(transStat.first)
 
-            UnsafeHelper.memcpyRaw(
-                null, vm.getIO().blockTransferRx[portNo].ptr,
-                incomingMsg, UnsafeHelper.getArrayOffset(incomingMsg),
-                transStat.first.toLong()
-            )
+            for (k in 0 until minOf(BLOCK_SIZE, transStat.first)) {
+                msgBuffer.write(vm.getIO().blockTransferRx[portNo][k.toLong()].toInt())
+            }
 
-            msgBuffer.write(incomingMsg)
         } while (transStat.second)
 
         getReady(vm, portNo)
@@ -122,8 +118,9 @@ object SerialHelper {
     private fun getBlockTransferStatus(vm: VM, portNo: Int): Pair<Int, Boolean> {
         val bits = vm.getIO().mmio_read(4084L + (portNo * 2))!!.toUint() or
                 (vm.getIO().mmio_read(4085L + (portNo * 2))!!.toUint() shl 8)
-        val rawcnt = bits.and(BLOCK_SIZE - 1)
-        return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to (bits < 0)
+        val rawcnt = bits.and(4095)
+        //FIXME return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to (bits < 0)
+        return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to (vm.getIO().blockTransferPorts[portNo].doYouHaveNext())
     }
 
 

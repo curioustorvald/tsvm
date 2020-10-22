@@ -272,6 +272,15 @@ if ('function' !== typeof Array.prototype.reduceRight) {
 
 load = undefined
 loadWithNewGlobal = undefined
+//
+function javaArrayToJs(jarr) {
+    if (!jarr.toString.startsWith("[")) return jarr;
+    var arr = [];
+    for (var k = 0; k < jarr.length; k++) {
+        arr.push(jarr[k]);
+    }
+    return arr;
+}
 // standard print functions
 function print(s) {
     sys.print(s);
