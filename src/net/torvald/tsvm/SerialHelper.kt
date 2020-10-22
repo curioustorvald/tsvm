@@ -15,28 +15,50 @@ object SerialHelper {
     fun sendMessageGetBytes(vm: VM, portNo: Int, message: ByteArray): ByteArray {
         sendMessage(vm, portNo, message)
         waitUntilReady(vm, portNo)
-        return getMessage(vm, portNo)
+        return fetchResponse(vm, portNo)
     }
 
     fun sendMessage(vm: VM, portNo: Int, message: ByteArray) {
         if (!checkIfDeviceIsThere(vm, portNo)) throw IllegalStateException("Device not connected")
         if (message.size > BLOCK_SIZE) throw NotImplementedError("sending message greater than 4096 is a future work :p")
 
-        UnsafeHelper.memcpyRaw(
+        /*UnsafeHelper.memcpyRaw(
             message, UnsafeHelper.getArrayOffset(message),
             null, vm.getIO().blockTransferTx[portNo].ptr,
             minOf(BLOCK_SIZE, message.size).toLong()
-        )
+        )*/
+
+        for (k in 0 until BLOCK_SIZE) {
+            vm.getIO().blockTransferTx[portNo][k.toLong()] = if (k >= message.size) 0 else message[k]
+        }
+
         initiateWriting(vm, portNo)
+
+        // TODO assuming the write operation is finished... (wait for something?)
+        getReady(vm, portNo)
     }
 
-    fun getMessage(vm: VM, portNo: Int): ByteArray {
+    // Returns what's on the RX buffer after sendMessage()
+    fun fetchResponse(vm: VM, portNo: Int): ByteArray {
+        val incomingMsg = ByteArray(BLOCK_SIZE)
+
+        UnsafeHelper.memcpyRaw(
+            null, vm.getIO().blockTransferRx[portNo].ptr,
+            incomingMsg, UnsafeHelper.getArrayOffset(incomingMsg),
+            BLOCK_SIZE.toLong()
+        )
+
+        return incomingMsg
+    }
+
+    // Initiates startSend() function from the connected device
+    fun pullMessage(vm: VM, portNo: Int): ByteArray {
         val msgBuffer = ByteArrayOutputStream(BLOCK_SIZE)
 
         // pull all the blocks of messages
         do {
             initiateReading(vm, portNo)
-            while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
+            waitUntilReady(vm, portNo)
 
             val transStat = getBlockTransferStatus(vm, portNo)
             val incomingMsg = ByteArray(transStat.first)
@@ -48,7 +70,9 @@ object SerialHelper {
             )
 
             msgBuffer.write(incomingMsg)
-        } while (getBlockTransferStatus(vm, portNo).second)
+        } while (transStat.second)
+
+        getReady(vm, portNo)
 
         return msgBuffer.toByteArray()
     }
@@ -63,7 +87,8 @@ object SerialHelper {
     }
 
     fun waitUntilReady(vm: VM, portNo: Int) {
-        while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
+        Thread.sleep(SLEEP_TIME)
+        //while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
     }
 
 
@@ -79,6 +104,12 @@ object SerialHelper {
 
     private fun initiateReading(vm: VM, portNo: Int) {
         vm.getIO().mmio_write(4092L + portNo, 0b0110)
+    }
+
+    private fun getReady(vm: VM, portNo: Int) {
+        val flags = vm.getIO().mmio_read(4092L + portNo)!!
+        val newFlags = flags.and(0b1111_1001.toByte()).or(0b0000_0010)
+        vm.getIO().mmio_write(4092L + portNo, newFlags)
     }
 
     private fun setBlockTransferStatus(vm: VM, portNo: Int, blockSize: Int, moreToSend: Boolean = false) {
@@ -99,4 +130,13 @@ object SerialHelper {
     private fun Boolean.toInt() = if (this) 1 else 0
 
     data class DeviceStatus(val isError: Boolean, val code: Int, val message: String)
+}
+
+class SerialHelperDelegate(val vm: VM) {
+    fun sendMessage(portNo: Int, message: ByteArray) = SerialHelper.sendMessage(vm, portNo, message)
+    fun pullMessage(portNo: Int) = SerialHelper.pullMessage(vm, portNo)
+    fun sendMessageGetBytes(portNo: Int, message: ByteArray) = SerialHelper.sendMessageGetBytes(vm, portNo, message)
+    fun fetchResponse(portNo: Int) = SerialHelper.fetchResponse(vm, portNo)
+    fun getDeviceStatus(portNo: Int) = SerialHelper.getDeviceStatus(vm, portNo)
+    fun waitUntilReady(portNo: Int) = SerialHelper.waitUntilReady(vm, portNo)
 }

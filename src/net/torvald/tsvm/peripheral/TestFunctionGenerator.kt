@@ -1,5 +1,6 @@
 package net.torvald.tsvm.peripheral
 
+import net.torvald.tsvm.VM
 import java.util.ArrayList
 
 class TestFunctionGenerator : BlockTransferInterface(true, false) {
@@ -33,16 +34,16 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
     }
 
     override fun startSend() {
-        if (readModeLength > 0) {
-            readModeLength = 0
-            startSend { it.writeout(filecontent_lorem) }
-        }
+        println("[TestFunctionGenerator] startSend()")
+        startSend { it.writeout(filecontent_lorem) }
     }
 
     override fun hasNext(): Boolean = false
 
     override fun writeout(inputData: ByteArray) {
-        val inputString = inputData.toString()
+        val inputString = inputData.toString(VM.CHARSET)
+
+        println("InputString: $inputString")
 
         if (inputString.startsWith("DEVRST\u0017")) {
             readModeLength = -1
@@ -50,8 +51,10 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         }
         else if (inputString.startsWith("DEVTYP\u0017"))
             startSend { it.writeout(composeSerialAns("STOR")) }
-        else if (inputString.startsWith("DEVNAM\u0017"))
+        else if (inputString.startsWith("DEVNAM\u0017")) {
+            println("Device name?")
             startSend { it.writeout(composeSerialAns("Testtec Virtual Disk Drive")) }
+        }
         else if (inputString.startsWith("OPENR\""))
             fileOpen = true
         else if (inputString.startsWith("CLOSE"))

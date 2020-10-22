@@ -101,7 +101,7 @@ MMIO
 
     a: 1 for send, 0 for receive
 
-    b-write: 1 to start sending if a-bit is set; if f-bit is unset, make other device to start sending
+    b-write: 1 to start sending if a-bit is set; if a-bit is unset, make other device to start sending
     b-read: if this bit is set, you're currently receiving something (aka busy)
 
     c-write: I'm ready to receive

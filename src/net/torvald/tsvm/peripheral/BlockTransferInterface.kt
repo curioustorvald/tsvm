@@ -1,5 +1,7 @@
 package net.torvald.tsvm.peripheral
 
+import java.io.IOException
+
 abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean) {
 
     protected var recipient: BlockTransferInterface? = null
@@ -23,7 +25,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     abstract fun startSend()
     /** The actual implementation */
     protected fun startSend(sendfun: ((BlockTransferInterface) -> Unit)? = null) {
-        if (areYouReady()) {
+        //if (areYouReady()) {
             busy = true
             ready = false
 
@@ -33,13 +35,16 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
 
             busy = false
             ready = true
-        }
+        //}
+        //else {
+        //    throw IOException("${this.javaClass.canonicalName}: Device '${recipient?.javaClass?.canonicalName}' is not ready to receive")
+        //}
     }
 
     /** Ask the recipient to start send its thing to me so that I can 'read'
      */
     open fun startRead() {
-        recipient?.startSend(null)
+        recipient?.startSend()
     }
 
     /** A method called by the sender so it can ACTUALLY write its thing onto me. */

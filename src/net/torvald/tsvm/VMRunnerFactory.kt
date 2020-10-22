@@ -79,6 +79,7 @@ object VMRunnerFactory {
                         bind.put("serial", VMSerialDebugger(vm))
                         bind.put("gzip", CompressorDelegate())
                         bind.put("base64", Base64Delegate())
+                        bind.put("com", SerialHelperDelegate(vm))
 
                         if (extension == "js") {
                             val fr = FileReader("./assets/JS_INIT.js")

@@ -125,4 +125,7 @@ con.color_pair(201,255);
 print("cya!");
 
 let konsht = 3412341241;
-print(konsht);
+println(konsht);
+
+let pppp = graphics.getCursorYX();
+println(pppp.toString());
