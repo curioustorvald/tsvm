@@ -8,6 +8,12 @@ Operators
 , - Function argument separator
 + - Just as in JS; concatenates two strings
 
+Test Programs:
+
+1 REM Random Maze
+10 PRINT(CHR$(47+ROUND(RND(1))*45);)
+20 GOTO 10
+
 */
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -392,7 +398,26 @@ basicInterpreterStatus.builtin = {
     if (!(args.length > 0 && args[0].value === 0))
         basicInterpreterStatus.rnd = (basicInterpreterStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
 
+
     return (basicInterpreterStatus.rnd) / 16777216;
+},
+"ROUND" : function(lnum, args) {
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.round(lh); });
+},
+"FLOOR" : function(lnum, args) {
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.floor(lh); });
+},
+"INT" : function(lnum, args) { // synonymous to FLOOR
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.floor(lh); });
+},
+"CEIL" : function(lnum, args) {
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.ceil(lh); });
+},
+"FIX" : function(lnum, args) {
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return (lh|0); });
+},
+"CHR$" : function(lnum, args) {
+    return oneArgNonNullNumeric(lnum, args, function(lh) { return String.fromCharCode(lh); });
 },
 "TEST" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
@@ -1260,7 +1285,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 basicFunctions._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = true;
+    var _debugprintHighestLevel = false;
 
     // TOKENISE
     var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
@@ -1386,7 +1411,8 @@ while (!tbasexit) {
         cmdbufMemFootPrint -= line.length;
         try {
             var cmd = line.split(" ");
-            basicFunctions[cmd[0]](cmd);
+            serial.printerr(cmd[0].toLowerCase());
+            basicFunctions[cmd[0].toLowerCase()](cmd);
         }
         catch (e) {
             println(e);
