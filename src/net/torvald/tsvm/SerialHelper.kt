@@ -83,8 +83,7 @@ object SerialHelper {
     }
 
     fun waitUntilReady(vm: VM, portNo: Int) {
-        Thread.sleep(SLEEP_TIME)
-        //while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
+        while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
     }
 
 
@@ -92,7 +91,7 @@ object SerialHelper {
         (vm.getIO().mmio_read(4092L + portNo)!! and 1.toByte()) == 1.toByte()
 
     private fun checkIfDeviceIsReady(vm: VM, portNo: Int) =
-        (vm.getIO().mmio_read(4092L + portNo)!! and 0b110.toByte()) == 0b011.toByte()
+        (vm.getIO().mmio_read(4092L + portNo)!! and 0b111.toByte()) == 0b011.toByte()
 
     private fun initiateWriting(vm: VM, portNo: Int) {
         vm.getIO().mmio_write(4092L + portNo, 0b1110)
@@ -130,10 +129,10 @@ object SerialHelper {
 }
 
 class SerialHelperDelegate(val vm: VM) {
-    fun sendMessage(portNo: Int, message: ByteArray) = SerialHelper.sendMessage(vm, portNo, message)
-    fun pullMessage(portNo: Int) = SerialHelper.pullMessage(vm, portNo)
-    fun sendMessageGetBytes(portNo: Int, message: ByteArray) = SerialHelper.sendMessageGetBytes(vm, portNo, message)
-    fun fetchResponse(portNo: Int) = SerialHelper.fetchResponse(vm, portNo)
+    fun sendMessage(portNo: Int, message: String) = SerialHelper.sendMessage(vm, portNo, message.toByteArray(VM.CHARSET))
+    fun pullMessage(portNo: Int) = SerialHelper.pullMessage(vm, portNo).toString(VM.CHARSET)
+    fun sendMessageGetBytes(portNo: Int, message: String) = SerialHelper.sendMessageGetBytes(vm, portNo, message.toByteArray(VM.CHARSET)).toString(VM.CHARSET)
+    fun fetchResponse(portNo: Int) = SerialHelper.fetchResponse(vm, portNo).toString(VM.CHARSET)
     fun getDeviceStatus(portNo: Int) = SerialHelper.getDeviceStatus(vm, portNo)
     fun waitUntilReady(portNo: Int) = SerialHelper.waitUntilReady(vm, portNo)
 }
