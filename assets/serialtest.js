@@ -2,6 +2,7 @@ var ba = com.sendMessageGetBytes(0, "DEVNAM"+String.fromCharCode(0x17));
 serial.println(ba);
 
 ba = com.pullMessage(0)
-serial.println(ba);
+serial.print(ba);
+serial.println("# END OF MSG");
 
-serial.println("\nk bye")
+serial.println("k bye")

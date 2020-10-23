@@ -85,18 +85,19 @@ Description: opens the file for writing
 
 Description: opens the file for appending (a variant of write)
 
-    WRITE<number of bytes to write>
+    WRITE
 
-Description: puts the device to WRITE mode. Any subsequent bytes will be interpreted as-is for writing
+Description: puts the device into WRITE mode. Any subsequent bytes will be interpreted as-is for writing
 
     FLUSH
 
 Description: flushes any internal output buffer and no longer puts the device to WRITE mode
 
-    READ<number of bytes to read>
+    READ
 
-Description: reads specified number of bytes. Any subsequent reading operation will return bytes stored into the file
-             until the specified number of bytes reached
+Description: reads one block of file. Any subsequent read attempts will return next block. If file size is lesser
+             than a single block, rest of the bytes will be filled with zero, and size-of-the-block (see terranmon.txt)
+             will be set accordingly.
 
     CLOSE
 

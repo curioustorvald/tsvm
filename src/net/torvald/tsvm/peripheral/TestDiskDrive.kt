@@ -55,6 +55,8 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     private var file: File? = null
     //private var readModeLength = -1 // always 4096
     private var stateCode = STATE_CODE_STANDBY
+    private var writeMode = false
+    private var writeModeLength = -1
 
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
     private var blockSendBuffer = ByteArray(1)
@@ -92,14 +94,12 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
                 blockSendBuffer = messageComposeBuffer.toByteArray()
             }
 
-            recipient.writeout(ByteArray(BLOCK_SIZE) {
-                val i = blockSendCount * BLOCK_SIZE
-                if (i + it >= blockSendBuffer.size) {
-                    0.toByte()
-                }
-                else {
-                    blockSendBuffer[i + it]
-                }
+            val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
+                blockSendBuffer.size % BLOCK_SIZE
+            else BLOCK_SIZE
+
+            recipient.writeout(ByteArray(sendSize) {
+                blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
             })
 
             blockSendCount += 1
@@ -124,21 +124,20 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             file = null
             blockSendCount = 0
             stateCode = STATE_CODE_STANDBY
+            writeMode = false
+            writeModeLength = -1
         }
         else if (inputString.startsWith("DEVSTU$END_OF_SEND_BLOCK")) {
             if (stateCode < 128) {
                 recipient?.writeout(composePositiveAns("${stateCode.toChar()}", errorMsgs[stateCode]))
-                //startSend { it.writeout(composePositiveAns("${stateCode.toChar()}", errorMsgs[stateCode])) }
             }
             else {
-                startSend { it.writeout(composeNegativeAns("${stateCode.toChar()}", errorMsgs[stateCode])) }
+                recipient?.writeout(composeNegativeAns("${stateCode.toChar()}", errorMsgs[stateCode]))
             }
         }
         else if (inputString.startsWith("DEVTYP$END_OF_SEND_BLOCK"))
-            //startSend { it.writeout(composePositiveAns("STOR")) }
             recipient?.writeout(composePositiveAns("STOR"))
         else if (inputString.startsWith("DEVNAM$END_OF_SEND_BLOCK"))
-            //startSend { it.writeout(composePositiveAns("Testtec Virtual Disk Drive")) }
             recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
         else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
             if (file != null) {
