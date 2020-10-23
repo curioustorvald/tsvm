@@ -100,24 +100,21 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         return sb.toByteArray()
     }
 
-    override fun startSend() {
-        recipient?.let { recipient ->
-            if (blockSendCount == 0) {
-                //blockSendBuffer = messageComposeBuffer.toByteArray()
-                blockSendBuffer = fileContent_multiblocks
-            }
-
-            val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
-                blockSendBuffer.size % BLOCK_SIZE
-            else BLOCK_SIZE
-
-            recipient.writeout(ByteArray(sendSize) {
-                blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
-            })
-
-            blockSendCount += 1
-
+    override fun startSendImpl(recipient: BlockTransferInterface) {
+        if (blockSendCount == 0) {
+            //blockSendBuffer = messageComposeBuffer.toByteArray()
+            blockSendBuffer = fileContent_multiblocks
         }
+
+        val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
+            blockSendBuffer.size % BLOCK_SIZE
+        else BLOCK_SIZE
+
+        recipient.writeout(ByteArray(sendSize) {
+            blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
+        })
+
+        blockSendCount += 1
     }
 
     override fun hasNext(): Boolean {
@@ -125,7 +122,7 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
 
         return (blockSendCount * BLOCK_SIZE < blockSendBuffer.size)
     }
-    override fun writeout(inputData: ByteArray) {
+    override fun writeoutImpl(inputData: ByteArray) {
         val inputString = inputData.toString(VM.CHARSET)
 
         if (inputString.startsWith("DEVRST\u0017")) {

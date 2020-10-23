@@ -88,22 +88,20 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
      *
      * Disk drive must send prepared message (or file transfer packet) to the computer.
      */
-    override fun startSend() {
-        recipient?.let { recipient ->
-            if (blockSendCount == 0) {
-                blockSendBuffer = messageComposeBuffer.toByteArray()
-            }
-
-            val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
-                blockSendBuffer.size % BLOCK_SIZE
-            else BLOCK_SIZE
-
-            recipient.writeout(ByteArray(sendSize) {
-                blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
-            })
-
-            blockSendCount += 1
+    override fun startSendImpl(recipient: BlockTransferInterface) {
+        if (blockSendCount == 0) {
+            blockSendBuffer = messageComposeBuffer.toByteArray()
         }
+
+        val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
+            blockSendBuffer.size % BLOCK_SIZE
+        else BLOCK_SIZE
+
+        recipient.writeout(ByteArray(sendSize) {
+            blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
+        })
+
+        blockSendCount += 1
     }
 
     /** Computer's attempt to startSend() will result in calling this very function.
@@ -111,11 +109,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
      *
      * Disk drive must create desired side effects in accordance with the input message.
      */
-    override fun writeout(inputData: ByteArray) {
-        ready = false
-        busy = true
-
-
+    override fun writeoutImpl(inputData: ByteArray) {
         val inputString = inputData.toString()
 
         if (inputString.startsWith("DEVRST$END_OF_SEND_BLOCK")) {
@@ -190,10 +184,6 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
                 }
             }
         }
-
-
-        ready = true
-        busy = false
     }
 
     val diskID: UUID = UUID(0, 0)

@@ -22,16 +22,14 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
 
     /** Writes a thing to the recipient.
      * A method exposed to outside of the box */
-    abstract fun startSend()
+    abstract fun startSendImpl(recipient: BlockTransferInterface)
     /** The actual implementation */
-    protected fun startSend(sendfun: ((BlockTransferInterface) -> Unit)? = null) {
+    fun startSend() {
         //if (areYouReady()) {
             busy = true
             ready = false
 
-            recipient?.let { recipient ->
-                sendfun?.invoke(recipient)
-            }
+            recipient?.let { startSendImpl(it) }
 
             busy = false
             ready = true
@@ -48,13 +46,13 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     }
 
     /** A method called by the sender so it can ACTUALLY write its thing onto me. */
-    abstract fun writeout(inputData: ByteArray)
+    abstract fun writeoutImpl(inputData: ByteArray)
     /** The actual implementation; must be called by a sender class */
-    protected fun writeout(inputData: ByteArray, writeoutfun: (() -> Unit)? = null) {
+    fun writeout(inputData: ByteArray) {
         busy = true
         ready = false
         blockSize = minOf(inputData.size, BLOCK_SIZE)
-        writeoutfun?.invoke()
+        writeoutImpl(inputData)
         busy = false
         ready = true
     }

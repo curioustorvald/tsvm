@@ -61,6 +61,7 @@ object SerialHelper {
             waitUntilReady(vm, portNo)
 
             val transStat = getBlockTransferStatus(vm, portNo)
+            println("[SerialHelper.pullMessage()] received length: ${transStat.first}")
 
             for (k in 0 until minOf(BLOCK_SIZE, transStat.first)) {
                 msgBuffer.write(vm.getIO().blockTransferRx[portNo][k.toLong()].toInt())
