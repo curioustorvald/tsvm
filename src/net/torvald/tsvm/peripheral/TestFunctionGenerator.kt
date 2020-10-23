@@ -100,7 +100,7 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         return sb.toByteArray()
     }
 
-    override fun startSendImpl(recipient: BlockTransferInterface) {
+    override fun startSendImpl(recipient: BlockTransferInterface): Int {
         if (blockSendCount == 0) {
             //blockSendBuffer = messageComposeBuffer.toByteArray()
             blockSendBuffer = fileContent_multiblocks
@@ -115,6 +115,8 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         })
 
         blockSendCount += 1
+
+        return sendSize
     }
 
     override fun hasNext(): Boolean {

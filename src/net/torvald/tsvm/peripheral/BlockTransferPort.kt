@@ -10,8 +10,9 @@ class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInterface(tr
 
     internal var hasNext = false
 
-    override fun startSendImpl(recipient: BlockTransferInterface) {
+    override fun startSendImpl(recipient: BlockTransferInterface): Int {
         recipient.writeout(ByteArray(BLOCK_SIZE) { vm.getIO().blockTransferTx[portno][it.toLong()] })
+        return blockSize // use MMIO to modify this variable
     }
 
     override fun hasNext(): Boolean = hasNext
@@ -22,9 +23,9 @@ class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInterface(tr
         //UnsafeHelper.memcpyRaw(inputData, arrayOffset, null, vm.getIO().blockTransferRx[portno].ptr, copySize)
 
         // not exposing raw memory to block probable security hole
-        println("[BlockTranferPort] writeout size: ${inputData.size}")
+        //println("[BlockTranferPort] writeout size: ${inputData.size}")
         for (k in 0 until BLOCK_SIZE) {
-            vm.getIO().blockTransferRx[portno][k.toLong()] = if (k >= inputData.size) 0x5F else inputData[k]
+            vm.getIO().blockTransferRx[portno][k.toLong()] = if (k >= inputData.size) 0 else inputData[k]
         }
     }
 

@@ -88,7 +88,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
      *
      * Disk drive must send prepared message (or file transfer packet) to the computer.
      */
-    override fun startSendImpl(recipient: BlockTransferInterface) {
+    override fun startSendImpl(recipient: BlockTransferInterface): Int {
         if (blockSendCount == 0) {
             blockSendBuffer = messageComposeBuffer.toByteArray()
         }
@@ -102,6 +102,8 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         })
 
         blockSendCount += 1
+
+        return sendSize
     }
 
     /** Computer's attempt to startSend() will result in calling this very function.

@@ -21,15 +21,19 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     open fun areYouBusy(): Boolean = recipient?.busy ?: false
 
     /** Writes a thing to the recipient.
-     * A method exposed to outside of the box */
-    abstract fun startSendImpl(recipient: BlockTransferInterface)
+     * A method exposed to outside of the box
+     * @return number of bytes actually sent over*/
+    abstract fun startSendImpl(recipient: BlockTransferInterface): Int
     /** The actual implementation */
     fun startSend() {
         //if (areYouReady()) {
             busy = true
             ready = false
 
-            recipient?.let { startSendImpl(it) }
+            recipient?.let {
+                this.blockSize = startSendImpl(it)
+                //println("[BlockTransferInterface.startSend()] recipients blocksize = ${this.blockSize}")
+            }
 
             busy = false
             ready = true

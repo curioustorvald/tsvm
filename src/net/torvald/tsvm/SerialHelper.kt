@@ -42,6 +42,7 @@ object SerialHelper {
     fun fetchResponse(vm: VM, portNo: Int): ByteArray {
         val incomingMsg = ByteArray(BLOCK_SIZE)
 
+        // incoming message is always 4K long and unused bytes are zero-filled. THIS IS INTENTIONAL
         UnsafeHelper.memcpyRaw(
             null, vm.getIO().blockTransferRx[portNo].ptr,
             incomingMsg, UnsafeHelper.getArrayOffset(incomingMsg),
@@ -61,9 +62,10 @@ object SerialHelper {
             waitUntilReady(vm, portNo)
 
             val transStat = getBlockTransferStatus(vm, portNo)
-            println("[SerialHelper.pullMessage()] received length: ${transStat.first}")
+            val receivedLen = transStat.first//vm.getIO().blockTransferPorts[portNo].yourBlockSize()
+            //println("[SerialHelper.pullMessage()] received length: $receivedLen")
 
-            for (k in 0 until minOf(BLOCK_SIZE, transStat.first)) {
+            for (k in 0 until minOf(BLOCK_SIZE, receivedLen)) {
                 msgBuffer.write(vm.getIO().blockTransferRx[portNo][k.toLong()].toInt())
             }
 
