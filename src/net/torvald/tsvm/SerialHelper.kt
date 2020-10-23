@@ -119,8 +119,8 @@ object SerialHelper {
         val bits = vm.getIO().mmio_read(4084L + (portNo * 2))!!.toUint() or
                 (vm.getIO().mmio_read(4085L + (portNo * 2))!!.toUint() shl 8)
         val rawcnt = bits.and(4095)
-        //FIXME return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to (bits < 0)
-        return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to (vm.getIO().blockTransferPorts[portNo].doYouHaveNext())
+        val gotMore = bits.and(0x8000) != 0
+        return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to gotMore
     }
 
 
