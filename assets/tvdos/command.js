@@ -1,10 +1,10 @@
-var DOS_VERSION = "1.0";
-var PROMPT_TEXT = ">";
-var CURRENT_DRIVE = "A";
+const DOS_VERSION = "1.0";
+const PROMPT_TEXT = ">";
+let CURRENT_DRIVE = "A";
 
-var shell_pwd = [""];
+let shell_pwd = [""];
 
-var welcome_text = "TSVM Disk Operating System, version " + DOS_VERSION;
+const welcome_text = "TSVM Disk Operating System, version " + DOS_VERSION;
 
 function get_prompt_text() {
     return CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT;

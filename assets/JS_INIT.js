@@ -278,9 +278,9 @@ load = undefined;
 loadWithNewGlobal = undefined;
 exit = undefined;
 quit = undefined;
-var eval = function(s) { // installing new eval function
+/*var eval = function(s) { // this impl is flawed; it does not return any, and cannot alter Global which may not you actually want
     return Function('"use strict";return(function(){'+s+'}())')();
-}
+}*/
 //
 function javaArrayToJs(jarr) {
     if (!jarr.toString.startsWith("[")) return jarr;

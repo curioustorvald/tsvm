@@ -1,8 +1,8 @@
 println("TERRAN Megatrends inc.");
 //println("Main RAM:"+(system.maxmem() >> 10)+" KBytes");
 
-var memptr = 0;
-var memtestptn = [
+let memptr = 0;
+const memtestptn = [
     // Overclockers will LOVE this!
     //[0x00,0x00,0x00,0x00 , 0xFF,0xFF,0xFF,0xFF , 0x00,0x00,0x00,0x00 , 0xFF,0xFF,0xFF,0xFF],
 

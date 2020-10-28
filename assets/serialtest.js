@@ -22,7 +22,7 @@ println(ba);
 
 serial.println(getStatusMessage(1));
 
-com.sendMessage(1, "OPENR\"basic.js\"");
+com.sendMessage(1, "OPENR\"fsh.js\"");
 
 println("Status code: "+com.getStatusCode(1));
 

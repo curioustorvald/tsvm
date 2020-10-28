@@ -1422,4 +1422,4 @@ while (!tbasexit) {
     }
 }
 
-return 0;
+0;
