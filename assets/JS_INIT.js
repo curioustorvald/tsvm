@@ -268,10 +268,15 @@ if ('function' !== typeof Array.prototype.reduceRight) {
     };
 }
 
-///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//  NOTE TO PROGRAMMERS: this JS_INIT script does not, and must not be invoked with strict mode  //
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
-load = undefined
-loadWithNewGlobal = undefined
+load = undefined;
+loadWithNewGlobal = undefined;
+var eval = function(s) { // installing new eval function
+    return Function('"use strict";return(function(){'+s+'}())')();
+}
 //
 function javaArrayToJs(jarr) {
     if (!jarr.toString.startsWith("[")) return jarr;

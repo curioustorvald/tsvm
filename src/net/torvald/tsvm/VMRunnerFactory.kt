@@ -1,8 +1,6 @@
 package net.torvald.tsvm
 
 import jdk.nashorn.api.scripting.NashornScriptEngineFactory
-import jdk.nashorn.api.scripting.ScriptUtils
-import jdk.nashorn.internal.runtime.regexp.joni.Syntax.Java
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.vdc.Videotron2K
 import java.io.FileReader
@@ -68,7 +66,7 @@ object VMRunnerFactory {
 
                     init {
                         val engineFactory = NashornScriptEngineFactory()
-                        engine = engineFactory.getScriptEngine("-strict", "--no-java", "--no-syntax-extensions", "--language=es6")
+                        engine = engineFactory.getScriptEngine("--no-java", "--no-syntax-extensions", "--language=es6")
                         assertNotNull(engine, "Script engine for extension $extension not found")
                     }
 
@@ -83,17 +81,15 @@ object VMRunnerFactory {
                         bind.put("base64", Base64Delegate())
                         bind.put("com", SerialHelperDelegate(vm))
 
-                        if (extension == "js") {
-                            val fr = FileReader("./assets/JS_INIT.js")
-                            val prg = fr.readText()
-                            fr.close()
-                            engine.eval(sanitiseJS(prg), context)
-                        }
+                        val fr = FileReader("./assets/JS_INIT.js")
+                        val prg = fr.readText()
+                        fr.close()
+                        engine.eval(sanitiseJS(prg), context)
                     }
 
                     override suspend fun executeCommand(command: String) {
                         try {
-                            engine.eval("\"use strict\";" + encapsulateJS(sanitiseJS(command)), context)
+                            engine.eval(encapsulateJS(sanitiseJS(command)), context)
                         }
                         catch (e: javax.script.ScriptException) {
                             System.err.println("ScriptException from the script:")
@@ -113,6 +109,6 @@ object VMRunnerFactory {
 
 
     private fun sanitiseJS(code: String) = code//.replace("\\", "\\\\")
-    private fun encapsulateJS(code: String) = "(function(){$code})()"
+    private fun encapsulateJS(code: String) = "\"use strict\";(function(){$code})()"
 
 }
