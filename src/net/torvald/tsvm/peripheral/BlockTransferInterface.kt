@@ -1,16 +1,16 @@
 package net.torvald.tsvm.peripheral
 
-import java.io.IOException
-
 abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean) {
 
     protected var recipient: BlockTransferInterface? = null
 
-    open @Volatile var ready = true
-    open @Volatile var busy = false
+    @Volatile var ready = true
+    @Volatile var busy = false
+
+    @Volatile var statusCode = 0
 
     protected var sendmode = false; private set
-    open var blockSize = 0
+    @Volatile var blockSize = 0
 
     open fun attachDevice(device: BlockTransferInterface?) {
         recipient = device
@@ -49,7 +49,9 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         recipient?.startSend()
     }
 
-    /** A method called by the sender so it can ACTUALLY write its thing onto me. */
+    /** A method called by the sender so it can ACTUALLY write its thing onto me.
+     *
+     * @param inputData received message, usually 4096 bytes long and null-padded */
     abstract fun writeoutImpl(inputData: ByteArray)
     /** The actual implementation; must be called by a sender class */
     fun writeout(inputData: ByteArray) {
@@ -63,6 +65,8 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     abstract fun hasNext(): Boolean
     open fun doYouHaveNext(): Boolean = recipient?.hasNext() ?: false
     open fun yourBlockSize(): Int = recipient?.blockSize ?: 0
+
+    fun getYourStatusCode() = recipient?.statusCode ?: 0
 
     /** @param sendmode TRUE for send, FALSE for receive */
     open fun setMode(sendmode: Boolean) {
@@ -82,5 +86,14 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         const val BAD_NEWS = 0x15.toByte()
         const val UNIT_SEP = 0x1F.toByte()
         const val END_OF_SEND_BLOCK = 0x17.toByte()
+
+        fun trimNull(ba: ByteArray): ByteArray {
+            var cnt = BLOCK_SIZE - 1
+            while (cnt >= 0) {
+                if (ba[cnt] != 0.toByte()) break
+                cnt -= 1
+            }
+            return ba.sliceArray(0..cnt)
+        }
     }
 }

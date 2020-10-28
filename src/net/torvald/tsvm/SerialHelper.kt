@@ -39,6 +39,7 @@ object SerialHelper {
     }
 
     // Returns what's on the RX buffer after sendMessage()
+    // i.e won't (actually shouldn't) clobber the device's message compose buffer (see TestDiskDrive)
     fun fetchResponse(vm: VM, portNo: Int): ByteArray {
         val incomingMsg = ByteArray(BLOCK_SIZE)
 
@@ -89,6 +90,7 @@ object SerialHelper {
         while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
     }
 
+    fun getStatusCode(vm: VM, portNo: Int) = vm.getIO().mmio_read(4080L + portNo)
 
     private fun checkIfDeviceIsThere(vm: VM, portNo: Int) =
         (vm.getIO().mmio_read(4092L + portNo)!! and 1.toByte()) == 1.toByte()
@@ -138,4 +140,5 @@ class SerialHelperDelegate(val vm: VM) {
     fun fetchResponse(portNo: Int) = SerialHelper.fetchResponse(vm, portNo).toString(VM.CHARSET)
     fun getDeviceStatus(portNo: Int) = SerialHelper.getDeviceStatus(vm, portNo)
     fun waitUntilReady(portNo: Int) = SerialHelper.waitUntilReady(vm, portNo)
+    fun getStatusCode(portNo: Int) = SerialHelper.getStatusCode(vm, portNo)
 }

@@ -92,6 +92,16 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 72..79 -> systemUptime.ushr((adi - 72) * 8).and(255).toByte()
             in 80..87 -> rtc.ushr((adi - 80) * 8).and(255).toByte()
 
+            4076L -> blockTransferPorts[0].statusCode.toByte()
+            4077L -> blockTransferPorts[1].statusCode.toByte()
+            4078L -> blockTransferPorts[2].statusCode.toByte()
+            4079L -> blockTransferPorts[3].statusCode.toByte()
+
+            4080L -> blockTransferPorts[0].getYourStatusCode().toByte()
+            4081L -> blockTransferPorts[1].getYourStatusCode().toByte()
+            4082L -> blockTransferPorts[2].getYourStatusCode().toByte()
+            4083L -> blockTransferPorts[3].getYourStatusCode().toByte()
+
             4084L -> (blockTransferPorts[0].yourBlockSize().toByte())
             4085L -> (blockTransferPorts[0].doYouHaveNext().toInt().shl(7) or blockTransferPorts[0].yourBlockSize().ushr(8).and(15)).toByte()
             4086L -> (blockTransferPorts[1].yourBlockSize().toByte())
@@ -135,6 +145,11 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
                 uptimeCounterLatched = byte.and(0b01).isNonZero()
                 RTClatched = byte.and(0b10).isNonZero()
             }
+
+            4076L -> blockTransferPorts[0].statusCode = bi
+            4077L -> blockTransferPorts[1].statusCode = bi
+            4078L -> blockTransferPorts[2].statusCode = bi
+            4079L -> blockTransferPorts[3].statusCode = bi
 
             4084L -> blockTransferPorts[0].blockSize = blockTransferPorts[0].blockSize.and(0xFF00) or byte.toInt().and(255)
             4085L -> {

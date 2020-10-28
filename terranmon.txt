@@ -82,6 +82,9 @@ MMIO
 72..79 RO: System uptime in nanoseconds
 80..87 RO: RTC in microseconds
 
+4076..4079 RW: 8-bit status code for the port
+4080..4083 RO: 8-bit status code for connected device
+
 4084..4091 RO: Block transfer status
     0b nnnnnnnn a000 mmmm
 

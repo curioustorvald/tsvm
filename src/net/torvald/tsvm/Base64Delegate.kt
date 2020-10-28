@@ -8,6 +8,10 @@ class Base64Delegate {
         return Base64Coder.decode(inputstr)
     }
 
+    fun atostr(inputstr: String): String {
+        return Base64Coder.decode(inputstr).toString(VM.CHARSET)
+    }
+
     fun btoa(inputbytes: ByteArray): String {
         val sb = StringBuilder()
         sb.append(Base64Coder.encode(inputbytes))

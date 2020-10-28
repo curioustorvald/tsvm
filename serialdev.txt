@@ -85,9 +85,12 @@ Description: opens the file for writing
 
 Description: opens the file for appending (a variant of write)
 
-    WRITE
+    WRITE<bytes to write>
 
-Description: puts the device into WRITE mode. Any subsequent bytes will be interpreted as-is for writing
+Description: puts the device into WRITE mode and sets internal counter. Any subsequent messages will be interpreted
+             as-is, get written directly to the file, and will decrement the internal counter accordingly.
+             The number of bytes are required because of a nature of block-transfer, where every message is always in
+             the length of the block size.
 
     FLUSH
 

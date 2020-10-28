@@ -13,6 +13,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         const val STATE_CODE_ILLEGAL_COMMAND = 128
         const val STATE_CODE_FILE_NOT_FOUND = 129
         const val STATE_CODE_FILE_ALREADY_OPENED = 130
+        const val STATE_CODE_OPERATION_NOT_PERMITTED = 131
         const val STATE_CODE_SYSTEM_IO_ERROR = 192
 
 
@@ -24,6 +25,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             errorMsgs[STATE_CODE_FILE_NOT_FOUND] = "FILE NOT FOUND"
             errorMsgs[STATE_CODE_FILE_ALREADY_OPENED] = "FILE ALREADY OPENED"
             errorMsgs[STATE_CODE_SYSTEM_IO_ERROR] = "IO ERROR ON SIMULATED DRIVE"
+            errorMsgs[STATE_CODE_OPERATION_NOT_PERMITTED] = "OPERATION NOT PERMITTED"
         }
     }
 
@@ -56,7 +58,6 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     private var fileOpen = false
     private var file = File(rootPath.toURI())
     //private var readModeLength = -1 // always 4096
-    private var stateCode = STATE_CODE_STANDBY
     private var writeMode = false
     private var writeModeLength = -1
 
@@ -66,6 +67,8 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
 
 
     init {
+        statusCode = STATE_CODE_STANDBY
+
         if (!rootPath.exists()) {
             rootPath.mkdirs()
         }
@@ -112,78 +115,101 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
      * Disk drive must create desired side effects in accordance with the input message.
      */
     override fun writeoutImpl(inputData: ByteArray) {
-        val inputString = inputData.toString(VM.CHARSET)
+        if (writeMode) {
 
-        if (inputString.startsWith("DEVRST\u0017")) {
-            //readModeLength = -1
-            fileOpen = false
-            file = File(rootPath.toURI())
-            blockSendCount = 0
-            stateCode = STATE_CODE_STANDBY
-            writeMode = false
-            writeModeLength = -1
         }
-        else if (inputString.startsWith("DEVSTU\u0017")) {
-            if (stateCode < 128) {
-                recipient?.writeout(composePositiveAns("${stateCode.toChar()}", errorMsgs[stateCode]))
+        else {
+            val inputString = trimNull(inputData).toString(VM.CHARSET)
+
+            if (inputString.startsWith("DEVRST\u0017")) {
+                //readModeLength = -1
+                fileOpen = false
+                file = File(rootPath.toURI())
+                blockSendCount = 0
+                statusCode = STATE_CODE_STANDBY
+                writeMode = false
+                writeModeLength = -1
             }
-            else {
-                recipient?.writeout(composeNegativeAns("${stateCode.toChar()}", errorMsgs[stateCode]))
-            }
-        }
-        else if (inputString.startsWith("DEVTYP\u0017"))
-            recipient?.writeout(composePositiveAns("STOR"))
-        else if (inputString.startsWith("DEVNAM\u0017"))
-            recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
-        else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
-            if (fileOpen) {
-                stateCode = STATE_CODE_FILE_ALREADY_OPENED
-                return
-            }
-
-            val openMode = inputString[4]
-
-            val prop = inputString.subSequence(6, inputString.length).split(",\"")
-
-            if (prop.size == 0 || prop.size > 2) {
-                stateCode = STATE_CODE_ILLEGAL_COMMAND
-                return
-            }
-            val filePath = sanitisePath(prop[0])
-            val driveNum = if (prop.size != 2) 0 else prop[1].toInt()
-
-            // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
-
-            file = File(rootPath, filePath)
-
-            if (openMode == 'R' && !file.exists()) {
-                stateCode = STATE_CODE_FILE_NOT_FOUND
-                return
-            }
-
-            fileOpen = true
-        }
-        else if (inputString.startsWith("LIST")) {
-            // temporary behaviour to ignore any arguments
-            resetBuf()
-            messageComposeBuffer.write(getReadableLs().toByteArray(VM.CHARSET))
-            stateCode = STATE_CODE_STANDBY
-        }
-        else if (inputString.startsWith("CLOSE")) {
-            fileOpen = false
-            stateCode = STATE_CODE_STANDBY
-        }
-        else if (inputString.startsWith("READ")) {
-            //readModeLength = inputString.substring(4 until inputString.length).toInt()
-
-            resetBuf()
-            if (file.isFile) {
-                try {
-                    messageComposeBuffer.write(file.readBytes())
-                    stateCode = STATE_CODE_STANDBY
+            else if (inputString.startsWith("DEVSTU\u0017")) {
+                if (statusCode < 128) {
+                    recipient?.writeout(composePositiveAns("${statusCode.toChar()}", errorMsgs[statusCode]))
                 }
-                catch (e: IOException) {
-                    stateCode = STATE_CODE_SYSTEM_IO_ERROR
+                else {
+                    recipient?.writeout(composeNegativeAns("${statusCode.toChar()}", errorMsgs[statusCode]))
+                }
+            }
+            else if (inputString.startsWith("DEVTYP\u0017"))
+                recipient?.writeout(composePositiveAns("STOR"))
+            else if (inputString.startsWith("DEVNAM\u0017"))
+                recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
+            else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
+                if (fileOpen) {
+                    statusCode = STATE_CODE_FILE_ALREADY_OPENED
+                    return
+                }
+
+                println("[TestDiskDrive] msg: $inputString, lastIndex: ${inputString.lastIndex}")
+
+                val openMode = inputString[4]
+                println("[TestDiskDrive] open mode: $openMode")
+                // split inputstring into path and optional drive-number
+
+                // get position of latest delimeter (comma)
+                var commaIndex = inputString.lastIndex
+                while (commaIndex > 6) {
+                    if (inputString[commaIndex] == ',') break; commaIndex -= 1
+                }
+                // sanity check if path is actually enclosed with double-quote
+                if (commaIndex != 6 && inputString[commaIndex - 1] != '"') {
+                    statusCode = STATE_CODE_ILLEGAL_COMMAND
+                    return
+                }
+                val pathStr = inputString.substring(6, if (commaIndex == 6) inputString.lastIndex else commaIndex - 1)
+                val driveNum =
+                    if (commaIndex == 6) null else inputString.substring(commaIndex + 1, inputString.length).toInt()
+                val filePath = sanitisePath(pathStr)
+
+                // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
+
+                file = File(rootPath, filePath)
+                println("[TestDiskDrive] file path: ${file.canonicalPath}, drive num: $driveNum")
+
+                if (openMode == 'R' && !file.exists()) {
+                    println("! file not found")
+                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    return
+                }
+
+                statusCode = STATE_CODE_STANDBY
+                fileOpen = true
+                blockSendCount = 0
+            }
+            else if (inputString.startsWith("LIST")) {
+                // temporary behaviour to ignore any arguments
+                resetBuf()
+                messageComposeBuffer.write(getReadableLs().toByteArray(VM.CHARSET))
+                statusCode = STATE_CODE_STANDBY
+            }
+            else if (inputString.startsWith("CLOSE")) {
+                fileOpen = false
+                statusCode = STATE_CODE_STANDBY
+            }
+            else if (inputString.startsWith("READ")) {
+                //readModeLength = inputString.substring(4 until inputString.length).toInt()
+
+                resetBuf()
+                if (file.isFile) {
+                    try {
+                        messageComposeBuffer.write(file.readBytes())
+                        statusCode = STATE_CODE_STANDBY
+                    }
+                    catch (e: IOException) {
+                        statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    }
+                }
+                else {
+                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    return
                 }
             }
         }
