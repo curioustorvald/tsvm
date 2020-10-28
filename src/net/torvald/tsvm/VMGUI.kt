@@ -36,6 +36,8 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
             0
         )
 
+        Gdx.input.inputProcessor = vm.getIO()
+
         batch = SpriteBatch()
         camera = OrthographicCamera(appConfig.width.toFloat(), appConfig.height.toFloat())
         camera.setToOrtho(false)
@@ -78,9 +80,6 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
             vmRunner.evalGlobal(bios + "\n" + tvgl)
             vmRunner.executeCommand(prg)
         }
-
-
-        Gdx.input.inputProcessor = vm.getIO()
     }
 
     private var updateAkku = 0.0

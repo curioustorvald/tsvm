@@ -20,13 +20,13 @@ if (system.maxmem() < 8192) {
     throw new Error("Out of memory");
 }
 
-var vmemsize = system.maxmem() - 5236;
+let vmemsize = system.maxmem() - 5236;
 
-var cmdbuf = []; // index: line number
-var cmdbufMemFootPrint = 0;
-var prompt = "Ok";
+let cmdbuf = []; // index: line number
+let cmdbufMemFootPrint = 0;
+let prompt = "Ok";
 
-var lang = {};
+let lang = {};
 lang.badNumberFormat = "Illegal number format";
 lang.badOperatorFormat = "Illegal operator format";
 lang.badFunctionCallFormat = "Illegal function call";
@@ -63,18 +63,18 @@ function getUsedMemSize() {
 }
 
 
-var reLineNum = /^[0-9]+ /;
+let reLineNum = /^[0-9]+ /;
 //var reFloat = /^([\-+]?[0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[\-+]?[0-9]+[.eEfF][0-9+\-]*[fF]?)$/;
 //var reDec = /^([\-+]?[0-9_]+)$/;
 //var reHex = /^(0[Xx][0-9A-Fa-f_]+)$/;
 //var reBin = /^(0[Bb][01_]+)$/;
 
 // must match partial
-var reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/;
-var reOps = /\^|;|\*|\/|\+|\-|[<>=]{1,2}/;
+let reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/;
+let reOps = /\^|;|\*|\/|\+|\-|[<>=]{1,2}/;
 
-var reNum = /[0-9]+/;
-var tbasexit = false;
+let reNum = /[0-9]+/;
+let tbasexit = false;
 
 println("Terran BASIC 1.0  "+vmemsize+" bytes free");
 println(prompt);
@@ -219,7 +219,7 @@ function threeArgNonNullNumeric(lnum, args, action) {
     if (isNaN(resolvedargs2)) throw lang.illegalType(lnum, resolvedargs2.value);
     return action(resolvedargs0, resolvedargs1, resolvedargs2);
 }
-var basicInterpreterStatus = {};
+let basicInterpreterStatus = {};
 basicInterpreterStatus.gosubStack = [];
 basicInterpreterStatus.variables = {};
 basicInterpreterStatus.defuns = {};
@@ -425,7 +425,7 @@ basicInterpreterStatus.builtin = {
 }
 };
 Object.freeze(basicInterpreterStatus.builtin);
-var basicFunctions = {};
+let basicFunctions = {};
 basicFunctions._isNumber = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
@@ -1398,19 +1398,19 @@ basicFunctions.run = function(args) { // RUN function
 };
 Object.freeze(basicFunctions);
 while (!tbasexit) {
-    var line = sys.read();
+    let line = sys.read();
     line = line.trim();
 
     cmdbufMemFootPrint += line.length;
 
     if (reLineNum.test(line)) {
-        var i = line.indexOf(" ");
+        let i = line.indexOf(" ");
         cmdbuf[line.slice(0, i)] = line.slice(i + 1, line.length);
     }
     else if (line.length > 0) {
         cmdbufMemFootPrint -= line.length;
         try {
-            var cmd = line.split(" ");
+            let cmd = line.split(" ");
             serial.printerr(cmd[0].toLowerCase());
             basicFunctions[cmd[0].toLowerCase()](cmd);
         }
@@ -1421,3 +1421,5 @@ while (!tbasexit) {
         println(prompt);
     }
 }
+
+return 0;
