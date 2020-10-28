@@ -134,7 +134,7 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         else if (inputString.startsWith("DEVTYP\u0017"))
             recipient?.writeout(composeSerialAns("STOR"))
         else if (inputString.startsWith("DEVNAM\u0017"))
-            recipient?.writeout(composeSerialAns("Testtec Virtual Disk Drive"))
+            recipient?.writeout(composeSerialAns("Testtec Signal Generator"))
         else if (inputString.startsWith("OPENR\""))
             fileOpen = true
         else if (inputString.startsWith("CLOSE"))

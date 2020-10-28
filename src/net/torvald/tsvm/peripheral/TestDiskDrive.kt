@@ -31,7 +31,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         val sb = ArrayList<Byte>()
         sb.add(GOOD_NEWS)
         sb.addAll(msg[0].toByteArray().toTypedArray())
-        for (k in 1 until msg.lastIndex) {
+        for (k in 1 until msg.size) {
             sb.add(UNIT_SEP)
             sb.addAll(msg[k].toByteArray().toTypedArray())
         }
@@ -43,7 +43,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         val sb = ArrayList<Byte>()
         sb.add(BAD_NEWS)
         sb.addAll(msg[0].toByteArray().toTypedArray())
-        for (k in 1 until msg.lastIndex) {
+        for (k in 1 until msg.size) {
             sb.add(UNIT_SEP)
             sb.addAll(msg[k].toByteArray().toTypedArray())
         }
@@ -51,8 +51,10 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         return sb.toByteArray()
     }
 
+    private val rootPath = File("test_assets/test_drive_$driveNum")
+
     private var fileOpen = false
-    private var file: File? = null
+    private var file = File(rootPath.toURI())
     //private var readModeLength = -1 // always 4096
     private var stateCode = STATE_CODE_STANDBY
     private var writeMode = false
@@ -61,8 +63,6 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
-
-    private val rootPath = File("test_assets/test_drive_$driveNum")
 
 
     init {
@@ -112,18 +112,18 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
      * Disk drive must create desired side effects in accordance with the input message.
      */
     override fun writeoutImpl(inputData: ByteArray) {
-        val inputString = inputData.toString()
+        val inputString = inputData.toString(VM.CHARSET)
 
-        if (inputString.startsWith("DEVRST$END_OF_SEND_BLOCK")) {
+        if (inputString.startsWith("DEVRST\u0017")) {
             //readModeLength = -1
             fileOpen = false
-            file = null
+            file = File(rootPath.toURI())
             blockSendCount = 0
             stateCode = STATE_CODE_STANDBY
             writeMode = false
             writeModeLength = -1
         }
-        else if (inputString.startsWith("DEVSTU$END_OF_SEND_BLOCK")) {
+        else if (inputString.startsWith("DEVSTU\u0017")) {
             if (stateCode < 128) {
                 recipient?.writeout(composePositiveAns("${stateCode.toChar()}", errorMsgs[stateCode]))
             }
@@ -131,12 +131,12 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
                 recipient?.writeout(composeNegativeAns("${stateCode.toChar()}", errorMsgs[stateCode]))
             }
         }
-        else if (inputString.startsWith("DEVTYP$END_OF_SEND_BLOCK"))
+        else if (inputString.startsWith("DEVTYP\u0017"))
             recipient?.writeout(composePositiveAns("STOR"))
-        else if (inputString.startsWith("DEVNAM$END_OF_SEND_BLOCK"))
+        else if (inputString.startsWith("DEVNAM\u0017"))
             recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
         else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
-            if (file != null) {
+            if (fileOpen) {
                 stateCode = STATE_CODE_FILE_ALREADY_OPENED
                 return
             }
@@ -156,7 +156,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
 
             file = File(rootPath, filePath)
 
-            if (openMode == 'R' && !file!!.exists()) {
+            if (openMode == 'R' && !file.exists()) {
                 stateCode = STATE_CODE_FILE_NOT_FOUND
                 return
             }
@@ -167,18 +167,19 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             // temporary behaviour to ignore any arguments
             resetBuf()
             messageComposeBuffer.write(getReadableLs().toByteArray(VM.CHARSET))
+            stateCode = STATE_CODE_STANDBY
         }
         else if (inputString.startsWith("CLOSE")) {
-            file = null
             fileOpen = false
+            stateCode = STATE_CODE_STANDBY
         }
         else if (inputString.startsWith("READ")) {
             //readModeLength = inputString.substring(4 until inputString.length).toInt()
 
             resetBuf()
-            if (file?.isFile == true) {
+            if (file.isFile) {
                 try {
-                    messageComposeBuffer.write(file!!.readBytes())
+                    messageComposeBuffer.write(file.readBytes())
                     stateCode = STATE_CODE_STANDBY
                 }
                 catch (e: IOException) {
@@ -191,26 +192,35 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     val diskID: UUID = UUID(0, 0)
 
     private fun getReadableLs(): String {
-        if (file == null) throw IllegalStateException("No file is opened")
-
         val sb = StringBuilder()
+        val isRoot = (file.absolutePath == rootPath.absolutePath)
 
-        if (file!!.isFile) sb.append(file!!.name)
+        if (file.isFile) sb.append(file.name)
         else {
+            sb.append("Current directory: ")
+            sb.append(if (isRoot) "(root)" else file.path)
+            sb.append('\n')
+
             sb.append(".\n")
-            if (file!!.absolutePath != rootPath.absolutePath) sb.append("..\n")
+            if (isRoot) sb.append("..\n")
             // actual entries
-            file!!.listFiles()!!.forEach {
+            file.listFiles()!!.forEach {
                 var filenameLen = it.name.length
+
                 sb.append(it.name)
+
                 if (it.isDirectory) {
                     sb.append("/")
                     filenameLen += 1
                 }
+
                 sb.append(" ".repeat(40 - filenameLen))
+
                 if (it.isFile) {
                     sb.append("${it.length()} B")
                 }
+
+                sb.append('\n')
             }
             sb.append('\n')
         }

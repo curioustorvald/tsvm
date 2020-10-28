@@ -75,6 +75,9 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
 
     companion object {
         const val BLOCK_SIZE = 4096
+
+        // these consts are UNUSABLE on writeoutImpl because wtf
+        // still possible to use on stringbuilder tho
         const val GOOD_NEWS = 0x06.toByte()
         const val BAD_NEWS = 0x15.toByte()
         const val UNIT_SEP = 0x1F.toByte()
