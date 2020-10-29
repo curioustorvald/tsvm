@@ -55,9 +55,9 @@ Returns: none
 
 Description: reads status of the device, if applicable
 Returns:
-    0x06 <status code> <0x1F> <message string> 0x17
-    0x15 <status code> <0x1F> <message string> 0x17
-Status Code is single byte number. Also see section 1.0
+    <status code> <0x1F> <message string> 0x17
+Status Code is single byte number, negative numbers (or >= 128) is used for negative response by convention.
+Also see section 1.0
 
 2. Device-specific commands
 
@@ -69,7 +69,8 @@ Status Code is single byte number. Also see section 1.0
 
 2.1.0 NOTE
 
-    comma-followed-by-drive-number can be omitted; drive number 1 will be substituted
+    - comma-followed-by-drive-number can be omitted; drive number 1 will be substituted
+    - drive number always starts at 1
 
 2.1.1 File Control
 
@@ -108,23 +109,24 @@ Description: closes any file that is open.
 
     LOAD"<path to file>",<drive number>
 
-Description: loads an executable file for running. Will throw an error if the file is not executable.
+Description: loads a file onto the main memory. The pointer to the file will be sent back to the host device.
 
     CHTYPE,<file type>,<drive number>
 
-Description: changes the file's file type (or its extension)
+Description: changes the open file's file type (or its extension)
 
-    CHDIR"<path>"
+    LIST
 
-Description: changes the working directory of the filesystem to given path. Disk with non-hierarchical filesystem should
-             ignore this command.
+Description: lists contents of the open (with OPENR) directory in READABLE FORMAT
+             (no 0x17 at the end, terminates string with zero)
+             When a file is opened instead of a directory, its filename should be printed
+             Raw filesystem (e.g. EPROM) should return first 4096 bytes of its contents.
 
-    LIST,<drive number>
-    LIST"<path>",<drive number>
+    LISTFILES
 
-Description: lists contents of the given directory in READABLE FORMAT (no 0x17 at the end, terminates string with zero)
-             If no path is given, current working directory will be used instead. Non-hierarchical system should ignore
-             PATH argument, and raw filesystem (e.g. EPROM) should return first 4096 bytes of its contents.
+Description: same as the LIST, but in machine readable format, which follows the following format:
+             <file/dir type> <filename> [<0x1E for separator> <file/dir type> <filename> ...] <0x17>
+             file/dir type: 0x11 for file, 0x12 for directory
 
     USAGE,<drive number>
 

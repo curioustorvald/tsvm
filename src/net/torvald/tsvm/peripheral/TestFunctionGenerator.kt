@@ -90,7 +90,6 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
 
     fun composeSerialAns(vararg msg: String): ByteArray {
         val sb = ArrayList<Byte>()
-        sb.add(0x06) // always positive ans
         sb.addAll(msg[0].toByteArray().toTypedArray())
         for (k in 1 until msg.lastIndex) {
             sb.add(0x1F)

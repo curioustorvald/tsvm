@@ -1,6 +1,10 @@
 println("TERRAN Megatrends inc.");
 //println("Main RAM:"+(system.maxmem() >> 10)+" KBytes");
 
+///////////////////////////////////////////////////////////////////////////////
+
+// Perform memtest
+
 let memptr = 0;
 const memtestptn = [
     // Overclockers will LOVE this!
@@ -61,5 +65,21 @@ catch (e) {
         println(" KB OK!");
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+
+// probe bootable device
+
+var _BIOS = {};
+
+// Syntax: [Port, Drive-number]
+// Port #0-3: Serial port 1-4
+//      #4+ : Left for future extension
+// Drive-number always starts at 1
+_BIOS.FIRST_BOOTABLE_PORT = [0,1]; // ah screw it
+
+Object.freeze(_BIOS);
+
+///////////////////////////////////////////////////////////////////////////////
 
 con.move(4,1);

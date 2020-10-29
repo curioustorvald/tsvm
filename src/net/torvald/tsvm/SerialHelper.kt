@@ -80,7 +80,6 @@ object SerialHelper {
     fun getDeviceStatus(vm: VM, portNo: Int): DeviceStatus {
         val msgStr = sendMessageGetBytes(vm, portNo, "DEVSTU$END_OF_SEND_BLOCK".toByteArray(VM.CHARSET))
         return DeviceStatus(
-            msgStr[0] == 0x06.toByte(),
             msgStr[1].toUint(),
             msgStr.sliceArray(3 until msgStr.size - 1).toString(VM.CHARSET)
         )
@@ -130,7 +129,7 @@ object SerialHelper {
 
     private fun Boolean.toInt() = if (this) 1 else 0
 
-    data class DeviceStatus(val isError: Boolean, val code: Int, val message: String)
+    data class DeviceStatus(val code: Int, val message: String)
 }
 
 class SerialHelperDelegate(val vm: VM) {
@@ -138,7 +137,8 @@ class SerialHelperDelegate(val vm: VM) {
     fun pullMessage(portNo: Int) = SerialHelper.pullMessage(vm, portNo).toString(VM.CHARSET)
     fun sendMessageGetBytes(portNo: Int, message: String) = SerialHelper.sendMessageGetBytes(vm, portNo, message.toByteArray(VM.CHARSET)).toString(VM.CHARSET)
     fun fetchResponse(portNo: Int) = SerialHelper.fetchResponse(vm, portNo).toString(VM.CHARSET)
-    fun getDeviceStatus(portNo: Int) = SerialHelper.getDeviceStatus(vm, portNo)
     fun waitUntilReady(portNo: Int) = SerialHelper.waitUntilReady(vm, portNo)
     fun getStatusCode(portNo: Int) = SerialHelper.getStatusCode(vm, portNo)
+    /** @return Object where { code: <Int>, message: <String> } */
+    fun getDeviceStatus(portNo: Int) = SerialHelper.getDeviceStatus(vm, portNo)
 }

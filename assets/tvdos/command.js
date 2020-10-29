@@ -1,5 +1,5 @@
 const DOS_VERSION = "1.0";
-const PROMPT_TEXT = ">";
+let PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
 
 let shell_pwd = [""];

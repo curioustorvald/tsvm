@@ -31,19 +31,6 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
 
      fun composePositiveAns(vararg msg: String): ByteArray {
         val sb = ArrayList<Byte>()
-        sb.add(GOOD_NEWS)
-        sb.addAll(msg[0].toByteArray().toTypedArray())
-        for (k in 1 until msg.size) {
-            sb.add(UNIT_SEP)
-            sb.addAll(msg[k].toByteArray().toTypedArray())
-        }
-        sb.add(END_OF_SEND_BLOCK)
-        return sb.toByteArray()
-    }
-
-    fun composeNegativeAns(vararg msg: String): ByteArray {
-        val sb = ArrayList<Byte>()
-        sb.add(BAD_NEWS)
         sb.addAll(msg[0].toByteArray().toTypedArray())
         for (k in 1 until msg.size) {
             sb.add(UNIT_SEP)
@@ -130,14 +117,8 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
                 writeMode = false
                 writeModeLength = -1
             }
-            else if (inputString.startsWith("DEVSTU\u0017")) {
-                if (statusCode < 128) {
-                    recipient?.writeout(composePositiveAns("${statusCode.toChar()}", errorMsgs[statusCode]))
-                }
-                else {
-                    recipient?.writeout(composeNegativeAns("${statusCode.toChar()}", errorMsgs[statusCode]))
-                }
-            }
+            else if (inputString.startsWith("DEVSTU\u0017"))
+                recipient?.writeout(composePositiveAns("${statusCode.toChar()}", errorMsgs[statusCode]))
             else if (inputString.startsWith("DEVTYP\u0017"))
                 recipient?.writeout(composePositiveAns("STOR"))
             else if (inputString.startsWith("DEVNAM\u0017"))
