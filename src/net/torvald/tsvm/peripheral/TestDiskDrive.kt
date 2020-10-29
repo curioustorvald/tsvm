@@ -14,6 +14,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         const val STATE_CODE_FILE_NOT_FOUND = 129
         const val STATE_CODE_FILE_ALREADY_OPENED = 130
         const val STATE_CODE_OPERATION_NOT_PERMITTED = 131
+        const val STATE_CODE_READ_ONLY = 132
         const val STATE_CODE_SYSTEM_IO_ERROR = 192
 
 
@@ -43,6 +44,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     private val rootPath = File("test_assets/test_drive_$driveNum")
 
     private var fileOpen = false
+    private var fileOpenMode = -1 // 1: 'W", 2: 'A'
     private var file = File(rootPath.toURI())
     //private var readModeLength = -1 // always 4096
     private var writeMode = false
@@ -103,7 +105,21 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
      */
     override fun writeoutImpl(inputData: ByteArray) {
         if (writeMode) {
+            if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
+            
+            inputData.forEach {
+                if (writeModeLength > 0) {
+                    //writeBuffer.write(it.toInt())
+                    //writeModeLength -= 1
+                    file.writeBytes(inputData.sliceArray(0 until writeModeLength))
+                    writeModeLength = 0
+                }
+            }
 
+            if (writeModeLength <= 0) {
+                writeMode = false
+                //writeBuffer.reset()
+            }
         }
         else {
             val inputString = trimNull(inputData).toString(VM.CHARSET)
@@ -111,6 +127,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             if (inputString.startsWith("DEVRST\u0017")) {
                 //readModeLength = -1
                 fileOpen = false
+                fileOpenMode = -1
                 file = File(rootPath.toURI())
                 blockSendCount = 0
                 statusCode = STATE_CODE_STANDBY
@@ -163,6 +180,11 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
 
                 statusCode = STATE_CODE_STANDBY
                 fileOpen = true
+                fileOpenMode = when (openMode) {
+                    'W' -> 1
+                    'A' -> 2
+                    else -> -1
+                }
                 blockSendCount = 0
             }
             else if (inputString.startsWith("LIST")) {
@@ -173,6 +195,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
             }
             else if (inputString.startsWith("CLOSE")) {
                 fileOpen = false
+                fileOpenMode = -1
                 statusCode = STATE_CODE_STANDBY
             }
             else if (inputString.startsWith("READ")) {
@@ -192,6 +215,19 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
                     statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
                     return
                 }
+            }
+            else if (inputString.startsWith("WRITE")) {
+                if (!fileOpen || fileOpenMode < 0) {
+                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    return
+                }
+                if (!file.canWrite()) {
+                    statusCode = STATE_CODE_READ_ONLY
+                    return
+                }
+                writeMode = true
+                writeModeLength = inputString.substring(5, inputString.length).toInt()
+                statusCode = 0
             }
         }
     }

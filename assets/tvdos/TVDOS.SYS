@@ -38,14 +38,14 @@ filesystem.open = function(driveLetter, path, operationMode) {
     }
 
     com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
-    let response = com.getStatusCode();
+    let response = com.getStatusCode(port[0]);
     return (response == 0);
 };
 // @return the entire contents of the file in String
-filesystem.readAll = function() {
+filesystem.readAll = function(driveLetter) {
     let port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "READ");
-    let response = com.getStatusCode();
+    let response = com.getStatusCode(port[0]);
     if (response < 0 || response >= 128) {
         let status = com.getDeviceStatus(port[0]);
         throw Error("Reading a file failed with "+status.code+": "+status.message);
