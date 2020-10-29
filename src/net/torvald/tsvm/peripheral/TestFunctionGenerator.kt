@@ -1,6 +1,7 @@
 package net.torvald.tsvm.peripheral
 
 import net.torvald.tsvm.VM
+import java.io.ByteArrayOutputStream
 import java.util.ArrayList
 
 class TestFunctionGenerator : BlockTransferInterface(true, false) {
@@ -87,6 +88,10 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
 
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
+    private var writeMode = false
+    private var writeModeLength = -1
+
+    private val writeBuffer = ByteArrayOutputStream()
 
     fun composeSerialAns(vararg msg: String): ByteArray {
         val sb = ArrayList<Byte>()
@@ -124,27 +129,51 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
         return (blockSendCount * BLOCK_SIZE < blockSendBuffer.size)
     }
     override fun writeoutImpl(inputData: ByteArray) {
-        val inputString = inputData.toString(VM.CHARSET)
+        if (writeMode) {
+            inputData.forEach {
+                if (writeModeLength > 0) {
+                    writeBuffer.write(it.toInt())
+                    writeModeLength -= 1
+                }
+            }
 
-        if (inputString.startsWith("DEVRST\u0017")) {
-            fileOpen = false
+            if (writeModeLength <= 0) {
+                writeMode = false
+
+                // test printout
+                val bufout = writeBuffer.toByteArray()
+                println("[TestFunctionGenerator] written bytes: ${bufout.size}")
+                println("[TestFunctionGenerator] written data: ${bufout.toString(VM.CHARSET)}")
+
+                writeBuffer.reset()
+            }
+        }
+        else {
+            val inputString = trimNull(inputData).toString(VM.CHARSET)
+
+            if (inputString.startsWith("DEVRST\u0017")) {
+                fileOpen = false
+                blockSendCount = 0
+            } else if (inputString.startsWith("DEVTYP\u0017"))
+                recipient?.writeout(composeSerialAns("STOR"))
+            else if (inputString.startsWith("DEVNAM\u0017"))
+                recipient?.writeout(composeSerialAns("Testtec Signal Generator"))
+            else if (inputString.startsWith("OPENR\""))
+                fileOpen = true
+            else if (inputString.startsWith("CLOSE"))
+                fileOpen = false
+            //else if (inputString.startsWith("READ"))
+            //    readModeLength = inputString.substring(4 until inputString.length).toInt()
+            else if (inputString.startsWith("LIST"))
+                recipient?.writeout("\"LOREM.TXT\"            TXT\nTotal 1 files on the disk".toByteArray())
+            else if (inputString.startsWith("WRITE")) {
+                writeMode = true
+                writeModeLength = inputString.substring(5, inputString.length).toInt()
+                statusCode = 0
+            }
+
             blockSendCount = 0
         }
-        else if (inputString.startsWith("DEVTYP\u0017"))
-            recipient?.writeout(composeSerialAns("STOR"))
-        else if (inputString.startsWith("DEVNAM\u0017"))
-            recipient?.writeout(composeSerialAns("Testtec Signal Generator"))
-        else if (inputString.startsWith("OPENR\""))
-            fileOpen = true
-        else if (inputString.startsWith("CLOSE"))
-            fileOpen = false
-        //else if (inputString.startsWith("READ"))
-        //    readModeLength = inputString.substring(4 until inputString.length).toInt()
-        else if (inputString.startsWith("LIST"))
-            recipient?.writeout("\"LOREM.TXT\"            TXT\nTotal 1 files on the disk".toByteArray())
-
-
-        blockSendCount = 0
     }
 
     override fun setMode(sendmode: Boolean) {

@@ -7,6 +7,7 @@ import net.torvald.tsvm.peripheral.BlockTransferInterface.Companion.END_OF_SEND_
 import java.io.ByteArrayOutputStream
 import kotlin.experimental.and
 import kotlin.experimental.or
+import kotlin.math.ceil
 
 object SerialHelper {
 
@@ -20,7 +21,6 @@ object SerialHelper {
 
     fun sendMessage(vm: VM, portNo: Int, message: ByteArray) {
         if (!checkIfDeviceIsThere(vm, portNo)) throw IllegalStateException("Device not connected")
-        if (message.size > BLOCK_SIZE) throw NotImplementedError("sending message greater than 4096 is a future work :p")
 
         /*UnsafeHelper.memcpyRaw(
             message, UnsafeHelper.getArrayOffset(message),
@@ -28,11 +28,15 @@ object SerialHelper {
             minOf(BLOCK_SIZE, message.size).toLong()
         )*/
 
-        for (k in 0 until BLOCK_SIZE) {
-            vm.getIO().blockTransferTx[portNo][k.toLong()] = if (k >= message.size) 0 else message[k]
+        for (blockCount in 0 until ceil(message.size.toFloat() / BLOCK_SIZE).toInt()) {
+            for (k in 0 until BLOCK_SIZE) {
+                val index = BLOCK_SIZE * blockCount + k
+                vm.getIO().blockTransferTx[portNo][k.toLong()] = if (index >= message.size) 0 else message[index]
+            }
+            initiateWriting(vm, portNo)
+            waitUntilReady(vm, portNo)
         }
 
-        initiateWriting(vm, portNo)
 
         // TODO assuming the write operation is finished... (wait for something?)
         getReady(vm, portNo)
