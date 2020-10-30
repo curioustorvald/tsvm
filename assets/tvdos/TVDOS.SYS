@@ -1,11 +1,11 @@
-// Boot script
+// define TVDOS
 var _TVDOS = {};
 _TVDOS.VERSION = "1.0";
 _TVDOS.DRIVES = {}; // Object where key-value pair is <drive-letter> : [serial-port, drive-number]
 // actually figure out the drive letter association
 // Drive A is always the device we're currently on
 _TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT;
-
+//TODO
 
 
 Object.freeze(_TVDOS);
@@ -54,3 +54,15 @@ filesystem.readAll = function(driveLetter) {
     return com.pullMessage(port[0]);
 };
 Object.freeze(filesystem);
+
+///////////////////////////////////////////////////////////////////////////////
+
+// install other stuffs
+filesystem.open("A", "tvdos/gl.js", "R");
+var GL = eval(filesystem.readAll("A"));
+
+///////////////////////////////////////////////////////////////////////////////
+
+// Boot script
+filesystem.open("A", "tvdos/command.js", "R");
+eval(filesystem.readAll("A"));

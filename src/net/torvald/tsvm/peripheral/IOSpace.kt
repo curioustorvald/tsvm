@@ -5,6 +5,7 @@ import com.badlogic.gdx.InputProcessor
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.VM
 import net.torvald.util.CircularArray
+import java.io.File
 import kotlin.experimental.and
 
 class IOSpace(val vm: VM) : PeriBase, InputProcessor {
@@ -39,7 +40,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
 
     init {
         blockTransferPorts[1].attachDevice(TestFunctionGenerator())
-        blockTransferPorts[0].attachDevice(TestDiskDrive(0))
+        blockTransferPorts[0].attachDevice(TestDiskDrive(0, File("assets/")))
     }
 
     private fun composeBlockTransferStatus(portno: Int): Int {

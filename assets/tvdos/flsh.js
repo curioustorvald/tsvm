@@ -7,11 +7,11 @@ const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 function print_prompt_text() {
     // oh-my-zsh-like prompt
     con.color_pair(239,161);
-    print(" "+CURRENT_DRIVE);
+    print(" "+CURRENT_DRIVE+":");
     con.color_pair(161,253);
     con.addch(16);
     con.color_pair(0,253);
-    print("\\"+shell_pwd.join("\\"));
+    print(" \\"+shell_pwd.join("\\")+" ");
     con.color_pair(253,255);
     con.addch(16);
     con.addch(32);

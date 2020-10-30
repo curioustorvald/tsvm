@@ -101,4 +101,4 @@ GL.drawSpriteOver = function(sheet, xi, yi, x, y) {
     }
 };
 
-Object.freeze(GL);
+Object.freeze(GL); // this returns frozen 'GL'

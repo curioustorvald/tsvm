@@ -6,7 +6,7 @@ import java.io.File
 import java.io.IOException
 import java.util.*
 
-class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, true) {
+class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : BlockTransferInterface(false, true) {
 
     companion object {
         const val STATE_CODE_STANDBY = 0
@@ -41,7 +41,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
         return sb.toByteArray()
     }
 
-    private val rootPath = File("test_assets/test_drive_$driveNum")
+    private val rootPath = theRootPath ?: File("test_assets/test_drive_$driveNum")
 
     private var fileOpen = false
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
