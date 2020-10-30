@@ -1,5 +1,6 @@
 // Boot script
 var _TVDOS = {};
+_TVDOS.VERSION = "1.0";
 _TVDOS.DRIVES = {}; // Object where key-value pair is <drive-letter> : [serial-port, drive-number]
 // actually figure out the drive letter association
 // Drive A is always the device we're currently on

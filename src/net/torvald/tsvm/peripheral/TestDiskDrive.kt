@@ -106,7 +106,7 @@ class TestDiskDrive(private val driveNum: Int) : BlockTransferInterface(false, t
     override fun writeoutImpl(inputData: ByteArray) {
         if (writeMode) {
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
-            
+
             inputData.forEach {
                 if (writeModeLength > 0) {
                     //writeBuffer.write(it.toInt())

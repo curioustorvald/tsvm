@@ -1,30 +1,42 @@
-const PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
 
 let shell_pwd = [""];
 
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 
-function get_prompt_text() {
-    return CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT;
+function print_prompt_text() {
+    // oh-my-zsh-like prompt
+    con.color_pair(239,161);
+    print(" "+CURRENT_DRIVE);
+    con.color_pair(161,253);
+    con.addch(16);
+    con.color_pair(0,253);
+    print("\\"+shell_pwd.join("\\"));
+    con.color_pair(253,255);
+    con.addch(16);
+    con.addch(32);
+    con.color_pair(239,255);
 }
 
 function greet() {
-    println(welcome_text);
+    con.color_pair(0,253);
+    //print(welcome_text + " ".repeat(_fsh.scrwidth - welcome_text.length));
+    print(welcome_text + " ".repeat(80 - welcome_text.length));
+    con.color_pair(239,255);
     println();
 }
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-println("Starting TVDOS...");
+con.clear();
 
 greet();
 
 let cmdHistory = []; // zeroth element is the oldest
 let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
 while (true) {
-    print(get_prompt_text());
+    print_prompt_text();
 
     let cmdbuf = "";
 

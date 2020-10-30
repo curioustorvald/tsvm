@@ -111,6 +111,12 @@ Description: closes any file that is open.
 
 Description: loads a file onto the main memory. The pointer to the file will be sent back to the host device.
 
+    LOADBOOT,<drive number>
+
+Description: loads a bootloader so that it can be read by the host device through the serial connection.
+             Technically there's no limit on the size of the bootloader but it's up to the BIOS to read more than
+             a single block.
+
     CHTYPE,<file type>,<drive number>
 
 Description: changes the open file's file type (or its extension)
