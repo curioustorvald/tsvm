@@ -1,5 +1,6 @@
 // load TVDOS.SYS
 let p = _BIOS.FIRST_BOOTABLE_PORT;
+com.sendMessage(p[0], "DEVRST\x17");
 com.sendMessage(p[0], 'OPENR"tvdos/TVDOS.SYS",'+p[1]);
 let r = com.getStatusCode(p[0]);
 if (r == 0){

@@ -125,6 +125,7 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
             val inputString = trimNull(inputData).toString(VM.CHARSET)
 
             if (inputString.startsWith("DEVRST\u0017")) {
+                println("[TestDiskDrive] Device Reset")
                 //readModeLength = -1
                 fileOpen = false
                 fileOpenMode = -1
