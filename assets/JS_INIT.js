@@ -300,8 +300,22 @@ function println(s) {
     else
         sys.println(s);
 }
+function printerr(s) {
+    print("\x1B[31m"+s+"\x1B[m");
+}
+function printerrln(s) {
+    println("\x1B[31m"+s+"\x1B[m");
+}
 function read() {
     return sys.read();
+}
+String.prototype.trimNull = function() {
+    let cnt = this.length - 1
+    while (cnt >= 0) {
+        if (this.charCodeAt(cnt) != 0) break;
+        cnt -= 1;
+    }
+    return this.slice(0, cnt + 1);
 }
 // ncurses-like terminal control
 var con = {};

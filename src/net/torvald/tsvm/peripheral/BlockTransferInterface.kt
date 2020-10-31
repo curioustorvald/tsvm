@@ -86,14 +86,14 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         const val BAD_NEWS = 0x15.toByte()
         const val UNIT_SEP = 0x1F.toByte()
         const val END_OF_SEND_BLOCK = 0x17.toByte()
-
-        fun trimNull(ba: ByteArray): ByteArray {
-            var cnt = BLOCK_SIZE - 1
-            while (cnt >= 0) {
-                if (ba[cnt] != 0.toByte()) break
-                cnt -= 1
-            }
-            return ba.sliceArray(0..cnt)
-        }
     }
+}
+
+fun ByteArray.trimNull(): ByteArray {
+    var cnt = BlockTransferInterface.BLOCK_SIZE - 1
+    while (cnt >= 0) {
+        if (this[cnt] != 0.toByte()) break
+        cnt -= 1
+    }
+    return this.sliceArray(0..cnt)
 }

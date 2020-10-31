@@ -4,6 +4,7 @@ import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.BlockTransferInterface.Companion.BLOCK_SIZE
 import net.torvald.tsvm.peripheral.BlockTransferInterface.Companion.END_OF_SEND_BLOCK
+import net.torvald.tsvm.peripheral.trimNull
 import java.io.ByteArrayOutputStream
 import kotlin.experimental.and
 import kotlin.experimental.or
@@ -95,10 +96,10 @@ object SerialHelper {
 
     fun getStatusCode(vm: VM, portNo: Int) = vm.getIO().mmio_read(4080L + portNo)
 
-    private fun checkIfDeviceIsThere(vm: VM, portNo: Int) =
+    fun checkIfDeviceIsThere(vm: VM, portNo: Int) =
         (vm.getIO().mmio_read(4092L + portNo)!! and 1.toByte()) == 1.toByte()
 
-    private fun checkIfDeviceIsReady(vm: VM, portNo: Int) =
+    fun checkIfDeviceIsReady(vm: VM, portNo: Int) =
         (vm.getIO().mmio_read(4092L + portNo)!! and 0b111.toByte()) == 0b011.toByte()
 
     private fun initiateWriting(vm: VM, portNo: Int) {
@@ -145,4 +146,5 @@ class SerialHelperDelegate(val vm: VM) {
     fun getStatusCode(portNo: Int) = SerialHelper.getStatusCode(vm, portNo)
     /** @return Object where { code: <Int>, message: <String> } */
     fun getDeviceStatus(portNo: Int) = SerialHelper.getDeviceStatus(vm, portNo)
+    fun areYouThere(portNo: Int) = SerialHelper.checkIfDeviceIsThere(vm, portNo)
 }

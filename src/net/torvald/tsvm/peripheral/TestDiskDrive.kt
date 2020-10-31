@@ -3,6 +3,7 @@ package net.torvald.tsvm.peripheral
 import net.torvald.tsvm.VM
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 import java.util.*
 
@@ -122,7 +123,7 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
             }
         }
         else {
-            val inputString = trimNull(inputData).toString(VM.CHARSET)
+            val inputString = inputData.trimNull().toString(VM.CHARSET)
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 println("[TestDiskDrive] Device Reset")
@@ -217,6 +218,37 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                     return
                 }
             }
+            else if (inputString.startsWith("LOADBOOT")) {
+                var commaIndex = 0
+                while (commaIndex < inputString.length) {
+                    if (inputString[commaIndex] == ',') break
+                    commaIndex += 1
+                }
+                val driveNum = if (commaIndex >= inputString.length) null else commaIndex
+
+                // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
+
+                val bootFile = File(rootPath, "!BOOTSEC")
+
+                if (!bootFile.exists()) {
+                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    return
+                }
+                val fis = FileInputStream(bootFile)
+                try {
+                    val retMsg = ByteArray(BLOCK_SIZE)
+                    fis.read(retMsg)
+                    recipient?.writeout(retMsg)
+                    statusCode = STATE_CODE_STANDBY
+                }
+                catch (e: IOException) {
+                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    return
+                }
+                finally {
+                    fis.close()
+                }
+            }
             else if (inputString.startsWith("WRITE")) {
                 if (!fileOpen || fileOpenMode < 0) {
                     statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
@@ -228,8 +260,10 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 }
                 writeMode = true
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
-                statusCode = 0
+                statusCode = STATE_CODE_STANDBY
             }
+            else
+                statusCode = STATE_CODE_ILLEGAL_COMMAND
         }
     }
 

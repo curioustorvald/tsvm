@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import java.io.File
 import java.io.FileReader
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
@@ -51,31 +52,10 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
         memvwr = Memvwr(vm)
 
-        // TEST PRG
-        //val fr = FileReader("./assets/tvdos/command.js")
-        //val fr = FileReader("./assets/jscon.js")
-
-        val fr1 = FileReader("./assets/bios1.js")
-        //val fr1 = FileReader("./assets/phototest.js")
-        val bios = fr1.readText()
-        fr1.close()
-
-        //val fr = FileReader("./assets/tvdos/command.js")
-        //val fr = FileReader("./assets/zippytest.js")
-        //val fr = FileReader("./assets/serialtest.js")
-        //val fr = FileReader("./assets/tvdos/fsh.js")
-        //val fr = FileReader("./assets/tvdos/flsh.js")
-        //val fr = FileReader("./assets/tbas/basic.js")
-        //val fr = FileReader("./assets/jscon.js")
-        val fr = FileReader("./assets/!BOOTSEC")
-        val prg = fr.readText()
-        fr.close()
-
+        // load test bios
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            //vmRunner.evalGlobal("$bios")
-            //vmRunner.executeCommand(prg)
-            vmRunner.executeCommand("$bios\n$prg")
+            vmRunner.executeCommand(File("./assets/bios1.js").readText(VM.CHARSET))
         }
     }
 

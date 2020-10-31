@@ -149,7 +149,7 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
             }
         }
         else {
-            val inputString = trimNull(inputData).toString(VM.CHARSET)
+            val inputString = inputData.trimNull().toString(VM.CHARSET)
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 fileOpen = false
@@ -171,6 +171,8 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
                 statusCode = 0
             }
+            else
+                statusCode = 128
 
             blockSendCount = 0
         }
