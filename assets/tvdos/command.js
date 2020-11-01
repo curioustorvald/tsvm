@@ -1,16 +1,29 @@
 let PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
 
-let shell_pwd = [""];
+let shell_pwd = [];
 
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 
-function get_prompt_text() {
-    return CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT;
+function print_prompt_text() {
+    //print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
+    con.color_pair(239,161);
+    print(" "+CURRENT_DRIVE+":");
+    con.color_pair(161,253);
+    con.addch(16);
+    con.color_pair(0,253);
+    print(" \\"+shell_pwd.join("\\")+" ");
+    con.color_pair(253,255);
+    con.addch(16);
+    con.addch(32);
+    con.color_pair(239,255);
 }
 
 function greet() {
-    println(welcome_text);
+    con.color_pair(0,253);
+    //print(welcome_text + " ".repeat(_fsh.scrwidth - welcome_text.length));
+    print(welcome_text + " ".repeat(80 - welcome_text.length));
+    con.color_pair(239,255);
     println();
 }
 
@@ -66,7 +79,7 @@ shell.parse = function(input) {
                 tokens.push(stringBuffer); stringBuffer = "";
                 mode = "LIMBO";
             }
-            else if (c == '\\') {
+            else if (c == '^') {
                 mode = "ESCAPE";
             }
             else {
@@ -86,7 +99,30 @@ shell.parse = function(input) {
 
     return tokens;
 }
-if (exec_args !== undefined) return shell;
+
+shell.coreutils = {
+    cd: function(args) {
+        if (args[1] === undefined) {
+            println(shell_pwd.join("\\"));
+            return
+        }
+
+        shell_pwd = args[1].split("\\");
+    }
+};
+Object.freeze(shell.coreutils);
+shell.execute = function(line) {
+    if (line.size == 0) return;
+    let tokens = shell.parse(line);
+    let cmd = tokens[0].toLowerCase();
+    if (shell.coreutils[cmd] !== undefined) {
+        shell.coreutils[cmd](tokens);
+    }
+    else {
+        printerrln('Bad command or filename: "'+cmd+'"');
+    }
+};
+if (exec_args !== undefined) return Object.freeze(shell);
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -98,7 +134,7 @@ greet();
 let cmdHistory = []; // zeroth element is the oldest
 let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
 while (true) {
-    print(get_prompt_text());
+    print_prompt_text();
 
     let cmdbuf = "";
 
@@ -120,8 +156,7 @@ while (true) {
         else if (key === 10 || key === 13) {
             println();
             try {
-                let tokens = shell.parse(cmdbuf);
-                tokens.forEach(function(it) { println(it+"_"); });
+                shell.execute(cmdbuf);
             }
             catch (e) {
                 printerrln(e);

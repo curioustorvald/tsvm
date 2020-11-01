@@ -350,15 +350,15 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
     Color table for default palette
 
     Black   240
-    Red     160
-    Green   30
+    Red     211
+    Green   61
     Yellow  230
-    Blue    19
-    Magenta 199
-    Cyan    74
+    Blue    49
+    Magenta 219
+    Cyan    114
     White   254
      */
-    private val sgrDefault8ColPal = intArrayOf(240,160,30,230,19,199,74,254)
+    private val sgrDefault8ColPal = intArrayOf(240,211,61,230,49,219,114,254)
 
     override fun sgrOneArg(arg: Int) {
 

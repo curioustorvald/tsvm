@@ -10,7 +10,7 @@ _TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT;
 
 _TVDOS.defaults = {
     path: [
-        ""
+        "/tvdos/bin"
     ]
 };
 Object.freeze(_TVDOS);
