@@ -167,7 +167,7 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 val pathStr = inputString.substring(6, if (commaIndex == 6) inputString.lastIndex else commaIndex - 1)
                 val driveNum =
                     if (commaIndex == 6) null else inputString.substring(commaIndex + 1, inputString.length).toInt()
-                val filePath = sanitisePath(pathStr)
+                val filePath = filterSuperRoot(sanitisePath(pathStr))
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
@@ -307,5 +307,30 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
     }
 
     private fun sanitisePath(s: String) = s.replace('\\','/').replace(Regex("""\?<>:\*\|"""),"-")
+
+    // applies a "cap" if the path attemps to access parent directory of the root
+    private fun filterSuperRoot(path: String): String {
+        var parentCount = 0
+        val paths = path.split('/')
+        val newPaths = ArrayList<String>()
+        paths.forEach {
+            if (it.isBlank() || it.isEmpty()) throw IllegalArgumentException("Path cannot contain whitespaces")
+
+            if (it == "..") {
+                parentCount -= -1
+            }
+            else if (it != ".") {
+                parentCount += 1
+            }
+
+            if (parentCount < -1) parentCount = -1
+
+            if (parentCount >= 0) {
+                newPaths.add(it)
+            }
+        }
+
+        return newPaths.joinToString("/")
+    }
 
 }
