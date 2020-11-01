@@ -36,6 +36,7 @@ shell.parse = function(input) {
 	ESCAPE -> QUOTE
 
 	LIMBO -> LITERAL [label="not space"]
+	LIMBO -> QUOTE [label="\""]
 	LIMBO -> LIMBO [label="space"]
 }*/
         if (mode == "LITERAL") {
@@ -52,7 +53,10 @@ shell.parse = function(input) {
             }
         }
         else if (mode == "LIMBO") {
-            if (c != ' ') {
+            if (c == '"') {
+                mode = "QUOTE";
+            }
+            else if (c != ' ') {
                 mode = "LITERAL";
                 stringBuffer += c;
             }
@@ -60,6 +64,7 @@ shell.parse = function(input) {
         else if (mode == "QUOTE") {
             if (c == '"') {
                 tokens.push(stringBuffer); stringBuffer = "";
+                mode = "LIMBO";
             }
             else if (c == '\\') {
                 mode = "ESCAPE";
@@ -72,14 +77,13 @@ shell.parse = function(input) {
 
         }
 
-        // end of the input string
-        if (i == input.length - 1) {
-            stringBuffer += c;
-            tokens.push(stringBuffer);
-        }
-
         i += 1;
     }
+
+    if (stringBuffer.length > 0) {
+        tokens.push(stringBuffer);
+    }
+
     return tokens;
 }
 if (exec_args !== undefined) return shell;
@@ -116,8 +120,8 @@ while (true) {
         else if (key === 10 || key === 13) {
             println();
             try {
-                println("You entered: " + cmdbuf);
-
+                let tokens = shell.parse(cmdbuf);
+                tokens.forEach(function(it) { println(it+"_"); });
             }
             catch (e) {
                 printerrln(e);
