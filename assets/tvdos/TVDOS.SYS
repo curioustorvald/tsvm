@@ -61,6 +61,13 @@ Object.freeze(filesystem);
 filesystem.open("A", "tvdos/gl.js", "R");
 var GL = eval(filesystem.readAll("A"));
 
+// @param cmdsrc JS source code
+// @param args arguments for the program, must be Array
+var execApp = function(cmdsrc, args) {
+    let prg = eval("let _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
+    return prg(args);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 // Boot script
@@ -68,7 +75,6 @@ filesystem.open("A", "tvdos/command.js", "R");
 let cmdsrc = filesystem.readAll("A");
 
 // app execution stub
-let prg = eval("let _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
-prg(undefined);
-//let testtest = prg(42);
-//println(testtest.test);
+execApp(cmdsrc);
+//let sh = execApp(cmdsrc, [42]);
+//println(sh.test);
