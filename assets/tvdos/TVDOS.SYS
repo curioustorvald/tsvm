@@ -71,6 +71,12 @@ var execApp = function(cmdsrc, args) {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Boot script
+_TVDOS.defaults = {
+    path: [
+        ""
+    ]
+};
+
 filesystem.open("A", "tvdos/command.js", "R");
 let cmdsrc = filesystem.readAll("A");
 

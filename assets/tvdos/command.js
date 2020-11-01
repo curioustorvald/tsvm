@@ -16,7 +16,72 @@ function greet() {
 
 
 let shell = {};
-shell.test = "command.js test string";
+// example input: echo "the string" > subdir\test.txt
+shell.parse = function(input) {
+    let tokens = [];
+    let stringBuffer = "";
+    let mode = "LITERAL"; // LITERAL, QUOTE, ESCAPE, LIMBO
+    let i = 0
+    while (i < input.length) {
+        const c = input[i];
+/*digraph g {
+	LITERAL -> QUOTE [label="\""]
+	LITERAL -> LIMBO [label="space"]
+	LITERAL -> LITERAL [label=else]
+
+	QUOTE -> LIMBO [label="\""]
+	QUOTE -> ESCAPE [label="\\"]
+	QUOTE -> QUOTE [label=else]
+
+	ESCAPE -> QUOTE
+
+	LIMBO -> LITERAL [label="not space"]
+	LIMBO -> LIMBO [label="space"]
+}*/
+        if (mode == "LITERAL") {
+            if (c == ' ') {
+                tokens.push(stringBuffer); stringBuffer = "";
+                mode = "LIMBO";
+            }
+            else if (c == '"') {
+                tokens.push(stringBuffer); stringBuffer = "";
+                mode = "QUOTE";
+            }
+            else {
+                stringBuffer += c;
+            }
+        }
+        else if (mode == "LIMBO") {
+            if (c != ' ') {
+                mode = "LITERAL";
+                stringBuffer += c;
+            }
+        }
+        else if (mode == "QUOTE") {
+            if (c == '"') {
+                tokens.push(stringBuffer); stringBuffer = "";
+            }
+            else if (c == '\\') {
+                mode = "ESCAPE";
+            }
+            else {
+                stringBuffer += c;
+            }
+        }
+        else if (mode == "ESCAPE") {
+
+        }
+
+        // end of the input string
+        if (i == input.length - 1) {
+            stringBuffer += c;
+            tokens.push(stringBuffer);
+        }
+
+        i += 1;
+    }
+    return tokens;
+}
 if (exec_args !== undefined) return shell;
 
 
