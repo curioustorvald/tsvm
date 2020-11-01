@@ -6,9 +6,11 @@ import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
+import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import java.io.File
-import java.io.FileReader
+
+fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).contentEquals(other)
 
 class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
@@ -53,9 +55,18 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
         memvwr = Memvwr(vm)
 
         // load test bios
+
+        val bios = File("./assets/bios1.bin").readBytes()
+        // check if bios is compressed in gzip
+        val biosStr = if (bios.startsWith(GZIP_HEADER))
+            CompressorDelegate.decomp(bios).toString(VM.CHARSET)
+        else
+            bios.toString(VM.CHARSET)
+
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(File("./assets/bios1.js").readText(VM.CHARSET))
+            //vmRunner.executeCommand(File("./assets/zippytest.js").readText(VM.CHARSET))
+            vmRunner.executeCommand(biosStr)
         }
     }
 

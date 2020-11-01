@@ -2,7 +2,7 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.utils.Base64Coder
 
-class Base64Delegate {
+object Base64Delegate {
 
     fun atob(inputstr: String): ByteArray {
         return Base64Coder.decode(inputstr)

@@ -77,8 +77,8 @@ object VMRunnerFactory {
                         bind.put("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
                         bind.put("graphics", GraphicsJSR223Delegate(vm))
                         bind.put("serial", VMSerialDebugger(vm))
-                        bind.put("gzip", CompressorDelegate())
-                        bind.put("base64", Base64Delegate())
+                        bind.put("gzip", CompressorDelegate)
+                        bind.put("base64", Base64Delegate)
                         bind.put("com", SerialHelperDelegate(vm))
 
                         val fr = FileReader("./assets/JS_INIT.js")

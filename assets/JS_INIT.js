@@ -84,6 +84,11 @@ if (!Array.prototype.filter){
         return res;
     };
 }
+if (!String.prototype.padStart) {
+    String.prototype.padStart = function(l, c) {
+        return (this.length >= l) ? this : (c.repeat(l - this.length) + this);
+    };
+}
 // Production steps of ECMA-262, Edition 5, 15.4.4.19
 // Reference: http://es5.github.io/#x15.4.4.19
 if (!Array.prototype.map) {

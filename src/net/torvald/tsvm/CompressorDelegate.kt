@@ -6,7 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
-class CompressorDelegate {
+object CompressorDelegate {
 
     /*fun comp(ba: ByteArray): ByteArray {
         val bin = ByteArrayInputStream(ba)
@@ -38,4 +38,5 @@ class CompressorDelegate {
         return ret
     }
 
+    val GZIP_HEADER = byteArrayOf(31,-117,8) // .gz in DEFLATE
 }

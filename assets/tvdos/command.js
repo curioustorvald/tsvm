@@ -1,4 +1,4 @@
-const PROMPT_TEXT = ">";
+let PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
 
 let shell_pwd = [""];
@@ -13,6 +13,11 @@ function greet() {
     println(welcome_text);
     println();
 }
+
+
+let shell = {};
+shell.test = "command.js test string";
+if (exec_args !== undefined) return shell;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -47,9 +52,10 @@ while (true) {
             println();
             try {
                 println("You entered: " + cmdbuf);
+
             }
             catch (e) {
-                println(e);
+                printerrln(e);
             }
             finally {
                 if (cmdbuf.trim().length > 0)
@@ -92,3 +98,5 @@ while (true) {
         }
     }
 }
+
+return 0;

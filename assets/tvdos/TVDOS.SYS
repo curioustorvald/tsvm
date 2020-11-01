@@ -65,4 +65,10 @@ var GL = eval(filesystem.readAll("A"));
 
 // Boot script
 filesystem.open("A", "tvdos/command.js", "R");
-eval(filesystem.readAll("A"));
+let cmdsrc = filesystem.readAll("A");
+
+// app execution stub
+let prg = eval("let _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
+prg(undefined);
+//let testtest = prg(42);
+//println(testtest.test);
