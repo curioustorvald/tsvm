@@ -108,6 +108,21 @@ shell.coreutils = {
         }
 
         shell_pwd = args[1].split("\\");
+    },
+    cls: function(args) {
+        con.clear();
+    },
+    exit: function(args) {
+        cmdExit = true;
+    },
+    ver: function(args) {
+        println(welcome_text);
+    },
+    echo: function(args) {
+        if (args[1] !== undefined) {
+            args.forEach(function(it,i) { if (i > 0) print(it+" ") });
+        }
+        println();
     }
 };
 Object.freeze(shell.coreutils);
@@ -133,7 +148,8 @@ greet();
 
 let cmdHistory = []; // zeroth element is the oldest
 let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
-while (true) {
+let cmdExit = false;
+while (!cmdExit) {
     print_prompt_text();
 
     let cmdbuf = "";
