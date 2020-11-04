@@ -3,14 +3,38 @@ let CURRENT_DRIVE = "A";
 let executableExtensions = [".com",".bat",".js", ""]; Object.freeze(executableExtensions);
 let shell_pwd = [];
 
+let goInteractive = false;
+let goFancy = false;
+
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 
 function print_prompt_text() {
-    print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
+    if (goFancy) {
+        con.color_pair(239,161);
+        print(" "+CURRENT_DRIVE+":");
+        con.color_pair(161,253);
+        con.addch(16);
+        con.color_pair(0,253);
+        print(" \\"+shell_pwd.join("\\")+" ");
+        con.color_pair(253,255);
+        con.addch(16);
+        con.addch(32);
+        con.color_pair(239,255);
+    }
+    else
+        print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
 }
 
 function greet() {
-    println(welcome_text);
+    if (goFancy) {
+        con.color_pair(0,253);
+        //print(welcome_text + " ".repeat(_fsh.scrwidth - welcome_text.length));
+        print(welcome_text + " ".repeat(80 - welcome_text.length));
+        con.color_pair(239,255);
+        println();
+    }
+    else
+        println(welcome_text);
 }
 
 
@@ -38,12 +62,12 @@ shell.parse = function(input) {
 	LIMBO -> QUOTE [label="\""]
 	LIMBO -> LIMBO [label="space"]
 }*/
-        if (mode == "LITERAL") {
-            if (c == ' ') {
+        if ("LITERAL" == mode) {
+            if (' ' == c) {
                 tokens.push(stringBuffer); stringBuffer = "";
                 mode = "LIMBO";
             }
-            else if (c == '"') {
+            else if ('"' == c) {
                 tokens.push(stringBuffer); stringBuffer = "";
                 mode = "QUOTE";
             }
@@ -51,8 +75,8 @@ shell.parse = function(input) {
                 stringBuffer += c;
             }
         }
-        else if (mode == "LIMBO") {
-            if (c == '"') {
+        else if ("LIMBO" == mode) {
+            if ('"' == c) {
                 mode = "QUOTE";
             }
             else if (c != ' ') {
@@ -60,20 +84,20 @@ shell.parse = function(input) {
                 stringBuffer += c;
             }
         }
-        else if (mode == "QUOTE") {
-            if (c == '"') {
+        else if ("QUOTE" == mode) {
+            if ('"' == c) {
                 tokens.push(stringBuffer); stringBuffer = "";
                 mode = "LIMBO";
             }
-            else if (c == '^') {
+            else if ('^' == c) {
                 mode = "ESCAPE";
             }
             else {
                 stringBuffer += c;
             }
         }
-        else if (mode == "ESCAPE") {
-
+        else if ("ESCAPE" == mode) {
+            TODO();
         }
 
         i += 1;
@@ -116,7 +140,7 @@ shell.coreutils = {
 };
 Object.freeze(shell.coreutils);
 shell.execute = function(line) {
-    if (line.size == 0) return;
+    if (0 == line.size) return;
     let tokens = shell.parse(line);
     let cmd = tokens[0];
 
@@ -175,13 +199,24 @@ Object.freeze(shell);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 if (exec_args[1] !== undefined) {
+    // only meaningful switches would be either /c or /k anyway
+    let firstSwitch = exec_args[1].toLowerCase();
+
     // command /c   <commands>
     // ^[0]    ^[1] ^[2]
-    if (exec_args[1].toLowerCase() == "/c") {
-        if (exec_args[2] == "") return 0; // no commands were given, just exit successfully
+    if ("/c" == firstSwitch) {
+        if ("" == exec_args[2]) return 0; // no commands were given, just exit successfully
         return shell.execute(exec_args[2]);
+    }
+    else if ("/k" == firstSwitch) {
+        if ("" == exec_args[2]) return 0; // no commands were given, just exit successfully
+        shell.execute(exec_args[2]);
+        goInteractive = true;
+    }
+    else if ("/fancy" == firstSwitch) {
+        goFancy = true;
+        goInteractive = true;
     }
     else {
         printerrln("Invalid switch: "+exec_args[1]);
@@ -189,14 +224,18 @@ if (exec_args[1] !== undefined) {
     }
 }
 else {
+    goInteractive = true;
+}
+
+if (goInteractive) {
     con.reset_graphics();
-    println("Starting TVDOS...");
     greet();
 
     let cmdHistory = []; // zeroth element is the oldest
     let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
     let cmdExit = false;
     while (!cmdExit) {
+        con.reset_graphics();
         print_prompt_text();
 
         let cmdbuf = "";
@@ -217,12 +256,14 @@ else {
             }
             // enter
             else if (key === 10 || key === 13) {
+                let errorlevel = 0;
                 println();
                 try {
-                    shell.execute(cmdbuf);
+                    errorlevel = shell.execute(cmdbuf);
                 }
                 catch (e) {
                     printerrln(e);
+                    errorlevel = -128;
                 }
                 finally {
                     if (cmdbuf.trim().length > 0)
