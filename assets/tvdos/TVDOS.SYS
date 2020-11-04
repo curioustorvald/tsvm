@@ -80,6 +80,6 @@ var execApp = function(cmdsrc, args) {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Boot script
-filesystem.open("A", "tvdos/command.js", "R");
+filesystem.open("A", "tvdos/bin/command.js", "R");
 let cmdsrc = filesystem.readAll("A");
 execApp(cmdsrc, ["", "/c", "\\AUTOEXEC.BAT"]);

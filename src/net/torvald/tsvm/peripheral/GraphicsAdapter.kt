@@ -371,6 +371,7 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
         else if (arg == 0) {
             ttyFore = TTY_FORE_DEFAULT
             ttyBack = TTY_BACK_DEFAULT
+            blinkCursor = true
         }
     }
 

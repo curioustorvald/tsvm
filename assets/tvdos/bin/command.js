@@ -1,6 +1,6 @@
 let PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
-
+let executableExtensions = [".com",".bat",".js", ""]; Object.freeze(executableExtensions);
 let shell_pwd = [];
 
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
@@ -109,6 +109,9 @@ shell.coreutils = {
             args.forEach(function(it,i) { if (i > 0) print(it+" ") });
         }
         println();
+    },
+    rem: function(args) {
+        return 0;
     }
 };
 Object.freeze(shell.coreutils);
@@ -116,6 +119,9 @@ shell.execute = function(line) {
     if (line.size == 0) return;
     let tokens = shell.parse(line);
     let cmd = tokens[0];
+
+    // handle Ctrl-C
+    if (con.hitterminate()) return 1;
 
     if (shell.coreutils[cmd.toLowerCase()] !== undefined) {
         let retval = shell.coreutils[cmd.toLowerCase()](tokens);
@@ -129,11 +135,14 @@ shell.execute = function(line) {
 
         searchDir.forEach(function(it) { serial.println("Searchdir: "+it); });
 
+        searchLoop:
         for (let i = 0; i < searchDir.length; i++) {
-            let path = (searchDir[i] + cmd).substring(1); // without substring, this will always prepend revslash
-            if (filesystem.open(CURRENT_DRIVE, path, "R")) {
-                fileExists = true;
-                break;
+            for (let j = 0; j < executableExtensions.length; j++) {
+                let path = (searchDir[i] + cmd + executableExtensions[j]).substring(1); // without substring, this will always prepend revslash
+                if (filesystem.open(CURRENT_DRIVE, path, "R")) {
+                    fileExists = true;
+                    break searchLoop;
+                }
             }
         }
 
@@ -151,7 +160,9 @@ shell.execute = function(line) {
             if ("BAT" == extension) {
                 // parse and run as batch file
                 let lines = prg.split('\n').filter(function(it) { return it.length > 0; });
-                lines.forEach(function(it) { println("Batch: " + it) }); // TODO
+                lines.forEach(function(line) {
+                    shell.execute(line);
+                });
             }
             else {
                 return execApp(prg, tokens)|0; // return value of undefined will cast into 0
@@ -165,7 +176,7 @@ Object.freeze(shell);
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-if (exec_args !== undefined) {
+if (exec_args[1] !== undefined) {
     // command /c   <commands>
     // ^[0]    ^[1] ^[2]
     if (exec_args[1].toLowerCase() == "/c") {
@@ -178,8 +189,8 @@ if (exec_args !== undefined) {
     }
 }
 else {
+    con.reset_graphics();
     println("Starting TVDOS...");
-
     greet();
 
     let cmdHistory = []; // zeroth element is the oldest

@@ -377,6 +377,9 @@ con.clear = function() {
 con.curs_set = function(arg) {
     print(String.fromCharCode(27,91)+"?25"+(((arg|0) == 0) ? "l" : "h"));
 };
+con.reset_graphics = function() {
+    println(String.fromCharCode(27,91,109));
+};
 Object.freeze(con);
 // system management  function
 var system = {};
