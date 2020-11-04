@@ -6,25 +6,11 @@ let shell_pwd = [];
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 
 function print_prompt_text() {
-    //print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
-    con.color_pair(239,161);
-    print(" "+CURRENT_DRIVE+":");
-    con.color_pair(161,253);
-    con.addch(16);
-    con.color_pair(0,253);
-    print(" \\"+shell_pwd.join("\\")+" ");
-    con.color_pair(253,255);
-    con.addch(16);
-    con.addch(32);
-    con.color_pair(239,255);
+    print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
 }
 
 function greet() {
-    con.color_pair(0,253);
-    //print(welcome_text + " ".repeat(_fsh.scrwidth - welcome_text.length));
-    print(welcome_text + " ".repeat(80 - welcome_text.length));
-    con.color_pair(239,255);
-    println();
+    println(welcome_text);
 }
 
 
@@ -129,77 +115,116 @@ Object.freeze(shell.coreutils);
 shell.execute = function(line) {
     if (line.size == 0) return;
     let tokens = shell.parse(line);
-    let cmd = tokens[0].toLowerCase();
-    if (shell.coreutils[cmd] !== undefined) {
-        shell.coreutils[cmd](tokens);
+    let cmd = tokens[0];
+
+    if (shell.coreutils[cmd.toLowerCase()] !== undefined) {
+        let retval = shell.coreutils[cmd.toLowerCase()](tokens);
+        return retval|0; // return value of undefined will cast into 0
     }
     else {
-        printerrln('Bad command or filename: "'+cmd+'"');
+        // search through PATH for execution
+
+        let fileExists = false;
+        let searchDir = (cmd.startsWith("\\")) ? [""] : ["\\"+shell_pwd.join("\\")].concat(_TVDOS.defaults.path);
+
+        searchDir.forEach(function(it) { serial.println("Searchdir: "+it); });
+
+        for (let i = 0; i < searchDir.length; i++) {
+            let path = (searchDir[i] + cmd).substring(1); // without substring, this will always prepend revslash
+            if (filesystem.open(CURRENT_DRIVE, path, "R")) {
+                fileExists = true;
+                break;
+            }
+        }
+
+        if (!fileExists) {
+            printerrln('Bad command or filename: "'+cmd+'"');
+            return -1;
+        }
+        else {
+            let prg = filesystem.readAll(CURRENT_DRIVE);
+            let extension = undefined;
+            // get proper extension
+            let dotSepTokens = cmd.split('.');
+            if (dotSepTokens.length > 1) extension = dotSepTokens[dotSepTokens.length - 1].toUpperCase();
+
+            if ("BAT" == extension) {
+                // parse and run as batch file
+                let lines = prg.split('\n').filter(function(it) { return it.length > 0; });
+                lines.forEach(function(it) { println("Batch: " + it) }); // TODO
+            }
+            else {
+                return execApp(prg, tokens)|0; // return value of undefined will cast into 0
+            }
+        }
     }
 };
-if (exec_args !== undefined) return Object.freeze(shell);
+Object.freeze(shell);
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-println("Starting TVDOS...");
 
-greet();
+if (exec_args !== undefined) {
+    // command /c   <commands>
+    // ^[0]    ^[1] ^[2]
+    if (exec_args[1].toLowerCase() == "/c") {
+        if (exec_args[2] == "") return 0; // no commands were given, just exit successfully
+        return shell.execute(exec_args[2]);
+    }
+    else {
+        printerrln("Invalid switch: "+exec_args[1]);
+        return 1;
+    }
+}
+else {
+    println("Starting TVDOS...");
 
-let cmdHistory = []; // zeroth element is the oldest
-let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
-let cmdExit = false;
-while (!cmdExit) {
-    print_prompt_text();
+    greet();
 
-    let cmdbuf = "";
+    let cmdHistory = []; // zeroth element is the oldest
+    let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
+    let cmdExit = false;
+    while (!cmdExit) {
+        print_prompt_text();
 
-    while (true) {
-        let key = con.getch();
+        let cmdbuf = "";
 
-        // printable chars
-        if (key >= 32 && key <= 126) {
-            let s = String.fromCharCode(key);
-            cmdbuf += s;
-            print(s);
-        }
-        // backspace
-        else if (key === 8 && cmdbuf.length > 0) {
-            cmdbuf = cmdbuf.substring(0, cmdbuf.length - 1);
-            print(String.fromCharCode(key));
-        }
-        // enter
-        else if (key === 10 || key === 13) {
-            println();
-            try {
-                shell.execute(cmdbuf);
+        while (true) {
+            let key = con.getch();
+
+            // printable chars
+            if (key >= 32 && key <= 126) {
+                let s = String.fromCharCode(key);
+                cmdbuf += s;
+                print(s);
             }
-            catch (e) {
-                printerrln(e);
+            // backspace
+            else if (key === 8 && cmdbuf.length > 0) {
+                cmdbuf = cmdbuf.substring(0, cmdbuf.length - 1);
+                print(String.fromCharCode(key));
             }
-            finally {
-                if (cmdbuf.trim().length > 0)
-                    cmdHistory.push(cmdbuf);
+            // enter
+            else if (key === 10 || key === 13) {
+                println();
+                try {
+                    shell.execute(cmdbuf);
+                }
+                catch (e) {
+                    printerrln(e);
+                }
+                finally {
+                    if (cmdbuf.trim().length > 0)
+                        cmdHistory.push(cmdbuf);
 
-                cmdHistoryScroll = 0;
-                break;
+                    cmdHistoryScroll = 0;
+                    break;
+                }
             }
-        }
-        // up arrow
-        else if (key === 19 && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
-            cmdHistoryScroll += 1;
+            // up arrow
+            else if (key === 19 && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
+                cmdHistoryScroll += 1;
 
-            // back the cursor in order to type new cmd
-            let x = 0;
-            for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8));
-            cmdbuf = cmdHistory[cmdHistory.length - cmdHistoryScroll];
-            // re-type the new command
-            print(cmdbuf);
-
-        }
-        // down arrow
-        else if (key === 20) {
-            if (cmdHistoryScroll > 0) {
                 // back the cursor in order to type new cmd
                 let x = 0;
                 for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8));
@@ -207,13 +232,25 @@ while (!cmdExit) {
                 // re-type the new command
                 print(cmdbuf);
 
-                cmdHistoryScroll -= 1;
             }
-            else {
-                // back the cursor in order to type new cmd
-                let x = 0;
-                for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8));
-                cmdbuf = "";
+            // down arrow
+            else if (key === 20) {
+                if (cmdHistoryScroll > 0) {
+                    // back the cursor in order to type new cmd
+                    let x = 0;
+                    for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8));
+                    cmdbuf = cmdHistory[cmdHistory.length - cmdHistoryScroll];
+                    // re-type the new command
+                    print(cmdbuf);
+
+                    cmdHistoryScroll -= 1;
+                }
+                else {
+                    // back the cursor in order to type new cmd
+                    let x = 0;
+                    for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8));
+                    cmdbuf = "";
+                }
             }
         }
     }

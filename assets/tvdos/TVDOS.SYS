@@ -10,7 +10,7 @@ _TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT;
 
 _TVDOS.defaults = {
     path: [
-        "/tvdos/bin"
+        "\\tvdos\\bin\\"
     ]
 };
 Object.freeze(_TVDOS);
@@ -31,8 +31,11 @@ filesystem._close = function(portNo) {
 filesystem._flush = function(portNo) {
     com.sendMessage(portNo, "FLUSH");
 };
-// @return true if operation committed successfully, false otherwise; throws error
-//         if unknown mode or invalid drive letter was given
+// @return true if operation committed successfully, false if:
+//             - opening file with R-mode and target file does not exists
+//         throws if:
+//             - java.lang.NullPointerException if path is null
+//             - Error if operation mode is not "R", "W" nor "A"
 filesystem.open = function(driveLetter, path, operationMode) {
     let port = filesystem._toPorts(driveLetter);
 
@@ -67,7 +70,8 @@ filesystem.open("A", "tvdos/gl.js", "R");
 var GL = eval(filesystem.readAll("A"));
 
 // @param cmdsrc JS source code
-// @param args arguments for the program, must be Array
+// @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
+//        for command line 'echo foo bar', args[0] must be 'echo'
 var execApp = function(cmdsrc, args) {
     let prg = eval("let _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
     return prg(args);
@@ -78,8 +82,4 @@ var execApp = function(cmdsrc, args) {
 // Boot script
 filesystem.open("A", "tvdos/command.js", "R");
 let cmdsrc = filesystem.readAll("A");
-
-// app execution stub
-execApp(cmdsrc);
-//let sh = execApp(cmdsrc, [42]);
-//println(sh.test);
+execApp(cmdsrc, ["", "/c", "\\AUTOEXEC.BAT"]);

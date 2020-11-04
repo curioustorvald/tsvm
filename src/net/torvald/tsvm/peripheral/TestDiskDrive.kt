@@ -31,7 +31,13 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
         }
     }
 
-     fun composePositiveAns(vararg msg: String): ByteArray {
+    private val DBGPRN = true
+
+    private fun printdbg(msg: Any) {
+        if (DBGPRN) println("[TestDiskDrive] $msg")
+    }
+
+    fun composePositiveAns(vararg msg: String): ByteArray {
         val sb = ArrayList<Byte>()
         sb.addAll(msg[0].toByteArray().toTypedArray())
         for (k in 1 until msg.size) {
@@ -126,7 +132,7 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
             val inputString = inputData.trimNull().toString(VM.CHARSET)
 
             if (inputString.startsWith("DEVRST\u0017")) {
-                println("[TestDiskDrive] Device Reset")
+                printdbg("Device Reset")
                 //readModeLength = -1
                 fileOpen = false
                 fileOpenMode = -1
@@ -144,14 +150,15 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
             else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
                 if (fileOpen) {
+
                     statusCode = STATE_CODE_FILE_ALREADY_OPENED
                     return
                 }
 
-                println("[TestDiskDrive] msg: $inputString, lastIndex: ${inputString.lastIndex}")
+                printdbg("msg: $inputString, lastIndex: ${inputString.lastIndex}")
 
                 val openMode = inputString[4]
-                println("[TestDiskDrive] open mode: $openMode")
+                printdbg("open mode: $openMode")
                 // split inputstring into path and optional drive-number
 
                 // get position of latest delimeter (comma)
@@ -172,10 +179,10 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
                 file = File(rootPath, filePath)
-                println("[TestDiskDrive] file path: ${file.canonicalPath}, drive num: $driveNum")
+                printdbg("file path: ${file.canonicalPath}, drive num: $driveNum")
 
                 if (openMode == 'R' && !file.exists()) {
-                    println("! file not found")
+                    printdbg("! file not found")
                     statusCode = STATE_CODE_FILE_NOT_FOUND
                     return
                 }
@@ -314,7 +321,7 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
         val paths = path.split('/')
         val newPaths = ArrayList<String>()
         paths.forEach {
-            if (it.isBlank() || it.isEmpty()) throw IllegalArgumentException("Path cannot contain whitespaces")
+            if (it.isBlank() || it.isEmpty()) throw IllegalArgumentException("Path cannot contain whitespaces: $paths")
 
             if (it == "..") {
                 parentCount -= -1
