@@ -1,6 +1,5 @@
 let PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
-let executableExtensions = [".com",".bat",".js", ""]; Object.freeze(executableExtensions);
 let shell_pwd = [];
 
 let goInteractive = false;
@@ -111,6 +110,14 @@ shell.parse = function(input) {
 }
 
 shell.coreutils = {
+/* Args follow this format:
+ * <command-name> <1st arg> <2nd arg> ...
+ * NOTE:
+ *   even if there's no 1st arg, length of args may not be 1, therefore don't:
+ *     if (args.length < 2)
+ *   but do instead:
+ *     if (args[1] === undefined)
+ */
     cd: function(args) {
         if (args[1] === undefined) {
             println(shell_pwd.join("\\"));
@@ -136,6 +143,38 @@ shell.coreutils = {
     },
     rem: function(args) {
         return 0;
+    },
+    set: function(args) {
+        // print all the env vars
+        if (args[1] === undefined) {
+            Object.entries(_TVDOS.variables).forEach(function(a) { println(a[0]+"="+a[1]); })
+        }
+        else {
+            // parse key-value pair with splitter '='
+            let key = undefined; let value = undefined;
+            // if syntax "<key> = <value>" is used?
+            if ('=' == args[2]) {
+                key = args[1].toUpperCase(); value = args[3];
+            }
+            else if (args[2] === undefined) {
+                let pair = args[1].split('=');
+                key = pair[0].toUpperCase(); value = pair[1];
+            }
+
+            if (key == undefined) throw SyntaxError("Input format must be 'key=value'");
+
+            // if value is undefined, show what envvar[key] has
+            if (value === undefined) {
+                if (_TVDOS.variables[key] === undefined)
+                    println("Environment variable '"+key+"' not found");
+                else
+                    println(_TVDOS.variables[key])
+            }
+            else {
+                // TODO parse %var_name% line
+                _TVDOS.variables[key] = value;
+            }
+        }
     }
 };
 Object.freeze(shell.coreutils);
@@ -155,14 +194,18 @@ shell.execute = function(line) {
         // search through PATH for execution
 
         let fileExists = false;
-        let searchDir = (cmd.startsWith("\\")) ? [""] : ["\\"+shell_pwd.join("\\")].concat(_TVDOS.defaults.path);
-
-        searchDir.forEach(function(it) { serial.println("Searchdir: "+it); });
+        let searchDir = (cmd.startsWith("\\")) ? [""] : ["\\"+shell_pwd.join("\\")].concat(_TVDOS.getPath());
+        let pathExt = [];
+        // fill pathExt using %PATHEXT% but also capitalise them
+        if (cmd.split(".")[1] === undefined)
+            _TVDOS.variables.PATHEXT.split(';').forEach(function(it) { pathExt.push(it); pathExt.push(it.toUpperCase()); });
+        else
+            pathExt.push(""); // final empty extension
 
         searchLoop:
         for (let i = 0; i < searchDir.length; i++) {
-            for (let j = 0; j < executableExtensions.length; j++) {
-                let path = (searchDir[i] + cmd + executableExtensions[j]).substring(1); // without substring, this will always prepend revslash
+            for (let j = 0; j < pathExt.length; j++) {
+                let path = (searchDir[i] + cmd + pathExt[j]).substring(1); // without substring, this will always prepend revslash
                 if (filesystem.open(CURRENT_DRIVE, path, "R")) {
                     fileExists = true;
                     break searchLoop;

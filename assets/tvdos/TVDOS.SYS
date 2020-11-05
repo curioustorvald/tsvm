@@ -8,10 +8,18 @@ _TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT;
 //TODO
 
 
-_TVDOS.defaults = {
-    path: [
-        "\\tvdos\\bin\\"
-    ]
+_TVDOS.getPath = function() {
+    return _TVDOS.variables.PATH.split(';');
+};
+// initial values
+_TVDOS.variables = {
+    DOSDIR: "\\tvdos\\",
+    LANG: "EN",
+    PATH: "\\tvdos\\bin\\",
+    PATHEXT: ".com;.bat;.js",
+    HELPPATH: "\\tvdos\\help\\",
+    OS_NAME: "Terrarum Virtual DOS",
+    OS_VERSION: _TVDOS.VERSION
 };
 Object.freeze(_TVDOS);
 
@@ -80,6 +88,7 @@ var execApp = function(cmdsrc, args) {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Boot script
+serial.println("TVDOS.SYS initialised, running boot script...");
 filesystem.open("A", "tvdos/bin/command.js", "R");
 let cmdsrc = filesystem.readAll("A");
 execApp(cmdsrc, ["", "/c", "\\AUTOEXEC.BAT"]);
