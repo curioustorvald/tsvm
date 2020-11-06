@@ -29,7 +29,7 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, lcdMode = false)
+        gpu = GraphicsAdapter(vm, theme = GraphicsAdapter.THEME_COLORCRT)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GPU_AND_TERM,

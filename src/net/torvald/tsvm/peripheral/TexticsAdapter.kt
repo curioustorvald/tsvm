@@ -2,7 +2,7 @@ package net.torvald.tsvm.peripheral
 
 import net.torvald.tsvm.VM
 
-class TexticsAdapter(vm: VM, lcdMode: Boolean = false, lcdInvert: Boolean = true) : GraphicsAdapter(vm, lcdMode, lcdInvert) {
+class TexticsAdapter(vm: VM, theme: String) : GraphicsAdapter(vm, theme) {
 
     override fun peek(addr: Long): Byte? {
         return when (addr) {

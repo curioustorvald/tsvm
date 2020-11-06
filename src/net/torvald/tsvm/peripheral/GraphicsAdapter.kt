@@ -15,7 +15,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
 
-open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boolean = true) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
+open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
 
     override fun getVM(): VM {
         return vm
@@ -34,8 +34,22 @@ open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: 
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
     protected val unusedArea = ByteArray(92)
 
-    protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) DRAW_SHADER_FRAG_LCD_NOINV else if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
-    protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) TEXT_TILING_SHADER_LCD_NOINV else if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
+    protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
+        if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
+            DRAW_SHADER_FRAG_LCD_NOINV
+        else if (theme.startsWith("pmlcd"))
+            DRAW_SHADER_FRAG_LCD
+        else
+            DRAW_SHADER_FRAG
+    )
+    protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
+        if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
+            TEXT_TILING_SHADER_LCD_NOINV
+        else if (theme.startsWith("pmlcd"))
+            TEXT_TILING_SHADER_LCD
+        else
+            TEXT_TILING_SHADER
+    )
 
     override var blinkCursor = true
     override var ttyRawMode = false
@@ -525,7 +539,7 @@ open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: 
     private var textCursorBlinkTimer = 0f
     private val textCursorBlinkInterval = 0.5f
     private var textCursorIsOn = true
-    private var glowDecay = if (lcdMode) 0.63f else 0.32f
+    private var glowDecay = if (theme.startsWith("pmlcd")) 0.63f else 0.32f
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
     fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {
@@ -552,7 +566,7 @@ open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: 
             batch.inUse {
 
                 // clear screen
-                batch.color = if (lcdMode) LCD_BASE_COL else clearCol
+                batch.color = if (theme.startsWith("pmlcd")) LCD_BASE_COL else clearCol
                 batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
 
@@ -564,7 +578,7 @@ open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: 
                 // must be done every time the shader is "actually loaded"
                 // try this: if above line precedes 'batch.shader = paletteShader', it won't work
                 batch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
-                if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+                if (theme.startsWith("pmlcd")) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                 // draw framebuffer
                 batch.draw(rendertex, x, y)
@@ -638,7 +652,7 @@ open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: 
                     textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
                     textShader.setUniformf("tilesInAtlas", 16f, 16f)
                     textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
-                    if (lcdMode) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+                    if (theme.startsWith("pmlcd")) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                     batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
@@ -718,6 +732,11 @@ open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: 
     private fun Boolean.toInt() = if (this) 1 else 0
 
     companion object {
+        const val THEME_COLORCRT = "crt_color"
+        const val THEME_GREYCRT = "crt"
+        const val THEME_LCD = "pmlcd"
+        const val THEME_LCD_INVERTED = "pmlcd_inverted"
+
         const val WIDTH = 560
         const val HEIGHT = 448
         const val TEXT_COLS = 80
