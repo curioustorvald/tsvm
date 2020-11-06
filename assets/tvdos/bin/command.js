@@ -193,6 +193,10 @@ shell.coreutils = {
                 _TVDOS.variables[key] = value;
             }
         }
+    },
+    dir: function(args) {
+        let path = (args[1] !== undefined) ? args[1] : "\\"+shell_pwd.join("\\");
+        throw Error("TODO");
     }
 };
 Object.freeze(shell.coreutils);

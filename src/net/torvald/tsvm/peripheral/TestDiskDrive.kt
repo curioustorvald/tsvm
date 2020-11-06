@@ -16,7 +16,11 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
         const val STATE_CODE_FILE_ALREADY_OPENED = 130
         const val STATE_CODE_OPERATION_NOT_PERMITTED = 131
         const val STATE_CODE_READ_ONLY = 132
+        const val STATE_CODE_NOT_A_FILE = 133
+        const val STATE_CODE_NOT_A_DIRECTORY = 134
+        const val STATE_CODE_NO_FILE_OPENED = 135
         const val STATE_CODE_SYSTEM_IO_ERROR = 192
+        const val STATE_CODE_SYSTEM_SECURITY_ERROR = 193
 
 
         val errorMsgs = Array(256) { "" }
@@ -27,7 +31,11 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
             errorMsgs[STATE_CODE_FILE_NOT_FOUND] = "FILE NOT FOUND"
             errorMsgs[STATE_CODE_FILE_ALREADY_OPENED] = "FILE ALREADY OPENED"
             errorMsgs[STATE_CODE_SYSTEM_IO_ERROR] = "IO ERROR ON SIMULATED DRIVE"
+            errorMsgs[STATE_CODE_SYSTEM_SECURITY_ERROR] = "SECURITY ERROR ON SIMULATED DRIVE"
             errorMsgs[STATE_CODE_OPERATION_NOT_PERMITTED] = "OPERATION NOT PERMITTED"
+            errorMsgs[STATE_CODE_NOT_A_FILE] = "NOT A FILE"
+            errorMsgs[STATE_CODE_NOT_A_DIRECTORY] = "NOT A DIRECTORY"
+            errorMsgs[STATE_CODE_NO_FILE_OPENED] = "NO FILE OPENED"
         }
     }
 
@@ -196,9 +204,45 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 }
                 blockSendCount = 0
             }
-            else if (inputString.startsWith("LIST")) {
-                // temporary behaviour to ignore any arguments
+            else if (inputString.startsWith("LISTFILES")) {
+                // TODO temporary behaviour to ignore any arguments
                 resetBuf()
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    return
+                }
+                try {
+                    if (file.isDirectory) {
+                        file.listFiles()!!.forEachIndexed { index, lsfile ->
+                            if (index != 0) messageComposeBuffer.write(0x1E)
+                            messageComposeBuffer.write(if (lsfile.isDirectory) 0x11 else 0x12)
+                            messageComposeBuffer.write(lsfile.name.toByteArray(VM.CHARSET))
+                        }
+
+                        statusCode = STATE_CODE_STANDBY
+                    }
+                    else {
+                        statusCode = STATE_CODE_NOT_A_DIRECTORY
+                        return
+                    }
+                }
+                catch (e: SecurityException) {
+                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    return
+                }
+                catch (e1: IOException) {
+                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    return
+                }
+            }
+            else if (inputString.startsWith("LIST")) {
+                // TODO temporary behaviour to ignore any arguments
+                resetBuf()
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    return
+                }
+
                 messageComposeBuffer.write(getReadableLs().toByteArray(VM.CHARSET))
                 statusCode = STATE_CODE_STANDBY
             }
@@ -257,7 +301,11 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 }
             }
             else if (inputString.startsWith("WRITE")) {
-                if (!fileOpen || fileOpenMode < 0) {
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    return
+                }
+                if (fileOpenMode < 0) {
                     statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
                     return
                 }
