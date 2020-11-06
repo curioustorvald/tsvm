@@ -5,6 +5,8 @@ let shell_pwd = [""];
 let goInteractive = false;
 let goFancy = false;
 
+let DEBUG_PRINT = true;
+
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 
 function print_prompt_text() {
@@ -36,6 +38,18 @@ function greet() {
         println(welcome_text);
 }
 
+function trimStartRevSlash(s) {
+    let cnt = 0;
+    while (cnt < s.length) {
+        let chr = s[cnt];
+
+        if (chr != '\\') break;
+
+        cnt += 1;
+    }
+
+    return s.substring(cnt);
+}
 
 let shell = {};
 // example input: echo "the string" > subdir\test.txt
@@ -199,6 +213,7 @@ shell.execute = function(line) {
 
         let fileExists = false;
         let searchDir = (cmd.startsWith("\\")) ? [""] : ["\\"+shell_pwd.join("\\")].concat(_TVDOS.getPath());
+
         let pathExt = [];
         // fill pathExt using %PATHEXT% but also capitalise them
         if (cmd.split(".")[1] === undefined)
@@ -209,7 +224,13 @@ shell.execute = function(line) {
         searchLoop:
         for (let i = 0; i < searchDir.length; i++) {
             for (let j = 0; j < pathExt.length; j++) {
-                let path = (searchDir[i] + cmd + pathExt[j]).substring(1); // without substring, this will always prepend revslash
+                let search = searchDir[i]; if (!search.endsWith('\\')) search += '\\';
+                let path = trimStartRevSlash(search + cmd + pathExt[j]);
+
+                if (DEBUG_PRINT) {
+                    serial.println("[command.js > shell.execute] file search path: "+path);
+                }
+
                 if (filesystem.open(CURRENT_DRIVE, path, "R")) {
                     fileExists = true;
                     break searchLoop;

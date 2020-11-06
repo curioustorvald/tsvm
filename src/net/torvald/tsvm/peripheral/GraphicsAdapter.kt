@@ -15,14 +15,14 @@ import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
 
-class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boolean = true) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
+open class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boolean = true) : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
 
     override fun getVM(): VM {
         return vm
     }
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
-    private var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
+    protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
         val rgba = DEFAULT_PALETTE[it / 4]
         val channel = it % 4
@@ -32,10 +32,10 @@ class GraphicsAdapter(val vm: VM, val lcdMode: Boolean = false, lcdInvert: Boole
     private val faketex: Texture
 
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
-    private val unusedArea = ByteArray(92)
+    protected val unusedArea = ByteArray(92)
 
-    private val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) DRAW_SHADER_FRAG_LCD_NOINV else if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
-    private val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) TEXT_TILING_SHADER_LCD_NOINV else if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
+    protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) DRAW_SHADER_FRAG_LCD_NOINV else if (lcdMode) DRAW_SHADER_FRAG_LCD else DRAW_SHADER_FRAG)
+    protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, if (lcdMode && !lcdInvert) TEXT_TILING_SHADER_LCD_NOINV else if (lcdMode) TEXT_TILING_SHADER_LCD else TEXT_TILING_SHADER)
 
     override var blinkCursor = true
     override var ttyRawMode = false

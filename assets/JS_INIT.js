@@ -46,6 +46,16 @@ if (!String.prototype.startsWith) {
         }
     });
 }
+if (!String.prototype.endsWith) {
+	Object.defineProperty(String.prototype, 'endsWith', {
+        value: function(search, this_len) {
+                if (this_len === undefined || this_len > this.length) {
+                this_len = this.length;
+            }
+            return this.substring(this_len - search.length, this_len) === search;
+        }
+    });
+}
 if (!Array.prototype.filter){
     Array.prototype.filter = function(func, thisArg) {
         'use strict';

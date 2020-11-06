@@ -13,11 +13,11 @@ _TVDOS.getPath = function() {
 };
 // initial values
 _TVDOS.variables = {
-    DOSDIR: "\\tvdos\\",
+    DOSDIR: "\\tvdos",
     LANG: "EN",
-    PATH: "\\tvdos\\bin\\",
+    PATH: "\\tvdos\\bin",
     PATHEXT: ".com;.bat;.js",
-    HELPPATH: "\\tvdos\\help\\",
+    HELPPATH: "\\tvdos\\help",
     OS_NAME: "Terrarum Virtual DOS",
     OS_VERSION: _TVDOS.VERSION
 };
