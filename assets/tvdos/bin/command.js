@@ -1,6 +1,6 @@
 let PROMPT_TEXT = ">";
 let CURRENT_DRIVE = "A";
-let shell_pwd = [];
+let shell_pwd = [""];
 
 let goInteractive = false;
 let goFancy = false;
@@ -14,7 +14,7 @@ function print_prompt_text() {
         con.color_pair(161,253);
         con.addch(16);
         con.color_pair(0,253);
-        print(" \\"+shell_pwd.join("\\")+" ");
+        print(" \\"+shell_pwd.join("\\").substring(1)+" ");
         con.color_pair(253,255);
         con.addch(16);
         con.addch(32);
@@ -120,11 +120,15 @@ shell.coreutils = {
  */
     cd: function(args) {
         if (args[1] === undefined) {
-            println(shell_pwd.join("\\"));
+            println(CURRENT_DRIVE+":"+shell_pwd.join("\\"));
             return
         }
 
-        shell_pwd = args[1].split("\\");
+        let pathstr = args[1].replaceAll('/','\\\\');
+        let newPwd = [""].concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
+
+
+        shell_pwd = newPwd;
     },
     cls: function(args) {
         con.clear();
