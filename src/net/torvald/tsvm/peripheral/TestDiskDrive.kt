@@ -365,6 +365,8 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
 
     // applies a "cap" if the path attemps to access parent directory of the root
     private fun filterSuperRoot(path: String): String {
+        if (path.isEmpty()) return path
+
         var parentCount = 0
         val paths = path.split('/')
         val newPaths = ArrayList<String>()
