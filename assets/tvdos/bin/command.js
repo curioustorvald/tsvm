@@ -140,20 +140,20 @@ shell.coreutils = {
 
         // replace slashes into revslashes
         let pathstr = args[1].replaceAll('/','\\\\');
+
+        let startsWithSlash = args[1].startsWith('\\');
+
         // split them into an array while filtering empty elements except for the root 'head'
-        let newPwd = [""].concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
+        let newPwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
         // construct new pathstr from pwd arr so it will be sanitised
         pathstr = newPwd.join('\\').substring(1);
 
         if (DEBUG_PRINT) serial.println("command.js > pathstr = "+pathstr);
 
         // check if path is valid
-        let dirOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (!dirOpened) { printerrln("CHDIR failed for '"+pathstr+"'"); return; }
-
-        // check if path is directory
-        let isDir = filesystem.isDirectory(CURRENT_DRIVE);
-        if (!isDir) { printerrln("CHDIR failed for '"+pathstr+"'"); return; }
+        filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        let dirOpened = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
+        if (!dirOpened) { printerrln("CHDIR failed for '"+pathstr+"'"); return; } // if file is not opened, FALSE will be returned
 
         shell_pwd = newPwd;
     },
@@ -208,8 +208,15 @@ shell.coreutils = {
         }
     },
     dir: function(args) {
-        let path = (args[1] !== undefined) ? args[1] : "\\"+shell_pwd.join("\\");
-        throw Error("TODO");
+        let pathstr = (args[1] !== undefined) ? args[1] : "\\"+shell_pwd.join("\\");
+
+        // check if path is valid
+        let pathOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        if (!pathOpened) { printerrln("CHDIR failed for '"+pathstr+"'"); return; }
+
+        let port = filesystem._toPorts(CURRENT_DRIVE)[0]
+        com.sendMessage(port, "LIST");
+        println(com.pullMessage(port));
     }
 };
 Object.freeze(shell.coreutils);

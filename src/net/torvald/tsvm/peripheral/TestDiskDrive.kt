@@ -355,10 +355,9 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
 
                 sb.append('\n')
             }
-            sb.append('\n')
         }
 
-        return sb.toString()
+        return if (sb.last() == '\n') sb.substring(0, sb.lastIndex) else sb.toString()
     }
 
     private fun sanitisePath(s: String) = s.replace('\\','/').replace(Regex("""\?<>:\*\|"""),"-")
@@ -371,9 +370,10 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
         val paths = path.split('/')
         val newPaths = ArrayList<String>()
         paths.forEach {
-            if (it.isBlank() || it.isEmpty()) throw IllegalArgumentException("Path cannot contain whitespaces: $paths")
-
-            if (it == "..") {
+            if (it.isBlank() || it.isEmpty()) {
+                /*do nothing*/
+            }
+            else if (it == "..") {
                 parentCount -= -1
             }
             else if (it != ".") {
