@@ -123,6 +123,18 @@ shell.parse = function(input) {
     return tokens;
 }
 
+function resolvePathInput(input) {
+    // replace slashes into revslashes
+    let pathstr = input.replaceAll('/','\\\\');
+    let startsWithSlash = input.startsWith('\\');
+
+    // split them into an array while filtering empty elements except for the root 'head'
+    let newPwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
+    // construct new pathstr from pwd arr so it will be sanitised
+    pathstr = newPwd.join('\\').substring(1);
+
+    return { string: pathstr, pwd: newPwd };
+}
 shell.coreutils = {
 /* Args follow this format:
  * <command-name> <1st arg> <2nd arg> ...
@@ -137,25 +149,28 @@ shell.coreutils = {
             println(CURRENT_DRIVE+":"+shell_pwd.join("\\"));
             return
         }
-
-        // replace slashes into revslashes
-        let pathstr = args[1].replaceAll('/','\\\\');
-
-        let startsWithSlash = args[1].startsWith('\\');
-
-        // split them into an array while filtering empty elements except for the root 'head'
-        let newPwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
-        // construct new pathstr from pwd arr so it will be sanitised
-        pathstr = newPwd.join('\\').substring(1);
-
-        if (DEBUG_PRINT) serial.println("command.js > pathstr = "+pathstr);
+        let path = resolvePathInput(args[1])
+        if (DEBUG_PRINT) serial.println("command.js > cd > pathstr = "+path.string);
 
         // check if path is valid
-        filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        filesystem.open(CURRENT_DRIVE, path.string, 'R');
         let dirOpened = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
-        if (!dirOpened) { printerrln("CHDIR failed for '"+pathstr+"'"); return; } // if file is not opened, FALSE will be returned
+        if (!dirOpened) { printerrln("CHDIR failed for '"+path.string+"'"); return; } // if file is not opened, FALSE will be returned
 
-        shell_pwd = newPwd;
+        shell_pwd = path.pwd;
+    },
+    mkdir: function(args) {
+        if (args[1] === undefined) {
+            printerrln("Syntax error");
+            return
+        }
+        let path = resolvePathInput(args[1])
+        if (DEBUG_PRINT) serial.println("command.js > mkdir > pathstr = "+path.string);
+
+        // check if path is valid
+        let dirOpened = filesystem.open(CURRENT_DRIVE, path.string, 'W');
+        let mkdird = filesystem.mkDir(CURRENT_DRIVE);
+        if (!mkdird) { printerrln("MKDIR failed for '"+path.string+"'"); return; }
     },
     cls: function(args) {
         con.clear();
@@ -212,13 +227,14 @@ shell.coreutils = {
 
         // check if path is valid
         let pathOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (!pathOpened) { printerrln("CHDIR failed for '"+pathstr+"'"); return; }
+        if (!pathOpened) { printerrln("File not found"); return; }
 
         let port = filesystem._toPorts(CURRENT_DRIVE)[0]
         com.sendMessage(port, "LIST");
         println(com.pullMessage(port));
     }
 };
+shell.coreutils.chdir = shell.coreutils.cd;
 Object.freeze(shell.coreutils);
 shell.execute = function(line) {
     if (0 == line.size) return;

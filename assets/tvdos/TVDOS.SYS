@@ -63,9 +63,12 @@ filesystem.readAll = function(driveLetter) {
     let port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "READ");
     let response = com.getStatusCode(port[0]);
+    if (135 == response) {
+        throw Error("File not opened");
+    }
     if (response < 0 || response >= 128) {
         let status = com.getDeviceStatus(port[0]);
-        throw Error("Reading a file failed with "+status.code+": "+status.message);
+        throw Error("Reading a file failed with "+response+": "+status.message);
     }
     return com.pullMessage(port[0]);
 };
@@ -78,6 +81,19 @@ filesystem.isDirectory = function(driveLetter) {
         throw Error("File not opened");
     }
     return (response === 0);
+}
+filesystem.mkDir = function(driveLetter) {
+    let port = filesystem._toPorts(driveLetter);
+    com.sendMessage(port[0], "MKDIR");
+    let response = com.getStatusCode(port[0]);
+    if (135 == response) {
+        throw Error("File not opened");
+    }
+    if (response < 0 || response >= 128) {
+        let status = com.getDeviceStatus(port[0]);
+        throw Error("Creating a directory failed with ("+response+"): "+status.message+"\n");
+    }
+    return (response === 0); // possible status codes: 0 (success), 1 (fail)
 }
 Object.freeze(filesystem);
 

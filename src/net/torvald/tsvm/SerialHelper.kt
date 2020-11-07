@@ -94,7 +94,7 @@ object SerialHelper {
         while (!checkIfDeviceIsReady(vm, portNo)) { Thread.sleep(SLEEP_TIME) }
     }
 
-    fun getStatusCode(vm: VM, portNo: Int) = vm.getIO().mmio_read(4080L + portNo)
+    fun getStatusCode(vm: VM, portNo: Int) = vm.getIO().mmio_read(4080L + portNo)!!.toInt().and(255)
 
     fun checkIfDeviceIsThere(vm: VM, portNo: Int) =
         (vm.getIO().mmio_read(4092L + portNo)!! and 1.toByte()) == 1.toByte()

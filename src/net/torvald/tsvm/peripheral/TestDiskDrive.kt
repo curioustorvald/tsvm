@@ -11,6 +11,8 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
 
     companion object {
         const val STATE_CODE_STANDBY = 0
+        const val STATE_CODE_OPERATION_FAILED = 1
+
         const val STATE_CODE_ILLEGAL_COMMAND = 128
         const val STATE_CODE_FILE_NOT_FOUND = 129
         const val STATE_CODE_FILE_ALREADY_OPENED = 130
@@ -27,6 +29,8 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
 
         init {
             errorMsgs[STATE_CODE_STANDBY] = "READY"
+            errorMsgs[STATE_CODE_OPERATION_FAILED] = "OPERATION FAILED"
+
             errorMsgs[STATE_CODE_ILLEGAL_COMMAND] = "SYNTAX ERROR"
             errorMsgs[STATE_CODE_FILE_NOT_FOUND] = "FILE NOT FOUND"
             errorMsgs[STATE_CODE_FILE_ALREADY_OPENED] = "FILE ALREADY OPENED"
@@ -298,6 +302,23 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                 }
                 finally {
                     fis.close()
+                }
+            }
+            else if (inputString.startsWith("MKDIR")) {
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    return
+                }
+                if (fileOpenMode < 1) {
+                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    return
+                }
+                try {
+                    val status = file.mkdir()
+                    statusCode = if (status) 0 else 1
+                }
+                catch (e: SecurityException) {
+                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
                 }
             }
             else if (inputString.startsWith("WRITE")) {
