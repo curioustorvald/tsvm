@@ -58,7 +58,7 @@ lang.outOfMem = function(line) {
 };
 Object.freeze(lang);
 
-function getUsedMemSize() {
+let getUsedMemSize = function() {
     return cmdbufMemFootPrint; // + array's dimsize * 8 + variables' sizeof literal + functions' expression length
 }
 
@@ -80,17 +80,17 @@ println("Terran BASIC 1.0  "+vmemsize+" bytes free");
 println(prompt);
 
 // variable object constructor
-function BasicVar(literal, type) {
+let BasicVar = function(literal, type) {
     this.literal = literal;
     this.type = type;
 }
 // DEFUN (GW-BASIC equiv. of DEF FN) constructor
-function BasicFun(params, expression) {
+let BasicFun = function(params, expression) {
     this.params = params;
     this.expression = expression;
 }
 // DIM (array) constructor
-function BasicArr() {
+let BasicArr = function() {
     var args = Array.from(arguments);
     if (args.length == 1)
         throw lang.syntaxfehler(args[0]);
@@ -114,7 +114,7 @@ function BasicArr() {
 }
 // Abstract Syntax Tree
 // creates empty tree node
-function BasicAST() {
+let BasicAST = function() {
     this.lnum = 0;
     this.depth = 0;
     this.leaves = [];
@@ -137,7 +137,7 @@ function BasicAST() {
         return sb;
     };
 }
-function parseSigil(s) {
+let parseSigil = function(s) {
     var rettype;
     if (s.endsWith("$"))
         rettype = "string";
@@ -153,7 +153,7 @@ function parseSigil(s) {
 @return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
         BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
 */
-function resolve(variable) {
+let resolve = function(variable) {
     if (variable.type == "string" || variable.type == "number" || variable.type == "bool")
         return variable.value;
     else if (variable.type == "literal") {
@@ -165,20 +165,20 @@ function resolve(variable) {
     else
         throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
 }
-function oneArgNonNull(lnum, args, action) {
+let oneArgNonNull = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
     return action(resolvedargs0);
 }
-function oneArgNonNullNumeric(lnum, args, action) {
+let oneArgNonNullNumeric = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
     if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
     return action(resolvedargs0);
 }
-function twoArgNonNull(lnum, args, action) {
+let twoArgNonNull = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -186,7 +186,7 @@ function twoArgNonNull(lnum, args, action) {
     if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
     return action(resolvedargs0, resolvedargs1);
 }
-function twoArgNonNullNumeric(lnum, args, action) {
+let twoArgNonNullNumeric = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -196,7 +196,7 @@ function twoArgNonNullNumeric(lnum, args, action) {
     if (isNaN(resolvedargs1)) throw lang.illegalType(lnum, resolvedargs1.value);
     return action(resolvedargs0, resolvedargs1);
 }
-function threeArgNonNull(lnum, args, action) {
+let threeArgNonNull = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -206,7 +206,7 @@ function threeArgNonNull(lnum, args, action) {
     if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
     return action(resolvedargs0, resolvedargs1, resolvedargs2);
 }
-function threeArgNonNullNumeric(lnum, args, action) {
+let threeArgNonNullNumeric = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var resolvedargs0 = resolve(args[0]);
     if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
@@ -1185,14 +1185,14 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
 };
 // @return is defined in BasicAST
-function JStoBASICtype(object) {
+let JStoBASICtype = function(object) {
     if (typeof object === "boolean") return "bool";
     else if (!isNaN(object)) return "number";
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
     else throw "InternalError: un-translatable object with typeof "+(typeof object)+"\n"+object;
 }
-function SyntaxTreeReturnObj(type, value, nextLine) {
+let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.type = type;
     this.value = value;
     this.nextLine = nextLine;
