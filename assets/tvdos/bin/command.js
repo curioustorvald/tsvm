@@ -7,6 +7,8 @@ let goFancy = false;
 
 let DEBUG_PRINT = true;
 
+let errorlevel = 0;
+
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
 
 function print_prompt_text() {
@@ -17,13 +19,21 @@ function print_prompt_text() {
         con.addch(16);
         con.color_pair(0,253);
         print(" \\"+shell_pwd.join("\\").substring(1)+" ");
+        if (errorlevel != 0) {
+            con.color_pair(211,253);
+            print("["+errorlevel+"] ");
+        }
         con.color_pair(253,255);
         con.addch(16);
         con.addch(32);
         con.color_pair(239,255);
     }
-    else
-        print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
+    else {
+        if (errorlevel != 0)
+            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT);
+        else
+            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
+    }
 }
 
 function greet() {
@@ -298,7 +308,7 @@ shell.execute = function(line) {
 
         if (!fileExists) {
             printerrln('Bad command or filename: "'+cmd+'"');
-            return -1;
+            return 127;
         }
         else {
             let prg = filesystem.readAll(CURRENT_DRIVE);
@@ -383,14 +393,16 @@ if (goInteractive) {
             }
             // enter
             else if (key === 10 || key === 13) {
-                let errorlevel = 0;
                 println();
                 try {
+                    errorlevel = 0; // reset the number
                     errorlevel = shell.execute(cmdbuf);
                 }
                 catch (e) {
-                    printerrln(e);
-                    errorlevel = -128;
+                    printerrln("\n"+e);
+                    if (errorlevel === 0 || errorlevel === undefined) {
+                        errorlevel = 1; // generic failure
+                    }
                 }
                 finally {
                     if (cmdbuf.trim().length > 0)

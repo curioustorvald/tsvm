@@ -1,17 +1,17 @@
 println("JS Console");
-var _cmdHistory = []; // zeroth element is the oldest
-var _cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
+let _cmdHistory = []; // zeroth element is the oldest
+let _cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
 while (true) {
     print("JS> ");
 
-    var _cmdbuf = "";
+    let _cmdbuf = "";
 
     while (true) {
-        var key = con.getch();
+        let key = con.getch();
 
         // printable chars
         if (key >= 32 && key <= 126) {
-            var __sss = String.fromCharCode(key);
+            let __sss = String.fromCharCode(key);
             _cmdbuf += __sss;
             print(__sss);
         }
@@ -24,10 +24,11 @@ while (true) {
         else if (key === 10 || key === 13) {
             println();
             try {
-                println(eval(_cmdbuf));
+                let prg = eval("let _appStub=function(){"+_cmdbuf+"};_appStub;"); // making 'exec_args' a app-level global
+                println(prg());
             }
             catch (e) {
-                println(e);
+                printerrln(e);
             }
             finally {
                 if (_cmdbuf.trim().length > 0)
@@ -42,7 +43,7 @@ while (true) {
             _cmdHistoryScroll += 1;
 
             // back the cursor in order to type new cmd
-            var __xx = 0;
+            let __xx = 0;
             for (__xx = 0; __xx < _cmdbuf.length; __xx++) print(String.fromCharCode(8));
             _cmdbuf = _cmdHistory[_cmdHistory.length - _cmdHistoryScroll];
             // re-type the new command
@@ -53,7 +54,7 @@ while (true) {
         else if (key === 20) {
             if (_cmdHistoryScroll > 0) {
                 // back the cursor in order to type new cmd
-                var __xx = 0;
+                let __xx = 0;
                 for (__xx = 0; __xx < _cmdbuf.length; __xx++) print(String.fromCharCode(8));
                 _cmdbuf = _cmdHistory[_cmdHistory.length - _cmdHistoryScroll];
                 // re-type the new command

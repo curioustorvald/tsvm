@@ -126,5 +126,4 @@ var execApp = function(cmdsrc, args) {
 serial.println("TVDOS.SYS initialised, running boot script...");
 var _G = {};
 filesystem.open("A", "tvdos/bin/command.js", "R");
-let cmdsrc = filesystem.readAll("A");
-execApp(cmdsrc, ["", "/c", "\\AUTOEXEC.BAT"]);
+execApp(filesystem.readAll("A"), ["", "/c", "\\AUTOEXEC.BAT"]);
