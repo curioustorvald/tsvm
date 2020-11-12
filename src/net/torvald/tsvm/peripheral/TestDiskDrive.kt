@@ -1,13 +1,14 @@
 package net.torvald.tsvm.peripheral
 
 import net.torvald.tsvm.VM
+import net.torvald.tsvm.VMJSR223Delegate
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.util.*
 
-class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : BlockTransferInterface(false, true) {
+class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: File? = null) : BlockTransferInterface(false, true) {
 
     companion object {
         const val STATE_CODE_STANDBY = 0
@@ -306,7 +307,7 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
             }
             else if (inputString.startsWith("MKDIR")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    statusCode = STATE_CODE_NO_FILE_OPENED
                     return
                 }
                 if (fileOpenMode < 1) {
@@ -321,9 +322,51 @@ class TestDiskDrive(private val driveNum: Int, theRootPath: File? = null) : Bloc
                     statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
                 }
             }
+            else if (inputString.startsWith("MKFILE")) {
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    return
+                }
+                if (fileOpenMode < 1) {
+                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    return
+                }
+                try {
+                    val f1 = file.createNewFile()
+                    statusCode = if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED
+                    return
+                }
+                catch (e: IOException) {
+                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                }
+                catch (e1: SecurityException) {
+                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                }
+            }
+            else if (inputString.startsWith("TOUCH")) {
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    return
+                }
+                if (fileOpenMode < 1) {
+                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    return
+                }
+                try {
+                    val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
+                    statusCode = if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED
+                    return
+                }
+                catch (e: IOException) {
+                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                }
+                catch (e1: SecurityException) {
+                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                }
+            }
             else if (inputString.startsWith("WRITE")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    statusCode = STATE_CODE_NO_FILE_OPENED
                     return
                 }
                 if (fileOpenMode < 0) {

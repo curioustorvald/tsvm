@@ -317,8 +317,7 @@ basicInterpreterStatus.builtin = {
                 if (seps[llll - 1] == ",") print("\t");
             }
 
-            var resolvedargs = resolve(args[llll]);
-            if (resolvedargs === undefined) resolvedargs = "";
+            var resolvedargs = resolve(args[llll]) || "";
 
             if (args[llll].type == "number")
                 print(" "+resolvedargs+" ");

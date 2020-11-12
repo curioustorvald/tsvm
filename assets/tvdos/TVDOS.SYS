@@ -27,6 +27,9 @@ Object.freeze(_TVDOS);
 
 var filesystem = {};
 filesystem._toPorts = function(driveLetter) {
+    if (driveLetter.toUpperCase === undefined) {
+        throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
+    }
     let port = _TVDOS.DRIVES[driveLetter.toUpperCase()];
     if (port === undefined) {
         throw Error("Drive letter '" + driveLetter.toUpperCase() + "' does not exist");
@@ -76,9 +79,8 @@ filesystem.isDirectory = function(driveLetter) {
     let port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "LISTFILES");
     let response = com.getStatusCode(port[0]);
-
     return (response === 0);
-}
+};
 filesystem.mkDir = function(driveLetter) {
     let port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "MKDIR");
@@ -89,7 +91,19 @@ filesystem.mkDir = function(driveLetter) {
         throw Error("Creating a directory failed with ("+response+"): "+status.message+"\n");
     }
     return (response === 0); // possible status codes: 0 (success), 1 (fail)
-}
+};
+filesystem.touch = function(driveLetter) {
+    let port = filesystem._toPorts(driveLetter);
+    com.sendMessage(port[0], "TOUCH");
+    let response = com.getStatusCode(port[0]);
+    return (response === 0);
+};
+filesystem.mkFile = function(driveLetter) {
+    let port = filesystem._toPorts(driveLetter);
+    com.sendMessage(port[0], "MKFILE");
+    let response = com.getStatusCode(port[0]);
+    return (response === 0);
+};
 Object.freeze(filesystem);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -110,6 +124,7 @@ var execApp = function(cmdsrc, args) {
 
 // Boot script
 serial.println("TVDOS.SYS initialised, running boot script...");
+var _G = {};
 filesystem.open("A", "tvdos/bin/command.js", "R");
 let cmdsrc = filesystem.readAll("A");
 execApp(cmdsrc, ["", "/c", "\\AUTOEXEC.BAT"]);

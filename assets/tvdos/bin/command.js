@@ -52,6 +52,8 @@ function trimStartRevSlash(s) {
 }
 
 let shell = {};
+shell.getPwd = function() { return shell_pwd; }
+shell.getCurrentDrive = function() { return CURRENT_DRIVE; }
 // example input: echo "the string" > subdir\test.txt
 shell.parse = function(input) {
     let tokens = [];
@@ -122,8 +124,7 @@ shell.parse = function(input) {
 
     return tokens;
 }
-
-function resolvePathInput(input) {
+shell.resolvePathInput = function(input) {
     // replace slashes into revslashes
     let pathstr = input.replaceAll('/','\\\\');
     let startsWithSlash = input.startsWith('\\');
@@ -166,7 +167,7 @@ shell.coreutils = {
             println(CURRENT_DRIVE+":"+shell_pwd.join("\\"));
             return
         }
-        let path = resolvePathInput(args[1])
+        let path = shell.resolvePathInput(args[1])
         if (DEBUG_PRINT) serial.println("command.js > cd > pathstr = "+path.string);
 
         // check if path is valid
@@ -181,7 +182,7 @@ shell.coreutils = {
             printerrln("Syntax error");
             return
         }
-        let path = resolvePathInput(args[1])
+        let path = shell.resolvePathInput(args[1])
         if (DEBUG_PRINT) serial.println("command.js > mkdir > pathstr = "+path.string);
 
         // check if path is valid
@@ -320,6 +321,7 @@ shell.execute = function(line) {
     }
 };
 Object.freeze(shell);
+_G.shell = shell;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
