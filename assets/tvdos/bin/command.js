@@ -20,7 +20,7 @@ function print_prompt_text() {
         con.color_pair(0,253);
         print(" \\"+shell_pwd.join("\\").substring(1)+" ");
         if (errorlevel != 0) {
-            con.color_pair(211,253);
+            con.color_pair(166,253);
             print("["+errorlevel+"] ");
         }
         con.color_pair(253,255);
@@ -397,10 +397,11 @@ if (goInteractive) {
                 try {
                     errorlevel = 0; // reset the number
                     errorlevel = shell.execute(cmdbuf);
+                    if (isNaN(errorlevel)) errorlevel = 2;
                 }
                 catch (e) {
                     printerrln("\n"+e);
-                    if (errorlevel === 0 || errorlevel === undefined) {
+                    if (errorlevel === 0 || isNaN(errorlevel)) {
                         errorlevel = 1; // generic failure
                     }
                 }
@@ -409,6 +410,7 @@ if (goInteractive) {
                         cmdHistory.push(cmdbuf);
 
                     cmdHistoryScroll = 0;
+
                     break;
                 }
             }
