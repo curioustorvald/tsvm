@@ -127,9 +127,26 @@ function resolvePathInput(input) {
     // replace slashes into revslashes
     let pathstr = input.replaceAll('/','\\\\');
     let startsWithSlash = input.startsWith('\\');
+    let newPwd = [];
 
     // split them into an array while filtering empty elements except for the root 'head'
-    let newPwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
+    let ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
+
+    serial.println("command.js > resolvePathInput > ipwd = "+ipwd);
+    serial.println("command.js > resolvePathInput > newPwd = "+newPwd);
+
+    // process dots
+    ipwd.forEach(function(it) {
+        serial.println("command.js > resolvePathInput > ipwd.forEach > it = "+it);
+        if (it === ".." && newPwd[1] !== undefined) {
+            newPwd.pop();
+        }
+        else if (it !== ".." && it !== ".") {
+            newPwd.push(it);
+        }
+        serial.println("command.js > resolvePathInput > newPwd = "+newPwd);
+    });
+
     // construct new pathstr from pwd arr so it will be sanitised
     pathstr = newPwd.join('\\').substring(1);
 

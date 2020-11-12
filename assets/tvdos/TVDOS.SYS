@@ -77,18 +77,13 @@ filesystem.isDirectory = function(driveLetter) {
     com.sendMessage(port[0], "LISTFILES");
     let response = com.getStatusCode(port[0]);
 
-    if (135 == response) {
-        throw Error("File not opened");
-    }
     return (response === 0);
 }
 filesystem.mkDir = function(driveLetter) {
     let port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "MKDIR");
     let response = com.getStatusCode(port[0]);
-    if (135 == response) {
-        throw Error("File not opened");
-    }
+
     if (response < 0 || response >= 128) {
         let status = com.getDeviceStatus(port[0]);
         throw Error("Creating a directory failed with ("+response+"): "+status.message+"\n");
