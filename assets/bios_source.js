@@ -38,7 +38,7 @@ try {
 }
 catch (e) {
     if (e == "Memory Error") {
-        println(" Memory Error");
+        println(" "+e);
     }
     else {
         println(" KB OK!");
