@@ -22,22 +22,27 @@ if (!fileOpened) {
 }
 
 let scroll = 0;
+let pan = -1;
 let termW = con.getmaxyx()[1];
 let termH = con.getmaxyx()[0] - 1;
 let buf = "";
 let fileContent = filesystem.readAll(_G.shell.getCurrentDrive());
 let key = -1;
+let panSize = termW >> 1;
 
 // initialise some helper variables
 let lineToBytes = [0];
+let maxPan = 0;
+let maxPanCur = 0;
 for (let i = 0; i < fileContent.length; i++) {
     let char = fileContent.charCodeAt(i);
+    maxPanCur += 1;
     if (char == 10 || char == 13) {
         lineToBytes.push(i + 1);
+        if (maxPanCur > maxPan) maxPan = maxPanCur;
+        maxPanCur = 0;
     }
 }
-
-serial.println(lineToBytes);
 
 let startAddr = -1;
 let paintCur = 0;
@@ -49,19 +54,21 @@ let repaint = function() {
     con.move(1,1); con.clear();
 
     startAddr = lineToBytes[scroll];
-    cy = 1; cx = 1; paintCur = 0;
+    cy = 1; cx = -pan; paintCur = 0;
     while (cy <= termH) {
         char = fileContent.charCodeAt(startAddr + paintCur);
         if (isNaN(char)) break;
         if (cy <= termH) {
-            con.move(cy, cx);
-            if (char != 10 && char != 13)
-                con.addch(char);
+            if (cx >= 0 && cx < termW) {
+                con.move(cy, cx);
+                if (char != 10 && char != 13)
+                    con.addch(char);
+            }
             cx += 1;
         }
         if (char == 10 || char == 13) {
             cy += 1;
-            cx = 1;
+            cx = -pan;
         }
         paintCur += 1;
     }
@@ -82,6 +89,14 @@ while (true) {
     }
     /*down*/else if (key == 20 && scroll < lineToBytes.length - termH) {
         scroll += 1;
+        repaint();
+    }
+    /*left*/else if (key == 21 && pan > 0) {
+        pan -= panSize;
+        repaint();
+    }
+    /*right*/else if (key == 22 && pan < maxPan - termW) {
+        pan += panSize;
         repaint();
     }
 }
