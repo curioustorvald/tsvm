@@ -13,6 +13,13 @@ class VMJSR223Delegate(val vm: VM) {
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
+    fun mapRom(slot: Int) {
+        vm.romMapping = slot.and(255)
+    }
+    fun romReadAll(): String {
+        if (vm.romMapping == 255) return ""
+        return vm.roms[vm.romMapping]!!.readAll()
+    }
 
     fun uptime(): Long {
         vm.poke(-69, -1)

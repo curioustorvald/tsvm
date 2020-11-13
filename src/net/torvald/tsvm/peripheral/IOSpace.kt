@@ -93,6 +93,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 72..79 -> systemUptime.ushr((adi - 72) * 8).and(255).toByte()
             in 80..87 -> rtc.ushr((adi - 80) * 8).and(255).toByte()
 
+            88L -> vm.romMapping.toByte()
+
             4076L -> blockTransferPorts[0].statusCode.toByte()
             4077L -> blockTransferPorts[1].statusCode.toByte()
             4078L -> blockTransferPorts[2].statusCode.toByte()
@@ -118,6 +120,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 8192..12287 -> blockTransferRx[1][addr - 8192]
             in 12288..16383 -> blockTransferRx[2][addr - 12288]
             in 16384..20479 -> blockTransferRx[3][addr - 16384]
+
+            in 65536..131071 -> if (vm.romMapping == -1) 255.toByte() else vm.roms[vm.romMapping]?.get(adi - 65536)
 
             in 131072..262143 -> vm.peripheralTable[1].peripheral?.mmio_read(addr - 131072)
             in 262144..393215 -> vm.peripheralTable[2].peripheral?.mmio_read(addr - 262144)
@@ -146,6 +150,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
                 uptimeCounterLatched = byte.and(0b01).isNonZero()
                 RTClatched = byte.and(0b10).isNonZero()
             }
+
+            88L -> vm.romMapping = bi
 
             4076L -> blockTransferPorts[0].statusCode = bi
             4077L -> blockTransferPorts[1].statusCode = bi

@@ -3,59 +3,22 @@ package net.torvald.tsvm
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.tsvm.firmware.Firmware
-import net.torvald.tsvm.firmware.Firmware.Companion.toLuaValue
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
-import org.luaj.vm2.LuaValue
+import net.torvald.tsvm.peripheral.VMProgramRom
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.PrintStream
 import java.util.*
 import kotlin.math.ceil
-import kotlin.random.Random
 
 /**
- * 1 byte = 2 pixels
- *
- * 560x448@4bpp = 125 440 bytes
- * 560x448@8bpp = 250 880 bytes
- *
- * -> 262144 bytes (256 kB)
- *
- * [USER AREA | HW AREA]
- *  Number of pheripherals = 8, of which the computer itself is considered as a peri.
- *
- * HW AREA = [Peripherals | MMIO | INTVEC]
- *
- * User area: 8 MB, hardware area: 8 MB
- *
- * 8192 kB
- *  User Space
- * 1024 kB
- *  Peripheral #8
- * 1024 kB
- *  Peripheral #7
- * ...
- * 1024 kB
- *  MMIO and Interrupt Vectors
- *  128 kB
- *   MMIO for Peri #8
- *  128 kB
- *   MMIO for Peri #7
- *  ...
- *  128 kB
- *   MMIO for the computer
- *   130816 bytes
- *    MMIO for Ports, etc.
- *   256 bytes
- *    Vectors for 64 interrupts
- *
- *
+ * A class representing an instance of a Virtual Machine
  */
 
 class VM(
     _memsize: Long,
-    val worldInterface: WorldInterface
+    val worldInterface: WorldInterface,
+    val roms: Array<VMProgramRom?> // first ROM must contain the BIOS
 ) {
 
     val id = java.util.Random().nextInt()
@@ -80,6 +43,9 @@ class VM(
     var getInputStream: () -> InputStream = { TODO() }
 
     val startTime: Long
+
+    var romMapping = 255
+        internal set
 
     init {
         peripheralTable[0] = PeripheralEntry(
@@ -216,9 +182,6 @@ class VM(
         mallocMap.set(index, index + count, false)
         mallocSizes.remove(index)
     }
-
-    //fun Byte.toLuaValue() = LuaValue.valueOf(this.toInt())
-
 
     internal data class VMNativePtr(val address: Int, val size: Int)
 }

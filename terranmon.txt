@@ -82,6 +82,8 @@ MMIO
 72..79 RO: System uptime in nanoseconds
 80..87 RO: RTC in microseconds
 
+88 RW: Rom mapping
+
 4076..4079 RW: 8-bit status code for the port
 4080..4083 RO: 8-bit status code for connected device
 
@@ -118,6 +120,8 @@ MMIO
 8192..12287 RW: Buffer for block transfer lane #2
 12288..16383 RW: Buffer for block transfer lane #3
 16384..20479 RW: Buffer for block transfer lane #4
+
+65536..131071 RO: Mapped to ROM
 
 --------------------------------------------------------------------------------
 

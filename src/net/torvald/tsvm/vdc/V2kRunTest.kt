@@ -15,7 +15,7 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter
 
 class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
-    val vm = VM(64.kB(), TheRealWorld())
+    val vm = VM(64.kB(), TheRealWorld(), arrayOf())
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch

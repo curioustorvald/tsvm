@@ -7,14 +7,14 @@ import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
+import net.torvald.tsvm.peripheral.GenericBios
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import java.io.File
 
 fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).contentEquals(other)
 
-class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
+class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
-    val vm = VM(64.kB(), TheRealWorld())
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch
@@ -54,19 +54,10 @@ class VMGUI(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter()
 
         memvwr = Memvwr(vm)
 
-        // load test bios
-
-        val bios = File("./assets/bios1.bin").readBytes()
-        // check if bios is compressed in gzip
-        val biosStr = if (bios.startsWith(GZIP_HEADER))
-            CompressorDelegate.decomp(bios).toString(VM.CHARSET)
-        else
-            bios.toString(VM.CHARSET)
 
         vmRunner = VMRunnerFactory(vm, "js")
         coroutineJob = GlobalScope.launch {
-            //vmRunner.executeCommand(File("./assets/zippytest.js").readText(VM.CHARSET))
-            vmRunner.executeCommand(biosStr)
+            vmRunner.executeCommand(vm.roms[0]!!.readAll())
         }
     }
 

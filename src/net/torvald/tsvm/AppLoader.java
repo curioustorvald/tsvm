@@ -4,6 +4,7 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl.LwjglApplication;
 import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
+import net.torvald.tsvm.peripheral.GenericBios;
 
 public class AppLoader {
 
@@ -24,7 +25,10 @@ public class AppLoader {
         appConfig.width = 560;
         appConfig.height = 448;
 
-        new LwjglApplication(new VMGUI(appConfig), appConfig);
+
+        // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
+        VM vm = new VM(64 << 10, new TheRealWorld(), new GenericBios[]{GenericBios.INSTANCE});
+        new LwjglApplication(new VMGUI(vm, appConfig), appConfig);
     }
 
     public static ShaderProgram loadShaderFromFile(String vert, String frag) {
