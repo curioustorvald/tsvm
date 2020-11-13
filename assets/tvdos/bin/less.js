@@ -24,7 +24,6 @@ if (!fileOpened) {
 let scroll = 0;
 let termW = con.getmaxyx()[1];
 let termH = con.getmaxyx()[0] - 1;
-let bufsize = termW * termH;
 let buf = "";
 let fileContent = filesystem.readAll(_G.shell.getCurrentDrive());
 let key = -1;
@@ -51,8 +50,9 @@ let repaint = function() {
 
     startAddr = lineToBytes[scroll];
     cy = 1; cx = 1; paintCur = 0;
-    while (cy <= termH && cx <= termW) {
+    while (cy <= termH) {
         char = fileContent.charCodeAt(startAddr + paintCur);
+        if (isNaN(char)) break;
         if (cy <= termH) {
             con.move(cy, cx);
             if (char != 10 && char != 13)
@@ -80,7 +80,7 @@ while (true) {
         scroll -= 1;
         repaint();
     }
-    /*down*/else if (key == 20 && scroll < lineToBytes.length - 1) {
+    /*down*/else if (key == 20 && scroll < lineToBytes.length - termH) {
         scroll += 1;
         repaint();
     }
