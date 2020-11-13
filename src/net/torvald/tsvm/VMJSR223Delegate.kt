@@ -41,6 +41,11 @@ class VMJSR223Delegate(val vm: VM) {
     }
     fun println() = print('\n')
 
+    /**
+     * @return key being hit, of which:
+     * a-zA-Z1-9: corresponding ASCII code
+     * ^A-^Z: 1 through 26
+     */
     fun readKey(): Int {
         val inputStream = vm.getInputStream()
         var key: Int = inputStream.read()

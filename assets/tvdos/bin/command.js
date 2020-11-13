@@ -410,6 +410,7 @@ if (goInteractive) {
                         cmdHistory.push(cmdbuf);
 
                     cmdHistoryScroll = 0;
+                    con.curs_set(1);
 
                     break;
                 }

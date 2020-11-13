@@ -395,6 +395,7 @@ con.color_pair = function(fore, back) { // 0..255
 con.clear = function() {
     print(String.fromCharCode(27,91)+"2J");
 };
+// @params arg 0 to hide, nonzero to show
 con.curs_set = function(arg) {
     print(String.fromCharCode(27,91)+"?25"+(((arg|0) == 0) ? "l" : "h"));
 };
