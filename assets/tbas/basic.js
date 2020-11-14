@@ -531,11 +531,11 @@ bF._opPrc = {
     "BOR":10,
     "AND":11,
     "OR":12,
-    "TO":13,"STEP":13,
+    "TO":13,
+    "STEP":14,
     "=":999
 };
 bF._opRh = {"^":1,"=":1};
-bF._opUni = {"+":1,"-":1};
 bF._keywords = {
 
 };
@@ -1098,7 +1098,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         var parenEnd = -1;
         var separators = [];
 
-        // initial scan
+        // initial scan for adding omitted parens
         for (k = 0; k < tokens.length; k++) {
             if (tokens[k] == "(" && states[k] != "quote") {
                 parenDepth += 1;
@@ -1112,7 +1112,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
             if (parenDepth == 0) {
                 if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) {
                     topmostOp = tokens[k].toUpperCase();
-                    topmostOpPrc = bF._opPrc[tokens[k]];
+                    topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
                     operatorPos = k;
                 }
             }
@@ -1136,6 +1136,8 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
         // get the position of parens and separators
         parenStart = -1; parenEnd = -1; parenDepth = 0;
+        topmostOpPrc = 0; operatorPos = -1;
+        // running again but now with newly added parens
         for (k = 0; k < tokens.length; k++) {
             if (tokens[k] == "(" && states[k] != "quote") {
                 parenDepth += 1;
@@ -1152,7 +1154,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
             if (parenDepth == 0) {
                 if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) {
                     topmostOp = tokens[k].toUpperCase();
-                    topmostOpPrc = bF._opPrc[tokens[k]];
+                    topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
                     operatorPos = k;
                 }
             }
