@@ -1465,6 +1465,17 @@ bF.load = function(args) { // LOAD function
         cmdbuf[lnum] = line.slice(i + 1, line.length);
     });
 };
+bF.catalog = function(args) { // CATALOG function
+    if (args[1] === undefined) args[1] = "\\";
+    let pathOpened = fs.open(args[1], 'R');
+    if (!pathOpened) {
+        throw lang.noSuchFile;
+        return;
+    }
+    let port = _BIOS.FIRST_BOOTABLE_PORT[0];
+    com.sendMessage(port, "LIST");
+    println(com.pullMessage(port));
+};
 Object.freeze(bF);
 while (!tbasexit) {
     let line = sys.read().trim();
