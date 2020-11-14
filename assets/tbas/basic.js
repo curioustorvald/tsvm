@@ -53,11 +53,11 @@ lang.outOfMem = function(line) {
 };
 Object.freeze(lang);
 
-let filesystem = {};
-filesystem._close = function(portNo) {
+let fs = {};
+fs._close = function(portNo) {
     com.sendMessage(portNo, "CLOSE");
 };
-filesystem._flush = function(portNo) {
+fs._flush = function(portNo) {
     com.sendMessage(portNo, "FLUSH");
 };
 // @return true if operation committed successfully, false if:
@@ -65,10 +65,10 @@ filesystem._flush = function(portNo) {
 //         throws if:
 //             - java.lang.NullPointerException if path is null
 //             - Error if operation mode is not "R", "W" nor "A"
-filesystem.open = function(path, operationMode) {
+fs.open = function(path, operationMode) {
     let port = _BIOS.FIRST_BOOTABLE_PORT;
 
-    filesystem._flush(port[0]); filesystem._close(port[0]);
+    fs._flush(port[0]); fs._close(port[0]);
 
     let mode = operationMode.toUpperCase();
     if (mode != "R" && mode != "W" && mode != "A") {
@@ -80,7 +80,7 @@ filesystem.open = function(path, operationMode) {
     return (response == 0);
 };
 // @return the entire contents of the file in String
-filesystem.readAll = function() {
+fs.readAll = function() {
     let port = _BIOS.FIRST_BOOTABLE_PORT;
     com.sendMessage(port[0], "READ");
     let response = com.getStatusCode(port[0]);
@@ -92,7 +92,7 @@ filesystem.readAll = function() {
     }
     return com.pullMessage(port[0]);
 };
-filesystem.write = function(string) {
+fs.write = function(string) {
     let port = _BIOS.FIRST_BOOTABLE_PORT;
     com.sendMessage(port[0], "WRITE"+string.length);
     let response = com.getStatusCode(port[0]);
@@ -103,9 +103,9 @@ filesystem.write = function(string) {
         throw Error("Writing a file failed with "+response);
     }
     com.sendMessage(port[0], string);
-    filesystem._flush(port[0]); filesystem._close(port[0]);
+    fs._flush(port[0]); fs._close(port[0]);
 };
-Object.freeze(filesystem);
+Object.freeze(fs);
 
 let getUsedMemSize = function() {
     return cmdbufMemFootPrint; // + array's dimsize * 8 + variables' sizeof literal + functions' expression length
@@ -1442,10 +1442,10 @@ bF.run = function(args) { // RUN function
 };
 bF.save = function(args) { // SAVE function
     if (args[1] === undefined) throw lang.missingOperand;
-    filesystem.open(args[1], "W");
+    fs.open(args[1], "W");
     let sb = "";
     cmdbuf.forEach(function(v,i) { sb += i+" "+v+"\n"; });
-    filesystem.write(sb);
+    fs.write(sb);
 };
 Object.freeze(bF);
 while (!tbasexit) {
