@@ -477,6 +477,7 @@ bStatus.builtin = {
 "FOR" : function(lnum, args) {
     throw TODO();
     // use bStatus.forStack
+    bStatus.forStack.push(lnum);
 },
 "NEXT" : function(lnum, args) {
     throw TODO();
@@ -500,6 +501,9 @@ bF._is1o = function(code) {
 bF._is2o = function(code) {
     return (code >= 0x3C && code <= 0x3E);
 };
+bF._isUnary = function(code) {
+    return (code == 0x2B) || (code == 0x2D) || (code == 0x21);
+}
 bF._isParenOpen = function(code) {
     return (code == 0x28 || code == 0x5B);
 };
@@ -514,27 +518,24 @@ bF._isSep = function(code) {
 };
 bF._opPrc = {
     // function call in itself has highest precedence
-    "^":0,
-    // precedence of 1 are unary plus/minus which are pre-parenthesized
+    "^":1,
     "*":2,"/":2,
     "MOD":3,
     "+":4,"-":4,
     //";":5,
     "<<":6,">>":6,
-    "==":7,"<>":7,"><":7,"<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
+    "<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
+    "==":8,"<>":8,"><":8,
     "BAND":8,
     "BXOR":9,
     "BOR":10,
     "AND":11,
     "OR":12,
-    "=":13
+    "TO":13,"STEP":13,
+    "=":999
 };
-bF._isUnaryOp = function(word) {
-    return 5 == bF._opPrc[word];
-};
-bF._isOperatorWord = function(word) {
-    return (bF._opPrc[word] !== undefined) // force the return type to be a boolean
-};
+bF._opRh = {"^":1,"=":1};
+bF._opUni = {"+":1,"-":1};
 bF._keywords = {
 
 };
@@ -662,6 +663,9 @@ bF._tokenise = function(lnum, cmd) {
             if (bF._is2o(charCode)) {
                 sb += char;
                 mode = "operator2";
+            }
+            else if (bF._isUnary(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
             }
             else if (bF._is1o(charCode)) {
                 throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
@@ -992,7 +996,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
-    var _debugSyntaxAnalysis = false;
+    var _debugSyntaxAnalysis = true;
 
     if (_debugSyntaxAnalysis) println("@@ SYNTAX ANALYSIS @@");
 
@@ -1007,9 +1011,9 @@ for input "DEFUN sinc(x) = sin(x) / x"
         return retTreeHead;
     }
 
-    var k;
-    var headWord = tokens[0].toLowerCase();
-    var treeHead = new BasicAST();
+    let k;
+    let headWord = tokens[0].toLowerCase();
+    let treeHead = new BasicAST();
     treeHead.depth = recDepth;
     treeHead.lnum = lnum;
 
@@ -1119,7 +1123,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
         // if there is no paren or paren does NOT start index 1
         // e.g. negative three should NOT require to be written as "-(3)"
-        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0) && states[0] != "operator") {
+        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0) && states[0] == "literal" && states[1] != "operator") {
             // make a paren!
             tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
             states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
@@ -1344,7 +1348,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 bF._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    var _debugprintHighestLevel = true;
 
     // TOKENISE
     var tokenisedObject = bF._tokenise(lnum, cmd);
