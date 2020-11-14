@@ -26,6 +26,8 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
 
     lateinit var memvwr: Memvwr
 
+    val usememvwr = false
+
     override fun create() {
         super.create()
 
@@ -52,7 +54,7 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
         vm.getErrorStream = { gpu.getErrorStream() }
         vm.getInputStream = { gpu.getInputStream() }
 
-        memvwr = Memvwr(vm)
+        if (usememvwr) memvwr = Memvwr(vm)
 
 
         vmRunner = VMRunnerFactory(vm, "js")
@@ -67,7 +69,7 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
     override fun render() {
         Gdx.graphics.setTitle("${AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond}")
 
-        memvwr.update()
+        if (usememvwr) memvwr.update()
 
         super.render()
 

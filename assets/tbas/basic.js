@@ -31,19 +31,14 @@ lang.badNumberFormat = "Illegal number format";
 lang.badOperatorFormat = "Illegal operator format";
 lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
+lang.missingOperand = "Missing operand";
 lang.syntaxfehler = function(line, reason) {
-    //serial.printerr("Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : ""));
-    //serial.printerr(new Error().stack);
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
 lang.illegalType = function(line, obj) {
-    //serial.printerr("Type mismatch" + ((line !== undefined) ? (" in "+line) : ""));
-    //serial.printerr(new Error().stack);
     return "Type mismatch" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
  };
 lang.refError = function(line, obj) {
-    //serial.printerr("Unresolved reference" + ((line !== undefined) ? (" in "+line) : ""));
-    //serial.printerr(new Error().stack);
     return "Unresolved reference" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
@@ -57,6 +52,60 @@ lang.outOfMem = function(line) {
     return "Out of memory in " + line;
 };
 Object.freeze(lang);
+
+let filesystem = {};
+filesystem._close = function(portNo) {
+    com.sendMessage(portNo, "CLOSE");
+};
+filesystem._flush = function(portNo) {
+    com.sendMessage(portNo, "FLUSH");
+};
+// @return true if operation committed successfully, false if:
+//             - opening file with R-mode and target file does not exists
+//         throws if:
+//             - java.lang.NullPointerException if path is null
+//             - Error if operation mode is not "R", "W" nor "A"
+filesystem.open = function(path, operationMode) {
+    let port = _BIOS.FIRST_BOOTABLE_PORT;
+
+    filesystem._flush(port[0]); filesystem._close(port[0]);
+
+    let mode = operationMode.toUpperCase();
+    if (mode != "R" && mode != "W" && mode != "A") {
+        throw Error("Unknown file opening mode: " + mode);
+    }
+
+    com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
+    let response = com.getStatusCode(port[0]);
+    return (response == 0);
+};
+// @return the entire contents of the file in String
+filesystem.readAll = function() {
+    let port = _BIOS.FIRST_BOOTABLE_PORT;
+    com.sendMessage(port[0], "READ");
+    let response = com.getStatusCode(port[0]);
+    if (135 == response) {
+        throw Error("File not opened");
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Reading a file failed with "+response);
+    }
+    return com.pullMessage(port[0]);
+};
+filesystem.write = function(string) {
+    let port = _BIOS.FIRST_BOOTABLE_PORT;
+    com.sendMessage(port[0], "WRITE"+string.length);
+    let response = com.getStatusCode(port[0]);
+    if (135 == response) {
+        throw Error("File not opened");
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Writing a file failed with "+response);
+    }
+    com.sendMessage(port[0], string);
+    filesystem._flush(port[0]); filesystem._close(port[0]);
+};
+Object.freeze(filesystem);
 
 let getUsedMemSize = function() {
     return cmdbufMemFootPrint; // + array's dimsize * 8 + variables' sizeof literal + functions' expression length
@@ -157,7 +206,7 @@ let resolve = function(variable) {
     if (variable.type == "string" || variable.type == "number" || variable.type == "bool")
         return variable.value;
     else if (variable.type == "literal") {
-        var basicvar = basicInterpreterStatus.variables[parseSigil(variable.value).name];
+        var basicvar = bStatus.vars[parseSigil(variable.value).name];
         return (basicvar !== undefined) ? basicvar.literal : undefined;
     }
     else if (variable.type == "null")
@@ -165,142 +214,143 @@ let resolve = function(variable) {
     else
         throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
 }
-let oneArgNonNull = function(lnum, args, action) {
+let oneArg = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs0 = resolve(args[0]);
-    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    return action(resolvedargs0);
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    return action(rsvArg0);
 }
-let oneArgNonNullNumeric = function(lnum, args, action) {
+let oneArgNum = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs0 = resolve(args[0]);
-    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
-    return action(resolvedargs0);
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0.value);
+    return action(rsvArg0);
 }
-let twoArgNonNull = function(lnum, args, action) {
+let twoArg = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs0 = resolve(args[0]);
-    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    var resolvedargs1 = resolve(args[1]);
-    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
-    return action(resolvedargs0, resolvedargs1);
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    var rsvArg1 = resolve(args[1]);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1.value);
+    return action(rsvArg0, rsvArg1);
 }
-let twoArgNonNullNumeric = function(lnum, args, action) {
+let twoArgNum = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs0 = resolve(args[0]);
-    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
-    var resolvedargs1 = resolve(args[1]);
-    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
-    if (isNaN(resolvedargs1)) throw lang.illegalType(lnum, resolvedargs1.value);
-    return action(resolvedargs0, resolvedargs1);
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0.value);
+    var rsvArg1 = resolve(args[1]);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1.value);
+    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1.value);
+    return action(rsvArg0, rsvArg1);
 }
-let threeArgNonNull = function(lnum, args, action) {
+let threeArg = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs0 = resolve(args[0]);
-    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    var resolvedargs1 = resolve(args[1]);
-    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
-    var resolvedargs2 = resolve(args[2]);
-    if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
-    return action(resolvedargs0, resolvedargs1, resolvedargs2);
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    var rsvArg1 = resolve(args[1]);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1.value);
+    var rsvArg2 = resolve(args[2]);
+    if (rsvArg2 === undefined) throw lang.refError(lnum, rsvArg2.value);
+    return action(rsvArg0, rsvArg1, rsvArg2);
 }
-let threeArgNonNullNumeric = function(lnum, args, action) {
+let threeArgNum = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs0 = resolve(args[0]);
-    if (resolvedargs0 === undefined) throw lang.refError(lnum, resolvedargs0.value);
-    if (isNaN(resolvedargs0)) throw lang.illegalType(lnum, resolvedargs0.value);
-    var resolvedargs1 = resolve(args[1]);
-    if (resolvedargs1 === undefined) throw lang.refError(lnum, resolvedargs1.value);
-    if (isNaN(resolvedargs1)) throw lang.illegalType(lnum, resolvedargs1.value);
-    var resolvedargs2 = resolve(args[2]);
-    if (resolvedargs2 === undefined) throw lang.refError(lnum, resolvedargs2.value);
-    if (isNaN(resolvedargs2)) throw lang.illegalType(lnum, resolvedargs2.value);
-    return action(resolvedargs0, resolvedargs1, resolvedargs2);
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0.value);
+    var rsvArg1 = resolve(args[1]);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1.value);
+    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1.value);
+    var rsvArg2 = resolve(args[2]);
+    if (rsvArg2 === undefined) throw lang.refError(lnum, rsvArg2.value);
+    if (isNaN(rsvArg2)) throw lang.illegalType(lnum, rsvArg2.value);
+    return action(rsvArg0, rsvArg1, rsvArg2);
 }
-let basicInterpreterStatus = {};
-basicInterpreterStatus.gosubStack = [];
-basicInterpreterStatus.variables = {};
-basicInterpreterStatus.defuns = {};
-basicInterpreterStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
+let bStatus = {};
+bStatus.gosubStack = [];
+bStatus.vars = {};
+bStatus.defuns = {};
+bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
 /*
 @param lnum line number
 @param args instance of the SyntaxTreeReturnObj
 */
-basicInterpreterStatus.builtin = {
+bStatus.builtin = {
+"REM" : function(lnum, args) {},
 "=" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var parsed = parseSigil(args[0].value); var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, args[1].value);
 
-    basicInterpreterStatus.variables[parsed.name] = new BasicVar(rh, (parsed.type === undefined) ? "float" : parsed.type);
+    bStatus.vars[parsed.name] = new BasicVar(rh, (parsed.type === undefined) ? "float" : parsed.type);
 },
 "==" : function(lnum, args) {
-    return twoArgNonNull(lnum, args, function(lh, rh) { return lh == rh; });
+    return twoArg(lnum, args, function(lh, rh) { return lh == rh; });
 },
 "<>" : function(lnum, args) {
-    return twoArgNonNull(lnum, args, function(lh, rh) { return lh != rh; });
+    return twoArg(lnum, args, function(lh, rh) { return lh != rh; });
 },
 "><" : function(lnum, args) {
-    return twoArgNonNull(lnum, args, function(lh, rh) { return lh != rh; });
+    return twoArg(lnum, args, function(lh, rh) { return lh != rh; });
 },
 "<=" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh <= rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh <= rh; });
 },
 "=<" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh <= rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh <= rh; });
 },
 ">=" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh >= rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh >= rh; });
 },
 "=>" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh >= rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh >= rh; });
 },
 "<" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh < rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh < rh; });
 },
 ">" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh > rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh > rh; });
 },
 "<<" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh << rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh << rh; });
 },
 ">>" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh >> rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh >> rh; });
 },
 "UNARYMINUS" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return -lh; });
+    return oneArgNum(lnum, args, function(lh) { return -lh; });
 },
 "UNARYPLUS" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return +lh; });
+    return oneArgNum(lnum, args, function(lh) { return +lh; });
 },
 "BAND" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh & rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh & rh; });
 },
 "BOR" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh | rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh | rh; });
 },
 "BXOR" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh ^ rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh ^ rh; });
 },
 "+" : function(lnum, args) {
-    return twoArgNonNull(lnum, args, function(lh, rh) { return lh + rh; });
+    return twoArg(lnum, args, function(lh, rh) { return lh + rh; });
 },
 "-" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh - rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh - rh; });
 },
 "*" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh * rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh * rh; });
 },
 "/" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh / rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh / rh; });
 },
 "MOD" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { return lh % rh; });
+    return twoArgNum(lnum, args, function(lh, rh) { return lh % rh; });
 },
 "^" : function(lnum, args) {
-    return twoArgNonNullNumeric(lnum, args, function(lh, rh) { Math.pow(lh, rh); });
+    return twoArgNum(lnum, args, function(lh, rh) { Math.pow(lh, rh); });
 },
 "PRINT" : function(lnum, args, seps) {
     //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
@@ -317,12 +367,12 @@ basicInterpreterStatus.builtin = {
                 if (seps[llll - 1] == ",") print("\t");
             }
 
-            var resolvedargs = resolve(args[llll]) || "";
+            var rsvArg = resolve(args[llll]) || "";
 
             if (args[llll].type == "number")
-                print(" "+resolvedargs+" ");
+                print(" "+rsvArg+" ");
             else
-                print(resolvedargs);
+                print(rsvArg);
         }
     }
 
@@ -342,39 +392,39 @@ basicInterpreterStatus.builtin = {
     }
 },
 "POKE" : function(lnum, args) {
-    twoArgNonNullNumeric(lnum, args, function(lh, rh) { sys.poke(lh, rh); });
+    twoArgNum(lnum, args, function(lh, rh) { sys.poke(lh, rh); });
 },
 "PEEK" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return sys.peek(lh); });
+    return oneArgNum(lnum, args, function(lh) { return sys.peek(lh); });
 },
 "GOTO" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return lh; });
+    return oneArgNum(lnum, args, function(lh) { return lh; });
 },
 "GOSUB" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) {
-        basicInterpreterStatus.gosubStack.push(lnum + 1);
+    return oneArgNum(lnum, args, function(lh) {
+        bStatus.gosubStack.push(lnum + 1);
         return lh;
     });
 },
 "RETURN" : function(lnum, args) {
-    var r = basicInterpreterStatus.gosubStack.pop();
+    var r = bStatus.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
     return r;
 },
 "CLEAR" : function(lnum, args) {
-    basicInterpreterStatus.variables = {};
+    bStatus.vars = {};
 },
 "PLOT" : function(lnum, args) {
-    threeArgNonNullNumeric(lnum, args, function(xpos, ypos, color) { graphics.plotPixel(xpos, ypos, color); });
+    threeArgNum(lnum, args, function(xpos, ypos, color) { graphics.plotPixel(xpos, ypos, color); });
 },
 "AND" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
+    var rsvArg = args.map(function(it) { return resolve(it); });
+    rsvArg.forEach(function(v) {
         if (v === undefined) throw lang.refError(lnum, v.value);
         if (typeof v !== "boolean") throw lang.illegalType(lnum, v.value);
     });
-    var argum = resolvedargs.map(function(it) {
+    var argum = rsvArg.map(function(it) {
         if (it === undefined) throw lang.refError(lnum, it.value);
         return it;
     });
@@ -382,12 +432,12 @@ basicInterpreterStatus.builtin = {
 },
 "OR" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var resolvedargs = args.map(function(it) { return resolve(it); });
-    resolvedargs.forEach(function(v) {
+    var rsvArg = args.map(function(it) { return resolve(it); });
+    rsvArg.forEach(function(v) {
         if (v === undefined) throw lang.refError(lnum, v.value);
         if (typeof v !== "boolean") throw lang.illegalType(lnum, v.value);
     });
-    var argum = resolvedargs.map(function(it) {
+    var argum = rsvArg.map(function(it) {
         if (it === undefined) throw lang.refError(lnum, it.value);
         return it;
     });
@@ -395,64 +445,64 @@ basicInterpreterStatus.builtin = {
 },
 "RND" : function(lnum, args) {
     if (!(args.length > 0 && args[0].value === 0))
-        basicInterpreterStatus.rnd = (basicInterpreterStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
+        bStatus.rnd = (bStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
 
 
-    return (basicInterpreterStatus.rnd) / 16777216;
+    return (bStatus.rnd) / 16777216;
 },
 "ROUND" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.round(lh); });
+    return oneArgNum(lnum, args, function(lh) { return Math.round(lh); });
 },
 "FLOOR" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.floor(lh); });
+    return oneArgNum(lnum, args, function(lh) { return Math.floor(lh); });
 },
 "INT" : function(lnum, args) { // synonymous to FLOOR
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.floor(lh); });
+    return oneArgNum(lnum, args, function(lh) { return Math.floor(lh); });
 },
 "CEIL" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return Math.ceil(lh); });
+    return oneArgNum(lnum, args, function(lh) { return Math.ceil(lh); });
 },
 "FIX" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return (lh|0); });
+    return oneArgNum(lnum, args, function(lh) { return (lh|0); });
 },
 "CHR$" : function(lnum, args) {
-    return oneArgNonNullNumeric(lnum, args, function(lh) { return String.fromCharCode(lh); });
+    return oneArgNum(lnum, args, function(lh) { return String.fromCharCode(lh); });
 },
 "TEST" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     return resolve(args[0]);
 }
 };
-Object.freeze(basicInterpreterStatus.builtin);
-let basicFunctions = {};
-basicFunctions._isNumber = function(code) {
+Object.freeze(bStatus.builtin);
+let bF = {};
+bF._isNum = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
-basicFunctions._isNumber2 = function(code) {
+bF._isNum2 = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66);
 };
-basicFunctions._isNumberSep = function(code) {
+bF._isNumSep = function(code) {
     return code == 0x2E || code == 0x42 || code == 0x58 || code == 0x62 || code == 0x78;
 };
-basicFunctions._isFirstOp = function(code) {
+bF._is1o = function(code) {
     return (code >= 0x3C && code <= 0x3E) || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2F || code == 0x5E;
 };
-basicFunctions._isSecondOp = function(code) {
+bF._is2o = function(code) {
     return (code >= 0x3C && code <= 0x3E);
 };
-basicFunctions._isParenOpen = function(code) {
+bF._isParenOpen = function(code) {
     return (code == 0x28 || code == 0x5B);
 };
-basicFunctions._isParenClose = function(code) {
+bF._isParenClose = function(code) {
     return (code == 0x29 || code == 0x5D);
 };
-basicFunctions._isParen = function(code) {
-    return basicFunctions._isParenOpen(code) || basicFunctions._isParenClose(code);
+bF._isParen = function(code) {
+    return bF._isParenOpen(code) || bF._isParenClose(code);
 };
-basicFunctions._isSeparator = function(code) {
+bF._isSep = function(code) {
     return code == 0x2C || code == 0x3B;
 };
-basicFunctions._operatorPrecedence = {
+bF._opPrc = {
     // function call in itself has highest precedence
     "^":0,
     // precedence of 1 are unary plus/minus which are pre-parenthesized
@@ -469,22 +519,22 @@ basicFunctions._operatorPrecedence = {
     "OR":12,
     "=":13
 };
-basicFunctions._isUnaryOp = function(word) {
-    return 5 == basicFunctions._operatorPrecedence[word];
+bF._isUnaryOp = function(word) {
+    return 5 == bF._opPrc[word];
 };
-basicFunctions._isOperatorWord = function(word) {
-    return (basicFunctions._operatorPrecedence[word] !== undefined) // force the return type to be a boolean
+bF._isOperatorWord = function(word) {
+    return (bF._opPrc[word] !== undefined) // force the return type to be a boolean
 };
-basicFunctions._keywords = {
+bF._keywords = {
 
 };
-basicFunctions._tokenise = function(lnum, cmd) {
-    var _debugprintStateTransition = false;
-    var k;
-    var tokens = [];
-    var states = [];
-    var sb = "";
-    var mode = "literal"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
+bF._tokenise = function(lnum, cmd) {
+    let _debugprintStateTransition = false;
+    let k;
+    let tokens = [];
+    let states = [];
+    let sb = "";
+    let mode = "literal"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
 
     // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error in the second pass
 
@@ -503,7 +553,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote";
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
             }
@@ -511,15 +561,15 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "limbo";
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "number";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "operator";
             }
@@ -528,10 +578,10 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("number" == mode) {
-            if (basicFunctions._isNumber(charCode)) {
+            if (bF._isNum(charCode)) {
                 sb += char;
             }
-            else if (basicFunctions._isNumberSep(charCode)) {
+            else if (bF._isNumSep(charCode)) {
                 sb += char;
                 mode = "numbersep";
             }
@@ -543,15 +593,15 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "limbo";
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren"
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "operator";
             }
@@ -561,7 +611,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("numbersep" == mode) {
-            if (basicFunctions._isNumber2(charCode)) {
+            if (bF._isNum2(charCode)) {
                 sb += char;
                 mode = "number2";
             }
@@ -570,7 +620,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("number2" == mode) {
-            if (basicFunctions._isNumber2(charCode)) {
+            if (bF._isNum2(charCode)) {
                 sb += char;
             }
             else if (0x22 == charCode) {
@@ -581,15 +631,15 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push("number");
                 mode = "limbo";
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("number");
                 mode = "paren"
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("number");
                 mode = "sep";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("number");
                 mode = "operator";
             }
@@ -599,14 +649,14 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("operator" == mode) {
-            if (basicFunctions._isSecondOp(charCode)) {
+            if (bF._is2o(charCode)) {
                 sb += char;
                 mode = "operator2";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "number";
             }
@@ -618,11 +668,11 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "limbo";
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren"
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
@@ -632,10 +682,10 @@ basicFunctions._tokenise = function(lnum, cmd) {
             }
         }
         else if ("operator2" == mode) {
-            if (basicFunctions._isFirstOp(charCode)) {
+            if (bF._is1o(charCode)) {
                 throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("operator");
                 mode = "number";
             }
@@ -647,11 +697,11 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push("operator");
                 mode = "limbo";
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("operator");
                 mode = "paren"
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push("operator");
                 mode = "sep";
             }
@@ -701,19 +751,19 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 sb = "" + char;
                 mode = "quote";
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 sb = "" + char;
                 mode = "paren";
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 sb = "" + char;
                 mode = "sep";
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 sb = "" + char;
                 mode = "number";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 sb = "" + char;
                 mode = "operator"
             }
@@ -729,19 +779,19 @@ basicFunctions._tokenise = function(lnum, cmd) {
             else if (0x22 == charCode) {
                 mode = "quote"
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 sb = "" + char;
                 mode = "paren";
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 sb = "" + char;
                 mode = "sep";
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 sb = "" + char;
                 mode = "number";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 sb = "" + char;
                 mode = "operator"
             }
@@ -759,19 +809,19 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote"
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "number";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "operator"
             }
@@ -789,19 +839,19 @@ basicFunctions._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote"
             }
-            else if (basicFunctions._isParen(charCode)) {
+            else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "paren";
             }
-            else if (basicFunctions._isSeparator(charCode)) {
+            else if (bF._isSep(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
-            else if (basicFunctions._isNumber(charCode)) {
+            else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "number";
             }
-            else if (basicFunctions._isFirstOp(charCode)) {
+            else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "operator"
             }
@@ -836,7 +886,7 @@ basicFunctions._tokenise = function(lnum, cmd) {
 
     return { "tokens": tokens, "states": states };
 };
-basicFunctions._parserElaboration = function(lnum, tokens, states) {
+bF._parserElaboration = function(lnum, tokens, states) {
     var _debugprintElaboration = false;
     if (_debugprintElaboration) println("@@ ELABORATION @@");
     var k = 0;
@@ -846,7 +896,7 @@ basicFunctions._parserElaboration = function(lnum, tokens, states) {
     while (k < states.length) { // using while loop because array size will change during the execution
         if (states[k] == "number" && !reNumber.test(tokens[k]))
             states[k] = "literal";
-        else if (states[k] == "literal" && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] !== undefined)
+        else if (states[k] == "literal" && bF._opPrc[tokens[k].toUpperCase()] !== undefined)
             states[k] = "operator";
         else if (tokens[k].toUpperCase() == "TRUE" || tokens[k].toUpperCase() == "FALSE")
             states[k] = "bool";
@@ -861,7 +911,7 @@ basicFunctions._parserElaboration = function(lnum, tokens, states) {
         k += 1;
     }
 };
-basicFunctions._parseTokens = function(lnum, tokens, states, recDepth) {
+bF._parseTokens = function(lnum, tokens, states, recDepth) {
     // DO NOT PERFORM SEMANTIC ANALYSIS HERE
     // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
 
@@ -992,28 +1042,28 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
         treeHead.value = "if";
         treeHead.type = "function";
-        treeHead.leaves[0] = basicFunctions._parseTokens(
+        treeHead.leaves[0] = bF._parseTokens(
                 lnum,
                 tokens.slice(1, indexThen),
                 states.slice(1, indexThen),
                 recDepth + 1
         );
         if (!useGoto)
-            treeHead.leaves[1] = basicFunctions._parseTokens(
+            treeHead.leaves[1] = bF._parseTokens(
                     lnum,
                     tokens.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length),
                     states.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length),
                     recDepth + 1
             );
         else
-            treeHead.leaves[1] = basicFunctions._parseTokens(
+            treeHead.leaves[1] = bF._parseTokens(
                     lnum,
                     [].concat("goto", tokens.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
                     [].concat("literal", states.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
                     recDepth + 1
             );
         if (indexElse !== undefined) {
-            treeHead.leaves[2] = basicFunctions._parseTokens(
+            treeHead.leaves[2] = bF._parseTokens(
                     lnum,
                     tokens.slice(indexElse + 1, tokens.length),
                     states.slice(indexElse + 1, tokens.length),
@@ -1046,9 +1096,9 @@ for input "DEFUN sinc(x) = sin(x) / x"
             }
 
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] > topmostOpPrc) {
+                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) {
                     topmostOp = tokens[k].toUpperCase();
-                    topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
+                    topmostOpPrc = bF._opPrc[tokens[k]];
                     operatorPos = k;
                 }
             }
@@ -1067,7 +1117,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
             if (_debugSyntaxAnalysis) println("inserting paren at right place");
             if (_debugSyntaxAnalysis) println(tokens.join(","));
 
-            return basicFunctions._parseTokens(lnum, tokens, states, recDepth);
+            return bF._parseTokens(lnum, tokens, states, recDepth);
         }
 
         // get the position of parens and separators
@@ -1086,9 +1136,9 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 separators.push(k);
             }
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && basicFunctions._operatorPrecedence[tokens[k].toUpperCase()] > topmostOpPrc) {
+                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) {
                     topmostOp = tokens[k].toUpperCase();
-                    topmostOpPrc = basicFunctions._operatorPrecedence[tokens[k]];
+                    topmostOpPrc = bF._opPrc[tokens[k]];
                     operatorPos = k;
                 }
             }
@@ -1110,8 +1160,8 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
                 treeHead.value = topmostOp;
                 treeHead.type = "operator";
-                treeHead.leaves[0] = basicFunctions._parseTokens(lnum, subtknL, substaL, recDepth + 1);
-                treeHead.leaves[1] = basicFunctions._parseTokens(lnum, subtknR, substaR, recDepth + 1);
+                treeHead.leaves[0] = bF._parseTokens(lnum, subtknL, substaL, recDepth + 1);
+                treeHead.leaves[1] = bF._parseTokens(lnum, subtknR, substaR, recDepth + 1);
             }
             else {
                 if (_debugSyntaxAnalysis) println("re-parenthesising unary op");
@@ -1119,7 +1169,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 // parenthesize the unary op
                 var unaryParenEnd = 1;
                 while (unaryParenEnd < tokens.length) {
-                    if (states[unaryParenEnd] == "operator" && basicFunctions._operatorPrecedence[tokens[unaryParenEnd]] > 1)
+                    if (states[unaryParenEnd] == "operator" && bF._opPrc[tokens[unaryParenEnd]] > 1)
                         break;
 
                     unaryParenEnd += 1;
@@ -1128,7 +1178,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 var newTokens = [].concat("(", tokens.slice(0, unaryParenEnd), ")", tokens.slice(unaryParenEnd, tokens.length));
                 var newStates = [].concat("paren", states.slice(0, unaryParenEnd), "paren", states.slice(unaryParenEnd, tokens.length));
 
-                return basicFunctions._parseTokens(lnum, newTokens, newStates, recDepth + 1);
+                return bF._parseTokens(lnum, newTokens, newStates, recDepth + 1);
             }
         }
         // FUNCTION CALL
@@ -1149,7 +1199,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
                 if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
 
-                leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1))
+                leaves.push(bF._parseTokens(lnum, subtkn, substa, recDepth + 1))
             }
             else if (parenEnd > parenStart) {
                 separators = [parenStart].concat(separators, [parenEnd]);
@@ -1169,7 +1219,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
                     if (_debugSyntaxAnalysis) println("subtokenB: "+subtkn.join("/"));
 
-                    leaves.push(basicFunctions._parseTokens(lnum, subtkn, substa, recDepth + 1));
+                    leaves.push(bF._parseTokens(lnum, subtkn, substa, recDepth + 1));
                 }
                 separators.slice(1, separators.length - 1).forEach(function(v) { if (v !== undefined) seps.push(tokens[v]); });
             }
@@ -1196,24 +1246,24 @@ let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.value = value;
     this.nextLine = nextLine;
 }
-basicFunctions._gotoCmds = { GOTO:1, GOSUB:1 }; // put nonzero (truthy) value here
-basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
+bF._gotoCmds = { GOTO:1, GOSUB:1 }; // put nonzero (truthy) value here
+bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     var _debugExec = false;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
 
-    if (syntaxTree === undefined)
+    if (syntaxTree === undefined || (recDepth == 0 && syntaxTree.value.toUpperCase() == "REM"))
         return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
     else if (syntaxTree.type == "function" || syntaxTree.type == "operator") {
         if (_debugExec) serial.println(recWedge+"function|operator");
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());
         var funcName = syntaxTree.value.toUpperCase();
-        var func = basicInterpreterStatus.builtin[funcName];
+        var func = bStatus.builtin[funcName];
 
         if (funcName == "IF") {
             if (syntaxTree.leaves.length != 2 && syntaxTree.leaves.length != 3) throw lang.syntaxfehler(lnum);
-            var testedval = basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
+            var testedval = bF._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
 
             if (_debugExec) {
                 serial.println(recWedge+"testedval:");
@@ -1223,12 +1273,12 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
 
             try {
-                var iftest = basicInterpreterStatus.builtin["TEST"](lnum, [testedval]);
+                var iftest = bStatus.builtin["TEST"](lnum, [testedval]);
 
                 if (!iftest && syntaxTree.leaves[2] !== undefined)
-                    return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[2], recDepth + 1);
+                    return bF._executeSyntaxTree(lnum, syntaxTree.leaves[2], recDepth + 1);
                 else if (iftest)
-                    return basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[1], recDepth + 1);
+                    return bF._executeSyntaxTree(lnum, syntaxTree.leaves[1], recDepth + 1);
                 else
                     return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
             }
@@ -1237,7 +1287,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
         }
         else {
-            var args = syntaxTree.leaves.map(function(it) { return basicFunctions._executeSyntaxTree(lnum, it, recDepth + 1); });
+            var args = syntaxTree.leaves.map(function(it) { return bF._executeSyntaxTree(lnum, it, recDepth + 1); });
 
             if (_debugExec) {
                 serial.println(recWedge+"fn call name: "+funcName);
@@ -1246,7 +1296,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
             if (func === undefined) {
                 serial.printerr(lang.syntaxfehler(lnum, funcName + " is not defined"));
-                throw lang.syntaxfehler(line, funcName + " is not defined");
+                throw lang.syntaxfehler(lnum, funcName + " is not defined");
             }
             else {
                 try {
@@ -1255,7 +1305,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                     return new SyntaxTreeReturnObj(
                             JStoBASICtype(funcCallResult),
                             funcCallResult,
-                            (basicFunctions._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1,
+                            (bF._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1,
                             syntaxTree.seps
                     );
                 }
@@ -1274,7 +1324,7 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
         return new SyntaxTreeReturnObj(syntaxTree.type, syntaxTree.value, lnum + 1);
     }
     else if (syntaxTree.type == "null") {
-        return new basicFunctions._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
+        return new bF._executeSyntaxTree(lnum, syntaxTree.leaves[0], recDepth + 1);
     }
     else {
         serial.println(recWedge+"Parse error in "+lnum);
@@ -1283,51 +1333,46 @@ basicFunctions._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     }
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
-basicFunctions._interpretLine = function(lnum, cmd) {
+bF._interpretLine = function(lnum, cmd) {
     var _debugprintHighestLevel = false;
 
     // TOKENISE
-    var tokenisedObject = basicFunctions._tokenise(lnum, cmd);
+    var tokenisedObject = bF._tokenise(lnum, cmd);
     var tokens = tokenisedObject.tokens;
     var states = tokenisedObject.states;
 
 
     // ELABORATION : distinguish numbers and operators from literals
-    basicFunctions._parserElaboration(lnum, tokens, states);
+    bF._parserElaboration(lnum, tokens, states);
 
     // PARSING (SYNTAX ANALYSIS)
-    var syntaxTree = basicFunctions._parseTokens(lnum, tokens, states, 0);
+    var syntaxTree = bF._parseTokens(lnum, tokens, states, 0);
     if (_debugprintHighestLevel) serial.println("Final syntax tree:");
     if (_debugprintHighestLevel) serial.println(syntaxTree.toString());
 
-    var execResult = basicFunctions._executeSyntaxTree(lnum, syntaxTree, 0);
-
-
-
     // EXECUTE
-    try {
+    //try {
+        var execResult = bF._executeSyntaxTree(lnum, syntaxTree, 0);
         return execResult.nextLine;
-    }
-    catch (e) {
-        throw lang.parserError(lnum, e);
-    }
-
-
+    //}
+    //catch (e) {
+    //    throw lang.parserError(lnum, e);
+    //}
 }; // end INTERPRETLINE
-basicFunctions._basicList = function(v, i, arr) {
+bF._basicList = function(v, i, arr) {
     if (i < 10) print(" ");
     if (i < 100) print(" ");
     print(i);
     print(" ");
     println(v);
 };
-basicFunctions.list = function(args) { // LIST function
+bF.list = function(args) { // LIST function
     if (args.length == 1) {
-        cmdbuf.forEach(basicFunctions._basicList);
+        cmdbuf.forEach(bF._basicList);
     }
     else if (args.length == 2) {
         if (cmdbuf[args[1]] !== undefined)
-            basicFunctions._basicList(cmdbuf[args[1]], args[1], undefined);
+            bF._basicList(cmdbuf[args[1]], args[1], undefined);
     }
     else {
         var lastIndex = (args[2] === ".") ? cmdbuf.length - 1 : (args[2] | 0);
@@ -1335,18 +1380,18 @@ basicFunctions.list = function(args) { // LIST function
         for (i = args[1]; i <= lastIndex; i++) {
             var cmd = cmdbuf[i];
             if (cmd !== undefined) {
-                basicFunctions._basicList(cmd, i, cmdbuf);
+                bF._basicList(cmd, i, cmdbuf);
             }
         }
     }
 };
-basicFunctions.system = function(args) { // SYSTEM function
+bF.system = function(args) { // SYSTEM function
     tbasexit = true;
 };
-basicFunctions.new = function(args) { // NEW function
+bF.new = function(args) { // NEW function
     cmdbuf = [];
 };
-basicFunctions.renum = function(args) { // RENUM function
+bF.renum = function(args) { // RENUM function
     var newcmdbuf = [];
     var linenumRelation = [[]];
     var cnt = 10;
@@ -1374,16 +1419,16 @@ basicFunctions.renum = function(args) { // RENUM function
         cmdbufMemFootPrint += ("" + i).length + 1 + v.length;
     });
 };
-basicFunctions.fre = function(args) {
+bF.fre = function(args) {
     println(vmemsize - getUsedMemSize());
 };
-basicFunctions.run = function(args) { // RUN function
+bF.run = function(args) { // RUN function
     var linenumber = 1;
     var oldnum = 1;
     do {
         if (cmdbuf[linenumber] !== undefined) {
             oldnum = linenumber;
-            linenumber = basicFunctions._interpretLine(linenumber, cmdbuf[linenumber]);
+            linenumber = bF._interpretLine(linenumber, cmdbuf[linenumber]);
         }
         else {
             linenumber += 1;
@@ -1395,10 +1440,16 @@ basicFunctions.run = function(args) { // RUN function
     } while (linenumber < cmdbuf.length)
     con.resetkeybuf();
 };
-Object.freeze(basicFunctions);
+bF.save = function(args) { // SAVE function
+    if (args[1] === undefined) throw lang.missingOperand;
+    filesystem.open(args[1], "W");
+    let sb = "";
+    cmdbuf.forEach(function(v,i) { sb += i+" "+v+"\n"; });
+    filesystem.write(sb);
+};
+Object.freeze(bF);
 while (!tbasexit) {
-    let line = sys.read();
-    line = line.trim();
+    let line = sys.read().trim();
 
     cmdbufMemFootPrint += line.length;
 
@@ -1408,15 +1459,21 @@ while (!tbasexit) {
     }
     else if (line.length > 0) {
         cmdbufMemFootPrint -= line.length;
-        try {
-            let cmd = line.split(" ");
-            serial.printerr(cmd[0].toLowerCase());
-            basicFunctions[cmd[0].toLowerCase()](cmd);
-        }
-        catch (e) {
-            println(e);
+        let cmd = line.split(" ");
+        if (bF[cmd[0].toLowerCase()] === undefined) {
+            serial.printerr("Unknown command: "+cmd[0].toLowerCase());
             println(lang.syntaxfehler());
         }
+        else {
+            try {
+                bF[cmd[0].toLowerCase()](cmd);
+            }
+            catch (e) {
+                serial.printerr(e);
+                println(e);
+            }
+        }
+
         println(prompt);
     }
 }

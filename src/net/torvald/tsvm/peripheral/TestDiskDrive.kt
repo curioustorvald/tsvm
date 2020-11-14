@@ -373,10 +373,6 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                     statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
                     return
                 }
-                if (!file.canWrite()) {
-                    statusCode = STATE_CODE_READ_ONLY
-                    return
-                }
                 writeMode = true
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
                 statusCode = STATE_CODE_STANDBY
