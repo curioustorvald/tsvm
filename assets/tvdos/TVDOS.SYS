@@ -70,10 +70,22 @@ filesystem.readAll = function(driveLetter) {
         throw Error("File not opened");
     }
     if (response < 0 || response >= 128) {
-        let status = com.getDeviceStatus(port[0]);
-        throw Error("Reading a file failed with "+response+": "+status.message);
+        throw Error("Reading a file failed with "+response);
     }
     return com.pullMessage(port[0]);
+};
+filesystem.write = function(driveLetter, string) {
+    let port = filesystem._toPorts(driveLetter);
+    com.sendMessage(port[0], "WRITE"+string.length);
+    let response = com.getStatusCode(port[0]);
+    if (135 == response) {
+        throw Error("File not opened");
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Writing a file failed with "+response);
+    }
+    com.sendMessage(port[0], string);
+    filesystem._flush(port[0]); filesystem._close(port[0]);
 };
 filesystem.isDirectory = function(driveLetter) {
     let port = filesystem._toPorts(driveLetter);
