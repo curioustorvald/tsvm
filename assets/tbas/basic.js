@@ -32,6 +32,7 @@ lang.badOperatorFormat = "Illegal operator format";
 lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.missingOperand = "Missing operand";
+lang.noSuchFile = "No such file";
 lang.syntaxfehler = function(line, reason) {
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
@@ -1446,6 +1447,23 @@ bF.save = function(args) { // SAVE function
     let sb = "";
     cmdbuf.forEach(function(v,i) { sb += i+" "+v+"\n"; });
     fs.write(sb);
+};
+bF.load = function(args) { // LOAD function
+    if (args[1] === undefined) throw lang.missingOperand;
+    let fileOpened = fs.open(args[1], "R");
+    if (!fileOpened) {
+        throw lang.noSuchFile;
+        return;
+    }
+    let prg = fs.readAll();
+
+    cmdbuf = [];
+    prg.split('\n').forEach(function(line) {
+        let i = line.indexOf(" ");
+        let lnum = line.slice(0, i);
+        if (isNaN(lnum)) throw lang.illegalType();
+        cmdbuf[lnum] = line.slice(i + 1, line.length);
+    });
 };
 Object.freeze(bF);
 while (!tbasexit) {
