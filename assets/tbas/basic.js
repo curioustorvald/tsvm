@@ -271,6 +271,7 @@ let threeArgNum = function(lnum, args, action) {
 }
 let bStatus = {};
 bStatus.gosubStack = [];
+bStatus.forStack = {};
 bStatus.vars = {};
 bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
@@ -472,7 +473,15 @@ bStatus.builtin = {
 "TEST" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     return resolve(args[0]);
-}
+},
+"FOR" : function(lnum, args) {
+    throw TODO();
+    // use bStatus.forStack
+},
+"NEXT" : function(lnum, args) {
+    throw TODO();
+    // use bStatus.forStack
+},
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
