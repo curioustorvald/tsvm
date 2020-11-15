@@ -932,13 +932,8 @@ void main() {
 
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
-    // apply colour
-    if (tileCol.r > 0) {
-        gl_FragColor = foreColFromMap;
-    }
-    else {
-        gl_FragColor = backColFromMap;
-    }
+    // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
+    gl_FragColor = mix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
