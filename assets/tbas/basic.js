@@ -170,7 +170,7 @@ let BasicAST = function() {
     this.leaves = [];
     this.seps = [];
     this.value = undefined;
-    this.type = "null"; // literal, operator, string, number, function, null
+    this.type = "null"; // literal, operator, string, number, array, function, null
 
     this.toString = function() {
         var sb = "";
