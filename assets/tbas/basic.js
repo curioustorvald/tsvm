@@ -214,7 +214,7 @@ let parseSigil = function(s) {
     else if (s.endsWith("!") || s.endsWith("#"))
         rettype = "float";
 
-    return {name:(rettype === undefined) ? s.toUpperCase() : s.substring(0, s.length - 1).toUpperCase(), type:rettype};
+    return {sgName:(rettype === undefined) ? s.toUpperCase() : s.substring(0, s.length - 1).toUpperCase(), sgType:rettype};
 }
 let literalTypes = ["string", "number", "bool", "array"];
 /*
@@ -226,7 +226,7 @@ let resolve = function(variable) {
     if (literalTypes.includes(variable.troType))
         return variable.troValue;
     else if (variable.troType == "literal") {
-        var basicVar = bStatus.vars[parseSigil(variable.troValue).name];
+        var basicVar = bStatus.vars[parseSigil(variable.troValue).sgName];
         return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
     }
     else if (variable.troType == "null")
@@ -310,9 +310,9 @@ bStatus.builtin = {
     var sigil = parseSigil(args[0].troValue);
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, args[1].troValue);
-    var type = sigil.type || JStoBASICtype(rh)
+    var type = sigil.sgType || JStoBASICtype(rh)
 
-    bStatus.vars[sigil.name] = new BasicVar(rh, type);
+    bStatus.vars[sigil.sgName] = new BasicVar(rh, type);
 },
 "==" : function(lnum, args) {
     return twoArg(lnum, args, function(lh, rh) { return lh == rh; });
@@ -413,9 +413,7 @@ bStatus.builtin = {
     return a;
 },
 "PRINT" : function(lnum, args, seps) {
-    serial.printerr("PRINT args = "+args);
-    serial.printerr("PRINT seps = "+seps);
-    //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
+    //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.troType+" "+it.troValue; })).join(", "));
 
     if (args.length == 0)
         println();
@@ -431,14 +429,14 @@ bStatus.builtin = {
 
             var rsvArg = resolve(args[llll]) || "";
 
-            if (args[llll].type == "number")
+            if (args[llll].troType == "number")
                 print(" "+rsvArg+" ");
             else
                 print(rsvArg);
         }
     }
 
-    if (args[args.length - 1].type != "null") println();
+    if (args[args.length - 1].troType != "null") println();
 },
 "EMIT" : function(lnum, args) {
     if (args.length > 0) {
@@ -1059,7 +1057,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
-    var _debugSyntaxAnalysis = false;
+    var _debugSyntaxAnalysis = true;
 
     if (_debugSyntaxAnalysis) serial.println("@@ SYNTAX ANALYSIS @@");
 
@@ -1335,7 +1333,7 @@ bF._gotoCmds = { GOTO:1, GOSUB:1 }; // put nonzero (truthy) value here
  * @return syntaxTreeReturnObject if recursion is escaped
  */
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = false;
+    var _debugExec = true;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
@@ -1384,7 +1382,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             // func not in builtins (e.g. array access, user-defined function defuns)
             if (func === undefined) {
                 let someVar = bStatus.vars[funcName];
-                if (someVar.astType != "array") {
+                if (someVar.bvType != "array") {
                     serial.printerr(lang.syntaxfehler(lnum, funcName + " is not defined"));
                     throw lang.syntaxfehler(lnum, funcName + " is not defined");
                 }
@@ -1428,7 +1426,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 bF._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    var _debugprintHighestLevel = true;
 
     // TOKENISE
     var tokenisedObject = bF._tokenise(lnum, cmd);
