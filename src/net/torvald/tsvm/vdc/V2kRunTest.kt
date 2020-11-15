@@ -29,7 +29,7 @@ class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdap
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, theme = GraphicsAdapter.THEME_COLORCRT)
+        gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GPU_AND_TERM,

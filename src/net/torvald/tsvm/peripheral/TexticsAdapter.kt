@@ -1,8 +1,22 @@
 package net.torvald.tsvm.peripheral
 
+import com.badlogic.gdx.graphics.Pixmap
+import com.badlogic.gdx.graphics.Texture
 import net.torvald.tsvm.VM
+import net.torvald.tsvm.kB
 
-class TexticsAdapter(vm: VM, theme: String) : GraphicsAdapter(vm, theme) {
+class TexticsAdapter(vm: VM, theme: String) : GraphicsAdapter(vm, AdapterConfig(
+    "crt_green",
+    720,
+    400,
+    80,
+    25,
+    239,
+    0,
+    256.kB(),
+    "./tty.png",
+    0.7f
+)) {
 
     override fun peek(addr: Long): Byte? {
         return when (addr) {
@@ -17,5 +31,7 @@ class TexticsAdapter(vm: VM, theme: String) : GraphicsAdapter(vm, theme) {
             else -> super.poke(addr, byte)
         }
     }
+
+
 
 }

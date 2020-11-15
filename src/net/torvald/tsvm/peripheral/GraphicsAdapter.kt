@@ -15,11 +15,32 @@ import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
 
-open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Companion.TEXT_ROWS, Companion.TEXT_COLS), PeriBase {
+data class AdapterConfig(
+    val theme: String,
+    val width: Int,
+    val height: Int,
+    val textCols: Int,
+    val textRows: Int,
+    val ttyDefaultFore: Int,
+    val ttyDefaultBack: Int,
+    val vramSize: Long,
+    val chrRomPath: String,
+    val decay: Float
+)
+
+open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
+    GlassTty(config.textRows, config.textCols), PeriBase {
 
     override fun getVM(): VM {
         return vm
     }
+
+    private val WIDTH = config.width
+    private val HEIGHT = config.height
+    private val VRAM_SIZE = config.vramSize
+    private val TTY_FORE_DEFAULT = config.ttyDefaultFore
+    private val TTY_BACK_DEFAULT = config.ttyDefaultBack
+    private val theme = config.theme
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
@@ -28,7 +49,7 @@ open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Compan
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    private val chrrom0 = Texture("./FontROM7x14.png")
+    protected val chrrom0 = Texture(config.chrRomPath)
     private val faketex: Texture
 
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
@@ -43,7 +64,9 @@ open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Compan
             DRAW_SHADER_FRAG
     )
     protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
-        if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
+        if (theme.startsWith("crt_") && !theme.endsWith("color"))
+            TEXT_TILING_SHADER_MONOCHROME
+        else if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
             TEXT_TILING_SHADER_LCD_NOINV
         else if (theme.startsWith("pmlcd"))
             TEXT_TILING_SHADER_LCD
@@ -125,6 +148,10 @@ open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Compan
         // when in text mode, and that's undesired behaviour
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
         spriteAndTextArea.fillWith(-1)
+        // fill text area with 0
+        for (k in 0 until TEXT_ROWS * TEXT_COLS) {
+            spriteAndTextArea[k + memTextOffset] = 0
+        }
 
         unusedArea[0] = 2
         unusedArea[1] = 3
@@ -539,7 +566,7 @@ open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Compan
     private var textCursorBlinkTimer = 0f
     private val textCursorBlinkInterval = 0.5f
     private var textCursorIsOn = true
-    private var glowDecay = if (theme.startsWith("pmlcd")) 0.63f else 0.32f
+    private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
     fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {
@@ -597,7 +624,7 @@ open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Compan
                             val drawCursor = blinkCursor && textCursorIsOn && cx == x && cy == y
                             val addr = y.toLong() * TEXT_COLS + x
                             val char =
-                                if (drawCursor) 0xDB else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
+                                if (drawCursor) 0xFF else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
                             val back =
                                 if (drawCursor) ttyBack else spriteAndTextArea[memTextBackOffset + addr].toInt()
                                     .and(255)
@@ -732,19 +759,21 @@ open class GraphicsAdapter(val vm: VM, val theme: String = "") : GlassTty(Compan
     private fun Boolean.toInt() = if (this) 1 else 0
 
     companion object {
+        val VRAM_SIZE = 256.kB()
+
+        val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
+            "crt_color",
+            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.32f
+        )
+        val DEFAULT_CONFIG_PMLCD = AdapterConfig(
+            "pmlcd_inverted",
+            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.64f
+        )
+
         const val THEME_COLORCRT = "crt_color"
         const val THEME_GREYCRT = "crt"
         const val THEME_LCD = "pmlcd"
         const val THEME_LCD_INVERTED = "pmlcd_inverted"
-
-        const val WIDTH = 560
-        const val HEIGHT = 448
-        const val TEXT_COLS = 80
-        const val TEXT_ROWS = 32
-        val VRAM_SIZE = 256.kB()
-
-        const val TTY_FORE_DEFAULT = 254
-        const val TTY_BACK_DEFAULT = 255
 
         private val LCD_BASE_COL = Color(0xa1a99cff.toInt())
 
@@ -910,6 +939,87 @@ void main() {
     else {
         gl_FragColor = backColFromMap;
     }
+}
+""".trimIndent()
+
+        val TEXT_TILING_SHADER_MONOCHROME = """
+#version 130
+#ifdef GL_ES
+precision mediump float;
+#endif
+#extension GL_EXT_gpu_shader4 : enable
+
+//layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
+// gl_FragCoord is origin to bottom-left
+
+varying vec4 v_color;
+varying vec2 v_texCoords;
+uniform sampler2D u_texture;
+
+
+uniform vec2 screenDimension;
+uniform vec2 tilesInAxes; // size of the tilemap texture; vec2(tiles_in_horizontal, tiles_in_vertical)
+
+uniform sampler2D tilesAtlas;
+uniform sampler2D foreColours;
+uniform sampler2D backColours;
+uniform sampler2D tilemap;
+
+uniform vec2 tilesInAtlas = ivec2(16.0, 16.0);
+uniform vec2 atlasTexSize = ivec2(128.0, 224.0);
+vec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
+
+ivec2 getTileXY(int tileNumber) {
+    return ivec2(tileNumber % int(tilesInAtlas.x), tileNumber / int(tilesInAtlas.x));
+}
+
+// return: int=0xaarrggbb
+int _colToInt(vec4 color) {
+    return int(color.b * 255) | (int(color.g * 255) << 8) | (int(color.r * 255) << 16) | (int(color.a * 255) << 24);
+}
+
+// 0x0rggbb where int=0xaarrggbb
+// return: [0..1048575]
+int getTileFromColor(vec4 color) {
+    return _colToInt(color) & 0xFFFFF;
+}
+
+void main() {
+
+    // READ THE FUCKING MANUAL, YOU DONKEY !! //
+    // This code purposedly uses flipped fragcoord. //
+    // Make sure you don't use gl_FragCoord unknowingly! //
+    // Remember, if there's a compile error, shader SILENTLY won't do anything //
+
+
+    // default gl_FragCoord takes half-integer (represeting centre of the pixel) -- could be useful for phys solver?
+    // This one, however, takes exact integer by rounding down. //
+    vec2 flippedFragCoord = vec2(gl_FragCoord.x, screenDimension.y - gl_FragCoord.y); // NO IVEC2!!; this flips Y
+
+    // get required tile numbers //
+
+    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
+
+    int tile = getTileFromColor(tileFromMap);
+    ivec2 tileXY = getTileXY(tile);
+
+    // calculate the UV coord value for texture sampling //
+
+    // don't really need highp here; read the GLES spec
+    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
+
+    // get final UV coord for the actual sampling //
+
+    vec2 finalUVCoordForTile = uvCoordForTile + uvCoordOffsetTile;// where we should be actually looking for in atlas, using UV coord (0..1)
+
+    // blending a breakage tex with main tex //
+
+    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+
+    // apply colour
+    gl_FragColor = tileCol;
+   
 }
 """.trimIndent()
 

@@ -41,8 +41,8 @@ class GraphicsJSR223Delegate(val vm: VM) {
 
     fun plotPixel(x: Int, y: Int, color: Byte) {
         getFirstGPU()?.let {
-            if (x in 0 until GraphicsAdapter.WIDTH && y in 0 until GraphicsAdapter.HEIGHT) {
-                it.poke(y.toLong() * GraphicsAdapter.WIDTH + x, color)
+            if (x in 0 until it.config.width && y in 0 until it.config.height) {
+                it.poke(y.toLong() * it.config.width + x, color)
             }
         }
     }

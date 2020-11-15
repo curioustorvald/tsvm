@@ -9,6 +9,7 @@ import kotlinx.coroutines.*
 import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
 import net.torvald.tsvm.peripheral.GenericBios
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.peripheral.TexticsAdapter
 import java.io.File
 
 fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).contentEquals(other)
@@ -31,7 +32,8 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, theme = GraphicsAdapter.THEME_COLORCRT)
+        //gpu = TexticsAdapter(vm, theme = GraphicsAdapter.THEME_COLORCRT)
+        gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GPU_AND_TERM,
