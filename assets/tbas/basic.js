@@ -294,16 +294,22 @@ bStatus.forStack = {};
 bStatus.vars = {}; // contains instances of BasicVars
 bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
+bStatus.getArrayIndexFun = function(lnum, array) {
+    return function(lnum, args) {
+        // TODO test 1-d array
+        // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
+        var rsvArg0 = resolve(args[0]);
+        if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+        if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0.value);
+
+        return array[rsvArg0];
+    };
+};
+bStatus.builtin = {
 /*
 @param lnum line number
 @param args instance of the SyntaxTreeReturnObj
 */
-bStatus.getArrayIndexFun = function(lnum, array) {
-    return function(lnum, args) {
-        return "test lol";
-    };
-};
-bStatus.builtin = {
 "REM" : function(lnum, args) {},
 "=" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
@@ -1383,13 +1389,13 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             if (func === undefined) {
                 let someVar = bStatus.vars[funcName];
                 if (someVar.bvType != "array") {
-                    serial.printerr(lang.syntaxfehler(lnum, funcName + " is not defined"));
-                    throw lang.syntaxfehler(lnum, funcName + " is not defined");
+                    serial.printerr(lang.syntaxfehler(lnum, funcName + " is not a function or an array"));
+                    throw lang.syntaxfehler(lnum, funcName + " is not a function or an array");
                 }
 
                 // TODO calling from bStatus.defuns
 
-                func = bStatus.getArrayIndexFun(lnum, someVar);
+                func = bStatus.getArrayIndexFun(lnum, someVar.bvLiteral);
             }
             // call whatever the 'func' has whether it's builtin or we just made shit up right above
             try {
