@@ -316,9 +316,9 @@ bStatus.builtin = {
     var sigil = parseSigil(args[0].troValue);
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, args[1].troValue);
-    var type = sigil.sgType || JStoBASICtype(rh)
-
+    var type = sigil.sgType || JStoBASICtype(rh);
     bStatus.vars[sigil.sgName] = new BasicVar(rh, type);
+    return rh;
 },
 "==" : function(lnum, args) {
     return twoArg(lnum, args, function(lh, rh) { return lh == rh; });
@@ -1323,7 +1323,7 @@ let JStoBASICtype = function(object) {
     else if (!isNaN(object)) return "number";
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
-    else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+"\n"+object;
+    else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+"\n"+object+"\n"+Object.entries(object);
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.troType = type;
