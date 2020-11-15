@@ -145,7 +145,7 @@ let BasicArr = function() {
     if (args.length == 1)
         throw lang.syntaxfehler(args[0]);
     else if (args.length == 0)
-        throw "InternalError: pass the line number!";
+        throw "BasicIntpError: pass the line number!";
     else {
         // create nested array as defined
         var dimsize = Number(args[1]);
@@ -203,8 +203,9 @@ let parseSigil = function(s) {
 @return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
         BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
 */
+let literalTypes = ["string", "number", "bool", "array"];
 let resolve = function(variable) {
-    if (variable.type == "string" || variable.type == "number" || variable.type == "bool")
+    if (literalTypes.includes(variable.type))
         return variable.value;
     else if (variable.type == "literal") {
         var basicvar = bStatus.vars[parseSigil(variable.value).name];
@@ -213,7 +214,7 @@ let resolve = function(variable) {
     else if (variable.type == "null")
         return undefined;
     else
-        throw "InternalError: unknown variable with type "+variable.type+", with value "+variable.value
+        throw "BasicIntpError: unknown variable with type "+variable.type+", with value "+variable.value
 }
 let oneArg = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
@@ -352,7 +353,38 @@ bStatus.builtin = {
     return twoArgNum(lnum, args, function(lh, rh) { return lh % rh; });
 },
 "^" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { Math.pow(lh, rh); });
+    return twoArgNum(lnum, args, function(lh, rh) { return Math.pow(lh, rh); });
+},
+"TO" : function(lnum, args) {
+    return twoArgNum(lnum, args, function(from, to) {
+        let a = [];
+        if (from <= to) {
+            for (let k = from; k <= to; k++) {
+                a.push(k);
+            }
+        }
+        else {
+            for (let k = to; k >= from; k--) {
+                a.push(k);
+            }
+        }
+        return a;
+    });
+},
+"STEP" : function(lnum, args) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    var rsvArg0 = resolve(args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0.value);
+    if (!Array.isArray(rsvArg0)) throw lang.illegalType(lnum, rsvArg0.value);
+    var rsvArg1 = resolve(args[1]);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1.value);
+    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1.value);
+    let a = []; let stepcnt = 0;
+    rsvArg0.forEach(function(v,i) {
+        if (stepcnt == 0) a.push(v);
+        stepcnt = (stepcnt + 1) % rsvArg1;
+    });
+    return a;
 },
 "PRINT" : function(lnum, args, seps) {
     //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.type+" "+it.value; })).join(", "));
@@ -896,7 +928,7 @@ bF._tokenise = function(lnum, cmd) {
         else if (states[k] == "number2" || states[k] == "numbersep") states[k] = "number";
     }
 
-    if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+")";
+    if (tokens.length != states.length) throw "BasicIntpError: size of tokens and states does not match (line: "+lnum+")";
 
     return { "tokens": tokens, "states": states };
 };
@@ -998,13 +1030,13 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
     var _debugSyntaxAnalysis = true;
 
-    if (_debugSyntaxAnalysis) println("@@ SYNTAX ANALYSIS @@");
+    if (_debugSyntaxAnalysis) serial.println("@@ SYNTAX ANALYSIS @@");
 
-    if (_debugSyntaxAnalysis) println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
+    if (_debugSyntaxAnalysis) serial.println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
 
-    if (tokens.length != states.length) throw "InternalError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
+    if (tokens.length != states.length) throw "BasicIntpError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
     if (tokens.length == 0) {
-        if (_debugSyntaxAnalysis) println("*empty tokens*");
+        if (_debugSyntaxAnalysis) serial.println("*empty tokens*");
         var retTreeHead = new BasicAST();
         retTreeHead.depth = recDepth;
         retTreeHead.lnum = lnum;
@@ -1023,7 +1055,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
     // LITERAL
     if (tokens.length == 1 && (isSemanticLiteral(tokens[0], states[0]))) {
-        if (_debugSyntaxAnalysis) println("literal/number: "+tokens[0]);
+        if (_debugSyntaxAnalysis) serial.println("literal/number: "+tokens[0]);
         treeHead.value = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
         treeHead.type = ("quote" == states[0]) ? "string" : ("number" == states[0]) ? "number" : "literal";
     }
@@ -1119,7 +1151,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
-        if (_debugSyntaxAnalysis) println("Paren position: "+parenStart+", "+parenEnd);
+        if (_debugSyntaxAnalysis) serial.println("Paren position: "+parenStart+", "+parenEnd);
 
         // if there is no paren or paren does NOT start index 1
         // e.g. negative three should NOT require to be written as "-(3)"
@@ -1128,8 +1160,8 @@ for input "DEFUN sinc(x) = sin(x) / x"
             tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
             states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
 
-            if (_debugSyntaxAnalysis) println("inserting paren at right place");
-            if (_debugSyntaxAnalysis) println(tokens.join(","));
+            if (_debugSyntaxAnalysis) serial.println("inserting paren at right place");
+            if (_debugSyntaxAnalysis) serial.println(tokens.join(","));
 
             return bF._parseTokens(lnum, tokens, states, recDepth);
         }
@@ -1161,11 +1193,11 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
-        if (_debugSyntaxAnalysis) println("NEW Paren position: "+parenStart+", "+parenEnd);
+        if (_debugSyntaxAnalysis) serial.println("NEW Paren position: "+parenStart+", "+parenEnd);
 
         // BINARY_OP/UNARY_OP
         if (topmostOp !== undefined) {
-            if (_debugSyntaxAnalysis) println("operator: "+topmostOp+", pos: "+operatorPos);
+            if (_debugSyntaxAnalysis) serial.println("operator: "+topmostOp+", pos: "+operatorPos);
 
             // BINARY_OP?
             if (operatorPos > 0) {
@@ -1180,7 +1212,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 treeHead.leaves[1] = bF._parseTokens(lnum, subtknR, substaR, recDepth + 1);
             }
             else {
-                if (_debugSyntaxAnalysis) println("re-parenthesising unary op");
+                if (_debugSyntaxAnalysis) serial.println("re-parenthesising unary op");
 
                 // parenthesize the unary op
                 var unaryParenEnd = 1;
@@ -1199,11 +1231,11 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
         // FUNCTION CALL
         else {
-            if (_debugSyntaxAnalysis) println("function call");
+            if (_debugSyntaxAnalysis) serial.println("function call");
             var currentFunction = (states[0] == "paren") ? undefined : tokens[0];
             treeHead.value = ("-" == currentFunction) ? "UNARYMINUS" : ("+" == currentFunction) ? "UNARYPLUS" : currentFunction;
             treeHead.type = (currentFunction === undefined) ? "null" : "function";
-            if (_debugSyntaxAnalysis) println("function name: "+treeHead.value);
+            if (_debugSyntaxAnalysis) serial.println("function name: "+treeHead.value);
 
             var leaves = [];
             var seps = [];
@@ -1213,13 +1245,13 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 var subtkn = tokens.slice(1, tokens.length);
                 var substa = states.slice(1, tokens.length);
 
-                if (_debugSyntaxAnalysis) println("subtokenA: "+subtkn.join("/"));
+                if (_debugSyntaxAnalysis) serial.println("subtokenA: "+subtkn.join("/"));
 
                 leaves.push(bF._parseTokens(lnum, subtkn, substa, recDepth + 1))
             }
             else if (parenEnd > parenStart) {
                 separators = [parenStart].concat(separators, [parenEnd]);
-                if (_debugSyntaxAnalysis) println("separators: "+separators.join(","));
+                if (_debugSyntaxAnalysis) serial.println("separators: "+separators.join(","));
                 // recursively parse comma-separated arguments
 
                 // print ( plus ( 3 , 2 ) , times ( 8 , 7 ) )
@@ -1233,7 +1265,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                     var subtkn = tokens.slice(separators[k - 1] + 1, separators[k]);
                     var substa = states.slice(separators[k - 1] + 1, separators[k]);
 
-                    if (_debugSyntaxAnalysis) println("subtokenB: "+subtkn.join("/"));
+                    if (_debugSyntaxAnalysis) serial.println("subtokenB: "+subtkn.join("/"));
 
                     leaves.push(bF._parseTokens(lnum, subtkn, substa, recDepth + 1));
                 }
@@ -1252,10 +1284,11 @@ for input "DEFUN sinc(x) = sin(x) / x"
 // @return is defined in BasicAST
 let JStoBASICtype = function(object) {
     if (typeof object === "boolean") return "bool";
+    else if (Array.isArray(object)) return "array";
     else if (!isNaN(object)) return "number";
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
-    else throw "InternalError: un-translatable object with typeof "+(typeof object)+"\n"+object;
+    else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+"\n"+object;
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.type = type;

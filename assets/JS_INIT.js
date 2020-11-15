@@ -282,6 +282,15 @@ if ('function' !== typeof Array.prototype.reduceRight) {
         return value;
     };
 }
+if (!Array.prototype.includes) {
+    Array.prototype.includes = function(e) {
+        var k;
+        for (k = 0; k < this.length; k++) {
+            if (e === this[k]) return true;
+        }
+        return false;
+    }
+}
 if (!Object.entries) {
     Object.entries = function( obj ){
         var ownProps = Object.keys( obj ),
