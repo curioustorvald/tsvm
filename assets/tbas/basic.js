@@ -549,7 +549,7 @@ bStatus.builtin = {
 
     let varname = asgnObj.asgnVarName
     // check for variable name collision (e.g. 10 K=1TO10 \n 20 FOR I=K should work but 20 FOR K=K must not)
-    if (bStatus.vars[varname] !== undefined)) throw lang.dupDef(lnum, varname);
+    if (bStatus.vars[varname] !== undefined) throw lang.dupDef(lnum, varname);
 
     // assign new variable
     bStatus.vars[varname] = asgnObj.asgnValue

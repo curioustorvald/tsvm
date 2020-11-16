@@ -30,8 +30,8 @@ public class AppLoader {
 
 
         // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
-        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{GenericBios.INSTANCE});
-        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
+        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{GenericBios.INSTANCE});
+        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
         new LwjglApplication(new VMGUI(vm, appConfig), appConfig);
     }
 

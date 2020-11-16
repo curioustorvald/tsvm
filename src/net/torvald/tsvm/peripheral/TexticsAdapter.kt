@@ -7,14 +7,14 @@ import net.torvald.tsvm.kB
 
 class TexticsAdapter(vm: VM, theme: String) : GraphicsAdapter(vm, AdapterConfig(
     "crt_green",
-    720,
-    400,
+    560,
+    448,
     80,
-    25,
+    32,
     239,
     0,
     256.kB(),
-    "./tty.png",
+    "./cp437_fira_code.png",
     0.7f
 )) {
 
