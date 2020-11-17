@@ -195,7 +195,11 @@ let BasicAST = function() {
 
     this.toString = function() {
         var sb = "";
-        var marker = ("literal" == this.astTpe) ? "i" : ("operator" == this.astType) ? "+" : "f";
+        var marker = ("literal" == this.astTpe) ? i :
+                     ("operator" == this.astType) ? String.fromCharCode(177) :
+                     ("string" == this.astType) ? String.fromCharCode(182) :
+                     ("number" == this.astType) ? String.fromCharCode(162) :
+                     ("array" == this.astType) ? "[" : String.fromCharCode(163);
         sb += "| ".repeat(this.astDepth) + marker+" Line "+this.astLnum+" ("+this.astType+")\n";
         sb += "| ".repeat(this.astDepth+1) + "leaves: "+(this.astLeaves.length)+"\n";
         sb += "| ".repeat(this.astDepth+1) + "value: "+this.astValue+" (type: "+typeof this.astValue+")\n";
@@ -293,7 +297,8 @@ let threeArgNum = function(lnum, args, action) {
 }
 let bStatus = {};
 bStatus.gosubStack = [];
-bStatus.forStack = {}; // key: forVar, value: linenum
+bStatus.forLnums = {}; // key: forVar, value: linenum
+bStatus.forStack = []; // forVars only
 bStatus.vars = {}; // contains instances of BasicVars
 bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
@@ -312,6 +317,9 @@ bStatus.builtin = {
 /*
 @param lnum line number
 @param args instance of the SyntaxTreeReturnObj
+
+if no args were given (e.g. "10 NEXT()"), args[0] will be: {troType: null, troValue: , troNextLine: 11}
+if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
 "REM" : function(lnum, args) {},
 "=" : function(lnum, args) {
@@ -554,12 +562,20 @@ bStatus.builtin = {
     // assign new variable
     bStatus.vars[varname] = asgnObj.asgnValue
     // put the varname to forstack
-    bStatus.forStack[asgnObj.asgnVarName] = lnum;
+    bStatus.forLnums[asgnObj.asgnVarName] = lnum;
+    bStatus.push(asgnObj.asgnVarName);
 },
 "NEXT" : function(lnum, args) {
-    throw TODO();
-    // use bStatus.forStack
-},
+    // if no args were given
+    if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
+        // go to most recent FOR
+        
+        return;
+    }
+
+    let rsvArgs = args.map(function(it) { resolve(it) });
+
+}
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
@@ -1080,7 +1096,11 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
     if (_debugSyntaxAnalysis) serial.println("@@ SYNTAX ANALYSIS @@");
 
-    if (_debugSyntaxAnalysis) serial.println("Parser Ln "+lnum+", Rec "+recDepth+", Tkn: "+tokens.join("/"));
+    if (_debugSyntaxAnalysis) {
+        serial.println("Parser Ln "+lnum+", Rec "+recDepth);
+        serial.println("Tokens: "+tokens);
+        serial.println("States: "+states);
+    }
 
     if (tokens.length != states.length) throw "BasicIntpError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
     if (tokens.length == 0) {
@@ -1103,6 +1123,21 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
     // LITERAL
     if (tokens.length == 1 && (isSemanticLiteral(tokens[0], states[0]))) {
+        // special case where there were only one word
+        if (recDepth == 0) {
+            // if that word is literal (e.g. "10 CLEAR"), interpret it as a function
+            if (states[0] == "literal") {
+                treeHead.astValue = tokens[0];
+                treeHead.astType = "function";
+
+                return treeHead;
+            }
+            // else, screw it
+            else {
+                throw lang.syntaxfehler(lnum);
+            }
+        }
+
         if (_debugSyntaxAnalysis) serial.println("literal/number: "+tokens[0]);
         treeHead.astValue = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
         treeHead.astType = ("quote" == states[0]) ? "string" : ("number" == states[0]) ? "number" : "literal";
