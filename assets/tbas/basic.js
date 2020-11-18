@@ -593,8 +593,61 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     }
 
     throw lang.syntaxfehler(lnum, "extra arguments for NEXT");
-}
+},
+/*
+10 input;"what is your name";a$
 
+£ Line 10 (function)
+| leaves: 3
+| value: input (type: string)
+£ Line 0 (null)
+| leaves: 0
+| value: undefined (type: undefined)
+`-----------------
+|  ;
+| ¶ Line 10 (string)
+| | leaves: 0
+| | value: what is your name (type: string)
+| `-----------------
+|  ;
+| i Line 10 (literal)
+| | leaves: 0
+| | value: A$ (type: string)
+| `-----------------
+`-----------------
+10 input "what is your name";a$
+
+£ Line 10 (function)
+| leaves: 2
+| value: input (type: string)
+| ¶ Line 10 (string)
+| | leaves: 0
+| | value: what is your name (type: string)
+| `-----------------
+|  ;
+| i Line 10 (literal)
+| | leaves: 0
+| | value: A$ (type: string)
+| `-----------------
+`-----------------
+*/
+"INPUT" : function(lnum, args) {
+    // just use tail-end arg as an input variable
+    let endArg = args.pop();
+    let arg = resolve(endArg);
+    if (arg === undefined) return undefined;
+
+    // print out prompt text
+    print("? ");
+
+    let inputstr = sys.read().trim();
+
+    // screw with the comma-separating because shrug
+    bStatus.vars[endArg.troValue] = inputstr;
+
+    // return raw input string
+    return inputstr;
+}
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
