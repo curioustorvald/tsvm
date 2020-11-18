@@ -33,6 +33,9 @@ lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.missingOperand = "Missing operand";
 lang.noSuchFile = "No such file";
+lang.nextWithoutFor = function(line) {
+    return "NEXT without FOR in "+line;
+};
 lang.syntaxfehler = function(line, reason) {
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
@@ -195,7 +198,7 @@ let BasicAST = function() {
 
     this.toString = function() {
         var sb = "";
-        var marker = ("literal" == this.astTpe) ? i :
+        var marker = ("literal" == this.astType) ? "i" :
                      ("operator" == this.astType) ? String.fromCharCode(177) :
                      ("string" == this.astType) ? String.fromCharCode(182) :
                      ("number" == this.astType) ? String.fromCharCode(162) :
@@ -444,12 +447,13 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
                 if (seps[llll - 1] == ",") print("\t");
             }
 
-            var rsvArg = resolve(args[llll]) || "";
+            var rsvArg = resolve(args[llll]);
+            if (rsvArg === undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
 
             if (args[llll].troType == "number")
                 print(" "+rsvArg+" ");
             else
-                print(rsvArg);
+                print(rsvArg || "");
         }
     }
 
@@ -556,24 +560,39 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (!Array.isArray(asgnObj.asgnValue)) throw lang.illegalType(lnum, asgnObj);
 
     let varname = asgnObj.asgnVarName
-    // check for variable name collision (e.g. 10 K=1TO10 \n 20 FOR I=K should work but 20 FOR K=K must not)
-    if (bStatus.vars[varname] !== undefined) throw lang.dupDef(lnum, varname);
 
     // assign new variable
-    bStatus.vars[varname] = asgnObj.asgnValue
+    // the var itself will have head of the array, and the head itself will be removed from the array
+    bStatus.vars[varname] = new BasicVar(asgnObj.asgnValue[0], JStoBASICtype(asgnObj.asgnValue.shift()));
+    // stores entire array (sans head) into temporary storage
+    bStatus.vars["for var "+varname] = new BasicVar(asgnObj.asgnValue, "array");
     // put the varname to forstack
     bStatus.forLnums[asgnObj.asgnVarName] = lnum;
-    bStatus.push(asgnObj.asgnVarName);
+    bStatus.forStack.push(asgnObj.asgnVarName);
 },
 "NEXT" : function(lnum, args) {
     // if no args were given
-    if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
+    //if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
         // go to most recent FOR
-        
-        return;
-    }
+        let forVarname = bStatus.forStack.pop();
+        //serial.println(lnum+" NEXT > forVarname = "+forVarname);
+        if (forVarname === undefined) {
+            throw lang.nextWithoutFor(lnum);
+        }
+        bStatus.vars[forVarname].bvLiteral = bStatus.vars["for var "+forVarname].bvLiteral.shift();
 
-    let rsvArgs = args.map(function(it) { resolve(it) });
+        if ((bStatus.vars[forVarname].bvLiteral !== undefined)) {
+            // feed popped value back, we're not done yet
+            bStatus.forStack.push(forVarname);
+            return bStatus.forLnums[forVarname] + 1;
+        }
+        else {
+            bStatus.vars[forVarname] === undefined; // unregister the variable
+            return lnum + 1;
+        }
+    //}
+
+    //let rsvArgs = args.map(function(it) { resolve(it) });
 
 }
 };
@@ -1092,7 +1111,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                "quote" == state || "number" == state || "bool" == state || "literal" == state;
     }
 
-    var _debugSyntaxAnalysis = true;
+    var _debugSyntaxAnalysis = false;
 
     if (_debugSyntaxAnalysis) serial.println("@@ SYNTAX ANALYSIS @@");
 
@@ -1379,7 +1398,7 @@ let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.troValue = value;
     this.troNextLine = nextLine;
 }
-bF._gotoCmds = { GOTO:1, GOSUB:1 }; // put nonzero (truthy) value here
+bF._gotoCmds = { GOTO:1, GOSUB:1, NEXT:1 }; // put nonzero (truthy) value here
 /**
  * @param lnum line number of BASIC
  * @param syntaxTree BasicAST
@@ -1431,7 +1450,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
             if (_debugExec) {
                 serial.println(recWedge+"fn call name: "+funcName);
-                serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.astType+" "+it.astValue; })).join(", "));
+                serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.troType+" "+it.troValue; })).join(", "));
             }
 
             // func not in builtins (e.g. array access, user-defined function defuns)
@@ -1481,7 +1500,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 bF._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = true;
+    var _debugprintHighestLevel = false;
 
     // TOKENISE
     var tokenisedObject = bF._tokenise(lnum, cmd);
