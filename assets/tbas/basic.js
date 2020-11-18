@@ -33,8 +33,8 @@ lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.missingOperand = "Missing operand";
 lang.noSuchFile = "No such file";
-lang.nextWithoutFor = function(line) {
-    return "NEXT without FOR in "+line;
+lang.nextWithoutFor = function(line, varname) {
+    return "NEXT "+((varname !== undefined) ? ("'"+varname+"'") : "")+"without FOR in "+line;
 };
 lang.syntaxfehler = function(line, reason) {
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
@@ -592,8 +592,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         }
     }
 
-    //let rsvArgs = args.map(function(it) { resolve(it) });
-
+    throw lang.syntaxfehler(lnum, "extra arguments for NEXT");
 }
 
 };
