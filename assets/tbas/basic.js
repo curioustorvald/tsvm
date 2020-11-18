@@ -453,7 +453,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             if (args[llll].troType == "number")
                 print(" "+rsvArg+" ");
             else
-                print(rsvArg || "");
+                print((rsvArg === undefined) ? "" : rsvArg);
         }
     }
 
@@ -572,7 +572,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "NEXT" : function(lnum, args) {
     // if no args were given
-    //if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
+    if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
         // go to most recent FOR
         let forVarname = bStatus.forStack.pop();
         //serial.println(lnum+" NEXT > forVarname = "+forVarname);
@@ -590,11 +590,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             bStatus.vars[forVarname] === undefined; // unregister the variable
             return lnum + 1;
         }
-    //}
+    }
 
     //let rsvArgs = args.map(function(it) { resolve(it) });
 
 }
+
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
