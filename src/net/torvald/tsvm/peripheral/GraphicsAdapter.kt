@@ -712,7 +712,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE
-            batch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() - yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
+            batch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
         }
 
 
