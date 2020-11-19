@@ -17,7 +17,7 @@ class VMJSR223Delegate(val vm: VM) {
         vm.romMapping = slot.and(255)
     }
     fun romReadAll(): String {
-        if (vm.romMapping == 255) return ""
+        if (vm.romMapping == 255 || vm.romMapping !in vm.roms.indices || vm.roms[vm.romMapping] == null) return ""
         return vm.roms[vm.romMapping]!!.readAll()
     }
 

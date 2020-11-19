@@ -114,6 +114,9 @@ fs.write = function(string) {
 };
 Object.freeze(fs);
 
+// implement your own con object here
+// requirements: reset_graphics(), getch(), curs_set(int), hitterminate(), resetkeybuf(), addch(int)
+
 let getUsedMemSize = function() {
     let varsMemSize = 0;
 
@@ -130,7 +133,6 @@ let getUsedMemSize = function() {
     });
     return varsMemSize + cmdbufMemFootPrint; // + array's dimsize * 8 + variables' sizeof literal + functions' expression length
 }
-
 
 let reLineNum = /^[0-9]+ /;
 //var reFloat = /^([\-+]?[0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[\-+]?[0-9]+[.eEfF][0-9+\-]*[fF]?)$/;
@@ -634,8 +636,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "INPUT" : function(lnum, args) {
     // just use tail-end arg as an input variable
     let endArg = args.pop();
-    let arg = resolve(endArg);
-    if (arg === undefined) return undefined;
+    if (endArg === undefined) {
+        system.printerr("INPUT called with no arguments");
+        return undefined;
+    }
 
     // print out prompt text
     print("? ");
@@ -643,7 +647,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     let inputstr = sys.read().trim();
 
     // screw with the comma-separating because shrug
-    bStatus.vars[endArg.troValue] = inputstr;
+    bStatus.vars[endArg.troValue] = new BasicVar(inputstr, JStoBASICtype(inputstr));
 
     // return raw input string
     return inputstr;

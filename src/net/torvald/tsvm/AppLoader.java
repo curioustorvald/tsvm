@@ -4,10 +4,7 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl.LwjglApplication;
 import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
-import net.torvald.tsvm.peripheral.BasicBios;
-import net.torvald.tsvm.peripheral.BasicRom;
-import net.torvald.tsvm.peripheral.GenericBios;
-import net.torvald.tsvm.peripheral.VMProgramRom;
+import net.torvald.tsvm.peripheral.*;
 
 public class AppLoader {
 
@@ -31,7 +28,8 @@ public class AppLoader {
 
         // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{GenericBios.INSTANCE});
-        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
+        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
+        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
         new LwjglApplication(new VMGUI(vm, appConfig), appConfig);
     }
 
