@@ -569,7 +569,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
     private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
-    fun render(delta: Float, batch: SpriteBatch, x: Float, y: Float) {
+    open fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
         rendertex.dispose()
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
@@ -608,7 +608,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
                 if (theme.startsWith("pmlcd")) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                 // draw framebuffer
-                batch.draw(rendertex, x, y)
+                batch.draw(rendertex, 0f, 0f)
 
                 // draw texts or sprites
 
@@ -712,7 +712,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE
-            batch.draw(outFBOs[1].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+            batch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() - yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
         }
 
 
@@ -1483,16 +1483,16 @@ void main() {
             0
         )
     }
+}
 
-    private fun FrameBuffer.inUse(action: () -> Unit) {
-        this.begin()
-        action()
-        this.end()
-    }
+fun FrameBuffer.inUse(action: () -> Unit) {
+    this.begin()
+    action()
+    this.end()
+}
 
-    private fun SpriteBatch.inUse(action: () -> Unit) {
-        this.begin()
-        action()
-        this.end()
-    }
+fun SpriteBatch.inUse(action: () -> Unit) {
+    this.begin()
+    action()
+    this.end()
 }

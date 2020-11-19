@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
+import net.torvald.tsvm.peripheral.CharacterLCDdisplay
 import net.torvald.tsvm.peripheral.GenericBios
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.TexticsAdapter
@@ -33,7 +34,8 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
         super.create()
 
         //gpu = TexticsAdapter(vm, theme = GraphicsAdapter.THEME_COLORCRT)
-        gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+        //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+        gpu = CharacterLCDdisplay(vm)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GPU_AND_TERM,

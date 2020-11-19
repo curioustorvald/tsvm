@@ -22,8 +22,8 @@ public class AppLoader {
         appConfig.resizable = false;
         appConfig.title = appTitle;
         appConfig.forceExit = true;
-        appConfig.width = 560;
-        appConfig.height = 448;
+        appConfig.width = 960;//560;
+        appConfig.height = 400;//448;
 
 
         // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
