@@ -2,6 +2,7 @@ package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.graphics.Pixmap
 import com.badlogic.gdx.graphics.Texture
+import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 
@@ -12,7 +13,7 @@ class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
     80,
     25,
     254,
-    255,
+    0,
     256.kB(),
     "./hp2640.png",
     0.32f
@@ -43,7 +44,5 @@ class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
             else -> super.poke(addr, byte)
         }
     }
-
-
 
 }

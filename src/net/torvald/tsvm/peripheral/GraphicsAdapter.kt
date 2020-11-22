@@ -576,6 +576,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
         outFBOs[1].inUse {
+            blendNormal(batch)
             batch.shader = null
             batch.inUse {
                 batch.color = decayColor
@@ -588,11 +589,12 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
             val clearCol = Color(unusedArea[0].toInt().and(15).toFloat() / 15f,
                 unusedArea[1].toInt().and(15).toFloat() / 15f,
                 unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
-            Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
+            Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
             batch.shader = null
             batch.inUse {
+                blendNormal(batch)
 
                 // clear screen
                 batch.color = if (theme.startsWith("pmlcd")) LCD_BASE_COL else clearCol
@@ -627,12 +629,17 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
                             val addr = y.toLong() * TEXT_COLS + x
                             val char =
                                 if (drawCursor) 0xFF else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
-                            val back =
+                            var back =
                                 if (drawCursor) ttyBack else spriteAndTextArea[memTextBackOffset + addr].toInt()
                                     .and(255)
-                            val fore =
+                            var fore =
                                 if (drawCursor) ttyFore else spriteAndTextArea[memTextForeOffset + addr].toInt()
                                     .and(255)
+
+                            if (!theme.contains("color")) {
+                                if (back == 255) back = 0
+                                if (fore == 255) fore = 0
+                            }
 
                             textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
                             textPixmap.drawPixel(x, y)
@@ -706,6 +713,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         outFBOs[1].inUse {
             batch.shader = null
             batch.inUse {
+                blendNormal(batch)
+
                 batch.color = decayColor
                 batch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
@@ -713,6 +722,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
 
         batch.shader = null
         batch.inUse {
+            Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
+            Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+            blendNormal(batch)
+
             batch.color = Color.WHITE
             batch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
         }
@@ -724,6 +737,12 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
             textCursorIsOn = !textCursorIsOn
         }
 
+    }
+
+    private fun blendNormal(batch: SpriteBatch) {
+        Gdx.gl.glEnable(GL20.GL_TEXTURE_2D)
+        Gdx.gl.glEnable(GL20.GL_BLEND)
+        batch.setBlendFunctionSeparate(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, GL20.GL_SRC_ALPHA, GL20.GL_ONE)
     }
 
     private fun peekPalette(offset: Int): Byte {
@@ -935,7 +954,6 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    // TODO non-linear mix with gamma 2.2
     gl_FragColor = mix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
