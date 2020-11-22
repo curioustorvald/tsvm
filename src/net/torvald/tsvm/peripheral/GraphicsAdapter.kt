@@ -153,9 +153,11 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
             spriteAndTextArea[k + memTextOffset] = 0
         }
 
-        unusedArea[0] = 2
-        unusedArea[1] = 3
-        unusedArea[2] = 4
+        if (theme.contains("color")) {
+            unusedArea[0] = 2
+            unusedArea[1] = 3
+            unusedArea[2] = 4
+        }
 
         setCursorPos(0, 0)
 
@@ -882,8 +884,6 @@ uniform vec2 tilesInAtlas = ivec2(16.0, 16.0);
 uniform vec2 atlasTexSize = ivec2(128.0, 224.0);
 vec2 tileSizeInPx = atlasTexSize / tilesInAtlas; // should be like ivec2(16, 16)
 
-float fontGamma = 1.8;
-
 ivec2 getTileXY(int tileNumber) {
     return ivec2(tileNumber % int(tilesInAtlas.x), tileNumber / int(tilesInAtlas.x));
 }
@@ -898,15 +898,6 @@ int _colToInt(vec4 color) {
 int getTileFromColor(vec4 color) {
     return _colToInt(color) & 0xFFFFF;
 }
-
-vec4 fontMix(vec4 zero, vec4 one, float scale) {
-    return vec4(zero.r * (1 - pow(scale, fontGamma)) + one.r * pow(scale, fontGamma),
-                zero.g * (1 - pow(scale, fontGamma)) + one.g * pow(scale, fontGamma),
-                zero.b * (1 - pow(scale, fontGamma)) + one.b * pow(scale, fontGamma),
-                zero.a * (1 - pow(scale, fontGamma)) + one.a * pow(scale, fontGamma)
-               );
-}
-
 
 void main() {
 
@@ -945,7 +936,7 @@ void main() {
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
     // TODO non-linear mix with gamma 2.2
-    gl_FragColor = fontMix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = mix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
