@@ -31,6 +31,9 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG
 )
 
+/**
+ * NOTE: if TTY size is greater than 80*32, SEGFAULT will occur because text buffer is fixed in size
+ */
 open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
     GlassTty(config.textRows, config.textCols), PeriBase {
 
