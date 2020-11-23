@@ -35,12 +35,12 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         return vm
     }
 
-    private val WIDTH = config.width
-    private val HEIGHT = config.height
-    private val VRAM_SIZE = config.vramSize
-    private val TTY_FORE_DEFAULT = config.ttyDefaultFore
-    private val TTY_BACK_DEFAULT = config.ttyDefaultBack
-    private val theme = config.theme
+    protected val WIDTH = config.width
+    protected val HEIGHT = config.height
+    protected val VRAM_SIZE = config.vramSize
+    protected val TTY_FORE_DEFAULT = config.ttyDefaultFore
+    protected val TTY_BACK_DEFAULT = config.ttyDefaultBack
+    protected val theme = config.theme
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
@@ -50,7 +50,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
     protected val chrrom0 = Texture(config.chrRomPath)
-    private val faketex: Texture
+    protected val faketex: Texture
 
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
     protected val unusedArea = ByteArray(92)
@@ -576,9 +576,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
         outFBOs[1].inUse {
-            blendNormal(batch)
             batch.shader = null
             batch.inUse {
+                blendNormal(batch)
                 batch.color = decayColor
                 batch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
