@@ -11,6 +11,7 @@ import net.torvald.UnsafeHelper
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
+import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
@@ -25,7 +26,9 @@ data class AdapterConfig(
     val ttyDefaultBack: Int,
     val vramSize: Long,
     val chrRomPath: String,
-    val decay: Float
+    val decay: Float,
+    val fragShader: String,
+    val paletteShader: String = DRAW_SHADER_FRAG
 )
 
 open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
@@ -56,22 +59,24 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
     protected val unusedArea = ByteArray(92)
 
     protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
-        if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
+        config.paletteShader
+        /*if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
             DRAW_SHADER_FRAG_LCD_NOINV
         else if (theme.startsWith("pmlcd"))
             DRAW_SHADER_FRAG_LCD
         else
-            DRAW_SHADER_FRAG
+            DRAW_SHADER_FRAG*/
     )
     protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
-        if (theme.startsWith("crt_") && !theme.endsWith("color"))
+        config.fragShader
+        /*if (theme.startsWith("crt_") && !theme.endsWith("color"))
             TEXT_TILING_SHADER_MONOCHROME
         else if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
             TEXT_TILING_SHADER_LCD_NOINV
         else if (theme.startsWith("pmlcd"))
             TEXT_TILING_SHADER_LCD
         else
-            TEXT_TILING_SHADER
+            TEXT_TILING_SHADER_COLOUR*/
     )
 
     override var blinkCursor = true
@@ -782,15 +787,6 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
     companion object {
         val VRAM_SIZE = 256.kB()
 
-        val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
-            "crt_color",
-            560, 448, 80, 32, 254, 255, 256.kB(), "./cp437_fira_code.png", 0.32f
-        )
-        val DEFAULT_CONFIG_PMLCD = AdapterConfig(
-            "pmlcd_inverted",
-            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.64f
-        )
-
         const val THEME_COLORCRT = "crt_color"
         const val THEME_GREYCRT = "crt"
         const val THEME_LCD = "pmlcd"
@@ -876,7 +872,7 @@ void main() {
 }
         """.trimIndent()
 
-        val TEXT_TILING_SHADER = """
+        val TEXT_TILING_SHADER_COLOUR = """
 #version 130
 #ifdef GL_ES
 precision mediump float;
@@ -1000,6 +996,11 @@ int getTileFromColor(vec4 color) {
     return _colToInt(color) & 0xFFFFF;
 }
 
+vec4 grey(vec4 color) {
+    float lum = 0.299 * color.r + 0.587 * color.g + 0.114 * color.b; // common standard used by both NTSC and PAL
+    return vec4(lum, lum, lum, color.a);
+}
+
 void main() {
 
     // READ THE FUCKING MANUAL, YOU DONKEY !! //
@@ -1015,6 +1016,8 @@ void main() {
     // get required tile numbers //
 
     vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = grey(texture2D(foreColours, flippedFragCoord / screenDimension));
+    vec4 backColFromMap = grey(texture2D(backColours, flippedFragCoord / screenDimension));
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);
@@ -1033,9 +1036,8 @@ void main() {
 
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
-    // apply colour
-    gl_FragColor = tileCol;
-   
+    // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
+    gl_FragColor = mix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
@@ -1232,6 +1234,17 @@ void main() {
     gl_FragColor = lcdBaseCol * outIntensity;
 }
 """.trimIndent()
+
+
+        val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
+            "crt_color",
+            560, 448, 80, 32, 254, 255, 256.kB(), "./cp437_fira_code.png", 0.32f, TEXT_TILING_SHADER_COLOUR
+        )
+        val DEFAULT_CONFIG_PMLCD = AdapterConfig(
+            "pmlcd_inverted",
+            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
+        )
+
 
         val DEFAULT_PALETTE = intArrayOf( // 0b rrrrrrrr gggggggg bbbbbbbb aaaaaaaa
             255,

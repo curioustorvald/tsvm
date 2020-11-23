@@ -6,7 +6,7 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.tsvm.VM
 
 class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
-    "pmlcd_inverted", 960, 400, 80, 25, 249, 255, 262144L, "./lcd.png", 0.7f
+    "pmlcd_inverted", 960, 400, 80, 25, 249, 255, 262144L, "./lcd.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
 )
 ) {
 
