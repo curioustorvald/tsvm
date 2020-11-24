@@ -58,6 +58,9 @@ lang.outOfMem = function(line) {
 lang.dupDef = function(line, varname) {
     return "Duplicate definition"+((varname !== undefined) ? (" on "+varname) : "")+" in "+line;
 };
+lang.asgnOnConst = function(line, constname) {
+    return 'Trying to modify constant "'+constname+'" in '+line;
+};
 Object.freeze(lang);
 
 let fs = {};
@@ -300,11 +303,18 @@ let threeArgNum = function(lnum, args, action) {
     if (isNaN(rsvArg2)) throw lang.illegalType(lnum, rsvArg2);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
+let initBvars = function() {
+    return {
+        "NIL": new BasicVar([], "array"),
+        "PI": new BasicVar(Math.PI, "number")
+    };
+}
 let bStatus = {};
 bStatus.gosubStack = [];
 bStatus.forLnums = {}; // key: forVar, value: linenum
 bStatus.forStack = []; // forVars only
-bStatus.vars = {}; // contains instances of BasicVars
+bStatus.vars = initBvars(); // contains instances of BasicVars
+bStatus.consts = {"NIL":1}; Object.freeze(bStatus.consts);
 bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
 bStatus.getArrayIndexFun = function(lnum, array) {
@@ -333,6 +343,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, args[1].troValue);
     var type = sigil.sgType || JStoBASICtype(rh);
+    if (bStatus.consts[sigil.sgName]) throw lang.asgnOnConst(lnum, sigil.sgName);
     bStatus.vars[sigil.sgName] = new BasicVar(rh, type);
     return {asgnVarName: sigil.sgName, asgnValue: rh};
 },
@@ -513,7 +524,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return r;
 },
 "CLEAR" : function(lnum, args) {
-    bStatus.vars = {};
+    bStatus.vars = initBvars();
 },
 "PLOT" : function(lnum, args) {
     threeArgNum(lnum, args, function(xpos, ypos, color) { graphics.plotPixel(xpos, ypos, color); });
@@ -683,7 +694,7 @@ bF._isNumSep = function(code) {
     return code == 0x2E || code == 0x42 || code == 0x58 || code == 0x62 || code == 0x78;
 };
 bF._is1o = function(code) {
-    return (code >= 0x3C && code <= 0x3E) || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2F || code == 0x5E;
+    return code == 0x3A || code == 0x7E || (code >= 0x3C && code <= 0x3E) || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2F || code == 0x5E;
 };
 bF._is2o = function(code) {
     return (code >= 0x3C && code <= 0x3E);
