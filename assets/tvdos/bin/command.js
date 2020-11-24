@@ -268,6 +268,7 @@ shell.execute = function(line) {
     if (0 == line.size) return;
     let tokens = shell.parse(line);
     let cmd = tokens[0];
+    if (cmd === undefined || cmd === '') return 0;
 
     // handle Ctrl-C
     if (con.hitterminate()) return 1;
