@@ -306,7 +306,9 @@ let threeArgNum = function(lnum, args, action) {
 let initBvars = function() {
     return {
         "NIL": new BasicVar([], "array"),
-        "PI": new BasicVar(Math.PI, "number")
+        "PI": new BasicVar(Math.PI, "number"),
+        "TAU": new BasicVar(Math.PI * 2.0, "number"),
+        "EULER": new BasicVar(Math.E, "number")
     };
 }
 let bStatus = {};
@@ -411,6 +413,15 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if (!Array.isArray(lh))
             throw lang.illegalType(lnum, lh);
         return lh.concat([rh]);
+    });
+},
+"#" : function(lnum, args) { // array CONCAT
+    return twoArg(lnum, args, function(lh, rh) {
+        if (!Array.isArray(rh))
+            throw lang.illegalType(lnum, rh);
+        if (!Array.isArray(lh))
+            throw lang.illegalType(lnum, lh);
+        return lh.concat(rh);
     });
 },
 "+" : function(lnum, args) { // addition, string concat
@@ -684,6 +695,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
+bF._1os = {":":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1};
+bF._2os = {"<":1,"=":1,">":1};
+bF._uos = {"+":1,"-":1,"!":1};
 bF._isNum = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
@@ -694,13 +708,13 @@ bF._isNumSep = function(code) {
     return code == 0x2E || code == 0x42 || code == 0x58 || code == 0x62 || code == 0x78;
 };
 bF._is1o = function(code) {
-    return code == 0x3A || code == 0x7E || (code >= 0x3C && code <= 0x3E) || code == 0x2A || code == 0x2B || code == 0x2D || code == 0x2F || code == 0x5E;
+    return bF._1os[String.fromCharCode(code)]
 };
 bF._is2o = function(code) {
-    return (code >= 0x3C && code <= 0x3E);
+    return bF._2os[String.fromCharCode(code)]
 };
 bF._isUnary = function(code) {
-    return (code == 0x2B) || (code == 0x2D) || (code == 0x21);
+    return bF._uos[String.fromCharCode(code)]
 }
 bF._isParenOpen = function(code) {
     return (code == 0x28 || code == 0x5B);
@@ -732,6 +746,7 @@ bF._opPrc = {
     "TO":13,
     "STEP":14,
     ":":15,"~":15, // array CONS and PUSH
+    "#": 16, // array concat
     "=":999
 };
 bF._opRh = {"^":1,"=":1,":":1};
