@@ -61,6 +61,7 @@ lang.dupDef = function(line, varname) {
 lang.asgnOnConst = function(line, constname) {
     return 'Trying to modify constant "'+constname+'" in '+line;
 };
+lang.aG = " arguments were given";
 Object.freeze(lang);
 
 let fs = {};
@@ -203,10 +204,10 @@ let BasicAST = function() {
 
     this.toString = function() {
         var sb = "";
-        var marker = ("literal" == this.astType) ? "i" :
-                     ("operator" == this.astType) ? String.fromCharCode(177) :
+        var marker = ("lit" == this.astType) ? "i" :
+                     ("op" == this.astType) ? String.fromCharCode(177) :
                      ("string" == this.astType) ? String.fromCharCode(182) :
-                     ("number" == this.astType) ? String.fromCharCode(162) :
+                     ("num" == this.astType) ? String.fromCharCode(162) :
                      ("array" == this.astType) ? "[" : String.fromCharCode(163);
         sb += "| ".repeat(this.astDepth) + marker+" Line "+this.astLnum+" ("+this.astType+")\n";
         sb += "| ".repeat(this.astDepth+1) + "leaves: "+(this.astLeaves.length)+"\n";
@@ -231,7 +232,7 @@ let parseSigil = function(s) {
 
     return {sgName:(rettype === undefined) ? s.toUpperCase() : s.substring(0, s.length - 1).toUpperCase(), sgType:rettype};
 }
-let literalTypes = ["string", "number", "bool", "array"];
+let literalTypes = ["string", "num", "bool", "array"];
 /*
 @param variable SyntaxTreeReturnObj, of which  the 'troType' is defined in BasicAST.
 @return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
@@ -242,7 +243,7 @@ let resolve = function(variable) {
         return variable.troValue.arrValue;
     else if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
         return variable.troValue;
-    else if (variable.troType == "literal") {
+    else if (variable.troType == "lit") {
         var basicVar = bStatus.vars[parseSigil(variable.troValue).sgName];
         return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
     }
@@ -252,20 +253,20 @@ let resolve = function(variable) {
         throw "BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue
 }
 let oneArg = function(lnum, args, action) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     return action(rsvArg0);
 }
 let oneArgNum = function(lnum, args, action) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     return action(rsvArg0);
 }
 let twoArg = function(lnum, args, action) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     var rsvArg1 = resolve(args[1]);
@@ -273,7 +274,7 @@ let twoArg = function(lnum, args, action) {
     return action(rsvArg0, rsvArg1);
 }
 let twoArgNum = function(lnum, args, action) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
@@ -283,7 +284,7 @@ let twoArgNum = function(lnum, args, action) {
     return action(rsvArg0, rsvArg1);
 }
 let threeArg = function(lnum, args, action) {
-    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     var rsvArg1 = resolve(args[1]);
@@ -293,7 +294,7 @@ let threeArg = function(lnum, args, action) {
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
 let threeArgNum = function(lnum, args, action) {
-    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
@@ -308,9 +309,9 @@ let threeArgNum = function(lnum, args, action) {
 let initBvars = function() {
     return {
         "NIL": new BasicVar([], "array"),
-        "PI": new BasicVar(Math.PI, "number"),
-        "TAU": new BasicVar(Math.PI * 2.0, "number"),
-        "EULER": new BasicVar(Math.E, "number")
+        "PI": new BasicVar(Math.PI, "num"),
+        "TAU": new BasicVar(Math.PI * 2.0, "num"),
+        "EULER": new BasicVar(Math.E, "num")
     };
 }
 let bStatus = {};
@@ -342,7 +343,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
 "REM" : function(lnum, args) {},
 "=" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
 
     var rh = resolve(args[1]);
@@ -476,7 +477,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "STEP" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
     if (!Array.isArray(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
@@ -491,8 +492,6 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return a;
 },
 "PRINT" : function(lnum, args, seps) {
-    //serial.println("BASIC func: PRINT -- args="+(args.map(function(it) { return it.troType+" "+it.troValue; })).join(", "));
-
     if (args.length == 0)
         println();
     else {
@@ -508,7 +507,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             var rsvArg = resolve(args[llll]);
             if (rsvArg === undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
 
-            if (args[llll].troType == "number")
+            if (args[llll].troType == "num")
                 print(" "+rsvArg+" ");
             else
                 print((rsvArg === undefined) ? "" : rsvArg);
@@ -557,7 +556,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     threeArgNum(lnum, args, function(xpos, ypos, color) { graphics.plotPixel(xpos, ypos, color); });
 },
 "AND" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map(function(it) { return resolve(it); });
     rsvArg.forEach(function(v) {
         if (v === undefined) throw lang.refError(lnum, v);
@@ -570,7 +569,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return argum[0] && argum[1];
 },
 "OR" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map(function(it) { return resolve(it); });
     rsvArg.forEach(function(v) {
         if (v === undefined) throw lang.refError(lnum, v.value);
@@ -608,7 +607,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArgNum(lnum, args, function(lh) { return String.fromCharCode(lh); });
 },
 "TEST" : function(lnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     return resolve(args[0]);
 },
 "FOR" : function(lnum, args) {
@@ -775,7 +774,7 @@ bF._tokenise = function(lnum, cmd) {
     let tokens = [];
     let states = [];
     let sb = "";
-    let mode = "literal"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
+    let mode = "lit"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
 
     // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error in the second pass
 
@@ -789,10 +788,10 @@ bF._tokenise = function(lnum, cmd) {
 
         if (_debugprintStateTransition) print("Char: "+char+"("+charCode+"), state: "+mode);
 
-        if ("literal" == mode) {
+        if ("lit" == mode) {
             if (0x22 == charCode) { // "
                 tokens.push(sb); sb = ""; states.push(mode);
-                mode = "quote";
+                mode = "qot";
             }
             else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
@@ -808,27 +807,27 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "number";
+                mode = "num";
             }
             else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "operator";
+                mode = "op";
             }
             else {
                 sb += char;
             }
         }
-        else if ("number" == mode) {
+        else if ("num" == mode) {
             if (bF._isNum(charCode)) {
                 sb += char;
             }
             else if (bF._isNumSep(charCode)) {
                 sb += char;
-                mode = "numbersep";
+                mode = "nsep";
             }
             else if (0x22 == charCode) {
                 tokens.push(sb); sb = ""; states.push(mode);
-                mode = "quote";
+                mode = "qot";
             }
             else if (" " == char) {
                 tokens.push(sb); sb = ""; states.push(mode);
@@ -844,55 +843,55 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "operator";
+                mode = "op";
             }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "literal";
+                mode = "lit";
             }
         }
-        else if ("numbersep" == mode) {
+        else if ("nsep" == mode) {
             if (bF._isNum2(charCode)) {
                 sb += char;
-                mode = "number2";
+                mode = "n2";
             }
             else {
                 throw lang.syntaxfehler(lnum, lang.badNumberFormat);
             }
         }
-        else if ("number2" == mode) {
+        else if ("n2" == mode) {
             if (bF._isNum2(charCode)) {
                 sb += char;
             }
             else if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; states.push("number");
-                mode = "quote";
+                tokens.push(sb); sb = ""; states.push("num");
+                mode = "qot";
             }
             else if (" " == char) {
-                tokens.push(sb); sb = ""; states.push("number");
+                tokens.push(sb); sb = ""; states.push("num");
                 mode = "limbo";
             }
             else if (bF._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("number");
+                tokens.push(sb); sb = "" + char; states.push("num");
                 mode = "paren"
             }
             else if (bF._isSep(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("number");
+                tokens.push(sb); sb = "" + char; states.push("num");
                 mode = "sep";
             }
             else if (bF._is1o(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("number");
-                mode = "operator";
+                tokens.push(sb); sb = "" + char; states.push("num");
+                mode = "op";
             }
             else {
-                tokens.push(sb); sb = "" + char; states.push("number");
-                mode = "literal";
+                tokens.push(sb); sb = "" + char; states.push("num");
+                mode = "lit";
             }
         }
-        else if ("operator" == mode) {
+        else if ("op" == mode) {
             if (bF._is2o(charCode)) {
                 sb += char;
-                mode = "operator2";
+                mode = "o2";
             }
             else if (bF._isUnary(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
@@ -902,11 +901,11 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "number";
+                mode = "num";
             }
             else if (0x22 == charCode) {
                 tokens.push(sb); sb = ""; states.push(mode);
-                mode = "quote";
+                mode = "qot";
             }
             else if (" " == char) {
                 tokens.push(sb); sb = ""; states.push(mode);
@@ -922,39 +921,39 @@ bF._tokenise = function(lnum, cmd) {
             }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "literal";
+                mode = "lit";
             }
         }
-        else if ("operator2" == mode) {
+        else if ("o2" == mode) {
             if (bF._is1o(charCode)) {
                 throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
             }
             else if (bF._isNum(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("operator");
-                mode = "number";
+                tokens.push(sb); sb = "" + char; states.push("op");
+                mode = "num";
             }
             else if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; states.push("operator");
-                mode = "quote";
+                tokens.push(sb); sb = ""; states.push("op");
+                mode = "qot";
             }
             else if (" " == char) {
-                tokens.push(sb); sb = ""; states.push("operator");
+                tokens.push(sb); sb = ""; states.push("op");
                 mode = "limbo";
             }
             else if (bF._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("operator");
+                tokens.push(sb); sb = "" + char; states.push("op");
                 mode = "paren"
             }
             else if (bF._isSep(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("operator");
+                tokens.push(sb); sb = "" + char; states.push("op");
                 mode = "sep";
             }
             else {
-                tokens.push(sb); sb = "" + char; states.push("operator");
-                mode = "literal";
+                tokens.push(sb); sb = "" + char; states.push("op");
+                mode = "lit";
             }
         }
-        else if ("quote" == mode) {
+        else if ("qot" == mode) {
             if (0x22 == charCode) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote_end";
@@ -984,7 +983,7 @@ bF._tokenise = function(lnum, cmd) {
                 sb += String.fromCharCode(0x07);
             else if ("b" == char)
                 sb += String.fromCharCode(0x08);
-            mode = "quote"; // ESCAPE is only legal when used inside of quote
+            mode = "qot"; // ESCAPE is only legal when used inside of quote
         }
         else if ("quote_end" == mode) {
             if (" " == char) {
@@ -993,7 +992,7 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (0x22 == charCode) {
                 sb = "" + char;
-                mode = "quote";
+                mode = "qot";
             }
             else if (bF._isParen(charCode)) {
                 sb = "" + char;
@@ -1005,15 +1004,15 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._isNum(charCode)) {
                 sb = "" + char;
-                mode = "number";
+                mode = "num";
             }
             else if (bF._is1o(charCode)) {
                 sb = "" + char;
-                mode = "operator"
+                mode = "op"
             }
             else {
                 sb = "" + char;
-                mode = "literal";
+                mode = "lit";
             }
         }
         else if ("limbo" == mode) {
@@ -1021,7 +1020,7 @@ bF._tokenise = function(lnum, cmd) {
                 /* do nothing */
             }
             else if (0x22 == charCode) {
-                mode = "quote"
+                mode = "qot"
             }
             else if (bF._isParen(charCode)) {
                 sb = "" + char;
@@ -1033,15 +1032,15 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._isNum(charCode)) {
                 sb = "" + char;
-                mode = "number";
+                mode = "num";
             }
             else if (bF._is1o(charCode)) {
                 sb = "" + char;
-                mode = "operator"
+                mode = "op"
             }
             else {
                 sb = "" + char;
-                mode = "literal";
+                mode = "lit";
             }
         }
         else if ("paren" == mode) {
@@ -1051,7 +1050,7 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (0x22 == charCode) {
                 tokens.push(sb); sb = ""; states.push(mode);
-                mode = "quote"
+                mode = "qot"
             }
             else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
@@ -1063,15 +1062,15 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "number";
+                mode = "num";
             }
             else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "operator"
+                mode = "op"
             }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "literal";
+                mode = "lit";
             }
         }
         else if ("sep" == mode) {
@@ -1081,7 +1080,7 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (0x22 == charCode) {
                 tokens.push(sb); sb = ""; states.push(mode);
-                mode = "quote"
+                mode = "qot"
             }
             else if (bF._isParen(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
@@ -1093,15 +1092,15 @@ bF._tokenise = function(lnum, cmd) {
             }
             else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "number";
+                mode = "num";
             }
             else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "operator"
+                mode = "op"
             }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "literal";
+                mode = "lit";
             }
         }
         else {
@@ -1122,8 +1121,8 @@ bF._tokenise = function(lnum, cmd) {
     }
     // clean up operator2 and number2
     for (k = 0; k < states.length; k++) {
-        if (states[k] == "operator2") states[k] = "operator";
-        else if (states[k] == "number2" || states[k] == "numbersep") states[k] = "number";
+        if (states[k] == "o2") states[k] = "op";
+        else if (states[k] == "n2" || states[k] == "nsep") states[k] = "num";
     }
 
     if (tokens.length != states.length) throw "BasicIntpError: size of tokens and states does not match (line: "+lnum+")";
@@ -1138,15 +1137,15 @@ bF._parserElaboration = function(lnum, tokens, states) {
     // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error
 
     while (k < states.length) { // using while loop because array size will change during the execution
-        if (states[k] == "number" && !reNumber.test(tokens[k]))
-            states[k] = "literal";
-        else if (states[k] == "literal" && bF._opPrc[tokens[k].toUpperCase()] !== undefined)
-            states[k] = "operator";
+        if (states[k] == "num" && !reNumber.test(tokens[k]))
+            states[k] = "lit";
+        else if (states[k] == "lit" && bF._opPrc[tokens[k].toUpperCase()] !== undefined)
+            states[k] = "op";
         else if (tokens[k].toUpperCase() == "TRUE" || tokens[k].toUpperCase() == "FALSE")
             states[k] = "bool";
 
         // decimalise hex/bin numbers (because Nashorn does not support binary literal)
-        if (states[k] == "number") {
+        if (states[k] == "num") {
             if (tokens[k].toUpperCase().startsWith("0B")) {
                 tokens[k] = parseInt(tokens[k].substring(2, tokens[k].length), 2) + "";
             }
@@ -1226,7 +1225,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
     function isSemanticLiteral(token, state) {
         return "]" == token || ")" == token ||
-               "quote" == state || "number" == state || "bool" == state || "literal" == state;
+               "qot" == state || "num" == state || "bool" == state || "lit" == state;
     }
 
     var _debugSyntaxAnalysis = false;
@@ -1263,7 +1262,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         // special case where there were only one word
         if (recDepth == 0) {
             // if that word is literal (e.g. "10 CLEAR"), interpret it as a function
-            if (states[0] == "literal") {
+            if (states[0] == "lit") {
                 treeHead.astValue = tokens[0];
                 treeHead.astType = "function";
 
@@ -1276,18 +1275,18 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         if (_debugSyntaxAnalysis) serial.println("literal/number: "+tokens[0]);
-        treeHead.astValue = ("quote" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
-        treeHead.astType = ("quote" == states[0]) ? "string" : ("number" == states[0]) ? "number" : "literal";
+        treeHead.astValue = ("qot" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
+        treeHead.astType = ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
     }
-    else if (tokens[0].toUpperCase() == "IF" && states[0] != "quote") {
+    else if (tokens[0].toUpperCase() == "IF" && states[0] != "qot") {
         // find ELSE and THEN
         var indexElse = undefined;
         var indexThen = undefined;
         for (k = tokens.length - 1; k >= 1; k--) {
-            if (indexElse === undefined && tokens[k].toUpperCase() == "ELSE" && states[k] != "quote") {
+            if (indexElse === undefined && tokens[k].toUpperCase() == "ELSE" && states[k] != "qot") {
                 indexElse = k;
             }
-            else if (indexThen === undefined && tokens[k].toUpperCase() == "THEN" && states[k] != "quote") {
+            else if (indexThen === undefined && tokens[k].toUpperCase() == "THEN" && states[k] != "qot") {
                 indexThen = k;
             }
         }
@@ -1295,7 +1294,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         var useGoto = false;
         if (indexThen === undefined) {
             for (k = (indexElse !== undefined) ? indexElse - 1 : tokens.length - 1; k >= 1; k--) {
-                if (indexThen == undefined && tokens[k].toUpperCase() == "GOTO" && states[k] != "quote") {
+                if (indexThen == undefined && tokens[k].toUpperCase() == "GOTO" && states[k] != "qot") {
                     useGoto = true;
                     indexThen = k;
                     break;
@@ -1325,7 +1324,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
             treeHead.astLeaves[1] = bF._parseTokens(
                     lnum,
                     [].concat("goto", tokens.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
-                    [].concat("literal", states.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
+                    [].concat("lit", states.slice(indexThen + 1, (indexElse !== undefined) ? indexElse : tokens.length)),
                     recDepth + 1
             );
         if (indexElse !== undefined) {
@@ -1352,17 +1351,17 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
         // initial scan for adding omitted parens
         for (k = 0; k < tokens.length; k++) {
-            if (tokens[k] == "(" && states[k] != "quote") {
+            if (tokens[k] == "(" && states[k] != "qot") {
                 parenDepth += 1;
                 if (parenStart == -1 && parenDepth == 1) parenStart = k;
             }
-            else if (tokens[k] == ")" && states[k] != "quote") {
+            else if (tokens[k] == ")" && states[k] != "qot") {
                 if (parenEnd == -1 && parenDepth == 1) parenEnd = k;
                 parenDepth -= 1;
             }
 
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) &&
+                if (states[k] == "op" && isSemanticLiteral(tokens[k-1], states[k-1]) &&
                         ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
                          (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
                 ) {
@@ -1378,7 +1377,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 
         // if there is no paren or paren does NOT start index 1
         // e.g. negative three should NOT require to be written as "-(3)"
-        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0) && states[0] == "literal" && states[1] != "operator") {
+        if ((parenStart > 1 || parenStart == -1) && (operatorPos != 1 && operatorPos != 0) && states[0] == "lit" && states[1] != "op") {
             // make a paren!
             tokens = [].concat(tokens[0], "(", tokens.slice(1, tokens.length), ")");
             states = [].concat(states[0], "paren", states.slice(1, states.length), "paren");
@@ -1394,11 +1393,11 @@ for input "DEFUN sinc(x) = sin(x) / x"
         topmostOpPrc = 0; operatorPos = -1;
         // running again but now with newly added parens
         for (k = 0; k < tokens.length; k++) {
-            if (tokens[k] == "(" && states[k] != "quote") {
+            if (tokens[k] == "(" && states[k] != "qot") {
                 parenDepth += 1;
                 if (parenStart == -1 && parenDepth == 1) parenStart = k;
             }
-            else if (tokens[k] == ")" && states[k] != "quote") {
+            else if (tokens[k] == ")" && states[k] != "qot") {
                 if (parenEnd == -1 && parenDepth == 1) parenEnd = k;
                 parenDepth -= 1;
             }
@@ -1407,7 +1406,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 separators.push(k);
             }
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) &&
+                if (states[k] == "op" && isSemanticLiteral(tokens[k-1], states[k-1]) &&
                         ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
                          (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
                 ) {
@@ -1433,7 +1432,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 var substaR = states.slice(operatorPos + 1, tokens.length);
 
                 treeHead.astValue = topmostOp;
-                treeHead.astType = "operator";
+                treeHead.astType = "op";
                 treeHead.astLeaves[0] = bF._parseTokens(lnum, subtknL, substaL, recDepth + 1);
                 treeHead.astLeaves[1] = bF._parseTokens(lnum, subtknR, substaR, recDepth + 1);
             }
@@ -1443,7 +1442,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 // parenthesize the unary op
                 var unaryParenEnd = 1;
                 while (unaryParenEnd < tokens.length) {
-                    if (states[unaryParenEnd] == "operator" && bF._opPrc[tokens[unaryParenEnd]] > 1)
+                    if (states[unaryParenEnd] == "op" && bF._opPrc[tokens[unaryParenEnd]] > 1)
                         break;
 
                     unaryParenEnd += 1;
@@ -1511,7 +1510,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
 let JStoBASICtype = function(object) {
     if (typeof object === "boolean") return "bool";
     else if (Array.isArray(object)) return "array";
-    else if (!isNaN(object)) return "number";
+    else if (!isNaN(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
@@ -1539,7 +1538,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
     if (syntaxTree === undefined || (recDepth == 0 && syntaxTree.astValue.toUpperCase() == "REM"))
         return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
-    else if (syntaxTree.astType == "function" || syntaxTree.astType == "operator") {
+    else if (syntaxTree.astType == "function" || syntaxTree.astType == "op") {
         if (_debugExec) serial.println(recWedge+"function|operator");
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());
         var funcName = syntaxTree.astValue.toUpperCase();
@@ -1606,11 +1605,11 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
         }
     }
-    else if (syntaxTree.astType == "number") {
-        if (_debugExec) serial.println(recWedge+"number");
+    else if (syntaxTree.astType == "num") {
+        if (_debugExec) serial.println(recWedge+"num");
         return new SyntaxTreeReturnObj(syntaxTree.astType, +(syntaxTree.astValue), lnum + 1);
     }
-    else if (syntaxTree.astType == "string" || syntaxTree.astType == "literal" || syntaxTree.astType == "bool") {
+    else if (syntaxTree.astType == "string" || syntaxTree.astType == "lit" || syntaxTree.astType == "bool") {
         if (_debugExec) serial.println(recWedge+"string|literal|bool");
         return new SyntaxTreeReturnObj(syntaxTree.astType, syntaxTree.astValue, lnum + 1);
     }
