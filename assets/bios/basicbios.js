@@ -18,4 +18,4 @@ Object.freeze(_BIOS);
 
 // load a BASIC rom
 sys.mapRom(1);
-eval("let _appStub=function(exec_args){"+sys.romReadAll()+"};_appStub;")();
+eval("let basicrom=function(exec_args){"+sys.romReadAll()+"};basicrom;")();

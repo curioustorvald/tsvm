@@ -238,7 +238,9 @@ let literalTypes = ["string", "number", "bool", "array"];
         BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
 */
 let resolve = function(variable) {
-    if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
+    if (variable.troType === "internal_arrindexing_lazy")
+        return variable.troValue.arrValue;
+    else if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
         return variable.troValue;
     else if (variable.troType == "literal") {
         var basicVar = bStatus.vars[parseSigil(variable.troValue).sgName];
@@ -252,55 +254,55 @@ let resolve = function(variable) {
 let oneArg = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     return action(rsvArg0);
 }
 let oneArgNum = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     return action(rsvArg0);
 }
 let twoArg = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
     return action(rsvArg0, rsvArg1);
 }
 let twoArgNum = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
-    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
+    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, args[1]);
     return action(rsvArg0, rsvArg1);
 }
 let threeArg = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
     var rsvArg2 = resolve(args[2]);
-    if (rsvArg2 === undefined) throw lang.refError(lnum, rsvArg2);
+    if (rsvArg2 === undefined) throw lang.refError(lnum, args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
 let threeArgNum = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
-    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
+    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, args[1]);
     var rsvArg2 = resolve(args[2]);
-    if (rsvArg2 === undefined) throw lang.refError(lnum, rsvArg2);
-    if (isNaN(rsvArg2)) throw lang.illegalType(lnum, rsvArg2);
+    if (rsvArg2 === undefined) throw lang.refError(lnum, args[2]);
+    if (isNaN(rsvArg2)) throw lang.illegalType(lnum, args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
 let initBvars = function() {
@@ -319,7 +321,7 @@ bStatus.vars = initBvars(); // contains instances of BasicVars
 bStatus.consts = {"NIL":1}; Object.freeze(bStatus.consts);
 bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
-bStatus.getArrayIndexFun = function(lnum, array) {
+bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
     return function(lnum, args) {
         // TODO test 1-d array
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
@@ -327,7 +329,7 @@ bStatus.getArrayIndexFun = function(lnum, array) {
         if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
         if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
 
-        return array[rsvArg0];
+        return {arrValue: array[rsvArg0], arrObj: array, arrIndex: rsvArg0, arrName: arrayName}; //array[rsvArg0];
     };
 };
 bStatus.builtin = {
@@ -341,13 +343,27 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "REM" : function(lnum, args) {},
 "=" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length + " arguments were given");
-    var sigil = parseSigil(args[0].troValue);
+    var troValue = args[0].troValue;
+
     var rh = resolve(args[1]);
-    if (rh === undefined) throw lang.refError(lnum, args[1].troValue);
-    var type = sigil.sgType || JStoBASICtype(rh);
-    if (bStatus.consts[sigil.sgName]) throw lang.asgnOnConst(lnum, sigil.sgName);
-    bStatus.vars[sigil.sgName] = new BasicVar(rh, type);
-    return {asgnVarName: sigil.sgName, asgnValue: rh};
+    if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
+
+    if (troValue.arrObj !== undefined) {
+        if (isNaN(rh)) throw lang.illegalType(lnum, rh);
+
+        troValue.arrObj[troValue.arrIndex] = rh;
+        return {asgnVarName: troValue.arrName, asgnValue: rh};
+    }
+    else {
+        var sigil = parseSigil(troValue);
+        var type = sigil.sgType || JStoBASICtype(rh);
+
+        if (bStatus.consts[sigil.sgName]) throw lang.asgnOnConst(lnum, sigil.sgName);
+
+        bStatus.vars[sigil.sgName] = new BasicVar(rh, type);
+        return {asgnVarName: sigil.sgName, asgnValue: rh};
+    }
+
 },
 "==" : function(lnum, args) {
     return twoArg(lnum, args, function(lh, rh) { return lh == rh; });
@@ -601,7 +617,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (asgnObj === undefined) throw  lang.syntaxfehler(lnum);
     if (!Array.isArray(asgnObj.asgnValue)) throw lang.illegalType(lnum, asgnObj);
 
-    let varname = asgnObj.asgnVarName
+    let varname = asgnObj.asgnVarName;
 
     // assign new variable
     // the var itself will have head of the array, and the head itself will be removed from the array
@@ -1499,6 +1515,7 @@ let JStoBASICtype = function(object) {
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
+    else if (object.arrValue !== undefined) return "internal_arrindexing_lazy";
     else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
@@ -1571,7 +1588,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
                 // TODO calling from bStatus.defuns
 
-                func = bStatus.getArrayIndexFun(lnum, someVar.bvLiteral);
+                func = bStatus.getArrayIndexFun(lnum, funcName, someVar.bvLiteral);
             }
             // call whatever the 'func' has whether it's builtin or we just made shit up right above
             try {

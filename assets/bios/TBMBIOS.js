@@ -76,7 +76,7 @@ if (portNumber < 4) {
 }
 else {
     sys.mapRom(1);
-    let response = eval("let _appStub=function(exec_args){"+sys.romReadAll()+"};_appStub;")();
+    let response = eval("let basica=function(exec_args){"+sys.romReadAll()+"};basica;")();
 
     if (response !== 0) println("No ROM BASIC system halted");
 }
