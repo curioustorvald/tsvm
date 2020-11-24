@@ -384,7 +384,25 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "BXOR" : function(lnum, args) {
     return twoArgNum(lnum, args, function(lh, rh) { return lh ^ rh; });
 },
-"+" : function(lnum, args) {
+":" : function(lnum, args) { // Haskell-style CONS
+    return twoArg(lnum, args, function(lh, rh) {
+        if (isNaN(lh))
+            throw lang.illegalType(lnum, lh); // BASIC array is numbers only
+        if (!Array.isArray(rh))
+            throw lang.illegalType(lnum, rh);
+        return [lh].concat(rh);
+    });
+},
+"~" : function(lnum, args) { // array PUSH
+    return twoArg(lnum, args, function(lh, rh) {
+        if (isNaN(rh))
+            throw lang.illegalType(lnum, rh); // BASIC array is numbers only
+        if (!Array.isArray(lh))
+            throw lang.illegalType(lnum, lh);
+        return lh.concat([rh]);
+    });
+},
+"+" : function(lnum, args) { // addition, string concat
     return twoArg(lnum, args, function(lh, rh) { return lh + rh; });
 },
 "-" : function(lnum, args) {
@@ -411,8 +429,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             }
         }
         else {
-            for (let k = to; k >= from; k--) {
-                a.push(k);
+            for (let k = -from; k <= -to; k++) {
+                a.push(-k);
             }
         }
 
@@ -702,9 +720,10 @@ bF._opPrc = {
     "OR":12,
     "TO":13,
     "STEP":14,
+    ":":15,"~":15, // FIXME it seems every operator is utilised as rightmost-derivative
     "=":999
 };
-bF._opRh = {"^":1,"=":1};
+bF._opRh = {"^":1,"=":1,":":1};
 bF._keywords = {
 
 };
