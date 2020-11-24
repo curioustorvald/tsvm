@@ -720,7 +720,7 @@ bF._opPrc = {
     "OR":12,
     "TO":13,
     "STEP":14,
-    ":":15,"~":15, // FIXME it seems every operator is utilised as rightmost-derivative
+    ":":15,"~":15, // array CONS and PUSH
     "=":999
 };
 bF._opRh = {"^":1,"=":1,":":1};
@@ -1320,7 +1320,10 @@ for input "DEFUN sinc(x) = sin(x) / x"
             }
 
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) {
+                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) &&
+                        ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
+                         (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
+                ) {
                     topmostOp = tokens[k].toUpperCase();
                     topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
                     operatorPos = k;
@@ -1362,7 +1365,10 @@ for input "DEFUN sinc(x) = sin(x) / x"
                 separators.push(k);
             }
             if (parenDepth == 0) {
-                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) && bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) {
+                if (states[k] == "operator" && isSemanticLiteral(tokens[k-1], states[k-1]) &&
+                        ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
+                         (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
+                ) {
                     topmostOp = tokens[k].toUpperCase();
                     topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
                     operatorPos = k;
