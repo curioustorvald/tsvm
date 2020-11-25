@@ -40,10 +40,10 @@ lang.syntaxfehler = function(line, reason) {
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
 lang.illegalType = function(line, obj) {
-    return "Type mismatch" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
+    return "Type mismatch" + ((obj !== undefined) ? ' "' + obj + '"' : "") + ((line !== undefined) ? (" in "+line) : "");
  };
 lang.refError = function(line, obj) {
-    return "Unresolved reference" + ((obj !== undefined) ? " \"" + obj + "\"" : "") + ((line !== undefined) ? (" in "+line) : "");
+    return "Unresolved reference" + ((obj !== undefined) ? ' "' + obj + '"' : "") + ((line !== undefined) ? (" in "+line) : "");
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
 lang.errorinline = function(line, stmt, errobj) {
@@ -60,6 +60,9 @@ lang.dupDef = function(line, varname) {
 };
 lang.asgnOnConst = function(line, constname) {
     return 'Trying to modify constant "'+constname+'" in '+line;
+};
+lang.subscrOutOfRng = function(line, object) {
+    return "Subscript out of range"+(object !== undefined ? (' for "'+object+'"') : '')+(line !== undefined ? (" in "+line) : "")
 };
 lang.aG = " arguments were given";
 Object.freeze(lang);
@@ -1515,6 +1518,8 @@ let JStoBASICtype = function(object) {
     else if (object === undefined) return "null";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
     else if (object.arrValue !== undefined) return "internal_arrindexing_lazy";
+    // buncha error msgs
+    else if (object.arrIndex >= object.arrObj.length) throw lang.subscrOutOfRng(undefined, object.arrName);
     else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
