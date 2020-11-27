@@ -494,11 +494,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
             var rsvArg = resolve(args[llll]);
             if (rsvArg === undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
-
-            if (args[llll].troType == "num")
-                print(" "+rsvArg+" ");
-            else
-                print((rsvArg === undefined) ? "" : rsvArg);
+            print((rsvArg === undefined) ? "" : rsvArg);
         }
     }
 
@@ -524,10 +520,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArgNum(lnum, args, function(lh) { return sys.peek(lh); });
 },
 "GOTO" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return lh; });
+    return oneArgNum(lnum, args, function(lh) {
+        if (lh < 0) throw lang.syntaxfehler(lnum, lh);
+        return lh;
+    });
 },
 "GOSUB" : function(lnum, args) {
     return oneArgNum(lnum, args, function(lh) {
+        if (lh < 0) throw lang.syntaxfehler(lnum, lh);
         bStatus.gosubStack.push(lnum + 1);
         return lh;
     });
@@ -535,6 +535,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "RETURN" : function(lnum, args) {
     var r = bStatus.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
+    serial.println(lnum+" RETURN to "+r);
     return r;
 },
 "CLEAR" : function(lnum, args) {
@@ -694,6 +695,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     // return raw input string
     return inputstr;
+},
+"END" : function(lnum, args) {
+    serial.println("Program terminated in "+lnum);
+    return Number.MAX_SAFE_INTEGER; // GOTO far-far-away
 }
 };
 Object.freeze(bStatus.builtin);
@@ -1512,7 +1517,7 @@ let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.troValue = value;
     this.troNextLine = nextLine;
 }
-bF._gotoCmds = { GOTO:1, GOSUB:1, NEXT:1 }; // put nonzero (truthy) value here
+bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1}; // put nonzero (truthy) value here
 /**
  * @param lnum line number of BASIC
  * @param syntaxTree BasicAST
@@ -1679,7 +1684,7 @@ bF.renum = function(args) { // RENUM function
     var cnt = 10;
     for (var k = 0; k < cmdbuf.length; k++) {
         if (cmdbuf[k] !== undefined) {
-            newcmdbuf[cnt] = cmdbuf[k];
+            newcmdbuf[cnt] = cmdbuf[k].trim();
             linenumRelation[k] = cnt;
             cnt += 10;
         }
@@ -1687,10 +1692,10 @@ bF.renum = function(args) { // RENUM function
     // deal with goto/gosub line numbers
     for (k = 0; k < newcmdbuf.length; k++) {
         if (newcmdbuf[k] !== undefined && newcmdbuf[k].toLowerCase().startsWith("goto ")) {
-            newcmdbuf[k] = "goto " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
+            newcmdbuf[k] = "GOTO " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
         }
         else if (newcmdbuf[k] !== undefined && newcmdbuf[k].toLowerCase().startsWith("gosub ")) {
-            newcmdbuf[k] = "gosub " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
+            newcmdbuf[k] = "GOSUB " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
         }
     }
     cmdbuf = newcmdbuf.slice(); // make shallow copy
@@ -1715,6 +1720,7 @@ bF.run = function(args) { // RUN function
         else {
             linenumber += 1;
         }
+        if (linenumber < 0) throw lang.badNumberFormat;
         if (con.hitterminate()) {
             println("Break in "+oldnum);
             break;
