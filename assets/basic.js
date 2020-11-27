@@ -172,29 +172,6 @@ let BasicFun = function(params, expression) {
     this.params = params;
     this.expression = expression;
 }
-// DIM (array) constructor
-/*let BasicArr = function() {
-    var args = Array.from(arguments);
-    if (args.length == 1)
-        throw lang.syntaxfehler(args[0]);
-    else if (args.length == 0)
-        throw "BasicIntpError: pass the line number!";
-    else {
-        // create nested array as defined
-        var dimsize = Number(args[1]);
-        var a = new Array(args[1]);
-        var internal = a;
-        for (var i = 2; i < args.length; i++) {
-            dimsize *= Number(args[i]);
-            var inner = new Array(args[i]);
-            internal.push(inner);
-            internal = inner;
-        }
-
-        this.array = a;
-        this.dimsize = dimsize;
-    }
-}*/
 // Abstract Syntax Tree
 // creates empty tree node
 let BasicAST = function() {
@@ -493,6 +470,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         stepcnt = (stepcnt + 1) % rsvArg1;
     });
     return a;
+},
+"DIM" : function(lnum, args) {
+    return oneArgNum(lnum, args, function(size) {
+        if (size <= 0) throw lang.syntaxfehler(lnum, size);
+        let a = [];
+        for (let k = 0; k < size; k++) a.push(0);
+        return a;
+    });
 },
 "PRINT" : function(lnum, args, seps) {
     if (args.length == 0)
@@ -1585,8 +1570,10 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             // func not in builtins (e.g. array access, user-defined function defuns)
             if (func === undefined) {
                 let someVar = bStatus.vars[funcName];
+                if (someVar === undefined) {
+                    throw lang.syntaxfehler(lnum, funcName + " is undefined");
+                }
                 if (someVar.bvType != "array") {
-                    serial.printerr(lang.syntaxfehler(lnum, funcName + " is not a function or an array"));
                     throw lang.syntaxfehler(lnum, funcName + " is not a function or an array");
                 }
 
