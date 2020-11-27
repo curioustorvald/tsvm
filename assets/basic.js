@@ -699,7 +699,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "END" : function(lnum, args) {
     serial.println("Program terminated in "+lnum);
     return Number.MAX_SAFE_INTEGER; // GOTO far-far-away
-}
+},
+"SPC" : function(lnum, args) {
+    return oneArgNum(lnum, args, function(lh) { return " ".repeat(lh); });
+},
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
@@ -1676,6 +1679,7 @@ bF.system = function(args) { // SYSTEM function
     tbasexit = true;
 };
 bF.new = function(args) { // NEW function
+    bStatus.vars = initBvars();
     cmdbuf = [];
 };
 bF.renum = function(args) { // RENUM function
@@ -1744,7 +1748,11 @@ bF.load = function(args) { // LOAD function
     }
     let prg = fs.readAll();
 
+    // reset the environment
     cmdbuf = [];
+    bStatus.vars = initBvars();
+
+    // read the source
     prg.split('\n').forEach(function(line) {
         let i = line.indexOf(" ");
         let lnum = line.slice(0, i);

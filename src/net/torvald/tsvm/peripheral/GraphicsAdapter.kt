@@ -1241,7 +1241,7 @@ void main() {
 
         val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
             "crt_color",
-            560, 448, 80, 32, 254, 255, 256.kB(), "./cp437_fira_code.png", 0.32f, TEXT_TILING_SHADER_COLOUR
+            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.32f, TEXT_TILING_SHADER_COLOUR
         )
         val DEFAULT_CONFIG_PMLCD = AdapterConfig(
             "pmlcd_inverted",
