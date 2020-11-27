@@ -365,13 +365,13 @@ else {
     goInteractive = true;
 }
 
+let cmdExit = false;
 if (goInteractive) {
     con.reset_graphics();
     greet();
 
     let cmdHistory = []; // zeroth element is the oldest
     let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
-    let cmdExit = false;
     while (!cmdExit) {
         con.reset_graphics();
         print_prompt_text();
