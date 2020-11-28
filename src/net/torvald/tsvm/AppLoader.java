@@ -18,7 +18,7 @@ public class AppLoader {
         appConfig.foregroundFPS = 60;
         appConfig.backgroundFPS = 60;
         appConfig.vSyncEnabled = false;
-        appConfig.useGL30 = true;
+        appConfig.useGL30 = false;
         appConfig.resizable = false;
         appConfig.title = appTitle;
         appConfig.forceExit = true;
