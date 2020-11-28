@@ -248,9 +248,9 @@ let oneArgNum = function(lnum, args, action) {
 let twoArg = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
+    if (rsvArg0 === undefined) throw lang.refError(lnum, "LH:"+Object.entries(args[0]));
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
+    if (rsvArg1 === undefined) throw lang.refError(lnum, "RH:"+Object.entries(args[1]));
     return action(rsvArg0, rsvArg1);
 }
 let twoArgNum = function(lnum, args, action) {
@@ -394,7 +394,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "BXOR" : function(lnum, args) {
     return twoArgNum(lnum, args, function(lh, rh) { return lh ^ rh; });
 },
-":" : function(lnum, args) { // Haskell-style CONS
+"!" : function(lnum, args) { // Haskell-style CONS
     return twoArg(lnum, args, function(lh, rh) {
         if (isNaN(lh))
             throw lang.illegalType(lnum, lh); // BASIC array is numbers only
@@ -420,6 +420,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             throw lang.illegalType(lnum, lh);
         return lh.concat(rh);
     });
+},
+":" : function(lnum, args) { // functional sequence
+    // just do nothing
 },
 "+" : function(lnum, args) { // addition, string concat
     return twoArg(lnum, args, function(lh, rh) { return lh + rh; });
@@ -706,9 +709,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
-bF._1os = {":":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1};
+bF._1os = {"!":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1,":":1};
 bF._2os = {"<":1,"=":1,">":1};
-bF._uos = {"+":1,"-":1,"!":1};
+bF._uos = {"+":1,"-":1};
 bF._isNum = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
@@ -739,6 +742,7 @@ bF._isParen = function(code) {
 bF._isSep = function(code) {
     return code == 0x2C || code == 0x3B;
 };
+// define operator precedence here...
 bF._opPrc = {
     // function call in itself has highest precedence
     "^":1,
@@ -756,11 +760,12 @@ bF._opPrc = {
     "OR":12,
     "TO":13,
     "STEP":14,
-    ":":15,"~":15, // array CONS and PUSH
+    "!":15,"~":15, // array CONS and PUSH
     "#": 16, // array concat
-    "=":999
+    "=":999,
+    ":":9999, // instructions separator
 };
-bF._opRh = {"^":1,"=":1,":":1};
+bF._opRh = {"^":1,"=":1,"!":1};
 bF._keywords = {
 
 };
@@ -1534,7 +1539,11 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
 
-    if (syntaxTree === undefined || (recDepth == 0 && syntaxTree.astValue.toUpperCase() == "REM"))
+    if (syntaxTree.astValue == undefined) { // empty meaningless parens
+        if (syntaxTree.astLeaves.length > 1) throw "WTF";
+        return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth);
+    }
+    else if (syntaxTree === undefined || (recDepth == 0 && syntaxTree.astValue.toUpperCase() == "REM"))
         return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
     else if (syntaxTree.astType == "function" || syntaxTree.astType == "op") {
         if (_debugExec) serial.println(recWedge+"function|operator");
@@ -1624,7 +1633,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 bF._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    var _debugprintHighestLevel = true;
 
     // TOKENISE
     var tokenisedObject = bF._tokenise(lnum, cmd);
