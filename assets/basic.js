@@ -422,7 +422,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 ":" : function(lnum, args) { // functional sequence
-    // just do nothing
+    // TODO alternative method of impl: make syntax tree to have two or more consequent command "roots" and execute from there
 },
 "+" : function(lnum, args) { // addition, string concat
     return twoArg(lnum, args, function(lh, rh) { return lh + rh; });
@@ -532,13 +532,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArgNum(lnum, args, function(lh) {
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
         bStatus.gosubStack.push(lnum + 1);
+        println(lnum+" GOSUB into "+lh);
         return lh;
     });
 },
 "RETURN" : function(lnum, args) {
     var r = bStatus.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
-    serial.println(lnum+" RETURN to "+r);
+    println(lnum+" RETURN to "+r);
     return r;
 },
 "CLEAR" : function(lnum, args) {
