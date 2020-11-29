@@ -421,9 +421,6 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return lh.concat(rh);
     });
 },
-":" : function(lnum, args) { // functional sequence
-    // TODO alternative method of impl: make syntax tree to have two or more consequent command "roots" and execute from there
-},
 "+" : function(lnum, args) { // addition, string concat
     return twoArg(lnum, args, function(lh, rh) { return lh + rh; });
 },
@@ -532,14 +529,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArgNum(lnum, args, function(lh) {
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
         bStatus.gosubStack.push(lnum + 1);
-        println(lnum+" GOSUB into "+lh);
+        //println(lnum+" GOSUB into "+lh);
         return lh;
     });
 },
 "RETURN" : function(lnum, args) {
     var r = bStatus.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
-    println(lnum+" RETURN to "+r);
+    //println(lnum+" RETURN to "+r);
     return r;
 },
 "CLEAR" : function(lnum, args) {
@@ -710,7 +707,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
-bF._1os = {"!":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1,":":1};
+bF._1os = {"!":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1};
 bF._2os = {"<":1,"=":1,">":1};
 bF._uos = {"+":1,"-":1};
 bF._isNum = function(code) {
@@ -764,7 +761,6 @@ bF._opPrc = {
     "!":15,"~":15, // array CONS and PUSH
     "#": 16, // array concat
     "=":999,
-    ":":9999, // instructions separator
 };
 bF._opRh = {"^":1,"=":1,"!":1};
 bF._keywords = {
@@ -1156,10 +1152,6 @@ bF._parserElaboration = function(lnum, tokens, states) {
         k += 1;
     }
 };
-/**
- * @returns BasicAST
- */
-bF._parseTokens = function(lnum, tokens, states, recDepth) {
     // DO NOT PERFORM SEMANTIC ANALYSIS HERE
     // at this point you can't (and shouldn't) distinguish whether or not defuns/variables are previously declared
 
@@ -1224,6 +1216,10 @@ f Line 10 (function)
 
 for input "DEFUN sinc(x) = sin(x) / x"
  */
+/**
+ * @returns BasicAST
+ */
+bF._parseTokens = function(lnum, tokens, states, recDepth) {
 
     function isSemanticLiteral(token, state) {
         return "]" == token || ")" == token ||
@@ -1255,10 +1251,6 @@ for input "DEFUN sinc(x) = sin(x) / x"
     treeHead.astDepth = recDepth;
     treeHead.astLnum = lnum;
 
-    // TODO ability to parse arbitrary parentheses
-    // test string: print((minus(plus(3,2),times(8,7))))
-    //                   ^                             ^ these extra parens break your parser
-
     // LITERAL
     if (tokens.length == 1 && (isSemanticLiteral(tokens[0], states[0]))) {
         // special case where there were only one word
@@ -1272,7 +1264,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
             }
             // else, screw it
             else {
-                throw lang.syntaxfehler(lnum);
+                throw lang.syntaxfehler(lnum, "TRAP_LITERALLY_LITERAL");
             }
         }
 
@@ -1305,7 +1297,7 @@ for input "DEFUN sinc(x) = sin(x) / x"
         }
 
         // generate tree
-        if (indexThen === undefined) throw lang.syntaxfehler(lnum);
+        if (indexThen === undefined) throw lang.syntaxfehler(lnum, "IF without THEN");
 
         treeHead.astValue = "if";
         treeHead.astType = "function";
@@ -1374,6 +1366,8 @@ for input "DEFUN sinc(x) = sin(x) / x"
             }
         }
 
+        // == AUTOPAREN ==
+        // TODO do it properly by counting number of arguments and whatnot
         if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
         if (_debugSyntaxAnalysis) serial.println("Paren position: "+parenStart+", "+parenEnd);
 
