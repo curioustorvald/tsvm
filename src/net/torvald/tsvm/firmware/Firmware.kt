@@ -11,9 +11,7 @@ import java.lang.RuntimeException
 
 internal class Firmware(val vm: VM) : TwoArgFunction() {
 
-    class ErrorIllegalAccess(val addr: Long) : RuntimeException() {
-
-    }
+    class ErrorIllegalAccess(val addr: Long) : RuntimeException("Segmentation fault at 0x${addr.toString(16).padStart(8, '0')}")
 
     companion object {
         internal fun translateAddr(vm : VM, addr: LuaValue): Pair<Any?, Long> {
