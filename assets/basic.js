@@ -1528,18 +1528,20 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1}; // put nonzero (truthy) v
  *
  * @return syntaxTreeReturnObject if recursion is escaped
  */
+bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     var _debugExec = true;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
 
-    if (syntaxTree.astValue == undefined) { // empty meaningless parens
+    if (syntaxTree == undefined) return bF._troNOP(lnum);
+    else if (syntaxTree.astValue == undefined) { // empty meaningless parens
         if (syntaxTree.astLeaves.length > 1) throw "WTF";
         return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth);
     }
-    else if (syntaxTree === undefined || (recDepth == 0 && syntaxTree.astValue.toUpperCase() == "REM"))
-        return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
+    else if (recDepth == 0 && syntaxTree.astValue.toUpperCase() == "REM")
+        return bF._troNOP(lnum);
     else if (syntaxTree.astType == "function" || syntaxTree.astType == "op") {
         if (_debugExec) serial.println(recWedge+"function|operator");
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());
