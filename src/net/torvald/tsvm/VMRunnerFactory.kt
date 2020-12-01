@@ -31,20 +31,6 @@ object VMRunnerFactory {
         }
 
         return when (extension) {
-            "lua" -> {
-                object : VMRunner(extension) {
-
-                    private val vmLua = VMLuaAdapter(vm)
-
-                    override suspend fun executeCommand(command: String) {
-                        vmLua.lua.load(command).call()
-                    }
-
-                    override suspend fun evalGlobal(command: String) {
-                        TODO("Not yet implemented")
-                    }
-                }
-            }
             "vt2" -> {
                 object : VMRunner(extension) {
 
@@ -62,18 +48,13 @@ object VMRunnerFactory {
             }
             "js" -> {
                 object : VMRunner(extension) {
-                    private val engine: ScriptEngine// = ScriptEngineManager().getEngineByExtension(extension)
+                    private val engine: ScriptEngine = ScriptEngineManager().getEngineByName("Graal.js")
+                    private val bind = engine.getBindings(ScriptContext.ENGINE_SCOPE)
 
                     init {
-                        val engineFactory = NashornScriptEngineFactory()
-                        engine = engineFactory.getScriptEngine("--no-java", "--no-syntax-extensions", "--language=es6")
-                        assertNotNull(engine, "Script engine for extension $extension not found")
-                    }
+                        // see https://github.com/graalvm/graaljs/blob/master/docs/user/ScriptEngine.md
+                        bind.put("polyglot.js.allowHostAccess", true)
 
-                    private val context = SimpleScriptContext()
-                    private val bind = context.getBindings(ScriptContext.ENGINE_SCOPE)
-
-                    init {
                         bind.put("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
                         bind.put("graphics", GraphicsJSR223Delegate(vm))
                         bind.put("serial", VMSerialDebugger(vm))
@@ -84,12 +65,12 @@ object VMRunnerFactory {
                         val fr = FileReader("./assets/JS_INIT.js")
                         val prg = fr.readText()
                         fr.close()
-                        engine.eval(sanitiseJS(prg), context)
+                        engine.eval(sanitiseJS(prg))
                     }
 
                     override suspend fun executeCommand(command: String) {
                         try {
-                            engine.eval(encapsulateJS(sanitiseJS(command)), context)
+                            engine.eval(encapsulateJS(sanitiseJS(command)))
                         }
                         catch (e: javax.script.ScriptException) {
                             System.err.println("ScriptException from the script:")
@@ -99,7 +80,7 @@ object VMRunnerFactory {
                     }
 
                     override suspend fun evalGlobal(command: String) {
-                        engine.eval("\"use strict\";" + sanitiseJS(command), context)
+                        engine.eval("\"use strict\";" + sanitiseJS(command))
                     }
                 }
             }

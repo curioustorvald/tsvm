@@ -30,7 +30,7 @@ filesystem._toPorts = function(driveLetter) {
     if (driveLetter.toUpperCase === undefined) {
         throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
     }
-    let port = _TVDOS.DRIVES[driveLetter.toUpperCase()];
+    var port = _TVDOS.DRIVES[driveLetter.toUpperCase()];
     if (port === undefined) {
         throw Error("Drive letter '" + driveLetter.toUpperCase() + "' does not exist");
     }
@@ -48,24 +48,24 @@ filesystem._flush = function(portNo) {
 //             - java.lang.NullPointerException if path is null
 //             - Error if operation mode is not "R", "W" nor "A"
 filesystem.open = function(driveLetter, path, operationMode) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
 
     filesystem._flush(port[0]); filesystem._close(port[0]);
 
-    let mode = operationMode.toUpperCase();
+    var mode = operationMode.toUpperCase();
     if (mode != "R" && mode != "W" && mode != "A") {
         throw Error("Unknown file opening mode: " + mode);
     }
 
     com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     return (response == 0);
 };
 // @return the entire contents of the file in String
 filesystem.readAll = function(driveLetter) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "READ");
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     if (135 == response) {
         throw Error("File not opened");
     }
@@ -75,9 +75,9 @@ filesystem.readAll = function(driveLetter) {
     return com.pullMessage(port[0]);
 };
 filesystem.write = function(driveLetter, string) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "WRITE"+string.length);
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     if (135 == response) {
         throw Error("File not opened");
     }
@@ -88,32 +88,32 @@ filesystem.write = function(driveLetter, string) {
     filesystem._flush(port[0]); filesystem._close(port[0]);
 };
 filesystem.isDirectory = function(driveLetter) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "LISTFILES");
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
 filesystem.mkDir = function(driveLetter) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "MKDIR");
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
 
     if (response < 0 || response >= 128) {
-        let status = com.getDeviceStatus(port[0]);
+        var status = com.getDeviceStatus(port[0]);
         throw Error("Creating a directory failed with ("+response+"): "+status.message+"\n");
     }
     return (response === 0); // possible status codes: 0 (success), 1 (fail)
 };
 filesystem.touch = function(driveLetter) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "TOUCH");
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
 filesystem.mkFile = function(driveLetter) {
-    let port = filesystem._toPorts(driveLetter);
+    var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "MKFILE");
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
 Object.freeze(filesystem);
@@ -128,8 +128,8 @@ var GL = eval(filesystem.readAll("A"));
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
 var execApp = function(cmdsrc, args) {
-    let prg = eval("let _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
-    return prg(args);
+    var execAppPrg = eval("var _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
+    return execAppPrg(args);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

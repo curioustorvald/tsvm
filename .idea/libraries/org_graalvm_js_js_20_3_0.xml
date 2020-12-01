@@ -1,0 +1,20 @@
+<component name="libraryTable">
+  <library name="org.graalvm.js:js:20.3.0" type="repository">
+    <properties maven-id="org.graalvm.js:js:20.3.0" />
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/lib/js-20.3.0.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/regex-20.3.0.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/truffle-api-20.3.0.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/graal-sdk-20.3.0.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/icu4j-67.1.jar!/" />
+    </CLASSES>
+    <JAVADOC>
+      <root url="jar://$PROJECT_DIR$/lib/js-20.3.0-javadoc.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/regex-20.3.0-javadoc.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/truffle-api-20.3.0-javadoc.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/graal-sdk-20.3.0-javadoc.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/icu4j-67.1-javadoc.jar!/" />
+    </JAVADOC>
+    <SOURCES />
+  </library>
+</component>

@@ -80,11 +80,11 @@ fs._flush = function(portNo) {
 //             - java.lang.NullPointerException if path is null
 //             - Error if operation mode is not "R", "W" nor "A"
 fs.open = function(path, operationMode) {
-    let port = _BIOS.FIRST_BOOTABLE_PORT;
+    var port = _BIOS.FIRST_BOOTABLE_PORT;
 
     fs._flush(port[0]); fs._close(port[0]);
 
-    let mode = operationMode.toUpperCase();
+    var mode = operationMode.toUpperCase();
     if (mode != "R" && mode != "W" && mode != "A") {
         throw Error("Unknown file opening mode: " + mode);
     }
@@ -95,9 +95,9 @@ fs.open = function(path, operationMode) {
 };
 // @return the entire contents of the file in String
 fs.readAll = function() {
-    let port = _BIOS.FIRST_BOOTABLE_PORT;
+    var port = _BIOS.FIRST_BOOTABLE_PORT;
     com.sendMessage(port[0], "READ");
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     if (135 == response) {
         throw Error("File not opened");
     }
@@ -107,9 +107,9 @@ fs.readAll = function() {
     return com.pullMessage(port[0]);
 };
 fs.write = function(string) {
-    let port = _BIOS.FIRST_BOOTABLE_PORT;
+    var port = _BIOS.FIRST_BOOTABLE_PORT;
     com.sendMessage(port[0], "WRITE"+string.length);
-    let response = com.getStatusCode(port[0]);
+    var response = com.getStatusCode(port[0]);
     if (135 == response) {
         throw Error("File not opened");
     }
@@ -125,10 +125,10 @@ Object.freeze(fs);
 // requirements: reset_graphics(), getch(), curs_set(int), hitterminate(), resetkeybuf(), addch(int)
 
 let getUsedMemSize = function() {
-    let varsMemSize = 0;
+    var varsMemSize = 0;
 
     Object.entries(bStatus.vars).forEach(function(pair,i) {
-        let object = pair[1];
+        var object = pair[1];
 
         if (Array.isArray(object)) {
             // TODO test 1-D array
@@ -441,14 +441,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "TO" : function(lnum, args) {
     return twoArgNum(lnum, args, function(from, to) {
-        let a = [];
+        var a = [];
         if (from <= to) {
-            for (let k = from; k <= to; k++) {
+            for (var k = from; k <= to; k++) {
                 a.push(k);
             }
         }
         else {
-            for (let k = -from; k <= -to; k++) {
+            for (var k = -from; k <= -to; k++) {
                 a.push(-k);
             }
         }
@@ -464,7 +464,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     var rsvArg1 = resolve(args[1]);
     if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
     if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1);
-    let a = []; let stepcnt = 0;
+    var a = []; var stepcnt = 0;
     rsvArg0.forEach(function(v,i) {
         if (stepcnt == 0) a.push(v);
         stepcnt = (stepcnt + 1) % rsvArg1;
@@ -474,8 +474,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "DIM" : function(lnum, args) {
     return oneArgNum(lnum, args, function(size) {
         if (size <= 0) throw lang.syntaxfehler(lnum, size);
-        let a = [];
-        for (let k = 0; k < size; k++) a.push(0);
+        var a = [];
+        for (var k = 0; k < size; k++) a.push(0);
         return a;
     });
 },
@@ -601,12 +601,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return resolve(args[0]);
 },
 "FOR" : function(lnum, args) {
-    let asgnObj = resolve(args[0]);
+    var asgnObj = resolve(args[0]);
     // type check
     if (asgnObj === undefined) throw  lang.syntaxfehler(lnum);
     if (!Array.isArray(asgnObj.asgnValue)) throw lang.illegalType(lnum, asgnObj);
 
-    let varname = asgnObj.asgnVarName;
+    var varname = asgnObj.asgnVarName;
 
     // assign new variable
     // the var itself will have head of the array, and the head itself will be removed from the array
@@ -621,7 +621,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // if no args were given
     if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
         // go to most recent FOR
-        let forVarname = bStatus.forStack.pop();
+        var forVarname = bStatus.forStack.pop();
         //serial.println(lnum+" NEXT > forVarname = "+forVarname);
         if (forVarname === undefined) {
             throw lang.nextWithoutFor(lnum);
@@ -680,7 +680,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
 "INPUT" : function(lnum, args) {
     // just use tail-end arg as an input variable
-    let endArg = args.pop();
+    var endArg = args.pop();
     if (endArg === undefined) {
         system.printerr("INPUT called with no arguments");
         return undefined;
@@ -689,7 +689,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // print out prompt text
     print("? ");
 
-    let inputstr = sys.read().trim();
+    var inputstr = sys.read().trim();
 
     // screw with the comma-separating because shrug
     bStatus.vars[endArg.troValue] = new BasicVar(inputstr, JStoBASICtype(inputstr));
@@ -767,12 +767,12 @@ bF._keywords = {
 
 };
 bF._tokenise = function(lnum, cmd) {
-    let _debugprintStateTransition = false;
-    let k;
-    let tokens = [];
-    let states = [];
-    let sb = "";
-    let mode = "lit"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
+    var _debugprintStateTransition = false;
+    var k;
+    var tokens = [];
+    var states = [];
+    var sb = "";
+    var mode = "lit"; // literal, quote, paren, sep, operator, number; operator2, numbersep, number2, limbo, escape, quote_end
 
     // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error in the second pass
 
@@ -1245,9 +1245,9 @@ bF._parseTokens = function(lnum, tokens, states, recDepth) {
         return retTreeHead;
     }
 
-    let k;
-    let headWord = tokens[0].toLowerCase();
-    let treeHead = new BasicAST();
+    var k;
+    var headWord = tokens[0].toLowerCase();
+    var treeHead = new BasicAST();
     treeHead.astDepth = recDepth;
     treeHead.astLnum = lnum;
 
@@ -1583,7 +1583,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
             // func not in builtins (e.g. array access, user-defined function defuns)
             if (func === undefined) {
-                let someVar = bStatus.vars[funcName];
+                var someVar = bStatus.vars[funcName];
                 if (someVar === undefined) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
                 }
@@ -1741,18 +1741,18 @@ bF.run = function(args) { // RUN function
 bF.save = function(args) { // SAVE function
     if (args[1] === undefined) throw lang.missingOperand;
     fs.open(args[1], "W");
-    let sb = "";
+    var sb = "";
     cmdbuf.forEach(function(v,i) { sb += i+" "+v+"\n"; });
     fs.write(sb);
 };
 bF.load = function(args) { // LOAD function
     if (args[1] === undefined) throw lang.missingOperand;
-    let fileOpened = fs.open(args[1], "R");
+    var fileOpened = fs.open(args[1], "R");
     if (!fileOpened) {
         throw lang.noSuchFile;
         return;
     }
-    let prg = fs.readAll();
+    var prg = fs.readAll();
 
     // reset the environment
     cmdbuf = [];
@@ -1760,36 +1760,36 @@ bF.load = function(args) { // LOAD function
 
     // read the source
     prg.split('\n').forEach(function(line) {
-        let i = line.indexOf(" ");
-        let lnum = line.slice(0, i);
+        var i = line.indexOf(" ");
+        var lnum = line.slice(0, i);
         if (isNaN(lnum)) throw lang.illegalType();
         cmdbuf[lnum] = line.slice(i + 1, line.length);
     });
 };
 bF.catalog = function(args) { // CATALOG function
     if (args[1] === undefined) args[1] = "\\";
-    let pathOpened = fs.open(args[1], 'R');
+    var pathOpened = fs.open(args[1], 'R');
     if (!pathOpened) {
         throw lang.noSuchFile;
         return;
     }
-    let port = _BIOS.FIRST_BOOTABLE_PORT[0];
+    var port = _BIOS.FIRST_BOOTABLE_PORT[0];
     com.sendMessage(port, "LIST");
     println(com.pullMessage(port));
 };
 Object.freeze(bF);
 while (!tbasexit) {
-    let line = sys.read().trim();
+    var line = sys.read().trim();
 
     cmdbufMemFootPrint += line.length;
 
     if (reLineNum.test(line)) {
-        let i = line.indexOf(" ");
+        var i = line.indexOf(" ");
         cmdbuf[line.slice(0, i)] = line.slice(i + 1, line.length);
     }
     else if (line.length > 0) {
         cmdbufMemFootPrint -= line.length;
-        let cmd = line.split(" ");
+        var cmd = line.split(" ");
         if (bF[cmd[0].toLowerCase()] === undefined) {
             serial.printerr("Unknown command: "+cmd[0].toLowerCase());
             println(lang.syntaxfehler());

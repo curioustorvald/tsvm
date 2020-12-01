@@ -38,15 +38,14 @@ class VMJSR223Delegate(val vm: VM) {
         return r
     }
 
-    fun print(s: String) {
+    fun print(s: Any) {
         //System.out.print("[Nashorn] $s")
-        vm.getPrintStream().write(s.toByteArray(VM.CHARSET))
+        vm.getPrintStream().write("$s".toByteArray(VM.CHARSET))
     }
-    fun println(s: String) {
-        System.out.println("[Nashorn] $s")
-        vm.getPrintStream().write((s + '\n').toByteArray(VM.CHARSET))
+    fun println(s: Any = "") {
+        System.out.println("[Graal] $s")
+        vm.getPrintStream().write(("$s\n").toByteArray(VM.CHARSET))
     }
-    fun println() = print('\n')
 
     /**
      * @return key being hit, of which:
@@ -112,7 +111,7 @@ class VMJSR223Delegate(val vm: VM) {
 }
 
 class VMSerialDebugger(val vm: VM) {
-    fun print(s: String) = System.out.print(s)
-    fun println(s: String) = System.out.println(s)
-    fun printerr(s: String) = System.err.println(s)
+    fun print(s: Any) = System.out.print("$s")
+    fun println(s: Any) = System.out.println("$s")
+    fun printerr(s: Any) = System.err.println("$s")
 }

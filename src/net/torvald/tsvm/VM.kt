@@ -2,7 +2,6 @@ package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
-import net.torvald.tsvm.firmware.Firmware
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.VMProgramRom
@@ -20,6 +19,9 @@ class VM(
     val worldInterface: WorldInterface,
     val roms: Array<VMProgramRom?> // first ROM must contain the BIOS
 ) {
+
+    class ErrorIllegalAccess(val addr: Long) : RuntimeException("Segmentation fault at 0x${addr.toString(16).padStart(8, '0')}")
+
 
     val id = java.util.Random().nextInt()
 
@@ -115,10 +117,10 @@ class VM(
     internal fun poke(addr: Long, value: Byte) {
         val (memspace, offset) = translateAddr(addr)
         if (memspace == null)
-            throw Firmware.ErrorIllegalAccess(addr)
+            throw ErrorIllegalAccess(addr)
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
-                throw Firmware.ErrorIllegalAccess(addr)
+                throw ErrorIllegalAccess(addr)
             else
                 memspace.set(offset, value)
         }
@@ -132,7 +134,7 @@ class VM(
             null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
-                throw Firmware.ErrorIllegalAccess(addr)
+                throw ErrorIllegalAccess(addr)
             else
                 memspace.get(offset)
         }

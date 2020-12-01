@@ -39,10 +39,10 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
-    fun plotPixel(x: Int, y: Int, color: Byte) {
+    fun plotPixel(x: Int, y: Int, color: Int) {
         getFirstGPU()?.let {
             if (x in 0 until it.config.width && y in 0 until it.config.height) {
-                it.poke(y.toLong() * it.config.width + x, color)
+                it.poke(y.toLong() * it.config.width + x, color.toByte())
             }
         }
     }
@@ -82,12 +82,12 @@ class GraphicsJSR223Delegate(val vm: VM) {
     /**
      * prints a char as-is; won't interpret them as an escape sequence
      */
-    fun putSymbol(char: Byte) {
+    fun putSymbol(c: Int) {
         getFirstGPU()?.let {
             val (cx, cy) = it.getCursorPos()
 
 
-            it.putChar(cx, cy, char)
+            it.putChar(cx, cy, c.toByte())
             it.setCursorPos(cx + 1, cy)
         }
     }
