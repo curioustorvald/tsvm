@@ -1,14 +1,11 @@
 package net.torvald.tsvm
 
-import jdk.nashorn.api.scripting.NashornScriptEngineFactory
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.vdc.Videotron2K
+import org.graalvm.polyglot.Context
+import org.graalvm.polyglot.HostAccess
 import java.io.FileReader
-import javax.script.ScriptContext
-import javax.script.ScriptEngine
 import javax.script.ScriptEngineManager
-import javax.script.SimpleScriptContext
-import kotlin.test.assertNotNull
 
 abstract class VMRunner(val extension: String) {
 
@@ -48,30 +45,34 @@ object VMRunnerFactory {
             }
             "js" -> {
                 object : VMRunner(extension) {
-                    private val engine: ScriptEngine = ScriptEngineManager().getEngineByName("Graal.js")
-                    private val bind = engine.getBindings(ScriptContext.ENGINE_SCOPE)
+                    private val context = Context.newBuilder("js")
+                        .allowHostAccess(HostAccess.ALL)
+                        .allowHostClassLookup { false }
+                        .allowIO(false)
+                        .build()
+                    private val bind = context.getBindings("js")
 
                     init {
                         // see https://github.com/graalvm/graaljs/blob/master/docs/user/ScriptEngine.md
-                        bind.put("polyglot.js.allowHostAccess", true)
-                        bind.put("js.console", false)
+                        bind.putMember("polyglot.js.allowHostAccess", true)
+                        bind.putMember("js.console", false)
 
-                        bind.put("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
-                        bind.put("graphics", GraphicsJSR223Delegate(vm))
-                        bind.put("serial", VMSerialDebugger(vm))
-                        bind.put("gzip", CompressorDelegate)
-                        bind.put("base64", Base64Delegate)
-                        bind.put("com", SerialHelperDelegate(vm))
+                        bind.putMember("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
+                        bind.putMember("graphics", GraphicsJSR223Delegate(vm))
+                        bind.putMember("serial", VMSerialDebugger(vm))
+                        bind.putMember("gzip", CompressorDelegate)
+                        bind.putMember("base64", Base64Delegate)
+                        bind.putMember("com", SerialHelperDelegate(vm))
 
                         val fr = FileReader("./assets/JS_INIT.js")
                         val prg = fr.readText()
                         fr.close()
-                        engine.eval(sanitiseJS(prg))
+                        context.eval("js", sanitiseJS(prg))
                     }
 
                     override suspend fun executeCommand(command: String) {
                         try {
-                            engine.eval(encapsulateJS(sanitiseJS(command)))
+                            context.eval("js", encapsulateJS(sanitiseJS(command)))
                         }
                         catch (e: javax.script.ScriptException) {
                             System.err.println("ScriptException from the script:")
@@ -81,7 +82,7 @@ object VMRunnerFactory {
                     }
 
                     override suspend fun evalGlobal(command: String) {
-                        engine.eval("\"use strict\";" + sanitiseJS(command))
+                        context.eval("js", "\"use strict\";" + sanitiseJS(command))
                     }
                 }
             }

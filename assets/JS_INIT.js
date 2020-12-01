@@ -427,5 +427,5 @@ Object.freeze(system);
 // some utilities functions
 
 if (Graal !== undefined && !Graal.isGraalRuntime()) {
-    printerrln("GraalVM compiler is not running, expect low performance");
+    serial.printerr("GraalVM compiler is not running, expect low performance");
 }
