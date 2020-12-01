@@ -26,7 +26,7 @@ Object.freeze(_TVDOS);
 ///////////////////////////////////////////////////////////////////////////////
 
 var filesystem = {};
-filesystem._toPorts = function(driveLetter) {
+filesystem._toPorts = (driveLetter) => {
     if (driveLetter.toUpperCase === undefined) {
         throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
     }
@@ -36,10 +36,10 @@ filesystem._toPorts = function(driveLetter) {
     }
     return port
 };
-filesystem._close = function(portNo) {
+filesystem._close = (portNo) => {
     com.sendMessage(portNo, "CLOSE");
 };
-filesystem._flush = function(portNo) {
+filesystem._flush = (portNo) => {
     com.sendMessage(portNo, "FLUSH");
 };
 // @return true if operation committed successfully, false if:
@@ -47,7 +47,7 @@ filesystem._flush = function(portNo) {
 //         throws if:
 //             - java.lang.NullPointerException if path is null
 //             - Error if operation mode is not "R", "W" nor "A"
-filesystem.open = function(driveLetter, path, operationMode) {
+filesystem.open = (driveLetter, path, operationMode) => {
     var port = filesystem._toPorts(driveLetter);
 
     filesystem._flush(port[0]); filesystem._close(port[0]);
@@ -62,7 +62,7 @@ filesystem.open = function(driveLetter, path, operationMode) {
     return (response == 0);
 };
 // @return the entire contents of the file in String
-filesystem.readAll = function(driveLetter) {
+filesystem.readAll = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "READ");
     var response = com.getStatusCode(port[0]);
@@ -74,7 +74,7 @@ filesystem.readAll = function(driveLetter) {
     }
     return com.pullMessage(port[0]);
 };
-filesystem.write = function(driveLetter, string) {
+filesystem.write = (driveLetter, string) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "WRITE"+string.length);
     var response = com.getStatusCode(port[0]);
@@ -87,13 +87,13 @@ filesystem.write = function(driveLetter, string) {
     com.sendMessage(port[0], string);
     filesystem._flush(port[0]); filesystem._close(port[0]);
 };
-filesystem.isDirectory = function(driveLetter) {
+filesystem.isDirectory = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "LISTFILES");
     var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
-filesystem.mkDir = function(driveLetter) {
+filesystem.mkDir = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "MKDIR");
     var response = com.getStatusCode(port[0]);
@@ -104,13 +104,13 @@ filesystem.mkDir = function(driveLetter) {
     }
     return (response === 0); // possible status codes: 0 (success), 1 (fail)
 };
-filesystem.touch = function(driveLetter) {
+filesystem.touch = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "TOUCH");
     var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
-filesystem.mkFile = function(driveLetter) {
+filesystem.mkFile = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "MKFILE");
     var response = com.getStatusCode(port[0]);
@@ -127,7 +127,7 @@ var GL = eval(filesystem.readAll("A"));
 // @param cmdsrc JS source code
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
-var execApp = function(cmdsrc, args) {
+var execApp = (cmdsrc, args) => {
     var execAppPrg = eval("var _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
     return execAppPrg(args);
 }

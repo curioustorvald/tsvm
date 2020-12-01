@@ -54,6 +54,7 @@ object VMRunnerFactory {
                     init {
                         // see https://github.com/graalvm/graaljs/blob/master/docs/user/ScriptEngine.md
                         bind.put("polyglot.js.allowHostAccess", true)
+                        bind.put("js.console", false)
 
                         bind.put("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
                         bind.put("graphics", GraphicsJSR223Delegate(vm))

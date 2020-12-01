@@ -127,7 +127,7 @@ Object.freeze(fs);
 let getUsedMemSize = function() {
     var varsMemSize = 0;
 
-    Object.entries(bStatus.vars).forEach(function(pair,i) {
+    Object.entries(bStatus.vars).forEach((pair, i) => {
         var object = pair[1];
 
         if (Array.isArray(object)) {
@@ -465,7 +465,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
     if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1);
     var a = []; var stepcnt = 0;
-    rsvArg0.forEach(function(v,i) {
+    rsvArg0.forEach((v,i) => {
         if (stepcnt == 0) a.push(v);
         stepcnt = (stepcnt + 1) % rsvArg1;
     });
@@ -548,7 +548,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "AND" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map(function(it) { return resolve(it); });
-    rsvArg.forEach(function(v) {
+    rsvArg.forEach((v) => {
         if (v === undefined) throw lang.refError(lnum, v);
         if (typeof v !== "boolean") throw lang.illegalType(lnum, v);
     });
@@ -561,7 +561,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "OR" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map(function(it) { return resolve(it); });
-    rsvArg.forEach(function(v) {
+    rsvArg.forEach((v) => {
         if (v === undefined) throw lang.refError(lnum, v.value);
         if (typeof v !== "boolean") throw lang.illegalType(lnum, v);
     });
@@ -1490,7 +1490,7 @@ bF._parseTokens = function(lnum, tokens, states, recDepth) {
 
                     leaves.push(bF._parseTokens(lnum, subtkn, substa, recDepth + 1));
                 }
-                separators.slice(1, separators.length - 1).forEach(function(v) { if (v !== undefined) seps.push(tokens[v]); });
+                separators.slice(1, separators.length - 1).forEach((v) => { if (v !== undefined) seps.push(tokens[v]) });
             }
             else throw lang.syntaxfehler(lnum, lang.badFunctionCallFormat);
             treeHead.astLeaves = leaves;//.filter(function(__v) { return __v !== undefined; });
@@ -1712,9 +1712,9 @@ bF.renum = function(args) { // RENUM function
 
     // recalculate memory footprint
     cmdbufMemFootPrint = 0;
-    cmdbuf.forEach(function(v, i, arr) {
-        cmdbufMemFootPrint += ("" + i).length + 1 + v.length;
-    });
+    cmdbuf.forEach((v, i, arr) =>
+        cmdbufMemFootPrint += ("" + i).length + 1 + v.length
+    );
 };
 bF.fre = function(args) {
     println(vmemsize - getUsedMemSize());
@@ -1742,7 +1742,7 @@ bF.save = function(args) { // SAVE function
     if (args[1] === undefined) throw lang.missingOperand;
     fs.open(args[1], "W");
     var sb = "";
-    cmdbuf.forEach(function(v,i) { sb += i+" "+v+"\n"; });
+    cmdbuf.forEach((v, i) => sb += i+" "+v+"\n");
     fs.write(sb);
 };
 bF.load = function(args) { // LOAD function
@@ -1759,7 +1759,7 @@ bF.load = function(args) { // LOAD function
     bStatus.vars = initBvars();
 
     // read the source
-    prg.split('\n').forEach(function(line) {
+    prg.split('\n').forEach((line) => {
         var i = line.indexOf(" ");
         var lnum = line.slice(0, i);
         if (isNaN(lnum)) throw lang.illegalType();

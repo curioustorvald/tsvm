@@ -313,6 +313,9 @@ load = undefined;
 loadWithNewGlobal = undefined;
 exit = undefined;
 quit = undefined;
+printErr = undefined;
+readbuffer = undefined;
+readline = undefined;
 /*var eval = function(s) { // this impl is flawed; it does not return any, and cannot alter Global which may not you actually want
     return Function('"use strict";return(function(){'+s+'}())')();
 }*/
@@ -422,3 +425,7 @@ system.halt = function() {
 };
 Object.freeze(system);
 // some utilities functions
+
+if (Graal !== undefined && !Graal.isGraalRuntime()) {
+    printerrln("GraalVM compiler is not running, expect low performance");
+}
