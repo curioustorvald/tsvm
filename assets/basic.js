@@ -493,12 +493,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             }
 
             var rsvArg = resolve(args[llll]);
-            if (rsvArg === undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
-            print((rsvArg === undefined) ? "" : rsvArg);
+            if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
+                print((rsvArg === undefined) ? "" : rsvArg);
         }
     }
 
-    if (args[args.length - 1].troType != "null") println();
+    if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 },
 "EMIT" : function(lnum, args) {
     if (args.length > 0) {
