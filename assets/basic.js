@@ -326,13 +326,19 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
         return varArgNum(lnum, args, (dims) => {
             let indexingstr = "";
+            serial.println("ar dims: "+dims);
             dims.forEach((d) => {
                 indexingstr = `[${d-INDEX_BASE}]${indexingstr}`;
             })
-            let indexedValue = eval(`array${indexingstr}`);
-            let index = dims[0];
-            let parentArr = eval(`array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
-            return {arrValue: indexedValue, arrObj: parentArr, arrIndex: index-INDEX_BASE, arrName: arrayName}
+            serial.println("ar indexedValue = "+`/*ar1*/array${indexingstr}`);
+            let indexedValue = eval(`/*ar1*/array${indexingstr}`);
+            let index = dims[0]-INDEX_BASE;
+            serial.println("ar parentArr = "+`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
+            let parentArr = eval(`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
+
+            if (index < 0) throw lang.subscrOutOfRng(lnum, arrayName);
+
+            return {arrValue: indexedValue, arrObj: parentArr, arrIndex: index, arrName: arrayName}
         });
 
         //return {arrValue: indexedValue, arrObj: array, arrIndex: rsvArg0, arrName: arrayName}; //array[rsvArg0];
@@ -356,17 +362,15 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (troValue.arrObj !== undefined) {
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
 
-        troValue.arrObj[troValue.arrIndex] = rh;
-        return {asgnVarName: troValue.arrName, asgnValue: rh};
+        troValue.arrObj[troValue.arrIndex] = rh|0;
+        return {asgnVarName: troValue.arrName, asgnValue: rh|0};
     }
     else {
-        var sigil = parseSigil(troValue);
-        var type = sigil.sgType || JStoBASICtype(rh);
-
-        if (bStatus.consts[sigil.sgName]) throw lang.asgnOnConst(lnum, sigil.sgName);
-
-        bStatus.vars[sigil.sgName] = new BasicVar(rh, type);
-        return {asgnVarName: sigil.sgName, asgnValue: rh};
+        var varname = troValue.toUpperCase();
+        var type = JStoBASICtype(rh);
+        if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
+        bStatus.vars[varname] = new BasicVar(rh, type);
+        return {asgnVarName: varname, asgnValue: rh};
     }
 
 },
@@ -618,7 +622,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "FIX" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => (lh|0));
 },
-"CHR$" : function(lnum, args) {
+"CHR" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => String.fromCharCode(lh));
 },
 "TEST" : function(lnum, args) {
@@ -704,23 +708,26 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 `-----------------
 */
 "INPUT" : function(lnum, args) {
-    // just use tail-end arg as an input variable
-    var endArg = args.pop();
-    if (endArg === undefined) {
-        system.printerr("INPUT called with no arguments");
-        return undefined;
-    }
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    var troValue = args[0].troValue;
 
     // print out prompt text
-    print("? ");
+    print("? "); var rh = sys.read().trim();
 
-    var inputstr = sys.read().trim();
+    if (troValue.arrObj !== undefined) {
+        if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
 
-    // screw with the comma-separating because shrug
-    bStatus.vars[endArg.troValue] = new BasicVar(inputstr, JStoBASICtype(inputstr));
-
-    // return raw input string
-    return inputstr;
+        troValue.arrObj[troValue.arrIndex] = rh|0;
+        return {asgnVarName: troValue.arrName, asgnValue: rh|0};
+    }
+    else {
+        var varname = troValue.toUpperCase();
+        //println("input varname: "+varname);
+        var type = JStoBASICtype(rh);
+        if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
+        bStatus.vars[varname] = new BasicVar(rh, type);
+        return {asgnVarName: varname, asgnValue: rh};
+    }
 },
 "END" : function(lnum, args) {
     serial.println("Program terminated in "+lnum);
@@ -729,13 +736,13 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "SPC" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => " ".repeat(lh));
 },
-"LEFT$" : function(lnum, args) {
+"LEFT" : function(lnum, args) {
     return twoArg(lnum, args, (str, len) => str.substring(0, len));
 },
-"MID$" : function(lnum, args) {
+"MID" : function(lnum, args) {
     return threeArg(lnum, args, (str, start, len) => str.substring(start-INDEX_BASE, start-INDEX_BASE+len));
 },
-"RIGHT$" : function(lnum, args) {
+"RIGHT" : function(lnum, args) {
     return twoArg(lnum, args, (str, len) => str.substring(str.length - len, str.length));
 },
 "OPTIONBASE" : function(lnum, args) {
@@ -843,10 +850,10 @@ bF._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "sep";
             }
-            else if (bF._isNum(charCode)) {
+            /*else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "num";
-            }
+            }*/
             else if (bF._is1o(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "op";
