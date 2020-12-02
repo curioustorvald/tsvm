@@ -162,7 +162,7 @@ println(prompt);
 // variable object constructor
 /** variable object constructor
  * @param literal Javascript object or primitive
- * @type derived from parseSigil or JStoBASICtype
+ * @type derived from JStoBASICtype
  * @see bStatus.builtin["="]
  */
 let BasicVar = function(literal, type) {
@@ -203,17 +203,6 @@ let BasicAST = function() {
         return sb;
     };
 }
-let parseSigil = function(s) {
-    var rettype;
-    if (s.endsWith("$"))
-        rettype = "string";
-    else if (s.endsWith("%"))
-        rettype = "integer";
-    else if (s.endsWith("!") || s.endsWith("#"))
-        rettype = "float";
-
-    return {sgName:(rettype === undefined) ? s.toUpperCase() : s.substring(0, s.length - 1).toUpperCase(), sgType:rettype};
-}
 let literalTypes = ["string", "num", "bool", "array"];
 /*
 @param variable SyntaxTreeReturnObj, of which  the 'troType' is defined in BasicAST.
@@ -226,7 +215,7 @@ let resolve = function(variable) {
     else if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
         return variable.troValue;
     else if (variable.troType == "lit") {
-        var basicVar = bStatus.vars[parseSigil(variable.troValue).sgName];
+        var basicVar = bStatus.vars[variable.troValue];
         return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
     }
     else if (variable.troType == "null")
@@ -450,7 +439,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "+" : function(lnum, args) { // addition, string concat
-    return twoArg(lnum, args, (lh,rh) => lh + rh);
+    return twoArg(lnum, args, (lh,rh) => (!isNaN(lh) && !isNaN(rh)) ? (lh*1 + rh*1) : (lh + rh));
 },
 "-" : function(lnum, args) {
     return twoArgNum(lnum, args, (lh,rh) => lh - rh);
@@ -601,11 +590,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return argum[0] || argum[1];
 },
 "RND" : function(lnum, args) {
-    if (!(args.length > 0 && args[0].troValue === 0))
-        bStatus.rnd = (bStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
-
-
-    return (bStatus.rnd) / 16777216;
+    return oneArgNum(lnum, args, (lh) => {
+        if (!(args.length > 0 && args[0].troValue === 0))
+            bStatus.rnd = Math.random();//(bStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
+        return bStatus.rnd;
+    });
 },
 "ROUND" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => Math.round(lh));
@@ -744,6 +733,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "RIGHT" : function(lnum, args) {
     return twoArg(lnum, args, (str, len) => str.substring(str.length - len, str.length));
+},
+"SGN" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => (it > 0) ? 1 : (it < 0) ? -1 : 0);
+},
+"ABS" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.abs(it));
 },
 "OPTIONBASE" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => {
@@ -1561,7 +1556,7 @@ let JStoBASICtype = function(object) {
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
     else if (object.arrValue !== undefined) return "internal_arrindexing_lazy";
     // buncha error msgs
-    else if (object.arrIndex >= object.arrObj.length) throw lang.subscrOutOfRng(undefined, object.arrName);
+    else if (object.arrIndex-INDEX_BASE >= object.arrObj.length) throw lang.subscrOutOfRng(undefined, `${object.arrName}(${object.arrIndex}, len:${object.arrObj.length})`);
     else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
