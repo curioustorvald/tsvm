@@ -286,6 +286,23 @@ let threeArgNum = function(lnum, args, action) {
     if (isNaN(rsvArg2)) throw lang.illegalType(lnum, args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
+let varArg = function(lnum, args, action) {
+    var rsvArg = args.map((it) => {
+        var r = resolve(it);
+        if (r === undefined) throw lang.refError(lnum, r);
+        return r;
+    });
+    return action(rsvArg);
+}
+let varArgNum = function(lnum, args, action) {
+    var rsvArg = args.map((it) => {
+        var r = resolve(it);
+        if (r === undefined) throw lang.refError(lnum, r);
+        if (isNaN(r)) throw lang.illegalType(lnum, r);
+        return r;
+    });
+    return action(rsvArg);
+}
 let initBvars = function() {
     return {
         "NIL": new BasicVar([], "array"),
@@ -304,13 +321,19 @@ bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
 bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
     return function(lnum, args) {
-        // TODO test 1-d array
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
-        var rsvArg0 = resolve(args[0]);
-        if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
-        if (isNaN(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
+        return varArgNum(lnum, args, (dims) => {
+            let indexingstr = "";
+            dims.forEach((d) => {
+                indexingstr = `[${d}]${indexingstr}`;
+            })
+            let indexedValue = eval(`array${indexingstr}`);
+            let index = dims[0];
+            let parentArr = eval(`array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
+            return {arrValue: indexedValue, arrObj: parentArr, arrIndex: index, arrName: arrayName}
+        });
 
-        return {arrValue: array[rsvArg0], arrObj: array, arrIndex: rsvArg0, arrName: arrayName}; //array[rsvArg0];
+        //return {arrValue: indexedValue, arrObj: array, arrIndex: rsvArg0, arrName: arrayName}; //array[rsvArg0];
     };
 };
 bStatus.builtin = {
@@ -330,7 +353,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
 
     if (troValue.arrObj !== undefined) {
-        if (isNaN(rh)) throw lang.illegalType(lnum, rh);
+        if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
 
         troValue.arrObj[troValue.arrIndex] = rh;
         return {asgnVarName: troValue.arrName, asgnValue: rh};
@@ -347,55 +370,55 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
 },
 "==" : function(lnum, args) {
-    return twoArg(lnum, args, function(lh, rh) { return lh == rh; });
+    return twoArg(lnum, args, (lh,rh) => lh == rh);
 },
 "<>" : function(lnum, args) {
-    return twoArg(lnum, args, function(lh, rh) { return lh != rh; });
+    return twoArg(lnum, args, (lh,rh) => lh != rh);
 },
 "><" : function(lnum, args) {
-    return twoArg(lnum, args, function(lh, rh) { return lh != rh; });
+    return twoArg(lnum, args, (lh,rh) => lh != rh);
 },
 "<=" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh <= rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh <= rh);
 },
 "=<" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh <= rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh <= rh);
 },
 ">=" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh >= rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh >= rh);
 },
 "=>" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh >= rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh >= rh);
 },
 "<" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh < rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh < rh);
 },
 ">" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh > rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh > rh);
 },
 "<<" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh << rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh << rh);
 },
 ">>" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh >> rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh >> rh);
 },
 "UNARYMINUS" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return -lh; });
+    return oneArgNum(lnum, args, (lh) => -lh);
 },
 "UNARYPLUS" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return +lh; });
+    return oneArgNum(lnum, args, (lh) => +lh);
 },
 "BAND" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh & rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh & rh);
 },
 "BOR" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh | rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh | rh);
 },
 "BXOR" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh ^ rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh ^ rh);
 },
 "!" : function(lnum, args) { // Haskell-style CONS
-    return twoArg(lnum, args, function(lh, rh) {
+    return twoArg(lnum, args, (lh,rh) => {
         if (isNaN(lh))
             throw lang.illegalType(lnum, lh); // BASIC array is numbers only
         if (!Array.isArray(rh))
@@ -404,7 +427,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "~" : function(lnum, args) { // array PUSH
-    return twoArg(lnum, args, function(lh, rh) {
+    return twoArg(lnum, args, (lh,rh) => {
         if (isNaN(rh))
             throw lang.illegalType(lnum, rh); // BASIC array is numbers only
         if (!Array.isArray(lh))
@@ -413,7 +436,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "#" : function(lnum, args) { // array CONCAT
-    return twoArg(lnum, args, function(lh, rh) {
+    return twoArg(lnum, args, (lh,rh) => {
         if (!Array.isArray(rh))
             throw lang.illegalType(lnum, rh);
         if (!Array.isArray(lh))
@@ -422,25 +445,25 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "+" : function(lnum, args) { // addition, string concat
-    return twoArg(lnum, args, function(lh, rh) { return lh + rh; });
+    return twoArg(lnum, args, (lh,rh) => lh + rh);
 },
 "-" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh - rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh - rh);
 },
 "*" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh * rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh * rh);
 },
 "/" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh / rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh / rh);
 },
 "MOD" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return lh % rh; });
+    return twoArgNum(lnum, args, (lh,rh) => lh % rh);
 },
 "^" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(lh, rh) { return Math.pow(lh, rh); });
+    return twoArgNum(lnum, args, (lh,rh) => Math.pow(lh, rh));
 },
 "TO" : function(lnum, args) {
-    return twoArgNum(lnum, args, function(from, to) {
+    return twoArgNum(lnum, args, (from, to) => {
         var a = [];
         if (from <= to) {
             for (var k = from; k <= to; k++) {
@@ -472,11 +495,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return a;
 },
 "DIM" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(size) {
-        if (size <= 0) throw lang.syntaxfehler(lnum, size);
-        var a = [];
-        for (var k = 0; k < size; k++) a.push(0);
-        return a;
+    return varArgNum(lnum, args, (dims) => {
+        let arraydec = "Array(dims[0]).fill(0)";
+        for (let k = 1; k < dims.length; k++) {
+            arraydec = `Array(dims[${k}]).fill().map(_=>${arraydec})`
+        }
+        return eval(arraydec);
     });
 },
 "PRINT" : function(lnum, args, seps) {
@@ -514,19 +538,19 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     }
 },
 "POKE" : function(lnum, args) {
-    twoArgNum(lnum, args, function(lh, rh) { sys.poke(lh, rh); });
+    twoArgNum(lnum, args, (lh,rh) => sys.poke(lh, rh));
 },
 "PEEK" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return sys.peek(lh); });
+    return oneArgNum(lnum, args, (lh) => sys.peek(lh));
 },
 "GOTO" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) {
+    return oneArgNum(lnum, args, (lh) => {
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
         return lh;
     });
 },
 "GOSUB" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) {
+    return oneArgNum(lnum, args, (lh) => {
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
         bStatus.gosubStack.push(lnum + 1);
         //println(lnum+" GOSUB into "+lh);
@@ -543,16 +567,16 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     bStatus.vars = initBvars();
 },
 "PLOT" : function(lnum, args) {
-    threeArgNum(lnum, args, function(xpos, ypos, color) { graphics.plotPixel(xpos, ypos, color); });
+    threeArgNum(lnum, args, (xpos, ypos, color) => graphics.plotPixel(xpos, ypos, color));
 },
 "AND" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    var rsvArg = args.map(function(it) { return resolve(it); });
+    var rsvArg = args.map((it) => resolve(it));
     rsvArg.forEach((v) => {
         if (v === undefined) throw lang.refError(lnum, v);
         if (typeof v !== "boolean") throw lang.illegalType(lnum, v);
     });
-    var argum = rsvArg.map(function(it) {
+    var argum = rsvArg.map((it) => {
         if (it === undefined) throw lang.refError(lnum, it);
         return it;
     });
@@ -560,12 +584,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "OR" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    var rsvArg = args.map(function(it) { return resolve(it); });
+    var rsvArg = args.map((it) => resolve(it));
     rsvArg.forEach((v) => {
         if (v === undefined) throw lang.refError(lnum, v.value);
         if (typeof v !== "boolean") throw lang.illegalType(lnum, v);
     });
-    var argum = rsvArg.map(function(it) {
+    var argum = rsvArg.map((it) => {
         if (it === undefined) throw lang.refError(lnum, it);
         return it;
     });
@@ -579,22 +603,22 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return (bStatus.rnd) / 16777216;
 },
 "ROUND" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return Math.round(lh); });
+    return oneArgNum(lnum, args, (lh) => Math.round(lh));
 },
 "FLOOR" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return Math.floor(lh); });
+    return oneArgNum(lnum, args, (lh) => Math.floor(lh));
 },
 "INT" : function(lnum, args) { // synonymous to FLOOR
-    return oneArgNum(lnum, args, function(lh) { return Math.floor(lh); });
+    return oneArgNum(lnum, args, (lh) => Math.floor(lh));
 },
 "CEIL" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return Math.ceil(lh); });
+    return oneArgNum(lnum, args, (lh) => Math.ceil(lh));
 },
 "FIX" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return (lh|0); });
+    return oneArgNum(lnum, args, (lh) => (lh|0));
 },
 "CHR$" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return String.fromCharCode(lh); });
+    return oneArgNum(lnum, args, (lh) => String.fromCharCode(lh));
 },
 "TEST" : function(lnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
@@ -702,7 +726,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return Number.MAX_SAFE_INTEGER; // GOTO far-far-away
 },
 "SPC" : function(lnum, args) {
-    return oneArgNum(lnum, args, function(lh) { return " ".repeat(lh); });
+    return oneArgNum(lnum, args, (lh) => " ".repeat(lh));
 },
 };
 Object.freeze(bStatus.builtin);
@@ -1181,34 +1205,36 @@ bF._parserElaboration = function(lnum, tokens, states) {
 /*
 for DEF*s, you might be able to go away with BINARY_OP, as the parsing tree would be:
 
-f Line 10 (function)
+£ Line 10 (function)
 | leaves: 1
-| value: defun
-| + Line 10 (operator)
+| value: defun (type: string)
+| ± Line 10 (op)
 | | leaves: 2
-| | value: =
-| | f Line 10 (function)
+| | value: = (type: string)
+| | £ Line 10 (function)
 | | | leaves: 1
-| | | value: sinc
-| | | i Line 10 (literal)
+| | | value: sinc (type: string)
+| | | i Line 10 (lit)
 | | | | leaves: 0
-| | | | value: X
+| | | | value: X (type: string)
 | | | `-----------------
 | | `-----------------
-| | + Line 10 (operator)
+| |  undefined
+| | ± Line 10 (op)
 | | | leaves: 2
-| | | value: /
-| | | f Line 10 (function)
+| | | value: / (type: string)
+| | | £ Line 10 (function)
 | | | | leaves: 1
-| | | | value: sin
-| | | | i Line 10 (literal)
+| | | | value: sin (type: string)
+| | | | i Line 10 (lit)
 | | | | | leaves: 0
-| | | | | value: X
+| | | | | value: X (type: string)
 | | | | `-----------------
 | | | `-----------------
-| | | i Line 10 (literal)
+| | |  undefined
+| | | i Line 10 (lit)
 | | | | leaves: 0
-| | | | value: X
+| | | | value: X (type: string)
 | | | `-----------------
 | | `-----------------
 | `-----------------
