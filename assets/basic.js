@@ -15,6 +15,8 @@ Test Programs:
 20 GOTO 10
 
 */
+let INDEX_BASE = 0;
+
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
     throw new Error("Out of memory");
@@ -325,12 +327,12 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
         return varArgNum(lnum, args, (dims) => {
             let indexingstr = "";
             dims.forEach((d) => {
-                indexingstr = `[${d}]${indexingstr}`;
+                indexingstr = `[${d-INDEX_BASE}]${indexingstr}`;
             })
             let indexedValue = eval(`array${indexingstr}`);
             let index = dims[0];
             let parentArr = eval(`array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
-            return {arrValue: indexedValue, arrObj: parentArr, arrIndex: index, arrName: arrayName}
+            return {arrValue: indexedValue, arrObj: parentArr, arrIndex: index-INDEX_BASE, arrName: arrayName}
         });
 
         //return {arrValue: indexedValue, arrObj: array, arrIndex: rsvArg0, arrName: arrayName}; //array[rsvArg0];
@@ -344,7 +346,6 @@ bStatus.builtin = {
 if no args were given (e.g. "10 NEXT()"), args[0] will be: {troType: null, troValue: , troNextLine: 11}
 if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
-"REM" : function(lnum, args) {},
 "=" : function(lnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
@@ -727,6 +728,21 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "SPC" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => " ".repeat(lh));
+},
+"LEFT$" : function(lnum, args) {
+    return twoArg(lnum, args, (str, len) => str.substring(0, len));
+},
+"MID$" : function(lnum, args) {
+    return threeArg(lnum, args, (str, start, len) => str.substring(start-INDEX_BASE, start-INDEX_BASE+len));
+},
+"RIGHT$" : function(lnum, args) {
+    return twoArg(lnum, args, (str, len) => str.substring(str.length - len, str.length));
+},
+"OPTIONBASE" : function(lnum, args) {
+    return oneArgNum(lnum, args, (lh) => {
+        if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
+        INDEX_BASE = lh|0;
+    });
 },
 };
 Object.freeze(bStatus.builtin);
@@ -1566,8 +1582,6 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
         if (syntaxTree.astLeaves.length > 1) throw "WTF";
         return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth);
     }
-    else if (recDepth == 0 && syntaxTree.astValue.toUpperCase() == "REM")
-        return bF._troNOP(lnum);
     else if (syntaxTree.astType == "function" || syntaxTree.astType == "op") {
         if (_debugExec) serial.println(recWedge+"function|operator");
         if (_debugExec) serial.println(recWedge+syntaxTree.toString());
@@ -1657,6 +1671,11 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 bF._interpretLine = function(lnum, cmd) {
     var _debugprintHighestLevel = true;
+
+    if (cmd.toUpperCase().startsWith("REM")) {
+        if (_debugprintHighestLevel) serial.println(lnum+" "+cmd);
+        return lnum+1;
+    }
 
     // TOKENISE
     var tokenisedObject = bF._tokenise(lnum, cmd);
@@ -1751,7 +1770,7 @@ bF.run = function(args) { // RUN function
     do {
         if (cmdbuf[linenumber] !== undefined) {
             oldnum = linenumber;
-            linenumber = bF._interpretLine(linenumber, cmdbuf[linenumber]);
+            linenumber = bF._interpretLine(linenumber, cmdbuf[linenumber].trim());
         }
         else {
             linenumber += 1;
