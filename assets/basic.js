@@ -11,7 +11,7 @@ Operators
 Test Programs:
 
 1 REM Random Maze
-10 PRINT(CHR$(47+ROUND(RND(1))*45);)
+10 PRINT(CHR(47+ROUND(RND(1))*45);)
 20 GOTO 10
 
 */
@@ -203,7 +203,7 @@ let BasicAST = function() {
         return sb;
     };
 }
-let literalTypes = ["string", "num", "bool", "array"];
+let literalTypes = ["string", "num", "bool", "array", "generator"];
 /*
 @param variable SyntaxTreeReturnObj, of which  the 'troType' is defined in BasicAST.
 @return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
@@ -302,6 +302,46 @@ let initBvars = function() {
         "EULER": new BasicVar(Math.E, "num")
     };
 }
+let ForGen = function(s,e,t) {
+    this.start = s;
+    this.end = e;
+    this.step = t || 1;
+
+    this.current = this.start;
+    this.stepsgn = (this.step > 0) ? 1 : -1;
+
+    this.hasNext = function() {
+        return this.current*this.stepsgn + this.step*this.stepsgn <= (this.end + this.step)*this.stepsgn;
+        // 1 to 10 step 1
+        // 1 + 1 <= 11 -> true
+        // 10 + 1 <= 11 -> true
+        // 11 + 1 <= 11 -> false
+
+        // 10 to 1 step -1
+        // -10 + 1 <= 0 -> true
+        // -1 + 1 <= 0 -> true
+        // 0 + 1 <= 0 -> false
+    }
+
+    // returns undefined if there is no next()
+    this.getNext = function() {
+        this.current += this.step;
+        return this.hasNext() ? this.current : undefined;
+    }
+
+    this.toArray = function() {
+        let a = [];
+        let cur = this.start;
+        while (cur*this.stepsgn + this.step*this.stepsgn <= (this.end + this.step)*this.stepsgn) {
+            a.push(cur);
+            cur += this.step;
+        }
+        return a;
+    }
+    this.toString = function() {
+        return `Generator: ${this.start} to ${this.end}`+((this.step !== 1) ? ` step ${this.step}` : '');
+    }
+}
 let bStatus = {};
 bStatus.gosubStack = [];
 bStatus.forLnums = {}; // key: forVar, value: linenum
@@ -348,9 +388,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
 
-    if (troValue.arrObj !== undefined) {
+    if (troValue.arrObj !== undefined) { // assign to existing array
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
-
         troValue.arrObj[troValue.arrIndex] = rh|0;
         return {asgnVarName: troValue.arrName, asgnValue: rh|0};
     }
@@ -361,7 +400,23 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         bStatus.vars[varname] = new BasicVar(rh, type);
         return {asgnVarName: varname, asgnValue: rh};
     }
+},
+"IN" : function(lnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    var troValue = args[0].troValue;
 
+    var rh = resolve(args[1]);
+    if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
+
+    if (troValue.arrObj !== undefined) {
+        throw lang.syntaxfehler(lnum);
+    }
+    else {
+        var varname = troValue.toUpperCase();
+        var type = JStoBASICtype(rh);
+        if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
+        return {asgnVarName: varname, asgnValue: rh};
+    }
 },
 "==" : function(lnum, args) {
     return twoArg(lnum, args, (lh,rh) => lh == rh);
@@ -457,7 +512,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return twoArgNum(lnum, args, (lh,rh) => Math.pow(lh, rh));
 },
 "TO" : function(lnum, args) {
-    return twoArgNum(lnum, args, (from, to) => {
+    /*return twoArgNum(lnum, args, (from, to) => {
         var a = [];
         if (from <= to) {
             for (var k = from; k <= to; k++) {
@@ -471,10 +526,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         }
 
         return a;
-    });
+    });*/
+    return twoArgNum(lnum, args, (from, to) => new ForGen(from, to, 1));
 },
 "STEP" : function(lnum, args) {
-    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    /*if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
     if (!Array.isArray(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
@@ -486,7 +542,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if (stepcnt == 0) a.push(v);
         stepcnt = (stepcnt + 1) % rsvArg1;
     });
-    return a;
+    return a;*/
+    return twoArg(lnum, args, (gen, step) => {
+        if (!(gen instanceof ForGen)) throw lang.illegalType(lnum, gen);
+        return new ForGen(gen.start, gen.end, step);
+    });
 },
 "DIM" : function(lnum, args) {
     return varArgNum(lnum, args, (dims) => {
@@ -505,14 +565,19 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             // parse separators.
             // ; - concat
             // , - tab
-            // numbers always surrounded by 1 whitespace
             if (llll >= 1) {
                 if (seps[llll - 1] == ",") print("\t");
             }
 
             var rsvArg = resolve(args[llll]);
             if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
-                print((rsvArg === undefined) ? "" : rsvArg);
+
+            if (rsvArg === undefined)
+                print("");
+            else if (rsvArg.toString !== undefined)
+                print(rsvArg.toString());
+            else
+                print(rsvArg);
         }
     }
 
@@ -618,7 +683,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     return resolve(args[0]);
 },
-"FOR" : function(lnum, args) {
+"FOREACH" : function(lnum, args) { // list comprehension model
     var asgnObj = resolve(args[0]);
     // type check
     if (asgnObj === undefined) throw  lang.syntaxfehler(lnum);
@@ -632,8 +697,27 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // stores entire array (sans head) into temporary storage
     bStatus.vars["for var "+varname] = new BasicVar(asgnObj.asgnValue, "array");
     // put the varname to forstack
-    bStatus.forLnums[asgnObj.asgnVarName] = lnum;
-    bStatus.forStack.push(asgnObj.asgnVarName);
+    bStatus.forLnums[varname] = lnum;
+    bStatus.forStack.push(varname);
+},
+"FOR" : function(lnum, args) { // generator model
+    var asgnObj = resolve(args[0]);
+    // type check
+    if (asgnObj === undefined) throw  lang.syntaxfehler(lnum);
+    if (!(asgnObj.asgnValue instanceof ForGen)) throw lang.illegalType(lnum, typeof asgnObj);
+
+    var varname = asgnObj.asgnVarName;
+    var generator = asgnObj.asgnValue;
+
+
+    // assign new variable
+    // the var itself will have head of the array, and the head itself will be removed from the array
+    bStatus.vars[varname] = new BasicVar(generator.start, "num");
+    // stores entire array (sans head) into temporary storage
+    bStatus.vars["for var "+varname] = new BasicVar(generator, "generator");
+    // put the varname to forstack
+    bStatus.forLnums[varname] = lnum;
+    bStatus.forStack.push(varname);
 },
 "NEXT" : function(lnum, args) {
     // if no args were given
@@ -644,7 +728,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if (forVarname === undefined) {
             throw lang.nextWithoutFor(lnum);
         }
-        bStatus.vars[forVarname].bvLiteral = bStatus.vars["for var "+forVarname].bvLiteral.shift();
+        var forVar = bStatus.vars["for var "+forVarname].bvLiteral;
+
+        if (forVar instanceof ForGen)
+            bStatus.vars[forVarname].bvLiteral = forVar.getNext();
+        else
+            bStatus.vars[forVarname].bvLiteral = forVar.shift();
 
         if ((bStatus.vars[forVarname].bvLiteral !== undefined)) {
             // feed popped value back, we're not done yet
@@ -652,7 +741,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             return bStatus.forLnums[forVarname] + 1;
         }
         else {
-            bStatus.vars[forVarname] === undefined; // unregister the variable
+            if (forVar instanceof ForGen)
+                bStatus.vars[forVarname].bvLiteral = forVar.current; // true BASIC compatibility for generator
+            else
+                bStatus.vars[forVarname] === undefined; // unregister the variable
+
             return lnum + 1;
         }
     }
@@ -803,8 +896,9 @@ bF._opPrc = {
     "!":15,"~":15, // array CONS and PUSH
     "#": 16, // array concat
     "=":999,
+    "IN":1000
 };
-bF._opRh = {"^":1,"=":1,"!":1};
+bF._opRh = {"^":1,"=":1,"!":1,"IN":1};
 bF._keywords = {
 
 };
@@ -1212,8 +1306,10 @@ bF._parserElaboration = function(lnum, tokens, states) {
     //            "IF" EXPRESSION "GOTO" NUMBERS "ELSE" NUMBERS |
     //            "IF" EXPRESSION "THEN" EXPRESSION |
     //            "IF" EXPRESSION "GOTO" NUMBERS
-    // FOR_LOOP -> "FOR" FUNCTION_OR_VARIABLE_NAME "=" EXPRESSION "TO" EXPRESSION "STEP" EXPRESSION |
-    //             "FOR" FUNCTION_OR_VARIABLE_NAME "=" EXPRESSION "TO" EXPRESSION
+    // FOR_LOOP -> "FOR" FUNCTION_OR_VARIABLE_NAME "IN" EXPRESSION "TO" EXPRESSION "STEP" EXPRESSION |
+    //             "FOR" FUNCTION_OR_VARIABLE_NAME "IN" EXPRESSION "TO" EXPRESSION |
+    //             "FOREACH" FUNCTION_OR_VARIABLE_NAME "=" EXPRESSION "TO" EXPRESSION "STEP" EXPRESSION |
+    //             "FOREACH" FUNCTION_OR_VARIABLE_NAME "=" EXPRESSION "TO" EXPRESSION |
     // WHILE_LOOP -> "WHILE" EXPERSSION
     // BINARY_OP -> EXPRSSION OPERATOR EXPRESSION
     // UNARY_OP -> OPERATOR EXPRESSION
@@ -1549,6 +1645,7 @@ bF._parseTokens = function(lnum, tokens, states, recDepth) {
 // @return is defined in BasicAST
 let JStoBASICtype = function(object) {
     if (typeof object === "boolean") return "bool";
+    else if (object instanceof ForGen) return "generator";
     else if (Array.isArray(object)) return "array";
     else if (!isNaN(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
