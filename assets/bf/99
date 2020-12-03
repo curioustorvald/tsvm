@@ -1,6 +1,6 @@
 # 99 bottles of beer in Brainf*ck
 # Copyright (C) 2008 Raphael Bois
-# 1671 brainf*ck instructions.
+# 1671 brainf*ck instructions
 # Published under GPL v2
 
 Initialization
@@ -98,7 +98,7 @@ Go back to (7) with final initialization step (remove 1 to all bytes)
     [>] at (20)
 
     +>+>[->+<<-<-
-         print ' on the wall' DOT LF LF
+         print ' on the wall' DOT LF
          <<<.            ' '
          <<<----.        'o'
          -.              'n'
@@ -114,7 +114,7 @@ Go back to (7) with final initialization step (remove 1 to all bytes)
          >---------- ---------- ---------- -- sets (15) to 'N'
 
          >>>++.--  DOT
-         >..       LF LF
+         >.       LF
     >>>] at (22)
 
     >>>[->[-]<<<<<<<[<]<[-]>>[>]>>>>>]+ if end of song reset bottles counter
