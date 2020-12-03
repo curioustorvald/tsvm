@@ -249,10 +249,10 @@ let twoArgNum = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
+    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, "LH:"+Object.entries(args[0]));
     var rsvArg1 = resolve(args[1]);
     if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
-    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, args[1]);
+    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, "RH:"+Object.entries(args[1]));
     return action(rsvArg0, rsvArg1);
 }
 let threeArg = function(lnum, args, action) {
