@@ -16,6 +16,7 @@ Test Programs:
 
 */
 let INDEX_BASE = 0;
+let TRACEON = true;
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -327,7 +328,7 @@ let ForGen = function(s,e,t) {
     // returns undefined if there is no next()
     this.getNext = function(mutated) {
         //if (mutated === undefined) throw "InternalError: parametre is missing";
-        if (mutated !== undefined) this.current = mutated;
+        if (mutated !== undefined) this.current = (mutated|0);
         this.current += this.step;
         return this.hasNext() ? this.current : undefined;
     }
@@ -575,12 +576,16 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             var rsvArg = resolve(args[llll]);
             if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
 
+            let printstr = "";
             if (rsvArg === undefined)
-                print("");
+                printstr = ("");
             else if (rsvArg.toString !== undefined)
-                print(rsvArg.toString());
+                printstr = (rsvArg.toString());
             else
-                print(rsvArg);
+                printstr = (rsvArg);
+
+            print(printstr);
+            if (TRACEON) serial.println("[BASIC.PRINT] "+printstr);
         }
     }
 
@@ -731,6 +736,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if (forVarname === undefined) {
             throw lang.nextWithoutFor(lnum);
         }
+
+        if (TRACEON) serial.println("[BASIC.FOR] looping "+forVarname);
+
         var forVar = bStatus.vars["for var "+forVarname].bvLiteral;
 
         if (forVar instanceof ForGen)
@@ -754,6 +762,18 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     }
 
     throw lang.syntaxfehler(lnum, "extra arguments for NEXT");
+},
+"BREAKTO" : function(lnum, args) {
+    return oneArgNum(lnum, args, (lh) => {
+        var forVarname = bStatus.forStack.pop();
+        if (forVarname === undefined) {
+            throw lang.nextWithoutFor(lnum);
+        }
+        if (TRACEON) serial.println(`[BASIC.FOR] breaking from ${forVarname}, jump to ${lh}`);
+
+        if (lh < 0) throw lang.syntaxfehler(lnum, lh);
+        return lh;
+    });
 },
 /*
 10 input;"what is your name";a$
@@ -798,6 +818,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     // print out prompt text
     print("? "); var rh = sys.read().trim();
+
+    if (rh*1 === (rh|0) || !isNaN(rh)) rh = rh*1
 
     if (troValue.arrObj !== undefined) {
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
@@ -1664,7 +1686,7 @@ let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.troValue = value;
     this.troNextLine = nextLine;
 }
-bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1}; // put nonzero (truthy) value here
+bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero (truthy) value here
 /**
  * @param lnum line number of BASIC
  * @param syntaxTree BasicAST
@@ -1674,7 +1696,7 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1}; // put nonzero (truthy) v
  */
 bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = true;
+    var _debugExec = false;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
@@ -1772,7 +1794,12 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
 bF._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = true;
+    var _debugprintHighestLevel = false;
+
+    if (TRACEON) {
+        //print(`[${lnum}]`);
+        serial.println("[BASIC] Line "+lnum);
+    }
 
     if (cmd.toUpperCase().startsWith("REM")) {
         if (_debugprintHighestLevel) serial.println(lnum+" "+cmd);
@@ -1794,13 +1821,16 @@ bF._interpretLine = function(lnum, cmd) {
     if (_debugprintHighestLevel) serial.println(syntaxTree.toString());
 
     // EXECUTE
-    //try {
+    try {
         var execResult = bF._executeSyntaxTree(lnum, syntaxTree, 0);
         return execResult.troNextLine;
-    //}
-    //catch (e) {
-    //    throw lang.parserError(lnum, e);
-    //}
+    }
+    catch (e) {
+        serial.println(`ERROR on ${lnum} -- PARSE TREE:`);
+        serial.println(syntaxTree.toString());
+        serial.println("ERROR CONTENTS:");
+        println(e);
+    }
 }; // end INTERPRETLINE
 bF._basicList = function(v, i, arr) {
     if (i < 10) print(" ");
@@ -1853,6 +1883,9 @@ bF.renum = function(args) { // RENUM function
         }
         else if (newcmdbuf[k] !== undefined && newcmdbuf[k].toLowerCase().startsWith("gosub ")) {
             newcmdbuf[k] = "GOSUB " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
+        }
+        else if (newcmdbuf[k] !== undefined && newcmdbuf[k].toLowerCase().startsWith("breakto ")) {
+            newcmdbuf[k] = "BREAKTO " + linenumRelation[newcmdbuf[k].match(reNum)[0]];
         }
     }
     cmdbuf = newcmdbuf.slice(); // make shallow copy
