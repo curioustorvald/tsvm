@@ -296,11 +296,30 @@ let varArgNum = function(lnum, args, action) {
     return action(rsvArg);
 }
 let initBvars = function() {
+    let primesgen = new ForGen(2,0);
+    primesgen.hasNext = (_) => true;
+    primesgen.getNext = function(_) {
+        do {
+            primesgen.current += 1;
+        } while (!(function(n){
+            if (n == 2 || n == 3) return true;
+            if (n % 2 == 0 || n % 3 == 0) return false;
+            for (let i = 5; i * i <= n; i = i + 6)
+                if (n % i == 0 || n % (i + 2) == 0)
+                    return false;
+            return true;
+        })(primesgen.current));
+
+        return primesgen.current;
+    };
+    primesgen.toString = (_) => "Generator: primes";
+
     return {
         "NIL": new BasicVar([], "array"),
         "PI": new BasicVar(Math.PI, "num"),
         "TAU": new BasicVar(Math.PI * 2.0, "num"),
-        "EULER": new BasicVar(Math.E, "num")
+        "EULER": new BasicVar(Math.E, "num"),
+        "PRIMES": new BasicVar(primesgen, "generator")
     };
 }
 let ForGen = function(s,e,t) {
@@ -341,6 +360,9 @@ let ForGen = function(s,e,t) {
             cur += this.step;
         }
         return a;
+    }
+    this.reset = function() {
+        this.current = this.start;
     }
     this.toString = function() {
         return `Generator: ${this.start} to ${this.end}`+((this.step !== 1) ? ` step ${this.step}` : '');
