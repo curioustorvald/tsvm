@@ -16,7 +16,7 @@ Test Programs:
 
 */
 let INDEX_BASE = 0;
-let TRACEON = true;
+let TRACEON = false;
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -359,14 +359,16 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
         return varArgNum(lnum, args, (dims) => {
             let indexingstr = "";
-            serial.println("ar dims: "+dims);
+            if (TRACEON) serial.println("ar dims: "+dims);
             dims.forEach((d) => {
                 indexingstr = `[${d-INDEX_BASE}]${indexingstr}`;
             })
-            serial.println("ar indexedValue = "+`/*ar1*/array${indexingstr}`);
+            if (TRACEON)
+                serial.println("ar indexedValue = "+`/*ar1*/array${indexingstr}`);
             let indexedValue = eval(`/*ar1*/array${indexingstr}`);
             let index = dims[0]-INDEX_BASE;
-            serial.println("ar parentArr = "+`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
+            if (TRACEON)
+                serial.println("ar parentArr = "+`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
             let parentArr = eval(`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
 
             if (index < 0) throw lang.subscrOutOfRng(lnum, arrayName);
@@ -1898,6 +1900,12 @@ bF.renum = function(args) { // RENUM function
 };
 bF.fre = function(args) {
     println(vmemsize - getUsedMemSize());
+};
+bF.tron = function(args) {
+    TRACEON = true;
+};
+bF.troff = function(args) {
+    TRACEON = false;
 };
 bF.run = function(args) { // RUN function
     var linenumber = 1;

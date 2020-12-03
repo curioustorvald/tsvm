@@ -1,4 +1,4 @@
-1 FOR I = 99 TO 1
+1 FOR I = 99 TO 1 STEP -1
 2   MODE = 1
 3   GOSUB 12
 4   PRINT(I+" bottle"+BOTTLES$+" of beer on the wall, "+i+" bottle"+BOTTLES$+" of beer.")
