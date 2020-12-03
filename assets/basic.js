@@ -323,8 +323,11 @@ let ForGen = function(s,e,t) {
         // 0 + 1 <= 0 -> false
     }
 
+    // mutableVar: the actual number stored into the FOR-Variable, because BASIC's FOR-Var is mutable af
     // returns undefined if there is no next()
-    this.getNext = function() {
+    this.getNext = function(mutated) {
+        //if (mutated === undefined) throw "InternalError: parametre is missing";
+        if (mutated !== undefined) this.current = mutated;
         this.current += this.step;
         return this.hasNext() ? this.current : undefined;
     }
@@ -731,7 +734,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         var forVar = bStatus.vars["for var "+forVarname].bvLiteral;
 
         if (forVar instanceof ForGen)
-            bStatus.vars[forVarname].bvLiteral = forVar.getNext();
+            bStatus.vars[forVarname].bvLiteral = forVar.getNext(bStatus.vars[forVarname].bvLiteral);
         else
             bStatus.vars[forVarname].bvLiteral = forVar.shift();
 
