@@ -17,6 +17,7 @@ Test Programs:
 */
 let INDEX_BASE = 0;
 let TRACEON = false;
+let DBGON = true;
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -43,10 +44,13 @@ lang.syntaxfehler = function(line, reason) {
     return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
 };
 lang.illegalType = function(line, obj) {
-    return "Type mismatch" + ((obj !== undefined) ? ' "' + obj + '"' : "") + ((line !== undefined) ? (" in "+line) : "");
+    return "Type mismatch" + ((obj !== undefined) ? ` "${obj} (typeof ${typeof obj})"` : "") + ((line !== undefined) ? (" in "+line) : "");
  };
 lang.refError = function(line, obj) {
-    return "Unresolved reference" + ((obj !== undefined) ? ' "' + obj + '"' : "") + ((line !== undefined) ? (" in "+line) : "");
+    serial.printerr(`${line} Unresolved reference:`);
+    serial.printerr(`    object: ${obj}, typeof: ${typeof obj}`);
+    serial.printerr(`    entries: ${Object.entries(obj)}`);
+    return "Unresolved reference" + ((obj !== undefined) ? ` "${obj}"` : "") + ((line !== undefined) ? (" in "+line) : "");
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
 lang.errorinline = function(line, stmt, errobj) {
@@ -64,10 +68,16 @@ lang.dupDef = function(line, varname) {
 lang.asgnOnConst = function(line, constname) {
     return 'Trying to modify constant "'+constname+'" in '+line;
 };
-lang.subscrOutOfRng = function(line, object) {
-    return "Subscript out of range"+(object !== undefined ? (' for "'+object+'"') : '')+(line !== undefined ? (" in "+line) : "")
+lang.subscrOutOfRng = function(line, object, index, maxlen) {
+    return "Subscript out of range"+(object !== undefined ? (' for "'+object+'"') : '')+(index !== undefined ? (` (index: ${index}, len: ${maxlen})`) : "")+(line !== undefined ? (" in "+line) : "");
 };
 lang.aG = " arguments were given";
+lang.ord = function(n) {
+    if (n % 10 == 1 && n % 100 != 11) return n+"st";
+    if (n % 10 == 2 && n % 100 != 12) return n+"nd";
+    if (n % 10 == 3 && n % 100 != 13) return n+"rd";
+    return n+"th";
+}
 Object.freeze(lang);
 
 let fs = {};
@@ -224,34 +234,40 @@ let resolve = function(variable) {
     else
         throw "BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue
 }
+let argCheckErr = function(lnum, o) {
+    if (o === undefined || o.troType == "null") throw lang.refError(lnum, o);
+    if (o.troType == "lit" && bStatus.vars[o.troValue] === undefined) throw lang.refError(lnum, o);
+    if (o.troValue.arrObj !== undefined && o.troValue.arrIndex >= o.troValue.arrObj.length)
+        throw lang.subscrOutOfRng(line, o.troValue.arrName, o.troValue.arrIndex, o.troValue.arrObj.length);
+}
 let oneArg = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     return action(rsvArg0);
 }
 let oneArgNum = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     return action(rsvArg0);
 }
 let twoArg = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, "LH:"+Object.entries(args[0]));
+    argCheckErr(lnum, args[1]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, "RH:"+Object.entries(args[1]));
     return action(rsvArg0, rsvArg1);
 }
 let twoArgNum = function(lnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, "LH:"+Object.entries(args[0]));
+    argCheckErr(lnum, args[1]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
     if (isNaN(rsvArg1)) throw lang.illegalType(lnum, "RH:"+Object.entries(args[1]));
     return action(rsvArg0, rsvArg1);
 }
@@ -382,15 +398,33 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
         return varArgNum(lnum, args, (dims) => {
             let indexingstr = "";
             if (TRACEON) serial.println("ar dims: "+dims);
+
+            let dimcnt = 1;
+            let oldIstr = "";
+            let istr = "";
+            // check error beforehand
+            dims.reverse().forEach((d) => {
+                oldIstr = istr;
+                istr += `[${d-INDEX_BASE}]`;
+                // test for index out of bounds
+                if (eval(`array${istr}`) === undefined) {
+                    throw lang.subscrOutOfRng(lnum, `${arrayName}${oldIstr} (${lang.ord(dimcnt)} dim)`, d-INDEX_BASE, eval(`array${oldIstr}`).length);
+                }
+                dimcnt += 1;
+            })
+            // actually build indexing string (trust me, indexing fails with code above; test with 'amazing.bas')
             dims.forEach((d) => {
                 indexingstr = `[${d-INDEX_BASE}]${indexingstr}`;
             })
             if (TRACEON)
                 serial.println("ar indexedValue = "+`/*ar1*/array${indexingstr}`);
+
             let indexedValue = eval(`/*ar1*/array${indexingstr}`);
             let index = dims[0]-INDEX_BASE;
+
             if (TRACEON)
                 serial.println("ar parentArr = "+`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
+            //let parentArr = eval(`/*ar2*/array${oldIndexingStr}`);
             let parentArr = eval(`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
 
             if (index < 0) throw lang.subscrOutOfRng(lnum, arrayName);
@@ -888,6 +922,42 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         INDEX_BASE = lh|0;
     });
 },
+"RESOLVE" : function(lnum, args) {
+    if (DBGON) {
+        return oneArg(lnum, args, (it) => {
+            println(it);
+        });
+    }
+    else {
+        throw lang.syntaxfehler(lnum);
+    }
+},
+"RESOLVE0" : function(lnum, args) {
+    if (DBGON) {
+        return oneArg(lnum, args, (it) => {
+            println(Object.entries(it));
+        });
+    }
+    else {
+        throw lang.syntaxfehler(lnum);
+    }
+},
+"UNRESOLVE" : function(lnum, args) {
+    if (DBGON) {
+        println(args[0]);
+    }
+    else {
+        throw lang.syntaxfehler(lnum);
+    }
+},
+"UNRESOLVE0" : function(lnum, args) {
+    if (DBGON) {
+        println(Object.entries(args[0]));
+    }
+    else {
+        throw lang.syntaxfehler(lnum);
+    }
+}
 };
 Object.freeze(bStatus.builtin);
 let bF = {};
@@ -1702,7 +1772,7 @@ let JStoBASICtype = function(object) {
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
     else if (object.arrValue !== undefined) return "internal_arrindexing_lazy";
     // buncha error msgs
-    else if (object.arrIndex-INDEX_BASE >= object.arrObj.length) throw lang.subscrOutOfRng(undefined, `${object.arrName}(${object.arrIndex}, len:${object.arrObj.length})`);
+    else if (object.arrIndex >= object.arrObj.length) throw lang.subscrOutOfRng(undefined, `${object.arrName}(${object.arrIndex}, len:${object.arrObj.length})`);
     else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
