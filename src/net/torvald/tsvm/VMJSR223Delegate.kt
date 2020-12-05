@@ -40,10 +40,12 @@ class VMJSR223Delegate(val vm: VM) {
 
     fun print(s: Any) {
         //System.out.print("[Nashorn] $s")
+        //System.out.print(s)
         vm.getPrintStream().write("$s".toByteArray(VM.CHARSET))
     }
     fun println(s: Any = "") {
         System.out.println("[Graal] $s")
+        //System.out.println(s)
         vm.getPrintStream().write(("$s\n").toByteArray(VM.CHARSET))
     }
 
