@@ -222,7 +222,7 @@ let literalTypes = ["string", "num", "bool", "array", "generator"];
 */
 let resolve = function(variable) {
     if (variable.troType === "internal_arrindexing_lazy")
-        return variable.troValue.arrValue;
+        return eval("variable.troValue.arrFull"+variable.troValue.arrKey);
     else if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
         return variable.troValue;
     else if (variable.troType == "lit") {
@@ -237,8 +237,6 @@ let resolve = function(variable) {
 let argCheckErr = function(lnum, o) {
     if (o === undefined || o.troType == "null") throw lang.refError(lnum, o);
     if (o.troType == "lit" && bStatus.vars[o.troValue] === undefined) throw lang.refError(lnum, o);
-    if (o.troValue.arrObj !== undefined && o.troValue.arrIndex >= o.troValue.arrObj.length)
-        throw lang.subscrOutOfRng(line, o.troValue.arrName, o.troValue.arrIndex, o.troValue.arrObj.length);
 }
 let oneArg = function(lnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
@@ -392,47 +390,44 @@ bStatus.vars = initBvars(); // contains instances of BasicVars
 bStatus.consts = {"NIL":1}; Object.freeze(bStatus.consts);
 bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
+bStatus.getDimSize = function(array, dim) {
+    var dims = [];
+    while (true) {
+        dims.push(array.length);
+
+        if (Array.isArray(array[0]))
+            array = array[0];
+        else
+            break;
+    }
+    return dims[dim];
+};
 bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
     return function(lnum, args) {
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
         return varArgNum(lnum, args, (dims) => {
-            let indexingstr = "";
             if (TRACEON) serial.println("ar dims: "+dims);
 
             let dimcnt = 1;
-            let oldIstr = "";
-            let istr = "";
-            // check error beforehand
-            dims.reverse().forEach((d) => {
-                oldIstr = istr;
-                istr += `[${d-INDEX_BASE}]`;
-                // test for index out of bounds
-                if (eval(`array${istr}`) === undefined) {
-                    throw lang.subscrOutOfRng(lnum, `${arrayName}${oldIstr} (${lang.ord(dimcnt)} dim)`, d-INDEX_BASE, eval(`array${oldIstr}`).length);
-                }
+            let oldIndexingStr = "";
+            let indexingstr = "";
+
+            dims.forEach(d => {
+                oldIndexingStr = indexingstr;
+                indexingstr += `[${d-INDEX_BASE}]`;
+
+                var testingArr = eval(`array${indexingstr}`);
+                if (testingArr === undefined)
+                    throw lang.subscrOutOfRng(lnum, `${arrayName}${oldIndexingStr} (${lang.ord(dimcnt)} dim)`, d-INDEX_BASE, bStatus.getDimSize(array, dimcnt-1));
+
                 dimcnt += 1;
-            })
-            // actually build indexing string (trust me, indexing fails with code above; test with 'amazing.bas')
-            dims.forEach((d) => {
-                indexingstr = `[${d-INDEX_BASE}]${indexingstr}`;
-            })
+            });
+
             if (TRACEON)
                 serial.println("ar indexedValue = "+`/*ar1*/array${indexingstr}`);
 
-            let indexedValue = eval(`/*ar1*/array${indexingstr}`);
-            let index = dims[0]-INDEX_BASE;
-
-            if (TRACEON)
-                serial.println("ar parentArr = "+`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
-            //let parentArr = eval(`/*ar2*/array${oldIndexingStr}`);
-            let parentArr = eval(`/*ar2*/array${indexingstr.substring(0, indexingstr.length - 2 - (""+index).length)}`);
-
-            if (index < 0) throw lang.subscrOutOfRng(lnum, arrayName);
-
-            return {arrValue: indexedValue, arrObj: parentArr, arrIndex: index, arrName: arrayName}
+            return {arrFull: array, arrName: arrayName, arrKey: indexingstr};
         });
-
-        //return {arrValue: indexedValue, arrObj: array, arrIndex: rsvArg0, arrName: arrayName}; //array[rsvArg0];
     };
 };
 bStatus.builtin = {
@@ -444,16 +439,21 @@ if no args were given (e.g. "10 NEXT()"), args[0] will be: {troType: null, troVa
 if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
 "=" : function(lnum, args) {
+    // THIS FUNCTION MUST BE COPIED TO 'INPUT'
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
 
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
 
-    if (troValue.arrObj !== undefined) { // assign to existing array
+    if (!isNaN(rh)) rh = rh*1 // if string we got can be cast to number, do it
+
+    if (troValue.arrFull !== undefined) { // assign to existing array
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
-        troValue.arrObj[troValue.arrIndex] = rh|0;
-        return {asgnVarName: troValue.arrName, asgnValue: rh|0};
+        let arr = eval("troValue.arrFull"+troValue.arrKey);
+        if (Array.isArray(arr)) throw lang.subscrOutOfRng(lnum, arr);
+        eval("troValue.arrFull"+troValue.arrKey+"=rh");
+        return {asgnVarName: troValue.arrName, asgnValue: rh};
     }
     else {
         var varname = troValue.toUpperCase();
@@ -470,7 +470,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
 
-    if (troValue.arrObj !== undefined) {
+    if (troValue.arrFull !== undefined) {
         throw lang.syntaxfehler(lnum);
     }
     else {
@@ -611,7 +611,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "DIM" : function(lnum, args) {
-    return varArgNum(lnum, args, (dims) => {
+    return varArgNum(lnum, args, (revdims) => {
+        let dims = revdims.reverse();
         let arraydec = "Array(dims[0]).fill(0)";
         for (let k = 1; k < dims.length; k++) {
             arraydec = `Array(dims[${k}]).fill().map(_=>${arraydec})`
@@ -877,13 +878,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // print out prompt text
     print("? "); var rh = sys.read().trim();
 
-    if (rh*1 === (rh|0) || !isNaN(rh)) rh = rh*1
+    if (!isNaN(rh)) rh = rh*1 // if string we got can be cast to number, do it
 
-    if (troValue.arrObj !== undefined) {
+    if (troValue.arrFull !== undefined) { // assign to existing array
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
-
-        troValue.arrObj[troValue.arrIndex] = rh|0;
-        return {asgnVarName: troValue.arrName, asgnValue: rh|0};
+        let arr = eval("troValue.arrFull"+troValue.arrKey);
+        if (Array.isArray(arr)) throw lang.subscrOutOfRng(lnum, arr);
+        eval("troValue.arrFull"+troValue.arrKey+"=rh");
+        return {asgnVarName: troValue.arrName, asgnValue: rh};
     }
     else {
         var varname = troValue.toUpperCase();
@@ -920,6 +922,18 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArgNum(lnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         INDEX_BASE = lh|0;
+    });
+},
+"OPTIONDEBUG" : function(lnum, args) {
+    return oneArgNum(lnum, args, (lh) => {
+        if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
+        DBGON = (1 == lh|0);
+    });
+},
+"OPTIONTRACE" : function(lnum, args) {
+    return oneArgNum(lnum, args, (lh) => {
+        if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
+        TRACEON = (1 == lh|0);
     });
 },
 "RESOLVE" : function(lnum, args) {
@@ -1770,9 +1784,8 @@ let JStoBASICtype = function(object) {
     else if (typeof object === "string" || object instanceof String) return "string";
     else if (object === undefined) return "null";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
-    else if (object.arrValue !== undefined) return "internal_arrindexing_lazy";
+    else if (object.arrName !== undefined) return "internal_arrindexing_lazy";
     // buncha error msgs
-    else if (object.arrIndex >= object.arrObj.length) throw lang.subscrOutOfRng(undefined, `${object.arrName}(${object.arrIndex}, len:${object.arrObj.length})`);
     else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
