@@ -665,18 +665,38 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 },
-"EMIT" : function(lnum, args) {
-    if (args.length > 0) {
+"EMIT" : function(lnum, args, seps) {
+    if (args.length == 0)
+        println();
+    else {
         for (var llll = 0; llll < args.length; llll++) {
-            var lvalll = resolve(args[llll]);
-            if (isNaN(lvalll)) {
-                print(lvalll);
+            // parse separators.
+            // ; - concat
+            // , - tab
+            if (llll >= 1) {
+                if (seps[llll - 1] == ",") print("\t");
             }
-            else {
-                con.addch(lvalll);
+
+            var rsvArg = resolve(args[llll]);
+            if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
+
+            let printstr = "";
+            if (rsvArg === undefined)
+                print("")
+            else if (!isNaN(rsvArg)) {
+                let c = con.getyx();
+                con.addch(rsvArg);
             }
+            else if (rsvArg.toString !== undefined)
+                print(rsvArg.toString());
+            else
+                printstr = (rsvArg);
+
+            if (TRACEON) serial.println("[BASIC.EMIT] "+printstr);
         }
     }
+
+    if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 },
 "POKE" : function(lnum, args) {
     twoArgNum(lnum, args, (lh,rh) => sys.poke(lh, rh));
