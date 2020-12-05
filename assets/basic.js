@@ -448,6 +448,13 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     if (!isNaN(rh)) rh = rh*1 // if string we got can be cast to number, do it
 
+    //println(lnum+" = lh: "+Object.entries(args[0]));
+    //println(lnum+" = rh raw: "+Object.entries(args[1]));
+    //println(lnum+" = rh resolved: "+rh);
+    //try { println(lnum+" = rh resolved entries: "+Object.entries(rh)); }
+    //catch (_) {}
+
+
     if (troValue.arrFull !== undefined) { // assign to existing array
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
         let arr = eval("troValue.arrFull"+troValue.arrKey);
@@ -459,8 +466,16 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         var varname = troValue.toUpperCase();
         var type = JStoBASICtype(rh);
         if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
-        bStatus.vars[varname] = new BasicVar(rh, type);
-        return {asgnVarName: varname, asgnValue: rh};
+        // special case for scalar array
+        // it basically bypasses the regular resolve subroutine
+        if (args[1].troType !== undefined && args[1].troType == "array") {
+            bStatus.vars[varname] = new BasicVar(args[1].troValue, "array");
+            return {asgnVarName: varname, asgnValue: rh};
+        }
+        else {
+            bStatus.vars[varname] = new BasicVar(rh, type);
+            return {asgnVarName: varname, asgnValue: rh};
+        }
     }
 },
 "IN" : function(lnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
@@ -1778,13 +1793,13 @@ bF._parseTokens = function(lnum, tokens, states, recDepth) {
 // @return is defined in BasicAST
 let JStoBASICtype = function(object) {
     if (typeof object === "boolean") return "bool";
+    else if (object === undefined) return "null";
+    else if (object.arrName !== undefined) return "internal_arrindexing_lazy";
+    else if (object.asgnVarName !== undefined) return "internal_assignment_object";
     else if (object instanceof ForGen) return "generator";
     else if (Array.isArray(object)) return "array";
     else if (!isNaN(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
-    else if (object === undefined) return "null";
-    else if (object.asgnVarName !== undefined) return "internal_assignment_object";
-    else if (object.arrName !== undefined) return "internal_arrindexing_lazy";
     // buncha error msgs
     else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
 }
@@ -1855,6 +1870,9 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             // func not in builtins (e.g. array access, user-defined function defuns)
             if (func === undefined) {
                 var someVar = bStatus.vars[funcName];
+
+                //println(lnum+" _executeSyntaxTree: "+Object.entries(someVar));
+
                 if (someVar === undefined) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
                 }
