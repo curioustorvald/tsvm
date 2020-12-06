@@ -53,7 +53,7 @@ object BasicRom : VMProgramRom {
     private val contents: ByteArray
 
     init {
-        val bytes = File("./assets/basic.js").readBytes()
+        val bytes = File("./assets/bios/basic.bin").readBytes()
         contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
     }
 

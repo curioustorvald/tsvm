@@ -15,7 +15,7 @@ Test Programs:
 20 GOTO 10
 
 */
-if (exec_args[1] !== undefined && exec_args[1].startsWith("-?")) {
+if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].startsWith("-?")) {
     println("Usage: basic <optional path to basic program>");
     println("When the optional basic program is set, the interpreter will run the program and then quit if successful, remain open if the program had an error.");
     return 0;
@@ -25,6 +25,8 @@ if (exec_args[1] !== undefined && exec_args[1].startsWith("-?")) {
 let INDEX_BASE = 0;
 let TRACEON = false;
 let DBGON = true;
+let DATA_CURSOR = 0;
+let DATA_CONSTS = [];
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -37,6 +39,11 @@ let cmdbuf = []; // index: line number
 let cmdbufMemFootPrint = 0;
 let prompt = "Ok";
 
+/* if string can be FOR REAL cast to number */
+function isNumable(s) {
+    return s !== undefined && (typeof s.trim == "function" && s.trim() !== "" || s.trim == undefined) && !isNaN(s);
+}
+
 let lang = {};
 lang.badNumberFormat = "Illegal number format";
 lang.badOperatorFormat = "Illegal operator format";
@@ -44,6 +51,9 @@ lang.badFunctionCallFormat = "Illegal function call";
 lang.unmatchedBrackets = "Unmatched brackets";
 lang.missingOperand = "Missing operand";
 lang.noSuchFile = "No such file";
+lang.outOfData = function(line) {
+    return "Out of DATA"+(line !== undefined ? (" in "+line) : "");
+};
 lang.nextWithoutFor = function(line, varname) {
     return "NEXT "+((varname !== undefined) ? ("'"+varname+"'") : "")+"without FOR in "+line;
 };
@@ -234,6 +244,7 @@ let resolve = function(variable) {
         return variable.troValue;
     else if (variable.troType == "lit") {
         var basicVar = bStatus.vars[variable.troValue];
+        if (basicVar.bvLiteral === "") return "";
         return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
     }
     else if (variable.troType == "null")
@@ -278,39 +289,39 @@ let twoArgNum = function(lnum, args, action) {
 }
 let threeArg = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
+    argCheckErr(lnum, args[1]);
     var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
+    argCheckErr(lnum, args[2]);
     var rsvArg2 = resolve(args[2]);
-    if (rsvArg2 === undefined) throw lang.refError(lnum, args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
 let threeArgNum = function(lnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    var rsvArg0 = resolve(args[0]);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
+    argCheckErr(lnum, args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
-    var rsvArg1 = resolve(args[1]);
     if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
+    argCheckErr(lnum, args[1]);
     if (isNaN(rsvArg1)) throw lang.illegalType(lnum, args[1]);
-    var rsvArg2 = resolve(args[2]);
     if (rsvArg2 === undefined) throw lang.refError(lnum, args[2]);
+    argCheckErr(lnum, args[2]);
     if (isNaN(rsvArg2)) throw lang.illegalType(lnum, args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
 let varArg = function(lnum, args, action) {
     var rsvArg = args.map((it) => {
+        argCheckErr(lnum, it);
         var r = resolve(it);
-        if (r === undefined) throw lang.refError(lnum, r);
         return r;
     });
     return action(rsvArg);
 }
 let varArgNum = function(lnum, args, action) {
     var rsvArg = args.map((it) => {
+        argCheckErr(lnum, it);
         var r = resolve(it);
-        if (r === undefined) throw lang.refError(lnum, r);
         if (isNaN(r)) throw lang.illegalType(lnum, r);
         return r;
     });
@@ -453,7 +464,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
 
-    if (!isNaN(rh)) rh = rh*1 // if string we got can be cast to number, do it
+    if (isNumable(rh)) rh = rh*1 // if string we got can be cast to number, do it
 
     //println(lnum+" = lh: "+Object.entries(args[0]));
     //println(lnum+" = rh raw: "+Object.entries(args[1]));
@@ -596,37 +607,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return twoArgNum(lnum, args, (lh,rh) => Math.pow(lh, rh));
 },
 "TO" : function(lnum, args) {
-    /*return twoArgNum(lnum, args, (from, to) => {
-        var a = [];
-        if (from <= to) {
-            for (var k = from; k <= to; k++) {
-                a.push(k);
-            }
-        }
-        else {
-            for (var k = -from; k <= -to; k++) {
-                a.push(-k);
-            }
-        }
-
-        return a;
-    });*/
     return twoArgNum(lnum, args, (from, to) => new ForGen(from, to, 1));
 },
 "STEP" : function(lnum, args) {
-    /*if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    var rsvArg0 = resolve(args[0]);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, rsvArg0);
-    if (!Array.isArray(rsvArg0)) throw lang.illegalType(lnum, rsvArg0);
-    var rsvArg1 = resolve(args[1]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, rsvArg1);
-    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, rsvArg1);
-    var a = []; var stepcnt = 0;
-    rsvArg0.forEach((v,i) => {
-        if (stepcnt == 0) a.push(v);
-        stepcnt = (stepcnt + 1) % rsvArg1;
-    });
-    return a;*/
     return twoArg(lnum, args, (gen, step) => {
         if (!(gen instanceof ForGen)) throw lang.illegalType(lnum, gen);
         return new ForGen(gen.start, gen.end, step);
@@ -657,13 +640,15 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             var rsvArg = resolve(args[llll]);
             if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
 
+            //serial.println(`${lnum} PRINT ${lang.ord(llll)} arg: ${Object.entries(args[llll])}, resolved: ${rsvArg}`);
+
             let printstr = "";
-            if (rsvArg === undefined)
-                printstr = ("");
+            if (rsvArg === undefined || rsvArg === "")
+                printstr = "";
             else if (rsvArg.toString !== undefined)
-                printstr = (rsvArg.toString());
+                printstr = rsvArg.toString();
             else
-                printstr = (rsvArg);
+                printstr = rsvArg;
 
             print(printstr);
             if (TRACEON) serial.println("[BASIC.PRINT] "+printstr);
@@ -960,12 +945,59 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "ABS" : function(lnum, args) {
     return oneArgNum(lnum, args, (it) => Math.abs(it));
 },
+"SIN" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.sin(it));
+},
+"COS" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.cos(it));
+},
+"TAN" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.tan(it));
+},
+"EXP" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.exp(it));
+},
+"ASN" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.asin(it));
+},
+"ACO" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.acos(it));
+},
+"ATN" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.atan(it));
+},
+"SQR" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.sqrt(it));
+},
+"CBR" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.cbrt(it));
+},
+"SINH" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.sinh(it));
+},
+"COSH" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.cosh(it));
+},
+"TANH" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.tanh(it));
+},
+"LOG" : function(lnum, args) {
+    return oneArgNum(lnum, args, (it) => Math.log(it));
+},
+"RESTORE" : function(lnum, args) {
+    DATA_CURSOR = 0;
+},
+"READ" : function(lnum, args) {
+    let r = DATA_CONSTS.shift();
+    if (r === undefined) throw outOfData(lnum);
+},
 "OPTIONBASE" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         INDEX_BASE = lh|0;
     });
 },
+"DATA" : function() { /*DATA must do nothing when encountered; they must be pre-processed*/ },
 "OPTIONDEBUG" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
@@ -1955,7 +1987,7 @@ bF._interpretLine = function(lnum, cmd) {
 
     if (cmd.toUpperCase().startsWith("REM")) {
         if (_debugprintHighestLevel) serial.println(lnum+" "+cmd);
-        return lnum+1;
+        return undefined;
     }
 
     // TOKENISE
@@ -1972,16 +2004,19 @@ bF._interpretLine = function(lnum, cmd) {
     if (_debugprintHighestLevel) serial.println("Final syntax tree:");
     if (_debugprintHighestLevel) serial.println(syntaxTree.toString());
 
+    return syntaxTree;
+}; // end INTERPRETLINE
+bF._executeAndGet = function(lnum, syntaxTree) {
     // EXECUTE
     try {
         var execResult = bF._executeSyntaxTree(lnum, syntaxTree, 0);
         return execResult.troNextLine;
     }
     catch (e) {
-        serial.printerr(`ERROR on ${lnum} -- PARSE TREE:\n${syntaxTree.toString()}\nERROR CONTENTS:\n${e}`);
+        serial.printerr(`ERROR on ${lnum} -- PARSE TREE:\n${syntaxTree.toString()}\nERROR CONTENTS:\n${e}\n${e.stack || "Stack trace undefined"}`);
         throw e;
     }
-}; // end INTERPRETLINE
+};
 bF._basicList = function(v, i, arr) {
     if (i < 10) print(" ");
     if (i < 100) print(" ");
@@ -2056,12 +2091,19 @@ bF.troff = function(args) {
     TRACEON = false;
 };
 bF.run = function(args) { // RUN function
+    // pre-build the trees
+    let programTree = [];
+    cmdbuf.forEach((linestr, linenum) => {
+        programTree[linenum] = bF._interpretLine(linenum, linestr.trim());
+    });
+
+    // actually execute the program
     var linenumber = 1;
     var oldnum = 1;
     do {
         if (cmdbuf[linenumber] !== undefined) {
             oldnum = linenumber;
-            linenumber = bF._interpretLine(linenumber, cmdbuf[linenumber].trim());
+            linenumber = bF._executeAndGet(linenumber, programTree[linenumber]);
         }
         else {
             linenumber += 1;
