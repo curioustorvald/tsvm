@@ -15,6 +15,13 @@ Test Programs:
 20 GOTO 10
 
 */
+if (exec_args[1] !== undefined && exec_args[1].startsWith("-?")) {
+    println("Usage: basic <optional path to basic program>");
+    println("When the optional basic program is set, the interpreter will run the program and then quit if successful, remain open if the program had an error.");
+    return 0;
+}
+
+
 let INDEX_BASE = 0;
 let TRACEON = false;
 let DBGON = true;
@@ -1971,10 +1978,8 @@ bF._interpretLine = function(lnum, cmd) {
         return execResult.troNextLine;
     }
     catch (e) {
-        serial.println(`ERROR on ${lnum} -- PARSE TREE:`);
-        serial.println(syntaxTree.toString());
-        serial.println("ERROR CONTENTS:");
-        println(e);
+        serial.printerr(`ERROR on ${lnum} -- PARSE TREE:\n${syntaxTree.toString()}\nERROR CONTENTS:\n${e}`);
+        throw e;
     }
 }; // end INTERPRETLINE
 bF._basicList = function(v, i, arr) {
@@ -2080,6 +2085,12 @@ bF.load = function(args) { // LOAD function
     if (args[1] === undefined) throw lang.missingOperand;
     var fileOpened = fs.open(args[1], "R");
     if (!fileOpened) {
+        fileOpened = fs.open(args[1]+".BAS", "R");
+    }
+    if (!fileOpened) {
+        fileOpened = fs.open(args[1]+".bas", "R");
+    }
+    if (!fileOpened) {
         throw lang.noSuchFile;
         return;
     }
@@ -2109,6 +2120,19 @@ bF.catalog = function(args) { // CATALOG function
     println(com.pullMessage(port));
 };
 Object.freeze(bF);
+
+if (exec_args[1] !== undefined) {
+    bF.load(["load", exec_args[1]]);
+    try {
+        bF.run();
+        return 0;
+    }
+    catch (e) {
+        serial.printerr(e);
+        println(e);
+    }
+}
+
 while (!tbasexit) {
     var line = sys.read().trim();
 
