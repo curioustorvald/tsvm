@@ -31,10 +31,14 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG
 )
 
+data class SuperGraphicsAddonConfig(
+    val hasSecondBank: Boolean = false
+)
+
 /**
  * NOTE: if TTY size is greater than 80*32, SEGFAULT will occur because text buffer is fixed in size
  */
-open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
+open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: SuperGraphicsAddonConfig = SuperGraphicsAddonConfig()) :
     GlassTty(config.textRows, config.textCols), PeriBase {
 
     override fun getVM(): VM {
@@ -152,7 +156,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig) :
         faketex = Texture(pm)
         pm.dispose()
 
-        // initialise with NONZERO value; value zero corresponds with opaque black, and it will paint the whole screen black
+        // initialise with NONZERO value; value zero corresponds to opaque black, and it will paint the whole screen black
         // when in text mode, and that's undesired behaviour
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
         spriteAndTextArea.fillWith(-1)

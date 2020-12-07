@@ -905,7 +905,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // print out prompt text
     print("? "); var rh = sys.read().trim();
 
-    if (!isNaN(rh)) rh = rh*1 // if string we got can be cast to number, do it
+    // if string we got can be cast to number, do it
+    // NOTE: empty string will be cast to 0, which corresponds to GW-BASIC
+    if (!isNaN(rh)) rh = rh*1
 
     if (troValue.arrFull !== undefined) { // assign to existing array
         if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);

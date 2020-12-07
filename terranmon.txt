@@ -168,17 +168,23 @@ FI
     Palette stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
     Palette number 255 is always full transparent (bits being all zero)
 
-Optional Sprite Card
-16 bytes
-    Reserved
-65520 bytes:
-    (0th sprite is always the GUI cursor, thus 251 sprites)
-    2 bytes
-        Ob hv000pxy yyyyyyyy (p: 0 for above-text, 1 for below-text, h: horizontal flip, v: vertical flip, x: show/hide, y: y-position)
-    2 bytes
-        0b rr0000xx xxxxxxxx (r: rotation, x: x-position)
+Optional Sprite Card (VRAM Bank 1 (256 kB))
+250880 bytes
+    Secondary framebuffer
+533 bytes: Sprite attribute table
+    (41 sprites total, of which 1 is GUI cursor)
+    12 bytes - signed fixed point
+        X-position
+        Y-position
+        Transform matrix A..D
+    1 bytes
+        0b 0000 00vp
+        (p: 0 for above-all, 1 for below-text, v: show/hide)
+10496 bytes: Sprite table
     256 bytes
         16x16 texture for the sprite
+235 bytes:
+    unused
 
 MMIO
 
