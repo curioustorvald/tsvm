@@ -30,7 +30,7 @@ let DATA_CONSTS = [];
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
-    throw new Error("Out of memory");
+    throw Error("Out of memory");
 }
 
 let vmemsize = system.maxmem() - 5236;
@@ -47,7 +47,9 @@ function isNumable(s) {
 let lang = {};
 lang.badNumberFormat = Error("Illegal number format");
 lang.badOperatorFormat = Error("Illegal operator format");
-lang.badFunctionCallFormat = Error("Illegal function call");
+lang.badFunctionCallFormat = function(reason) {
+    return Error("Illegal function call" + ((reason) ? ": "+reason : ""));
+};
 lang.unmatchedBrackets = Error("Unmatched brackets");
 lang.missingOperand = Error("Missing operand");
 lang.noSuchFile = Error("No such file");
@@ -190,7 +192,7 @@ println(prompt);
 // variable object constructor
 /** variable object constructor
  * @param literal Javascript object or primitive
- * @type derived from JStoBASICtype + "fun" + "internal_arrindexing_lazy" + "internal_assignment_object"
+ * @type derived from JStoBASICtype + "usrdefun" + "internal_arrindexing_lazy" + "internal_assignment_object"
  * @see bStatus.builtin["="]
  */
 let BasicVar = function(literal, type) {
@@ -199,6 +201,24 @@ let BasicVar = function(literal, type) {
 }
 // Abstract Syntax Tree
 // creates empty tree node
+let astToString = function(ast) {
+    var sb = "";
+    var marker = ("lit" == ast.astType) ? "i" :
+                 ("op" == ast.astType) ? String.fromCharCode(177) :
+                 ("string" == ast.astType) ? String.fromCharCode(182) :
+                 ("num" == ast.astType) ? String.fromCharCode(162) :
+                 ("array" == ast.astType) ? "[" : String.fromCharCode(163);
+    sb += "| ".repeat(ast.astDepth) + marker+" Line "+ast.astLnum+" ("+ast.astType+")\n";
+    sb += "| ".repeat(ast.astDepth+1) + "leaves: "+(ast.astLeaves.length)+"\n";
+    sb += "| ".repeat(ast.astDepth+1) + "value: "+ast.astValue+" (type: "+typeof ast.astValue+")\n";
+    for (var k = 0; k < ast.astLeaves.length; k++) {
+        if (k > 0)
+            sb += "| ".repeat(ast.astDepth+1) + " " + ast.astSeps[k - 1] + "\n";
+        sb += astToString(ast.astLeaves[k]);
+    }
+    sb += "| ".repeat(ast.astDepth) + "`-----------------\n";
+    return sb;
+}
 let BasicAST = function() {
     this.astLnum = 0;
     this.astDepth = 0;
@@ -206,25 +226,6 @@ let BasicAST = function() {
     this.astSeps = [];
     this.astValue = undefined;
     this.astType = "null"; // literal, operator, string, number, array, function, null, defun_args
-
-    this.toString = function() {
-        var sb = "";
-        var marker = ("lit" == this.astType) ? "i" :
-                     ("op" == this.astType) ? String.fromCharCode(177) :
-                     ("string" == this.astType) ? String.fromCharCode(182) :
-                     ("num" == this.astType) ? String.fromCharCode(162) :
-                     ("array" == this.astType) ? "[" : String.fromCharCode(163);
-        sb += "| ".repeat(this.astDepth) + marker+" Line "+this.astLnum+" ("+this.astType+")\n";
-        sb += "| ".repeat(this.astDepth+1) + "leaves: "+(this.astLeaves.length)+"\n";
-        sb += "| ".repeat(this.astDepth+1) + "value: "+this.astValue+" (type: "+typeof this.astValue+")\n";
-        for (var k = 0; k < this.astLeaves.length; k++) {
-            if (k > 0)
-                sb += "| ".repeat(this.astDepth+1) + " " + this.astSeps[k - 1] + "\n";
-            sb += this.astLeaves[k].toString(); + "\n";
-        }
-        sb += "| ".repeat(this.astDepth) + "`-----------------\n";
-        return sb;
-    };
 }
 let literalTypes = ["string", "num", "bool", "array", "generator"];
 /*
@@ -245,7 +246,7 @@ let resolve = function(variable) {
     else if (variable.troType == "null")
         return undefined;
     else
-        throw "BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue
+        throw Error("BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue);
 }
 let argCheckErr = function(lnum, o) {
     if (o === undefined || o.troType == "null") throw lang.refError(lnum, o);
@@ -322,7 +323,7 @@ let varArgNum = function(lnum, args, action) {
     });
     return action(rsvArg);
 }
-let initBvars = function() {
+let _primesgen = function() {
     let primesgen = new ForGen(2,0);
     primesgen.hasNext = (_) => true;
     primesgen.getNext = function(_) {
@@ -340,14 +341,18 @@ let initBvars = function() {
         return primesgen.current;
     };
     primesgen.toString = (_) => "Generator: primes";
-
-    return {
-        "NIL": new BasicVar([], "array"),
-        "PI": new BasicVar(Math.PI, "num"),
-        "TAU": new BasicVar(Math.PI * 2.0, "num"),
-        "EULER": new BasicVar(Math.E, "num"),
-        "PRIMES": new BasicVar(primesgen, "generator")
-    };
+    return primesgen;
+}
+let _basicConsts = {
+   "NIL": new BasicVar([], "array"),
+   "PI": new BasicVar(Math.PI, "num"),
+   "TAU": new BasicVar(Math.PI * 2.0, "num"),
+   "EULER": new BasicVar(Math.E, "num"),
+   "PRIMES": new BasicVar(_primesgen, "generator")
+};
+Object.freeze(_basicConsts);
+let initBvars = function() {
+    return JSON.parse(JSON.stringify(_basicConsts));
 }
 let ForGen = function(s,e,t) {
     this.start = s;
@@ -400,8 +405,6 @@ bStatus.gosubStack = [];
 bStatus.forLnums = {}; // key: forVar, value: linenum
 bStatus.forStack = []; // forVars only
 bStatus.vars = initBvars(); // contains instances of BasicVars
-bStatus.consts = {"NIL":1}; Object.freeze(bStatus.consts);
-bStatus.defuns = {};
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
 bStatus.getDimSize = function(array, dim) {
     var dims = [];
@@ -416,7 +419,7 @@ bStatus.getDimSize = function(array, dim) {
     return dims[dim];
 };
 bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
-    return function(lnum, args) {
+    return function(lnum, args, seps) {
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
         return varArgNum(lnum, args, (dims) => {
             if (TRACEON) serial.println("ar dims: "+dims);
@@ -442,6 +445,48 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
             return {arrFull: array, arrName: arrayName, arrKey: indexingstr};
         });
     };
+};
+bStatus.getDefunThunk = function(lnum, exprTree) {
+    let tree = JSON.parse(JSON.stringify(exprTree));
+    return function(lnum, args, seps) {
+        let argsMap = [];
+        args.map(it => {
+            argCheckErr(lnum, it);
+            return resolve(it);
+        }).forEach(arg => argsMap.push(arg));
+
+        if (DBGON) {
+            serial.println("[BASIC.getDefunThunk] thunk args:");
+            serial.println(argsMap);
+        }
+
+        // perform renaming
+        bF._recurseApplyAST(tree, (it) => {
+            if ("defun_args" == it.astType) {
+                if (DBGON) {
+                    serial.println("[BASIC.getDefunThunk] thunk renamed arg tree brance:");
+                    serial.println(astToString(it));
+                }
+
+                let argsIndex = it.astValue;
+                let theArg = argsMap[argsIndex]; // instanceof theArg == resolved version of SyntaxTreeReturnObj
+
+                if (theArg === undefined)
+                    throw lang.badFunctionCallFormat(lang.ord(argsIndex)+" argument was not given");
+
+                it.astValue = theArg;
+                it.astType = JStoBASICtype(theArg);
+            }
+        });
+
+        if (DBGON) {
+            serial.println("[BASIC.getDefunThunk] thunk tree:");
+            serial.println(astToString(tree));
+        }
+
+        // evaluate new tree
+        return resolve(bF._executeSyntaxTree(lnum, tree, 0));
+    }
 };
 bStatus.builtin = {
 /*
@@ -478,7 +523,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     else {
         var varname = troValue.toUpperCase();
         var type = JStoBASICtype(rh);
-        if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
+        if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
         // special case for scalar array
         // it basically bypasses the regular resolve subroutine
         if (args[1].troType !== undefined && args[1].troType == "array") {
@@ -504,7 +549,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     else {
         var varname = troValue.toUpperCase();
         var type = JStoBASICtype(rh);
-        if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
+        if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
         return {asgnVarName: varname, asgnValue: rh};
     }
 },
@@ -775,7 +820,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "FOREACH" : function(lnum, args) { // list comprehension model
     var asgnObj = resolve(args[0]);
     // type check
-    if (asgnObj === undefined) throw  lang.syntaxfehler(lnum);
+    if (asgnObj === undefined) throw lang.syntaxfehler(lnum);
     if (!Array.isArray(asgnObj.asgnValue)) throw lang.illegalType(lnum, asgnObj);
 
     var varname = asgnObj.asgnVarName;
@@ -792,7 +837,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "FOR" : function(lnum, args) { // generator model
     var asgnObj = resolve(args[0]);
     // type check
-    if (asgnObj === undefined) throw  lang.syntaxfehler(lnum);
+    if (asgnObj === undefined) throw lang.syntaxfehler(lnum);
     if (!(asgnObj.asgnValue instanceof ForGen)) throw lang.illegalType(lnum, typeof asgnObj);
 
     var varname = asgnObj.asgnVarName;
@@ -915,7 +960,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         var varname = troValue.toUpperCase();
         //println("input varname: "+varname);
         var type = JStoBASICtype(rh);
-        if (bStatus.consts[varname]) throw lang.asgnOnConst(lnum, varname);
+        if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
         bStatus.vars[varname] = new BasicVar(rh, type);
         return {asgnVarName: varname, asgnValue: rh};
     }
@@ -986,7 +1031,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "READ" : function(lnum, args) {
     let r = DATA_CONSTS.shift();
-    if (r === undefined) throw outOfData(lnum);
+    if (r === undefined) throw lang.outOfData(lnum);
 },
 "OPTIONBASE" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => {
@@ -1442,7 +1487,7 @@ bF._tokenise = function(lnum, cmd) {
             }
         }
         else {
-            throw "Unknown parser state: " + mode;
+            throw Error("Unknown parser state: " + mode);
         }
 
         if (_debugprintStateTransition) println("->"+mode);
@@ -1463,7 +1508,7 @@ bF._tokenise = function(lnum, cmd) {
         else if (states[k] == "n2" || states[k] == "nsep") states[k] = "num";
     }
 
-    if (tokens.length != states.length) throw "BasicIntpError: size of tokens and states does not match (line: "+lnum+")";
+    if (tokens.length != states.length) throw Error("BasicIntpError: size of tokens and states does not match (line: "+lnum+")");
 
     return { "tokens": tokens, "states": states };
 };
@@ -1589,7 +1634,7 @@ bF._parseTokens = function(lnum, tokens, states, recDepth) {
         serial.println("States: "+states);
     }
 
-    if (tokens.length != states.length) throw "BasicIntpError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")";
+    if (tokens.length != states.length) throw Error("BasicIntpError: size of tokens and states does not match (line: "+lnum+", recursion depth: "+recDepth+")");
     if (tokens.length == 0) {
         if (_debugSyntaxAnalysis) serial.println("*empty tokens*");
         var retTreeHead = new BasicAST();
@@ -1866,7 +1911,7 @@ let JStoBASICtype = function(object) {
     else if (!isNaN(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
     // buncha error msgs
-    else throw "BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object);
+    else throw Error("BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object));
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
     this.troType = type;
@@ -1883,23 +1928,23 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero 
  */
 bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = false;
+    var _debugExec = true;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
 
     if (syntaxTree == undefined) return bF._troNOP(lnum);
     else if (syntaxTree.astValue == undefined) { // empty meaningless parens
-        if (syntaxTree.astLeaves.length > 1) throw "WTF";
+        if (syntaxTree.astLeaves.length > 1) throw Error("WTF");
         return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth);
     }
     else if (syntaxTree.astType == "function" || syntaxTree.astType == "op") {
         if (_debugExec) serial.println(recWedge+"function|operator");
-        if (_debugExec) serial.println(recWedge+syntaxTree.toString());
+        if (_debugExec) serial.println(recWedge+astToString(syntaxTree));
         var funcName = syntaxTree.astValue.toUpperCase();
         var func = bStatus.builtin[funcName];
 
-        if (funcName == "IF") {
+        if ("IF" == funcName) {
             if (syntaxTree.astLeaves.length != 2 && syntaxTree.astLeaves.length != 3) throw lang.syntaxfehler(lnum);
             var testedval = bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth + 1);
 
@@ -1924,19 +1969,19 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                 throw lang.errorinline(lnum, "TEST", eeeee);
             }
         }
-        else if (funcName = "DEFUN") {
-            if (syntaxTree.astLeaves.length !== 1) throw lang.syntaxfehler(lnum, "1");
-            if (syntaxTree.astLeaves[0].astValue !== "=") throw lang.syntaxfehler(lnum, "2 -- "+syntaxTree.astLeaves[0].astValue);
+        else if ("DEFUN" == funcName) {
             if (recDepth > 0) throw lang.badFunctionCallFormat; // nested DEFUN is TODO and it involves currying and de bruijn indexing
-            if (syntaxTree.astLeaves[0].astLeaves.length !== 2) throw lang.syntaxfehler(lnum, "3");
+            if (syntaxTree.astLeaves.length !== 1) throw lang.syntaxfehler(lnum, "DEFUN 1");
+            if (syntaxTree.astLeaves[0].astValue !== "=") throw lang.syntaxfehler(lnum, "DEFUN 2 -- "+syntaxTree.astLeaves[0].astValue);
+            if (syntaxTree.astLeaves[0].astLeaves.length !== 2) throw lang.syntaxfehler(lnum, "DEFUN 3");
             let nameTree = syntaxTree.astLeaves[0].astLeaves[0];
             let exprTree = syntaxTree.astLeaves[0].astLeaves[1];
 
             // create parametres map
-            // NOTE: latest param ('z' as in foo(x,y,z)) gets index 0
+            // NOTE: firstmost param ('x' as in foo(x,y,z)) gets index 0
             let defunName = nameTree.astValue.toUpperCase();
             let defunRenamingMap = {};
-            nameTree.astLeaves.reverse().forEach((it, i) => {
+            nameTree.astLeaves.forEach((it, i) => {
                 if (it.astType !== "lit") throw lang.syntaxfehler(lnum, "4");
                 return defunRenamingMap[it.astValue] = i;
             });
@@ -1957,23 +2002,31 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             });
 
             // test print new tree
-            serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
-            serial.println("[BASIC.DEFUN] defun name tree: ");
-            serial.println(nameTree.toString());
-            serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
-            serial.println("[BASIC.DEFUN] defun expression tree:");
-            serial.println(exprTree.toString());
+            //serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
+            //serial.println("[BASIC.DEFUN] defun name tree: ");
+            //serial.println(astToString(nameTree));
+            //serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
+            //serial.println("[BASIC.DEFUN] defun expression tree:");
+            //serial.println(astToString(exprTree));
 
             // check if the variable name already exists
-            // search fom basic variables
-            //if (bStatus.vars[defunName])
+            // search from constants
+            if (_basicConsts[defunName]) throw lang.asgnOnConst(lnum, defunName);
+            // search from builtin functions
+            if (bStatus.builtin[defunName] !== undefined || bF[defunName.toLowerCase()] !== undefined)
+                throw lang.dupDef(lnum, defunName);
+
+            // finally assign the function to the variable table
+            bStatus.vars[defunName] = new BasicVar(exprTree, "usrdefun");
+
+            return bF._troNOP(lnum);
         }
         else {
-            var args = syntaxTree.astLeaves.map(function(it) { return bF._executeSyntaxTree(lnum, it, recDepth + 1); });
+            var args = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, it, recDepth + 1));
 
             if (_debugExec) {
                 serial.println(recWedge+"fn call name: "+funcName);
-                serial.println(recWedge+"fn call args: "+(args.map(function(it) { return it.troType+" "+it.troValue; })).join(", "));
+                serial.println(recWedge+"fn call args: "+(args.map(it => it.troType+" "+it.troValue)).join(", "));
             }
 
             // func not in builtins (e.g. array access, user-defined function defuns)
@@ -1985,13 +2038,15 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                 if (someVar === undefined) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
                 }
-                if (someVar.bvType != "array") {
+                else if ("array" == someVar.bvType) {
+                    func = bStatus.getArrayIndexFun(lnum, funcName, someVar.bvLiteral);
+                }
+                else if ("usrdefun" == someVar.bvType) {
+                    func = bStatus.getDefunThunk(lnum, someVar.bvLiteral);
+                }
+                else {
                     throw lang.syntaxfehler(lnum, funcName + " is not a function or an array");
                 }
-
-                // TODO calling from bStatus.defuns
-
-                func = bStatus.getArrayIndexFun(lnum, funcName, someVar.bvLiteral);
             }
             // call whatever the 'func' has whether it's builtin or we just made shit up right above
             try {
@@ -2005,25 +2060,25 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                 );
             }
             catch (eeeee) {
-                throw lang.errorinline(lnum, funcName, eeeee);
+                throw lang.errorinline(lnum, funcName || "undefined", eeeee || "undefined");
             }
         }
     }
     else if (syntaxTree.astType == "num") {
         if (_debugExec) serial.println(recWedge+"num");
-        return new SyntaxTreeReturnObj(syntaxTree.astType, +(syntaxTree.astValue), lnum + 1);
+        return new SyntaxTreeReturnObj(syntaxTree.astType, (syntaxTree.astValue)*1, lnum + 1);
     }
     else if (syntaxTree.astType == "string" || syntaxTree.astType == "lit" || syntaxTree.astType == "bool") {
         if (_debugExec) serial.println(recWedge+"string|literal|bool");
         return new SyntaxTreeReturnObj(syntaxTree.astType, syntaxTree.astValue, lnum + 1);
     }
     else if (syntaxTree.astType == "null") {
-        return new bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth + 1);
+        return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth + 1);
     }
     else {
         serial.println(recWedge+"Parse error in "+lnum);
-        serial.println(recWedge+syntaxTree.toString());
-        throw "Parse error";
+        serial.println(recWedge+astToString(syntaxTree));
+        throw Error("Parse error");
     }
 };
 // @returns: line number for the next command, normally (lnum + 1); if GOTO or GOSUB was met, returns its line number
@@ -2052,7 +2107,7 @@ bF._interpretLine = function(lnum, cmd) {
     // PARSING (SYNTAX ANALYSIS)
     var syntaxTree = bF._parseTokens(lnum, tokens, states, 0);
     if (_debugprintHighestLevel) serial.println("Final syntax tree:");
-    if (_debugprintHighestLevel) serial.println(syntaxTree.toString());
+    if (_debugprintHighestLevel) serial.println(astToString(syntaxTree));
 
     return syntaxTree;
 }; // end INTERPRETLINE
@@ -2063,7 +2118,7 @@ bF._executeAndGet = function(lnum, syntaxTree) {
         return execResult.troNextLine;
     }
     catch (e) {
-        serial.printerr(`ERROR on ${lnum} -- PARSE TREE:\n${syntaxTree.toString()}\nERROR CONTENTS:\n${e}\n${e.stack || "Stack trace undefined"}`);
+        serial.printerr(`ERROR on ${lnum} -- PARSE TREE:\n${astToString(syntaxTree)}\nERROR CONTENTS:\n${e}\n${e.stack || "Stack trace undefined"}`);
         throw e;
     }
 };
@@ -2220,7 +2275,7 @@ if (exec_args[1] !== undefined) {
         return 0;
     }
     catch (e) {
-        serial.printerr(e);
+        serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
         println(e);
     }
 }
@@ -2246,7 +2301,7 @@ while (!tbasexit) {
                 bF[cmd[0].toLowerCase()](cmd);
             }
             catch (e) {
-                serial.printerr(e);
+                serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
                 println(e);
             }
         }
