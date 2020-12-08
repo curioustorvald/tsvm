@@ -45,48 +45,48 @@ function isNumable(s) {
 }
 
 let lang = {};
-lang.badNumberFormat = "Illegal number format";
-lang.badOperatorFormat = "Illegal operator format";
-lang.badFunctionCallFormat = "Illegal function call";
-lang.unmatchedBrackets = "Unmatched brackets";
-lang.missingOperand = "Missing operand";
-lang.noSuchFile = "No such file";
+lang.badNumberFormat = Error("Illegal number format");
+lang.badOperatorFormat = Error("Illegal operator format");
+lang.badFunctionCallFormat = Error("Illegal function call");
+lang.unmatchedBrackets = Error("Unmatched brackets");
+lang.missingOperand = Error("Missing operand");
+lang.noSuchFile = Error("No such file");
 lang.outOfData = function(line) {
-    return "Out of DATA"+(line !== undefined ? (" in "+line) : "");
+    return Error("Out of DATA"+(line !== undefined ? (" in "+line) : ""));
 };
 lang.nextWithoutFor = function(line, varname) {
-    return "NEXT "+((varname !== undefined) ? ("'"+varname+"'") : "")+"without FOR in "+line;
+    return Error("NEXT "+((varname !== undefined) ? ("'"+varname+"'") : "")+"without FOR in "+line);
 };
 lang.syntaxfehler = function(line, reason) {
-    return "Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : "");
+    return Error("Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : ""));
 };
 lang.illegalType = function(line, obj) {
-    return "Type mismatch" + ((obj !== undefined) ? ` "${obj} (typeof ${typeof obj})"` : "") + ((line !== undefined) ? (" in "+line) : "");
+    return Error("Type mismatch" + ((obj !== undefined) ? ` "${obj} (typeof ${typeof obj})"` : "") + ((line !== undefined) ? (" in "+line) : ""));
  };
 lang.refError = function(line, obj) {
     serial.printerr(`${line} Unresolved reference:`);
     serial.printerr(`    object: ${obj}, typeof: ${typeof obj}`);
     serial.printerr(`    entries: ${Object.entries(obj)}`);
-    return "Unresolved reference" + ((obj !== undefined) ? ` "${obj}"` : "") + ((line !== undefined) ? (" in "+line) : "");
+    return Error("Unresolved reference" + ((obj !== undefined) ? ` "${obj}"` : "") + ((line !== undefined) ? (" in "+line) : ""));
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
 lang.errorinline = function(line, stmt, errobj) {
-    return 'Error'+((line !== undefined) ? (" in "+line) : "")+' on statement "'+stmt+'": '+errobj;
+    return Error('Error'+((line !== undefined) ? (" in "+line) : "")+' on statement "'+stmt+'": '+errobj);
 };
 lang.parserError = function(line, errorobj) {
-    return "Parser error in " + line + ": " + errorobj;
+    return Error("Parser error in " + line + ": " + errorobj);
 };
 lang.outOfMem = function(line) {
-    return "Out of memory in " + line;
+    return Error("Out of memory in " + line);
 };
 lang.dupDef = function(line, varname) {
-    return "Duplicate definition"+((varname !== undefined) ? (" on "+varname) : "")+" in "+line;
+    return Error("Duplicate definition"+((varname !== undefined) ? (" on "+varname) : "")+" in "+line);
 };
 lang.asgnOnConst = function(line, constname) {
-    return 'Trying to modify constant "'+constname+'" in '+line;
+    return Error('Trying to modify constant "'+constname+'" in '+line);
 };
 lang.subscrOutOfRng = function(line, object, index, maxlen) {
-    return "Subscript out of range"+(object !== undefined ? (' for "'+object+'"') : '')+(index !== undefined ? (` (index: ${index}, len: ${maxlen})`) : "")+(line !== undefined ? (" in "+line) : "");
+    return Error("Subscript out of range"+(object !== undefined ? (' for "'+object+'"') : '')+(index !== undefined ? (` (index: ${index}, len: ${maxlen})`) : "")+(line !== undefined ? (" in "+line) : ""));
 };
 lang.aG = " arguments were given";
 lang.ord = function(n) {
@@ -190,17 +190,12 @@ println(prompt);
 // variable object constructor
 /** variable object constructor
  * @param literal Javascript object or primitive
- * @type derived from JStoBASICtype
+ * @type derived from JStoBASICtype + "fun" + "internal_arrindexing_lazy" + "internal_assignment_object"
  * @see bStatus.builtin["="]
  */
 let BasicVar = function(literal, type) {
     this.bvLiteral = literal;
     this.bvType = type;
-}
-// DEFUN (GW-BASIC equiv. of DEF FN) constructor
-let BasicFun = function(params, expression) {
-    this.params = params;
-    this.expression = expression;
 }
 // Abstract Syntax Tree
 // creates empty tree node
@@ -210,7 +205,7 @@ let BasicAST = function() {
     this.astLeaves = [];
     this.astSeps = [];
     this.astValue = undefined;
-    this.astType = "null"; // literal, operator, string, number, array, function, null
+    this.astType = "null"; // literal, operator, string, number, array, function, null, defun_args
 
     this.toString = function() {
         var sb = "";
@@ -1525,6 +1520,15 @@ bF._parserElaboration = function(lnum, tokens, states) {
     // FUNCTION_CALL -> LITERAL GROUPING
     // GROUPING -> "(" EXPRESSION ")"
 
+
+bF._recurseApplyAST = function(tree, action) {
+    if (tree.astLeaves[0] === undefined)
+        return action(tree);
+    else {
+        action(tree);
+        tree.astLeaves.forEach(it => bF._recurseApplyAST(it, action))
+    }
+}
 /*
 for DEF*s, you might be able to go away with BINARY_OP, as the parsing tree would be:
 
@@ -1919,6 +1923,50 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             catch (eeeee) {
                 throw lang.errorinline(lnum, "TEST", eeeee);
             }
+        }
+        else if (funcName = "DEFUN") {
+            if (syntaxTree.astLeaves.length !== 1) throw lang.syntaxfehler(lnum, "1");
+            if (syntaxTree.astLeaves[0].astValue !== "=") throw lang.syntaxfehler(lnum, "2 -- "+syntaxTree.astLeaves[0].astValue);
+            if (recDepth > 0) throw lang.badFunctionCallFormat; // nested DEFUN is TODO and it involves currying and de bruijn indexing
+            if (syntaxTree.astLeaves[0].astLeaves.length !== 2) throw lang.syntaxfehler(lnum, "3");
+            let nameTree = syntaxTree.astLeaves[0].astLeaves[0];
+            let exprTree = syntaxTree.astLeaves[0].astLeaves[1];
+
+            // create parametres map
+            // NOTE: latest param ('z' as in foo(x,y,z)) gets index 0
+            let defunName = nameTree.astValue.toUpperCase();
+            let defunRenamingMap = {};
+            nameTree.astLeaves.reverse().forEach((it, i) => {
+                if (it.astType !== "lit") throw lang.syntaxfehler(lnum, "4");
+                return defunRenamingMap[it.astValue] = i;
+            });
+
+            // rename the parametres
+            bF._recurseApplyAST(exprTree, (it) => {
+                if (it.astType == "lit") {
+                    // check if parametre name is valid
+                    if (defunRenamingMap[it.astValue] === undefined) {
+                        throw lang.refError(lnum, it.astValue);
+                    }
+
+                    it.astType = "defun_args";
+                    it.astValue = defunRenamingMap[it.astValue];
+                }
+                // decrease the recursion counter while we're looping
+                it.astDepth -= 2;
+            });
+
+            // test print new tree
+            serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
+            serial.println("[BASIC.DEFUN] defun name tree: ");
+            serial.println(nameTree.toString());
+            serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
+            serial.println("[BASIC.DEFUN] defun expression tree:");
+            serial.println(exprTree.toString());
+
+            // check if the variable name already exists
+            // search fom basic variables
+            //if (bStatus.vars[defunName])
         }
         else {
             var args = syntaxTree.astLeaves.map(function(it) { return bF._executeSyntaxTree(lnum, it, recDepth + 1); });
