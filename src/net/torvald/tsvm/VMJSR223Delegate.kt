@@ -109,6 +109,16 @@ class VMJSR223Delegate(val vm: VM) {
         return sb.toString()
     }
 
+    fun spin() {
+        Thread.sleep(4L);
+    }
+
+    fun waitForMemChg(addr: Int, andMask: Int, xorMask: Int) {
+        while ((peek(addr) xor xorMask) and andMask == 0) {
+            spin();
+        }
+    }
+    fun waitForMemChg(addr: Int, andMask: Int) = waitForMemChg(addr, andMask, 0)
 
 }
 
