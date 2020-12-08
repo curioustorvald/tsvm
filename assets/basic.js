@@ -47,6 +47,7 @@ function isNumable(s) {
 let lang = {};
 lang.badNumberFormat = Error("Illegal number format");
 lang.badOperatorFormat = Error("Illegal operator format");
+lang.divByZero = Error("Division by zero");
 lang.badFunctionCallFormat = function(reason) {
     return Error("Illegal function call" + ((reason) ? ": "+reason : ""));
 };
@@ -381,6 +382,7 @@ let ForGen = function(s,e,t) {
         //if (mutated === undefined) throw "InternalError: parametre is missing";
         if (mutated !== undefined) this.current = (mutated|0);
         this.current += this.step;
+        serial.println(`[BASIC.FORGEN] ${(mutated|0)} -> ${this.current}`);
         return this.hasNext() ? this.current : undefined;
     }
 
@@ -638,7 +640,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return twoArgNum(lnum, args, (lh,rh) => lh * rh);
 },
 "/" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh / rh);
+    return twoArgNum(lnum, args, (lh,rh) => {
+        if (rh == 0) throw lang.divByZero;
+        return lh / rh
+    });
 },
 "MOD" : function(lnum, args) {
     return twoArgNum(lnum, args, (lh,rh) => lh % rh);
@@ -1890,7 +1895,7 @@ bF._parseTokens = function(lnum, tokens, states, recDepth) {
                 }
                 separators.slice(1, separators.length - 1).forEach((v) => { if (v !== undefined) seps.push(tokens[v]) });
             }
-            else throw lang.syntaxfehler(lnum, lang.badFunctionCallFormat);
+            else throw lang.badFunctionCallFormat();
             treeHead.astLeaves = leaves;//.filter(function(__v) { return __v !== undefined; });
             treeHead.astSeps = seps;
         }
@@ -1928,7 +1933,7 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero 
  */
 bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = true;
+    var _debugExec = false;
     var recWedge = "> ".repeat(recDepth);
 
     if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
@@ -1970,7 +1975,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
         }
         else if ("DEFUN" == funcName) {
-            if (recDepth > 0) throw lang.badFunctionCallFormat; // nested DEFUN is TODO and it involves currying and de bruijn indexing
+            if (recDepth > 0) throw lang.badFunctionCallFormat(); // nested DEFUN is TODO and it involves currying and de bruijn indexing
             if (syntaxTree.astLeaves.length !== 1) throw lang.syntaxfehler(lnum, "DEFUN 1");
             if (syntaxTree.astLeaves[0].astValue !== "=") throw lang.syntaxfehler(lnum, "DEFUN 2 -- "+syntaxTree.astLeaves[0].astValue);
             if (syntaxTree.astLeaves[0].astLeaves.length !== 2) throw lang.syntaxfehler(lnum, "DEFUN 3");
