@@ -1057,16 +1057,36 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "DATA" : function() { /*DATA must do nothing when encountered; they must be pre-processed*/ },
+/* Syopsis: MAP function, functor
+ */
 "MAP" : function(lnum, args) {
     return twoArg(lnum, args, (fn, functor) => {
         // TODO test only works with DEFUN'd functions
         if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
-        if (functor.toArray === undefined && !isArray(functor)) throw lang.syntaxfehler(lnum, functor);
-
+        if (functor.toArray === undefined && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, functor);
         // generator?
         if (functor.toArray) functor = functor.toArray();
 
         return functor.map(it => bStatus.getDefunThunk(lnum, fn)(lnum, [it]));
+    });
+},
+/* Synopsis: FOLD function, init_value, functor
+ * a function must accept two arguments, of which first argument will be an accumulator
+ */
+"FOLD" : function(lnum, args) {
+    return threeArg(lnum, args, (fn, init, functor) => {
+        // TODO test only works with DEFUN'd functions
+        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (functor.toArray === undefined && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, functor);
+        // generator?
+        if (functor.toArray) functor = functor.toArray();
+
+        let akku = init;
+        functor.forEach(it => {
+            akku = bStatus.getDefunThunk(lnum, fn)(lnum, [akku, it]);
+        });
+
+        return akku;
     });
 },
 "OPTIONDEBUG" : function(lnum, args) {
