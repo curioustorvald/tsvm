@@ -203,6 +203,7 @@ let BasicVar = function(literal, type) {
 // Abstract Syntax Tree
 // creates empty tree node
 let astToString = function(ast) {
+    if (ast === undefined || ast.astType === undefined) return "";
     var sb = "";
     var marker = ("lit" == ast.astType) ? "i" :
                  ("op" == ast.astType) ? String.fromCharCode(177) :
@@ -394,7 +395,7 @@ let ForGen = function(s,e,t) {
         //if (mutated === undefined) throw "InternalError: parametre is missing";
         if (mutated !== undefined) this.current = (mutated|0);
         this.current += this.step;
-        serial.println(`[BASIC.FORGEN] ${(mutated|0)} -> ${this.current}`);
+        //serial.println(`[BASIC.FORGEN] ${(mutated|0)} -> ${this.current}`);
         return this.hasNext() ? this.current : undefined;
     }
 
