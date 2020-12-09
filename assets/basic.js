@@ -226,7 +226,7 @@ let BasicAST = function() {
     this.astLeaves = [];
     this.astSeps = [];
     this.astValue = undefined;
-    this.astType = "null"; // literal, operator, string, number, array, function, null, defun_args
+    this.astType = "null"; // literal, operator, string, number, array, function, null, defun_args (! NOT usrdefun !)
 }
 let literalTypes = ["string", "num", "bool", "array", "generator"];
 /*
@@ -235,7 +235,18 @@ let literalTypes = ["string", "num", "bool", "array", "generator"];
         BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
 */
 let resolve = function(variable) {
-    if (variable.troType === "internal_arrindexing_lazy")
+    // head error checking
+    if (variable.troType === undefined) {
+        // primitves types somehow injected from elsewhere (main culprit: MAP)
+        //throw Error(`BasicIntpError: trying to resolve unknown object '${variable}' with entries ${Object.entries(variable)}`);
+
+        if (isNumable(variable)) return variable*1;
+        if (Array.isArray(variable)) return variable;
+        if (typeof variabe == "object")
+            throw Error(`BasicIntpError: trying to resolve unknown object '${variable}' with entries ${Object.entries(variable)}`);
+        return variable;
+    }
+    else if (variable.troType === "internal_arrindexing_lazy")
         return eval("variable.troValue.arrFull"+variable.troValue.arrKey);
     else if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
         return variable.troValue;
@@ -246,6 +257,7 @@ let resolve = function(variable) {
     }
     else if (variable.troType == "null")
         return undefined;
+    // tail error checking
     else
         throw Error("BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue);
 }
@@ -449,7 +461,7 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
     };
 };
 bStatus.getDefunThunk = function(lnum, exprTree) {
-    let tree = JSON.parse(JSON.stringify(exprTree));
+    let tree = JSON.parse(JSON.stringify(exprTree)); // ALWAYS create new tree instance!
     return function(lnum, args, seps) {
         let argsMap = [];
         args.map(it => {
@@ -1045,6 +1057,18 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "DATA" : function() { /*DATA must do nothing when encountered; they must be pre-processed*/ },
+"MAP" : function(lnum, args) {
+    return twoArg(lnum, args, (fn, functor) => {
+        // TODO test only works with DEFUN'd functions
+        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (functor.toArray === undefined && !isArray(functor)) throw lang.syntaxfehler(lnum, functor);
+
+        // generator?
+        if (functor.toArray) functor = functor.toArray();
+
+        return functor.map(it => bStatus.getDefunThunk(lnum, fn)(lnum, [it]));
+    });
+},
 "OPTIONDEBUG" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
@@ -1153,9 +1177,8 @@ bF._opPrc = {
     "IN":1000
 };
 bF._opRh = {"^":1,"=":1,"!":1,"IN":1};
-bF._keywords = {
-
-};
+// these names appear on executeSyntaxTree as "exceptional terms" on parsing (regular function calls are not "exceptional terms")
+bF._keywords = {"IF":1,"THEN":1,"ELSE":1,"DEFUN":1};
 bF._tokenise = function(lnum, cmd) {
     var _debugprintStateTransition = false;
     var k;
@@ -1933,10 +1956,16 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero 
  */
 bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    var _debugExec = false;
-    var recWedge = "> ".repeat(recDepth);
+    let _debugExec = true;
+    let _debugPrintCurrentLine = true;
+    let recWedge = "> ".repeat(recDepth);
 
-    if (_debugExec) serial.println(recWedge+"@@ EXECUTE @@");
+    if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
+    if (_debugPrintCurrentLine && recDepth == 0) {
+        serial.println("Syntax Tree in "+lnum+":");
+        serial.println(astToString(syntaxTree));
+    }
+
 
     if (syntaxTree == undefined) return bF._troNOP(lnum);
     else if (syntaxTree.astValue == undefined) { // empty meaningless parens
@@ -1975,7 +2004,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
         }
         else if ("DEFUN" == funcName) {
-            if (recDepth > 0) throw lang.badFunctionCallFormat(); // nested DEFUN is TODO and it involves currying and de bruijn indexing
+            //if (recDepth > 0) throw lang.badFunctionCallFormat(); // nested DEFUN is TODO and it involves currying and de bruijn indexing
             if (syntaxTree.astLeaves.length !== 1) throw lang.syntaxfehler(lnum, "DEFUN 1");
             if (syntaxTree.astLeaves[0].astValue !== "=") throw lang.syntaxfehler(lnum, "DEFUN 2 -- "+syntaxTree.astLeaves[0].astValue);
             if (syntaxTree.astLeaves[0].astLeaves.length !== 2) throw lang.syntaxfehler(lnum, "DEFUN 3");
@@ -2023,7 +2052,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             // finally assign the function to the variable table
             bStatus.vars[defunName] = new BasicVar(exprTree, "usrdefun");
 
-            return bF._troNOP(lnum);
+            return new SyntaxTreeReturnObj("function", exprTree, lnum + 1);
         }
         else {
             var args = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, it, recDepth + 1));
@@ -2064,7 +2093,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                 );
             }
             catch (eeeee) {
-                throw lang.errorinline(lnum, funcName || "undefined", eeeee || "undefined");
+                throw lang.errorinline(lnum, (funcName === undefined) ? "undefined" : funcName, (eeeee === undefined) ? "undefined" : eeeee);
             }
         }
     }
