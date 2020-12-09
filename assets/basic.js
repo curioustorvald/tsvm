@@ -1995,12 +1995,11 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             bF._recurseApplyAST(exprTree, (it) => {
                 if (it.astType == "lit") {
                     // check if parametre name is valid
-                    if (defunRenamingMap[it.astValue] === undefined) {
-                        throw lang.refError(lnum, it.astValue);
+                    // if the name is invalid, regard it as a global variable (i.e. do nothing)
+                    if (defunRenamingMap[it.astValue] !== undefined) {
+                        it.astType = "defun_args";
+                        it.astValue = defunRenamingMap[it.astValue];
                     }
-
-                    it.astType = "defun_args";
-                    it.astValue = defunRenamingMap[it.astValue];
                 }
                 // decrease the recursion counter while we're looping
                 it.astDepth -= 2;
