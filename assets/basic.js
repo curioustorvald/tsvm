@@ -1090,6 +1090,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return akku;
     });
 },
+/* GOTO and GOSUB won't work but that's probably the best...? */
+"DO" : function(lnum, args) {
+    //return resolve(args[args.length - 1]);
+    return undefined;
+},
 "OPTIONDEBUG" : function(lnum, args) {
     return oneArgNum(lnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
