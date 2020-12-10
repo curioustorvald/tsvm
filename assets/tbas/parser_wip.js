@@ -24,6 +24,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     treeHead.astDepth = recDepth;
     treeHead.astLnum = lnum;
     
+    // ## case for:
+    //    "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
     if ("IF" == headTkn && "lit" == headSta) {
         // find nearest THEN and ELSE but also take parens into account
         let thenPos = -1;
@@ -59,14 +61,43 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         // "THEN" not found, raise error!
         if (thenPos == -1) throw ParserError("IF without THEN in " + lnum);
         
-        // TODO gotta go home :)
+        treeHead.astValue = "IF";
+        treeHead.astType = "function";
+        
+        treeHead.astLeaves[0] = bF._parseEquation(lnum,
+            tokens.slice(1, thenPos),
+            states.slice(1, thenPos),
+            recDepth + 1,
+            true // if_equation mode
+        );
+        treeHead.astLeaves[1] = bF._parseStmt(lnum,
+            tokens.slice(thenPos + 1, (elsePos != -1) ? elsePos : tokens.length),
+            states.slice(thenPos + 1, (elsePos != -1) ? elsePos : tokens.length),
+            recDepth + 1
+        );
+        if (elsePos != -1)
+            treeHead.astLeaves[2] = bF._parseStmt(lnum,
+                tokens.slice(elsePos + 1, tokens.length),
+                states.slice(elsePos + 1, tokens.length),
+                recDepth + 1
+            );
+        
+        return treeHead;
     }
+
+    // ## case for:
+    //    ???
+        
+    // TODO
+   
 }
 /** Parses following EBNF rule:
  * lit (* which is parsed by the tokeniser already *)
  * @return: BasicAST
  */
 bF._parseLit = function(lnum, tokens, states, recDepth) {
+    if (tokens.length > 1) throw ParserError();
+    
     let treeHead = new BasicAST();
     treeHead.astDepth = recDepth;
     treeHead.astLnum = lnum;
@@ -82,7 +113,7 @@ bF._parseLit = function(lnum, tokens, states, recDepth) {
         }
         // else, screw it
         else {
-            throw lang.syntaxfehler(lnum, "TRAP_LITERALLY_LITERAL");
+            throw ParserError("TRAP_LITERALLY_LITERAL");
         }
     }
 
@@ -98,7 +129,7 @@ bF._parseLit = function(lnum, tokens, states, recDepth) {
  * @return: BasicAST
  */
 bF._EquationIllegalTokens = ["IF","THEN","ELSE","DEFUN","ON"];
-bF._parseEquation = function(lnum, tokens, states, recDepth) {
+bF._parseEquation = function(lnum, tokens, states, recDepth, ifMode) {
     // scan for operators with highest precedence, use rightmost one if multiple were found
     let topmostOp;
     let topmostOpPrc = 0;
@@ -156,6 +187,10 @@ bF._parseEquation = function(lnum, tokens, states, recDepth) {
     if (topmostOp !== undefined) {
         if (_debugSyntaxAnalysis) serial.println("operator: "+topmostOp+", pos: "+operatorPos);
 
+        if (ifMode && topmostOp == "=") throw lang.syntaxfehler(lnum, "'=' used on IF, did you mean '=='?");
+        if (ifMode && topmostOp == ":") throw lang.syntaxfehler(lnum, "':' used on IF");
+        
+        
         // this is the AST we're going to build up and return
         // (other IF clauses don't use this)
         let treeHead = new BasicAST();
@@ -188,7 +223,7 @@ bF._parseEquation = function(lnum, tokens, states, recDepth) {
     // ## case for:
     //    lit
     let headTkn = tokens[0].toUpperCase();
-    if (!bF._EquationIllegalTokens.includes(headTkn)) {
+    if (!bF._EquationIllegalTokens.includes(headTkn) && tokens.length == 1) {
         return bF._parseLit(lnum, tokens, states, recDepth + 1);
     }
     

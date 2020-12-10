@@ -1602,28 +1602,40 @@ bF._recurseApplyAST = function(tree, action) {
     }
 }
 /** EBNF notation:
-stmt =
-      "IF" , equation , "THEN" , stmt , ["ELSE" , stmt]
-    | "DEFUN" , [lit] , "(" , [lit , {" , " , lit}] , ")" , "=" , stmt
-    | "ON" , lit , function , equation , [{"," , equation}]
-    | function , [equation , {argsep , equation}]
-    | function , "(" , [equation , {argsep , equation}] , ")"
-    | equation
-    | "(" , stmt , ")" ;
+line = linenumber , stmt , {":" , stmt} ;
+linenumber = digits ;
 
-equation = lit , op , lit
-    | op_uni , lit
+stmt =  
+      "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
+    | "DEFUN" , [lit] , "(" , [lit , {" , " , lit}] , ")" , "=" , stmt
+    | "ON" , lit , lit , equation , {"," , equation}
+    | function_call
+    | "(" , stmt , ")" ;
+    
+function_call =
+      lit
+    | lit , function_call , {argsep , function_call}
+    | lit , "(" , [function_call , {argsep , function_call}] , ")"
+    | equation
+    
+equation = equation , op , equation
+    | op_uni , equation
     | lit
     | "(" , equation , ")"
 
-(* don't bother looking at these, because you already know the stuff *)
-
+if_equation = if_equation , op - ("=") , if_equation
+    | op_uni , if_equation
+    | lit
+    | "(" , if_equation , ")"
+    
+(* don't bother looking at these, because you already know the stuff *)    
+    
 function = lit ;
 argsep = ","|";" ;
-lit = alph , [digits] | num | string ;
+lit = alph , [digits] | num | string ; (* example: "MyVar_2" *)
 op = "^" | "*" | "/" | "MOD" | "+" | "-" | "<<" | ">>" | "<" | ">" | "<="
     | "=<" | ">=" | "=>" | "==" | "<>" | "><" | "BAND" | "BXOR" | "BOR"
-    | "AND" | "OR" | "TO" | "STEP" | "!" | "~" | "#" | "=" | ":" ;
+    | "AND" | "OR" | "TO" | "STEP" | "!" | "~" | "#" | "=" ;
 op_uni = "-" | "+" ;
 
 alph = letter | letter , alph ;
@@ -1631,7 +1643,7 @@ digits = digit | digit , digits ;
 hexdigits = hexdigit | hexdigit , hexdigits ;
 bindigits = bindigit | bindigit , bindigits ;
 num = digits | digits , "." , [digits] | "." , digits
-    | ("0x"|"0X") , hexdigits
+    | ("0x"|"0X") , hexdigits 
     | ("0b"|"0B") , bindigits ; (* sorry, no e-notation! *)
 visible = ? ASCII 0x20 to 0x7E ? ;
 string = '"' , (visible | visible , stringlit) , '"' ;

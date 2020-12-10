@@ -1,25 +1,37 @@
+line = linenumber , stmt , {":" , stmt} ;
+linenumber = digits ;
+
 stmt =  
-      "IF" , equation , "THEN" , stmt , ["ELSE" , stmt]
+      "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
     | "DEFUN" , [lit] , "(" , [lit , {" , " , lit}] , ")" , "=" , stmt
-    | "ON" , lit , function , equation , [{"," , equation}]
-    | function , [equation , {argsep , equation}]
-    | function , "(" , [equation , {argsep , equation}] , ")"
-    | equation 
+    | "ON" , lit , lit , equation , {"," , equation}
+    | function_call
     | "(" , stmt , ")" ;
+    
+function_call =
+      lit
+    | lit , function_call , {argsep , function_call}
+    | lit , "(" , [function_call , {argsep , function_call}] , ")"
+    | equation
     
 equation = equation , op , equation
     | op_uni , equation
     | lit
     | "(" , equation , ")"
 
+if_equation = if_equation , op - ("=") , if_equation
+    | op_uni , if_equation
+    | lit
+    | "(" , if_equation , ")"
+    
 (* don't bother looking at these, because you already know the stuff *)    
     
 function = lit ;
 argsep = ","|";" ;
-lit = alph , [digits] | num | string ;
+lit = alph , [digits] | num | string ; (* example: "MyVar_2" *)
 op = "^" | "*" | "/" | "MOD" | "+" | "-" | "<<" | ">>" | "<" | ">" | "<="
     | "=<" | ">=" | "=>" | "==" | "<>" | "><" | "BAND" | "BXOR" | "BOR"
-    | "AND" | "OR" | "TO" | "STEP" | "!" | "~" | "#" | "=" | ":" ;
+    | "AND" | "OR" | "TO" | "STEP" | "!" | "~" | "#" | "=" ;
 op_uni = "-" | "+" ;
 
 alph = letter | letter , alph ;
@@ -47,3 +59,24 @@ hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b"
 bindigit = "0" | "1" ;
 
 (* all possible token states: lit num op bool qot paren sep *)
+
+
+IF
+1. cond
+2. true
+[3. false]
+
+DEFUN
+1. funcname
+    1. arg0
+    [2. arg1]
+    [3. argN...]
+2. stmt
+
+ON
+1. varname
+2. functionname
+3. arg0
+[4. arg1]
+[5. argN...]
+
