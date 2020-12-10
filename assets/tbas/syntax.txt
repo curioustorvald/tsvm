@@ -1,0 +1,49 @@
+stmt =  
+      "IF" , equation , "THEN" , stmt , ["ELSE" , stmt]
+    | "DEFUN" , [lit] , "(" , [lit , {" , " , lit}] , ")" , "=" , stmt
+    | "ON" , lit , function , equation , [{"," , equation}]
+    | function , [equation , {argsep , equation}]
+    | function , "(" , [equation , {argsep , equation}] , ")"
+    | equation 
+    | "(" , stmt , ")" ;
+    
+equation = equation , op , equation
+    | op_uni , equation
+    | lit
+    | "(" , equation , ")"
+
+(* don't bother looking at these, because you already know the stuff *)    
+    
+function = lit ;
+argsep = ","|";" ;
+lit = alph , [digits] | num | string ;
+op = "^" | "*" | "/" | "MOD" | "+" | "-" | "<<" | ">>" | "<" | ">" | "<="
+    | "=<" | ">=" | "=>" | "==" | "<>" | "><" | "BAND" | "BXOR" | "BOR"
+    | "AND" | "OR" | "TO" | "STEP" | "!" | "~" | "#" | "=" | ":" ;
+op_uni = "-" | "+" ;
+
+alph = letter | letter , alph ;
+digits = digit | digit , digits ;
+hexdigits = hexdigit | hexdigit , hexdigits ;
+bindigits = bindigit | bindigit , bindigits ;
+num = digits | digits , "." , [digits] | "." , digits
+    | ("0x"|"0X") , hexdigits 
+    | ("0b"|"0B") , bindigits ; (* sorry, no e-notation! *)
+visible = ? ASCII 0x20 to 0x7E ? ;
+string = '"' , (visible | visible , stringlit) , '"' ;
+
+letter = "A" | "B" | "C" | "D" | "E" | "F" | "G"
+    | "H" | "I" | "J" | "K" | "L" | "M" | "N"
+    | "O" | "P" | "Q" | "R" | "S" | "T" | "U"
+    | "V" | "W" | "X" | "Y" | "Z" | "a" | "b"
+    | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+    | "j" | "k" | "l" | "m" | "n" | "o" | "p"
+    | "q" | "r" | "s" | "t" | "u" | "v" | "w"
+    | "x" | "y" | "z" | "_" ;
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b"
+    | "c" | "d" | "e" | "f" | "0" | "1" | "2" | "3" | "4" | "5" | "6"
+    | "7" | "8" | "9" ;
+bindigit = "0" | "1" ;
+
+(* all possible token states: lit num op bool qot paren sep *)
