@@ -1,31 +1,30 @@
 line = linenumber , stmt , {":" , stmt} ;
 linenumber = digits ;
 
-stmt =  
-      if_stmt //TODO
-    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
-    | "ON" , if_equation , ident , if_equation , {"," , if_equation}
+stmt =
+      "IF" , if_conditional , "THEN" , stmt , ["ELSE" , stmt] ; //TODO
+    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr //TODO
+    | "ON" , if_conditional , ident , if_conditional , {"," , if_conditional}
     | "(" , stmt , ")"
-    | function_call ;
+    | expr ;
     
-if_stmt = "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt] ; //TODO
-    
-function_call =
-      if_stmt //TODO
-    | equation ;
-    | ident , "(" , [stmt , {argsep , stmt} , [argsep]] , ")"
-    | ident , stmt , {argsep , stmt} , [argsep]
-    
-equation = 
-      lit
-    | "(" , equation , ")"
+expr = // ALL TODO
+      "(" , expr , ")"
     | function_call , op , function_call
-    | op_uni , function_call ;
-
-if_equation = if_equation , op - ("=") , if_equation
-    | op_uni , if_equation
+    | op_uni , function_call
+    | function_call ; //TODO
+    
+function_call = // ALL TODO
+      "IF" , if_conditional , "THEN" , expr , ["ELSE" , expr] ; //TODO
     | lit
-    | "(" , if_equation , ")" ;
+    | ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
+    | ident , expr , {argsep , expr} , [argsep] ;
+
+if_conditional =
+      "(" , if_conditional , ")"
+    | function_call , op - "=" , function_call
+    | op_uni , function_call
+    | function_call ; //TODO
     
 (* don't bother looking at these, because you already know the stuff *)    
     
