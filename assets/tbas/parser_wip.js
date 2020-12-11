@@ -6,18 +6,27 @@ class ParserError extends Error {
 }
 let bF = {};
 let printdbg = any => serial.println(any);
+let printdbg2 = function(icon, msg, lnum, tokens, states, recDepth) {
+    let treeHead = "| ".repeat(recDepth);
+    printdbg(`${icon}${lnum} ${treeHead}${tokens.join(' ')}`);
+    printdbg(`${icon}${lnum} ${treeHead}${states.join(' ')}`);
+    printdbg(`${icon}${lnum} ${treeHead}${msg}`);
+}
+let printdbgline = function(icon, msg, lnum, recDepth) {
+    let treeHead = "| ".repeat(recDepth);
+    printdbg(`${icon}${lnum} ${treeHead}${msg}`);
+}
 
 /** Parses following EBNF rule:
- * stmt =  
- *       "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
+ *       if_stmt
  *     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
- *     | "ON" , ident , ident , equation , {"," , equation}
+ *     | "ON" , if_equation , ident , if_equation , {"," , if_equation}
  *     | "(" , stmt , ")"
  *     | function_call ;
  * @return: BasicAST
  */
 bF._parseStmt = function(lnum, tokens, states, recDepth) {
-    printdbg(`\n$${lnum}: ${">".repeat(recDepth)} ${tokens.join(' ')}\n$${lnum}: ${">".repeat(recDepth)} ${states.join(' ')}`);
+    printdbg2('$', '', lnum, tokens, states, recDepth);
 
     let headTkn = tokens[0].toUpperCase();
     let headSta = states[0];
@@ -68,6 +77,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     // ## case for:
     //    "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
     if ("IF" == headTkn && "lit" == headSta) {
+        printdbg2('$', 'IF Stmt', lnum, tokens, states, recDepth);
+        
         // "THEN" not found, raise error!
         if (thenPos == -1) throw new ParserError("IF without THEN in " + lnum);
         
@@ -99,6 +110,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     if ("DEFUN" == headTkn && "lit" == headSta &&
         parenStart == 2 && tokens[parenEnd + 1] == "=" && states[parenEnd + 1] == "op"
     ) {
+        printdbg2('$', 'DEFUN Stmt', lnum, tokens, states, recDepth);
+
         treeHead.astValue = "DEFUN";
         treeHead.astType = "function";
         
@@ -135,41 +148,42 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     // ## case for:
     //    | "(" , stmt , ")"
     if (parenStart == 0 && parenEnd == tokens.length - 1) {
+        printdbg2('$', '( Stmt )', lnum, tokens, states, recDepth);
         return bF._parseStmt(lnum,
             tokens.slice(parenStart + 1, parenEnd),
             states.slice(parenStart + 1, parenEnd),
-            recDepth
+            recDepth + 1
         );
     }
     
     // ## case for:
     //    | function_call ;
     try {
-        return bF._parseFunctionCall(lnum, tokens, states, recDepth);
+        printdbg2('$', 'Function Call', lnum, tokens, states, recDepth);
+        return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
     }
     catch (e) {
+        printdbgline('$', 'Error!', lnum, recDepth);
         throw new ParserError("Statement cannot be parsed: "+e.stack);
     }
 }
 /** Parses following EBNF rule:
- *       equation
- *     | ident , "(" , [function_call , {argsep , function_call} , [argsep]] , ")"
- *     | ident , function_call , {argsep , function_call} , [argsep]
+ *     "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt] ;
+ * @return: BasicAST
+ */
+bF._parseIfStmt = function(lnum, tokens, states, recDepth) {
+    // TODO
+}
+/** Parses following EBNF rule:
+ *       if_stmt
+ *     | equation
+ *     | ident , "(" , [stmt , {argsep , stmt} , [argsep]] , ")"
+ *     | ident , stmt , {argsep , stmt} , [argsep] ;
  * @return: BasicAST
  */
 bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
-    printdbg(`\n${String.fromCharCode(0xA3)}${lnum}: ${">".repeat(recDepth)} ${tokens.join(' ')}\n${String.fromCharCode(0xA3)}${lnum}: ${">".repeat(recDepth)} ${states.join(' ')}`);
+    printdbg2(String.fromCharCode(0xA3), '', lnum, tokens, states, recDepth);
 
-    // ## case for:
-    //    equation
-    try {
-        return bF._parseEquation(lnum, tokens, states, recDepth);
-    }
-    // if ParserError is raised, continue to apply other rules
-    catch (e) {
-        if (!(e instanceof ParserError)) throw e;
-    }
-    
     let parenDepth = 0;
     let parenStart = -1;
     let parenEnd = -1;
@@ -201,39 +215,67 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     let parenUsed = (parenStart == 1 && parenEnd == states.length - 1);
     
     // ## case for:
-    //    | ident , "(" , [function_call , {argsep , function_call} , [argsep]] , ")"
-    //    | ident , function_call , {argsep , function_call} , [argsep]
-    let treeHead = new BasicAST();
-    treeHead.astDepth = recDepth;
-    treeHead.astLnum = lnum;
-    
-    // set function name and also check for syntax by deliberately parsing the word
-    treeHead.astValue = bF._parseIdent(lnum, [tokens[0]], [states[0]], recDepth + 1).astValue; // always UPPERCASE
+    //    | ident , "(" , [stmt , {argsep , stmt} , [argsep]] , ")"
+    //    | ident , stmt , {argsep , stmt} , [argsep] ;
+    try {
+        printdbg2(String.fromCharCode(0xA3), 'Function Call', lnum, tokens, states, recDepth);
+        let treeHead = new BasicAST();
+        treeHead.astDepth = recDepth;
+        treeHead.astLnum = lnum;
 
-    // 5 8 11 [end]
-    let argSeps = parenUsed ? _argsepsOnLevelOne : _argsepsOnLevelZero; // choose which "sep tray" to use
-    // 1 6 9 12
-    let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
-    // [1,5) [6,8) [9,11) [12,end)
-    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || tokens.length - (parenUsed))}}); // use end of token position as separator position
-    
-    // check for trailing separator
-    let hasTrailingSep = (states[states.length - 1 - (parenUsed)] == "sep");
-    // exclude last separator from recursion if input tokens has trailing separator
-    if (hasTrailingSep) argPos.pop();
-    
-    // recursively parse function arguments
-    treeHead.astLeaves = argPos.map(x => bF._parseFunctionCall(lnum,
-        tokens.slice(x.start, x.end),
-        states.slice(x.start, x.end),
-        recDepth + 1
-    ));
-    treeHead.astType = "function";
-    treeHead.astSeps = argSeps.map(i => tokens[i]);
-    
-    return treeHead;
+        // set function name and also check for syntax by deliberately parsing the word
+        treeHead.astValue = bF._parseIdent(lnum, [tokens[0]], [states[0]], recDepth + 1).astValue; // always UPPERCASE
+
+        // 5 8 11 [end]
+        let argSeps = parenUsed ? _argsepsOnLevelOne : _argsepsOnLevelZero; // choose which "sep tray" to use
+        // 1 6 9 12
+        let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
+        // [1,5) [6,8) [9,11) [12,end)
+        let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || tokens.length - (parenUsed))}}); // use end of token position as separator position
+
+        // check for trailing separator
+        let hasTrailingSep = (states[states.length - 1 - (parenUsed)] == "sep");
+        // exclude last separator from recursion if input tokens has trailing separator
+        if (hasTrailingSep) argPos.pop();
+
+        // recursively parse function arguments
+        treeHead.astLeaves = argPos.map((x,i) => {
+            printdbg2(String.fromCharCode(0xA3), 'Function Arguments #'+i, lnum, tokens, states, recDepth);
+
+            // check for empty tokens
+            if (x.end - x.start <= 0) throw new ParserError("not a function call because it's malformed");
+
+            return bF._parseStmt(lnum,
+                tokens.slice(x.start, x.end),
+                states.slice(x.start, x.end),
+                recDepth + 1
+            )}
+        );
+        treeHead.astType = "function";
+        treeHead.astSeps = argSeps.map(i => tokens[i]);
+
+        return treeHead;
+    }
+    // if ParserError is raised, continue to apply other rules
+    catch (e) {
+        if (!(e instanceof ParserError)) throw e;
+        printdbgline(String.fromCharCode(0xA3), 'It was NOT!', lnum, recDepth);
+    }
+
+    // ## case for:
+        //    equation
+    try {
+        printdbg2(String.fromCharCode(0xA3), 'Equation', lnum, tokens, states, recDepth);
+        return bF._parseEquation(lnum, tokens, states, recDepth + 1);
+    }
+    catch (e) {
+        printdbgline('$', 'Error!', lnum, recDepth);
+        throw new ParserError("Statement cannot be parsed: "+e.stack);
+    }
 }
 bF._parseIdent = function(lnum, tokens, states, recDepth) {
+    printdbg2('i', 'Identifier', lnum, tokens, states, recDepth);
+
     if (!Array.isArray(tokens) && !Array.isArray(states)) throw new ParserError("Tokens and states are not array");
     if (tokens.length > 1 || states[0] != "lit") throw new ParserError(`illegal tokens '${tokens}' with states '${states}' in ${lnum}`);
     
@@ -249,6 +291,8 @@ bF._parseIdent = function(lnum, tokens, states, recDepth) {
  * @return: BasicAST
  */
 bF._parseLit = function(lnum, tokens, states, recDepth) {
+    printdbg2('L', 'Literal', lnum, tokens, states, recDepth);
+
     if (!Array.isArray(tokens) && !Array.isArray(states)) throw new ParserError("Tokens and states are not array");
     if (tokens.length > 1) throw new ParserError("parseLit 1");
     
@@ -270,17 +314,18 @@ bF.isSemanticLiteral = function(token, state) {
  * equation = 
  *       lit
  *     | "(" , equation , ")"
- *     | equation , op , equation
- *     | op_uni , equation
+ *     | function_call , op , function_call
+ *     | op_uni , function_call ;
  * @return: BasicAST
  */
 bF._parseEquation = function(lnum, tokens, states, recDepth, ifMode) {
+    printdbg2(String.fromCharCode(0xB1), '', lnum, tokens, states, recDepth);
 
     // ## case for:
     //    lit
     let headTkn = tokens[0].toUpperCase();
     if (!bF._EquationIllegalTokens.includes(headTkn) && tokens.length == 1) {
-        return bF._parseLit(lnum, tokens, states, recDepth);
+        return bF._parseLit(lnum, tokens, states, recDepth + 1);
     }
     
     // scan for operators with highest precedence, use rightmost one if multiple were found
@@ -331,12 +376,12 @@ bF._parseEquation = function(lnum, tokens, states, recDepth, ifMode) {
         return bF._parseEquation(lnum,
             tokens.slice(parenStart + 1, parenEnd),
             states.slice(parenStart + 1, parenEnd),
-            recDepth
+            recDepth + 1
         );
     }
     // ## case for:
-    //      equation , op, equation
-    //    | op_uni , equation
+    //      function_call , op, function_call
+    //    | op_uni , function_call
     // if operator is found, split by the operator and recursively parse the LH and RH
     if (topmostOp !== undefined) {
         if (_debugSyntaxAnalysis) serial.println("operator: "+topmostOp+", pos: "+operatorPos);
@@ -360,8 +405,8 @@ bF._parseEquation = function(lnum, tokens, states, recDepth, ifMode) {
             let subtknR = tokens.slice(operatorPos + 1, tokens.length);
             let substaR = states.slice(operatorPos + 1, tokens.length);
 
-            treeHead.astLeaves[0] = bF._parseEquation(lnum, subtknL, substaL, recDepth + 1);
-            treeHead.astLeaves[1] = bF._parseEquation(lnum, subtknR, substaR, recDepth + 1);
+            treeHead.astLeaves[0] = bF._parseFunctionCall(lnum, subtknL, substaL, recDepth + 1);
+            treeHead.astLeaves[1] = bF._parseFunctionCall(lnum, subtknR, substaR, recDepth + 1);
         }
         else {
             treeHead.astValue = (topmostOp === "-") ? "UNARYMINUS" : "UNARYPLUS";
@@ -435,10 +480,19 @@ let lnum = 10;
 // FIXME print's last (;) gets parsed but ignored
 //let tokens = ["if","s","<","2","then","(","nop1",")","else","(","if","s","<","9999","then","nop2","else","nop3",")"];
 //let states = ["lit","lit","op","num","lit","paren","lit","paren","lit","paren","lit","lit","op","num","lit","lit","lit","lit","paren"];
+
+// DEFUN HYPOT(X,Y) = SQR(X*X+Y*Y)
 //let tokens = ["defun","HYPOT","(","X",",","Y",")","=","SQR","(","X","*","X","+","Y","*","Y",")"];
 //let states = ["lit","lit","paren","lit","sep","lit","paren","op","lit","paren","lit","op","lit","op","lit","op","lit","paren"];
+
+// DEFUN SINC(X) = SIN(X) / X
+//let tokens = ["DEFUN","SINC","(","X",")","=","SIN","(","X",")","/","X"];
+//let states = ["lit","lit","paren","lit","paren","op","lit","paren","lit","paren","op","lit"];
+
+// PRINT(MAP(DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1), 1 TO 10))
 let tokens = ["PRINT","(","MAP","(","DEFUN","FAC","(","N",")","=","IF","N","==","0","THEN","1","ELSE","N","*","FAC","(","N","-","1",")",",","1","TO","10",")",")"];
 let states = ["lit","paren","lit","paren","lit","lit","paren","lit","paren","op","lit","lit","op","num","lit","num","lit","lit","op","lit","paren","lit","op","num","paren","sep","num","op","num","paren","paren"];
+
 let _debugSyntaxAnalysis = false;
 
 try  {

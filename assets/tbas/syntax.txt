@@ -2,22 +2,25 @@ line = linenumber , stmt , {":" , stmt} ;
 linenumber = digits ;
 
 stmt =  
-      "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
+      if_stmt //TODO
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
     | "ON" , if_equation , ident , if_equation , {"," , if_equation}
     | "(" , stmt , ")"
     | function_call ;
     
+if_stmt = "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt] ; //TODO
+    
 function_call =
-      equation
-    | ident , "(" , [function_call , {argsep , function_call} , [argsep]] , ")"
-    | ident , function_call , {argsep , function_call} , [argsep] ;
+      if_stmt //TODO
+    | equation ;
+    | ident , "(" , [stmt , {argsep , stmt} , [argsep]] , ")"
+    | ident , stmt , {argsep , stmt} , [argsep]
     
 equation = 
       lit
     | "(" , equation , ")"
-    | equation , op , equation
-    | op_uni , equation ;
+    | function_call , op , function_call
+    | op_uni , function_call ;
 
 if_equation = if_equation , op - ("=") , if_equation
     | op_uni , if_equation
