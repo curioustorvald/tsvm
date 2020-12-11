@@ -5,6 +5,7 @@ class ParserError extends Error {
     }
 }
 let bF = {};
+let printdbg = any => serial.println(any);
 
 /** Parses following EBNF rule:
  * stmt =  
@@ -16,6 +17,8 @@ let bF = {};
  * @return: BasicAST
  */
 bF._parseStmt = function(lnum, tokens, states, recDepth) {
+    printdbg(`\n$${lnum}: ${">".repeat(recDepth)} ${tokens.join(' ')}\n$${lnum}: ${">".repeat(recDepth)} ${states.join(' ')}`);
+
     let headTkn = tokens[0].toUpperCase();
     let headSta = states[0];
     
@@ -145,7 +148,7 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         return bF._parseFunctionCall(lnum, tokens, states, recDepth);
     }
     catch (e) {
-        throw new ParserError("Statement cannot be parsed: "+e+" in "+lnum);
+        throw new ParserError("Statement cannot be parsed: "+e.stack);
     }
 }
 /** Parses following EBNF rule:
@@ -155,6 +158,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
  * @return: BasicAST
  */
 bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
+    printdbg(`\n${String.fromCharCode(0xA3)}${lnum}: ${">".repeat(recDepth)} ${tokens.join(' ')}\n${String.fromCharCode(0xA3)}${lnum}: ${">".repeat(recDepth)} ${states.join(' ')}`);
+
     // ## case for:
     //    equation
     try {
@@ -230,7 +235,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
 }
 bF._parseIdent = function(lnum, tokens, states, recDepth) {
     if (!Array.isArray(tokens) && !Array.isArray(states)) throw new ParserError("Tokens and states are not array");
-    if (tokens.length > 1 || states[0] != "lit") throw new ParserError(`illegal token count '${tokens.length}' with states '${states}' in ${lnum}`);
+    if (tokens.length > 1 || states[0] != "lit") throw new ParserError(`illegal tokens '${tokens}' with states '${states}' in ${lnum}`);
     
     let treeHead = new BasicAST();
     treeHead.astDepth = recDepth;
@@ -430,8 +435,10 @@ let lnum = 10;
 // FIXME print's last (;) gets parsed but ignored
 //let tokens = ["if","s","<","2","then","(","nop1",")","else","(","if","s","<","9999","then","nop2","else","nop3",")"];
 //let states = ["lit","lit","op","num","lit","paren","lit","paren","lit","paren","lit","lit","op","num","lit","lit","lit","lit","paren"];
-let tokens = ["defun","HYPOT","(","X",",","Y",")","=","SQR","(","X","*","X","+","Y","*","Y",")"];
-let states = ["lit","lit","paren","lit","sep","lit","paren","op","lit","paren","lit","op","lit","op","lit","op","lit","paren"];
+//let tokens = ["defun","HYPOT","(","X",",","Y",")","=","SQR","(","X","*","X","+","Y","*","Y",")"];
+//let states = ["lit","lit","paren","lit","sep","lit","paren","op","lit","paren","lit","op","lit","op","lit","op","lit","paren"];
+let tokens = ["PRINT","(","MAP","(","DEFUN","FAC","(","N",")","=","IF","N","==","0","THEN","1","ELSE","N","*","FAC","(","N","-","1",")",",","1","TO","10",")",")"];
+let states = ["lit","paren","lit","paren","lit","lit","paren","lit","paren","op","lit","lit","op","num","lit","num","lit","lit","op","lit","paren","lit","op","num","paren","sep","num","op","num","paren","paren"];
 let _debugSyntaxAnalysis = false;
 
 try  {
