@@ -1607,31 +1607,32 @@ linenumber = digits ;
 
 stmt =  
       "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
-    | "DEFUN" , [lit] , "(" , [lit , {" , " , lit}] , ")" , "=" , stmt
-    | "ON" , lit , lit , equation , {"," , equation}
-    | function_call
-    | "(" , stmt , ")" ;
+    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
+    | "ON" , ident , ident , equation , {"," , equation}
+    | "(" , stmt , ")"
+    | function_call ;
     
 function_call =
-      lit
-    | lit , function_call , {argsep , function_call}
-    | lit , "(" , [function_call , {argsep , function_call}] , ")"
-    | equation
+      equation
+    | ident , "(" , [function_call , {argsep , function_call} , [argsep]] , ")"
+    | ident , function_call , {argsep , function_call} , [argsep] ;
     
-equation = equation , op , equation
-    | op_uni , equation
-    | lit
+equation = 
+      lit
     | "(" , equation , ")"
+    | equation , op , equation
+    | op_uni , equation ;
 
 if_equation = if_equation , op - ("=") , if_equation
     | op_uni , if_equation
     | lit
-    | "(" , if_equation , ")"
+    | "(" , if_equation , ")" ;
     
-(* don't bother looking at these, because you already know the stuff *)    
+(* don't bother looking at these, because you already know the stuff *)     
     
 function = lit ;
 argsep = ","|";" ;
+ident = alph , [digits] ;
 lit = alph , [digits] | num | string ; (* example: "MyVar_2" *)
 op = "^" | "*" | "/" | "MOD" | "+" | "-" | "<<" | ">>" | "<" | ">" | "<="
     | "=<" | ">=" | "=>" | "==" | "<>" | "><" | "BAND" | "BXOR" | "BOR"
@@ -1663,7 +1664,6 @@ hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b"
 bindigit = "0" | "1" ;
 
 (* all possible token states: lit num op bool qot paren sep *)
-
  */
 // @return BasicAST
 bF._parseEquation = functoin(lnum, tokens, states, recDepth) {

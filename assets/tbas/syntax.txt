@@ -3,31 +3,32 @@ linenumber = digits ;
 
 stmt =  
       "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
-    | "DEFUN" , [lit] , "(" , [lit , {" , " , lit}] , ")" , "=" , stmt
-    | "ON" , lit , lit , equation , {"," , equation}
-    | function_call
-    | "(" , stmt , ")" ;
+    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
+    | "ON" , ident , ident , equation , {"," , equation}
+    | "(" , stmt , ")"
+    | function_call ;
     
 function_call =
-      lit
-    | lit , function_call , {argsep , function_call}
-    | lit , "(" , [function_call , {argsep , function_call}] , ")"
-    | equation
+      equation
+    | ident , "(" , [function_call , {argsep , function_call} , [argsep]] , ")"
+    | ident , function_call , {argsep , function_call} , [argsep] ;
     
-equation = equation , op , equation
-    | op_uni , equation
-    | lit
+equation = 
+      lit
     | "(" , equation , ")"
+    | equation , op , equation
+    | op_uni , equation ;
 
 if_equation = if_equation , op - ("=") , if_equation
     | op_uni , if_equation
     | lit
-    | "(" , if_equation , ")"
+    | "(" , if_equation , ")" ;
     
 (* don't bother looking at these, because you already know the stuff *)    
     
 function = lit ;
 argsep = ","|";" ;
+ident = alph , [digits] ;
 lit = alph , [digits] | num | string ; (* example: "MyVar_2" *)
 op = "^" | "*" | "/" | "MOD" | "+" | "-" | "<<" | ">>" | "<" | ">" | "<="
     | "=<" | ">=" | "=>" | "==" | "<>" | "><" | "BAND" | "BXOR" | "BOR"
@@ -61,22 +62,26 @@ bindigit = "0" | "1" ;
 (* all possible token states: lit num op bool qot paren sep *)
 
 
-IF
+IF (type: function, value: IF)
 1. cond
 2. true
 [3. false]
 
-DEFUN
+DEFUN (type: function, value: DEFUN)
 1. funcname
     1. arg0
     [2. arg1]
     [3. argN...]
 2. stmt
 
-ON
+ON (type: function, value: ON)
 1. varname
 2. functionname
 3. arg0
 [4. arg1]
 [5. argN...]
 
+FUNCTION_CALL (type: function, value: PRINT or something)
+1. arg0
+2. arg1
+[3. argN...]
