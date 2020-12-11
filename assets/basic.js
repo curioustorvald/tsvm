@@ -227,7 +227,7 @@ let BasicAST = function() {
     this.astLeaves = [];
     this.astSeps = [];
     this.astValue = undefined;
-    this.astType = "null"; // literal, operator, string, number, array, function, null, defun_args (! NOT usrdefun !)
+    this.astType = "null"; // lit, op, string, num, array, function, null, defun_args (! NOT usrdefun !)
 }
 let literalTypes = ["string", "num", "bool", "array", "generator"];
 /*
@@ -1608,7 +1608,7 @@ linenumber = digits ;
 stmt =  
       "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
-    | "ON" , ident , ident , equation , {"," , equation}
+    | "ON" , if_equation , ident , if_equation , {"," , if_equation}
     | "(" , stmt , ")"
     | function_call ;
     
@@ -1628,7 +1628,7 @@ if_equation = if_equation , op - ("=") , if_equation
     | lit
     | "(" , if_equation , ")" ;
     
-(* don't bother looking at these, because you already know the stuff *)     
+(* don't bother looking at these, because you already know the stuff *)    
     
 function = lit ;
 argsep = ","|";" ;
@@ -1664,6 +1664,30 @@ hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b"
 bindigit = "0" | "1" ;
 
 (* all possible token states: lit num op bool qot paren sep *)
+
+IF (type: function, value: IF)
+1. cond
+2. true
+[3. false]
+
+DEFUN (type: function, value: DEFUN)
+1. funcname
+    1. arg0
+    [2. arg1]
+    [3. argN...]
+2. stmt
+
+ON (type: function, value: ON)
+1. varname
+2. functionname
+3. arg0
+[4. arg1]
+[5. argN...]
+
+FUNCTION_CALL (type: function, value: PRINT or something)
+1. arg0
+2. arg1
+[3. argN...]
  */
 // @return BasicAST
 bF._parseEquation = functoin(lnum, tokens, states, recDepth) {

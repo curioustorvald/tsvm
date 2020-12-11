@@ -28,6 +28,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     let parenDepth = 0;
     let parenStart = -1;
     let parenEnd = -1;
+    let sepsZero = [];
+    let sepsOne = [];
 
     // scan for parens that will be used for several rules
     // also find nearest THEN and ELSE but also take parens into account
@@ -49,6 +51,11 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
             else if (-1 == elsePos && "ELSE" == tokens[k].toUpperCase() && "lit" == states[k])
                 elsePos = k;
         }
+        
+        if (parenDepth == 0 && states[k] == "sep")
+            sepsZero.push(k);
+        if (parenDepth == 1 && states[k] == "sep")
+            sepsOne.push(k);
     }
 
     // unmatched brackets, duh!
@@ -84,7 +91,44 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         
         return treeHead;
     }
-
+    // ## case for:
+    //    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
+    if ("DEFUN" == headTkn && "lit" == headSta &&
+        parenStart == 2 && tokens[parenEnd + 1] == "=" && states[parenEnd + 1] == "op"
+    ) {
+        treeHead.astValue = "DEFUN";
+        treeHead.astType = "function";
+        
+        // parse function name
+        if (tokens[1] == "(") {
+            // anonymous function
+            treeHead.astLeaves[0] = BasicAST();
+            treeHead.astLeaves[0].astLnum = lnum;
+            treeHead.astLeaves[0].astDepth = recDepth;
+            treeHead.astLeaves[0].astType = "lit";
+        }
+        else {
+            treeHead.astLeaves[0] = bF._parseIdent(lnum, [tokens[1]], [states[1]], recDepth + 1);
+        }
+        
+        // parse function arguments
+        treeHead.astLeaves[0].astLeaves = sepsOne.map(i=>i-1).concat([parenEnd - 1])
+            .map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 2));
+        
+        // parse function body
+        treeHead.astLeaves[1] = bF._parseStmt(lnum,
+            tokens.slice(parenEnd + 2, tokens.length),
+            states.slice(parenEnd + 2, states.length),
+            recDepth + 1
+        );
+        
+        return treeHead;
+    }
+    // ## case for:
+    //    | "ON" , if_equation , ident , if_equation , {"," , if_equation}
+    if ("ON" == headTkn && "lit" == headSta) {
+        // TODO
+    }
     // ## case for:
     //    | "(" , stmt , ")"
     if (parenStart == 0 && parenEnd == tokens.length - 1) {
@@ -128,6 +172,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     let _argsepsOnLevelOne = []; // argseps collected when parenDepth == 1
     
     // Scan for unmatched parens and mark off the right operator we must deal with
+    // every function_call need to re-scan because it is recursively called
     for (let k = 0; k < tokens.length; k++) {
         // increase paren depth and mark paren start position
         if (tokens[k] == "(" && states[k] != "qot") {
@@ -179,7 +224,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
         recDepth + 1
     ));
     treeHead.astType = "function";
-    treeHead.astSeps = argSeps;
+    treeHead.astSeps = argSeps.map(i => tokens[i]);
     
     return treeHead;
 }
@@ -245,6 +290,7 @@ bF._parseEquation = function(lnum, tokens, states, recDepth, ifMode) {
     let parenEnd = -1;
 
     // Scan for unmatched parens and mark off the right operator we must deal with
+    // every function_call need to re-scan because it is recursively called
     for (let k = 0; k < tokens.length; k++) {
         // increase paren depth and mark paren start position
         if (tokens[k] == "(" && states[k] != "qot") {
@@ -355,7 +401,7 @@ let BasicAST = function() {
     this.astLeaves = [];
     this.astSeps = [];
     this.astValue = undefined;
-    this.astType = "null"; // literal, operator, string, number, array, function, null, defun_args (! NOT usrdefun !)
+    this.astType = "null"; // lit, op, string, num, array, function, null, defun_args (! NOT usrdefun !)
 }
 bF._opPrc = {
     // function call in itself has highest precedence
@@ -381,8 +427,11 @@ bF._opPrc = {
 };
 bF._opRh = {"^":1,"=":1,"!":1,"IN":1};
 let lnum = 10;
-let tokens = ["print","2","+","5","*","3"];
-let states = ["lit","num","op","num","op","num"];
+// FIXME print's last (;) gets parsed but ignored
+//let tokens = ["if","s","<","2","then","(","nop1",")","else","(","if","s","<","9999","then","nop2","else","nop3",")"];
+//let states = ["lit","lit","op","num","lit","paren","lit","paren","lit","paren","lit","lit","op","num","lit","lit","lit","lit","paren"];
+let tokens = ["defun","HYPOT","(","X",",","Y",")","=","SQR","(","X","*","X","+","Y","*","Y",")"];
+let states = ["lit","lit","paren","lit","sep","lit","paren","op","lit","paren","lit","op","lit","op","lit","op","lit","paren"];
 let _debugSyntaxAnalysis = false;
 
 try  {

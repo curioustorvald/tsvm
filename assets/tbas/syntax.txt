@@ -4,7 +4,7 @@ linenumber = digits ;
 stmt =  
       "IF" , if_equation , "THEN" , stmt , ["ELSE" , stmt]
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , stmt
-    | "ON" , ident , ident , equation , {"," , equation}
+    | "ON" , if_equation , ident , if_equation , {"," , if_equation}
     | "(" , stmt , ")"
     | function_call ;
     
@@ -60,7 +60,6 @@ hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b"
 bindigit = "0" | "1" ;
 
 (* all possible token states: lit num op bool qot paren sep *)
-
 
 IF (type: function, value: IF)
 1. cond
