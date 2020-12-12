@@ -64,6 +64,7 @@ bF._parseTokens = function(lnum, tokens, states) {
     });
 }
 
+
 /** Parses following EBNF rule:
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
@@ -251,8 +252,166 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     
     /*************************************************************************/
     
-    throw new ParserError("Statement cannot be parsed: "+e.stack);
+    throw new ParserError("Statement cannot be parsed");
 } // END of STMT
+
+
+/** Parses following EBNF rule:
+expr = (* this basically blocks some funny attemps such as using DEFUN as anon function because everything is global in BASIC *)
+      lit
+    | "(" , expr , ")"
+    | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    | function_call
+    | expr , op , expr
+    | op_uni , expr ;
+ 
+ * @return: BasicAST
+ */
+bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
+    bF.parserPrintdbg2('E', lnum, tokens, states, recDepth);
+
+    /*************************************************************************/
+
+    // ## case for:
+    //    lit
+    let headTkn = tokens[0].toUpperCase();
+    if (!bF._EquationIllegalTokens.includes(headTkn) && tokens.length == 1) {
+        bF.parserPrintdbgline('E', 'Literal Call', lnum, recDepth);
+        return bF._parseLit(lnum, tokens, states, recDepth + 1);
+    }
+    
+    /*************************************************************************/
+    
+    // scan for operators with highest precedence, use rightmost one if multiple were found
+    let topmostOp;
+    let topmostOpPrc = 0;
+    let operatorPos = -1;
+
+    // find and mark position of parentheses
+    // properly deal with the nested function calls
+    let parenDepth = 0;
+    let parenStart = -1;
+    let parenEnd = -1;
+
+    // Scan for unmatched parens and mark off the right operator we must deal with
+    // every function_call need to re-scan because it is recursively called
+    for (let k = 0; k < tokens.length; k++) {
+        // increase paren depth and mark paren start position
+        if (tokens[k] == "(" && states[k] != "qot") {
+            parenDepth += 1;
+            if (parenStart == -1 && parenDepth == 1) parenStart = k;
+        }
+        // decrease paren depth
+        else if (tokens[k] == ")" && states[k] != "qot") {
+            if (parenEnd == -1 && parenDepth == 1) parenEnd = k;
+            parenDepth -= 1;
+        }
+
+        // determine the right operator to deal with
+        if (parenDepth == 0) {
+            if (states[k] == "op" && bF.isSemanticLiteral(tokens[k-1], states[k-1]) &&
+                    ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
+                        (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
+            ) {
+                topmostOp = tokens[k].toUpperCase();
+                topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
+                operatorPos = k;
+            }
+        }
+    }
+
+    // unmatched brackets, duh!
+    if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
+
+    /*************************************************************************/
+    
+    // ## case for:
+    //    | "(" , expr , ")"
+    if (parenStart == 0 && parenEnd == tokens.length - 1) {
+        bF.parserPrintdbgline('E', '( Expr )', lnum, recDepth);
+        
+        return bF._parseExpr(lnum,
+            tokens.slice(parenStart + 1, parenEnd),
+            states.slice(parenStart + 1, parenEnd),
+            recDepth + 1
+        );
+    }
+    
+    /*************************************************************************/
+
+    // ## case for:
+    //    | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    try {
+        bF.parserPrintdbgline('E', "Trying IF Expression...", lnum, recDepth);
+        return bF._parseIfMode(lnum, tokens, states, recDepth + 1, false);
+    }
+    // if ParserError is raised, continue to apply other rules
+    catch (e) {
+        bF.parserPrintdbgline('E', 'It was NOT!', lnum, recDepth);
+        if (!(e instanceof ParserError)) throw e;
+    }
+    
+    /*************************************************************************/
+    
+    // ## case for:
+    //    | function_call ;
+    try {
+        bF.parserPrintdbgline('E', "Trying Function Call...", lnum, recDepth);
+        return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
+    }
+    // if ParserError is raised, continue to apply other rules
+    catch (e) {
+        bF.parserPrintdbgline('E', 'It was NOT!', lnum, recDepth);
+        if (!(e instanceof ParserError)) throw e;
+    }
+    
+    /*************************************************************************/
+    
+    // ## case for:
+    //    | expr , op, expr
+    //    | op_uni , expr
+    // if operator is found, split by the operator and recursively parse the LH and RH
+    if (topmostOp !== undefined) {
+        bF.parserPrintdbgline('E', 'Operators', lnum, recDepth);
+
+        if (ifMode && topmostOp == "=") throw lang.syntaxfehler(lnum, "'=' used on IF, did you mean '=='?");
+        if (ifMode && topmostOp == ":") throw lang.syntaxfehler(lnum, "':' used on IF");
+        
+        
+        // this is the AST we're going to build up and return
+        // (other IF clauses don't use this)
+        let treeHead = new BasicAST();
+        treeHead.astLnum = lnum;
+        treeHead.astValue = topmostOp;
+        treeHead.astType = "op";
+        
+        // BINARY_OP?
+        if (operatorPos > 0) {
+            let subtknL = tokens.slice(0, operatorPos);
+            let substaL = states.slice(0, operatorPos);
+            let subtknR = tokens.slice(operatorPos + 1, tokens.length);
+            let substaR = states.slice(operatorPos + 1, tokens.length);
+
+            treeHead.astLeaves[0] = bF._parseExpr(lnum, subtknL, substaL, recDepth + 1);
+            treeHead.astLeaves[1] = bF._parseExpr(lnum, subtknR, substaR, recDepth + 1);
+        }
+        else {
+            treeHead.astValue = (topmostOp === "-") ? "UNARYMINUS" : "UNARYPLUS";
+            treeHead.astLeaves[0] = bF._parseExpr(lnum,
+                tokens.slice(operatorPos + 1, tokens.length),
+                states.slice(operatorPos + 1, states.length),
+                recDepth + 1
+            );
+        }
+        
+        return treeHead;
+    }
+    
+    /*************************************************************************/
+    
+    throw new ParserError("Expression cannot be parsed");
+} // END of EXPR
+
 
 /** Parses following EBNF rule:
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
@@ -337,165 +496,6 @@ bF._parseIfMode = function(lnum, tokens, states, recDepth, exprMode) {
     
     throw new ParserError("not an IF "+(exprMode) ? "expression" : "statement");
 } // END of IF
-
-
-/** Parses following EBNF rule:
-expr = (* this basically blocks some funny attemps such as using DEFUN as anon function because everything is global in BASIC *)
-      lit
-    | "(" , expr , ")"
-    | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
-    | expr , op , expr
-    | op_uni , expr
-    | function_call ; //TODO
- 
- * @return: BasicAST
- */
-bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
-    bF.parserPrintdbg2('E', lnum, tokens, states, recDepth);
-
-    /*************************************************************************/
-
-    // ## case for:
-    //    lit
-    let headTkn = tokens[0].toUpperCase();
-    if (!bF._EquationIllegalTokens.includes(headTkn) && tokens.length == 1) {
-        bF.parserPrintdbgline('E', 'Literal Call', lnum, recDepth);
-        return bF._parseLit(lnum, tokens, states, recDepth + 1);
-    }
-    
-    /*************************************************************************/
-    
-    // scan for operators with highest precedence, use rightmost one if multiple were found
-    let topmostOp;
-    let topmostOpPrc = 0;
-    let operatorPos = -1;
-
-    // find and mark position of parentheses
-    // properly deal with the nested function calls
-    let parenDepth = 0;
-    let parenStart = -1;
-    let parenEnd = -1;
-
-    // Scan for unmatched parens and mark off the right operator we must deal with
-    // every function_call need to re-scan because it is recursively called
-    for (let k = 0; k < tokens.length; k++) {
-        // increase paren depth and mark paren start position
-        if (tokens[k] == "(" && states[k] != "qot") {
-            parenDepth += 1;
-            if (parenStart == -1 && parenDepth == 1) parenStart = k;
-        }
-        // decrease paren depth
-        else if (tokens[k] == ")" && states[k] != "qot") {
-            if (parenEnd == -1 && parenDepth == 1) parenEnd = k;
-            parenDepth -= 1;
-        }
-
-        // determine the right operator to deal with
-        if (parenDepth == 0) {
-            if (states[k] == "op" && bF.isSemanticLiteral(tokens[k-1], states[k-1]) &&
-                    ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
-                        (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
-            ) {
-                topmostOp = tokens[k].toUpperCase();
-                topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
-                operatorPos = k;
-            }
-        }
-    }
-
-    // unmatched brackets, duh!
-    if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
-    if (_debugSyntaxAnalysis) serial.println("Equation NEW Paren position: "+parenStart+", "+parenEnd);
-    
-    /*************************************************************************/
-    
-    // ## case for:
-    //    | "(" , expr , ")"
-    if (parenStart == 0 && parenEnd == tokens.length - 1) {
-        bF.parserPrintdbgline('E', '( Expr )', lnum, recDepth);
-        
-        return bF._parseEquation(lnum,
-            tokens.slice(parenStart + 1, parenEnd),
-            states.slice(parenStart + 1, parenEnd),
-            recDepth + 1
-        );
-    }
-    
-    /*************************************************************************/
-
-    // ## case for:
-    //    | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
-    try {
-        bF.parserPrintdbgline('E', "Trying IF Expression...", lnum, recDepth);
-        return bF._parseIfMode(lnum, tokens, states, recDepth + 1, false);
-    }
-    // if ParserError is raised, continue to apply other rules
-    catch (e) {
-        bF.parserPrintdbgline('E', 'It was NOT!', lnum, recDepth);
-        if (!(e instanceof ParserError)) throw e;
-    }
-    
-    /*************************************************************************/
-    
-    // ## case for:
-    //    | expr , op, expr
-    //    | op_uni , expr
-    // if operator is found, split by the operator and recursively parse the LH and RH
-    if (topmostOp !== undefined) {
-        bF.parserPrintdbgline('E', 'Operators', lnum, recDepth);
-        
-        if (_debugSyntaxAnalysis) serial.println("operator: "+topmostOp+", pos: "+operatorPos);
-
-        if (ifMode && topmostOp == "=") throw lang.syntaxfehler(lnum, "'=' used on IF, did you mean '=='?");
-        if (ifMode && topmostOp == ":") throw lang.syntaxfehler(lnum, "':' used on IF");
-        
-        
-        // this is the AST we're going to build up and return
-        // (other IF clauses don't use this)
-        let treeHead = new BasicAST();
-        treeHead.astLnum = lnum;
-        treeHead.astValue = topmostOp;
-        treeHead.astType = "op";
-        
-        // BINARY_OP?
-        if (operatorPos > 0) {
-            let subtknL = tokens.slice(0, operatorPos);
-            let substaL = states.slice(0, operatorPos);
-            let subtknR = tokens.slice(operatorPos + 1, tokens.length);
-            let substaR = states.slice(operatorPos + 1, tokens.length);
-
-            treeHead.astLeaves[0] = bF._parseExpr(lnum, subtknL, substaL, recDepth + 1);
-            treeHead.astLeaves[1] = bF._parseExpr(lnum, subtknR, substaR, recDepth + 1);
-        }
-        else {
-            treeHead.astValue = (topmostOp === "-") ? "UNARYMINUS" : "UNARYPLUS";
-            treeHead.astLeaves[0] = bF._parseExpr(lnum,
-                tokens.slice(operatorPos + 1, tokens.length),
-                states.slice(operatorPos + 1, states.length),
-                recDepth + 1
-            );
-        }
-        
-        return treeHead;
-    }
-    
-    /*************************************************************************/
-    
-    // ## case for:
-    //    | function_call ;
-    try {
-        bF.parserPrintdbgline('E', "Trying Function Call...", lnum, recDepth);
-        return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
-    }
-    catch (e) {
-        throw new ParserError("Expression cannot be parsed: "+e.stack);
-    }
-    
-    /*************************************************************************/
-    
-    throw new ParserError("Expression cannot be parsed: "+e.stack);
-} // END of EXPR
-
 
 
 /** Parses following EBNF rule:
@@ -608,7 +608,6 @@ bF._parseLit = function(lnum, tokens, states, recDepth) {
     
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
-    if (_debugSyntaxAnalysis) serial.println("literal/number: "+tokens[0]);
     treeHead.astValue = ("qot" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
     treeHead.astType = ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
     
@@ -698,12 +697,16 @@ let states4 = ["lit","paren","lit","lit","op","lit","lit","qot","lit","lit","lit
 let tokens5 = ["ON","6","*","SQR","(","X","-","3",")","GOTO","X","+","1",",","X","+","2",",","X","+","3"];
 let states5 = ["lit","num","op","lit","paren","lit","op","num","paren","lit","lit","op","num","sep","lit","op","num","sep","lit","op","num"];
 
-let _debugSyntaxAnalysis = false;
+// FOR K=1 TO 10
+let tokens6 = ["FOR","K","=","1","TO","10"];
+let states6 = ["lit","lit","op","num","op","num"];
+
+// FIXME print(chr(47+round(rnd(1))*45);) outputs bad tree
 
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens5.concat([":"], tokens4),
-        states5.concat(["seq"], states4)
+        tokens5,
+        states5
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));

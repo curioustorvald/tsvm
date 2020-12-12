@@ -16,9 +16,9 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
       lit
     | "(" , expr , ")"
     | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    | function_call
     | expr , op , expr
-    | op_uni , expr
-    | function_call ;
+    | op_uni , expr ;
     
 expr_sans_asgn = ? identical to expr except errors out whenever "=" is found ? ;
     
