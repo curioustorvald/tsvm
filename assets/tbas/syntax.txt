@@ -7,6 +7,7 @@ linenumber = digits ;
 
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+    | "FOR" , expr  // TODO
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
@@ -68,6 +69,9 @@ IF (type: function, value: IF)
 1. cond
 2. true
 [3. false]
+
+FOR (type: function, value: FOR)
+1. expr (normally (=) but not necessarily)
 
 DEFUN (type: function, value: DEFUN)
 1. funcname

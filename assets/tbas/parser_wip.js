@@ -247,12 +247,12 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     }
     catch (e) {
         bF.parserPrintdbgline('$', 'Error!', lnum, recDepth);
-        throw new ParserError("Statement cannot be parsed: "+e.stack);
+        throw new ParserError("Statement cannot be parsed in "+lnum+": "+e.stack);
     }
     
     /*************************************************************************/
     
-    throw new ParserError("Statement cannot be parsed");
+    throw new ParserError("Statement cannot be parsed in "+lnum);
 } // END of STMT
 
 
@@ -412,7 +412,7 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     
     /*************************************************************************/
     
-    throw new ParserError("Expression cannot be parsed");
+    throw new ParserError("Expression cannot be parsed in "+lnum);
 } // END of EXPR
 
 
