@@ -16,6 +16,7 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
       lit
     | "(" , expr , ")"
     | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    (* at this point, if OP is found in paren-level 0, skip function_call *)
     | function_call
     | expr , op , expr
     | op_uni , expr ;

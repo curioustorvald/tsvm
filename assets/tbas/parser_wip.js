@@ -354,15 +354,18 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     /*************************************************************************/
     
     // ## case for:
+    //    (* at this point, if OP is found in paren-level 0, skip function_call *)
     //    | function_call ;
-    try {
-        bF.parserPrintdbgline('E', "Trying Function Call...", lnum, recDepth);
-        return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
-    }
-    // if ParserError is raised, continue to apply other rules
-    catch (e) {
-        bF.parserPrintdbgline('E', 'It was NOT!', lnum, recDepth);
-        if (!(e instanceof ParserError)) throw e;
+    if (topmostOp === undefined) {
+        try {
+            bF.parserPrintdbgline('E', "Trying Function Call...", lnum, recDepth);
+            return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
+        }
+        // if ParserError is raised, continue to apply other rules
+        catch (e) {
+            bF.parserPrintdbgline('E', 'It was NOT!', lnum, recDepth);
+            if (!(e instanceof ParserError)) throw e;
+        }
     }
     
     /*************************************************************************/
@@ -537,14 +540,17 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     
     // unmatched brackets, duh!
     if (parenDepth != 0) throw lang.syntaxfehler(lnum, lang.unmatchedBrackets);
-    let parenUsed = (parenStart == 1 && parenEnd == states.length - 1);
+    let parenUsed = (parenStart == 1);
+    // && parenEnd == tokens.length - 1);
+    // if starting paren is found, just use it
+    // this prevents "RND(~~)*K" to be parsed as [RND, (~~)*K]
     
     /*************************************************************************/
 
     // ## case for:
     //      ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
     //    | ident , expr , {argsep , expr} , [argsep] ;
-    bF.parserPrintdbgline(String.fromCharCode(0x192), 'Function Call', lnum, recDepth);
+    bF.parserPrintdbgline(String.fromCharCode(0x192), `Function Call (parenUsed: ${parenUsed})`, lnum, recDepth);
     
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
@@ -557,10 +563,10 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     // 1 6 9 12
     let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
     // [1,5) [6,8) [9,11) [12,end)
-    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || tokens.length - (parenUsed))}}); // use end of token position as separator position
+    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || (parenUsed) ? parenEnd : tokens.length )}}); // use end of token position as separator position
 
     // check for trailing separator
-    let hasTrailingSep = (states[states.length - 1 - (parenUsed)] == "sep");
+    let hasTrailingSep = (states[((parenUsed) ? parenEnd : states.length) - 1] == "sep");
     // exclude last separator from recursion if input tokens has trailing separator
     if (hasTrailingSep) argPos.pop();
 
@@ -702,11 +708,17 @@ let tokens6 = ["FOR","K","=","1","TO","10"];
 let states6 = ["lit","lit","op","num","op","num"];
 
 // FIXME print(chr(47+round(rnd(1))*45);) outputs bad tree
+let tokens7 = ["PRINT","(","CHR","(","47","+","ROUND","(","RND","(","1",")",")","*","45",")",";",")"];
+let states7 = ["lit","paren","lit","paren","num","op","lit","paren","lit","paren","num","paren","paren","op","num","paren","sep","paren"];
+
+// PRINT 4 + 5 * 9
+let tokens8 = ["PRINT","4","+","5","*","9"];
+let states8 = ["lit","num","op","num","op","num"];
 
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens5,
-        states5
+        tokens8,
+        states8
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));
