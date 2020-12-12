@@ -1,37 +1,37 @@
+(* quick reference to EBNF *)
+(* { word } = word is repeated 0 or more times *)
+(* [ word ] = word is optional (repeated 0 or 1 times) *)
+
 line = linenumber , stmt , {":" , stmt} ;
 linenumber = digits ;
 
 stmt =
-      "IF" , if_conditional , "THEN" , stmt , ["ELSE" , stmt] ; //TODO
-    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr //TODO
-    | "ON" , if_conditional , ident , if_conditional , {"," , if_conditional}
+      "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+    | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
+    | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
     | expr ;
     
-expr = // ALL TODO
-      "(" , expr , ")"
-    | function_call , op , function_call
-    | op_uni , function_call
-    | function_call ; //TODO
+expr = (* this basically blocks some funny attemps such as using DEFUN as anon function because everything is global in BASIC *)
+      lit
+    | "(" , expr , ")"
+    | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    | expr , op , expr
+    | op_uni , expr
+    | function_call ;
     
-function_call = // ALL TODO
-      "IF" , if_conditional , "THEN" , expr , ["ELSE" , expr] ; //TODO
-    | lit
-    | ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
+expr_sans_asgn = ? identical to expr except errors out whenever "=" is found ? ;
+    
+function_call =
+      ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
     | ident , expr , {argsep , expr} , [argsep] ;
 
-if_conditional =
-      "(" , if_conditional , ")"
-    | function_call , op - "=" , function_call
-    | op_uni , function_call
-    | function_call ; //TODO
     
 (* don't bother looking at these, because you already know the stuff *)    
     
-function = lit ;
-argsep = ","|";" ;
-ident = alph , [digits] ;
-lit = alph , [digits] | num | string ; (* example: "MyVar_2" *)
+argsep = "," | ";" ;
+ident = alph , [digits] ; (* variable and function names *)
+lit = alph , [digits] | num | string ; (* ident + numbers and string literals *)
 op = "^" | "*" | "/" | "MOD" | "+" | "-" | "<<" | ">>" | "<" | ">" | "<="
     | "=<" | ">=" | "=>" | "==" | "<>" | "><" | "BAND" | "BXOR" | "BOR"
     | "AND" | "OR" | "TO" | "STEP" | "!" | "~" | "#" | "=" ;
@@ -76,8 +76,8 @@ DEFUN (type: function, value: DEFUN)
 2. stmt
 
 ON (type: function, value: ON)
-1. varname
-2. functionname
+1. testvalue
+2. functionname (type: lit)
 3. arg0
 [4. arg1]
 [5. argN...]
