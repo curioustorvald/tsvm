@@ -21,7 +21,9 @@ bF.parserPrintdbgline = function(icon, msg, lnum, recDepth) {
  */
 bF._parseTokens = function(lnum, tokens, states) {
     bF.parserPrintdbg2('Line ', lnum, tokens, states, 0);
-    
+
+    if (tokens.length !== states.length) throw lang.syntaxfehler(lnum);
+
     /*************************************************************************/
 
     let parenDepth = 0;
@@ -89,6 +91,16 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
+
+    /*************************************************************************/
+
+    // case for: single word (e.g. NEXT for FOR loop)
+    if (tokens.length == 1 && states.length == 1) {
+        bF.parserPrintdbgline('$', "Single Word Function Call", lnum, recDepth);
+        return bF._parseLit(lnum, tokens, states, recDepth + 1, true);
+    }
+
+    /*************************************************************************/
 
     let parenDepth = 0;
     let parenStart = -1;
@@ -631,7 +643,7 @@ bF._parseIdent = function(lnum, tokens, states, recDepth) {
 /**
  * @return: BasicAST
  */
-bF._parseLit = function(lnum, tokens, states, recDepth) {
+bF._parseLit = function(lnum, tokens, states, recDepth, functionMode) {
     bF.parserPrintdbg2(String.fromCharCode(0xA2), lnum, tokens, states, recDepth);
 
     if (!Array.isArray(tokens) && !Array.isArray(states)) throw new ParserError("Tokens and states are not array");
@@ -640,7 +652,7 @@ bF._parseLit = function(lnum, tokens, states, recDepth) {
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
     treeHead.astValue = ("qot" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
-    treeHead.astType = ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
+    treeHead.astType = (functionMode) ? "function" : ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
     
     return treeHead;
 }
@@ -729,8 +741,8 @@ let tokens5 = ["ON","6","*","SQR","(","X","-","3",")","GOTO","X","+","1",",","X"
 let states5 = ["lit","num","op","lit","paren","lit","op","num","paren","lit","lit","op","num","sep","lit","op","num","sep","lit","op","num"];
 
 // FOR K=1 TO 10
-let tokens6 = ["FOR","K","=","1","TO","10"];
-let states6 = ["lit","lit","op","num","op","num"];
+let tokens6 = ["FOR","K","=","10","TO","1","STEP","-","1"];
+let states6 = ["lit","lit","op","num","op","num","op","op","num"];
 
 // FIXME print(chr(47+round(rnd(1))*45);) outputs bad tree
 let tokens7 = ["PRINT","(","CHR","(","47","+","ROUND","(","RND","(","1",")",")","*","45",")",";",")"];
@@ -740,10 +752,14 @@ let states7 = ["lit","paren","lit","paren","num","op","lit","paren","lit","paren
 let tokens8 = ["PRINT","4","+","5","*","9"];
 let states8 = ["lit","num","op","num","op","num"];
 
+// NEXT
+let tokens9 = ["NEXT"];
+let states9 = ["lit"];
+
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens8,
-        states8
+        tokens6,
+        states6
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));

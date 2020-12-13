@@ -869,7 +869,6 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     var varname = asgnObj.asgnVarName;
     var generator = asgnObj.asgnValue;
 
-
     // assign new variable
     // the var itself will have head of the array, and the head itself will be removed from the array
     bStatus.vars[varname] = new BasicVar(generator.start, "num");
@@ -1732,7 +1731,9 @@ bF.parserPrintdbgline = function(icon, msg, lnum, recDepth) {
  */
 bF._parseTokens = function(lnum, tokens, states) {
     bF.parserPrintdbg2('Line ', lnum, tokens, states, 0);
-    
+
+    if (tokens.length !== states.length) throw lang.syntaxfehler(lnum);
+
     /*************************************************************************/
 
     let parenDepth = 0;
@@ -1800,6 +1801,16 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
 
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
+
+    /*************************************************************************/
+
+    // case for: single word (e.g. NEXT for FOR loop)
+    if (tokens.length == 1 && states.length == 1) {
+        bF.parserPrintdbgline('$', "Single Word Function Call", lnum, recDepth);
+        return bF._parseLit(lnum, tokens, states, recDepth + 1, true);
+    }
+
+    /*************************************************************************/
 
     let parenDepth = 0;
     let parenStart = -1;
@@ -2341,7 +2352,7 @@ bF._parseIdent = function(lnum, tokens, states, recDepth) {
 /**
  * @return: BasicAST
  */
-bF._parseLit = function(lnum, tokens, states, recDepth) {
+bF._parseLit = function(lnum, tokens, states, recDepth, functionMode) {
     bF.parserPrintdbg2(String.fromCharCode(0xA2), lnum, tokens, states, recDepth);
 
     if (!Array.isArray(tokens) && !Array.isArray(states)) throw new ParserError("Tokens and states are not array");
@@ -2350,7 +2361,7 @@ bF._parseLit = function(lnum, tokens, states, recDepth) {
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
     treeHead.astValue = ("qot" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
-    treeHead.astType = ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
+    treeHead.astType = (functionMode) ? "function" : ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
 
     return treeHead;
 }
@@ -2579,7 +2590,7 @@ bF._executeAndGet = function(lnum, syntaxTree) {
     try {
         var execResult = bF._executeSyntaxTree(lnum, syntaxTree, 0);
 
-        serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
+        if (bF.parserDoDebugPrint) serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
 
         return execResult.troNextLine;
     }
