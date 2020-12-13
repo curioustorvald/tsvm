@@ -1619,28 +1619,30 @@ linenumber = digits ;
 
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+    | "FOR" , expr
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
     | expr ;
-    
+
 expr = (* this basically blocks some funny attemps such as using DEFUN as anon function because everything is global in BASIC *)
       lit
     | "(" , expr , ")"
     | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    (* at this point, if OP is found in paren-level 0, skip function_call *)
+    | function_call
     | expr , op , expr
-    | op_uni , expr
-    | function_call ;
-    
+    | op_uni , expr ;
+
 expr_sans_asgn = ? identical to expr except errors out whenever "=" is found ? ;
-    
+
 function_call =
       ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
     | ident , expr , {argsep , expr} , [argsep] ;
 
-    
-(* don't bother looking at these, because you already know the stuff *)    
-    
+
+(* don't bother looking at these, because you already know the stuff *)
+
 argsep = "," | ";" ;
 ident = alph , [digits] ; (* variable and function names *)
 lit = alph , [digits] | num | string ; (* ident + numbers and string literals *)
@@ -1654,7 +1656,7 @@ digits = digit | digit , digits ;
 hexdigits = hexdigit | hexdigit , hexdigits ;
 bindigits = bindigit | bindigit , bindigits ;
 num = digits | digits , "." , [digits] | "." , digits
-    | ("0x"|"0X") , hexdigits 
+    | ("0x"|"0X") , hexdigits
     | ("0b"|"0B") , bindigits ; (* sorry, no e-notation! *)
 visible = ? ASCII 0x20 to 0x7E ? ;
 string = '"' , (visible | visible , stringlit) , '"' ;
@@ -1679,6 +1681,9 @@ IF (type: function, value: IF)
 1. cond
 2. true
 [3. false]
+
+FOR (type: function, value: FOR)
+1. expr (normally (=) but not necessarily)
 
 DEFUN (type: function, value: DEFUN)
 1. funcname
@@ -1723,7 +1728,7 @@ bF.parserPrintdbgline = function(icon, msg, lnum, recDepth) {
 
 /**
  * The starting point to parse those tokens
- * @return: BasicAST
+ * @return ARRAY of BasicAST
  */
 bF._parseTokens = function(lnum, tokens, states) {
     bF.parserPrintdbg2('Line ', lnum, tokens, states, 0);
@@ -1778,6 +1783,7 @@ bF._parseTokens = function(lnum, tokens, states) {
 /** Parses following EBNF rule:
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+    | "FOR" , expr
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ident , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
@@ -1843,6 +1849,25 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     catch (e) {
         bF.parserPrintdbgline('$', 'It was NOT!', lnum, recDepth);
         if (!(e instanceof ParserError)) throw e;
+    }
+
+    /*************************************************************************/
+
+    // ## case for:
+    //    | "FOR" , expr
+    if ("FOR" == headTkn && "lit" == headSta) {
+        bF.parserPrintdbgline('$', 'FOR Stmt', lnum, recDepth);
+
+        treeHead.astValue = "FOR";
+        treeHead.astType = "function";
+
+        treeHead.astLeaves[0] = bF._parseExpr(lnum,
+            tokens.slice(1, tokens.length),
+            states.slice(1, states.length),
+            recDepth + 1
+        );
+
+        return treeHead;
     }
 
     /*************************************************************************/
@@ -2553,6 +2578,9 @@ bF._executeAndGet = function(lnum, syntaxTree) {
     // EXECUTE
     try {
         var execResult = bF._executeSyntaxTree(lnum, syntaxTree, 0);
+
+        serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
+
         return execResult.troNextLine;
     }
     catch (e) {

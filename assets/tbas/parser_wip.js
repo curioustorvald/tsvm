@@ -56,11 +56,15 @@ bF._parseTokens = function(lnum, tokens, states) {
         // check for empty tokens
         if (x.end - x.start <= 0) throw new ParserError("Malformed Line");
         
-        return bF._parseStmt(lnum,
+        let tree = bF._parseStmt(lnum,
             tokens.slice(x.start, x.end),
             states.slice(x.start, x.end),
             1
         );
+
+        bF.parserPrintdbgline('Tree in ', '\n'+astToString(tree), lnum, 0);
+
+        return tree;
     });
 }
 
@@ -68,6 +72,7 @@ bF._parseTokens = function(lnum, tokens, states) {
 /** Parses following EBNF rule:
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+    | "FOR" , expr
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ident , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
@@ -134,7 +139,27 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         bF.parserPrintdbgline('$', 'It was NOT!', lnum, recDepth);
         if (!(e instanceof ParserError)) throw e;
     }
-    
+
+
+    /*************************************************************************/
+
+    // ## case for:
+    //    | "FOR" , expr
+    if ("FOR" == headTkn && "lit" == headSta) {
+        bF.parserPrintdbgline('$', 'FOR Stmt', lnum, recDepth);
+
+        treeHead.astValue = "FOR";
+        treeHead.astType = "function";
+
+        treeHead.astLeaves[0] = bF._parseExpr(lnum,
+            tokens.slice(1, tokens.length),
+            states.slice(1, states.length),
+            recDepth + 1
+        );
+
+        return treeHead;
+    }
+
     /*************************************************************************/
     
     // ## case for:
