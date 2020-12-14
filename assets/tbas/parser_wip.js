@@ -660,7 +660,7 @@ bF._parseLit = function(lnum, tokens, states, recDepth, functionMode) {
 
 bF._EquationIllegalTokens = ["IF","THEN","ELSE","DEFUN","ON"];
 bF.isSemanticLiteral = function(token, state) {
-    return "]" == token || ")" == token ||
+    return undefined == token || "]" == token || ")" == token ||
             "qot" == state || "num" == state || "bool" == state || "lit" == state;
 }
 
@@ -755,6 +755,14 @@ let states8 = ["lit","num","op","num","op","num"];
 // NEXT
 let tokens9 = ["NEXT"];
 let states9 = ["lit"];
+
+// PRINT -3
+let tokens10 = ["PRINT","-","3"];
+let states10 = ["lit","op","num"];
+
+// PRINT SPC(20-I);
+let tokens11 = ["PRINT","SPC","(","20","-","I",")",";"];
+let states11 = ["lit"],"lit","paren","num","op","lit","paren","sep"];
 
 try  {
     let trees = bF._parseTokens(lnum,

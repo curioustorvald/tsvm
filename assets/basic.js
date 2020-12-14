@@ -1706,7 +1706,7 @@ FUNCTION_CALL (type: function, value: PRINT or something)
 // @returns BasicAST
 bF._EquationIllegalTokens = ["IF","THEN","ELSE","DEFUN","ON"];
 bF.isSemanticLiteral = function(token, state) {
-    return "]" == token || ")" == token ||
+    return undefined == token || "]" == token || ")" == token ||
             "qot" == state || "num" == state || "bool" == state || "lit" == state;
 }
 bF.parserDoDebugPrint = true;
