@@ -223,9 +223,8 @@ let astToString = function(ast, depth) {
     sb += l__.repeat(recDepth+1) + "leaves: "+(ast.astLeaves.length)+"\n";
     sb += l__.repeat(recDepth+1) + "value: "+ast.astValue+" (type: "+typeof ast.astValue+")\n";
     for (var k = 0; k < ast.astLeaves.length; k++) {
-        if (k > 0)
-            sb += l__.repeat(recDepth+1) + " " + ast.astSeps[k - 1] + "\n";
         sb += astToString(ast.astLeaves[k], recDepth + 1);
+        sb += l__.repeat(recDepth+1) + " " + ast.astSeps[k] + "\n";
     }
     sb += l__.repeat(recDepth)+String.fromCharCode(0x2570)+String.fromCharCode(0x2500).repeat(13)+'\n';
     return sb;
@@ -1726,7 +1725,6 @@ bF.parserPrintdbgline = function(icon, msg, lnum, recDepth) {
 }
 
 /**
- * The starting point to parse those tokens
  * @return ARRAY of BasicAST
  */
 bF._parseTokens = function(lnum, tokens, states) {
@@ -1740,7 +1738,7 @@ bF._parseTokens = function(lnum, tokens, states) {
     let parenStart = -1;
     let parenEnd = -1;
     let seps = [];
-    
+
     // scan for parens and (:)s
     for (let k = 0; k < tokens.length; k++) {
         // increase paren depth and mark paren start position
@@ -1757,17 +1755,17 @@ bF._parseTokens = function(lnum, tokens, states) {
         if (parenDepth == 0 && tokens[k] == ":" && states[k] == "seq")
             seps.push(k);
     }
-    
+
     let startPos = [0].concat(seps.map(k => k+1));
     let stmtPos = startPos.map((s,i) => {return{start:s, end:(seps[i] || tokens.length)}}); // use end of token position as separator position
-    
+
     return stmtPos.map((x,i) => {
         if (stmtPos.length > 1)
             bF.parserPrintdbgline('Line ', 'Statement #'+(i+1), lnum, 0);
-        
+
         // check for empty tokens
         if (x.end - x.start <= 0) throw new ParserError("Malformed Line");
-        
+
         let tree = bF._parseStmt(lnum,
             tokens.slice(x.start, x.end),
             states.slice(x.start, x.end),
@@ -1876,7 +1874,7 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         // parse function name
         if (tokens[1] == "(") {
             // anonymous function
-            treeHead.astLeaves[0] = BasicAST();
+            treeHead.astLeaves[0] = new BasicAST();
             treeHead.astLeaves[0].astLnum = lnum;
             treeHead.astLeaves[0].astType = "lit";
         }
@@ -1996,6 +1994,20 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
  */
 bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     bF.parserPrintdbg2('E', lnum, tokens, states, recDepth);
+
+    /*************************************************************************/
+
+    // ## special case for virtual dummy element (e.g. phantom element on "PRINT SPC(20);")
+    if (tokens[0] === undefined && states[0] === undefined) {
+        let treeHead = new BasicAST();
+        treeHead.astLnum = lnum;
+        treeHead.astValue = undefined;
+        treeHead.astType = "null";
+
+        return treeHead;
+    }
+
+    /*************************************************************************/
 
     let headTkn = tokens[0].toUpperCase();
     let headSta = states[0];
@@ -2305,7 +2317,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     treeHead.astValue = bF._parseIdent(lnum, [tokens[0]], [states[0]], recDepth + 1).astValue; // always UPPERCASE
 
     // 5 8 11 [end]
-    let argSeps = parenUsed ? [].concat(_argsepsOnLevelOne) : [].concat(_argsepsOnLevelZero); // choose which "sep tray" to use
+    let argSeps = parenUsed ? _argsepsOnLevelOne : _argsepsOnLevelZero; // choose which "sep tray" to use
     bF.parserPrintdbgline(String.fromCharCode(0x192), "argSeps = "+argSeps, lnum, recDepth);
     // 1 6 9 12
     let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
@@ -2315,16 +2327,14 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     bF.parserPrintdbgline(String.fromCharCode(0x192), "argPos = "+argPos.map(it=>`${it.start}/${it.end}`), lnum, recDepth);
 
     // check for trailing separator
-    let hasTrailingSep = (states[((parenUsed) ? parenEnd : states.length) - 1] == "sep");
-    // exclude last separator from recursion if input tokens has trailing separator
-    if (hasTrailingSep) argPos.pop();
+
 
     // recursively parse function arguments
     treeHead.astLeaves = argPos.map((x,i) => {
         bF.parserPrintdbgline(String.fromCharCode(0x192), 'Function Arguments #'+(i+1), lnum, recDepth);
 
         // check for empty tokens
-        if (x.end - x.start <= 0) throw new ParserError("not a function call because it's malformed");
+        if (x.end - x.start < 0) throw new ParserError("not a function call because it's malformed");
 
         return bF._parseExpr(lnum,
             tokens.slice(x.start, x.end),
@@ -2334,10 +2344,10 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     );
     treeHead.astType = "function";
     treeHead.astSeps = argSeps.map(i => tokens[i]);
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "astSeps = "+treeHead.astSeps, lnum, recDepth);
 
     return treeHead;
 }
-
 
 
 bF._parseIdent = function(lnum, tokens, states, recDepth) {

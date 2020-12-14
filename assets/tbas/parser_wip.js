@@ -170,7 +170,7 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         // parse function name
         if (tokens[1] == "(") {
             // anonymous function
-            treeHead.astLeaves[0] = BasicAST();
+            treeHead.astLeaves[0] = new BasicAST();
             treeHead.astLeaves[0].astLnum = lnum;
             treeHead.astLeaves[0].astType = "lit";
         }
@@ -290,6 +290,20 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
  */
 bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     bF.parserPrintdbg2('E', lnum, tokens, states, recDepth);
+
+    /*************************************************************************/
+
+    // ## special case for virtual dummy element (e.g. phantom element on "PRINT SPC(20);")
+    if (tokens[0] === undefined && states[0] === undefined) {
+        let treeHead = new BasicAST();
+        treeHead.astLnum = lnum;
+        treeHead.astValue = undefined;
+        treeHead.astType = "null";
+
+        return treeHead;
+    }
+
+    /*************************************************************************/
 
     let headTkn = tokens[0].toUpperCase();
     let headSta = states[0];
@@ -599,7 +613,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     treeHead.astValue = bF._parseIdent(lnum, [tokens[0]], [states[0]], recDepth + 1).astValue; // always UPPERCASE
 
     // 5 8 11 [end]
-    let argSeps = parenUsed ? [].concat(_argsepsOnLevelOne) : [].concat(_argsepsOnLevelZero); // choose which "sep tray" to use
+    let argSeps = parenUsed ? _argsepsOnLevelOne : _argsepsOnLevelZero; // choose which "sep tray" to use
     bF.parserPrintdbgline(String.fromCharCode(0x192), "argSeps = "+argSeps, lnum, recDepth);
     // 1 6 9 12
     let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
@@ -609,16 +623,14 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     bF.parserPrintdbgline(String.fromCharCode(0x192), "argPos = "+argPos.map(it=>`${it.start}/${it.end}`), lnum, recDepth);
 
     // check for trailing separator
-    let hasTrailingSep = (states[((parenUsed) ? parenEnd : states.length) - 1] == "sep");
-    // exclude last separator from recursion if input tokens has trailing separator
-    if (hasTrailingSep) argPos.pop();
+
 
     // recursively parse function arguments
     treeHead.astLeaves = argPos.map((x,i) => {
         bF.parserPrintdbgline(String.fromCharCode(0x192), 'Function Arguments #'+(i+1), lnum, recDepth);
 
         // check for empty tokens
-        if (x.end - x.start <= 0) throw new ParserError("not a function call because it's malformed");
+        if (x.end - x.start < 0) throw new ParserError("not a function call because it's malformed");
 
         return bF._parseExpr(lnum,
             tokens.slice(x.start, x.end),
@@ -628,6 +640,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     );
     treeHead.astType = "function";
     treeHead.astSeps = argSeps.map(i => tokens[i]);
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "astSeps = "+treeHead.astSeps, lnum, recDepth);
 
     return treeHead;
 }
@@ -688,9 +701,8 @@ let astToString = function(ast, depth) {
     sb += l__.repeat(recDepth+1) + "leaves: "+(ast.astLeaves.length)+"\n";
     sb += l__.repeat(recDepth+1) + "value: "+ast.astValue+" (type: "+typeof ast.astValue+")\n";
     for (var k = 0; k < ast.astLeaves.length; k++) {
-        if (k > 0)
-            sb += l__.repeat(recDepth+1) + " " + ast.astSeps[k - 1] + "\n";
         sb += astToString(ast.astLeaves[k], recDepth + 1);
+        sb += l__.repeat(recDepth+1) + " " + ast.astSeps[k] + "\n";
     }
     sb += l__.repeat(recDepth)+String.fromCharCode(0x2570)+String.fromCharCode(0x2500).repeat(13)+'\n';
     return sb;
@@ -729,7 +741,6 @@ let bStatus = {};
 bStatus.builtin = {};
 ["PRINT","NEXT","SPC","CHR","ROUND","SQR","RND","GOTO","GOSUB","DEFUN","FOR","MAP"].forEach(w=>{ bStatus.builtin[w] = 1 });
 let lnum = 10;
-// FIXME print's last (;) gets parsed but ignored
 
 // if s<2 then (nop1) else (if s < 9999 then nop2 else nop3)
 let tokens1 = ["if","s","<","2","then","(","nop1",")","else","(","if","s","<","9999","then","nop2","else","nop3",")"];
@@ -783,10 +794,20 @@ let states12 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","l
 let tokens13 = ["K","=","MAP","FAC",",","1","TO","10"];
 let states13 = ["lit","op","lit","lit","sep","num","op","num"];
 
+// DEFUN FIB(N)=IF N==0 THEN 0 ELSE IF N==1 THEN 1 ELSE FIB(N-1)+FIB(N-2)
+let tokens14 = ["DEFUN","FIB","(","N",")","=","IF","N","==","0","THEN","0",
+    "ELSE","IF","N","==","1","THEN","1",
+    "ELSE","FIB","(","N","-","1",")","+","FIB","(","N","-","2",")"];
+let states14 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","lit","num",
+    "lit","lit","lit","op","num","lit","num",
+    "lit","lit","paren","lit","op","num","paren","op","lit","paren","lit","op","num","paren"];
+
+// PRINT(MAP FIB, 1 TO 10) is broken
+
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens13,
-        states13
+        tokens14,
+        states14
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));
