@@ -802,12 +802,15 @@ let states14 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","l
     "lit","lit","lit","op","num","lit","num",
     "lit","lit","paren","lit","op","num","paren","op","lit","paren","lit","op","num","paren"];
 
-// PRINT(MAP FIB, 1 TO 10) is broken
+// PRINT(MAP FIB, 1 TO 10) is not broken, it's obvious syntax error
+// use "PRINT MAP(FIB, 1 TO 10)" instead
+let tokens15 = ["PRINT","MAP","(","FIB",",","1","TO","10",")"];
+let states15 = ["lit","lit","paren","lit","sep","num","op","num","paren"];
 
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens14,
-        states14
+        tokens15,
+        states15
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));

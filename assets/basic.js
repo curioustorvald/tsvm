@@ -23,7 +23,7 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
 
 
 let INDEX_BASE = 0;
-let TRACEON = false;
+let TRACEON = true;
 let DBGON = true;
 let DATA_CURSOR = 0;
 let DATA_CONSTS = [];
@@ -2411,8 +2411,8 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero 
  */
 bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
 bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
-    let _debugExec = true;
-    let _debugPrintCurrentLine = true;
+    let _debugExec = false;
+    let _debugPrintCurrentLine = false;
     let recWedge = "> ".repeat(recDepth);
 
     if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
@@ -2487,12 +2487,12 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             });
 
             // test print new tree
-            serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
-            serial.println("[BASIC.DEFUN] defun name tree: ");
-            serial.println(astToString(nameTree));
-            serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
-            serial.println("[BASIC.DEFUN] defun expression tree:");
-            serial.println(astToString(exprTree));
+            //serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
+            //serial.println("[BASIC.DEFUN] defun name tree: ");
+            //serial.println(astToString(nameTree));
+            //serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
+            //serial.println("[BASIC.DEFUN] defun expression tree:");
+            //serial.println(astToString(exprTree));
 
             // check if the variable name already exists
             // search from constants
