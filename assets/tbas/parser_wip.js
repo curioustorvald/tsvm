@@ -15,6 +15,10 @@ bF.parserPrintdbgline = function(icon, msg, lnum, recDepth) {
     let treeHead = String.fromCharCode(0x2502,32).repeat(recDepth);
     bF.parserPrintdbg(`${icon}${lnum} ${treeHead}${msg}`);
 }
+let lang = {};
+lang.syntaxfehler = function(line, reason) {
+    return Error("Syntax error" + ((line !== undefined) ? (" in "+line) : "") + ((reason !== undefined) ? (": "+reason) : ""));
+};
 
 /**
  * @return ARRAY of BasicAST
@@ -77,7 +81,7 @@ stmt =
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ident , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
-    | expr ;
+    | expr ; (* if the statement is 'lit' and contains only one word, treat it as function_call e.g. NEXT for FOR loop *)
  * @return: BasicAST
  */
 bF._parseStmt = function(lnum, tokens, states, recDepth) {
@@ -379,15 +383,7 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     ) {
         bF.parserPrintdbgline('E', 'Builtin Function Call w/o Paren', lnum, recDepth);
 
-        let treeHead = bF._parseIdent(lnum, [headTkn], [headSta], recDepth + 1);
-        treeHead.astLeaves[0] = bF._parseExpr(lnum,
-            tokens.slice(1, tokens.length),
-            states.slice(1, states.length),
-            recDepth + 1
-        );
-        treeHead.astType = "function";
-
-        return treeHead;
+        return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
     }
 
     /*************************************************************************/
@@ -603,11 +599,14 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     treeHead.astValue = bF._parseIdent(lnum, [tokens[0]], [states[0]], recDepth + 1).astValue; // always UPPERCASE
 
     // 5 8 11 [end]
-    let argSeps = parenUsed ? _argsepsOnLevelOne : _argsepsOnLevelZero; // choose which "sep tray" to use
+    let argSeps = parenUsed ? [].concat(_argsepsOnLevelOne) : [].concat(_argsepsOnLevelZero); // choose which "sep tray" to use
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "argSeps = "+argSeps, lnum, recDepth);
     // 1 6 9 12
     let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "argStartPos = "+argStartPos, lnum, recDepth);
     // [1,5) [6,8) [9,11) [12,end)
-    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || (parenUsed) ? parenEnd : tokens.length )}}); // use end of token position as separator position
+    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || (parenUsed ? parenEnd : tokens.length) )}}); // use end of token position as separator position
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "argPos = "+argPos.map(it=>`${it.start}/${it.end}`), lnum, recDepth);
 
     // check for trailing separator
     let hasTrailingSep = (states[((parenUsed) ? parenEnd : states.length) - 1] == "sep");
@@ -659,7 +658,9 @@ bF._parseLit = function(lnum, tokens, states, recDepth, functionMode) {
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
     treeHead.astValue = ("qot" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
-    treeHead.astType = (functionMode) ? "function" : ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
+    treeHead.astType = ("qot" == states[0]) ? "string" :
+        ("num" == states[0]) ? "num" :
+        (functionMode) ? "function" : "lit";
     
     return treeHead;
 }
@@ -726,7 +727,7 @@ bF._opPrc = {
 bF._opRh = {"^":1,"=":1,"!":1,"IN":1};
 let bStatus = {};
 bStatus.builtin = {};
-["PRINT","NEXT","SPC","CHR","ROUND","SQR","RND","GOTO","GOSUB","DEFUN","FOR"].forEach(w=>{ bStatus.builtin[w] = 1 });
+["PRINT","NEXT","SPC","CHR","ROUND","SQR","RND","GOTO","GOSUB","DEFUN","FOR","MAP"].forEach(w=>{ bStatus.builtin[w] = 1 });
 let lnum = 10;
 // FIXME print's last (;) gets parsed but ignored
 
@@ -777,10 +778,15 @@ let states11 = ["lit","lit","paren","num","op","lit","paren","sep"];
 // DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1)
 let tokens12 = ["DEFUN","FAC","(","N",")","=","IF","N","==","0","THEN","1","ELSE","N","*","FAC","(","N","-","1",")"];
 let states12 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","lit","num","lit","lit","op","lit","paren","lit","op","num","paren"];
+
+// K = MAP FAC , 1 TO 10
+let tokens13 = ["K","=","MAP","FAC",",","1","TO","10"];
+let states13 = ["lit","op","lit","lit","sep","num","op","num"];
+
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens12,
-        states12
+        tokens13,
+        states13
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));

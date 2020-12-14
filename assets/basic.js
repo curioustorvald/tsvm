@@ -1622,7 +1622,7 @@ stmt =
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
-    | expr ;
+    | expr ; (* if the statement is 'lit' and contains only one word, treat it as function_call e.g. NEXT for FOR loop *)
 
 expr = (* this basically blocks some funny attemps such as using DEFUN as anon function because everything is global in BASIC *)
       lit
@@ -1787,7 +1787,7 @@ stmt =
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ident , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
-    | expr ;
+    | expr ; (* if the statement is 'lit' and contains only one word, treat it as function_call e.g. NEXT for FOR loop *)
  * @return: BasicAST
  */
 bF._parseStmt = function(lnum, tokens, states, recDepth) {
@@ -2089,15 +2089,7 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     ) {
         bF.parserPrintdbgline('E', 'Builtin Function Call w/o Paren', lnum, recDepth);
 
-        let treeHead = bF._parseIdent(lnum, [headTkn], [headSta], recDepth + 1);
-        treeHead.astLeaves[0] = bF._parseExpr(lnum,
-            tokens.slice(1, tokens.length),
-            states.slice(1, states.length),
-            recDepth + 1
-        );
-        treeHead.astType = "function";
-
-        return treeHead;
+        return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
     }
 
     /*************************************************************************/
@@ -2313,11 +2305,14 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
     treeHead.astValue = bF._parseIdent(lnum, [tokens[0]], [states[0]], recDepth + 1).astValue; // always UPPERCASE
 
     // 5 8 11 [end]
-    let argSeps = parenUsed ? _argsepsOnLevelOne : _argsepsOnLevelZero; // choose which "sep tray" to use
+    let argSeps = parenUsed ? [].concat(_argsepsOnLevelOne) : [].concat(_argsepsOnLevelZero); // choose which "sep tray" to use
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "argSeps = "+argSeps, lnum, recDepth);
     // 1 6 9 12
     let argStartPos = [1 + (parenUsed)].concat(argSeps.map(k => k+1));
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "argStartPos = "+argStartPos, lnum, recDepth);
     // [1,5) [6,8) [9,11) [12,end)
-    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || (parenUsed) ? parenEnd : tokens.length )}}); // use end of token position as separator position
+    let argPos = argStartPos.map((s,i) => {return{start:s, end:(argSeps[i] || (parenUsed ? parenEnd : tokens.length) )}}); // use end of token position as separator position
+    bF.parserPrintdbgline(String.fromCharCode(0x192), "argPos = "+argPos.map(it=>`${it.start}/${it.end}`), lnum, recDepth);
 
     // check for trailing separator
     let hasTrailingSep = (states[((parenUsed) ? parenEnd : states.length) - 1] == "sep");
@@ -2342,6 +2337,7 @@ bF._parseFunctionCall = function(lnum, tokens, states, recDepth) {
 
     return treeHead;
 }
+
 
 
 bF._parseIdent = function(lnum, tokens, states, recDepth) {
@@ -2369,7 +2365,9 @@ bF._parseLit = function(lnum, tokens, states, recDepth, functionMode) {
     let treeHead = new BasicAST();
     treeHead.astLnum = lnum;
     treeHead.astValue = ("qot" == states[0]) ? tokens[0] : tokens[0].toUpperCase();
-    treeHead.astType = (functionMode) ? "function" : ("qot" == states[0]) ? "string" : ("num" == states[0]) ? "num" : "lit";
+    treeHead.astType = ("qot" == states[0]) ? "string" :
+        ("num" == states[0]) ? "num" :
+        (functionMode) ? "function" : "lit";
 
     return treeHead;
 }
