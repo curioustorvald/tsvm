@@ -1193,7 +1193,7 @@ bF._opPrc = {
     "*":2,"/":2,
     "MOD":3,
     "+":4,"-":4,
-    //";":5,
+    "NOT":5,"BNOT":5,
     "<<":6,">>":6,
     "<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
     "==":8,"<>":8,"><":8,
@@ -1784,7 +1784,6 @@ bF._parseTokens = function(lnum, tokens, states) {
 /** Parses following EBNF rule:
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
-    | "FOR" , expr
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ident , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
@@ -1860,25 +1859,6 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
     catch (e) {
         bF.parserPrintdbgline('$', 'It was NOT!', lnum, recDepth);
         if (!(e instanceof ParserError)) throw e;
-    }
-
-    /*************************************************************************/
-
-    // ## case for:
-    //    | "FOR" , expr
-    if ("FOR" == headTkn && "lit" == headSta) {
-        bF.parserPrintdbgline('$', 'FOR Stmt', lnum, recDepth);
-
-        treeHead.astValue = "FOR";
-        treeHead.astType = "function";
-
-        treeHead.astLeaves[0] = bF._parseExpr(lnum,
-            tokens.slice(1, tokens.length),
-            states.slice(1, states.length),
-            recDepth + 1
-        );
-
-        return treeHead;
     }
 
     /*************************************************************************/
@@ -2007,6 +1987,7 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
       lit
     | "(" , expr , ")"
     | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    | kywd , expr (* also deals with FOR statement; kywd = ? words that exists on the list of predefined function that are not operators ? ; *)
     | function_call
     | expr , op , expr
     | op_uni , expr ;
@@ -2016,11 +1997,13 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
 bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     bF.parserPrintdbg2('E', lnum, tokens, states, recDepth);
 
+    let headTkn = tokens[0].toUpperCase();
+    let headSta = states[0];
+
     /*************************************************************************/
 
     // ## case for:
     //    lit
-    let headTkn = tokens[0].toUpperCase();
     if (!bF._EquationIllegalTokens.includes(headTkn) && tokens.length == 1) {
         bF.parserPrintdbgline('E', 'Literal Call', lnum, recDepth);
         return bF._parseLit(lnum, tokens, states, recDepth + 1);
@@ -2100,9 +2083,29 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     /*************************************************************************/
 
     // ## case for:
+    //    | kywd , expr (* kywd = ? words that exists on the list of predefined function that are not operators ? ; *)
+    if (bStatus.builtin[headTkn] && headSta == "lit" && !bF._opPrc[headTkn] &&
+        states[1] != "paren"
+    ) {
+        bF.parserPrintdbgline('E', 'Builtin Function Call w/o Paren', lnum, recDepth);
+
+        let treeHead = bF._parseIdent(lnum, [headTkn], [headSta], recDepth + 1);
+        treeHead.astLeaves[0] = bF._parseExpr(lnum,
+            tokens.slice(1, tokens.length),
+            states.slice(1, states.length),
+            recDepth + 1
+        );
+        treeHead.astType = "function";
+
+        return treeHead;
+    }
+
+    /*************************************************************************/
+
+    // ## case for:
     //    (* at this point, if OP is found in paren-level 0, skip function_call *)
     //    | function_call ;
-    if (topmostOp === undefined) {
+    if (topmostOp === undefined) { // don't remove this IF statement!
         try {
             bF.parserPrintdbgline('E', "Trying Function Call...", lnum, recDepth);
             return bF._parseFunctionCall(lnum, tokens, states, recDepth + 1);
@@ -2145,7 +2148,12 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
             treeHead.astLeaves[1] = bF._parseExpr(lnum, subtknR, substaR, recDepth + 1);
         }
         else {
-            treeHead.astValue = (topmostOp === "-") ? "UNARYMINUS" : "UNARYPLUS";
+            if (topmostOp === "-") treeHead.astValue = "UNARYMINUS"
+            else if (topmostOp === "+") treeHead.astValue = "UNARYPLUS"
+            else if (topmostOp === "NOT") treeHead.astValue = "UNARYLOGICNOT"
+            else if (topmostOp === "BNOT") treeHead.astValue = "UNARYBNOT"
+            else throw new ParserError(`Unknown unary op '${topmostOp}'`)
+
             treeHead.astLeaves[0] = bF._parseExpr(lnum,
                 tokens.slice(operatorPos + 1, tokens.length),
                 states.slice(operatorPos + 1, states.length),
@@ -2554,11 +2562,6 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 bF._interpretLine = function(lnum, cmd) {
     var _debugprintHighestLevel = false;
 
-    if (TRACEON) {
-        //print(`[${lnum}]`);
-        serial.println("[BASIC] Line "+lnum);
-    }
-
     if (cmd.toUpperCase().startsWith("REM")) {
         if (_debugprintHighestLevel) serial.println(lnum+" "+cmd);
         return undefined;
@@ -2684,6 +2687,11 @@ bF.run = function(args) { // RUN function
     var oldnum = 1;
     do {
         if (cmdbuf[linenumber] !== undefined) {
+            if (TRACEON) {
+                //print(`[${lnum}]`);
+                serial.println("[BASIC] Line "+linenumber);
+            }
+
             oldnum = linenumber;
 
             let trees = programTrees[linenumber];

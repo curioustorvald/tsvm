@@ -7,7 +7,6 @@ linenumber = digits ;
 
 stmt =
       "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
-    | "FOR" , expr
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
@@ -17,6 +16,7 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
       lit
     | "(" , expr , ")"
     | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    | kywd , expr - "(" (* also deals with FOR statement *)
     (* at this point, if OP is found in paren-level 0, skip function_call *)
     | function_call
     | expr , op , expr
@@ -27,7 +27,7 @@ expr_sans_asgn = ? identical to expr except errors out whenever "=" is found ? ;
 function_call =
       ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
     | ident , expr , {argsep , expr} , [argsep] ;
-
+kywd = ? words that exists on the list of predefined function that are not operators ? ;
     
 (* don't bother looking at these, because you already know the stuff *)    
     
