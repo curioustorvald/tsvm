@@ -1612,7 +1612,9 @@ bF._recurseApplyAST = function(tree, action) {
 (* { word } = word is repeated 0 or more times *)
 (* [ word ] = word is optional (repeated 0 or 1 times) *)
 
-line = linenumber , stmt , {":" , stmt} ;
+line =
+      linenumber , stmt , {":" , stmt}
+    | linenumber , "REM" , ? basically anything ? ;
 linenumber = digits ;
 
 stmt =
@@ -1731,6 +1733,7 @@ bF._parseTokens = function(lnum, tokens, states) {
     bF.parserPrintdbg2('Line ', lnum, tokens, states, 0);
 
     if (tokens.length !== states.length) throw lang.syntaxfehler(lnum);
+    if (tokens[0] == "REM" && states[0] != "qot") return;
 
     /*************************************************************************/
 
@@ -2703,9 +2706,15 @@ bF.run = function(args) { // RUN function
             oldnum = linenumber;
 
             let trees = programTrees[linenumber];
-            trees.forEach((t,i) => {
-                linenumber = bF._executeAndGet(linenumber, t);
-            });
+
+            if (trees !== undefined) {
+                trees.forEach((t,i) => {
+                    linenumber = bF._executeAndGet(linenumber, t);
+                });
+            }
+            else {
+                linenumber += 1;
+            }
         }
         else {
             linenumber += 1;

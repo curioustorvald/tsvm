@@ -2,7 +2,9 @@
 (* { word } = word is repeated 0 or more times *)
 (* [ word ] = word is optional (repeated 0 or 1 times) *)
 
-line = linenumber , stmt , {":" , stmt} ;
+line =
+      linenumber , stmt , {":" , stmt}
+    | linenumber , "REM" , ? basically anything ? ;
 linenumber = digits ;
 
 stmt =

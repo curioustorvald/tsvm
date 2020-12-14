@@ -27,6 +27,7 @@ bF._parseTokens = function(lnum, tokens, states) {
     bF.parserPrintdbg2('Line ', lnum, tokens, states, 0);
 
     if (tokens.length !== states.length) throw lang.syntaxfehler(lnum);
+    if (tokens[0].toUpperCase() == "REM" && states[0] != "qot") return;
 
     /*************************************************************************/
 
