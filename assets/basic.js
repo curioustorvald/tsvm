@@ -36,6 +36,7 @@ if (system.maxmem() < 8192) {
 let vmemsize = system.maxmem() - 5236;
 
 let cmdbuf = []; // index: line number
+let gotoLabels = {};
 let cmdbufMemFootPrint = 0;
 let prompt = "Ok";
 
@@ -770,18 +771,24 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArgNum(lnum, stmtnum, args, (lh) => sys.peek(lh));
 },
 "GOTO" : function(lnum, stmtnum, args) {
-    return oneArgNum(lnum, stmtnum, args, (lh) => {
-        if (lh < 0) throw lang.syntaxfehler(lnum, lh);
-        return new JumpObj(lh, 0, lnum, lh);
-    });
+    // search from gotoLabels first
+    let line = gotoLabels[args[0].troValue];
+    // if not found, use resolved variable
+    if (line === undefined) line = resolve(args[0]);
+    if (line < 0) throw lang.syntaxfehler(lnum, line);
+
+    return new JumpObj(line, 0, lnum, line);
 },
 "GOSUB" : function(lnum, stmtnum, args) {
-    return oneArgNum(lnum, stmtnum, args, (lh) => {
-        if (lh < 0) throw lang.syntaxfehler(lnum, lh);
-        bStatus.gosubStack.push([lnum, stmtnum + 1]);
-        //println(lnum+" GOSUB into "+lh);
-        return new JumpObj(lh, 0, lnum, lh);
-    });
+    // search from gotoLabels first
+    let line = gotoLabels[args[0].troValue];
+    // if not found, use resolved variable
+    if (line === undefined) line = resolve(args[0]);
+    if (line < 0) throw lang.syntaxfehler(lnum, line);
+
+    bStatus.gosubStack.push([lnum, stmtnum + 1]);
+    //println(lnum+" GOSUB into "+lh);
+    return new JumpObj(line, 0, lnum, line);
 },
 "RETURN" : function(lnum, stmtnum, args) {
     var r = bStatus.gosubStack.pop();
@@ -1109,6 +1116,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "DO" : function(lnum, stmtnum, args) {
     //return resolve(args[args.length - 1]);
     return undefined;
+},
+"LABEL" : function(lnum, stmtnum, args) {
+    let labelname = args[0].troValue;
+
+    if (labelname === undefined) throw lang.syntaxfehler(lnum, "empty LABEL");
+    gotoLabels[labelname] = lnum;
 },
 "OPTIONDEBUG" : function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => {
@@ -2686,8 +2699,9 @@ bF.system = function(args) { // SYSTEM function
     tbasexit = true;
 };
 bF.new = function(args) { // NEW function
+    if (args) cmdbuf = [];
     bStatus.vars = initBvars();
-    cmdbuf = [];
+    gotoLabels = {};
 };
 bF.renum = function(args) { // RENUM function
     var newcmdbuf = [];
@@ -2729,11 +2743,21 @@ bF.tron = function(args) {
 bF.troff = function(args) {
     TRACEON = false;
 };
+bF.prescanStmts = ["DATA","LABEL"];
 bF.run = function(args) { // RUN function
+    bF.new(false);
+
     // pre-build the trees
     let programTrees = [];
     cmdbuf.forEach((linestr, linenum) => {
-        programTrees[linenum] = bF._interpretLine(linenum, linestr.trim());
+        let trees = bF._interpretLine(linenum, linestr.trim());
+        programTrees[linenum] = trees
+        // do prescan job (data, label, etc)
+        trees.forEach((t, i) => {
+            if (bF.prescanStmts.includes(t.astValue)) {
+                bF._executeAndGet(linenum, i, t);
+            }
+        })
     });
 
     // actually execute the program
@@ -2795,8 +2819,7 @@ bF.load = function(args) { // LOAD function
     var prg = fs.readAll();
 
     // reset the environment
-    cmdbuf = [];
-    bStatus.vars = initBvars();
+    bF.new(true);
 
     // read the source
     prg.split('\n').forEach((line) => {
