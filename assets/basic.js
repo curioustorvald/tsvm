@@ -1882,12 +1882,16 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
             treeHead.astLeaves[0].astType = "lit";
         }
         else {
+            bF.parserPrintdbgline('$', 'DEFUN Stmt Function Name:', lnum, recDepth);
             treeHead.astLeaves[0] = bF._parseIdent(lnum, [tokens[1]], [states[1]], recDepth + 1);
         }
 
         // parse function arguments
-        treeHead.astLeaves[0].astLeaves = sepsOne.map(i=>i-1).concat([parenEnd - 1])
-            .map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 2));
+        bF.parserPrintdbgline('$', 'DEFUN Stmt Function Arguments -- ', lnum, recDepth);
+        let defunArgDeclSeps = sepsOne.filter((i) => i < parenEnd + 1).map(i => i-1).concat([parenEnd - 1]);
+        bF.parserPrintdbgline('$', 'DEFUN Stmt Function Arguments comma position: '+defunArgDeclSeps, lnum, recDepth);
+
+        treeHead.astLeaves[0].astLeaves = defunArgDeclSeps.map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 1));
 
         // parse function body
         treeHead.astLeaves[1] = bF._parseExpr(lnum,

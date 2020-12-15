@@ -176,12 +176,16 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
             treeHead.astLeaves[0].astType = "lit";
         }
         else {
+            bF.parserPrintdbgline('$', 'DEFUN Stmt Function Name:', lnum, recDepth);
             treeHead.astLeaves[0] = bF._parseIdent(lnum, [tokens[1]], [states[1]], recDepth + 1);
         }
         
         // parse function arguments
-        treeHead.astLeaves[0].astLeaves = sepsOne.map(i=>i-1).concat([parenEnd - 1])
-            .map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 2));
+        bF.parserPrintdbgline('$', 'DEFUN Stmt Function Arguments -- ', lnum, recDepth);
+        let defunArgDeclSeps = sepsOne.filter((i) => i < parenEnd + 1).map(i => i-1).concat([parenEnd - 1]);
+        bF.parserPrintdbgline('$', 'DEFUN Stmt Function Arguments comma position: '+defunArgDeclSeps, lnum, recDepth);
+
+        treeHead.astLeaves[0].astLeaves = defunArgDeclSeps.map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 1));
         
         // parse function body
         treeHead.astLeaves[1] = bF._parseExpr(lnum,
@@ -808,10 +812,14 @@ let states14 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","l
 let tokens15 = ["PRINT","MAP","(","FIB",",","1","TO","10",")"];
 let states15 = ["lit","lit","paren","lit","sep","num","op","num","paren"];
 
+// DEFUN KA(X)=IF X>2 THEN DO(PRINT(HAI);PRINT(X)) ELSE DO(PRINT(BYE);PRINT(X))
+let tokens16 = ["DEFUN","KA","(","X",")","=","IF","X",">","2","THEN","DO","(","PRINT","(","HAI",")",";","PRINT","(","X",")",")","ELSE","DO","(","PRINT","(","BYE",")",";","PRINT","(","X",")",")"];
+let states16 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","lit","lit","paren","lit","paren","qot","paren","sep","lit","paren","lit","paren","paren","lit","lit","paren","lit","paren","qot","paren","sep","lit","paren","lit","paren","paren"];
+
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens15,
-        states15
+        tokens16,
+        states16
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));
