@@ -76,7 +76,7 @@ lang.illegalType = function(line, obj) {
 lang.refError = function(line, obj) {
     serial.printerr(`${line} Unresolved reference:`);
     serial.printerr(`    object: ${obj}, typeof: ${typeof obj}`);
-    serial.printerr(`    entries: ${Object.entries(obj)}`);
+    if (obj !== null && obj !== undefined) serial.printerr(`    entries: ${Object.entries(obj)}`);
     return Error("Unresolved reference" + ((obj !== undefined) ? ` "${obj}"` : "") + ((line !== undefined) ? (" in "+line) : ""));
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
@@ -273,20 +273,20 @@ let argCheckErr = function(lnum, o) {
     if (o === undefined || o.troType == "null") throw lang.refError(lnum, o);
     if (o.troType == "lit" && bStatus.vars[o.troValue] === undefined) throw lang.refError(lnum, o);
 }
-let oneArg = function(lnum, args, action) {
+let oneArg = function(lnum, stmtnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
     return action(rsvArg0);
 }
-let oneArgNum = function(lnum, args, action) {
+let oneArgNum = function(lnum, stmtnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
     if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     return action(rsvArg0);
 }
-let twoArg = function(lnum, args, action) {
+let twoArg = function(lnum, stmtnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
@@ -294,7 +294,7 @@ let twoArg = function(lnum, args, action) {
     var rsvArg1 = resolve(args[1]);
     return action(rsvArg0, rsvArg1);
 }
-let twoArgNum = function(lnum, args, action) {
+let twoArgNum = function(lnum, stmtnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
@@ -304,7 +304,7 @@ let twoArgNum = function(lnum, args, action) {
     if (isNaN(rsvArg1)) throw lang.illegalType(lnum, "RH:"+Object.entries(args[1]));
     return action(rsvArg0, rsvArg1);
 }
-let threeArg = function(lnum, args, action) {
+let threeArg = function(lnum, stmtnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
     var rsvArg0 = resolve(args[0]);
@@ -314,7 +314,7 @@ let threeArg = function(lnum, args, action) {
     var rsvArg2 = resolve(args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
-let threeArgNum = function(lnum, args, action) {
+let threeArgNum = function(lnum, stmtnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     argCheckErr(lnum, args[0]);
@@ -327,7 +327,7 @@ let threeArgNum = function(lnum, args, action) {
     if (isNaN(rsvArg2)) throw lang.illegalType(lnum, args[2]);
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
-let varArg = function(lnum, args, action) {
+let varArg = function(lnum, stmtnum, args, action) {
     var rsvArg = args.map((it) => {
         argCheckErr(lnum, it);
         var r = resolve(it);
@@ -335,7 +335,7 @@ let varArg = function(lnum, args, action) {
     });
     return action(rsvArg);
 }
-let varArgNum = function(lnum, args, action) {
+let varArgNum = function(lnum, stmtnum, args, action) {
     var rsvArg = args.map((it) => {
         argCheckErr(lnum, it);
         var r = resolve(it);
@@ -424,7 +424,7 @@ let ForGen = function(s,e,t) {
 }
 let bStatus = {};
 bStatus.gosubStack = [];
-bStatus.forLnums = {}; // key: forVar, value: linenum
+bStatus.forLnums = {}; // key: forVar, value: [lnum, stmtnum]
 bStatus.forStack = []; // forVars only
 bStatus.vars = initBvars(); // contains instances of BasicVars
 bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
@@ -440,10 +440,14 @@ bStatus.getDimSize = function(array, dim) {
     }
     return dims[dim];
 };
-bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
-    return function(lnum, args, seps) {
+bStatus.getArrayIndexFun = function(lnum, stmtnum, arrayName, array) {
+    if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
+
+    return function(lnum, stmtnum, args, seps) {
+        if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
+
         // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
-        return varArgNum(lnum, args, (dims) => {
+        return varArgNum(lnum, stmtnum, args, (dims) => {
             if (TRACEON) serial.println("ar dims: "+dims);
 
             let dimcnt = 1;
@@ -468,9 +472,13 @@ bStatus.getArrayIndexFun = function(lnum, arrayName, array) {
         });
     };
 };
-bStatus.getDefunThunk = function(lnum, exprTree) {
+bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
+    if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
+
     let tree = JSON.parse(JSON.stringify(exprTree)); // ALWAYS create new tree instance!
-    return function(lnum, args, seps) {
+    return function(lnum, stmtnum, args, seps) {
+        if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
+
         let argsMap = [];
         args.map(it => {
             argCheckErr(lnum, it);
@@ -507,7 +515,7 @@ bStatus.getDefunThunk = function(lnum, exprTree) {
         }
 
         // evaluate new tree
-        return resolve(bF._executeSyntaxTree(lnum, tree, 0));
+        return resolve(bF._executeSyntaxTree(lnum, stmtnum, tree, 0));
     }
 };
 bStatus.builtin = {
@@ -518,7 +526,7 @@ bStatus.builtin = {
 if no args were given (e.g. "10 NEXT()"), args[0] will be: {troType: null, troValue: , troNextLine: 11}
 if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
-"=" : function(lnum, args) {
+"=" : function(lnum, stmtnum, args) {
     // THIS FUNCTION MUST BE COPIED TO 'INPUT'
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
@@ -558,7 +566,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         }
     }
 },
-"IN" : function(lnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
+"IN" : function(lnum, stmtnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
 
@@ -575,56 +583,56 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return {asgnVarName: varname, asgnValue: rh};
     }
 },
-"==" : function(lnum, args) {
-    return twoArg(lnum, args, (lh,rh) => lh == rh);
+"==" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (lh,rh) => lh == rh);
 },
-"<>" : function(lnum, args) {
-    return twoArg(lnum, args, (lh,rh) => lh != rh);
+"<>" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (lh,rh) => lh != rh);
 },
-"><" : function(lnum, args) {
-    return twoArg(lnum, args, (lh,rh) => lh != rh);
+"><" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (lh,rh) => lh != rh);
 },
-"<=" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh <= rh);
+"<=" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh <= rh);
 },
-"=<" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh <= rh);
+"=<" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh <= rh);
 },
-">=" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh >= rh);
+">=" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >= rh);
 },
-"=>" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh >= rh);
+"=>" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >= rh);
 },
-"<" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh < rh);
+"<" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh < rh);
 },
-">" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh > rh);
+">" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh > rh);
 },
-"<<" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh << rh);
+"<<" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh << rh);
 },
-">>" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh >> rh);
+">>" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >> rh);
 },
-"UNARYMINUS" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => -lh);
+"UNARYMINUS" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => -lh);
 },
-"UNARYPLUS" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => +lh);
+"UNARYPLUS" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => +lh);
 },
-"BAND" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh & rh);
+"BAND" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh & rh);
 },
-"BOR" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh | rh);
+"BOR" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh | rh);
 },
-"BXOR" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh ^ rh);
+"BXOR" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh ^ rh);
 },
-"!" : function(lnum, args) { // Haskell-style CONS
-    return twoArg(lnum, args, (lh,rh) => {
+"!" : function(lnum, stmtnum, args) { // Haskell-style CONS
+    return twoArg(lnum, stmtnum, args, (lh,rh) => {
         if (isNaN(lh))
             throw lang.illegalType(lnum, lh); // BASIC array is numbers only
         if (!Array.isArray(rh))
@@ -632,8 +640,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return [lh].concat(rh);
     });
 },
-"~" : function(lnum, args) { // array PUSH
-    return twoArg(lnum, args, (lh,rh) => {
+"~" : function(lnum, stmtnum, args) { // array PUSH
+    return twoArg(lnum, stmtnum, args, (lh,rh) => {
         if (isNaN(rh))
             throw lang.illegalType(lnum, rh); // BASIC array is numbers only
         if (!Array.isArray(lh))
@@ -641,8 +649,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return lh.concat([rh]);
     });
 },
-"#" : function(lnum, args) { // array CONCAT
-    return twoArg(lnum, args, (lh,rh) => {
+"#" : function(lnum, stmtnum, args) { // array CONCAT
+    return twoArg(lnum, stmtnum, args, (lh,rh) => {
         if (!Array.isArray(rh))
             throw lang.illegalType(lnum, rh);
         if (!Array.isArray(lh))
@@ -650,37 +658,37 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return lh.concat(rh);
     });
 },
-"+" : function(lnum, args) { // addition, string concat
-    return twoArg(lnum, args, (lh,rh) => (!isNaN(lh) && !isNaN(rh)) ? (lh*1 + rh*1) : (lh + rh));
+"+" : function(lnum, stmtnum, args) { // addition, string concat
+    return twoArg(lnum, stmtnum, args, (lh,rh) => (!isNaN(lh) && !isNaN(rh)) ? (lh*1 + rh*1) : (lh + rh));
 },
-"-" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh - rh);
+"-" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh - rh);
 },
-"*" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh * rh);
+"*" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh * rh);
 },
-"/" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => {
+"/" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
         if (rh == 0) throw lang.divByZero;
         return lh / rh
     });
 },
-"MOD" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => lh % rh);
+"MOD" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh % rh);
 },
-"^" : function(lnum, args) {
-    return twoArgNum(lnum, args, (lh,rh) => Math.pow(lh, rh));
+"^" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => Math.pow(lh, rh));
 },
-"TO" : function(lnum, args) {
-    return twoArgNum(lnum, args, (from, to) => new ForGen(from, to, 1));
+"TO" : function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (from, to) => new ForGen(from, to, 1));
 },
-"STEP" : function(lnum, args) {
-    return twoArg(lnum, args, (gen, step) => {
+"STEP" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (gen, step) => {
         if (!(gen instanceof ForGen)) throw lang.illegalType(lnum, gen);
         return new ForGen(gen.start, gen.end, step);
     });
 },
-"DIM" : function(lnum, args) {
+"DIM" : function(lnum, stmtnum, args) {
     return varArgNum(lnum, args, (revdims) => {
         let dims = revdims.reverse();
         let arraydec = "Array(dims[0]).fill(0)";
@@ -690,7 +698,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return eval(arraydec);
     });
 },
-"PRINT" : function(lnum, args, seps) {
+"PRINT" : function(lnum, stmtnum, args, seps) {
     if (args.length == 0)
         println();
     else {
@@ -722,7 +730,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 },
-"EMIT" : function(lnum, args, seps) {
+"EMIT" : function(lnum, stmtnum, args, seps) {
     if (args.length == 0)
         println();
     else {
@@ -755,39 +763,39 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 },
-"POKE" : function(lnum, args) {
+"POKE" : function(lnum, stmtnum, args) {
     twoArgNum(lnum, args, (lh,rh) => sys.poke(lh, rh));
 },
-"PEEK" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => sys.peek(lh));
+"PEEK" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => sys.peek(lh));
 },
-"GOTO" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+"GOTO" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
-        return lh;
+        return new JumpObj(lh, 0, lnum, lh);
     });
 },
-"GOSUB" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+"GOSUB" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
-        bStatus.gosubStack.push(lnum + 1);
+        bStatus.gosubStack.push([lnum, stmtnum + 1]);
         //println(lnum+" GOSUB into "+lh);
-        return lh;
+        return new JumpObj(lh, 0, lnum, lh);
     });
 },
-"RETURN" : function(lnum, args) {
+"RETURN" : function(lnum, stmtnum, args) {
     var r = bStatus.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
     //println(lnum+" RETURN to "+r);
-    return r;
+    return new JumpObj(r[0], r[1], lnum, r);
 },
-"CLEAR" : function(lnum, args) {
+"CLEAR" : function(lnum, stmtnum, args) {
     bStatus.vars = initBvars();
 },
-"PLOT" : function(lnum, args) {
+"PLOT" : function(lnum, stmtnum, args) {
     threeArgNum(lnum, args, (xpos, ypos, color) => graphics.plotPixel(xpos, ypos, color));
 },
-"AND" : function(lnum, args) {
+"AND" : function(lnum, stmtnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map((it) => resolve(it));
     rsvArg.forEach((v) => {
@@ -800,7 +808,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
     return argum[0] && argum[1];
 },
-"OR" : function(lnum, args) {
+"OR" : function(lnum, stmtnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map((it) => resolve(it));
     rsvArg.forEach((v) => {
@@ -813,36 +821,36 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
     return argum[0] || argum[1];
 },
-"RND" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+"RND" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (!(args.length > 0 && args[0].troValue === 0))
             bStatus.rnd = Math.random();//(bStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
         return bStatus.rnd;
     });
 },
-"ROUND" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => Math.round(lh));
+"ROUND" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => Math.round(lh));
 },
-"FLOOR" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => Math.floor(lh));
+"FLOOR" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => Math.floor(lh));
 },
-"INT" : function(lnum, args) { // synonymous to FLOOR
-    return oneArgNum(lnum, args, (lh) => Math.floor(lh));
+"INT" : function(lnum, stmtnum, args) { // synonymous to FLOOR
+    return oneArgNum(lnum, stmtnum, args, (lh) => Math.floor(lh));
 },
-"CEIL" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => Math.ceil(lh));
+"CEIL" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => Math.ceil(lh));
 },
-"FIX" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => (lh|0));
+"FIX" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => (lh|0));
 },
-"CHR" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => String.fromCharCode(lh));
+"CHR" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => String.fromCharCode(lh));
 },
-"TEST" : function(lnum, args) {
+"TEST" : function(lnum, stmtnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     return resolve(args[0]);
 },
-"FOREACH" : function(lnum, args) { // list comprehension model
+"FOREACH" : function(lnum, stmtnum, args) { // list comprehension model
     var asgnObj = resolve(args[0]);
     // type check
     if (asgnObj === undefined) throw lang.syntaxfehler(lnum);
@@ -856,10 +864,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // stores entire array (sans head) into temporary storage
     bStatus.vars["for var "+varname] = new BasicVar(asgnObj.asgnValue, "array");
     // put the varname to forstack
-    bStatus.forLnums[varname] = lnum;
+    bStatus.forLnums[varname] = [lnum, stmtnum];
     bStatus.forStack.push(varname);
 },
-"FOR" : function(lnum, args) { // generator model
+"FOR" : function(lnum, stmtnum, args) { // generator model
     var asgnObj = resolve(args[0]);
     // type check
     if (asgnObj === undefined) throw lang.syntaxfehler(lnum);
@@ -874,10 +882,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // stores entire array (sans head) into temporary storage
     bStatus.vars["for var "+varname] = new BasicVar(generator, "generator");
     // put the varname to forstack
-    bStatus.forLnums[varname] = lnum;
+    bStatus.forLnums[varname] = [lnum, stmtnum];
     bStatus.forStack.push(varname);
 },
-"NEXT" : function(lnum, args) {
+"NEXT" : function(lnum, stmtnum, args) {
     // if no args were given
     if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
         // go to most recent FOR
@@ -899,7 +907,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if ((bStatus.vars[forVarname].bvLiteral !== undefined)) {
             // feed popped value back, we're not done yet
             bStatus.forStack.push(forVarname);
-            return bStatus.forLnums[forVarname] + 1;
+            let forLnum = bStatus.forLnums[forVarname]
+            return new JumpObj(forLnum[0], forLnum[1]+1, lnum, [forLnum[0], forLnum[1]+1]); // goto the statement RIGHT AFTER the FOR-declaration
         }
         else {
             if (forVar instanceof ForGen)
@@ -907,14 +916,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             else
                 bStatus.vars[forVarname] === undefined; // unregister the variable
 
-            return lnum + 1;
+            return new JumpObj(lnum, stmtnum + 1, lnum, [lnum, stmtnum + 1]);
         }
     }
 
     throw lang.syntaxfehler(lnum, "extra arguments for NEXT");
 },
-"BREAKTO" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+/*"BREAKTO" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         var forVarname = bStatus.forStack.pop();
         if (forVarname === undefined) {
             throw lang.nextWithoutFor(lnum);
@@ -922,9 +931,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if (TRACEON) serial.println(`[BASIC.FOR] breaking from ${forVarname}, jump to ${lh}`);
 
         if (lh < 0) throw lang.syntaxfehler(lnum, lh);
-        return lh;
+        return new JumpObj(lh, 0, lnum, lh);
     });
-},
+},*/
 /*
 10 input;"what is your name";a$
 
@@ -962,7 +971,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 | `-----------------
 `-----------------
 */
-"INPUT" : function(lnum, args) {
+"INPUT" : function(lnum, stmtnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
 
@@ -989,76 +998,76 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return {asgnVarName: varname, asgnValue: rh};
     }
 },
-"END" : function(lnum, args) {
+"END" : function(lnum, stmtnum, args) {
     serial.println("Program terminated in "+lnum);
-    return Number.MAX_SAFE_INTEGER; // GOTO far-far-away
+    return new JumpObj(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER - 1, lnum, undefined); // GOTO far-far-away
 },
-"SPC" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => " ".repeat(lh));
+"SPC" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => " ".repeat(lh));
 },
-"LEFT" : function(lnum, args) {
-    return twoArg(lnum, args, (str, len) => str.substring(0, len));
+"LEFT" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (str, len) => str.substring(0, len));
 },
-"MID" : function(lnum, args) {
-    return threeArg(lnum, args, (str, start, len) => str.substring(start-INDEX_BASE, start-INDEX_BASE+len));
+"MID" : function(lnum, stmtnum, args) {
+    return threeArg(lnum, stmtnum, args, (str, start, len) => str.substring(start-INDEX_BASE, start-INDEX_BASE+len));
 },
-"RIGHT" : function(lnum, args) {
-    return twoArg(lnum, args, (str, len) => str.substring(str.length - len, str.length));
+"RIGHT" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (str, len) => str.substring(str.length - len, str.length));
 },
-"SGN" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => (it > 0) ? 1 : (it < 0) ? -1 : 0);
+"SGN" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => (it > 0) ? 1 : (it < 0) ? -1 : 0);
 },
-"ABS" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.abs(it));
+"ABS" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.abs(it));
 },
-"SIN" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.sin(it));
+"SIN" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.sin(it));
 },
-"COS" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.cos(it));
+"COS" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.cos(it));
 },
-"TAN" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.tan(it));
+"TAN" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.tan(it));
 },
-"EXP" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.exp(it));
+"EXP" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.exp(it));
 },
-"ASN" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.asin(it));
+"ASN" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.asin(it));
 },
-"ACO" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.acos(it));
+"ACO" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.acos(it));
 },
-"ATN" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.atan(it));
+"ATN" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.atan(it));
 },
-"SQR" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.sqrt(it));
+"SQR" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.sqrt(it));
 },
-"CBR" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.cbrt(it));
+"CBR" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.cbrt(it));
 },
-"SINH" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.sinh(it));
+"SINH" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.sinh(it));
 },
-"COSH" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.cosh(it));
+"COSH" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.cosh(it));
 },
-"TANH" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.tanh(it));
+"TANH" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.tanh(it));
 },
-"LOG" : function(lnum, args) {
-    return oneArgNum(lnum, args, (it) => Math.log(it));
+"LOG" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (it) => Math.log(it));
 },
-"RESTORE" : function(lnum, args) {
+"RESTORE" : function(lnum, stmtnum, args) {
     DATA_CURSOR = 0;
 },
-"READ" : function(lnum, args) {
+"READ" : function(lnum, stmtnum, args) {
     let r = DATA_CONSTS.shift();
     if (r === undefined) throw lang.outOfData(lnum);
 },
-"OPTIONBASE" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+"OPTIONBASE" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         INDEX_BASE = lh|0;
     });
@@ -1066,22 +1075,22 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "DATA" : function() { /*DATA must do nothing when encountered; they must be pre-processed*/ },
 /* Syopsis: MAP function, functor
  */
-"MAP" : function(lnum, args) {
-    return twoArg(lnum, args, (fn, functor) => {
+"MAP" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (fn, functor) => {
         // TODO test only works with DEFUN'd functions
         if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
         if (functor.toArray === undefined && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, functor);
         // generator?
         if (functor.toArray) functor = functor.toArray();
 
-        return functor.map(it => bStatus.getDefunThunk(lnum, fn)(lnum, [it]));
+        return functor.map(it => bStatus.getDefunThunk(lnum, stmtnum, fn)(lnum, stmtnum, [it]));
     });
 },
 /* Synopsis: FOLD function, init_value, functor
  * a function must accept two arguments, of which first argument will be an accumulator
  */
-"FOLD" : function(lnum, args) {
-    return threeArg(lnum, args, (fn, init, functor) => {
+"FOLD" : function(lnum, stmtnum, args) {
+    return threeArg(lnum, stmtnum, args, (fn, init, functor) => {
         // TODO test only works with DEFUN'd functions
         if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
         if (functor.toArray === undefined && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, functor);
@@ -1090,32 +1099,32 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
         let akku = init;
         functor.forEach(it => {
-            akku = bStatus.getDefunThunk(lnum, fn)(lnum, [akku, it]);
+            akku = bStatus.getDefunThunk(lnum, stmtnum, fn)(lnum, stmtnum, [akku, it]);
         });
 
         return akku;
     });
 },
 /* GOTO and GOSUB won't work but that's probably the best...? */
-"DO" : function(lnum, args) {
+"DO" : function(lnum, stmtnum, args) {
     //return resolve(args[args.length - 1]);
     return undefined;
 },
-"OPTIONDEBUG" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+"OPTIONDEBUG" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         DBGON = (1 == lh|0);
     });
 },
-"OPTIONTRACE" : function(lnum, args) {
-    return oneArgNum(lnum, args, (lh) => {
+"OPTIONTRACE" : function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         TRACEON = (1 == lh|0);
     });
 },
-"RESOLVE" : function(lnum, args) {
+"RESOLVE" : function(lnum, stmtnum, args) {
     if (DBGON) {
-        return oneArg(lnum, args, (it) => {
+        return oneArg(lnum, stmtnum, args, (it) => {
             println(it);
         });
     }
@@ -1123,9 +1132,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         throw lang.syntaxfehler(lnum);
     }
 },
-"RESOLVE0" : function(lnum, args) {
+"RESOLVE0" : function(lnum, stmtnum, args) {
     if (DBGON) {
-        return oneArg(lnum, args, (it) => {
+        return oneArg(lnum, stmtnum, args, (it) => {
             println(Object.entries(it));
         });
     }
@@ -1133,7 +1142,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         throw lang.syntaxfehler(lnum);
     }
 },
-"UNRESOLVE" : function(lnum, args) {
+"UNRESOLVE" : function(lnum, stmtnum, args) {
     if (DBGON) {
         println(args[0]);
     }
@@ -1141,7 +1150,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         throw lang.syntaxfehler(lnum);
     }
 },
-"UNRESOLVE0" : function(lnum, args) {
+"UNRESOLVE0" : function(lnum, stmtnum, args) {
     if (DBGON) {
         println(Object.entries(args[0]));
     }
@@ -2404,11 +2413,18 @@ let JStoBASICtype = function(object) {
     else throw Error("BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object));
 }
 let SyntaxTreeReturnObj = function(type, value, nextLine) {
+    if (nextLine === undefined || !Array.isArray(nextLine))
+        throw Error("TODO change format of troNextLine to [linenumber, stmtnumber]")
+
     this.troType = type;
     this.troValue = value;
-    this.troNextLine = nextLine;
+    this.troNextLine = nextLine; // TODO change format of troNextLine to [linenumber, stmtnumber]
 }
-bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero (truthy) value here
+let JumpObj = function(targetLnum, targetStmtNum, fromLnum, rawValue) {
+    this.jmpNext = [targetLnum, targetStmtNum];
+    this.jmpFrom = fromLnum;
+    this.jmpReturningValue = rawValue;
+}
 /**
  * @param lnum line number of BASIC
  * @param syntaxTree BasicAST
@@ -2416,8 +2432,10 @@ bF._gotoCmds = {GOTO:1,GOSUB:1,RETURN:1,NEXT:1,END:1,BREAKTO:1}; // put nonzero 
  *
  * @return syntaxTreeReturnObject if recursion is escaped
  */
-bF._troNOP = function(lnum) { return new SyntaxTreeReturnObj("null", undefined, lnum + 1); }
-bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
+bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", undefined, [lnum, stmtnum+1]); }
+bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
+    if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
+
     let _debugExec = false;
     let _debugPrintCurrentLine = false;
     let recWedge = "> ".repeat(recDepth);
@@ -2429,10 +2447,10 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
     }
 
 
-    if (syntaxTree == undefined) return bF._troNOP(lnum);
+    if (syntaxTree == undefined) return bF._troNOP(lnum, stmtnum);
     else if (syntaxTree.astValue == undefined) { // empty meaningless parens
         if (syntaxTree.astLeaves.length > 1) throw Error("WTF");
-        return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth);
+        return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth);
     }
     else if (syntaxTree.astType == "function" || syntaxTree.astType == "op") {
         if (_debugExec) serial.println(recWedge+"function|operator");
@@ -2443,7 +2461,7 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
 
         if ("IF" == funcName) {
             if (syntaxTree.astLeaves.length != 2 && syntaxTree.astLeaves.length != 3) throw lang.syntaxfehler(lnum);
-            var testedval = bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth + 1);
+            var testedval = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
 
             if (_debugExec) {
                 serial.println(recWedge+"testedval:");
@@ -2453,21 +2471,21 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
 
             try {
-                var iftest = bStatus.builtin["TEST"](lnum, [testedval]);
+                var iftest = bStatus.builtin["TEST"](lnum, stmtnum, [testedval]);
 
                 if (!iftest && syntaxTree.astLeaves[2] !== undefined)
-                    return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[2], recDepth + 1);
+                    return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[2], recDepth + 1);
                 else if (iftest)
-                    return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[1], recDepth + 1);
+                    return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[1], recDepth + 1);
                 else
-                    return new SyntaxTreeReturnObj("null", undefined, lnum + 1);
+                    return bF._troNOP(lnum, stmtnum);
             }
             catch (eeeee) {
+                serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
                 throw lang.errorinline(lnum, "TEST", eeeee);
             }
         }
         else if ("DEFUN" == funcName) {
-            //if (recDepth > 0) throw lang.badFunctionCallFormat(); // nested DEFUN is TODO and it involves currying and de bruijn indexing
             if (syntaxTree.astLeaves.length !== 2) throw lang.syntaxfehler(lnum, "DEFUN 1");
             let nameTree = syntaxTree.astLeaves[0];
             let exprTree = syntaxTree.astLeaves[1];
@@ -2506,15 +2524,33 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             if (_basicConsts[defunName]) throw lang.asgnOnConst(lnum, defunName);
             // search from builtin functions
             if (bStatus.builtin[defunName] !== undefined || bF[defunName.toLowerCase()] !== undefined)
-                throw lang.dupDef(lnum, defunName);
+                throw lang.dupDef(lnum, stmtnum, defunName);
 
             // finally assign the function to the variable table
             bStatus.vars[defunName] = new BasicVar(exprTree, "usrdefun");
 
-            return new SyntaxTreeReturnObj("function", exprTree, lnum + 1);
+            return new SyntaxTreeReturnObj("function", exprTree, [lnum, stmtnum + 1]);
+        }
+        else if ("ON" == funcName) {
+            if (syntaxTree.astLeaves.length < 3) throw lang.badFunctionCallFormat();
+
+            let testValue = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
+            let functionName = syntaxTree.astLeaves[1].astValue;
+            let arrays = [];
+            for (let k = 2; k < astLeaves.length; k++)
+                arrays.push(bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[k], recDepth + 1));
+
+            try  {
+                let r = bStatus.builtin["ON"](lnum, stmtnum, [testValue].concat(arrays))
+                return new SyntaxTreeReturnObj(JStoBASICtype(r.jmpReturningValue), r.jmpReturningValue, r.jmpNext);
+            }
+            catch (e) {
+                serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
+                throw lang.errorinline(lnum, "ON error", e);
+            }
         }
         else {
-            var args = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, it, recDepth + 1));
+            var args = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1));
 
             if (_debugExec) {
                 serial.println(recWedge+"fn call name: "+funcName);
@@ -2531,10 +2567,10 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
                 }
                 else if ("array" == someVar.bvType) {
-                    func = bStatus.getArrayIndexFun(lnum, funcName, someVar.bvLiteral);
+                    func = bStatus.getArrayIndexFun(lnum, stmtnum, funcName, someVar.bvLiteral);
                 }
                 else if ("usrdefun" == someVar.bvType) {
-                    func = bStatus.getDefunThunk(lnum, someVar.bvLiteral);
+                    func = bStatus.getDefunThunk(lnum, stmtnum, someVar.bvLiteral);
                 }
                 else {
                     throw lang.syntaxfehler(lnum, funcName + " is not a function or an array");
@@ -2542,30 +2578,31 @@ bF._executeSyntaxTree = function(lnum, syntaxTree, recDepth) {
             }
             // call whatever the 'func' has whether it's builtin or we just made shit up right above
             try {
-                var funcCallResult = func(lnum, args, syntaxTree.astSeps);
+                let funcCallResult = func(lnum, stmtnum, args, syntaxTree.astSeps);
+                let retVal = (funcCallResult instanceof JumpObj) ? funcCallResult.jmpReturningValue : funcCallResult;
 
                 return new SyntaxTreeReturnObj(
-                        JStoBASICtype(funcCallResult),
-                        funcCallResult,
-                        (bF._gotoCmds[funcName] !== undefined) ? funcCallResult : lnum + 1,
-                        syntaxTree.astSeps
+                        JStoBASICtype(retVal),
+                        retVal,
+                        (funcCallResult instanceof JumpObj) ? funcCallResult.jmpNext : [lnum, stmtnum + 1]
                 );
             }
-            catch (eeeee) {
-                throw lang.errorinline(lnum, (funcName === undefined) ? "undefined" : funcName, (eeeee === undefined) ? "undefined" : eeeee);
+            catch (e) {
+                serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
+                throw lang.errorinline(lnum, (funcName === undefined) ? "undefined" : funcName, (e === undefined) ? "undefined" : e);
             }
         }
     }
     else if (syntaxTree.astType == "num") {
         if (_debugExec) serial.println(recWedge+"num");
-        return new SyntaxTreeReturnObj(syntaxTree.astType, (syntaxTree.astValue)*1, lnum + 1);
+        return new SyntaxTreeReturnObj(syntaxTree.astType, (syntaxTree.astValue)*1, [lnum, stmtnum + 1]);
     }
     else if (syntaxTree.astType == "string" || syntaxTree.astType == "lit" || syntaxTree.astType == "bool") {
         if (_debugExec) serial.println(recWedge+"string|literal|bool");
-        return new SyntaxTreeReturnObj(syntaxTree.astType, syntaxTree.astValue, lnum + 1);
+        return new SyntaxTreeReturnObj(syntaxTree.astType, syntaxTree.astValue, [lnum, stmtnum + 1]);
     }
     else if (syntaxTree.astType == "null") {
-        return bF._executeSyntaxTree(lnum, syntaxTree.astLeaves[0], recDepth + 1);
+        return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
     }
     else {
         serial.println(recWedge+"Parse error in "+lnum);
@@ -2602,18 +2639,20 @@ bF._interpretLine = function(lnum, cmd) {
 
     return syntaxTrees;
 }; // end INTERPRETLINE
-// @return next line number
-bF._executeAndGet = function(lnum, syntaxTree) {
+// @return [next line number, next statement number]
+bF._executeAndGet = function(lnum, stmtnum, syntaxTree) {
+    if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
+
     // EXECUTE
     try {
-        var execResult = bF._executeSyntaxTree(lnum, syntaxTree, 0);
+        var execResult = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree, 0);
 
         if (bF.parserDoDebugPrint) serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
 
         return execResult.troNextLine;
     }
     catch (e) {
-        serial.printerr(`ERROR on ${lnum} -- PARSE TREE:\n${astToString(syntaxTree)}\nERROR CONTENTS:\n${e}\n${e.stack || "Stack trace undefined"}`);
+        serial.printerr(`ERROR on ${lnum}:${stmtnum} -- PARSE TREE:\n${astToString(syntaxTree)}\nERROR CONTENTS:\n${e}\n${e.stack || "Stack trace undefined"}`);
         throw e;
     }
 };
@@ -2698,37 +2737,39 @@ bF.run = function(args) { // RUN function
     });
 
     // actually execute the program
-    var linenumber = 1;
-    var oldnum = 1;
+    let lnum = 1;
+    let stmtnum = 0;
+    let oldnum = 1;
+    let tree = undefined;
     do {
-        if (cmdbuf[linenumber] !== undefined) {
+        if (programTrees[lnum] !== undefined) {
             if (TRACEON) {
                 //print(`[${lnum}]`);
-                serial.println("[BASIC] Line "+linenumber);
+                serial.println("[BASIC] Line "+lnum);
             }
 
-            oldnum = linenumber;
+            oldnum = lnum;
+            tree = (programTrees[lnum] !== undefined) ? programTrees[lnum][stmtnum] : undefined;
 
-            let trees = programTrees[linenumber];
-
-            if (trees !== undefined) {
-                trees.forEach((t,i) => {
-                    linenumber = bF._executeAndGet(linenumber, t);
-                });
+            if (tree !== undefined) {
+                let nextObj = bF._executeAndGet(lnum, stmtnum, tree);
+                lnum = nextObj[0];
+                stmtnum = nextObj[1];
             }
             else {
-                linenumber += 1;
+                lnum += 1;
+                stmtnum = 0;
             }
         }
         else {
-            linenumber += 1;
+            lnum += 1;
         }
-        if (linenumber < 0) throw lang.badNumberFormat;
+        if (lnum < 0) throw lang.badNumberFormat;
         if (con.hitterminate()) {
             println("Break in "+oldnum);
             break;
         }
-    } while (linenumber < cmdbuf.length)
+    } while (lnum < cmdbuf.length)
     con.resetkeybuf();
 };
 bF.save = function(args) { // SAVE function
