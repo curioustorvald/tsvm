@@ -2818,6 +2818,8 @@ bF.run = function(args) { // RUN function
 };
 bF.save = function(args) { // SAVE function
     if (args[1] === undefined) throw lang.missingOperand;
+    if (!args[1].toUpperCase().endsWith(".BAS"))
+        args[1] += ".bas";
     fs.open(args[1], "W");
     var sb = "";
     cmdbuf.forEach((v, i) => sb += i+" "+v+"\n");
