@@ -530,7 +530,7 @@ bF._parseIfMode = function(lnum, tokens, states, recDepth, exprMode) {
     if ("IF" == headTkn && "lit" == headSta) {
         
         // "THEN" not found, raise error!
-        if (thenPos == -1) throw new ParserError("IF without THEN in " + lnum);
+        if (thenPos == -1) throw lang.syntaxfehler(lnum, "IF without THEN");
         
         treeHead.astValue = "IF";
         treeHead.astType = "function";

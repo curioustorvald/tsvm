@@ -1114,14 +1114,31 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 /* GOTO and GOSUB won't work but that's probably the best...? */
 "DO" : function(lnum, stmtnum, args) {
-    //return resolve(args[args.length - 1]);
-    return undefined;
+    return args[args.length - 1];
 },
 "LABEL" : function(lnum, stmtnum, args) {
     let labelname = args[0].troValue;
 
     if (labelname === undefined) throw lang.syntaxfehler(lnum, "empty LABEL");
     gotoLabels[labelname] = lnum;
+},
+"ON" : function(lnum, stmtnum, args) {
+    //args: functionName (string), testvalue (SyntaxTreeReturnObj), arg0 (SyntaxTreeReturnObj), arg1 (SyntaxTreeReturnObj), ...
+    if (args[2] === undefined) throw lang.syntaxfehler(lnum);
+
+    let jmpFun = args.shift();
+    let testvalue = resolve(args.shift())-INDEX_BASE;
+
+    // args must be resolved lazily because jump label is not resolvable
+    let jmpTarget = args[testvalue];
+
+    if (jmpFun !== "GOTO" && jmpFun !== "GOSUB")
+        throw lang.badFunctionCallFormat(`Not a jump statement: ${jmpFun}`)
+
+    if (jmpTarget === undefined)
+        return undefined;
+
+    return bStatus.builtin[jmpFun](lnum, stmtnum, [jmpTarget]);
 },
 "OPTIONDEBUG" : function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => {
@@ -2258,7 +2275,7 @@ bF._parseIfMode = function(lnum, tokens, states, recDepth, exprMode) {
     if ("IF" == headTkn && "lit" == headSta) {
 
         // "THEN" not found, raise error!
-        if (thenPos == -1) throw new ParserError("IF without THEN in " + lnum);
+        if (thenPos == -1) throw lang.syntaxfehler(lnum, "IF without THEN");
 
         treeHead.astValue = "IF";
         treeHead.astType = "function";
@@ -2550,11 +2567,11 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             let testValue = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
             let functionName = syntaxTree.astLeaves[1].astValue;
             let arrays = [];
-            for (let k = 2; k < astLeaves.length; k++)
+            for (let k = 2; k < syntaxTree.astLeaves.length; k++)
                 arrays.push(bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[k], recDepth + 1));
 
             try  {
-                let r = bStatus.builtin["ON"](lnum, stmtnum, [testValue].concat(arrays))
+                let r = bStatus.builtin["ON"](lnum, stmtnum, [functionName, testValue].concat(arrays))
                 return new SyntaxTreeReturnObj(JStoBASICtype(r.jmpReturningValue), r.jmpReturningValue, r.jmpNext);
             }
             catch (e) {
@@ -2592,6 +2609,9 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             // call whatever the 'func' has whether it's builtin or we just made shit up right above
             try {
                 let funcCallResult = func(lnum, stmtnum, args, syntaxTree.astSeps);
+
+                if (funcCallResult instanceof SyntaxTreeReturnObj) return funcCallResult;
+
                 let retVal = (funcCallResult instanceof JumpObj) ? funcCallResult.jmpReturningValue : funcCallResult;
 
                 return new SyntaxTreeReturnObj(
