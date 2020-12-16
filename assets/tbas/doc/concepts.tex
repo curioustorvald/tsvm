@@ -1,0 +1,22 @@
+This chapter describes the basic concepts of the language.
+
+
+\section{Values and Types}
+
+BASIC is a \emph{Dynamically Typed Language}, which means variables do not know which group they should barge in; only values of the variable do. In fact, there is no type definition in the language: We do want our variables to feel themselves awkward.
+
+There are five basic types: \emph{undefined}, \emph{boolean}, \emph{number}, \emph{string},  \emph{array}, \emph{generator} and \emph{function}.
+
+\emph{Undefined} is the type of the literal value \textbf{undefined}, who likes to possess nothing (I think he's secretly a buddhist).
+
+\emph{Boolean} is the type of the values that is either \textbf{TRUE} or \textbf{FALSE}, he knows no in-between. \textbf{undefined}, \emph{number 0} and \textbf{FALSE} makes condition \emph{false}. 
+
+\emph{Number} represents real (double-precision floating-point or \emph{actually rational}) numbers. Operations on numbers follow the same rules of the underlying virtual machine\footnote{if you are not a computer person, just disregard}, and such machines must follow the IEEE 754 standard\footnote{ditto.}. 
+
+\emph{String} represents immutable\footnote{cannot be altered directly} sequences of bytes. However, you can't weave them to make something like \emph{string array}\footnote{future feature\ldots maybe\ldots? Probably not\ldots}.
+
+\emph{Array} represents collection of numbers in 1-- or more dimensions.
+
+\emph{Generator} represents a value that automatically counts up/down whenever they have been called in For-Next loop.
+
+\emph{Functions} are, well\ldots functions\footnote{This is no {\lambda}-expression; there is no way you can define local-- or anonymous variable in BASIC.}, especially user-defined ones. Functions are \emph{type} because some built-in functions will actually take \emph{functions} as arguments.

@@ -42,3 +42,10 @@ tmp_*
 *.index
 *.threads
 *_Leak_Suspects.zip
+
+# TeX outputs
+*.aux
+*.log
+*.out
+*.pdf
+*.toc
