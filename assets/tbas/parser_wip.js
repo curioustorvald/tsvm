@@ -78,7 +78,8 @@ bF._parseTokens = function(lnum, tokens, states) {
 
 /** Parses following EBNF rule:
 stmt =
-      "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+      "REM" , ? anything ?
+    | "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ident , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
@@ -90,19 +91,24 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
 
     /*************************************************************************/
 
-    let headTkn = tokens[0].toUpperCase();
-    let headSta = states[0];
-    
-    let treeHead = new BasicAST();
-    treeHead.astLnum = lnum;
-
-    /*************************************************************************/
-
     // case for: single word (e.g. NEXT for FOR loop)
     if (tokens.length == 1 && states.length == 1) {
         bF.parserPrintdbgline('$', "Single Word Function Call", lnum, recDepth);
         return bF._parseLit(lnum, tokens, states, recDepth + 1, true);
     }
+
+    /*************************************************************************/
+
+    let headTkn = tokens[0].toUpperCase();
+    let headSta = states[0];
+
+    let treeHead = new BasicAST();
+    treeHead.astLnum = lnum;
+
+    /*************************************************************************/
+
+    // case for: "REM" , ? anything ?
+    if (headTkn == "REM" && headSta != "qot") return;
 
     /*************************************************************************/
 

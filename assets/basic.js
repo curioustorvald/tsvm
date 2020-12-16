@@ -690,7 +690,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "DIM" : function(lnum, stmtnum, args) {
-    return varArgNum(lnum, args, (revdims) => {
+    return varArgNum(lnum, stmtnum, args, (revdims) => {
         let dims = revdims.reverse();
         let arraydec = "Array(dims[0]).fill(0)";
         for (let k = 1; k < dims.length; k++) {
@@ -1835,6 +1835,14 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
 
     /*************************************************************************/
 
+    // case for: single word (e.g. NEXT for FOR loop)
+    if (tokens.length == 1 && states.length == 1) {
+        bF.parserPrintdbgline('$', "Single Word Function Call", lnum, recDepth);
+        return bF._parseLit(lnum, tokens, states, recDepth + 1, true);
+    }
+
+    /*************************************************************************/
+
     let headTkn = tokens[0].toUpperCase();
     let headSta = states[0];
 
@@ -1843,11 +1851,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
 
     /*************************************************************************/
 
-    // case for: single word (e.g. NEXT for FOR loop)
-    if (tokens.length == 1 && states.length == 1) {
-        bF.parserPrintdbgline('$', "Single Word Function Call", lnum, recDepth);
-        return bF._parseLit(lnum, tokens, states, recDepth + 1, true);
-    }
+    // case for: "REM" , ? anything ?
+    if (headTkn == "REM" && headSta != "qot") return;
 
     /*************************************************************************/
 
@@ -2773,11 +2778,13 @@ bF.run = function(args) { // RUN function
         let trees = bF._interpretLine(linenum, linestr.trim());
         programTrees[linenum] = trees
         // do prescan job (data, label, etc)
-        trees.forEach((t, i) => {
-            if (bF.prescanStmts.includes(t.astValue)) {
-                bF._executeAndGet(linenum, i, t);
-            }
-        })
+        if (trees !== undefined) {
+            trees.forEach((t, i) => {
+                if (t !== undefined && bF.prescanStmts.includes(t.astValue)) {
+                    bF._executeAndGet(linenum, i, t);
+                }
+            })
+        }
     });
 
     // actually execute the program

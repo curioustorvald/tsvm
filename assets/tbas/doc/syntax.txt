@@ -8,7 +8,8 @@ line =
 linenumber = digits ;
 
 stmt =
-      "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
+      "REM" , ? anything ?
+    | "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"

@@ -37,7 +37,6 @@ digraph g {
 	LITERAL -> PAREN [label="()[]"]
 	LITERAL -> limbo [label=_]
 	LITERAL -> SEP [label=","]
-	LITERAL -> NUMBER [label="0..9"]
 	LITERAL -> OPERATOR [label="^*/+->=<"]
 	LITERAL -> LITERAL [label=otherwise]
 
