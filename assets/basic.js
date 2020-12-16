@@ -671,11 +671,20 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "/" : function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
         if (rh == 0) throw lang.divByZero;
-        return lh / rh
+        return lh / rh;
+    });
+},
+"\\" : function(lnum, stmtnum, args) { // integer division, rounded towards zero
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
+        if (rh == 0) throw lang.divByZero;
+        return (lh / rh)|0;
     });
 },
 "MOD" : function(lnum, stmtnum, args) {
-    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh % rh);
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
+        if (rh == 0) throw lang.divByZero;
+        return lh % rh;
+    });
 },
 "^" : function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => Math.pow(lh, rh));
@@ -1140,6 +1149,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     return bStatus.builtin[jmpFun](lnum, stmtnum, [jmpTarget]);
 },
+"MIN" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (lh,rh) => (lh > rh) ? rh : lh);
+},
+"MAX" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (lh,rh) => (lh < rh) ? rh : lh);
+},
 "OPTIONDEBUG" : function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
@@ -1228,22 +1243,23 @@ bF._isSep = function(code) {
 bF._opPrc = {
     // function call in itself has highest precedence
     "^":1,
-    "*":2,"/":2,
+    "*":2,"/":2,"\\":2,
     "MOD":3,
     "+":4,"-":4,
     "NOT":5,"BNOT":5,
     "<<":6,">>":6,
     "<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
     "==":8,"<>":8,"><":8,
-    "BAND":8,
-    "BXOR":9,
-    "BOR":10,
-    "AND":11,
-    "OR":12,
-    "TO":13,
-    "STEP":14,
-    "!":15,"~":15, // array CONS and PUSH
-    "#": 16, // array concat
+    "MIN":10,"MAX":10,
+    "BAND":20,
+    "BXOR":21,
+    "BOR":22,
+    "AND":30,
+    "OR":31,
+    "TO":40,
+    "STEP":41,
+    "!":50,"~":51, // array CONS and PUSH
+    "#": 52, // array concat
     "=":999,
     "IN":1000
 };

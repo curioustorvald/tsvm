@@ -728,22 +728,23 @@ let BasicAST = function() {
 bF._opPrc = {
     // function call in itself has highest precedence
     "^":1,
-    "*":2,"/":2,
+    "*":2,"/":2,"\\":2,
     "MOD":3,
     "+":4,"-":4,
     "NOT":5,"BNOT":5,
     "<<":6,">>":6,
     "<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
     "==":8,"<>":8,"><":8,
-    "BAND":8,
-    "BXOR":9,
-    "BOR":10,
-    "AND":11,
-    "OR":12,
-    "TO":13,
-    "STEP":14,
-    "!":15,"~":15, // array CONS and PUSH
-    "#": 16, // array concat
+    "MIN":10,"MAX":10,
+    "BAND":20,
+    "BXOR":21,
+    "BOR":22,
+    "AND":30,
+    "OR":31,
+    "TO":40,
+    "STEP":41,
+    "!":50,"~":51, // array CONS and PUSH
+    "#": 52, // array concat
     "=":999,
     "IN":1000
 };
