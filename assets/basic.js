@@ -687,7 +687,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
 },
 "^" : function(lnum, stmtnum, args) {
-    return twoArgNum(lnum, stmtnum, args, (lh,rh) => Math.pow(lh, rh));
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
+        let r = Math.pow(lh, rh);
+        if (isNaN(r)) throw lang.badFunctionCallFormat();
+        if (!isFinite(r)) throw lang.divByZero;
+        return r;
+    });
 },
 "TO" : function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (from, to) => new ForGen(from, to, 1));
