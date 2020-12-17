@@ -27,6 +27,8 @@
 \usepackage{soul}
 \usepackage{verbatim}
 \usepackage{etoolbox}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
 
 \usepackage{lineno} % debug
 
@@ -86,7 +88,33 @@
 \end{tabular*}%
 }}
 
+\newtcolorbox{lgreybox}[1][]{%
+  breakable,
+  enhanced,
+  colback=lgrey,
+  attach title to upper,
+  fontupper=\monofont,
+  #1
+}
 
+\definecolor{sourcecomment}{HTML}{888888}
+
+\lstset{frame=tb,
+  language=[Visual]Basic,
+  aboveskip=3mm,
+  belowskip=3mm,
+  showstringspaces=false,
+  columns=flexible,
+  basicstyle={\small\ttfamily},
+  numbers=none,
+  numberstyle=\textbf,
+  keywordstyle=,
+  commentstyle=\color{sourcecomment},
+  stringstyle=\textbf,
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=3
+}
 
 %\aliaspagestyle{part}{empty}
 %\aliaspagestyle{chapter}{empty}
