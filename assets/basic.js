@@ -1227,7 +1227,7 @@ Object.freeze(bStatus.builtin);
 let bF = {};
 bF._1os = {"!":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1,":":1};
 bF._2os = {"<":1,"=":1,">":1};
-bF._uos = {"+":1,"-":1};
+bF._uos = {"+":1,"-":1,"NOT":1,"BNOT":1};
 bF._isNum = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
