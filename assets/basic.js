@@ -779,7 +779,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 },
 "POKE" : function(lnum, stmtnum, args) {
-    twoArgNum(lnum, args, (lh,rh) => sys.poke(lh, rh));
+    twoArgNum(lnum, stmtnum, args, (lh,rh) => sys.poke(lh, rh));
 },
 "PEEK" : function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => sys.peek(lh));
@@ -814,7 +814,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     bStatus.vars = initBvars();
 },
 "PLOT" : function(lnum, stmtnum, args) {
-    threeArgNum(lnum, args, (xpos, ypos, color) => graphics.plotPixel(xpos, ypos, color));
+    threeArgNum(lnum, stmtnum, args, (xpos, ypos, color) => graphics.plotPixel(xpos, ypos, color));
 },
 "AND" : function(lnum, stmtnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
@@ -1674,7 +1674,7 @@ bF._parserElaboration = function(lnum, tokens, states) {
     }
 };
 bF._recurseApplyAST = function(tree, action) {
-    if (tree.astLeaves[0] === undefined)
+    if (tree.astLeaves === undefined || tree.astLeaves[0] === undefined)
         return action(tree);
     else {
         action(tree);
@@ -2684,7 +2684,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
 };
 // @return ARRAY of BasicAST
 bF._interpretLine = function(lnum, cmd) {
-    var _debugprintHighestLevel = false;
+    let _debugprintHighestLevel = false;
 
     if (cmd.toUpperCase().startsWith("REM")) {
         if (_debugprintHighestLevel) serial.println(lnum+" "+cmd);
@@ -2692,16 +2692,38 @@ bF._interpretLine = function(lnum, cmd) {
     }
 
     // TOKENISE
-    var tokenisedObject = bF._tokenise(lnum, cmd);
-    var tokens = tokenisedObject.tokens;
-    var states = tokenisedObject.states;
+    let tokenisedObject = bF._tokenise(lnum, cmd);
+    let tokens = tokenisedObject.tokens;
+    let states = tokenisedObject.states;
 
 
     // ELABORATION : distinguish numbers and operators from literals
     bF._parserElaboration(lnum, tokens, states);
 
     // PARSING (SYNTAX ANALYSIS)
-    var syntaxTrees = bF._parseTokens(lnum, tokens, states);
+    let syntaxTrees = bF._parseTokens(lnum, tokens, states);
+
+    // syntax tree pruning
+    // turn UNARYMINUS(num) to -num
+    syntaxTrees.forEach(syntaxTree => {
+        bF._recurseApplyAST(syntaxTree, tree => {
+            if (tree.astValue == "UNARYMINUS" && tree.astType == "op" &&
+                tree.astLeaves[1] === undefined && tree.astLeaves[0] !== undefined && tree.astLeaves[0].astType == "num"
+            ) {
+                tree.astValue = -(tree.astLeaves[0].astValue);
+                tree.astType = JStoBASICtype(tree.astValue);
+                tree.astLeaves = [];
+            }
+            else if (tree.astValue == "UNARYPLUS" && tree.astType == "op" &&
+                tree.astLeaves[1] === undefined && tree.astLeaves[0] !== undefined && tree.astLeaves[0].astType == "num"
+            ) {
+                tree.astValue = +(tree.astLeaves[0].astValue);
+                tree.astType = JStoBASICtype(tree.astValue);
+                tree.astLeaves = [];
+            }
+        });
+    });
+
     if (_debugprintHighestLevel) {
         syntaxTrees.forEach((t,i) => {
             serial.println("\nParsed Statement #"+(i+1));
