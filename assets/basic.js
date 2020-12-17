@@ -994,7 +994,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
 "INPUT" : function(lnum, stmtnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    var troValue = args[0].troValue;
+    let troValue = args[0].troValue;
 
     // print out prompt text
     print("? "); var rh = sys.read().trim();
@@ -1011,9 +1011,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return {asgnVarName: troValue.arrName, asgnValue: rh};
     }
     else {
-        var varname = troValue.toUpperCase();
+        let varname = troValue.toUpperCase();
         //println("input varname: "+varname);
-        var type = JStoBASICtype(rh);
+        let type = JStoBASICtype(rh);
         if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
         bStatus.vars[varname] = new BasicVar(rh, type);
         return {asgnVarName: varname, asgnValue: rh};
@@ -1159,6 +1159,20 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 },
 "MAX" : function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (lh,rh) => (lh < rh) ? rh : lh);
+},
+"GETKEYSDOWN" : function(lnum, stmtnum, args) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    let troValue = args[0].troValue;
+    let varname = troValue.toUpperCase();
+    let keys = [];
+    sys.poke(-40, 255);
+    for (let k = -41; k >= -48; k--) {
+        keys.push(sys.peek(k));
+    }
+
+    if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
+    bStatus.vars[varname] = new BasicVar(keys, "array");
+    return {asgnVarName: varname, asgnValue: keys};
 },
 "OPTIONDEBUG" : function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => {
