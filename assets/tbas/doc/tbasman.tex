@@ -19,12 +19,14 @@
 \usepackage{afterpage}
 \usepackage{hyperref}
 \usepackage{graphicx}
-\usepackage{xcolor}
+\usepackage{tabulary}
+\usepackage[table]{xcolor}
 \usepackage{ltablex}
 \usepackage{parskip}
 \usepackage{multicol}
 \usepackage{soul}
 \usepackage{verbatim}
+\usepackage{etoolbox}
 
 \usepackage{lineno} % debug
 
@@ -34,10 +36,9 @@
 \setlength{\mytextsize}{\f@size pt}
 \newlength{\mybaselineskip}
 \setlength{\mybaselineskip}{1.3\mytextsize}
+\patchcmd{\verbatim@input}{\@verbatim}{\scriptsize\@verbatim}{}{}
 \makeatother
 \setlength{\baselineskip}{\mybaselineskip}
-
-\usepackage[fontsize=\mytextsize,baseline=\baselineskip,lines=38]{grid}
 
 \frenchspacing
 \setlength{\parindent}{0pt}
@@ -50,7 +51,7 @@
 \hyphenation{ECMA-scr-ipt}
 
 \newcommand\forceindent{\hskip1.5em}
-
+\newcommand\basicexp{\raisebox{0.25ex}{\scriptsize\wedge}}
 
 % Title styling
 \pretitle{\begin{flushright}}
@@ -79,8 +80,16 @@
 \definecolor{lgrey}{HTML}{eeeeee}
 \sethlcolor{lgrey}
 \renewcommand{\thefootnote}{\fnsymbol{footnote}}
-\newcommand{\code}[1]{{\monofont\hl{#1}}}
-\newcommand{\codebf}[1]{{\monofont \textbf{\hl{#1}}}}
+\newcommand{\code}[1]{{\monofont\hl{\,#1\,}}}
+\newcommand{\codebf}[1]{{\monofont \textbf{\hl{\,#1\,}}}}
+%%\newcommand{\codeline}[1]{{\monofont\hl{\,#1\,}}}
+\newcommand{\codeline}[1]{%
+\colorbox{lgrey}{%
+\begin{tabular*}{\textwidth}{l}%
+\monofont #1 \\% TODO fill the cell with \hl colour
+\end{tabular*}%
+}}
+
 
 
 %\aliaspagestyle{part}{empty}
@@ -130,9 +139,15 @@
 \chapter{Language Reference}
 \input{langref}
 
-\chapter{Implementation}
+\chapter{Statements}
+\input{statements}
+
+\chapter{Functions}
+\input{functions}
+
+\chapter{Technical Reference}
 \input{implementation}
-\input{theinterpreter}
+
 
 %% Bibliography %%
 % https://robhagemans.github.io/pcbasic/doc/2.0/
@@ -140,7 +155,9 @@
 
 \chapter{Index}
 
+\chapter*{Disclaimers}
 
+\oreallypress{} is entirely fictional publishing entity; \oreallypress{} has no affiliation whatsoever with any of the real-world publishers.
 
 
 \afterpage{\pagestyle{empty}\null\newpage}

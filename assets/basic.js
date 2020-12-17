@@ -1678,31 +1678,34 @@ line =
 linenumber = digits ;
 
 stmt =
-      "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
-    | "FOR" , expr
+      "REM" , ? anything ?
+    | "IF" , expr_sans_asgn , "THEN" , stmt , ["ELSE" , stmt]
     | "DEFUN" , [ident] , "(" , [ident , {" , " , ident}] , ")" , "=" , expr
     | "ON" , expr_sans_asgn , ("GOTO" | "GOSUB") , expr_sans_asgn , {"," , expr_sans_asgn}
     | "(" , stmt , ")"
-    | expr ; (* if the statement is 'lit' and contains only one word, treat it as function_call e.g. NEXT for FOR loop *)
-
-expr = (* this basically blocks some funny attemps such as using DEFUN as anon function because everything is global in BASIC *)
+    | expr ; (* if the statement is 'lit' and contains only one word, treat it as function_call
+                e.g. NEXT for FOR loop *)
+    
+expr = (* this basically blocks some funny attemps such as using DEFUN as anon function
+          because everything is global in BASIC *)
       lit
     | "(" , expr , ")"
     | "IF" , expr_sans_asgn , "THEN" , expr , ["ELSE" , expr]
+    | kywd , expr - "(" (* also deals with FOR statement *)
     (* at this point, if OP is found in paren-level 0, skip function_call *)
     | function_call
     | expr , op , expr
     | op_uni , expr ;
-
+    
 expr_sans_asgn = ? identical to expr except errors out whenever "=" is found ? ;
-
+    
 function_call =
       ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
     | ident , expr , {argsep , expr} , [argsep] ;
-
-
-(* don't bother looking at these, because you already know the stuff *)
-
+kywd = ? words that exists on the list of predefined function that are not operators ? ;
+    
+(* don't bother looking at these, because you already know the stuff *)    
+    
 argsep = "," | ";" ;
 ident = alph , [digits] ; (* variable and function names *)
 lit = alph , [digits] | num | string ; (* ident + numbers and string literals *)
@@ -1716,26 +1719,22 @@ digits = digit | digit , digits ;
 hexdigits = hexdigit | hexdigit , hexdigits ;
 bindigits = bindigit | bindigit , bindigits ;
 num = digits | digits , "." , [digits] | "." , digits
-    | ("0x"|"0X") , hexdigits
+    | ("0x"|"0X") , hexdigits 
     | ("0b"|"0B") , bindigits ; (* sorry, no e-notation! *)
 visible = ? ASCII 0x20 to 0x7E ? ;
 string = '"' , (visible | visible , stringlit) , '"' ;
 
-letter = "A" | "B" | "C" | "D" | "E" | "F" | "G"
-    | "H" | "I" | "J" | "K" | "L" | "M" | "N"
-    | "O" | "P" | "Q" | "R" | "S" | "T" | "U"
-    | "V" | "W" | "X" | "Y" | "Z" | "a" | "b"
-    | "c" | "d" | "e" | "f" | "g" | "h" | "i"
-    | "j" | "k" | "l" | "m" | "n" | "o" | "p"
-    | "q" | "r" | "s" | "t" | "u" | "v" | "w"
-    | "x" | "y" | "z" | "_" ;
+letter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N"
+    | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" | "a" | "b"
+    | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p"
+    | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" | "_" ;
 digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
-hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b"
-    | "c" | "d" | "e" | "f" | "0" | "1" | "2" | "3" | "4" | "5" | "6"
-    | "7" | "8" | "9" ;
+hexdigit = "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b" | "c" | "d" | "e" | "f" | "0" | "1"
+    | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 bindigit = "0" | "1" ;
 
 (* all possible token states: lit num op bool qot paren sep *)
+(* below are schematic of trees generated after parsing the statements *)
 
 IF (type: function, value: IF)
 1. cond
