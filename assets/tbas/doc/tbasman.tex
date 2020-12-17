@@ -42,7 +42,7 @@
 
 \frenchspacing
 \setlength{\parindent}{0pt}
-\setlength{\parskip}{10pt}
+\setlength{\parskip}{\mytextsize}
 \setsecnumdepth{subsection}
 
 
@@ -71,10 +71,6 @@
 \renewcommand\memendofchapterhook{%
 \m@mindentafterchapter\@afterheading}
 \makeatother
-
-% section/chapter header spacing
-\let\oldsection\section
-\renewcommand{\section}[1]{\oldsection{#1} \vskip\baselineskip}
 
 
 \definecolor{lgrey}{HTML}{eeeeee}

@@ -182,9 +182,23 @@ Boolean operators operate on boolean values. If one of the operand is not boolea
 Code & Operation & Result \\
 \hline
 \condensedfont{NOT} \emph{x} & Logical negation & True if \emph{x} is false and vice versa \\
-\emph{x}  \condensedfont{AND} \emph{y} & Bitwise conjunction & True if \emph{x} and \emph{y} are both true \\
-\emph{x}  \condensedfont{OR} \emph{y} & Bitwise disjunction & True if \emph{x} or \emph{y} is true, or  both are true \\
+\emph{x} \condensedfont{AND} \emph{y} & Bitwise conjunction & True if \emph{x} and \emph{y} are both true \\
+\emph{x} \condensedfont{OR} \emph{y} & Bitwise disjunction & True if \emph{x} or \emph{y} is true, or  both are true \\
 \end{tabulary}
+
+\subsection{Array Operators}
+
+Array operators operate on arrays and numeric values.
+
+\begin{tabulary}{\textwidth}{CLL}
+Code & Operation & Result \\
+\hline
+\emph{x} $!$ \emph{y} & Cons & Prepends a value of \emph{x} into an array of \emph{y} \\
+\emph{x} $\sim$ \emph{y} & Push & Appends a value of \emph{y} into an array of \emph{x} \\
+\emph{x} $\#$ \emph{y} & Concat & Concatenates two arrays \\
+\end{tabulary}
+
+Arbitrary arrays can be constructed using empty-array constant \codebf{NIL}.
 
 \section{Syntax In EBNF}
 
