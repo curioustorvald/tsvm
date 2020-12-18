@@ -4,6 +4,7 @@ class ParserError extends Error {
         Error.captureStackTrace(this, ParserError);
     }
 }
+var DEFUNS_BUILD_DEFUNS = false;
 let bF = {};
 bF.parserPrintdbg = any => serial.println(any);
 bF.parserPrintdbg2 = function(icon, lnum, tokens, states, recDepth) {
@@ -173,7 +174,7 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
 
         treeHead.astValue = "DEFUN";
         treeHead.astType = "function";
-        
+
         // parse function name
         if (tokens[1] == "(") {
             // anonymous function
@@ -185,21 +186,22 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
             bF.parserPrintdbgline('$', 'DEFUN Stmt Function Name:', lnum, recDepth);
             treeHead.astLeaves[0] = bF._parseIdent(lnum, [tokens[1]], [states[1]], recDepth + 1);
         }
-        
+
         // parse function arguments
         bF.parserPrintdbgline('$', 'DEFUN Stmt Function Arguments -- ', lnum, recDepth);
         let defunArgDeclSeps = sepsOne.filter((i) => i < parenEnd + 1).map(i => i-1).concat([parenEnd - 1]);
         bF.parserPrintdbgline('$', 'DEFUN Stmt Function Arguments comma position: '+defunArgDeclSeps, lnum, recDepth);
 
         treeHead.astLeaves[0].astLeaves = defunArgDeclSeps.map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 1));
-        
+
         // parse function body
-        treeHead.astLeaves[1] = bF._parseExpr(lnum,
+        let parseFunction = (DEFUNS_BUILD_DEFUNS) ? bF._parseStmt : bF._parseExpr;
+        treeHead.astLeaves[1] = parseFunction(lnum,
             tokens.slice(parenEnd + 2, tokens.length),
             states.slice(parenEnd + 2, states.length),
             recDepth + 1
         );
-        
+
         return treeHead;
     }
 

@@ -27,6 +27,7 @@ let TRACEON = true;
 let DBGON = true;
 let DATA_CURSOR = 0;
 let DATA_CONSTS = [];
+let DEFUNS_BUILD_DEFUNS = false;
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -615,7 +616,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh << rh);
 },
 ">>" : function(lnum, stmtnum, args) {
-    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >> rh);
+    return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >>> rh);
 },
 "UNARYMINUS" : function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => -lh);
@@ -1972,7 +1973,8 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         treeHead.astLeaves[0].astLeaves = defunArgDeclSeps.map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 1));
 
         // parse function body
-        treeHead.astLeaves[1] = bF._parseExpr(lnum,
+        let parseFunction = (DEFUNS_BUILD_DEFUNS) ? bF._parseStmt : bF._parseExpr;
+        treeHead.astLeaves[1] = parseFunction(lnum,
             tokens.slice(parenEnd + 2, tokens.length),
             states.slice(parenEnd + 2, states.length),
             recDepth + 1

@@ -6,14 +6,14 @@ This chapter describes the \tbas{} language.
 
 In the descriptions of BASIC syntax, these conventions apply.
 
-\begin{itemize}
+\begin{itemlist}
 \item \codebf{VERBATIM} --- Type exactly as shown
 \item \code{IDENTIFIER} --- Replace \emph{identifier} with appropriate metavariable
 \item \code{[a]} --- Words within square brackets are optional
 \item \code{\{a|b\}} --- Choose either \code{a} or \code{b}
 \item \code{[a|b]} --- Optional version of above
 \item \code{a...} --- The preceding entity can be repeated
-\end{itemize}
+\end{itemlist}
 
 \section{Definitions}
 
@@ -21,11 +21,11 @@ A \emph{Program Line} consists of a line number followed by a \emph{Statements}.
 
 A \emph{Line Number} is an integer within the range of \intrange{}.
 
-A \emph{Statements} consists of 1 statement or more, separated by colons:
+A \emph{Statement} is special form of code which has special meaning. A program line can be composed of 1 or more statements, separated by colons. For the details of statements available in \tbas , see \ref{statements}.
 
 \codeline{STATEMENT [: STATEMENT]...}
 
-An \emph{Expression} takes one of the following forms:
+An \emph{Expression} is rather normal program lines, e.g. mathematical equations and function calles. The expression takes one of the following forms. For the details of functions available in \tbas , see \ref{functions}.
 
 \codeline{VARIABLE\_OR\_FUNCTION}\\
 \codeline{( EXPRESSION )}\\
@@ -103,10 +103,10 @@ Precedence & Operators & Associativity & Precedence & Operators & Associativity 
 \end{tabulary}
 
 \subsubsection*{Examples}
-\begin{itemize}
+\begin{itemlist}
 \item Exponentiation is more tightly bound than negation: \code{-1\basicexp 2 == -(1\basicexp 2) == -1} but \code{(-1)\basicexp 2 == 1}
 \item Exponentiation is right-associative: \code{4\basicexp 3\basicexp 2 == 4\basicexp (3\basicexp 2) == 262144}. This behaviour is \emph{different} from GW-BASIC in which its exponentiation is left-associative.
-\end{itemize}
+\end{itemlist}
 
 \subsection{Mathematical Operators}
 
@@ -115,6 +115,7 @@ Mathematical operators operate on expressions that returns numeric value only, e
 \begin{tabulary}{\textwidth}{CLL}
 Code & Operation & Result \\
 \hline
+\emph{x} $=$ \emph{y} & Assignment & Assigns \emph{y} into \emph{x} \\
 \emph{x} $\basicexp$ \emph{y} & Exponentiation & \emph{x} raised to the \emph{y}th power \\
 \emph{x} $\ast$ \emph{y} & Multiplication & Product of \emph{x} and \emph{y} \\
 \emph{x} $/$ \emph{y} & Division & Quotient of \emph{x} and \emph{y} \\
@@ -124,19 +125,22 @@ Code & Operation & Result \\
 \emph{x} $-$ \emph{y} & Subtraction & Difference of \emph{x} and \emph{y} \\
 $+$ \emph{x} & Unary Plus & Value of \emph{x} \\
 $-$ \emph{x} & Unary Minus & Negative value of \emph{x} \\
+\emph{x} \condensedfont{MIN} \emph{y} & Minimum & Lesser value of two \\
+\emph{x} \condensedfont{MAX} \emph{y} & Maximum & Greater value of two \\
+
 \end{tabulary}
 
 \subsubsection*{Notes}
-\begin{itemize}
+\begin{itemlist}
 \item Type conversion rule follows underlying Javascript implementation. In other words, \emph{only the god knows.}
 \item The expression \code{0\basicexp 0} will return \code{1}, even though the expression is indeterminant.
-\end{itemize}
+\end{itemlist}
 
 \subsubsection*{Errors}
-\begin{itemize}
+\begin{itemlist}
 \item Any expression that results \code{NaN} or \code{Infinity} in Javascript will return some kind of errors, mainly \code{Division by zero}.
 \item If \code{\emph{x}<0} and \code{\emph{y}} is not integer, \code{\emph{x}\basicexp\emph{y}} will raise \code{Illegal function call}.
-\end{itemize}
+\end{itemlist}
 
 \subsection{Comparison Operators}
 
@@ -155,19 +159,21 @@ Code & Operation & Result \\
 
 When comparing strings, the ordering is as follows:
 
-\begin{itemize}
+\begin{itemlist}
 \item Two strings are equal only when they are of the same length and every codepoint of the first string is identical to that of the second. This includes any whitespace or unprintable characters. 
 \item Each character position of the string is compared starting from the leftmost character. When a pair of different characters is encountered, the string with the character of lesser codepoint is less than the string with the character of greater codepoint. 
 \item If the strings are of different length, but equal up to the length of the shorter string, then the shorter string is less than the longer string.
-\end{itemize}
+\end{itemlist}
 
 \subsection{Bitwise Operators}
 
-Bitwise operators operate on integers only. Floating points are truncated\footnote{truncated towards zero} to integers.
+Bitwise operators operate on unsigned integers only. Floating points are truncated\footnote{truncated towards zero} to integers.
 
 \begin{tabulary}{\textwidth}{CLL}
 Code & Operation & Result \\
 \hline
+\emph{x}  <\!< \emph{y} & Bitwise Shift Left & Shifts entire bits of \emph{x} by \emph{y} \\
+\emph{x}  >\!> \emph{y} & Bitwise Shift Right & Shift entire bits \emph{x} by \emph{y}, including sign bit \\
 \condensedfont{BNOT} \emph{x} & Ones' complement & $-\emph{x}-1$ \\
 \emph{x}  \condensedfont{BAND} \emph{y} & Bitwise conjunction & Bitwise AND of \emph{x} and \emph{y} \\
 \emph{x}  \condensedfont{BOR} \emph{y} & Bitwise disjunction & Bitwise OR of \emph{x} and \emph{y} \\
@@ -176,7 +182,7 @@ Code & Operation & Result \\
 
 \subsection{Boolean Operators}
 
-Boolean operators operate on boolean values. If one of the operand is not boolean, it will be cast to appropriate boolean value. See \ref{valuesandtypes}
+Boolean operators operate on boolean values. If one of the operand is not boolean, it will be cast to appropriate boolean value. See \ref{valuesandtypes} for casting rules.
 
 \begin{tabulary}{\textwidth}{CLL}
 Code & Operation & Result \\
@@ -184,6 +190,17 @@ Code & Operation & Result \\
 \condensedfont{NOT} \emph{x} & Logical negation & True if \emph{x} is false and vice versa \\
 \emph{x} \condensedfont{AND} \emph{y} & Bitwise conjunction & True if \emph{x} and \emph{y} are both true \\
 \emph{x} \condensedfont{OR} \emph{y} & Bitwise disjunction & True if \emph{x} or \emph{y} is true, or  both are true \\
+\end{tabulary}
+
+\subsection{Generator Operators}
+
+Generator operators operate on numeric values and generators to create and modify a generator.
+
+\begin{tabulary}{\textwidth}{CLL}
+Code & Result \\
+\hline
+\emph{x} \condensedfont{TO} \emph{y} & Creates an generator that counts from \emph{x} to \emph{y} \\
+\emph{x} \condensedfont{STEP} \emph{y} & Modifies an counting stride of the generator \emph{x} into \emph{y} \\
 \end{tabulary}
 
 \subsection{Array Operators}

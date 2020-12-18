@@ -47,6 +47,8 @@
 \setlength{\parskip}{\mytextsize}
 \setsecnumdepth{subsection}
 
+%% More compact itemize %%
+\newenvironment{itemlist}{\vspace{0pt}\itemize}{\enditemize}
 
 %% Idioms %%
 \hyphenation{Java-scr-ipt}
@@ -64,6 +66,10 @@
 % new sections are new page
 %\let\oldsection\chapter
 %\renewcommand\chapter{\clearpage\oldsection}
+
+% shorten spaces before section header
+\setbeforesubsecskip{\mytextsize}
+\setbeforesubsubsecskip{\mytextsize}
 
 % chapter title -- no now page after
 \renewcommand\chapterheadstart{} % kill the drop
@@ -122,6 +128,7 @@
 
 % The title
 \newcommand{\tbas}{Terran BASIC}
+\newcommand{\thismachine}{TSVM}
 \newcommand{\tbasver}{1.0}
 \newcommand{\theedition}{First Edition}
 \newcommand{\oreallypress}{\large\textbf{O'REALLY\raisebox{1ex}{\scriptsize ?}} \normalsize Press}
