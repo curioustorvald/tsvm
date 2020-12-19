@@ -1,9 +1,19 @@
 \begin{lstlisting}
-10 REM         TERRAN BASIC
-20 REM     REFERENCE MANUAL
-30 REM      For Version 1.0
-40 REM        First Edition
-100 PRINT "Hello, world!"
-110 PRINT "Git gud!"
-999 END
+10 DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1)
+20 FOR K=1 TO 6
+30 PRINT FAC(K)
+40 NEXT
+\end{lstlisting}
+
+\begin{lstlisting}
+10 DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1)
+20 K=MAP FAC, 1 TO 10
+30 PRINT K
+\end{lstlisting}
+
+\begin{lstlisting}
+10 DEFUN FIB(N)=IF N==0 THEN 0 ELSE IF N==1 THEN 1 ELSE FIB(N-1)+FIB(N-2)
+20 FOR K=1 TO 12
+30 PRINT FIB(K);" ";
+40 NEXT
 \end{lstlisting}
