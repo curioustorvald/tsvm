@@ -35,6 +35,8 @@ tmp_*
 ## Vim temp files
 *.swp
 *.swo
+## Kate temp swap file
+*.kate-swp
 
 # Eclipse MAT heap files
 *.hprof

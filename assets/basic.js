@@ -46,6 +46,8 @@ function isNumable(s) {
     return s !== undefined && (typeof s.trim == "function" && s.trim() !== "" || s.trim == undefined) && !isNaN(s);
 }
 
+function cloneObject(o) = JSON.parse(JSON.stringify(o));
+
 class ParserError extends Error {
     constructor(...args) {
         super(...args);
@@ -271,7 +273,8 @@ let resolve = function(variable) {
     else
         throw Error("BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue);
 }
-let curryDefun = function(exprTree, value) {
+let curryDefun = function(inputTree, value) {
+    let exprTree = cloneObject(inputTree);
     bF._recurseApplyAST(exprTree, it => {
         if (it.astType == "defun_args") {
             // apply arg0 into the tree
@@ -285,13 +288,6 @@ let curryDefun = function(exprTree, value) {
             }
         }
     });
-
-    if (DBGON) {
-        serial.println("[BASIC.curryDefun] currying value: "+value);
-        serial.println(Object.entries(value));
-        serial.println("[BASIC.curryDefun] curried expression tree:");
-        serial.println(astToString(exprTree));
-    }
 
     return exprTree;
 }
@@ -399,7 +395,7 @@ let _basicConsts = {
 };
 Object.freeze(_basicConsts);
 let initBvars = function() {
-    return JSON.parse(JSON.stringify(_basicConsts));
+    return cloneObject(_basicConsts);
 }
 let ForGen = function(s,e,t) {
     this.start = s;
@@ -501,7 +497,7 @@ bStatus.getArrayIndexFun = function(lnum, stmtnum, arrayName, array) {
 bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-    let tree = JSON.parse(JSON.stringify(exprTree)); // ALWAYS create new tree instance!
+    let tree = cloneObject(exprTree); // ALWAYS create new tree instance!
     return function(lnum, stmtnum, args, seps) {
         if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
@@ -1230,9 +1226,17 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         if (DBGON) {
             serial.println("[BASIC.CURRY] currying "+args[0].troValue+" with "+arg0);
             serial.println("args[1] = "+Object.entries(args[1]));
+            serial.println("[BASIC.CURRY] before currying:");
+            serial.println(astToString(fn))
         }
 
         curryDefun(fn, arg0);
+
+        if (DBGON) {
+            serial.println("[BASIC.CURRY] after currying:");
+            serial.println(astToString(fn));
+        }
+
         return fn;
     });
 },
@@ -2584,16 +2588,15 @@ bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", un
 bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-    let _debugExec = false;
-    let _debugPrintCurrentLine = false;
-    let recWedge = "> ".repeat(recDepth);
+    let _debugExec = true;
+    let _debugPrintCurrentLine = true;
+    let recWedge = ">".repeat(recDepth) + " ";
 
     if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
     if (_debugPrintCurrentLine && recDepth == 0) {
         serial.println("Syntax Tree in "+lnum+":");
         serial.println(astToString(syntaxTree));
     }
-
 
     if (syntaxTree == undefined) return bF._troNOP(lnum, stmtnum);
     else if (syntaxTree.astValue == undefined) { // empty meaningless parens
@@ -2613,9 +2616,9 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
 
             if (_debugExec) {
                 serial.println(recWedge+"testedval:");
-                serial.println(recWedge+"type="+testedval.astType);
-                serial.println(recWedge+"value="+testedval.astValue);
-                serial.println(recWedge+"nextLine="+testedval.astNextLine);
+                serial.println(recWedge+"type="+testedval.troValue.astType);
+                serial.println(recWedge+"value="+testedval.troValue.astValue);
+                serial.println(recWedge+"nextLine="+testedval.troValue.astNextLine);
             }
 
             try {
@@ -2710,7 +2713,9 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             if (func === undefined) {
                 var someVar = bStatus.vars[funcName];
 
-                //println(lnum+" _executeSyntaxTree: "+Object.entries(someVar));
+                if (DBGON) {
+                    serial.println(lnum+" _executeSyntaxTree: "+Object.entries(someVar));
+                }
 
                 if (someVar === undefined) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
@@ -2745,15 +2750,28 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             }
         }
     }
+    // array indexing in the tree (caused by indexing array within recursive DEFUN)
+    else if (syntaxTree.astType == "array" && syntaxTree.astLeaves[0] !== undefined) {
+        let indexer = bStatus.getArrayIndexFun(lnum, stmtnum, "substituted array", syntaxTree.astValue);
+        let indices = syntaxTree.astLeaves.map(it=>bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1));
+        let retVal = indexer(lnum, stmtnum, indices);
+        if (_debugExec) serial.println(recWedge+`indexing substituted array(${Object.entries(indices)}) = ${Object.entries(retVal)}`);
+        return new SyntaxTreeReturnObj(
+                JStoBASICtype(retVal),
+                retVal,
+                [lnum, stmtnum + 1]
+        );
+    }
     else if (syntaxTree.astType == "num") {
-        if (_debugExec) serial.println(recWedge+"num");
+        if (_debugExec) serial.println(recWedge+"num "+((syntaxTree.astValue)*1));
         return new SyntaxTreeReturnObj(syntaxTree.astType, (syntaxTree.astValue)*1, [lnum, stmtnum + 1]);
     }
     else if (syntaxTree.astType == "lit" || literalTypes.includes(syntaxTree.astType)) {
-        if (_debugExec) serial.println(recWedge+"literal|string|bool|array");
+        if (_debugExec) serial.println(recWedge+"literal with astType: "+syntaxTree.astType+", astValue: "+syntaxTree.astValue);
         return new SyntaxTreeReturnObj(syntaxTree.astType, syntaxTree.astValue, [lnum, stmtnum + 1]);
     }
     else if (syntaxTree.astType == "null") {
+        if (_debugExec) serial.println(recWedge+"null")
         return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
     }
     else {
@@ -2761,7 +2779,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
         serial.println(recWedge+astToString(syntaxTree));
         throw Error("Parse error");
     }
-};
+}; // END OF bF._executeSyntaxTree
 // @return ARRAY of BasicAST
 bF._interpretLine = function(lnum, cmd) {
     let _debugprintHighestLevel = false;
