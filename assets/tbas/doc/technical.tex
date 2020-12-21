@@ -23,7 +23,7 @@ Typical User Input & TYPEOF(\textbf{Q}) & Instanceof \\
 
 \section{Unresolved Values}
 
-Unresolved variables has JS-object of \code{troType}, with \emph{instanceof} \code{SyntaxTeeReturnObj}. Its properties are defined as follows:
+Unresolved variables has JS-object of \code{troType}, with \emph{instanceof} \code{SyntaxTreeReturnObj}. Its properties are defined as follows:
 
 \begin{tabulary}{\textwidth}{RL}
 Properties & Description \\
@@ -39,19 +39,19 @@ Following table shows which BASIC object can have which \code{troType}:
 BASIC Type & troType \\
 \hline
 Any Variable & {\ttfamily lit} \\
-DEFUN'd Function & {\ttfamily function} \\
 Boolean & {\ttfamily bool} \\
 Generator & {\ttfamily generator} \\
 Array & {\ttfamily array} \\
 Number & {\ttfamily num} \\
 String & {\ttfamily string} \\
+DEFUN'd Function & {\ttfamily internal\_lambda} \\
 Array Indexing & {\ttfamily internal\_arrindexing\_lazy} \\
 Assignment & {\ttfamily internal\_assignment\_object} \\
 \end{tabulary}
 
 \subsection*{Notes}
 \begin{itemlist}
-\item All type that is not \code{lit} only appear when the statement returns such values, e.g. \code{function} only get returned by DEFUN statements as the statement itself returns defined function as well as assign them to given BASIC variable.
+\item All type that is not \code{lit} only appear when the statement returns such values, e.g. \code{internal\_lambda} only get returned by DEFUN statements as the statement itself returns defined function as well as assign them to given BASIC variable.
 \item As all variables will have \code{troType} of \code{lit} when they are not resolved, the property must not be used to determine the type of the variable; you must \code{resolve} it first.
 \item The type string \code{function} should not appear outside of TRO and \code{astType}; if you do see them in the wild, please check your JS code because you probably meant \code{usrdefun}.
 \end{itemlist}

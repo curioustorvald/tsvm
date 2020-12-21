@@ -1,3 +1,14 @@
+Okay, how do we begin\ldots
+
+\begin{lstlisting}
+10 PRINT 2+2
+run
+4
+Ok
+\end{lstlisting}
+
+Oh \emph{boy} we just did a computation! It printed out \code{4} which is a correct answer for $2+2$ and it didn't crash!
+
 \begin{lstlisting}
 10 DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1)
 20 FOR K=1 TO 6
@@ -11,9 +22,38 @@
 30 PRINT K
 \end{lstlisting}
 
+
 \begin{lstlisting}
 10 DEFUN FIB(N)=IF N==0 THEN 0 ELSE IF N==1 THEN 1 ELSE FIB(N-1)+FIB(N-2)
 20 FOR K=1 TO 12
 30 PRINT FIB(K);" ";
 40 NEXT
 \end{lstlisting}
+
+\section[Currying]{Haskell Curry Wants to Know Your Location}
+
+So what the fsck is currying? Consider the following code:
+
+\begin{lstlisting}
+10 DEFUN F(K,T)=ABS(T)==K
+20 CF=CURRY(F,32)
+30 PRINT CF(24) : REM will print 'false'
+40 PRINT CF(-32) : REM will print 'true'
+\end{lstlisting}
+
+Here, \code{CF} is a curried function of \code{F}; built-in function \code{CURRY} applies \code{32} to the first parametre of the function \code{F}, which dynamically returns a \code{function} \code{CF(T)=ABS(T)==32}. The fact that \code{CURRY} returns a \emph{function} opens many possibilities, for example, you can create loads of cousin function without making loads of duplicate codes.
+
+\section[Wrapping-Up]{The Grand Unification}
+
+Using all the knowledge we have learned, it should be trivial\footnote{/s} to write a Quicksort algorithm in \tbas, like this:
+
+\begin{lstlisting}
+10 DEFUN LESS(P,X)=X<P
+11 DEFUN GTEQ(P,X)=X>=P
+12 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE QSORT(FILTER(CURRY(LESS,XS(0)),XS)) # XS(0)!NIL # QSORT(FILTER(CURRY(GTEQ,XS(0)),XS))
+100 L=7!9!4!5!2!3!1!8!6!NIL
+110 SL=QSORT(L)
+120 PRINT L:PRINT SL
+\end{lstlisting}
+
+Line 10--12 implements quicksort algorithm. \code{LESS} is a user-function version of less-than operator, and \code{GTEQ} is similar. \code{QSORT} selects a pivot using head-element of array \code{XS}\footnote{stands for \emph{X's}}, then using curried version of \code{LESS} and \code{GTEQ} to move values lesser than pivot to the left and greater to the right, and these two sorted \emph{chunks} are recursively sorted using the same \code{QSORT} function. Currying is used to give comparison functions a pivot-value to compare against, and also because \code{FILTER} wants a \emph{function} and not an \emph{expression}. \code{XS(0)} simply fetches a head-elemement of \code{XS}. \code{XS(0)!NIL} creates a single-element array contains \code{XS(0)}.

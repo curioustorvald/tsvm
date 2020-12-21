@@ -271,7 +271,7 @@ let resolve = function(variable) {
         return undefined;
     // tail error checking
     else
-        throw Error("BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue);
+        throw Error("BasicIntpError: unknown variable/object with type "+variable.troType+", with value "+variable.troValue);
 }
 let curryDefun = function(inputTree, value) {
     let exprTree = cloneObject(inputTree);
@@ -2681,7 +2681,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             // finally assign the function to the variable table
             bStatus.vars[defunName] = new BasicVar(exprTree, "usrdefun");
 
-            return new SyntaxTreeReturnObj("function", exprTree, [lnum, stmtnum + 1]);
+            return new SyntaxTreeReturnObj("internal_lambda", exprTree, [lnum, stmtnum + 1]);
         }
         else if ("ON" == funcName) {
             if (syntaxTree.astLeaves.length < 3) throw lang.badFunctionCallFormat();

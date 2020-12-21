@@ -12,7 +12,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
         Returns inverse cosine of \code{X}.
     \subsection{ASN}
         \codeline{Y \textbf{= ASN(}X\textbf{)}}\par
-        Returns inverss sine of \code{X}.
+        Returns inverse sine of \code{X}.
     \subsection{ATN}
         \codeline{Y \textbf{= ATN(}X\textbf{)}}\par
         Returns inverse tangent of \code{X}.
@@ -37,6 +37,9 @@ Functions are a form of expression that may taks input arguments surrounded by p
     \subsection{FLOOR, INT}
         \codeline{Y \textbf{=} \{\textbf{FLOOR}|\textbf{INT}\}\textbf{(}X\textbf{)}}\par
         Returns integer value of \code{X}, truncated towards negative infinity.
+    \subsection{LEN}
+        \codeline{Y \textbf{= LEN(}X\textbf{)}}\par
+        Returns length of \code{X}. \code{X} can be either a string or an array.
     \subsection{LOG}
         \codeline{Y \textbf{= LOG(}X\textbf{)}}\par
         Returns natural logarithm of \code{X}.
@@ -73,7 +76,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
     \subsection{GETKEYSDOWN}
         \codeline{\textbf{GETKEYSDOWN} VARIABLE}\par
         Stores array that contains keycode of keys held down in \code{VARIABLE}.\par
-        Actual keycode and the array length depends on the machine: in \thismachine , array length will be fixed to 8. For the list of available keycodes, see \ref{technical}.
+        Actual keycode and the array length depends on the machine: in \thismachine , array length will be fixed to 8. For the list of available keycodes, see \ref{implementation}.
     \subsection{INPUT}
         \codeline{\textbf{INPUT} VARIABLE}\par
         Prints out \code{? } to the console and waits for user input. Input can be any length and terminated with return key. The input will be stored to given variable.
@@ -130,6 +133,8 @@ Functions are a form of expression that may taks input arguments surrounded by p
 
 \section{Higher-order Function}
 
+    \subsection{CURRY}
     \subsection{DO}
+    \subsection{FILTER}
     \subsection{FOLD}
     \subsection{MAP}
