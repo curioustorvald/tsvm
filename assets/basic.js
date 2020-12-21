@@ -27,7 +27,7 @@ let TRACEON = true;
 let DBGON = true;
 let DATA_CURSOR = 0;
 let DATA_CONSTS = [];
-let DEFUNS_BUILD_DEFUNS = false;
+let DEFUNS_BUILD_DEFUNS = true;
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
@@ -238,7 +238,7 @@ let BasicAST = function() {
     this.astValue = undefined;
     this.astType = "null"; // lit, op, string, num, array, function, null, defun_args (! NOT usrdefun !)
 }
-let literalTypes = ["string", "num", "bool", "array", "generator"];
+let literalTypes = ["string", "num", "bool", "array", "generator", "usrdefun"];
 /*
 @param variable SyntaxTreeReturnObj, of which  the 'troType' is defined in BasicAST.
 @return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
@@ -270,6 +270,22 @@ let resolve = function(variable) {
     // tail error checking
     else
         throw Error("BasicIntpError: unknown variable with type "+variable.troType+", with value "+variable.troValue);
+}
+let curryDefun = function(exprTree, value) {
+    bF._recurseApplyAST(exprTree, it => {
+        if (it.astType == "defun_args") {
+            // apply arg0 into the tree
+            if (it.astValue == 0) {
+                it.astType = JStoBASICtype(value);
+                it.astValue = value;
+            }
+            // shift down arg index
+            else {
+                it.astValue -= 1;
+            }
+        }
+    });
+    return exprTree;
 }
 let argCheckErr = function(lnum, o) {
     if (o === undefined || o.troType == "null") throw lang.refError(lnum, o);
@@ -503,11 +519,10 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
                 let argsIndex = it.astValue;
                 let theArg = argsMap[argsIndex]; // instanceof theArg == resolved version of SyntaxTreeReturnObj
 
-                if (theArg === undefined)
-                    throw lang.badFunctionCallFormat(lang.ord(argsIndex)+" argument was not given");
-
-                it.astValue = theArg;
-                it.astType = JStoBASICtype(theArg);
+                if (theArg !== undefined) { // this "forgiveness" is required to implement currying
+                    it.astValue = theArg;
+                    it.astType = JStoBASICtype(theArg);
+                }
             }
         });
 
@@ -1175,14 +1190,34 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     bStatus.vars[varname] = new BasicVar(keys, "array");
     return {asgnVarName: varname, asgnValue: keys};
 },
+"CURRY" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (fn, arg0) => {
+        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Not a Function");
+        curryDefun(fn, arg0);
+        return fn;
+    });
+},
+"TYPEOF" : function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, bv => {
+        if (bv.Type === undefined || !(bv instanceof BasicVar))
+            return JStoBASICtype(bv);
+        return bv.bvType;
+    });
+},
+"LEN" : function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, lh => {
+        if (lh.length === undefined) throw lang.illegalType();
+        return lh.length;
+    });
+},
 "OPTIONDEBUG" : function(lnum, stmtnum, args) {
-    return oneArgNum(lnum, stmtnum, args, (lh) => {
+    oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         DBGON = (1 == lh|0);
     });
 },
 "OPTIONTRACE" : function(lnum, stmtnum, args) {
-    return oneArgNum(lnum, stmtnum, args, (lh) => {
+    oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line);
         TRACEON = (1 == lh|0);
     });
@@ -1197,10 +1232,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         throw lang.syntaxfehler(lnum);
     }
 },
-"RESOLVE0" : function(lnum, stmtnum, args) {
+"RESOLVEVAR" : function(lnum, stmtnum, args) {
     if (DBGON) {
         return oneArg(lnum, stmtnum, args, (it) => {
-            println(Object.entries(it));
+            let v = bStatus.vars[args[0].troValue];
+            if (v === undefined) println("Undefined variable: "+args[0].troValue);
+            else println(`type: ${v.bvType}, value: ${v.bvLiteral}`);
         });
     }
     else {
@@ -1700,7 +1737,7 @@ stmt =
     | "(" , stmt , ")"
     | expr ; (* if the statement is 'lit' and contains only one word, treat it as function_call
                 e.g. NEXT for FOR loop *)
-    
+
 expr = (* this basically blocks some funny attemps such as using DEFUN as anon function
           because everything is global in BASIC *)
       lit
@@ -1711,16 +1748,16 @@ expr = (* this basically blocks some funny attemps such as using DEFUN as anon f
     | function_call
     | expr , op , expr
     | op_uni , expr ;
-    
+
 expr_sans_asgn = ? identical to expr except errors out whenever "=" is found ? ;
-    
+
 function_call =
       ident , "(" , [expr , {argsep , expr} , [argsep]] , ")"
     | ident , expr , {argsep , expr} , [argsep] ;
 kywd = ? words that exists on the list of predefined function that are not operators ? ;
-    
-(* don't bother looking at these, because you already know the stuff *)    
-    
+
+(* don't bother looking at these, because you already know the stuff *)
+
 argsep = "," | ";" ;
 ident = alph , [digits] ; (* variable and function names *)
 lit = alph , [digits] | num | string ; (* ident + numbers and string literals *)
@@ -1734,7 +1771,7 @@ digits = digit | digit , digits ;
 hexdigits = hexdigit | hexdigit , hexdigits ;
 bindigits = bindigit | bindigit , bindigits ;
 num = digits | digits , "." , [digits] | "." , digits
-    | ("0x"|"0X") , hexdigits 
+    | ("0x"|"0X") , hexdigits
     | ("0b"|"0B") , bindigits ; (* sorry, no e-notation! *)
 visible = ? ASCII 0x20 to 0x7E ? ;
 string = '"' , (visible | visible , stringlit) , '"' ;
@@ -2477,6 +2514,7 @@ let JStoBASICtype = function(object) {
     else if (object.arrName !== undefined) return "internal_arrindexing_lazy";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
     else if (object instanceof ForGen) return "generator";
+    else if (object instanceof BasicAST) return "usrdefun";
     else if (Array.isArray(object)) return "array";
     else if (!isNaN(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
@@ -2708,22 +2746,24 @@ bF._interpretLine = function(lnum, cmd) {
     // syntax tree pruning
     // turn UNARYMINUS(num) to -num
     syntaxTrees.forEach(syntaxTree => {
-        bF._recurseApplyAST(syntaxTree, tree => {
-            if (tree.astValue == "UNARYMINUS" && tree.astType == "op" &&
-                tree.astLeaves[1] === undefined && tree.astLeaves[0] !== undefined && tree.astLeaves[0].astType == "num"
-            ) {
-                tree.astValue = -(tree.astLeaves[0].astValue);
-                tree.astType = JStoBASICtype(tree.astValue);
-                tree.astLeaves = [];
-            }
-            else if (tree.astValue == "UNARYPLUS" && tree.astType == "op" &&
-                tree.astLeaves[1] === undefined && tree.astLeaves[0] !== undefined && tree.astLeaves[0].astType == "num"
-            ) {
-                tree.astValue = +(tree.astLeaves[0].astValue);
-                tree.astType = JStoBASICtype(tree.astValue);
-                tree.astLeaves = [];
-            }
-        });
+        if (syntaxTree !== undefined) {
+            bF._recurseApplyAST(syntaxTree, tree => {
+                if (tree.astValue == "UNARYMINUS" && tree.astType == "op" &&
+                    tree.astLeaves[1] === undefined && tree.astLeaves[0] !== undefined && tree.astLeaves[0].astType == "num"
+                ) {
+                    tree.astValue = -(tree.astLeaves[0].astValue);
+                    tree.astType = JStoBASICtype(tree.astValue);
+                    tree.astLeaves = [];
+                }
+                else if (tree.astValue == "UNARYPLUS" && tree.astType == "op" &&
+                    tree.astLeaves[1] === undefined && tree.astLeaves[0] !== undefined && tree.astLeaves[0].astType == "num"
+                ) {
+                    tree.astValue = +(tree.astLeaves[0].astValue);
+                    tree.astType = JStoBASICtype(tree.astValue);
+                    tree.astLeaves = [];
+                }
+            });
+        }
     });
 
     if (_debugprintHighestLevel) {
