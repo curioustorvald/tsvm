@@ -285,6 +285,14 @@ let curryDefun = function(exprTree, value) {
             }
         }
     });
+
+    if (DBGON) {
+        serial.println("[BASIC.curryDefun] currying value: "+value);
+        serial.println(Object.entries(value));
+        serial.println("[BASIC.curryDefun] curried expression tree:");
+        serial.println(astToString(exprTree));
+    }
+
     return exprTree;
 }
 let argCheckErr = function(lnum, o) {
@@ -504,7 +512,9 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
         }).forEach(arg => argsMap.push(arg));
 
         if (DBGON) {
-            serial.println("[BASIC.getDefunThunk] thunk args:");
+            serial.println("[BASIC.getDefunThunk.invoke] unthunking: ");
+            serial.println(astToString(tree));
+            serial.println("[BASIC.getDefunThunk.invoke] thunk args:");
             serial.println(argsMap);
         }
 
@@ -512,7 +522,7 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
         bF._recurseApplyAST(tree, (it) => {
             if ("defun_args" == it.astType) {
                 if (DBGON) {
-                    serial.println("[BASIC.getDefunThunk] thunk renamed arg tree brance:");
+                    serial.println("[BASIC.getDefunThunk.invoke] thunk renaming arg-tree branch:");
                     serial.println(astToString(it));
                 }
 
@@ -520,14 +530,24 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
                 let theArg = argsMap[argsIndex]; // instanceof theArg == resolved version of SyntaxTreeReturnObj
 
                 if (theArg !== undefined) { // this "forgiveness" is required to implement currying
+                    if (DBGON) {
+                        serial.println("[BASIC.getDefunThunk.invoke] thunk renaming-theArg: "+theArg);
+                        serial.println(Object.entries(theArg));
+                    }
+
                     it.astValue = theArg;
                     it.astType = JStoBASICtype(theArg);
+                }
+
+                if (DBGON) {
+                    serial.println("[BASIC.getDefunThunk.invoke] thunk successfully renamed arg-tree branch:");
+                    serial.println(astToString(it));
                 }
             }
         });
 
         if (DBGON) {
-            serial.println("[BASIC.getDefunThunk] thunk tree:");
+            serial.println("[BASIC.getDefunThunk.invoke] resulting thunk tree:");
             serial.println(astToString(tree));
         }
 
@@ -1142,6 +1162,19 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return akku;
     });
 },
+/* Syopsis: FILTER function, functor
+ */
+"FILTER" : function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (fn, functor) => {
+        // TODO test only works with DEFUN'd functions
+        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (functor.toArray === undefined && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, functor);
+        // generator?
+        if (functor.toArray) functor = functor.toArray();
+
+        return functor.filter(it => bStatus.getDefunThunk(lnum, stmtnum, fn)(lnum, stmtnum, [it]));
+    });
+},
 /* GOTO and GOSUB won't work but that's probably the best...? */
 "DO" : function(lnum, stmtnum, args) {
     return args[args.length - 1];
@@ -1193,6 +1226,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "CURRY" : function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (fn, arg0) => {
         if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Not a Function");
+
+        if (DBGON) {
+            serial.println("[BASIC.CURRY] currying "+args[0].troValue+" with "+arg0);
+            serial.println("args[1] = "+Object.entries(args[1]));
+        }
+
         curryDefun(fn, arg0);
         return fn;
     });
@@ -2589,9 +2628,9 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
                 else
                     return bF._troNOP(lnum, stmtnum);
             }
-            catch (eeeee) {
+            catch (e) {
                 serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
-                throw lang.errorinline(lnum, "TEST", eeeee);
+                throw lang.errorinline(lnum, "TEST", e);
             }
         }
         else if ("DEFUN" == funcName) {
@@ -2610,7 +2649,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
 
             // rename the parametres
             bF._recurseApplyAST(exprTree, (it) => {
-                if (it.astType == "lit") {
+                if (it.astType == "lit" || it.astType == "function") {
                     // check if parametre name is valid
                     // if the name is invalid, regard it as a global variable (i.e. do nothing)
                     if (defunRenamingMap[it.astValue] !== undefined) {
@@ -2621,13 +2660,14 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             });
 
             // test print new tree
-            //serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
-            //serial.println("[BASIC.DEFUN] defun name tree: ");
-            //serial.println(astToString(nameTree));
-            //serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
-            //serial.println("[BASIC.DEFUN] defun expression tree:");
-            //serial.println(astToString(exprTree));
-
+            if (DBGON) {
+                serial.println("[BASIC.DEFUN] defun debug info for function "+defunName);
+                serial.println("[BASIC.DEFUN] defun name tree: ");
+                serial.println(astToString(nameTree));
+                serial.println("[BASIC.DEFUN] defun renaming map: "+Object.entries(defunRenamingMap));
+                serial.println("[BASIC.DEFUN] defun expression tree:");
+                serial.println(astToString(exprTree));
+            }
             // check if the variable name already exists
             // search from constants
             if (_basicConsts[defunName]) throw lang.asgnOnConst(lnum, defunName);
@@ -2709,8 +2749,8 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
         if (_debugExec) serial.println(recWedge+"num");
         return new SyntaxTreeReturnObj(syntaxTree.astType, (syntaxTree.astValue)*1, [lnum, stmtnum + 1]);
     }
-    else if (syntaxTree.astType == "string" || syntaxTree.astType == "lit" || syntaxTree.astType == "bool") {
-        if (_debugExec) serial.println(recWedge+"string|literal|bool");
+    else if (syntaxTree.astType == "lit" || literalTypes.includes(syntaxTree.astType)) {
+        if (_debugExec) serial.println(recWedge+"literal|string|bool|array");
         return new SyntaxTreeReturnObj(syntaxTree.astType, syntaxTree.astValue, [lnum, stmtnum + 1]);
     }
     else if (syntaxTree.astType == "null") {
