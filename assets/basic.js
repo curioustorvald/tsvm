@@ -46,9 +46,16 @@ function isNumable(s) {
     return s !== undefined && (typeof s.trim == "function" && s.trim() !== "" || s.trim == undefined) && !isNaN(s);
 }
 
-function cloneObject(o) = JSON.parse(JSON.stringify(o));
+function cloneObject(o) { return JSON.parse(JSON.stringify(o)); }
 
 class ParserError extends Error {
+    constructor(...args) {
+        super(...args);
+        Error.captureStackTrace(this, ParserError);
+    }
+}
+
+class InternalError extends Error {
     constructor(...args) {
         super(...args);
         Error.captureStackTrace(this, ParserError);
@@ -222,7 +229,8 @@ let astToString = function(ast, depth) {
                  ("op" == ast.astType) ? String.fromCharCode(0xB1) :
                  ("string" == ast.astType) ? String.fromCharCode(0xB6) :
                  ("num" == ast.astType) ? String.fromCharCode(0xA2) :
-                 ("array" == ast.astType) ? "[" : String.fromCharCode(0x192);
+                 ("array" == ast.astType) ? "[" :
+                 ("defun_args" === ast.astType) ? String.fromCharCode(0x3B4) : String.fromCharCode(0x192);
     sb += l__.repeat(recDepth) + marker+" Line "+ast.astLnum+" ("+ast.astType+")\n";
     sb += l__.repeat(recDepth+1) + "leaves: "+(ast.astLeaves.length)+"\n";
     sb += l__.repeat(recDepth+1) + "value: "+ast.astValue+" (type: "+typeof ast.astValue+")\n";
@@ -277,14 +285,31 @@ let curryDefun = function(inputTree, value) {
     let exprTree = cloneObject(inputTree);
     bF._recurseApplyAST(exprTree, it => {
         if (it.astType == "defun_args") {
+            if (DBGON) {
+                serial.println("[curryDefun] found defun_args #"+it.astValue);
+                serial.println(astToString(it));
+            }
             // apply arg0 into the tree
             if (it.astValue == 0) {
                 it.astType = JStoBASICtype(value);
                 it.astValue = value;
+
+                if (DBGON) {
+                    serial.println("[curryDefun] applying value "+value);
+                }
             }
             // shift down arg index
             else {
                 it.astValue -= 1;
+
+                if (DBGON) {
+                    serial.println("[curryDefun] decrementing arg index");
+                }
+            }
+
+            if (DBGON) {
+                serial.println("[curryDefun] after the task:");
+                serial.println(astToString(it));
             }
         }
     });
@@ -1220,25 +1245,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return {asgnVarName: varname, asgnValue: keys};
 },
 "CURRY" : function(lnum, stmtnum, args) {
-    return twoArg(lnum, stmtnum, args, (fn, arg0) => {
-        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Not a Function");
-
-        if (DBGON) {
-            serial.println("[BASIC.CURRY] currying "+args[0].troValue+" with "+arg0);
-            serial.println("args[1] = "+Object.entries(args[1]));
-            serial.println("[BASIC.CURRY] before currying:");
-            serial.println(astToString(fn))
-        }
-
-        curryDefun(fn, arg0);
-
-        if (DBGON) {
-            serial.println("[BASIC.CURRY] after currying:");
-            serial.println(astToString(fn));
-        }
-
-        return fn;
-    });
+    throw new InternalError("Uh-oh you're not supposed to see this!");
 },
 "TYPEOF" : function(lnum, stmtnum, args) {
     return oneArg(lnum, stmtnum, args, bv => {
@@ -1251,6 +1258,30 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return oneArg(lnum, stmtnum, args, lh => {
         if (lh.length === undefined) throw lang.illegalType();
         return lh.length;
+    });
+},
+"HEAD" : function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, lh => {
+        if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
+        return lh[0];
+    });
+},
+"TAIL" : function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, lh => {
+        if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
+        return lh.slice(1, lh.length);
+    });
+},
+"INIT" : function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, lh => {
+        if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
+        return lh.slice(0, lh.length - 1);
+    });
+},
+"LAST" : function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, lh => {
+        if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
+        return lh[lh.length - 1];
     });
 },
 "OPTIONDEBUG" : function(lnum, stmtnum, args) {
@@ -1723,7 +1754,7 @@ bF._tokenise = function(lnum, cmd) {
         else if (states[k] == "n2" || states[k] == "nsep") states[k] = "num";
     }
 
-    if (tokens.length != states.length) throw Error("BasicIntpError: size of tokens and states does not match (line: "+lnum+")");
+    if (tokens.length != states.length) throw new InternalError("size of tokens and states does not match (line: "+lnum+")");
 
     return { "tokens": tokens, "states": states };
 };
@@ -2701,6 +2732,38 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
                 throw lang.errorinline(lnum, "ON error", e);
             }
         }
+        else if ("CURRY" == funcName) {
+            if (syntaxTree.astLeaves.length !== 2) throw lang.badFunctionCallFormat();
+            let functionName = syntaxTree.astLeaves[0].astValue;
+            let functionTreeVar = bStatus.vars[functionName];
+            if (functionTreeVar.bvType !== "usrdefun") throw lang.badFunctionCallFormat(`'${functionName}' is not a user-defined function`);
+
+            let functionTree = functionTreeVar.bvLiteral;
+            let valueTree = syntaxTree.astLeaves[1];
+
+            if (DBGON) {
+                serial.println("[BASIC.CURRY] currying this function tree...");
+                serial.println(astToString(functionTree));
+                serial.println("[BASIC.CURRY] with this value tree:");
+                serial.println(astToString(valueTree));
+                serial.println("\n[BASIC.CURRY] now resolving the value tree...")
+            }
+            let curryingValue = resolve(bF._executeSyntaxTree(lnum, stmtnum, valueTree, recDepth + 1));
+
+            if (DBGON) {
+                serial.println("\n[BASIC.CURRY] I'm back from resolving the value tree!");
+                serial.println(`[BASIC.CURRY] It seems you want to curry '${functionName}' with '${curryingValue}' amirite? Let's do it!\n`);
+            }
+
+            let curriedTree = curryDefun(functionTree, curryingValue);
+
+            if (DBGON) {
+                serial.println("[BASIC.CURRY] Here's your curried tree:");
+                serial.println(astToString(curriedTree));
+            }
+
+            return new SyntaxTreeReturnObj("internal_lambda_curry", curriedTree, [lnum, stmtnum + 1]);
+        }
         else {
             var args = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1));
 
@@ -2775,9 +2838,9 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
         return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
     }
     else {
-        serial.println(recWedge+"Parse error in "+lnum);
+        serial.println(recWedge+"Parsing error in "+lnum);
         serial.println(recWedge+astToString(syntaxTree));
-        throw Error("Parse error");
+        throw Error("Parsing error");
     }
 }; // END OF bF._executeSyntaxTree
 // @return ARRAY of BasicAST

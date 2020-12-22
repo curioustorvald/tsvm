@@ -53,20 +53,21 @@ Using all the knowledge we have learned, it should be trivial\footnote{/s} to wr
 \begin{lstlisting}
 10 DEFUN LESS(P,X)=X<P
 11 DEFUN GTEQ(P,X)=X>=P
-12 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE QSORT(FILTER(CURRY(LESS,XS(0)),XS)) # XS(0)!NIL # QSORT(FILTER(CURRY(GTEQ,XS(0)),XS))
+12 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE
+    QSORT(FILTER(CURRY(LESS,HEAD XS),TAIL XS)) # HEAD(XS)!NIL # 
+    QSORT(FILTER(CURRY(GTEQ,HEAD XS),TAIL XS))
 100 L=7!9!4!5!2!3!1!8!6!NIL
 110 SL=QSORT(L)
 120 PRINT L:PRINT SL
 \end{lstlisting}
 
-Line 12 implements quicksort algorithm, using \code{LESS} and \code{GTEQ} as helper functions. \code{LESS} is a user-function version of less-than operator, and \code{GTEQ} is similar. \code{QSORT} selects a pivot using head-element of array \code{XS}\footnote{stands for \emph{X's}}, then using curried version of \code{LESS} and \code{GTEQ} to move values lesser than pivot to the left and greater to the right, and these two sorted \emph{chunks} are recursively sorted using the same \code{QSORT} function. Currying is used to give comparison functions a pivot-value to compare against, and also because \code{FILTER} wants a \emph{function} and not an \emph{expression}. \code{XS(0)} simply fetches a head-elemement of \code{XS}. \code{XS(0)!NIL} creates a single-element array contains \code{XS(0)}.
+Line 12 implements quicksort algorithm, using \code{LESS} and \code{GTEQ} as helper functions. \code{LESS} is a user-function version of less-than operator, and \code{GTEQ} is similar. \code{QSORT} selects a pivot using head-element of array \code{XS}\footnote{stands for \emph{X's}} using \code{HEAD XS}, then using curried version of \code{LESS} and \code{GTEQ} to move values lesser than pivot \emph{minus the head element (here \code{TAIL XS} returns such array)} to the left and greater to the right, and these two sorted \emph{chunks} are recursively sorted using the same \code{QSORT} function. Currying is used to give comparison functions a pivot-value to compare against, and also because \code{FILTER} wants a \emph{function} and not an \emph{expression}. \code{HEAD XS} simply fetches a head-elemement of \code{XS}. \code{HEAD(XS)!NIL} creates a single-element array contains \code{XS(0)}.
 
 %Uncomment this if you finally decided to support a closure%
-%% Using \emph{closure}, the definition of \code{QSORT} can be \emph{even more cryptic}:
-%% 
-%% \begin{lstlisting}
-%% 10 QSORT=[XS]~>IF LEN(XS)<1 THEN NIL ELSE QSORT(FILTER([K]~>K<XS(0),XS)) # XS(0)!NIL # QSORT(FILTER([K]~>K>=XS(0),XS))
-%% 100 L=7!9!4!5!2!3!1!8!6!NIL
-%% 110 SL=QSORT(L)
-%% 120 PRINT L:PRINT SL
-%% \end{lstlisting}
+Using \emph{closure}, the definition of \code{QSORT} can truly be a one-liner and be \emph{even more cryptic}:
+
+\begin{lstlisting}
+10 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE
+    QSORT(FILTER([K]~>K<HEAD XS,TAIL XS)) # HEAD(XS)!NIL # 
+    QSORT(FILTER([K]~>K>=HEAD XS,TAIL XS))
+\end{lstlisting}

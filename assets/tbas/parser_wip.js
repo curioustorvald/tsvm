@@ -709,7 +709,8 @@ let astToString = function(ast, depth) {
                  ("op" == ast.astType) ? String.fromCharCode(0xB1) :
                  ("string" == ast.astType) ? String.fromCharCode(0xB6) :
                  ("num" == ast.astType) ? String.fromCharCode(0xA2) :
-                 ("array" == ast.astType) ? "[" : String.fromCharCode(0x192);
+                 ("array" == ast.astType) ? "[" :
+                 ("defun_args" === ast.astType) ? String.fromCharCode(0x3B4) : String.fromCharCode(0x192);
     sb += l__.repeat(recDepth) + marker+" Line "+ast.astLnum+" ("+ast.astType+")\n";
     sb += l__.repeat(recDepth+1) + "leaves: "+(ast.astLeaves.length)+"\n";
     sb += l__.repeat(recDepth+1) + "value: "+ast.astValue+" (type: "+typeof ast.astValue+")\n";
