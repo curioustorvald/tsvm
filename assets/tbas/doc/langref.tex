@@ -12,7 +12,7 @@ In the descriptions of BASIC syntax, these conventions apply.
 \item \code{[a]} --- Words within square brackets are optional
 \item \code{\{a|b\}} --- Choose either \code{a} or \code{b}
 \item \code{[a|b]} --- Optional version of above
-\item \code{a...} --- The preceding entity can be repeated
+\item \code{a\ldots} --- The preceding entity can be repeated
 \end{itemlist}
 
 \section{Definitions}
@@ -23,7 +23,7 @@ A \emph{Line Number} is an integer within the range of \intrange{}.
 
 A \emph{Statement} is special form of code which has special meaning. A program line can be composed of 1 or more statements, separated by colons. For the details of statements available in \tbas , see \ref{statements}.
 
-\codeline{STATEMENT [: STATEMENT]...}
+\codeline{STATEMENT [: STATEMENT]\ldots}
 
 An \emph{Expression} is rather normal program lines, e.g. mathematical equations and function calles. The expression takes one of the following forms. For the details of functions available in \tbas , see \ref{functions}.
 
@@ -37,7 +37,7 @@ An \emph{Expression} is rather normal program lines, e.g. mathematical equations
 
 An \emph{Array} takes following form:
 
-\codeline{ARRAY\_NAME \textbf{(} EXPRESSION [\textbf{,} EXPRESSION]... \textbf{)}}
+\codeline{ARRAY\_NAME \textbf{(} EXPRESSION [\textbf{,} EXPRESSION]\ldots\ \textbf{)}}
 
 \section{Literals}
 \subsection{String Literals}
@@ -54,9 +54,9 @@ To print out graphical letters outside of ASCII-printable, use string concatenat
 
 Numeric literals take one of the following forms:
 
-\codeline{[\textbf{+}|\textbf{-}][\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]... [\textbf{.}][\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]...}\\
-\codeline{\textbf{0}\{\textbf{x}|\textbf{X}\}[\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]...}\\
-\codeline{\textbf{0}\{\textbf{b}|\textbf{B}\}[\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]...}
+\codeline{[\textbf{+}|\textbf{-}][\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]\ldots\ [\textbf{.}][\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]\ldots}\\
+\codeline{\textbf{0}\{\textbf{x}|\textbf{X}\}[\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]\ldots}\\
+\codeline{\textbf{0}\{\textbf{b}|\textbf{B}\}[\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]\ldots}
 
 Hexadecimal and binary literals are always interpreted as \emph{unsigned} integers. They must range between \intrange{}.
 
@@ -226,6 +226,8 @@ Code & Operation & Result \\
 \emph{f} \basiccurry{} \emph{x} & Curry & Apply \emph{x} into the first parameter of the function \emph{f} \\
 %{[}\emph{x},\,\emph{y}\ldots{]} \basicclosure{} \emph{e} & Closure & Creates a closure (anonymous function) from one or more parameters \emph{x},\,\emph{y}\ldots\ and an expression \emph{e} \\
 \end{tabulary}
+
+\emph{Currying} is an operation that returns derivative of the function that has given value applied to its first parameter.\footnote{Do \emph{not} believe in that this is \emph{the} definition of currying. In the wild, currying is applied to cascades of \lambda-expressions and the behaviour is different to \tbas{}'s, even though it seems equivalent if you compare the function that two curries would produce.} See \ref{currying101} for tutorials.
 
 \section{Syntax In EBNF}
 

@@ -35,7 +35,8 @@ Functions are a form of expression that may taks input arguments surrounded by p
         \codeline{Y \textbf{= FIX(}X\textbf{)}}\par
         Returns integer value of \code{X}, truncated towards zero.
     \subsection{FLOOR, INT}
-        \codeline{Y \textbf{=} \{\textbf{FLOOR}|\textbf{INT}\}\textbf{(}X\textbf{)}}\par
+        \codeline{Y \textbf{= FLOOR(}X\textbf{)}}
+        \codeline{Y \textbf{= INT(}X\textbf{)}}\par
         Returns integer value of \code{X}, truncated towards negative infinity.
     \subsection{LEN}
         \codeline{Y \textbf{= LEN(}X\textbf{)}}\par
@@ -84,11 +85,11 @@ Functions are a form of expression that may taks input arguments surrounded by p
 \section{Output}
 
     \subsection{EMIT}
-        \codeline{\textbf{EMIT(}EXPR [\{\textbf{,}|\textbf{;}\} EXPR]...\textbf{)}}\par
+        \codeline{\textbf{EMIT(}EXPR [\{\textbf{,}|\textbf{;}\} EXPR]\ldots\textbf{)}}\par
         Prints out characters corresponding to given number on the code page being used.\par
         \code{EXPR} is numeric expression.
     \subsection{PRINT}
-        \codeline{\textbf{PRINT(}EXPR [\{\textbf{,}|\textbf{;}\} EXPR]...\textbf{)}}\par
+        \codeline{\textbf{PRINT(}EXPR [\{\textbf{,}|\textbf{;}\} EXPR]\ldots\textbf{)}}\par
         Prints out given string expressions.\par
         \code{EXPR} is a string, numeric expression, or array.\par
         \code{PRINT} is one of the few function that differentiates two style of argument separator: \codebf{;} will simply concatenate two expressions (unlike traditional BASIC, numbers will not have surrounding spaces), \codebf{,} tabulates the expressions.
@@ -99,11 +100,11 @@ Functions are a form of expression that may taks input arguments surrounded by p
         \codeline{\textbf{CLEAR}}\par
         Clears all declared variables.
     \subsection{DATA}
-        \codeline{\textbf{DATA} CONST0 [\textbf{,} CONST1]...}\par
+        \codeline{\textbf{DATA} CONST0 [\textbf{,} CONST1]\ldots}\par
         Adds data that can be read by \code{READ} function.
         \subsubsection*{Notes}
         \begin{itemlist}
-        \item \code{DATA} declarations need not be reacheable in the program flow
+        \item \code{DATA} declarations need not be reacheable in the program flow.
         \end{itemlist}
     \subsection{END}
         \codeline{\textbf{END}}\par
@@ -129,7 +130,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
         Puts a name onto the line numeber the statement is located. Jumping to the \code{NAME}
         \subsubsection*{Notes}
         \begin{itemlist}
-        \item \code{NAME} must be a valid variable name
+        \item \code{NAME} must be a valid variable name.
         \end{itemlist}
     \subsection{NEXT}
         \codeline{\textbf{NEXT}}\par
@@ -150,22 +151,22 @@ Functions are a form of expression that may taks input arguments surrounded by p
         \codeline{CHAR \textbf{= CHR(}X\textbf{)}}\par
         Returns the character with code point of \code{X}. Code point is a numeric expression in the range of $[0-255]$.
     \subsection{LEFT}
-        \codeline{SUBSTR \textbf{= LEFT(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
+        \codeline{SUBSTR \textbf{= LEFT(}STR \textbf{,} NUM\_CHARS\textbf{)}}\par
         Returns the leftmost \code{NUM\_CHARS} characters of \code{STR}.
     \subsection{MID}
-        \codeline{SUBSTR \textbf{= MID(}STR\textbf{,}POSITION\textbf{,}LENGTH\textbf{)}}\par
+        \codeline{SUBSTR \textbf{= MID(}STR \textbf{,} POSITION \textbf{,} LENGTH\textbf{)}}\par
         Returns a substring of \code{STR} starting at \code{POSITION} with specified \code{LENGTH}.\par
         When \code{OPTIONBASE 1} is specified, the position starts from 1; otherwise it will start from 0. 
     \subsection{RIGHT}
         \codeline{SUBSTR \textbf{= RIGHT(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
         Returns the rightmost \code{NUM\_CHARS} characters of \code{STR}.
     \subsection{SPC}
-        \codeline{STR \textbf{= SPC(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
+        \codeline{STR \textbf{= SPC(}STR \textbf{,} NUM\_CHARS\textbf{)}}\par
         Returns a string of \code{NUM\_CHARS} spaces.
 \section{Graphics}
 
     \subsection{PLOT}
-        \codeline{\textbf{PLOT(}X\_POS\textbf{,}Y\_POS\textbf{,}COLOUR\textbf{)}}\par
+        \codeline{\textbf{PLOT(}X\_POS \textbf{,} Y\_POS \textbf{,} COLOUR\textbf{)}}\par
         Plots a pixel to the framebuffer of the display, at XY-position of \code{X\_POS} and \code{Y\_POS}, with colour of \code{COLOUR}.\par
         Top-left corner of the pixel will be 1 if \code{OPTIONBASE 1} is specified; otherwise it will be 0.
 
@@ -186,17 +187,37 @@ Functions are a form of expression that may taks input arguments surrounded by p
 \section{System}
 
     \subsection{PEEK}
-        \codeline{BYTE \textbf{= PEEK(}MEMADDR\textbf{)}}\par
-        Returns whatever the value stored in the \code{MEMADDR} of the scratchpad-memory.\par
+        \codeline{BYTE \textbf{= PEEK(}MEM\_ADDR\textbf{)}}\par
+        Returns whatever the value stored in the \code{MEM\_ADDR} of the scratchpad-memory.\par
         Address mirroring, illegal access, etc. are entirely up to the virtual machine which the BASIC interpreter is running on.
     \subsection{POKE}
-        \codeline{\textbf{POKE(}MEMADDR\textbf{,}BYTE\textbf{)}}\par
-        Puts a \code{BYTE} into the \code{MEMADDR} of the scratchpad-memory.
+        \codeline{\textbf{POKE(}MEM\_ADDR \textbf{,} BYTE\textbf{)}}\par
+        Puts a \code{BYTE} into the \code{MEM\_ADDR} of the scratchpad-memory.
 
 \section{Higher-order Function}
 
-    \subsection{CURRY}
     \subsection{DO}
+        \codeline{\textbf{DO(}EXPR0 [\textbf{;} EXPR1]\ldots\textbf{)}}\par
+        Executes \code{EXPRn}s sequentially.
     \subsection{FILTER}
+        \codeline{NEWLIST \textbf{= FILTER(}FUNCTION \textbf{,} ITERABLE\textbf{)}}\par
+        Returns an array of values from the \code{ITERABLE} that passes the given function. i.e. values that makes \code{FUNCTION(VALUE\_FROM\_ITERABLE)} true.
+        \subsubsection*{Parameters}
+        \begin{itemlist}
+        \item \code{FUNCTION} is a user-defined function with single parameter.
+        \item \code{ITERABLE} is either an array or a generator.
+        \end{itemlist}
     \subsection{FOLD}
+        \codeline{NEWVALUE \textbf{= FOLD(}FUNCTION \textbf{,} INIT\_VALUE \textbf{,} ITERABLE\textbf{)}}\par
+        Iteratively applies given function with accumulator and the value from the \code{ITERABLE}, returning the final accumulator. Accumulator will be set to \code{INIT\_VALUE} before iterating over the iterable. In the first execution, the accumulator will be set to \code{ACC=FUNCTION(ACC,ITERABLE(0))}, and the execution will continue to remaining values within the iterable until all values are consumed. The \code{ITERABLE} will not be modified after the execution.
+        \subsubsection*{Parameters}
+        \begin{itemlist}
+        \item \code{FUNCTION} is a user-defined function with two parameters: first parameter being accumulator and second being a value.
+        \end{itemlist}
     \subsection{MAP}
+        \codeline{NEWLIST \textbf{= MAP(}FUNCTION \textbf{,} ITERABLE\textbf{)}}\par
+        Applies given function onto the every element in the iterable, and returns an array that contains such items. i.e. returns tranformation of \code{ITERABLE} of which the transformation is \code{FUNCTION}. The \code{ITERABLE} will not be modified after the execution.
+        \subsubsection*{Parameters}
+        \begin{itemlist}
+        \item \code{FUNCTION} is a user-defined function with single parameter.
+        \end{itemlist}

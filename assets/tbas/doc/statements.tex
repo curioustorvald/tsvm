@@ -18,11 +18,11 @@ If \code{TRUTH\_VALUE} is truthy, executes \code{TRUE\_EXPRESSION}; if \code{TRU
 
 \section{ON}
 
-\codeline{\textbf{ON} INDEX\_EXPRESSION \{\textbf{GOTO}|\textbf{GOSUB}\} LINE0 [\textbf{,} LINE1]...}
+\codeline{\textbf{ON} INDEX\_EXPRESSION \{\textbf{GOTO}|\textbf{GOSUB}\} LINE0 [\textbf{,} LINE1]\ldots}
 
 Jumps to \code{INDEX\_EXPRESSION}-th line number in the argements. If \code{INDEX\_EXPRESSION} is outside of range of the arguments, no jump will be performed.
 
-\subsubsection*{parameters}
+\subsubsection*{Parameters}
 
 \begin{itemlist}
 \item \code{LINEn} can be a number, numeric expression (aka equations) or a line label.
@@ -33,15 +33,15 @@ Jumps to \code{INDEX\_EXPRESSION}-th line number in the argements. If \code{INDE
 
 \emph{There it is, the} DEFUN. \emph{All those new-fangled parser\footnote{a computer program that translates program code entered by you into some data bits that only it can understand} and paradigms\footnote{a guidance to in which way you must think to assimilate your brain into the computer-overlord} are tied to this very statement on \tbas{}, and only Wally knows its secrets\ldots}
 
-\codeline{\textbf{DEFUN} NAME \textbf{(} [ARGS0 [\textbf{,} ARGS1]...] \textbf{)} \textbf{=} EXPRESSION }
+\codeline{\textbf{DEFUN} NAME \textbf{(} [ARGS0 [\textbf{,} ARGS1]\ldots] \textbf{)} \textbf{=} EXPRESSION }
 
 With the aid of other statements\footnote{Actually, only the IF is useful, unless you want to \emph{transcend} from the \emph{dung} of mortality by using DEFUN within DEFUN (a little modification of the source code is required)} and functions, DEFUN will allow you to ascend from traditional BASIC and do godly things such as \emph{recursion}\footnote{see recursion} and \emph{functional programming}.
 
 Oh, and you can define your own function, in traditional \code{DEF FN} sense.
 
-\subsubsection*{parameters}
+\subsubsection*{Parameters}
 
 \begin{itemlist}
-\item \code{NAME} must be a valid variable name
-\item \code{ARGSn} must be valid variable names, but can be a name of variables already used within the BASIC program; their value will not be affected nor be used
+\item \code{NAME} must be a valid variable name.
+\item \code{ARGSn} must be valid variable names, but can be a name of variables already used within the BASIC program; their value will not be affected nor be used.
 \end{itemlist}
