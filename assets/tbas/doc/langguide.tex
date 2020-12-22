@@ -1,4 +1,7 @@
-Okay, how do we begin\ldots
+\quad
+\chapterprecishere{``Begin at the beginning'', the King said gravely, ``and go on till you come to the end: then stop.''\par\raggedleft --- \textup{Lewis Carroll, } Alice in Wonderland}
+
+We'll begin at the beginning; how beginning? This:
 
 \begin{lstlisting}
 10 PRINT 2+2
@@ -41,11 +44,11 @@ So what the fsck is currying? Consider the following code:
 40 PRINT CF(-32) : REM will print 'true'
 \end{lstlisting}
 
-Here, \code{CF} is a curried function of \code{F}; built-in function \code{CURRY} applies \code{32} to the first parametre of the function \code{F}, which dynamically returns a \code{function} \code{CF(T)=ABS(T)==32}. The fact that \code{CURRY} returns a \emph{function} opens many possibilities, for example, you can create loads of cousin function without making loads of duplicate codes.
+Here, \code{CF} is a curried function of \code{F}; built-in function \code{CURRY} applies \code{32} to the first parametre of the function \code{F}, which dynamically returns a \emph{function} of \code{CF(T) = ABS(T) == 32}. The fact that \code{CURRY} returns a \emph{function} opens many possibilities, for example, you can create loads of sibling functions without making loads of duplicate codes.
 
 \section[Wrapping-Up]{The Grand Unification}
 
-Using all the knowledge we have learned, it should be trivial\footnote{/s} to write a Quicksort algorithm in \tbas, like this:
+Using all the knowledge we have learned, it should be trivial\footnote{/s} to write a Quicksort function in \tbas, like this:
 
 \begin{lstlisting}
 10 DEFUN LESS(P,X)=X<P
@@ -56,4 +59,14 @@ Using all the knowledge we have learned, it should be trivial\footnote{/s} to wr
 120 PRINT L:PRINT SL
 \end{lstlisting}
 
-Line 10--12 implements quicksort algorithm. \code{LESS} is a user-function version of less-than operator, and \code{GTEQ} is similar. \code{QSORT} selects a pivot using head-element of array \code{XS}\footnote{stands for \emph{X's}}, then using curried version of \code{LESS} and \code{GTEQ} to move values lesser than pivot to the left and greater to the right, and these two sorted \emph{chunks} are recursively sorted using the same \code{QSORT} function. Currying is used to give comparison functions a pivot-value to compare against, and also because \code{FILTER} wants a \emph{function} and not an \emph{expression}. \code{XS(0)} simply fetches a head-elemement of \code{XS}. \code{XS(0)!NIL} creates a single-element array contains \code{XS(0)}.
+Line 12 implements quicksort algorithm, using \code{LESS} and \code{GTEQ} as helper functions. \code{LESS} is a user-function version of less-than operator, and \code{GTEQ} is similar. \code{QSORT} selects a pivot using head-element of array \code{XS}\footnote{stands for \emph{X's}}, then using curried version of \code{LESS} and \code{GTEQ} to move values lesser than pivot to the left and greater to the right, and these two sorted \emph{chunks} are recursively sorted using the same \code{QSORT} function. Currying is used to give comparison functions a pivot-value to compare against, and also because \code{FILTER} wants a \emph{function} and not an \emph{expression}. \code{XS(0)} simply fetches a head-elemement of \code{XS}. \code{XS(0)!NIL} creates a single-element array contains \code{XS(0)}.
+
+%Uncomment this if you finally decided to support a closure%
+%% Using \emph{closure}, the definition of \code{QSORT} can be \emph{even more cryptic}:
+%% 
+%% \begin{lstlisting}
+%% 10 QSORT=[XS]~>IF LEN(XS)<1 THEN NIL ELSE QSORT(FILTER([K]~>K<XS(0),XS)) # XS(0)!NIL # QSORT(FILTER([K]~>K>=XS(0),XS))
+%% 100 L=7!9!4!5!2!3!1!8!6!NIL
+%% 110 SL=QSORT(L)
+%% 120 PRINT L:PRINT SL
+%% \end{lstlisting}
