@@ -96,10 +96,26 @@ Functions are a form of expression that may taks input arguments surrounded by p
 \section{Program Manipulation}
 
     \subsection{CLEAR}
+        \codeline{\textbf{CLEAR}}\par
+        Clears all declared variables.
     \subsection{DATA}
+        \codeline{\textbf{DATA} CONST0 [\textbf{,} CONST1]...}\par
+        Adds data that can be read by \code{READ} function.
+        \subsubsection*{Notes}
+        \begin{itemlist}
+        \item \code{DATA} declarations need not be reacheable in the program flow.
+        \end{itemlist}
     \subsection{END}
+        \codeline{\textbf{END}}\par
+        Stops program execution and returns control to the user.
     \subsection{FOR}
+        \codeline{\textbf{FOR} LOOPVAR \textbf{=} START \textbf{TO} STOP [\textbf{STEP} STEP]}
+        \codeline{\textbf{FOR} LOOPVAR \textbf{=} GENERATOR}\par
+        Starts a \code{FOR-NEXT} loop.\par
+        Initially, \code{LOOPVAR} is set to \code{START} then statements between the \code{FOR} statement and corresponding \code{NEXT} statements are executed and \code{LOOPVAR} is incremented by \code{STEP}, or by 1 if \code{STEP} is not specified. The program flow will continue to loop around until \code{LOOPVAR} is outside the range of \code{START}--\code{STOP}. The value of the \code{LOOPVAR} is equal to \code{STOP}$+$\code{STEP} when the looping finishes.
     \subsection{FOREACH}
+        \codeline{\textbf{FOREACH} LOOPVAR \textbf{IN} ARRAY}\par
+        Same as \code{FOR} but fetches \code{LOOPVAR} from given \code{ARRAY}.
     \subsection{GOSUB}
     \subsection{GOTO}
     \subsection{LABEL}
