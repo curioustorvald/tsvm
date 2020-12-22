@@ -103,7 +103,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
         Adds data that can be read by \code{READ} function.
         \subsubsection*{Notes}
         \begin{itemlist}
-        \item \code{DATA} declarations need not be reacheable in the program flow.
+        \item \code{DATA} declarations need not be reacheable in the program flow
         \end{itemlist}
     \subsection{END}
         \codeline{\textbf{END}}\par
@@ -117,35 +117,81 @@ Functions are a form of expression that may taks input arguments surrounded by p
         \codeline{\textbf{FOREACH} LOOPVAR \textbf{IN} ARRAY}\par
         Same as \code{FOR} but fetches \code{LOOPVAR} from given \code{ARRAY}.
     \subsection{GOSUB}
+        \codeline{\textbf{GOSUB} LINENUM}\par
+        Jumps to a subroutine at \code{LINENUM}. The next \code{RETURN} statements makes program flow to jump back to the statement after the \code{GOSUB}.\par
+        \code{LINENUM} can be either a numeric expression or a Label.
     \subsection{GOTO}
+        \codeline{\textbf{GOTO} LINENUM}\par
+        Jumps to \code{LINENUM}.\par
+        \code{LINENUM} can be either a numeric expression or a Label.
     \subsection{LABEL}
+        \codeline{\textbf{LABEL} NAME}\par
+        Puts a name onto the line numeber the statement is located. Jumping to the \code{NAME}
+        \subsubsection*{Notes}
+        \begin{itemlist}
+        \item \code{NAME} must be a valid variable name
+        \end{itemlist}
     \subsection{NEXT}
+        \codeline{\textbf{NEXT}}\par
+        Iterates \code{FOR-NEXT} loop and increments the loop variable from the most recent \code{FOR} statement and jumps to that statement.
     \subsection{READ}
+        \codeline{\textbf{READ} VARIABLE}\par
+        Assigns data declared from \code{DATA} statements to given variable. Reading starts at the current \code{DATA} position, and the data position will be incremented by one. The position is reset to the zero by the \code{RUN} command.
     \subsection{RESTORE}
+        \codeline{\textbf{RESTORE}}\par
+        Resets the \code{DATA} pointer.
     \subsection{RETURN}
+        \codeline{\textbf{RETURN}}\par
+        Returns from the \code{GOSUB} statement.
 
 \section{String Manipulation}
 
     \subsection{CHR}
+        \codeline{CHAR \textbf{= CHR(}X\textbf{)}}\par
+        Returns the character with code point of \code{X}. Code point is a numeric expression in the range of $[0-255]$.
     \subsection{LEFT}
+        \codeline{SUBSTR \textbf{= LEFT(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
+        Returns the leftmost \code{NUM\_CHARS} characters of \code{STR}.
     \subsection{MID}
+        \codeline{SUBSTR \textbf{= MID(}STR\textbf{,}POSITION\textbf{,}LENGTH\textbf{)}}\par
+        Returns a substring of \code{STR} starting at \code{POSITION} with specified \code{LENGTH}.\par
+        When \code{OPTIONBASE 1} is specified, the position starts from 1; otherwise it will start from 0. 
     \subsection{RIGHT}
+        \codeline{SUBSTR \textbf{= RIGHT(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
+        Returns the rightmost \code{NUM\_CHARS} characters of \code{STR}.
     \subsection{SPC}
-
+        \codeline{STR \textbf{= SPC(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
+        Returns a string of \code{NUM\_CHARS} spaces.
 \section{Graphics}
 
     \subsection{PLOT}
+        \codeline{\textbf{PLOT(}X\_POS\textbf{,}Y\_POS\textbf{,}COLOUR\textbf{)}}\par
+        Plots a pixel to the framebuffer of the display, at XY-position of \code{X\_POS} and \code{Y\_POS}, with colour of \code{COLOUR}.\par
+        Top-left corner of the pixel will be 1 if \code{OPTIONBASE 1} is specified; otherwise it will be 0.
 
 \section{Meta}
 
     \subsection{OPTIONBASE}
+        \codeline{\textbf{OPTIONBASE} \{\textbf{0}|\textbf{1}\}}\par
+        Specifies at which number the array/string/pixel indices begin.
     \subsection{OPTIONDEBUG}
+        \codeline{\textbf{OPTIONDEBUG} \{\textbf{0}|\textbf{1}\}}\par
+        Specifies whether or not the debugging messages should be printed out.\par
+        The messages will be printed out to the \emph{serial debugging console}, or to the stdout.
     \subsection{OPTIONTRACE}
+        \codeline{\textbf{OPTIONTRACE} \{\textbf{0}|\textbf{1}\}}\par
+        Specifies whether or not the line numbers should be printed out.\par
+        The messages will be printed out to the \emph{serial debugging console}, or to the stdout.
 
 \section{System}
 
     \subsection{PEEK}
+        \codeline{BYTE \textbf{= PEEK(}MEMADDR\textbf{)}}\par
+        Returns whatever the value stored in the \code{MEMADDR} of the scratchpad-memory.\par
+        Address mirroring, illegal access, etc. are entirely up to the virtual machine which the BASIC interpreter is running on.
     \subsection{POKE}
+        \codeline{\textbf{POKE(}MEMADDR\textbf{,}BYTE\textbf{)}}\par
+        Puts a \code{BYTE} into the \code{MEMADDR} of the scratchpad-memory.
 
 \section{Higher-order Function}
 
