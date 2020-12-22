@@ -1,20 +1,12 @@
+// Created by CuriousTorvald on 2020-05-19
+// Version 1.0 Release Date 202?-??-??
+
 /*
-NOTE: do not allow concatenation of commands!
+Copyright 2020 CuriousTorvald
 
-Operators
+Insert copyright notice here
+ */
 
-; - When used by PRINT and INPUT, concatenates two printables; numbers will have one space between them while strings
-    will not.
-, - Function argument separator
-+ - Just as in JS; concatenates two strings
-
-Test Programs:
-
-1 REM Random Maze
-10 PRINT(CHR(47+ROUND(RND(1))*45);)
-20 GOTO 10
-
-*/
 if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].startsWith("-?")) {
     println("Usage: basic <optional path to basic program>");
     println("When the optional basic program is set, the interpreter will run the program and then quit if successful, remain open if the program had an error.");
