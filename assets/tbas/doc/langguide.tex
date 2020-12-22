@@ -39,12 +39,13 @@ So what the fsck is currying? Consider the following code:
 
 \begin{lstlisting}
 10 DEFUN F(K,T)=ABS(T)==K
-20 CF=CURRY(F,32)
+20 CF=F<~32
 30 PRINT CF(24) : REM will print 'false'
 40 PRINT CF(-32) : REM will print 'true'
 \end{lstlisting}
 
-Here, \code{CF} is a curried function of \code{F}; built-in function \code{CURRY} applies \code{32} to the first parametre of the function \code{F}, which dynamically returns a \emph{function} of \code{CF(T) = ABS(T) == 32}. The fact that \code{CURRY} returns a \emph{function} opens many possibilities, for example, you can create loads of sibling functions without making loads of duplicate codes.
+% NOTE: you can't use \basiccurry within \code{}
+Here, \code{CF} is a curried function of \code{F}; built-in operator \code{$<\!\sim$} applies \code{32} to the first parameter of the function \code{F}, which dynamically returns a \emph{function} of \code{CF(T) = ABS(T) == 32}. The fact that Curry Operator returns a \emph{function} opens many possibilities, for example, you can create loads of sibling functions without making loads of duplicate codes.
 
 \section[Wrapping-Up]{The Grand Unification}
 
@@ -53,21 +54,21 @@ Using all the knowledge we have learned, it should be trivial\footnote{/s} to wr
 \begin{lstlisting}
 10 DEFUN LESS(P,X)=X<P
 11 DEFUN GTEQ(P,X)=X>=P
-12 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE
-    QSORT(FILTER(CURRY(LESS,HEAD XS),TAIL XS)) # HEAD(XS)!NIL # 
-    QSORT(FILTER(CURRY(GTEQ,HEAD XS),TAIL XS))
+12 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE 
+    QSORT(FILTER(LESS<~HEAD(XS),TAIL(XS))) # HEAD(XS)!NIL # 
+    QSORT(FILTER(GTEQ<~HEAD(XS),TAIL(XS)))
 100 L=7!9!4!5!2!3!1!8!6!NIL
-110 SL=QSORT(L)
-120 PRINT L:PRINT SL
+110 PRINT L
+120 PRINT QSORT(L)
 \end{lstlisting}
 
 Line 12 implements quicksort algorithm, using \code{LESS} and \code{GTEQ} as helper functions. \code{LESS} is a user-function version of less-than operator, and \code{GTEQ} is similar. \code{QSORT} selects a pivot using head-element of array \code{XS}\footnote{stands for \emph{X's}} using \code{HEAD XS}, then using curried version of \code{LESS} and \code{GTEQ} to move values lesser than pivot \emph{minus the head element (here \code{TAIL XS} returns such array)} to the left and greater to the right, and these two sorted \emph{chunks} are recursively sorted using the same \code{QSORT} function. Currying is used to give comparison functions a pivot-value to compare against, and also because \code{FILTER} wants a \emph{function} and not an \emph{expression}. \code{HEAD XS} simply fetches a head-elemement of \code{XS}. \code{HEAD(XS)!NIL} creates a single-element array contains \code{XS(0)}.
 
 %Uncomment this if you finally decided to support a closure%
-Using \emph{closure}, the definition of \code{QSORT} can truly be a one-liner and be \emph{even more cryptic}:
-
-\begin{lstlisting}
-10 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE
-    QSORT(FILTER([K]~>K<HEAD XS,TAIL XS)) # HEAD(XS)!NIL # 
-    QSORT(FILTER([K]~>K>=HEAD XS,TAIL XS))
-\end{lstlisting}
+%% Using \emph{closure}, the definition of \code{QSORT} can truly be a one-liner and be \emph{even more cryptic}:
+%% 
+%% \begin{lstlisting}
+%% 10 QSORT=[XS]~>IF LEN(XS)<1 THEN NIL ELSE 
+%%     QSORT(FILTER([K]~>K<HEAD XS,TAIL XS)) # HEAD(XS)!NIL # 
+%%     QSORT(FILTER([K]~>K>=HEAD XS,TAIL XS))
+%% \end{lstlisting}

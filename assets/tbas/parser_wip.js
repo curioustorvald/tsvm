@@ -748,10 +748,12 @@ bF._opPrc = {
     "STEP":41,
     "!":50,"~":51, // array CONS and PUSH
     "#": 52, // array concat
+    "<~": 100, // curry operator
+    "~>": 101, // closure operator
     "=":999,
     "IN":1000
 };
-bF._opRh = {"^":1,"=":1,"!":1,"IN":1};
+bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"<~":1,"~>":1};
 let bStatus = {};
 bStatus.builtin = {};
 ["PRINT","NEXT","SPC","CHR","ROUND","SQR","RND","GOTO","GOSUB","DEFUN","FOR","MAP"].forEach(w=>{ bStatus.builtin[w] = 1 });
@@ -826,10 +828,14 @@ let states15 = ["lit","lit","paren","lit","sep","num","op","num","paren"];
 let tokens16 = ["DEFUN","KA","(","X",")","=","IF","X",">","2","THEN","DO","(","PRINT","(","HAI",")",";","PRINT","(","X",")",")","ELSE","DO","(","PRINT","(","BYE",")",";","PRINT","(","X",")",")"];
 let states16 = ["lit","lit","paren","lit","paren","op","lit","lit","op","num","lit","lit","paren","lit","paren","qot","paren","sep","lit","paren","lit","paren","paren","lit","lit","paren","lit","paren","qot","paren","sep","lit","paren","lit","paren","paren"];
 
+// FILTER(FN<~HEAD XS, TAIL XS)
+let tokens17 = ["FILTER","(","FN","<~","HEAD","XS",",","TAIL","XS",")"];
+let states17 = ["lit","paren","lit","op","lit","lit","sep","lit","lit","paren"];
+
 try  {
     let trees = bF._parseTokens(lnum,
-        tokens16,
-        states16
+        tokens17,
+        states17
     );
     trees.forEach((t,i) => {
         serial.println("\nParsed Statement #"+(i+1));

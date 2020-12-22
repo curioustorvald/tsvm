@@ -51,11 +51,15 @@
 \newenvironment{itemlist}{\vspace{0pt}\itemize}{\enditemize}
 
 %% Idioms %%
-\hyphenation{Java-scr-ipt}
-\hyphenation{ECMA-scr-ipt}
+\hyphenation{Java-script}
+\hyphenation{ECMA-script}
 
 \newcommand\forceindent{\hskip1.5em}
+
+%% BASIC operators %%
 \newcommand\basicexp{\raisebox{0.25ex}{\scriptsize\wedge}}
+\newcommand\basiccurry{$<\!\sim$}
+\newcommand\basicclosure{$\sim\!>$}
 
 % Title styling
 \pretitle{\begin{flushright}}
@@ -70,6 +74,9 @@
 % shorten spaces before section header
 \setbeforesubsecskip{\mytextsize}
 \setbeforesubsubsecskip{\mytextsize}
+
+% extra space for table
+\setlength{\extrarowheight}{0.166ex}
 
 % chapter title -- no now page after
 \renewcommand\chapterheadstart{} % kill the drop

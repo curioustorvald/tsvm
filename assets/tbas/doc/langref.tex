@@ -72,13 +72,11 @@ Furthermore, \emph{sigils} are not used in the \tbas{} and attempting to use one
 
 Types of data recognised by \tbas{} are distinguished by some arcane magic of Javascript auto-casing mumbo-jumbo
 
-\begin{tabulary}{\textwidth}{RCL}
+\begin{tabulary}{\textwidth}{rCL}
 Type & Range & Precision \\
-\hline \hline
+\hline
 String & As many as the machine can handle & \, \\
-\hline
 Integer & $ \pm 2^{53}-1 $ & exact within the range \\
-\hline
 Float & $ \pm 4.9406564584124654 \times 10^{-324} $ -- $ \pm 1.7976931348623157 \times 10^{308} $ & about 16 significant figures \\
 \end{tabulary}
 
@@ -87,20 +85,21 @@ Float & $ \pm 4.9406564584124654 \times 10^{-324} $ -- $ \pm 1.7976931348623157 
 
 The order of precedence of the operators is as shown below, lower numbers means they have higher precedence (more tightly bound)
 
-\begin{tabulary}{\textwidth}{CCC|CCC}
-Precedence & Operators & Associativity & Precedence & Operators & Associativity \\
+\begin{tabulary}{\textwidth}{cCc|cCc}
+Order & Op & Associativity & Order & Op & Associativity \\
 \hline
-1 & \basicexp & Right & 10 & \condensedfont{BAND} & Left \\
-2 & \ast \quad $/$ \quad $\backslash$ & Left & 11 & \condensedfont{BXOR} & Left \\
-3 & \condensedfont{MOD} & Left & 12 & \condensedfont{BOR} & Left \\
-4 & $+$ \quad $-$ & Left & 13 & \condensedfont{AND} & Left \\
-5 & \condensedfont{NOT} \enskip \condensedfont{BNOT} & Left & 14 & \condensedfont{OR} & Left \\
-6 & <\!< \quad >\!> & Left & 15 & \condensedfont{TO} \enskip \condensedfont{STEP} & Left \\
-7 & < \enskip > \enskip <\!= \enskip =\!< \enskip >\!= \enskip =\!> & Left & 16 & ! & Right \\
-8 & == \quad <\!> \quad >\!< & Left & 17 & \sim & Left\\
-9 & \condensedfont{MIN} \enskip \condensedfont{MAX} & Left & 18 & \# & Left \\
- & & & 19 & = & Right \\
+1 & \basicexp & Right & 11 & \condensedfont{BXOR} & Left \\
+2 & \ast \quad $/$ \quad $\backslash$ & Left & 12 & \condensedfont{BOR} & Left \\
+3 & \condensedfont{MOD} & Left & 13 & \condensedfont{AND} & Left \\
+4 & $+$ \quad $-$ & Left & 14 & \condensedfont{OR} & Left \\
+5 & \condensedfont{NOT} \enskip \condensedfont{BNOT} & Left & 15 & \condensedfont{TO} \enskip \condensedfont{STEP} & Left \\
+6 & <\!< \quad >\!> & Left & 16 & ! & Right \\
+7 & < \enskip > \enskip <\!= \enskip =\!< \enskip >\!= \enskip =\!> & Left & 17 & \sim & Left\\
+8 & == \quad <\!> \quad >\!< & Left & 18 & \# & Left \\
+9 & \condensedfont{MIN} \enskip \condensedfont{MAX} & Left & 19 & \basiccurry & Right \\
+10 & \condensedfont{BAND} & Left & 20 & = & Right \\
 \end{tabulary}
+
 
 \subsubsection*{Examples}
 \begin{itemlist}
@@ -112,7 +111,7 @@ Precedence & Operators & Associativity & Precedence & Operators & Associativity 
 
 Mathematical operators operate on expressions that returns numeric value only, except for the \code{+} operator which will take the action of string concatenation if either of the operand is non-numeric.
 
-\begin{tabulary}{\textwidth}{CLL}
+\begin{tabulary}{\textwidth}{clL}
 Code & Operation & Result \\
 \hline
 \emph{x} $=$ \emph{y} & Assignment & Assigns \emph{y} into \emph{x} \\
@@ -146,7 +145,7 @@ $-$ \emph{x} & Unary Minus & Negative value of \emph{x} \\
 
 Comparison operator can operate on numeric and string operands. String operands will be automatically converted to numeric value if they can be; if one operand is numeric and other is non-numeric string, the former will be converted to string value.
 
-\begin{tabulary}{\textwidth}{CLL}
+\begin{tabulary}{\textwidth}{clL}
 Code & Operation & Result \\
 \hline
 \emph{x} == \emph{y} & Equal & True if \emph{x} equals \emph{y} \\
@@ -169,7 +168,7 @@ When comparing strings, the ordering is as follows:
 
 Bitwise operators operate on unsigned integers only. Floating points are truncated\footnote{truncated towards zero} to integers.
 
-\begin{tabulary}{\textwidth}{CLL}
+\begin{tabulary}{\textwidth}{clL}
 Code & Operation & Result \\
 \hline
 \emph{x}  <\!< \emph{y} & Bitwise Shift Left & Shifts entire bits of \emph{x} by \emph{y} \\
@@ -184,7 +183,7 @@ Code & Operation & Result \\
 
 Boolean operators operate on boolean values. If one of the operand is not boolean, it will be cast to appropriate boolean value. See \ref{valuesandtypes} for casting rules.
 
-\begin{tabulary}{\textwidth}{CLL}
+\begin{tabulary}{\textwidth}{clL}
 Code & Operation & Result \\
 \hline
 \condensedfont{NOT} \emph{x} & Logical negation & True if \emph{x} is false and vice versa \\
@@ -196,7 +195,7 @@ Code & Operation & Result \\
 
 Generator operators operate on numeric values and generators to create and modify a generator.
 
-\begin{tabulary}{\textwidth}{CLL}
+\begin{tabulary}{\textwidth}{clL}
 Code & Result \\
 \hline
 \emph{x} \condensedfont{TO} \emph{y} & Creates an generator that counts from \emph{x} to \emph{y} \\
@@ -207,7 +206,7 @@ Code & Result \\
 
 Array operators operate on arrays and numeric values.
 
-\begin{tabulary}{\textwidth}{CLL}
+\begin{tabulary}{\textwidth}{clL}
 Code & Operation & Result \\
 \hline
 \emph{x} $!$ \emph{y} & Cons & Prepends a value of \emph{x} into an array of \emph{y} \\
@@ -216,6 +215,17 @@ Code & Operation & Result \\
 \end{tabulary}
 
 Arbitrary arrays can be constructed using empty-array constant \codebf{NIL}.
+
+\subsection{Function Operators}
+
+Function operators operate on functions and some values.
+
+\begin{tabulary}{\textwidth}{clL}
+Code & Operation & Result \\
+\hline
+\emph{f} \basiccurry{} \emph{x} & Curry & Apply \emph{x} into the first parameter of the function \emph{f} \\
+%{[}\emph{x},\,\emph{y}\ldots{]} \basicclosure{} \emph{e} & Closure & Creates a closure (anonymous function) from one or more parameters \emph{x},\,\emph{y}\ldots\ and an expression \emph{e} \\
+\end{tabulary}
 
 \section{Syntax In EBNF}
 
