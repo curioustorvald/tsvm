@@ -2617,8 +2617,8 @@ bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", un
 bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-    let _debugExec = true;
-    let _debugPrintCurrentLine = true;
+    let _debugExec = false;
+    let _debugPrintCurrentLine = false;
     let recWedge = ">".repeat(recDepth) + " ";
 
     if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
@@ -2870,7 +2870,7 @@ bF._executeAndGet = function(lnum, stmtnum, syntaxTree) {
     try {
         var execResult = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree, 0);
 
-        if (bF.parserDoDebugPrint) serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
+        if (DBGON) serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
 
         return execResult.troNextLine;
     }
