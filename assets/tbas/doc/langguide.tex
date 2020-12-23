@@ -12,6 +12,30 @@ Ok
 
 Oh \emph{boy} we just did a computation! It printed out \code{4} which is a correct answer for $2+2$ and it didn't crash!
 
+\section[GOTO]{GOTO here and there}
+\section[When GOTO Is Bad]{Severe Acute Spaghettification Syndrome}
+\section[Subroutine with GOSUB]{GOSUB to the rescue!}
+
+\section[FOR-NEXT Loop]{FOR ever loop NEXT}
+
+\begin{lstlisting}
+10 FOR I = 1 TO 20
+20 PRINT SPC(20-I);
+30 FOR J = 1 TO I*2-1
+40 PRINT "*";
+50 NEXT:PRINT
+60 NEXT
+\end{lstlisting}
+
+\section[Get User INPUT]{Isn't It Nice To Have a Computer That Will Question You?}
+
+\section[Recursion]{BRB: Bad Recursion BRB: Bad Recursion BRB: Bad Recursion BRB: Bad RecursionBRB: Bad Recursion BRBRangeError: Maximum call stack size exceeded}
+
+\begin{lstlisting}
+10 DEFUN ENDLESS(SHIT)=ENDLESS(SHIT)
+20 ENDLESS(1)
+\end{lstlisting}
+
 \begin{lstlisting}
 10 DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1)
 20 FOR K=1 TO 6
