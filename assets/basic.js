@@ -568,6 +568,27 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
         return resolve(bF._executeSyntaxTree(lnum, stmtnum, tree, 0));
     }
 };
+/* Accepts troValue, assignes to BASIC variable, and returns internal_assign_object
+ * @params troValue Variable to assign into
+ * @params rh the value, resolved
+ */
+bStatus.addAsBasicVar = function(troValue, rh) {
+    if (troValue.arrFull !== undefined) { // assign to existing array
+        if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
+        let arr = eval("troValue.arrFull"+troValue.arrKey);
+        if (Array.isArray(arr)) throw lang.subscrOutOfRng(lnum, arr);
+        eval("troValue.arrFull"+troValue.arrKey+"=rh");
+        return {asgnVarName: troValue.arrName, asgnValue: rh};
+    }
+    else {
+        let varname = troValue.toUpperCase();
+        //println("input varname: "+varname);
+        let type = JStoBASICtype(rh);
+        if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
+        bStatus.vars[varname] = new BasicVar(rh, type);
+        return {asgnVarName: varname, asgnValue: rh};
+    }
+}
 bStatus.builtin = {
 /*
 @param lnum line number
@@ -592,29 +613,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     //try { println(lnum+" = rh resolved entries: "+Object.entries(rh)); }
     //catch (_) {}
 
-
-    if (troValue.arrFull !== undefined) { // assign to existing array
-        if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
-        let arr = eval("troValue.arrFull"+troValue.arrKey);
-        if (Array.isArray(arr)) throw lang.subscrOutOfRng(lnum, arr);
-        eval("troValue.arrFull"+troValue.arrKey+"=rh");
-        return {asgnVarName: troValue.arrName, asgnValue: rh};
-    }
-    else {
-        var varname = troValue.toUpperCase();
-        var type = JStoBASICtype(rh);
-        if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
-        // special case for scalar array
-        // it basically bypasses the regular resolve subroutine
-        if (args[1].troType !== undefined && args[1].troType == "array") {
-            bStatus.vars[varname] = new BasicVar(args[1].troValue, "array");
-            return {asgnVarName: varname, asgnValue: rh};
-        }
-        else {
-            bStatus.vars[varname] = new BasicVar(rh, type);
-            return {asgnVarName: varname, asgnValue: rh};
-        }
-    }
+    return bStatus.addAsBasicVar(troValue, rh);
 }},
 "IN" : {f:function(lnum, stmtnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
@@ -1040,21 +1039,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // NOTE: empty string will be cast to 0, which corresponds to GW-BASIC
     if (!isNaN(rh)) rh = rh*1
 
-    if (troValue.arrFull !== undefined) { // assign to existing array
-        if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
-        let arr = eval("troValue.arrFull"+troValue.arrKey);
-        if (Array.isArray(arr)) throw lang.subscrOutOfRng(lnum, arr);
-        eval("troValue.arrFull"+troValue.arrKey+"=rh");
-        return {asgnVarName: troValue.arrName, asgnValue: rh};
-    }
-    else {
-        let varname = troValue.toUpperCase();
-        //println("input varname: "+varname);
-        let type = JStoBASICtype(rh);
-        if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
-        bStatus.vars[varname] = new BasicVar(rh, type);
-        return {asgnVarName: varname, asgnValue: rh};
-    }
+    return bStatus.addAsBasicVar(troValue, rh);
+}},
+"CIN" : {f:function(lnum, stmtnum, args) {
+    return sys.read().trim();
 }},
 "END" : {f:function(lnum, stmtnum, args) {
     serial.println("Program terminated in "+lnum);
@@ -1121,8 +1109,18 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     DATA_CURSOR = 0;
 }},
 "READ" : {f:function(lnum, stmtnum, args) {
-    let r = DATA_CONSTS.shift();
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    let troValue = args[0].troValue;
+
+    let rh = DATA_CONSTS[DATA_CURSOR++];
+    if (rh === undefined) throw lang.outOfData(lnum);
+
+    return bStatus.addAsBasicVar(troValue, rh);
+}},
+"DGET" : {f:function(lnum, stmtnum, args) {
+    let r = DATA_CONSTS[DATA_CURSOR++];
     if (r === undefined) throw lang.outOfData(lnum);
+    return r;
 }},
 "OPTIONBASE" : {f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => {

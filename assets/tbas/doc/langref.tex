@@ -1,6 +1,6 @@
 \newcommand{\intrange}{\hl{[$0..2^{53}-1$]}}
 
-This chapter describes the \tbas{} language.
+This chapter describes the \tbas\ language.
 
 \section{Metasyntax}
 
@@ -19,7 +19,7 @@ In the descriptions of BASIC syntax, these conventions apply.
 
 A \emph{Program Line} consists of a line number followed by a \emph{Statements}. Program Lines are terminated by a line break or by the end-of-the-file.
 
-A \emph{Line Number} is an integer within the range of \intrange{}.
+A \emph{Line Number} is an integer within the range of \intrange.
 
 A \emph{Statement} is special form of code which has special meaning. A program line can be composed of 1 or more statements, separated by colons. For the details of statements available in \tbas , see \ref{statements}.
 
@@ -58,7 +58,7 @@ Numeric literals take one of the following forms:
 \codeline{\textbf{0}\{\textbf{x}|\textbf{X}\}[\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]\ldots}\\
 \codeline{\textbf{0}\{\textbf{b}|\textbf{B}\}[\textbf{0}|\textbf{1}|\textbf{2}|\textbf{3}|\textbf{4}|\textbf{5}|\textbf{6}|\textbf{7}|\textbf{8}|\textbf{9}]\ldots}
 
-Hexadecimal and binary literals are always interpreted as \emph{unsigned} integers. They must range between \intrange{}.
+Hexadecimal and binary literals are always interpreted as \emph{unsigned} integers. They must range between \intrange.
 
 \subsection{Variables} 
 
@@ -66,11 +66,11 @@ Variable names must start with a letter and all characters of the name must be l
 
 Unlike conventional BASIC dialects (especially GW-BASIC), name pool of variables are shared between all the types. For example, if you have a numeric variable \code{A}, and define an array named \code{A} later in the program, the new array will overwrite your numeric \code{A}.
 
-Furthermore, \emph{sigils} are not used in the \tbas{} and attempting to use one will raise syntax-error or undefined behaviour.
+Furthermore, \emph{sigils} are not used in the \tbas\ and attempting to use one will raise syntax-error or undefined behaviour.
 
 \subsection{Types}
 
-Types of data recognised by \tbas{} are distinguished by some arcane magic of Javascript auto-casing mumbo-jumbo
+Types of data recognised by \tbas\ are distinguished by some arcane magic of Javascript auto-casing mumbo-jumbo
 
 \begin{tabulary}{\textwidth}{rCL}
 Type & Range & Precision \\
@@ -245,8 +245,8 @@ Function operators operate on functions and some values.
 \begin{tabulary}{\textwidth}{clL}
 Code & Operation & Result \\
 \hline
-\emph{f} \basiccurry{} \emph{x} & Curry & Apply \emph{x} into the first parameter of the function \emph{f} \\
-%{[}\emph{x},\,\emph{y}\ldots{]} \basicclosure{} \emph{e} & Closure & Creates a closure (anonymous function) from one or more parameters \emph{x},\,\emph{y}\ldots\ and an expression \emph{e} \\
+\emph{f} \basiccurry\ \emph{x} & Curry & Apply \emph{x} into the first parameter of the function \emph{f} \\
+%{[}\emph{x},\,\emph{y}\ldots{]} \basicclosure\ \emph{e} & Closure & Creates a closure (anonymous function) from one or more parameters \emph{x},\,\emph{y}\ldots\ and an expression \emph{e} \\
 \end{tabulary}
 
 \emph{Currying} is an operation that returns new function that has given value applied to the original function's first parameter. See \ref{currying101} for tutorials.
