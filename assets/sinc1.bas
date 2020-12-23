@@ -4,8 +4,7 @@
 100 LABEL SINCQ:REM gets Sinc(Q)
 110 Q=IF I==0 THEN 1.0 ELSE SIN(I)/I
 120 RETURN
-200 LABEL PLOTLINE:REM Converts 0-1 value into screen line
-201 REM input is Q, results are stored to SQ
+200 LABEL PLOTLINE:REM Converts 0-1 value into screen line. input is Q, results are stored to SQ
 210 SQ=CHR(0)
 220 FOR X=1 TO ZEROLINE+AMP
 230 SQ=SQ+(IF X==ROUND(ZEROLINE+Q*AMP) THEN "@" ELSE IF X==10 THEN "|" ELSE CHR(250))

@@ -1209,18 +1209,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return twoArg(lnum, stmtnum, args, (lh,rh) => (lh < rh) ? rh : lh);
 }},
 "GETKEYSDOWN" : {f:function(lnum, stmtnum, args) {
-    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    let troValue = args[0].troValue;
-    let varname = troValue.toUpperCase();
     let keys = [];
     sys.poke(-40, 255);
     for (let k = -41; k >= -48; k--) {
         keys.push(sys.peek(k));
     }
-
-    if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
-    bStatus.vars[varname] = new BasicVar(keys, "array");
-    return {asgnVarName: varname, asgnValue: keys};
+    return keys;
 }},
 "<~" : {f:function(lnum, stmtnum, args) { // CURRY operator
     return twoArg(lnum, stmtnum, args, (fn, value) => {
@@ -2617,8 +2611,8 @@ bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", un
 bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-    let _debugExec = false;
-    let _debugPrintCurrentLine = false;
+    let _debugExec = true;
+    let _debugPrintCurrentLine = true;
     let recWedge = ">".repeat(recDepth) + " ";
 
     if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
