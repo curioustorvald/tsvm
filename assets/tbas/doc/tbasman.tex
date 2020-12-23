@@ -3,7 +3,7 @@
 
 %% Copyright (c) 2020 CuriousTorvald and the contributors.
 
-\documentclass[10pt, stock, openany]{memoir}
+\documentclass[10pt, stock, openany, chapter]{memoir}
 
 
 \usepackage{fontspec}
@@ -20,6 +20,7 @@
 \usepackage{hyperref}
 \usepackage{graphicx}
 \usepackage{tabulary}
+\usepackage{longtable}
 \usepackage[table]{xcolor}
 \usepackage{ltablex}
 \usepackage{parskip}
@@ -29,6 +30,7 @@
 \usepackage{etoolbox}
 \usepackage[most]{tcolorbox}
 \usepackage{listings}
+\usepackage{amsmath,amssymb}
 
 \usepackage{lineno} % debug
 
@@ -129,8 +131,9 @@
   tabsize=3
 }
 
-%\aliaspagestyle{part}{empty}
-%\aliaspagestyle{chapter}{empty}
+\addtocontents{toc}{\protect\thispagestyle{empty}} % no page number for the TOC header page
+\aliaspagestyle{part}{empty} % aliasing PART as empty so that page number would not be printed
+\aliaspagestyle{chapter}{section} % aliasing CHAPTER as section so that page numbering style would be the same as section
 
 
 % The title
@@ -157,7 +160,6 @@
 \end{titlingpage}
 
 \setcounter{page}{3}
-
 \tableofcontents*
 
 
@@ -192,8 +194,6 @@
 
 \chapter{Implementation Details}
 \input{Implementation}
-
-\chapter{Index}
 
 \chapter{Bibliography}
 \input{bibliography}

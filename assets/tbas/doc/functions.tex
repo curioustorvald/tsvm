@@ -101,11 +101,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
         Clears all declared variables.
     \subsection{DATA}
         \codeline{\textbf{DATA} CONST0 [\textbf{,} CONST1]\ldots}\par
-        Adds data that can be read by \code{READ} function.
-        \subsubsection*{Notes}
-        \begin{itemlist}
-        \item \code{DATA} declarations need not be reacheable in the program flow.
-        \end{itemlist}
+        Adds data that can be read by \code{READ} function. \code{DATA} declarations need not be reacheable in the program flow.
     \subsection{END}
         \codeline{\textbf{END}}\par
         Stops program execution and returns control to the user.
@@ -158,7 +154,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
         Returns a substring of \code{STR} starting at \code{POSITION} with specified \code{LENGTH}.\par
         When \code{OPTIONBASE 1} is specified, the position starts from 1; otherwise it will start from 0. 
     \subsection{RIGHT}
-        \codeline{SUBSTR \textbf{= RIGHT(}STR\textbf{,}NUM\_CHARS\textbf{)}}\par
+        \codeline{SUBSTR \textbf{= RIGHT(}STR \textbf{,} NUM\_CHARS\textbf{)}}\par
         Returns the rightmost \code{NUM\_CHARS} characters of \code{STR}.
     \subsection{SPC}
         \codeline{STR \textbf{= SPC(}STR \textbf{,} NUM\_CHARS\textbf{)}}\par
@@ -177,12 +173,10 @@ Functions are a form of expression that may taks input arguments surrounded by p
         Specifies at which number the array/string/pixel indices begin.
     \subsection{OPTIONDEBUG}
         \codeline{\textbf{OPTIONDEBUG} \{\textbf{0}|\textbf{1}\}}\par
-        Specifies whether or not the debugging messages should be printed out.\par
-        The messages will be printed out to the \emph{serial debugging console}, or to the stdout.
+        Specifies whether or not the debugging messages should be printed out. The messages will be printed out to the \emph{serial debugging console}, or to the stdout.
     \subsection{OPTIONTRACE}
         \codeline{\textbf{OPTIONTRACE} \{\textbf{0}|\textbf{1}\}}\par
-        Specifies whether or not the line numbers should be printed out.\par
-        The messages will be printed out to the \emph{serial debugging console}, or to the stdout.
+        Specifies whether or not the line numbers should be printed out. The messages will be printed out to the \emph{serial debugging console}, or to the stdout.
 
 \section{System}
 

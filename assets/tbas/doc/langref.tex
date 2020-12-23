@@ -85,21 +85,43 @@ Float & $ \pm 4.9406564584124654 \times 10^{-324} $ -- $ \pm 1.7976931348623157 
 
 The order of precedence of the operators is as shown below, lower numbers means they have higher precedence (more tightly bound)
 
-\begin{tabulary}{\textwidth}{cCc|cCc}
-Order & Op & Associativity & Order & Op & Associativity \\
-\hline
-1 & \basicexp & Right & 11 & \condensedfont{BXOR} & Left \\
-2 & \ast \quad $/$ \quad $\backslash$ & Left & 12 & \condensedfont{BOR} & Left \\
-3 & \condensedfont{MOD} & Left & 13 & \condensedfont{AND} & Left \\
-4 & $+$ \quad $-$ & Left & 14 & \condensedfont{OR} & Left \\
-5 & \condensedfont{NOT} \enskip \condensedfont{BNOT} & Left & 15 & \condensedfont{TO} \enskip \condensedfont{STEP} & Left \\
-6 & <\!< \quad >\!> & Left & 16 & ! & Right \\
-7 & < \enskip > \enskip <\!= \enskip =\!< \enskip >\!= \enskip =\!> & Left & 17 & \sim & Left\\
-8 & == \quad <\!> \quad >\!< & Left & 18 & \# & Left \\
-9 & \condensedfont{MIN} \enskip \condensedfont{MAX} & Left & 19 & \basiccurry & Right \\
-10 & \condensedfont{BAND} & Left & 20 & = & Right \\
-\end{tabulary}
+\begin{longtable}{*{2}{m{\textwidth}}}\hline
+\endfirsthead
+\endhead
 
+\endfoot
+\hline
+\endlastfoot
+\centering
+\begin{tabulary}{\textwidth}{cCc}
+Order & Op & Associativity \\
+\hline
+1 & \basicexp & Right \\
+2 & \ast\quad$/$\quad$\backslash$ & Left \\
+3 & \condensedfont{MOD} & Left \\
+4 & $+$\quad$-$ & Left \\
+5 & \condensedfont{NOT}\quad\condensedfont{BNOT} & Left \\
+6 & <\!<\quad>\!> & Left \\
+7 & <\enskip>\enskip=\!<\enskip<\!=\enskip=\!>\enskip>\!= & Left \\
+8 & ==\quad<\!>\quad>\!< & Left \\
+9 & \condensedfont{MIN}\quad\condensedfont{MAX} & Left \\
+10 & \condensedfont{BAND} & Left \\
+\end{tabulary}
+\begin{tabulary}{\textwidth}{cCc}
+Order & Op & Associativity \\
+\hline
+11 & \condensedfont{BXOR} & Left \\
+12 & \condensedfont{BOR} & Left \\
+13 & \condensedfont{AND} & Left \\
+14 & \condensedfont{OR} & Left \\
+15 & \condensedfont{TO}\quad\condensedfont{STEP} & Left \\
+16 & ! & Right \\
+17 & \sim & Left\\
+18 & \# & Left \\
+19 & \basiccurry & Right \\
+20 & = & Right \\
+\end{tabulary}
+\end{longtable}
 
 \subsubsection*{Examples}
 \begin{itemlist}
@@ -227,7 +249,7 @@ Code & Operation & Result \\
 %{[}\emph{x},\,\emph{y}\ldots{]} \basicclosure{} \emph{e} & Closure & Creates a closure (anonymous function) from one or more parameters \emph{x},\,\emph{y}\ldots\ and an expression \emph{e} \\
 \end{tabulary}
 
-\emph{Currying} is an operation that returns derivative of the function that has given value applied to its first parameter.\footnote{Do \emph{not} believe in that this is \emph{the} definition of currying. In the wild, currying is applied to cascades of \lambda-expressions and the behaviour is different to \tbas{}'s, even though it seems equivalent if you compare the function that two curries would produce.} See \ref{currying101} for tutorials.
+\emph{Currying} is an operation that returns new function that has given value applied to the original function's first parameter. See \ref{currying101} for tutorials.
 
 \section{Syntax In EBNF}
 
