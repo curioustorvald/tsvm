@@ -2858,6 +2858,7 @@ bF._interpretLine = function(lnum, cmd) {
     let syntaxTrees = bF._parseTokens(lnum, tokens, states);
 
     // syntax tree pruning
+
     // turn UNARYMINUS(num) to -num
     syntaxTrees.forEach(syntaxTree => {
         if (syntaxTree !== undefined) {
@@ -2880,6 +2881,24 @@ bF._interpretLine = function(lnum, cmd) {
         }
     });
 
+    // automatically apply currying
+    // '(<~) FNQ (P X Y)' into '(<~) FNQ ((<~) P ((<~) X Y))'
+    // FIXME this autocurrying is very likely to be a janky-ass-shit
+    syntaxTrees.forEach(syntaxTree => {
+        if (syntaxTree !== undefined) {
+            bF._recurseApplyAST(syntaxTree, tree => {
+                if (tree.astValue == "<~" && tree.astLeaves[1] !== undefined && tree.astLeaves[1].astLeaves[0] !== undefined) {
+                    let subTree = new BasicAST();
+                    subTree.astValue = "<~";
+                    subTree.astType = "op";
+                    subTree.astLnum = tree.astLnum;
+                    subTree.astLeaves = [tree.astLeaves[1], tree.astLeaves[1].astLeaves[0]];
+
+                    tree.astLeaves[1] = subTree;
+                }
+            });
+        }
+    });
     if (_debugprintHighestLevel) {
         syntaxTrees.forEach((t,i) => {
             serial.println("\nParsed Statement #"+(i+1));
