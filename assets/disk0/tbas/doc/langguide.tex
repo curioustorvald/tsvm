@@ -16,7 +16,9 @@ Oh \emph{boy} we just did a computation! It printed out \code{4} which is a corr
 \section[When GOTO Is Bad]{Severe Acute Spaghettification Syndrome}
 \section[Subroutine with GOSUB]{GOSUB to the rescue!}
 
-\section[FOR-NEXT Loop]{FOR ever loop NEXT}
+\section[FOR--NEXT Loop]{FOR ever loop NEXT}
+
+So you can make a loop using \code{GOTO}s here and there, but they \emph{totally suck}. Fortunately, there's better way to go about that: the FOR--NEXT loop!
 
 \begin{lstlisting}
 10 FOR I = 1 TO 20
@@ -29,7 +31,37 @@ Oh \emph{boy} we just did a computation! It printed out \code{4} which is a corr
 
 \section[Get User INPUT]{Isn't It Nice To Have a Computer That Will Question You?}
 
+What fun is the program if it won't talk with you? You can make that happen with \code{INPUT} statement.
+
+
+\begin{lstlisting}
+10 PRINT "WHAT IS YOUR NAME";
+20 INPUT NAME
+30 PRINT "HELLO, ";NAME
+\end{lstlisting}
+
+This short program will ask your name, and then it will greet you by the name you told to the computer.
+
+\section[Function]{Function}
+
+Consider the following code:
+
+\begin{lstlisting}
+(code with many repeating phrases)
+\end{lstlisting}
+
+As you can clearly see, it has way too many repeating phrase: \code{i'm redundant!} Would it be nice to tidy it up, but much cooler and in \emph{one-liner}?
+
+Lo and behold, the \code{DEFUN}! You can define a \emph{function} in a single line using it, and it even re-names the variable so you don't have to worry about unintended name collisions like when you were playing with \code{GOSUB}s!
+
+\begin{lstlisting}
+(same code but better)
+\end{lstlisting}
+
+
 \section[Recursion]{BRB: Bad Recursion BRB: Bad Recursion BRB: Bad Recursion BRB: Bad RecursionBRB: Bad Recursion BRBRangeError: Maximum call stack size exceeded}
+
+But don't get over-excited, as it's super-trivial to create unintentional infinite loop.
 
 \begin{lstlisting}
 10 DEFUN ENDLESS(SHIT)=ENDLESS(SHIT)

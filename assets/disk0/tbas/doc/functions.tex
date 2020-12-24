@@ -119,7 +119,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
     \subsection{FOR}
         \codeline{\textbf{FOR} LOOPVAR \textbf{=} START \textbf{TO} STOP [\textbf{STEP} STEP]}
         \codeline{\textbf{FOR} LOOPVAR \textbf{=} GENERATOR}\par
-        Starts a \code{FOR-NEXT} loop.\par
+        Starts a FOR--NEXT loop.\par
         Initially, \code{LOOPVAR} is set to \code{START} then statements between the \code{FOR} statement and corresponding \code{NEXT} statements are executed and \code{LOOPVAR} is incremented by \code{STEP}, or by 1 if \code{STEP} is not specified. The program flow will continue to loop around until \code{LOOPVAR} is outside the range of \code{START}--\code{STOP}. The value of the \code{LOOPVAR} is equal to \code{STOP}$+$\code{STEP} when the looping finishes.
     \subsection{FOREACH}
         \codeline{\textbf{FOREACH} LOOPVAR \textbf{IN} ARRAY}\par
@@ -141,7 +141,7 @@ Functions are a form of expression that may taks input arguments surrounded by p
         \end{itemlist}
     \subsection{NEXT}
         \codeline{\textbf{NEXT}}\par
-        Iterates \code{FOR-NEXT} loop and increments the loop variable from the most recent \code{FOR} statement and jumps to that statement.
+        Iterates FOR--NEXT loop and increments the loop variable from the most recent \code{FOR} statement and jumps to that statement.
     \subsection{RESTORE}
         \codeline{\textbf{RESTORE}}\par
         Resets the \code{DATA} pointer.
