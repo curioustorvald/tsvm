@@ -33,8 +33,8 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
     override fun create() {
         super.create()
 
-        //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
-        gpu = TexticsAdapter(vm)
+        gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+        //gpu = TexticsAdapter(vm)
         //gpu = CharacterLCDdisplay(vm)
 
         vm.peripheralTable[1] = PeripheralEntry(

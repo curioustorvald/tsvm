@@ -39,8 +39,9 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     private val keyEventBuffers = ByteArray(8)
 
     init {
-        blockTransferPorts[1].attachDevice(TestFunctionGenerator())
-        blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets/")))
+        //blockTransferPorts[1].attachDevice(TestFunctionGenerator())
+        //blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets")))
+        blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets/disk0")))
     }
 
     private fun composeBlockTransferStatus(portno: Int): Int {

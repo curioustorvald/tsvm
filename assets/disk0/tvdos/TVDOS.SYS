@@ -15,7 +15,7 @@ _TVDOS.getPath = function() {
 _TVDOS.variables = {
     DOSDIR: "\\tvdos",
     LANG: "EN",
-    PATH: "\\tvdos\\bin",
+    PATH: ";\\tvdos\\bin;\\tbas;\\home",
     PATHEXT: ".com;.bat;.js",
     HELPPATH: "\\tvdos\\help",
     OS_NAME: "Terrarum Virtual DOS",

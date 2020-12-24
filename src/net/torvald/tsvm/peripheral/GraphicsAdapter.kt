@@ -59,7 +59,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected val chrrom0 = Texture(config.chrRomPath)
+    protected val chrrom0 = Texture("./assets/"+config.chrRomPath)
     protected val faketex: Texture
 
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
@@ -1245,11 +1245,11 @@ void main() {
 
         val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
             "crt_color",
-            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.32f, TEXT_TILING_SHADER_COLOUR
+            560, 448, 80, 32, 254, 255, 256.kB(), "FontROM7x14.png", 0.32f, TEXT_TILING_SHADER_COLOUR
         )
         val DEFAULT_CONFIG_PMLCD = AdapterConfig(
             "pmlcd_inverted",
-            560, 448, 80, 32, 254, 255, 256.kB(), "./FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
+            560, 448, 80, 32, 254, 255, 256.kB(), "FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
         )
 
 

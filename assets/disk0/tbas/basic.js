@@ -15,18 +15,19 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
 
 
 let INDEX_BASE = 0;
-let TRACEON = true;
-let DBGON = true;
+let TRACEON = false;
+let DBGON = false;
 let DATA_CURSOR = 0;
 let DATA_CONSTS = [];
-let DEFUNS_BUILD_DEFUNS = true;
+const DEFUNS_BUILD_DEFUNS = true;
+const BASIC_HOME_PATH = "/home/basic/"
 
 if (system.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM");
     throw Error("Out of memory");
 }
 
-let vmemsize = system.maxmem() - 5236;
+let vmemsize = system.maxmem();
 
 let cmdbuf = []; // index: line number
 let gotoLabels = {};
@@ -132,7 +133,7 @@ fs.open = function(path, operationMode) {
         throw Error("Unknown file opening mode: " + mode);
     }
 
-    com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
+    com.sendMessage(port[0], "OPEN"+mode+'"'+BASIC_HOME_PATH+path+'",'+port[1]);
     let response = com.getStatusCode(port[0]);
     return (response == 0);
 };
@@ -196,8 +197,14 @@ let reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)
 
 let reNum = /[0-9]+/;
 let tbasexit = false;
+const greetText = "Terran BASIC 1.0  "+String.fromCharCode(179)+"  Scratchpad Memory: "+vmemsize+" bytes";
+const greetLeftPad = (80 - greetText.length) >> 1;
+const greetRightPad = 80 - greetLeftPad - greetText.length;
 
-println("Terran BASIC 1.0  "+vmemsize+" bytes free");
+con.color_pair(0,253);
+print(" ".repeat(greetLeftPad)+greetText+" ".repeat(greetRightPad));
+con.color_pair(239,255);
+println();
 println(prompt);
 
 // variable object constructor
@@ -1887,7 +1894,7 @@ bF.isSemanticLiteral = function(token, state) {
     return undefined == token || "]" == token || ")" == token ||
             "qot" == state || "num" == state || "bool" == state || "lit" == state;
 }
-bF.parserDoDebugPrint = true;
+bF.parserDoDebugPrint = false;
 bF.parserPrintdbg = any => { if (bF.parserDoDebugPrint) serial.println(any) };
 bF.parserPrintdbg2 = function(icon, lnum, tokens, states, recDepth) {
     if (bF.parserDoDebugPrint) {
@@ -2611,8 +2618,8 @@ bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", un
 bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-    let _debugExec = true;
-    let _debugPrintCurrentLine = true;
+    let _debugExec = false;
+    let _debugPrintCurrentLine = false;
     let recWedge = ">".repeat(recDepth) + " ";
 
     if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
@@ -3050,7 +3057,7 @@ bF.catalog = function(args) { // CATALOG function
 };
 Object.freeze(bF);
 
-if (exec_args[1] !== undefined) {
+if (exec_args !== undefined && exec_args[1] !== undefined) {
     bF.load(["load", exec_args[1]]);
     try {
         bF.run();

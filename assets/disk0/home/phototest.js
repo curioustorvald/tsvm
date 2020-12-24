@@ -11,6 +11,5 @@ for (i = indices.length - 1; i > 0; i--) {
 }
 for (i = 0; i < 250880; i++) {
     graphics.plotPixel(indices[i] % 560, (indices[i] / 560)|0, image[indices[i]]);
-    graphics.plotPixel(indices[i] % 560, (indices[i] / 560)|0, image[indices[i]]);
 }
 con.color_fore(0);

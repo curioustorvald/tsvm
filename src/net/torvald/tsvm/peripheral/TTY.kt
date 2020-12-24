@@ -13,7 +13,7 @@ class TTY(val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
         const val TEXT_COLS = 80
     }
 
-    private val chrrom = Texture("./tty.png")
+    private val chrrom = Texture("./assets/tty.png")
     private val textBuffer = UnsafeHelper.allocate(TEXT_ROWS * TEXT_COLS * 2L)
     override var rawCursorPos = 0
     

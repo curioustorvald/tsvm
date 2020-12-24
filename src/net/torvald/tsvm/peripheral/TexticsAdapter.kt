@@ -34,7 +34,7 @@ class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
     0.64f
 )) {*/
 
-    private val crtGradTex = Texture("./crt_grad.png")
+    private val crtGradTex = Texture("./assets/crt_grad.png")
 
     companion object {
         val crtColor = hashMapOf(
