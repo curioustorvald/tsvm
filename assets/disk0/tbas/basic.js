@@ -29,10 +29,10 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
     return 0;
 }
 
-
+const PROD = true;
 let INDEX_BASE = 0;
-let TRACEON = false;
-let DBGON = false;
+let TRACEON = (!PROD) && true;
+let DBGON = (!PROD) && true;
 let DATA_CURSOR = 0;
 let DATA_CONSTS = [];
 const DEFUNS_BUILD_DEFUNS = true;
@@ -296,8 +296,9 @@ let resolve = function(variable) {
     else
         throw Error("BasicIntpError: unknown variable/object with type "+variable.troType+", with value "+variable.troValue);
 }
-let curryDefun = function(inputTree, value) {
+let curryDefun = function(inputTree, inputValue) {
     let exprTree = cloneObject(inputTree);
+    let value = cloneObject(inputValue);
     bF._recurseApplyAST(exprTree, it => {
         if (it.astType == "defun_args") {
             if (DBGON) {
@@ -306,9 +307,18 @@ let curryDefun = function(inputTree, value) {
             }
             // apply arg0 into the tree
             if (it.astValue == 0) {
-                it.astType = JStoBASICtype(value);
-                it.astValue = value;
-
+                let valueType = JStoBASICtype(value);
+                if (valueType === "usrdefun") {
+                    it.astLnum = value.astLnum;
+                    it.astLeaves = value.astLeaves;
+                    it.astSeps = value.astSeps;
+                    it.astValue = value.astValue
+                    it.astType = value.astType;
+                }
+                else {
+                    it.astType = valueType
+                    it.astValue = value;
+                }
                 if (DBGON) {
                     serial.println("[curryDefun] applying value "+value);
                 }
@@ -1910,7 +1920,7 @@ bF.isSemanticLiteral = function(token, state) {
     return undefined == token || "]" == token || ")" == token ||
             "qot" == state || "num" == state || "bool" == state || "lit" == state;
 }
-bF.parserDoDebugPrint = false;
+bF.parserDoDebugPrint = (!PROD) && true;
 bF.parserPrintdbg = any => { if (bF.parserDoDebugPrint) serial.println(any) };
 bF.parserPrintdbg2 = function(icon, lnum, tokens, states, recDepth) {
     if (bF.parserDoDebugPrint) {
@@ -2602,10 +2612,10 @@ let JStoBASICtype = function(object) {
     else if (object === undefined) return "null";
     else if (object.arrName !== undefined) return "internal_arrindexing_lazy";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
-    else if (object instanceof ForGen) return "generator";
+    else if (object instanceof ForGen || object.start !== undefined && object.end !== undefined && typeof object.hasNext == "function") return "generator";
     else if (object instanceof BasicAST || object.astLeaves !== undefined) return "usrdefun";
     else if (Array.isArray(object)) return "array";
-    else if (!isNaN(object)) return "num";
+    else if (isNumable(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
     // buncha error msgs
     else throw Error("BasicIntpError: un-translatable object with typeof "+(typeof object)+",\ntoString = "+object+",\nentries = "+Object.entries(object));
@@ -2634,8 +2644,8 @@ bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", un
 bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-    let _debugExec = false;
-    let _debugPrintCurrentLine = false;
+    let _debugExec = (!PROD) && true;
+    let _debugPrintCurrentLine = (!PROD) && true;
     let recWedge = ">".repeat(recDepth) + " ";
 
     if (_debugExec || _debugPrintCurrentLine) serial.println(recWedge+"@@ EXECUTE @@");
