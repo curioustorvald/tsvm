@@ -1239,7 +1239,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     if (jmpTarget === undefined)
         return undefined;
 
-    return bStatus.builtin[jmpFun](lnum, stmtnum, [jmpTarget]);
+    return bStatus.builtin[jmpFun].f(lnum, stmtnum, [jmpTarget]);
 }},
 "MIN" : {f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (lh,rh) => (lh > rh) ? rh : lh);

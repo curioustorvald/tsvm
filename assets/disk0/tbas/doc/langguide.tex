@@ -19,36 +19,55 @@ Oh \emph{boy} we just did a computation! It printed out \code{4} which is a corr
 Following program attempts to calculate a square root of the input value,  showing how \code{GOTO} can be used in such manner.
 
 \begin{lstlisting}
-10 X = 1337
-20 Y = 0.5 * X
-30 Z = Y
-40 Y = Y-(((Y^2)-X)/(2*Y))
+10 X=1337
+20 Y=0.5*X
+30 Z=Y
+40 Y=Y-((Y^2)-X)/(2*Y)
 50 IF NOT(Z==Y) THEN GOTO 30 : REM 'NOT(Z==Y)' can be rewritten to 'Z<>Y' 
 100 PRINT "Square root of ";X;" is approximately ";Y
 \end{lstlisting}
 
 Here, \code{GOTO} in line 50 is used to perform a loop, which keeps looping until \code{Z} and \code{Y} becomes equal. This is a newtonian method of approximating a square root. 
 
-\section[When GOTO Is Bad]{Severe Acute Spaghettification Syndrome}
+\section[Subroutine with GOSUB]{What If We Wanted to Go Back?}
 
+But \code{GOTO} only jumps, you can't jump \emph{back}. Well, not with that attitute; you \emph{can} go back with \code{GOSUB} and \code{RETURN} statement.
 
+This program will draw a triangle, where the actual drawing part is on line 100--160, and only get jumped into it when needed.
 
-\section[Subroutine with GOSUB]{GOSUB to the rescue!}
+\begin{lstlisting}
+10 GOTO 1000
+100 REM subroutine to draw a segment. Size is stored to 'Q'
+110 PRINT SPC(20-Q);
+120 Q1=1 : REM loop counter for this subroutine
+130 PRINT "*";
+140 Q1=Q1+1
+150 IF Q1<=Q*2-1 THEN GOTO 130
+160 PRINT : RETURN : REM this line will take us back from the jump
+1000 Q=1 : REM this is our loop counter
+1010 GOSUB 100
+1020 Q=Q+1
+1030 IF Q<=20 THEN GOTO 1010
+\end{lstlisting}
 
 \section[FOR--NEXT Loop]{FOR ever loop NEXT}
 
-So you can make a loop using \code{GOTO}s here and there, but they \emph{totally suck}, too much spaphetti crashes your cerebral cortex faster than \emph{Crash Bandicoot 2}. Fortunately, there's better way to go about that: the FOR--NEXT loop!
+As we've just seen, you can make loops using \code{GOTO}s here and there, but they \emph{totally suck}, too much spaphetti crashes your cerebral cortex faster than \emph{Crash Bandicoot 2}. Fortunately, there's a better way to go about that: the FOR--NEXT loop!
 
 \begin{lstlisting}
-10 FOR I = 1 TO 20
-20 PRINT SPC(20-I);
-30 FOR J = 1 TO I*2-1
-40 PRINT "*";
-50 NEXT:PRINT
-60 NEXT
+10 GOTO 1000
+100 REM subroutine to draw a segment. Size is stored to 'Q'
+110 PRINT SPC(20-Q);
+120 FOR Q1=1 TO Q*2-1
+130 PRINT "*";
+140 NEXT : PRINT
+150 RETURN
+1000 FOR Q=1 TO 20
+1010 GOSUB 100
+1020 NEXT
 \end{lstlisting}
 
-When executed, this program print out triangles of stars. Still not convinced? Try to write a same program with \code{GOTO}s.
+When executed, this program print out \emph{exactly the same} triangle, but code is much more straightforward thanks to the \code{FOR} statement.
 
 \section[Get User INPUT]{Isn't It Nice To Have a Computer That Will Question You?}
 
@@ -67,17 +86,22 @@ This short program will ask your name, and then it will greet you by the name yo
 Consider the following code:
 
 \begin{lstlisting}
-(code with many repeating phrases)
+10 DEFUN POW2(N)=2^N
+20 DEFUN DCOS(N)=COS(PI*N/180)
+30 FOR X=0 TO 8
+40 PRINT X,POW2(X)
+50 NEXT
+60 PRINT "----------------"
+70 FOREACH A=0!45!90!135!180!NIL
+80 PRINT A,DCOS(A)
+90 NEXT
 \end{lstlisting}
 
-As you can clearly see, it has way too many repeating phrase: \code{i'm redundant!} Would it be nice to tidy it up, but much cooler and in \emph{one-liner}?
+Here, we have defined two functions to use in the program: \code{POW2} and \code{DCOS2}. Also observe that functions are defined using variable \code{N}s, but we use them with \code{X} in line 40 and with \code{A} in line 80: yes, functions can have their local name so you don't have to carefully choose which variable name to use in your subroutine.
 
-Lo and behold, the \code{DEFUN}! You can define a \emph{function} in a single line using it, and it even re-names the variable so you don't have to worry about unintended name collisions like when you were playing with \code{GOSUB}s!
+Except a function can't have statements that spans 2- or more BASIC lines; but there are ways to get around that, including \code{DO} statement and \emph{functional currying}.
 
-\begin{lstlisting}
-(same code but better)
-\end{lstlisting}
-
+This sample program also shows \code{FOREACH} statement, which is same as \code{FOR} but works with arrays.
 
 \section[Recursion]{BRB: Bad Recursion BRB: Bad Recursion BRB: Bad Recursion BRB: Bad RecursionBRB: Bad Recursion BRBRangeError: Maximum call stack size exceeded}
 
@@ -129,7 +153,7 @@ Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. We're just p
 \section[Currying]{Haskell Curry Wants to Know Your Location}
 \label{currying101}
 
-So what the fsck is currying? Consider the following code:
+Two pages ago there was a mentioning about something called \emph{functional currying}. So what the fsck is currying? Consider the following code:
 
 \begin{lstlisting}
 10 DEFUN F(K,T)=ABS(T)==K
