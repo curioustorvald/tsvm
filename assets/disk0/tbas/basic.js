@@ -704,6 +704,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 "UNARYPLUS" : {f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => +lh);
 }},
+"UNARYLOGICNOT" : {f:function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => !(lh));
+}},
+"UNARYBNOT" : {f:function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (lh) => ~(lh));
+}},
 "BAND" : {f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh & rh);
 }},
