@@ -23,13 +23,16 @@ Following program attempts to calculate a square root of the input value,  showi
 20 Y = 0.5 * X
 30 Z = Y
 40 Y = Y-(((Y^2)-X)/(2*Y))
-50 IF Z <> Y THEN GOTO 30
+50 IF NOT(Z==Y) THEN GOTO 30 : REM 'NOT(Z==Y)' can be rewritten to 'Z<>Y' 
 100 PRINT "Square root of ";X;" is approximately ";Y
 \end{lstlisting}
 
-Here, \code{GOTO} in line 50 to perform a loop, which keep loops until \code{Z} and \code{Y} becomes equal. This is a newtonian method of approximating a square root. 
+Here, \code{GOTO} in line 50 is used to perform a loop, which keeps looping until \code{Z} and \code{Y} becomes equal. This is a newtonian method of approximating a square root. 
 
 \section[When GOTO Is Bad]{Severe Acute Spaghettification Syndrome}
+
+
+
 \section[Subroutine with GOSUB]{GOSUB to the rescue!}
 
 \section[FOR--NEXT Loop]{FOR ever loop NEXT}
