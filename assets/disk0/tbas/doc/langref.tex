@@ -11,7 +11,7 @@ In the descriptions of BASIC syntax, these conventions apply.
 \item \code{IDENTIFIER} --- Replace \emph{identifier} with appropriate metavariable
 \item \code{[a]} --- Words within square brackets are optional
 \item \code{\{a|b\}} --- Choose either \code{a} or \code{b}
-\item \code{[a|b]} --- Optional version of above
+\item \code{[a|b]} --- Optional version of the above
 \item \code{a\ldots} --- The preceding entity can be repeated
 \end{itemlist}
 
@@ -46,7 +46,7 @@ String literals take the following form:
 
 \codeline{\textbf{"} [CHARACTERS] \textbf{"}}
 
-where \code{CHARACTERS} is a 0 or more repetition of ASCII-printable letters.\footnote{In other words, \code{0x20..0x7E}}
+where \code{CHARACTERS} is a 1- or more repetition of ASCII-printable letters.\footnote{In other words, \code{0x20..0x7E}}
 
 To print out graphical letters outside of ASCII-printable, use string concatenation with \code{CHR} function, or use \code{EMIT} function.
 
@@ -255,13 +255,13 @@ Code & Operation & Result \\
 
 Some variables are pre-defined on the language itself and cannot be modified; such variables are called \emph{constants}.
 
-\begin{tabulary}{\textwidth}{rlL}
-Name & Type & Value \\
+\begin{tabulary}{\textwidth}{rllL}
+Name & Type & Value & Description \\
 \hline
-NIL & Array & Empty Array \\
-PI & Number & $3.141592653589793$ \\
-TAU & Number & $6.283185307179586$ \\
-EULER & Number & $2.718281828459045$
+NIL & Array & Empty Array & Used to construct arbitrary array using CONS-operator \\
+PI & Number & $3.141592653589793$ & $\pi$ \\
+TAU & Number & $6.283185307179586$ & $2 \pi$ \\
+EULER & Number & $2.718281828459045$ & Euler's number $e$ \\
 \end{tabulary}
 
 \section{Syntax In EBNF}

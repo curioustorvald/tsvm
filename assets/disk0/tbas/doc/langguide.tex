@@ -14,7 +14,7 @@ Oh \emph{boy} we just did a computation! It printed out \code{4} which is a corr
 
 \section[GOTO]{GOTO here and there}
 
-\code{GOTO} is used a lot in BASIC, and so does in \tbas. \code{GOTO} is a simplest method of diverging a program flow: execute only the some part of the program conditionally and perform a loop.
+\code{GOTO} is used a lot in BASIC, and so does in \tbas. \code{GOTO} is a simplest method of diverging a program flow: execute only the part of the program conditionally and perform a loop.
 
 Following program attempts to calculate a square root of the input value,  showing how \code{GOTO} can be used in such manner.
 
@@ -52,7 +52,7 @@ This program will draw a triangle, where the actual drawing part is on line 100-
 
 \section[FOR--NEXT Loop]{FOR ever loop NEXT}
 
-As we've just seen, you can make loops using \code{GOTO}s here and there, but they \emph{totally suck}, too much spaphetti crashes your cerebral cortex faster than \emph{Crash Bandicoot 2}. Fortunately, there's a better way to go about that: the FOR--NEXT loop!
+As we've just seen, you can make loops using \code{GOTO}s here and there, but they \emph{totally suck}, too much spaghetti crashes your cerebral cortex faster than \emph{Crash Bandicoot 2}. Fortunately, there's a better way to go about that: the FOR--NEXT loop!
 
 \begin{lstlisting}
 10 GOTO 1000
@@ -97,7 +97,7 @@ Consider the following code:
 90 NEXT
 \end{lstlisting}
 
-Here, we have defined two functions to use in the program: \code{POW2} and \code{DCOS2}. Also observe that functions are defined using variable \code{N}s, but we use them with \code{X} in line 40 and with \code{A} in line 80: yes, functions can have their local name so you don't have to carefully choose which variable name to use in your subroutine.
+Here, we have defined two functions to use in the program: \code{POW2} and \code{DCOS}. Also observe that functions are defined using variable \code{N}s, but we use them with \code{X} in line 40 and with \code{A} in line 80: yes, functions can have their local name so you don't have to carefully choose which variable name to use in your subroutine.
 
 Except a function can't have statements that spans 2- or more BASIC lines; but there are ways to get around that, including \code{DO} statement and \emph{functional currying}.
 
@@ -116,7 +116,7 @@ But don't get over-excited, as it's super-trivial to create unintentional infini
 
 (if you tried this and computer becomes unresponsive, hit Ctrl-C to terminate the execution)
 
-This failed attempt is to create a function that calculates a factorial of \code{N}. It didn't work because there is no \emph{halting condition}: didn't told computer to when to escape from the loop.
+This failed attempt is to create a function that calculates a factorial of \code{N}. It didn't work because there is no \emph{halting condition}: didn't tell computer to when to escape from the loop.
 
 $n \times 1$ is always $n$, and $0!$ is $1$, so it would be nice to break out of the loop when \code{N} reaches $0$; here is the modified program:
 
@@ -140,7 +140,7 @@ Since \code{IF-THEN-ELSE} can be chained to make third or more conditions --- \c
 
 \code{MAP} is a \emph{higher-order}\footnote{Higher-order function is a function that takes another function as an argument.} function that takes a function (called \emph{transformation}) and an array to construct a new array that contains old array transformed with given \emph{transformation}.
 
-Or, think about the old \code{FAC} program before: it only printed out the value of $1!$, $2!$ \ldots\ $10!$. What if we wanted to build an array that contains such values?
+Or, think about the old \code{FAC} program before: it merely printed out the value of $1!$, $2!$ \ldots\ $10!$. What if we wanted to build an array that contains such values?
 
 \begin{lstlisting}
 10 DEFUN FAC(N)=IF N==0 THEN 1 ELSE N*FAC(N-1)
@@ -148,7 +148,7 @@ Or, think about the old \code{FAC} program before: it only printed out the value
 30 PRINT K
 \end{lstlisting}
 
-Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. We're just printing out the array, but you can make acutual use out of the array.
+Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. Right now we're just printing out the array, but you can make acutual use out of the array.
 
 \section[Currying]{Haskell Curry Wants to Know Your Location}
 \label{currying101}
