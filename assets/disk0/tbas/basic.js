@@ -1255,7 +1255,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     }
     return keys;
 }},
-"<~" : {f:function(lnum, stmtnum, args) { // CURRY operator
+"~<" : {f:function(lnum, stmtnum, args) { // CURRY operator
     return twoArg(lnum, stmtnum, args, (fn, value) => {
         // TODO test only works with DEFUN'd functions
         if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
@@ -1421,12 +1421,12 @@ bF._opPrc = {
     "STEP":41,
     "!":50,"~":51, // array CONS and PUSH
     "#": 52, // array concat
-    "<~": 100, // curry operator
+    "~<": 100, // curry operator
     "~>": 101, // closure operator
     "=":999,
     "IN":1000
 };
-bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"~>":1}; // <~ and ~> cannot have same associativity
+bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"~>":1}; // ~< and ~> cannot have same associativity
 // these names appear on executeSyntaxTree as "exceptional terms" on parsing (regular function calls are not "exceptional terms")
 bF._tokenise = function(lnum, cmd) {
     var _debugprintStateTransition = false;
@@ -2887,24 +2887,6 @@ bF._interpretLine = function(lnum, cmd) {
         }
     });
 
-    // automatically apply currying
-    // '(<~) FNQ (P X Y)' into '(<~) FNQ ((<~) P ((<~) X Y))'
-    // FIXME this autocurrying is very likely to be a janky-ass-shit
-    syntaxTrees.forEach(syntaxTree => {
-        if (syntaxTree !== undefined) {
-            bF._recurseApplyAST(syntaxTree, tree => {
-                if (tree.astValue == "<~" && tree.astLeaves[1] !== undefined && tree.astLeaves[1].astLeaves[0] !== undefined) {
-                    let subTree = new BasicAST();
-                    subTree.astValue = "<~";
-                    subTree.astType = "op";
-                    subTree.astLnum = tree.astLnum;
-                    subTree.astLeaves = [tree.astLeaves[1], tree.astLeaves[1].astLeaves[0]];
-
-                    tree.astLeaves[1] = subTree;
-                }
-            });
-        }
-    });
     if (_debugprintHighestLevel) {
         syntaxTrees.forEach((t,i) => {
             serial.println("\nParsed Statement #"+(i+1));

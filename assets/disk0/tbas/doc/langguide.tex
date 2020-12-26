@@ -160,13 +160,13 @@ Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. Right now we
 
 \begin{lstlisting}
 10 DEFUN F(K,T)=ABS(T)==K
-20 CF=F<~32
+20 CF=F~<32
 30 PRINT CF(24) : REM will print 'false'
 40 PRINT CF(-32) : REM will print 'true'
 \end{lstlisting}
 
 % NOTE: you can't use \basiccurry within \code{}
-Here, \code{CF} is a curried function of \code{F}; built-in operator \code{$<\!\sim$} applies \code{32} to the first parameter of the function \code{F}, which dynamically returns a \emph{function} of \code{CF(T) = ABS(T) == 32}. The fact that Curry Operator returns a \emph{function} opens many possibilities, for example, you can create loads of sibling functions without making loads of duplicate codes.
+Here, \code{CF} is a curried function of \code{F}; built-in operator \code{$\sim\!<$} applies \code{32} to the first parameter of the function \code{F}, which dynamically returns a \emph{function} of \code{CF(T) = ABS(T) == 32}. The fact that Curry Operator returns a \emph{function} opens many possibilities, for example, you can create loads of sibling functions without making loads of duplicate codes.
 
 \section[Wrapping-Up]{The Grand Unification}
 
@@ -176,8 +176,8 @@ Using all the knowledge we have learned, it should be trivial\footnote{/s} to wr
 10 DEFUN LESS(P,X)=X<P
 11 DEFUN GTEQ(P,X)=X>=P
 12 DEFUN QSORT(XS)=IF LEN(XS)<1 THEN NIL ELSE 
-    QSORT(FILTER(LESS<~HEAD(XS),TAIL(XS))) # HEAD(XS)!NIL # 
-    QSORT(FILTER(GTEQ<~HEAD(XS),TAIL(XS)))
+    QSORT(FILTER(LESS~<HEAD(XS),TAIL(XS))) # HEAD(XS)!NIL # 
+    QSORT(FILTER(GTEQ~<HEAD(XS),TAIL(XS)))
 100 L=7!9!4!5!2!3!1!8!6!NIL
 110 PRINT L
 120 PRINT QSORT(L)
