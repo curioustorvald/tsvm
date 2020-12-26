@@ -118,7 +118,8 @@ Order & Op & Associativity \\
 16 & ! & Right \\
 17 & \sim & Left\\
 18 & \# & Left \\
-19 & \basiccurry & Right \\
+19 & \basiccurry & Left \\
+%19.5 & \basicclosure & Right \\
 20 & = & Right \\
 \end{tabulary}
 \end{longtable}
@@ -249,7 +250,7 @@ Code & Operation & Result \\
 %{[}\emph{x},\,\emph{y}\ldots{]} \basicclosure\ \emph{e} & Closure & Creates a closure (anonymous function) from one or more parameters \emph{x},\,\emph{y}\ldots\ and an expression \emph{e} \\
 \end{tabulary}
 
-\emph{Currying} is an operation that returns new function that has given value applied to the original function's first parameter. See \ref{currying101} for tutorials.
+\emph{Currying}\footnote{\emph{Partial Application} should be more appropriate for this operator, but oh well: \emph{currying} is less mouthful.} is an operation that returns new function that has given value applied to the original function's first parameter. See \ref{currying101} for tutorials.
 
 \section{Constants}
 

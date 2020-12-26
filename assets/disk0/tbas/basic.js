@@ -29,7 +29,7 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
     return 0;
 }
 
-const PROD = true;
+const PROD = false;
 let INDEX_BASE = 0;
 let TRACEON = (!PROD) && true;
 let DBGON = (!PROD) && true;
@@ -1426,7 +1426,7 @@ bF._opPrc = {
     "=":999,
     "IN":1000
 };
-bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"<~":1,"~>":1};
+bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"~>":1}; // <~ and ~> cannot have same associativity
 // these names appear on executeSyntaxTree as "exceptional terms" on parsing (regular function calls are not "exceptional terms")
 bF._tokenise = function(lnum, cmd) {
     var _debugprintStateTransition = false;
