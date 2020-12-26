@@ -99,7 +99,7 @@ Consider the following code:
 
 Here, we have defined two functions to use in the program: \code{POW2} and \code{DCOS}. Also observe that functions are defined using variable \code{N}s, but we use them with \code{X} in line 40 and with \code{A} in line 80: yes, functions can have their local name so you don't have to carefully choose which variable name to use in your subroutine.
 
-Except a function can't have statements that spans 2- or more BASIC lines; but there are ways to get around that, including \code{DO} statement and \emph{functional currying}.
+Except a function can't have statements that spans two- or more BASIC lines; but there are ways to get around that, including \code{DO} statement and \emph{functional currying}\newcounter{curryingappearance}\setcounter{curryingappearance}{\value{page}}
 
 This sample program also shows \code{FOREACH} statement, which is same as \code{FOR} but works with arrays.
 
@@ -153,7 +153,10 @@ Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. Right now we
 \section[Currying]{Haskell Curry Wants to Know Your Location}
 \label{currying101}
 
-Two pages ago there was a mentioning about something called \emph{functional currying}. So what the fsck is currying? Consider the following code:
+\newcounter{curryingselfref}
+\setcounter{curryingselfref}{\value{page} - \value{curryingappearance}}
+
+\cnttoenglish{\thecurryingselfref}{page} ago there was a mentioning about something called \emph{functional currying}. So what the fsck is currying? Consider the following code:
 
 \begin{lstlisting}
 10 DEFUN F(K,T)=ABS(T)==K

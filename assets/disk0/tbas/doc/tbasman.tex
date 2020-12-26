@@ -31,6 +31,8 @@
 \usepackage[most]{tcolorbox}
 \usepackage{listings}
 \usepackage{amsmath,amssymb}
+\usepackage{calc}
+\usepackage{ifthen}
 
 \usepackage{lineno} % debug
 
@@ -130,6 +132,22 @@
   breakatwhitespace=true,
   tabsize=3
 }
+
+\newcommand{\cnttoenglish}[2]{{%
+\ifthenelse{#1=1}{One}{%
+\ifthenelse{#1=2}{Two}{%
+\ifthenelse{#1=3}{Three}{%
+\ifthenelse{#1=4}{Four}{%
+\ifthenelse{#1=5}{Five}{%
+\ifthenelse{#1=6}{Six}{%
+\ifthenelse{#1=7}{Seven}{%
+\ifthenelse{#1=8}{Eight}{%
+\ifthenelse{#1=9}{Nine}{%
+\ifthenelse{#1=10}{Ten}{%
+\ifthenelse{#1=11}{Eleven}{%
+\ifthenelse{#1=12}{Twelve}{%
+\arabic{#1}%
+}}}}}}}}}}}}} \ifthenelse{#1=1}{#2}{#2s}}
 
 \addtocontents{toc}{\protect\thispagestyle{empty}} % no page number for the TOC header page
 \aliaspagestyle{part}{empty} % aliasing PART as empty so that page number would not be printed
