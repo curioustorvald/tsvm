@@ -31,7 +31,7 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
 
 const THEVERSION = "1.0";
 
-const PROD = true;
+const PROD = false;
 let INDEX_BASE = 0;
 let TRACEON = (!PROD) && true;
 let DBGON = (!PROD) && true;
@@ -603,9 +603,9 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree) {
  * @params troValue Variable to assign into
  * @params rh the value, resolved
  */
-bStatus.addAsBasicVar = function(troValue, rh) {
+bStatus.addAsBasicVar = function(lnum, troValue, rh) {
     if (troValue.arrFull !== undefined) { // assign to existing array
-        if (isNaN(rh) && !Array.isArray(rh)) throw lang.illegalType(lnum, rh);
+        if (Array.isArray(rh)) throw lang.illegalType(lnum, rh); // no ragged array!
         let arr = eval("troValue.arrFull"+troValue.arrKey);
         if (Array.isArray(arr)) throw lang.subscrOutOfRng(lnum, arr);
         eval("troValue.arrFull"+troValue.arrKey+"=rh");
@@ -644,7 +644,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     //try { println(lnum+" = rh resolved entries: "+Object.entries(rh)); }
     //catch (_) {}
 
-    return bStatus.addAsBasicVar(troValue, rh);
+    return bStatus.addAsBasicVar(lnum, troValue, rh);
 }},
 "IN" : {f:function(lnum, stmtnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
@@ -1076,7 +1076,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     // NOTE: empty string will be cast to 0, which corresponds to GW-BASIC
     if (!isNaN(rh)) rh = rh*1
 
-    return bStatus.addAsBasicVar(troValue, rh);
+    return bStatus.addAsBasicVar(lnum, troValue, rh);
 }},
 "CIN" : {f:function(lnum, stmtnum, args) {
     return sys.read().trim();
@@ -1152,7 +1152,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     let rh = DATA_CONSTS[DATA_CURSOR++];
     if (rh === undefined) throw lang.outOfData(lnum);
 
-    return bStatus.addAsBasicVar(troValue, rh);
+    return bStatus.addAsBasicVar(lnum, troValue, rh);
 }},
 "DGET" : {f:function(lnum, stmtnum, args) {
     let r = DATA_CONSTS[DATA_CURSOR++];
@@ -1621,15 +1621,15 @@ bF._tokenise = function(lnum, cmd) {
                 tokens.push(sb); sb = ""; states.push(mode);
                 mode = "quote_end";
             }
-            else if (charCode == 0x5C) { // reverse solidus
+            /*else if (charCode == 0x5C) { // reverse solidus
                 tokens.push(sb); sb = "";
                 mode = "escape";
-            }
+            }*/
             else {
                 sb += char;
             }
         }
-        else if ("escape" == mode) {
+        /*else if ("escape" == mode) {
             if (0x5C == charCode) // reverse solidus
                 sb += String.fromCharCode(0x5C);
             else if ("n" == char)
@@ -1647,7 +1647,7 @@ bF._tokenise = function(lnum, cmd) {
             else if ("b" == char)
                 sb += String.fromCharCode(0x08);
             mode = "qot"; // ESCAPE is only legal when used inside of quote
-        }
+        }*/
         else if ("quote_end" == mode) {
             if (" " == char) {
                 sb = "";
@@ -1788,7 +1788,10 @@ bF._tokenise = function(lnum, cmd) {
         else if (states[k] == "n2" || states[k] == "nsep") states[k] = "num";
     }
 
-    if (tokens.length != states.length) throw new InternalError("size of tokens and states does not match (line: "+lnum+")");
+    if (tokens.length != states.length) {
+        throw new InternalError("size of tokens and states does not match (line: "+lnum+")\n"+
+        tokens+"\n"+states);
+    }
 
     return { "tokens": tokens, "states": states };
 };
@@ -1815,6 +1818,7 @@ bF._parserElaboration = function(lnum, tokens, states) {
                 tokens[k] = parseInt(tokens[k].substring(2, tokens[k].length), 2) + "";
             }
         }
+
 
         k += 1;
     }
@@ -2778,13 +2782,14 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             if (func === undefined) {
                 var someVar = bStatus.vars[funcName];
 
+                if (someVar === undefined) {
+                    throw lang.syntaxfehler(lnum, funcName + " is undefined");
+                }
+
                 if (DBGON) {
                     serial.println(lnum+" _executeSyntaxTree: "+Object.entries(someVar));
                 }
 
-                if (someVar === undefined) {
-                    throw lang.syntaxfehler(lnum, funcName + " is undefined");
-                }
                 else if ("array" == someVar.bvType) {
                     func = bStatus.getArrayIndexFun(lnum, stmtnum, funcName, someVar.bvLiteral);
                 }
@@ -2797,6 +2802,10 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             }
             // call whatever the 'func' has whether it's builtin or we just made shit up right above
             try {
+                if (func === undefined) {
+                    throw lang.syntaxfehler(lnum, funcName + " is undefined");
+                }
+
                 let funcCallResult = func(lnum, stmtnum, args, syntaxTree.astSeps);
 
                 if (funcCallResult instanceof SyntaxTreeReturnObj) return funcCallResult;
