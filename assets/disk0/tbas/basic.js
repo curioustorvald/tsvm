@@ -51,6 +51,7 @@ let cmdbuf = []; // index: line number
 let gotoLabels = {};
 let cmdbufMemFootPrint = 0;
 let prompt = "Ok";
+let prescan = false;
 
 /* if string can be FOR REAL cast to number */
 function isNumable(s) {
@@ -1164,7 +1165,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         INDEX_BASE = lh|0;
     });
 }},
-"DATA" : {f:function() { /*DATA must do nothing when encountered; they must be pre-processed*/ }},
+"DATA" : {f:function(lnum, stmtnum, args) {
+    if (prescan) {
+        args.forEach(it => DATA_CONSTS.push(resolve(it)));
+    }
+}},
 /* Syopsis: MAP function, functor
  */
 "MAP" : {f:function(lnum, stmtnum, args) {
@@ -1215,10 +1220,11 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return args[args.length - 1];
 }},
 "LABEL" : {f:function(lnum, stmtnum, args) {
-    let labelname = args[0].troValue;
-
-    if (labelname === undefined) throw lang.syntaxfehler(lnum, "empty LABEL");
-    gotoLabels[labelname] = lnum;
+    if (prescan) {
+        let labelname = args[0].troValue;
+        if (labelname === undefined) throw lang.syntaxfehler(lnum, "empty LABEL");
+        gotoLabels[labelname] = lnum;
+    }
 }},
 "ON" : {f:function(lnum, stmtnum, args) {
     //args: functionName (string), testvalue (SyntaxTreeReturnObj), arg0 (SyntaxTreeReturnObj), arg1 (SyntaxTreeReturnObj), ...
@@ -2978,6 +2984,9 @@ bF.new = function(args) { // NEW function
     if (args) cmdbuf = [];
     bStatus.vars = initBvars();
     gotoLabels = {};
+    DATA_CONSTS = [];
+    DATA_CURSOR = 0;
+    INDEX_BASE = 0;
 };
 bF.renum = function(args) { // RENUM function
     var newcmdbuf = [];
@@ -3023,8 +3032,9 @@ bF.prescanStmts = ["DATA","LABEL"];
 bF.run = function(args) { // RUN function
     bF.new(false);
 
-    // pre-build the trees
     let programTrees = [];
+    // pre-build the trees
+    prescan = true;
     cmdbuf.forEach((linestr, linenum) => {
         let trees = bF._interpretLine(linenum, linestr.trim());
         programTrees[linenum] = trees
@@ -3037,6 +3047,11 @@ bF.run = function(args) { // RUN function
             })
         }
     });
+    prescan = false;
+
+    if (!PROD && DBGON) {
+        serial.println("[BASIC] final DATA: "+DATA_CONSTS);
+    }
 
     // actually execute the program
     let lnum = 1;
