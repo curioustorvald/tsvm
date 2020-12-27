@@ -31,7 +31,7 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
 
 const THEVERSION = "1.0";
 
-const PROD = false;
+const PROD = true;
 let INDEX_BASE = 0;
 let TRACEON = (!PROD) && true;
 let DBGON = (!PROD) && true;
