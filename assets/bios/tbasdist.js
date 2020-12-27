@@ -27,11 +27,9 @@ if (r == 0){
             let g=com.pullMessage(0);
             let execAppPrg = eval("var _appStub=function(exec_args){"+g+"};_appStub;"); // making 'exec_args' a app-level global
             execAppPrg();
-            return 0;
         }
         catch (e) {
             printerrln("\nApp Execution Error: "+(e.stack || e));
-            return 1;
         }
     }
     else
@@ -39,3 +37,5 @@ if (r == 0){
 }
 else
     printerrln("No bootable medium found.");
+
+println("CPU halted");

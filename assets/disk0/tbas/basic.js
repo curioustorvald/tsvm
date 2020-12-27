@@ -29,7 +29,9 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
     return 0;
 }
 
-const PROD = false;
+const THEVERSION = "1.0";
+
+const PROD = true;
 let INDEX_BASE = 0;
 let TRACEON = (!PROD) && true;
 let DBGON = (!PROD) && true;
@@ -213,7 +215,7 @@ let reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)
 
 let reNum = /[0-9]+/;
 let tbasexit = false;
-const greetText = "Terran BASIC 1.0  "+String.fromCharCode(179)+"  Scratchpad Memory: "+vmemsize+" bytes";
+const greetText = `Terran BASIC ${THEVERSION}  `+String.fromCharCode(179)+"  Scratchpad Memory: "+vmemsize+" bytes";
 const greetLeftPad = (80 - greetText.length) >> 1;
 const greetRightPad = 80 - greetLeftPad - greetText.length;
 
@@ -301,10 +303,10 @@ let curryDefun = function(inputTree, inputValue) {
     let value = cloneObject(inputValue);
     bF._recurseApplyAST(exprTree, it => {
         if (it.astType == "defun_args") {
-            if (DBGON) {
+            /*if (DBGON) {
                 serial.println("[curryDefun] found defun_args #"+it.astValue);
                 serial.println(astToString(it));
-            }
+            }*/
             // apply arg0 into the tree
             if (it.astValue == 0) {
                 let valueType = JStoBASICtype(value);
@@ -319,23 +321,18 @@ let curryDefun = function(inputTree, inputValue) {
                     it.astType = valueType
                     it.astValue = value;
                 }
-                if (DBGON) {
-                    serial.println("[curryDefun] applying value "+value);
-                }
+                //if (DBGON) serial.println("[curryDefun] applying value "+value);
             }
             // shift down arg index
             else {
                 it.astValue -= 1;
-
-                if (DBGON) {
-                    serial.println("[curryDefun] decrementing arg index");
-                }
+                //if (DBGON) serial.println("[curryDefun] decrementing arg index");
             }
 
-            if (DBGON) {
+            /*if (DBGON) {
                 serial.println("[curryDefun] after the task:");
                 serial.println(astToString(it));
-            }
+            }*/
         }
     });
 
@@ -2823,6 +2820,41 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
                 retVal,
                 [lnum, stmtnum + 1]
         );
+    }
+    // userdefun with args
+    // apply given arguments (syntaxTree.astLeaves) to the expression tree and evaluate it
+    // if tree has leaves and their leaves are all terminal leaves (does not have grandchild AND they are not usrdefun)
+    else if (syntaxTree.astType == "usrdefun" && syntaxTree.astLeaves[0] !== undefined &&
+    syntaxTree.astLeaves.every(child => child.astLeaves[0] == undefined && child.astType !== "usrdefun")) {
+        let oldTree = syntaxTree.astValue;
+        let argsTro = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1));
+        let newTree = oldTree; // curryDefun() will make a clone of it for us
+        for (let k = 0; k < argsTro.length; k++) {
+            newTree = curryDefun(oldTree, argsTro[k].troValue);
+        }
+
+        // make a javascript function out of the new tree, thess lines are now basically the same as above function calling lines
+        let func = bStatus.getDefunThunk(lnum, stmtnum, newTree);
+
+        // call whatever the 'func' has whether it's builtin or we just made shit up right above
+        try {
+            //let funcCallResult = func(lnum, stmtnum, argsTro, syntaxTree.astSeps);
+            let funcCallResult = func(lnum, stmtnum, [], syntaxTree.astSeps);
+
+            if (funcCallResult instanceof SyntaxTreeReturnObj) return funcCallResult;
+
+            let retVal = (funcCallResult instanceof JumpObj) ? funcCallResult.jmpReturningValue : funcCallResult;
+
+            return new SyntaxTreeReturnObj(
+                    JStoBASICtype(retVal),
+                    retVal,
+                    (funcCallResult instanceof JumpObj) ? funcCallResult.jmpNext : [lnum, stmtnum + 1]
+            );
+        }
+        catch (e) {
+            serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`);
+            throw lang.errorinline(lnum, (funcName === undefined) ? "undefined" : funcName, (e === undefined) ? "undefined" : e);
+        }
     }
     else if (syntaxTree.astType == "num") {
         if (_debugExec) serial.println(recWedge+"num "+((syntaxTree.astValue)*1));
