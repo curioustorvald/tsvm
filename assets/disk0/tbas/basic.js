@@ -719,8 +719,8 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 }},
 "!" : {f:function(lnum, stmtnum, args) { // Haskell-style CONS
     return twoArg(lnum, stmtnum, args, (lh,rh) => {
-        if (isNaN(lh))
-            throw lang.illegalType(lnum, lh); // BASIC array is numbers only
+        if (Array.isArray(lh))
+            throw lang.illegalType(lnum, lh); // NO ragged array!
         if (!Array.isArray(rh))
             throw lang.illegalType(lnum, rh);
         return [lh].concat(rh);
@@ -728,10 +728,10 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 }},
 "~" : {f:function(lnum, stmtnum, args) { // array PUSH
     return twoArg(lnum, stmtnum, args, (lh,rh) => {
-        if (isNaN(rh))
-            throw lang.illegalType(lnum, rh); // BASIC array is numbers only
         if (!Array.isArray(lh))
             throw lang.illegalType(lnum, lh);
+        if (Array.isArray(rh))
+            throw lang.illegalType(lnum, rh); // NO ragged array!
         return lh.concat([rh]);
     });
 }},
