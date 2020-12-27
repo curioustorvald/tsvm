@@ -136,9 +136,22 @@ Since \code{IF-THEN-ELSE} can be chained to make third or more conditions --- \c
 40 NEXT
 \end{lstlisting}
 
+\section[Higher-order Function]{The Functions of the High Order}
+
+Higher-order functions are functions that either takes another function as an argument, or returns a function. This sample program shows how higher-order functions can be constructed.
+
+\begin{lstlisting}
+10 DEFUN APPLY(F,X)=F(X)
+20 DEFUN FUN(X)=X^2
+30 K=APPLY(FUN,42)
+40 PRINT K
+\end{lstlisting}
+
+Here, \code{APPLY} takes a function \code{F} and value \code{X}, \emph{applies} a function \code{F} onto the value \code{X} and returns the value. Since \code{APPLY} takes a function, it's higher-order function.
+
 \section[MAPping]{Map}
 
-\code{MAP} is a \emph{higher-order}\footnote{Higher-order function is a function that takes another function as an argument.} function that takes a function (called \emph{transformation}) and an array to construct a new array that contains old array transformed with given \emph{transformation}.
+\code{MAP} is a higher-order function that takes a function (called \emph{transformation}) and an array to construct a new array that contains old array transformed with given \emph{transformation}.
 
 Or, think about the old \code{FAC} program before: it merely printed out the value of $1!$, $2!$ \ldots\ $10!$. What if we wanted to build an array that contains such values?
 
@@ -148,7 +161,7 @@ Or, think about the old \code{FAC} program before: it merely printed out the val
 30 PRINT K
 \end{lstlisting}
 
-Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. Right now we're just printing out the array, but you can make acutual use out of the array.
+Here, \code{K} holds the values of $1!$, $2!$ \ldots\ $10!$. Right now we're just printing out the array, but being an array, you can make actual use of it.
 
 \section[Currying]{Haskell Curry Wants to Know Your Location}
 \label{currying101}
@@ -156,7 +169,7 @@ Here, \code{K} will contain the values of $1!$, $2!$ \ldots\ $10!$. Right now we
 \newcounter{curryingselfref}
 \setcounter{curryingselfref}{\value{page} - \value{curryingappearance}}
 
-\cnttoenglish{\thecurryingselfref}{page} ago there was a mentioning about something called \emph{functional currying}. So what the fsck is currying? Consider the following code:
+\cnttoenglish{\value{curryingselfref}}{page} ago there was a mentioning about something called \emph{functional currying}. So what the fsck is currying? Consider the following code:
 
 \begin{lstlisting}
 10 DEFUN F(K,T)=ABS(T)==K
