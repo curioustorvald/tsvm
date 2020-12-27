@@ -2782,14 +2782,15 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             if (func === undefined) {
                 var someVar = bStatus.vars[funcName];
 
+                if (DBGON) {
+                    serial.println(lnum+" _executeSyntaxTree: "+someVar);
+                    if (typeof someVar == "object")
+                        serial.println(lnum+" _executeSyntaxTree: "+Object.entries(someVar));
+                }
+
                 if (someVar === undefined) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
                 }
-
-                if (DBGON) {
-                    serial.println(lnum+" _executeSyntaxTree: "+Object.entries(someVar));
-                }
-
                 else if ("array" == someVar.bvType) {
                     func = bStatus.getArrayIndexFun(lnum, stmtnum, funcName, someVar.bvLiteral);
                 }
