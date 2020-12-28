@@ -104,7 +104,7 @@ lang.refError = function(line, obj) {
 };
 lang.nowhereToReturn = function(line) { return "RETURN without GOSUB in " + line; };
 lang.errorinline = function(line, stmt, errobj) {
-    return Error('Error'+((line !== undefined) ? (" in "+line) : "")+' on statement "'+stmt+'": '+errobj);
+    return Error('Error'+((line !== undefined) ? (" in "+line) : "")+' on "'+stmt+'": '+errobj);
 };
 lang.parserError = function(line, errorobj) {
     return Error("Parser error in " + line + ": " + errorobj);
@@ -290,6 +290,7 @@ let resolve = function(variable) {
         return variable.troValue;
     else if (variable.troType == "lit") {
         var basicVar = bStatus.vars[variable.troValue];
+        if (basicVar === undefined) throw lang.refError(undefined, variable.troValue);
         if (basicVar.bvLiteral === "") return "";
         return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
     }
@@ -340,8 +341,8 @@ let curryDefun = function(inputTree, inputValue) {
     return exprTree;
 }
 let argCheckErr = function(lnum, o) {
-    if (o === undefined || o.troType == "null") throw lang.refError(lnum, o);
-    if (o.troType == "lit" && bStatus.vars[o.troValue] === undefined) throw lang.refError(lnum, o);
+    if (o === undefined || o.troType == "null") throw lang.refError(lnum, "(variable undefined)");
+    if (o.troType == "lit" && bStatus.vars[o.troValue] === undefined) throw lang.refError(lnum, o.troValue);
 }
 let oneArg = function(lnum, stmtnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
