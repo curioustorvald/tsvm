@@ -2839,9 +2839,8 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     }
     // userdefun with args
     // apply given arguments (syntaxTree.astLeaves) to the expression tree and evaluate it
-    // if tree has leaves and their leaves are all terminal leaves (does not have grandchild AND they are not usrdefun)
-    else if (syntaxTree.astType == "usrdefun" && syntaxTree.astLeaves[0] !== undefined &&
-    syntaxTree.astLeaves.every(child => child.astLeaves[0] == undefined && child.astType !== "usrdefun")) {
+    // if tree has leaves:
+    else if (syntaxTree.astType == "usrdefun" && syntaxTree.astLeaves[0] !== undefined) {
         let oldTree = syntaxTree.astValue;
         let argsTro = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1));
         let newTree = oldTree; // curryDefun() will make a clone of it for us
