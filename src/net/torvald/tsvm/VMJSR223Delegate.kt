@@ -123,7 +123,7 @@ class VMJSR223Delegate(val vm: VM) {
 }
 
 class VMSerialDebugger(val vm: VM) {
-    fun print(s: Any) = System.out.print("$s")
-    fun println(s: Any) = System.out.println("$s")
-    fun printerr(s: Any) = System.err.println("$s")
+    fun print(s: Any?) = System.out.print("$s")
+    fun println(s: Any?) = System.out.println("$s")
+    fun printerr(s: Any?) = System.err.println("$s")
 }
