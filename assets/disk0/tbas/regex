@@ -1,0 +1,13 @@
+Nuke comments:
+
+/\*[ -~\n]+?\*/|//[^\n]*
+
+then do:
+
+\n *\n+
+
+replace into
+
+\n
+
+until there's no match left
