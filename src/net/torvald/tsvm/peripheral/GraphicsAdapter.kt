@@ -423,6 +423,11 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         else if (arg in 40..47) {
             ttyBack = sgrDefault8ColPal[arg - 40]
         }
+        else if (arg == 7) {
+            val t = ttyFore
+            ttyFore = ttyBack
+            ttyBack = t
+        }
         else if (arg == 0) {
             ttyFore = TTY_FORE_DEFAULT
             ttyBack = TTY_BACK_DEFAULT

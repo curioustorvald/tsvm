@@ -423,6 +423,9 @@ con.resetkeybuf = function() {
     sys.poke(-41, 0); sys.poke(-42, 0); sys.poke(-43, 0); sys.poke(-44, 0);
     sys.poke(-45, 0); sys.poke(-46, 0); sys.poke(-47, 0); sys.poke(-48, 0);
 };
+con.video_reverse = function() {
+    print(String.fromCharCode(27,91)+"7m");
+};
 con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
         print(String.fromCharCode(27,91)+"38;5;255m");
@@ -448,6 +451,11 @@ con.curs_set = function(arg) {
 };
 con.reset_graphics = function() {
     print(String.fromCharCode(27,91,109));
+};
+// returns current key-down status
+con.poll_keys = function() {
+    sys.poke(-40, 1);
+    return [-41,-42,-43,-44,-45,-46,-47,-48].map(it => sys.peek(it));
 };
 Object.freeze(con);
 // system management  function
