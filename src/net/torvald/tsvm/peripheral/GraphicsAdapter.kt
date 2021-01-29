@@ -123,7 +123,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         var newx = x
         var newy = y
 
-        if (newx >= TEXT_COLS) {
+        if (newx > TEXT_COLS) {
             newx = 0
             newy += 1
         }

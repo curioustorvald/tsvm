@@ -50,7 +50,7 @@ function greet() {
         con.color_pair(0,253);
         print(" ".repeat(greetLeftPad)+welcome_text+" ".repeat(greetRightPad));
         con.color_pair(253,255);
-        con.addch(16);
+        con.addch(16);print('  ');
         con.move(3,1);
     }
     else
@@ -434,7 +434,7 @@ if (goInteractive) {
                     if (isNaN(errorlevel)) errorlevel = 2;
                 }
                 catch (e) {
-                    printerrln("\n"+e);
+                    printerrln("\n"+(e.stack || e));
                     if (errorlevel === 0 || isNaN(errorlevel)) {
                         errorlevel = 1; // generic failure
                     }

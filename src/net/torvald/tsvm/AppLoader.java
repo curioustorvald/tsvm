@@ -30,7 +30,7 @@ public class AppLoader {
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
 
-        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{GenericBios.INSTANCE});
+        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{QuickBios.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
         new LwjglApplication(new VMGUI(vm, appConfig), appConfig);
     }

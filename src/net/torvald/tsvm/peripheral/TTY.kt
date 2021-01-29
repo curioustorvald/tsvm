@@ -39,7 +39,7 @@ class TTY(val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
         var newx = x
         var newy = y
 
-        if (newx >= TEXT_COLS) {
+        if (newx > TEXT_COLS) {
             newx = 0
             newy += 1
         }
