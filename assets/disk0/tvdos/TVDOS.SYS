@@ -9,13 +9,13 @@ _TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT;
 
 
 _TVDOS.getPath = function() {
-    return _TVDOS.variables.PATH.split(';');
+    return [''].concat(_TVDOS.variables.PATH.split(';'));
 };
 // initial values
 _TVDOS.variables = {
     DOSDIR: "\\tvdos",
     LANG: "EN",
-    PATH: ";\\tvdos\\bin;\\tbas;\\home",
+    PATH: "\\tvdos\\bin;\\tbas;\\home",
     PATHEXT: ".com;.bat;.js",
     HELPPATH: "\\tvdos\\help",
     OS_NAME: "Terrarum Virtual DOS",

@@ -1,2 +1,2 @@
-10 print(chr(47+round(rnd(1))*45);)
-20 goto 10
+10 PRINT(CHR(47+ROUND(RND(1))*45);)
+20 GOTO 10

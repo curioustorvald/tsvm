@@ -11,9 +11,9 @@ import kotlin.math.absoluteValue
 class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
     "crt_white",
     720,
-    375,
+    480,
     80,
-    25,
+    32,
     254,
     0,
     256.kB(),

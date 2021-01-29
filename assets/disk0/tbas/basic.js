@@ -1,5 +1,6 @@
 // Created by CuriousTorvald on 2020-05-19
 // Version 1.0 Release Date 2020-12-28
+// Version 1.1 Release Date 2021-01-28
 
 /*
 Copyright (c) 2020-2021 CuriousTorvald
@@ -29,15 +30,14 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
     return 0;
 }
 
-const THEVERSION = "1.1-dev";
+const THEVERSION = "1.2-dev";
 
-const PROD = false;
+const PROD = true;
 let INDEX_BASE = 0;
 let TRACEON = (!PROD) && true;
 let DBGON = (!PROD) && true;
 let DATA_CURSOR = 0;
 let DATA_CONSTS = [];
-const DEFUNS_BUILD_DEFUNS = false;
 const BASIC_HOME_PATH = "/home/basic/"
 
 if (system.maxmem() < 8192) {
@@ -52,17 +52,26 @@ let gotoLabels = {};
 let cmdbufMemFootPrint = 0;
 let prompt = "Ok";
 let prescan = false;
+let replCmdBuf = []; // used to store "load filename" and issues it when user confirmed potential data loss
+let replUsrConfirmed = false;
 
 // lambdaBoundVars is used in two different mode:
 //  - PARSER will just store a symbol as a string literal
 //  - EXECUTOR will store the actual info of the bound vars in this format: [astType, astValue]
 let lambdaBoundVars = []; // format: [[a,b],[c]] for "[c]~>[a,b]~>expr"
 
-/* if string can be FOR REAL cast to number */
+/* if an object can be FOR REAL cast to number */
 function isNumable(s) {
-    return s !== undefined && (typeof s.trim == "function" && s.trim() !== "" || s.trim == undefined) && !isNaN(s);
+    // array?
+    if (Array.isArray(s)) return false;
+    // undefined?
+    if (s === undefined) return false;
+    // null string?
+    if (typeof s.trim == "function" && s.trim().length == 0) return false;
+    // else?
+    return !isNaN(s); // NOTE: isNaN('') == false
 }
-
+let tonum = (t) => t*1.0;
 function cloneObject(o) { return JSON.parse(JSON.stringify(o)); }
 
 class ParserError extends Error {
@@ -72,7 +81,7 @@ class ParserError extends Error {
     }
 }
 
-class InternalError extends Error {
+class BASICerror extends Error {
     constructor(...args) {
         super(...args);
         Error.captureStackTrace(this, ParserError);
@@ -83,8 +92,8 @@ let lang = {};
 lang.badNumberFormat = Error("Illegal number format");
 lang.badOperatorFormat = Error("Illegal operator format");
 lang.divByZero = Error("Division by zero");
-lang.badFunctionCallFormat = function(reason) {
-    return Error("Illegal function call" + ((reason) ? ": "+reason : ""));
+lang.badFunctionCallFormat = function(line, reason) {
+    return Error("Illegal function call" + ((line) ? " in "+line : "") + ((reason) ? ": "+reason : ""));
 };
 lang.unmatchedBrackets = Error("Unmatched brackets");
 lang.missingOperand = Error("Missing operand");
@@ -195,7 +204,7 @@ Object.freeze(fs);
 let getUsedMemSize = function() {
     var varsMemSize = 0;
 
-    Object.entries(bStatus.vars).forEach((pair, i) => {
+    Object.entries(bS.vars).forEach((pair, i) => {
         var object = pair[1];
 
         if (Array.isArray(object)) {
@@ -216,26 +225,32 @@ let reLineNum = /^[0-9]+ /;
 //var reBin = /^(0[Bb][01_]+)$/;
 
 // must match partial
-let reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9_]+)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/;
-//let reOps = /\^|;|\*|\/|\+|\-|[<>=]{1,2}/;
-
+let reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9]+(\_[0-9])*)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/;
 let reNum = /[0-9]+/;
 let tbasexit = false;
-const greetText = `Terran BASIC ${THEVERSION}  `+String.fromCharCode(179)+"  Scratchpad Memory: "+vmemsize+" bytes";
-const greetLeftPad = (80 - greetText.length) >> 1;
-const greetRightPad = 80 - greetLeftPad - greetText.length;
+const termWidth = con.getmaxyx()[1];
+const termHeight = con.getmaxyx()[0];
+const greetText = (termWidth >= 70) ? `Terran BASIC ${THEVERSION}  `+String.fromCharCode(179)+"  Scratchpad Memory: "+vmemsize+" bytes" : `Terran BASIC ${THEVERSION}`;
+const greetLeftPad = (termWidth - greetText.length - 6) >> 1;
+const greetRightPad = termWidth - greetLeftPad - greetText.length - 6;
 
+con.clear();
+con.color_pair(253,255);
+print('  ');con.addch(17);
 con.color_pair(0,253);
 print(" ".repeat(greetLeftPad)+greetText+" ".repeat(greetRightPad));
+con.color_pair(253,255);
+con.addch(16);
+con.move(3,1);
+
 con.color_pair(239,255);
-println();
 println(prompt);
 
 // variable object constructor
 /** variable object constructor
  * @param literal Javascript object or primitive
  * @type derived from JStoBASICtype + "usrdefun" + "internal_arrindexing_lazy" + "internal_assignment_object"
- * @see bStatus.builtin["="]
+ * @see bS.builtin["="]
  */
 let BasicVar = function(literal, type) {
     this.bvLiteral = literal;
@@ -247,7 +262,9 @@ let astToString = function(ast, depth, isFinalLeaf) {
     let l__ = "| ";
     
     let recDepth = depth || 0;
-    if (ast === undefined || ast.astType === undefined) return "";
+    if (!isAST(ast)) return "";
+    
+    let hastStr = ast.astHash;
     let sb = "";
     let marker = ("lit" == ast.astType) ? "i" :
                  ("op" == ast.astType) ? "+" :
@@ -255,13 +272,43 @@ let astToString = function(ast, depth, isFinalLeaf) {
                  ("num" == ast.astType) ? "$" :
                  ("array" == ast.astType) ? "[" :
                  ("defun_args" === ast.astType) ? "d" : "f";
-    sb += l__.repeat(recDepth)+`${marker} ${ast.astLnum}: "${ast.astValue}" (astType:${ast.astType}); leaves: ${ast.astLeaves.length}\n`;    
+    sb += l__.repeat(recDepth)+`${marker} ${ast.astLnum}: "${ast.astValue}" (astType:${ast.astType}); leaves: ${ast.astLeaves.length}; hash:"${hastStr}"\n`;    
     for (var k = 0; k < ast.astLeaves.length; k++) {
         sb += astToString(ast.astLeaves[k], recDepth + 1, k == ast.astLeaves.length - 1);
         if (ast.astSeps[k] !== undefined)
             sb += l__.repeat(recDepth)+` sep:${ast.astSeps[k]}\n`;
     }
     sb += l__.repeat(recDepth)+"`"+"-".repeat(22)+'\n';
+    return sb;
+}
+let monadToString = function(monad, depth) {
+    let recDepth = depth || 0;
+    let l__ = "  ";
+    let sb = ` M"${monad.mHash}"(${monad.mType}): `
+    //if (monad.mType == "value") {
+        sb += (monad.mVal === undefined) ? "(undefined)" : (isAST(monad.mVal)) ? `f"${monad.mVal.astHash}"` : (isMonad(monad.mVal)) ? `M"${monad.mVal.mHash}"` : monad.mVal;
+    /*}
+    else if (monad.mType == "list") {
+        let elemToStr = function(e) {
+            return (e === undefined) ? "(undefined)" :
+                (isAST(e)) ? `f"${e.astHash}"` :
+                (isMonad(e)) ? `M"${e.mHash}"` :
+                e
+        }
+        
+        let m = monad.mVal;
+        while (1) {
+            sb += elemToStr(m.p);
+            if (m.n === undefined) break;
+            else {
+                sb += ",";
+                m = m.n;
+            }
+        }
+    }
+    else {
+        throw new BASICerror("unknown monad subtype: "+m.mType);
+    }*/
     return sb;
 }
 let theLambdaBoundVars = function() {
@@ -277,27 +324,103 @@ let theLambdaBoundVars = function() {
     })
     return sb;
 }
+let makeBase32Hash = function() {
+    let e = "YBNDRFG8EJKMCPQXOTLVWIS2A345H769";
+    let m = e.length;
+    return e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)]
+}
 let BasicAST = function() {
     this.astLnum = 0;
     this.astLeaves = [];
     this.astSeps = [];
     this.astValue = undefined;
     this.astType = "null"; // lit, op, string, num, array, function, null, defun_args (! NOT usrdefun !)
+    this.astHash = makeBase32Hash();
 }
-let literalTypes = ["string", "num", "bool", "array", "generator", "usrdefun"];
+// I'm basically duck-typing here...
+let isAST = (object) => (object === undefined) ? false : object.astLeaves !== undefined && object.astHash !== undefined
+let isRunnable = (object) => isAST(object) || object.mType == "funseq";
+let BasicFunSeq = function(f) {
+    if (!Array.isArray(f) || !isAST(f[0])) throw new BASICerror("Not an array of functions");
+    this.mHash = makeBase32Hash();
+    this.mType = "funseq";
+    this.mVal = f;
+}
+/** A List Monad (a special case of Value-monad)
+ * This monad MUST follow the monad law!
+ * @param m a monadic value (Javascript array)
+ */
+let BasicListMonad = function(m) {
+    this.mHash = makeBase32Hash();
+    this.mType = "list";
+    this.mVal = [m];
+}
+/** A Memoisation Monad, aka the most generic monad
+ * This monad MUST follow the monad law!
+ * @param m a monadic value
+ */
+/* Test this monad with following program
+ * This program requires (>>=) to "play by the rules"
+10 LSORT=[XS]~>IF LEN(XS)<1 THEN NIL ELSE LSORT(FILTER([K]~>K<HEAD XS,TAIL XS)) # HEAD(XS)!NIL # LSORT(FILTER([K]~>K>=HEAD XS,TAIL XS))
+20 LREV=[XS]~>MAP([I]~>XS(I),LEN(XS)-1 TO 0 STEP -1)
+30 LINC=[XS]~>MAP([I]~>I+1,XS)
+40 L=7!9!4!5!2!3!1!8!6!NIL
+100 MAGICKER=[XS]~>MRET(LSORT(XS))>>=([X]~>MRET(LREV(X))>>=([X]~>MRET(LINC(X))))
+110 MAGICK_L = MAGICKER(L)
+120 PRINT MAGICK_L()
+ */
+/* Value-monad satisfies monad laws, test with following program
+10 F=[X]~>X*2 : G=[X]~>X^3 : RETN=[X]~>MRET(X)
+
+100 PRINT:PRINT "First law: 'return a >>= k' equals to 'k a'"
+110 K=[X]~>RETN(F(X)) : REM K is monad-returning function
+120 A=42
+130 KM=RETN(A)>>=K
+140 KO=K(A)
+150 PRINT("KM is ";TYPEOF(KM);", ";MJOIN(KM))
+160 PRINT("KO is ";TYPEOF(KO);", ";MJOIN(KO))
+
+200 PRINT:PRINT "Second law: 'm >>= return' equals to 'm'"
+210 M=MRET(G(42))
+220 MM=M>>=RETN
+230 MO=M
+240 PRINT("MM is ";TYPEOF(MM);", ";MJOIN(MM))
+250 PRINT("MO is ";TYPEOF(MO);", ";MJOIN(MO))
+
+300 PRINT:PRINT "Third law: 'm >>= (\x -> k x >>= h)' equals to '(m >>= k) >>= h'"
+310 REM see line 110 for the definition of K
+320 H=[X]~>RETN(G(X)) : REM H is monad-returning function
+330 M=MRET(69)
+340 M1=M>>=([X]~>K(X)>>=H)
+350 M2=(M>>=K)>>=H
+360 PRINT("M1 is ";TYPEOF(M1);", ";MJOIN(M1))
+370 PRINT("M2 is ";TYPEOF(M2);", ";MJOIN(M2))
+ */
+let BasicMemoMonad = function(m) {
+    this.mHash = makeBase32Hash();
+    this.mType = "value";
+    this.mVal = m; // a monadic value
+    this.seq = undefined; // unused
+}
+// I'm basically duck-typing here...
+let isMonad = (o) => (o === undefined) ? false : (o.mType !== undefined);
+
+let literalTypes = ["string", "num", "bool", "array", "generator", "usrdefun", "monad"];
 /*
 @param variable SyntaxTreeReturnObj, of which  the 'troType' is defined in BasicAST.
 @return a value, if the input type if string or number, its literal value will be returned. Otherwise will search the
         BASIC variable table and return the literal value of the BasicVar; undefined will be returned if no such var exists.
 */
 let resolve = function(variable) {
+    if (variable === undefined) return undefined;
     // head error checking
     if (variable.troType === undefined) {
         // primitves types somehow injected from elsewhere (main culprit: MAP)
         //throw Error(`BasicIntpError: trying to resolve unknown object '${variable}' with entries ${Object.entries(variable)}`);
 
-        if (isNumable(variable)) return variable*1;
+        if (isNumable(variable)) return tonum(variable);
         if (Array.isArray(variable)) return variable;
+        if (isGenerator(variable) || isAST(variable) || isMonad(variable)) return variable;
         if (typeof variable == "object")
             throw Error(`BasicIntpError: trying to resolve unknown object '${variable}' with entries ${Object.entries(variable)}`);
         return variable;
@@ -307,10 +430,17 @@ let resolve = function(variable) {
     else if (literalTypes.includes(variable.troType) || variable.troType.startsWith("internal_"))
         return variable.troValue;
     else if (variable.troType == "lit") {
-        var basicVar = bStatus.vars[variable.troValue];
-        if (basicVar === undefined) throw lang.refError(undefined, variable.troValue);
-        if (basicVar.bvLiteral === "") return "";
-        return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
+        // when program tries to call builtin function (e.g. SIN), return usrdefun-wrapped version
+        if (bS.builtin[variable.troValue] !== undefined) {
+            return bS.wrapBuiltinToUsrdefun(variable.troValue);
+        }
+        // else, it's just a plain-old variable :p
+        else {
+            let basicVar = bS.vars[variable.troValue];
+            if (basicVar === undefined) throw lang.refError(undefined, variable.troValue);
+            if (basicVar.bvLiteral === "") return "";
+            return (basicVar !== undefined) ? basicVar.bvLiteral : undefined;
+        }
     }
     else if (variable.troType == "null")
         return undefined;
@@ -318,61 +448,94 @@ let resolve = function(variable) {
     else
         throw Error("BasicIntpError: unknown variable/object with type "+variable.troType+", with value "+variable.troValue);
 }
+let findHighestIndex = function(exprTree) {
+    let highestIndex = [-1,-1];
+    // look for the highest index of [a,b]
+    let rec = function(exprTree) {
+        bF._recurseApplyAST(exprTree, it => {
+            if (it.astType == "defun_args") {
+                let recIndex = it.astValue[0];
+                let ordIndex = it.astValue[1];
+                
+                if (recIndex > highestIndex[0]) {
+                    highestIndex = [recIndex, 0];
+                }
+                
+                if (recIndex == highestIndex[0] && ordIndex > highestIndex[1]) {
+                    highestIndex[1] = ordIndex;
+                }
+            }
+            else if (isAST(it.astValue)) {
+                rec(it.astValue);
+            }
+        });
+    };rec(exprTree);
+    return highestIndex;
+}
+let indexDec = function(node, recIndex) {
+    if (node.astType == "defun_args" && node.astValue[0] === recIndex) {
+        let newNode = cloneObject(node);
+        newNode.astValue[1] -= 1;
+        return newNode;
+    }
+    else return node;
+}
 let curryDefun = function(inputTree, inputValue) {    
     let exprTree = cloneObject(inputTree);
     let value = cloneObject(inputValue);
-    let highestIndex = [-1,-1];
-    // look for the highest index of [a,b]
-    bF._recurseApplyAST(exprTree, it => {
-        if (it.astType == "defun_args") {
-            let recIndex = it.astValue[0];
-            let ordIndex = it.astValue[1];
-            
-            if (recIndex > highestIndex[0]) {
-                highestIndex = [recIndex, 0];
-            }
-            
-            if (recIndex == highestIndex[0] && ordIndex > highestIndex[1]) {
-                highestIndex[1] = ordIndex;
-            }
-        }
-    });
+    let highestIndex = findHighestIndex(exprTree)[0];
     
     if (DBGON) {
         serial.println("[curryDefun] highest index to curry: "+highestIndex);
     }
     
+    let substitution = new BasicAST();
+    if (isAST(value)) {
+        substitution = value;
+    }
+    else {
+        substitution.astLnum = "??";
+        substitution.astType = JStoBASICtype(value);
+        substitution.astValue = value;
+    }
+    
     // substitute the highest index with given value
+    /*bF._recurseApplyAST(exprTree, it => {
+        return (it.astType == "defun_args" && it.astValue[0] === highestIndex[0] && it.astValue[1] === highestIndex[1]) ? substitution : it
+    });*/
+    
+    // substitute the highest index [max recIndex, 0] with given value
+    // and if recIndex is same as the highestIndex and ordIndex is greater than zero,
+    // decrement the ordIndex
     bF._recurseApplyAST(exprTree, it => {
-        if (it.astType == "defun_args" && it.astValue[0] === highestIndex[0] && it.astValue[1] === highestIndex[1]) {
-            /*if (DBGON) {
-                serial.println("[curryDefun] found defun_args #"+it.astValue);
-                serial.println(astToString(it));
-            }*/
-            
-            // apply arg0 into the tree
-            let valueType = JStoBASICtype(value);
-            /*if (valueType === "usrdefun") {
-                it.astLnum = value.astLnum;
-                it.astLeaves = value.astLeaves;
-                it.astSeps = value.astSeps;
-                it.astValue = value.astValue
-                it.astType = value.astType;
-            }
-            else {*/
-                it.astType = valueType
-                it.astValue = value;
-            //}
-            //if (DBGON) serial.println("[curryDefun] applying value "+value);
-
-            /*if (DBGON) {
-                serial.println("[curryDefun] after the task:");
-                serial.println(astToString(it));
-            }*/
-        }
+        return (it.astType == "defun_args" && it.astValue[0] === highestIndex && it.astValue[1] === 0) ? substitution : indexDec(it, highestIndex)
     });
-
+    
     return exprTree;
+}
+let getMonadEvalFun = (monad) => function(lnum, stmtnum, args, sep) {
+    if (!isMonad(monad)) throw lang.badFunctionCallFormat(lnum, "not a monad");
+        
+    if (DBGON) {
+        serial.println("[BASIC.MONADEVAL] monad:");
+        serial.println(monadToString(monad));
+    }
+    
+    if (monad.mType == "funseq") {
+        let arg = args[0];
+        monad.mVal.forEach(f => {
+            arg = bS.getDefunThunk(f)(lnum, stmtnum, [arg]);
+        })
+        return arg;
+    }
+    else {
+        // args are futile
+        return monad.mVal;
+    }
+}
+let listMonConcat = function(parentm, childm) {
+    parentm.mVal = parentm.mVal.concat(childm.mVal);
+    return parentm;
 }
 let countArgs = function(defunTree) {
     let cnt = -1;
@@ -386,7 +549,8 @@ let countArgs = function(defunTree) {
 let argCheckErr = function(lnum, o) {
     if (o === undefined) throw lang.refError(lnum, "(variable is undefined)");
     if (o.troType == "null") throw lang.refError(lnum, o);
-    if (o.troType == "lit" && bStatus.vars[o.troValue] === undefined) throw lang.refError(lnum, o.troValue);
+    if (o.troType == "lit" && bS.builtin[o.troValue] !== undefined) return;
+    if (o.troType == "lit" && bS.vars[o.troValue] === undefined) throw lang.refError(lnum, o.troValue);
 }
 let oneArg = function(lnum, stmtnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
@@ -394,11 +558,16 @@ let oneArg = function(lnum, stmtnum, args, action) {
     var rsvArg0 = resolve(args[0]);
     return action(rsvArg0);
 }
+let oneArgNul = function(lnum, stmtnum, args, action) {
+    if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    var rsvArg0 = resolve(args[0]);
+    return action(rsvArg0);
+}
 let oneArgNum = function(lnum, stmtnum, args, action) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
-    var rsvArg0 = resolve(args[0]);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
+    var rsvArg0 = resolve(args[0], 1);
+    if (!isNumable(rsvArg0)) throw lang.illegalType(lnum, args[0]);
     return action(rsvArg0);
 }
 let twoArg = function(lnum, stmtnum, args, action) {
@@ -409,14 +578,20 @@ let twoArg = function(lnum, stmtnum, args, action) {
     var rsvArg1 = resolve(args[1]);
     return action(rsvArg0, rsvArg1);
 }
+let twoArgNul = function(lnum, stmtnum, args, action) {
+    if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
+    var rsvArg0 = resolve(args[0]);
+    var rsvArg1 = resolve(args[1]);
+    return action(rsvArg0, rsvArg1);
+}
 let twoArgNum = function(lnum, stmtnum, args, action) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     argCheckErr(lnum, args[0]);
-    var rsvArg0 = resolve(args[0]);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, "LH:"+Object.entries(args[0]));
+    var rsvArg0 = resolve(args[0], 1);
+    if (!isNumable(rsvArg0)) throw lang.illegalType(lnum, "LH:"+Object.entries(args[0]));
     argCheckErr(lnum, args[1]);
-    var rsvArg1 = resolve(args[1]);
-    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, "RH:"+Object.entries(args[1]));
+    var rsvArg1 = resolve(args[1], 1);
+    if (!isNumable(rsvArg1)) throw lang.illegalType(lnum, "RH:"+Object.entries(args[1]));
     return action(rsvArg0, rsvArg1);
 }
 let threeArg = function(lnum, stmtnum, args, action) {
@@ -431,15 +606,15 @@ let threeArg = function(lnum, stmtnum, args, action) {
 }
 let threeArgNum = function(lnum, stmtnum, args, action) {
     if (args.length != 3) throw lang.syntaxfehler(lnum, args.length+lang.aG);
-    if (rsvArg0 === undefined) throw lang.refError(lnum, args[0]);
     argCheckErr(lnum, args[0]);
-    if (isNaN(rsvArg0)) throw lang.illegalType(lnum, args[0]);
-    if (rsvArg1 === undefined) throw lang.refError(lnum, args[1]);
+    var rsvArg0 = resolve(args[0], 1);
+    if (!isNumable(rsvArg0)) throw lang.illegalType(lnum, "1H:"+Object.entries(args[0]));
     argCheckErr(lnum, args[1]);
-    if (isNaN(rsvArg1)) throw lang.illegalType(lnum, args[1]);
-    if (rsvArg2 === undefined) throw lang.refError(lnum, args[2]);
+    var rsvArg1 = resolve(args[1], 1);
+    if (!isNumable(rsvArg1)) throw lang.illegalType(lnum, "2H:"+Object.entries(args[1]));
     argCheckErr(lnum, args[2]);
-    if (isNaN(rsvArg2)) throw lang.illegalType(lnum, args[2]);
+    var rsvArg2 = resolve(args[2], 1);
+    if (!isNumable(rsvArg2)) throw lang.illegalType(lnum, "3H:"+Object.entries(args[2]));
     return action(rsvArg0, rsvArg1, rsvArg2);
 }
 let varArg = function(lnum, stmtnum, args, action) {
@@ -459,11 +634,28 @@ let varArgNum = function(lnum, stmtnum, args, action) {
     });
     return action(rsvArg);
 }
+let makeIdFun = () => {
+    let i = new BasicAST();
+    i.astValue = [0,0];
+    i.astType = "defun_args";
+    i.astLnum = "**";
+    
+    let a = new BasicAST();
+    a.astValue = i;
+    a.astType = "usrdefun";
+    a.astLnum = "**";
+    
+    return a;
+}
 let _basicConsts = {
    "NIL": new BasicVar([], "array"),
    "PI": new BasicVar(Math.PI, "num"),
    "TAU": new BasicVar(Math.PI * 2.0, "num"),
    "EULER": new BasicVar(Math.E, "num"),
+   "ID": new BasicVar(makeIdFun(), "usrdefun"),
+   "UNDEFINED": new BasicVar(undefined, "null"),
+   "TRUE": new BasicVar(true, "bool"),
+   "FALSE": new BasicVar(false, "bool")
 };
 Object.freeze(_basicConsts);
 let initBvars = function() {
@@ -477,6 +669,7 @@ let ForGen = function(s,e,t) {
     this.current = this.start;
     this.stepsgn = (this.step > 0) ? 1 : -1;
 }
+// I'm basically duck-typing here...
 let isGenerator = (o) => o.start !== undefined && o.end !== undefined && o.step !== undefined && o.stepsgn !== undefined
 let genToArray = (gen) => {
     let a = [];
@@ -489,21 +682,19 @@ let genToArray = (gen) => {
 }
 let genHasHext = (o) => o.current*o.stepsgn + o.step*o.stepsgn <= (o.end + o.step)*o.stepsgn;
 let genGetNext = (gen, mutated) => {
-    //if (mutated === undefined) throw "InternalError: parameter is missing";
-    if (mutated !== undefined) gen.current = (mutated|0);
+    if (mutated !== undefined) gen.current = tonum(mutated);
     gen.current += gen.step;
-    //serial.println(`[BASIC.FORGEN] ${(mutated|0)} -> ${gen.current}`);
     return genHasHext(gen) ? gen.current : undefined;
 }
 let genToString = (gen) => `Generator: ${gen.start} to ${gen.end}`+((gen.step !== 1) ? ` step ${gen.step}` : '');
 let genReset = (gen) => { gen.current = gen.start }
-let bStatus = {};
-bStatus.gosubStack = [];
-bStatus.forLnums = {}; // key: forVar, value: [lnum, stmtnum]
-bStatus.forStack = []; // forVars only
-bStatus.vars = initBvars(); // contains instances of BasicVars
-bStatus.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
-bStatus.getDimSize = function(array, dim) {
+let bS = {}; // BASIC status
+bS.gosubStack = [];
+bS.forLnums = {}; // key: forVar, value: [lnum, stmtnum]
+bS.forStack = []; // forVars only
+bS.vars = initBvars(); // contains instances of BasicVars
+bS.rnd = 0; // stores mantissa (23 bits long) of single precision floating point number
+bS.getDimSize = function(array, dim) {
     var dims = [];
     while (true) {
         dims.push(array.length);
@@ -515,27 +706,26 @@ bStatus.getDimSize = function(array, dim) {
     }
     return dims[dim];
 };
-bStatus.getArrayIndexFun = function(lnum, stmtnum, arrayName, array) {
+bS.getArrayIndexFun = function(lnum, stmtnum, arrayName, array) {
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
     return function(lnum, stmtnum, args, seps) {
         if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
-        // NOTE: BASIC arrays are index in column-major order, which is OPPOSITE of C/JS/etc.
         return varArgNum(lnum, stmtnum, args, (dims) => {
             if (TRACEON) serial.println("ar dims: "+dims);
 
             let dimcnt = 1;
             let oldIndexingStr = "";
             let indexingstr = "";
-
+            
             dims.forEach(d => {
                 oldIndexingStr = indexingstr;
                 indexingstr += `[${d-INDEX_BASE}]`;
 
                 var testingArr = eval(`array${indexingstr}`);
                 if (testingArr === undefined)
-                    throw lang.subscrOutOfRng(lnum, `${arrayName}${oldIndexingStr} (${lang.ord(dimcnt)} dim)`, d-INDEX_BASE, bStatus.getDimSize(array, dimcnt-1));
+                    throw lang.subscrOutOfRng(lnum, `${arrayName}${oldIndexingStr} (${lang.ord(dimcnt)} dim)`, d-INDEX_BASE, bS.getDimSize(array, dimcnt-1));
 
                 dimcnt += 1;
             });
@@ -550,23 +740,27 @@ bStatus.getArrayIndexFun = function(lnum, stmtnum, arrayName, array) {
 /**
  * @return a Javascript function that when called, evaluates the exprTree
  */
-bStatus.getDefunThunk = function(lnum, stmtnum, exprTree, norename) {
-    if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
-
+bS.getDefunThunk = function(exprTree, norename) {
+    if (!isRunnable(exprTree)) throw new BASICerror("not a syntax tree");
+    
+    // turns funseq-monad into runnable function
+    if (isMonad(exprTree)) return getMonadEvalFun(exprTree);
+    
     let tree = cloneObject(exprTree); // ALWAYS create new tree instance!
+    
     return function(lnum, stmtnum, args, seps) {
         if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
         
         if (!norename) {
             let argsMap = args.map(it => {
-                argCheckErr(lnum, it);
+                //argCheckErr(lnum, it);
                 let rit = resolve(it);
                 return [JStoBASICtype(rit), rit]; // substitute for [astType, astValue]
-            }).reverse();
+            });//.reverse();
             
             // bind arguments
             lambdaBoundVars.unshift(argsMap);
-
+            
             if (DBGON) {
                 serial.println("[BASIC.getDefunThunk.invoke] unthunking: ");
                 serial.println(astToString(tree));
@@ -575,7 +769,7 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree, norename) {
                 serial.println("[BASIC.getDefunThunk.invoke] lambda bound vars:");
                 serial.println(theLambdaBoundVars());
             }
-
+            
             // perform renaming
             bF._recurseApplyAST(tree, (it) => {
                 if ("defun_args" == it.astType) {
@@ -583,22 +777,26 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree, norename) {
                         serial.println("[BASIC.getDefunThunk.invoke] thunk renaming arg-tree branch:");
                         serial.println(astToString(it));
                     }
-
+                    
                     let recIndex = it.astValue[0];
                     let argIndex = it.astValue[1];
                     
                     let theArg = lambdaBoundVars[recIndex][argIndex]; // instanceof theArg == resolved version of SyntaxTreeReturnObj
-
+                    
                     if (theArg !== undefined) { // this "forgiveness" is required to implement currying
                         if (DBGON) {
                             serial.println("[BASIC.getDefunThunk.invoke] thunk renaming-theArg: "+theArg);
                             serial.println(`${Object.entries(theArg)}`);
                         }
-
+                        
+                        if (theArg[0] === "null") {
+                            throw new BASICerror(`Bound variable is ${theArg}; lambdaBoundVars: ${theLambdaBoundVars()}`);
+                        }
+                        
                         it.astValue = theArg[1];
                         it.astType = theArg[0];
                     }
-
+                    
                     if (DBGON) {
                         serial.println("[BASIC.getDefunThunk.invoke] thunk successfully renamed arg-tree branch:");
                         serial.println(astToString(it));
@@ -617,7 +815,7 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree, norename) {
                 serial.println(astToString(tree));
             }
         }
-
+        
         // evaluate new tree
         if (DBGON) {
             serial.println("[BASIC.getDefunThunk.invoke] evaluating tree:");
@@ -632,11 +830,34 @@ bStatus.getDefunThunk = function(lnum, stmtnum, exprTree, norename) {
         return ret;
     }
 };
+bS.wrapBuiltinToUsrdefun = function(funcname) {
+    let argCount = bS.builtin[funcname].argc;
+    
+    if (argCount === undefined) throw new BASICerror(`${funcname} cannot be wrapped into usrdefun`);
+    
+    let leaves = [];
+    for (let k = 0; k < argCount; k++) {
+        let l = new BasicAST();
+        l.astLnum = "**";
+        l.astValue = [0,k];
+        l.astType = "defun_args";
+        
+        leaves.push(l);
+    }
+    
+    let tree = new BasicAST();
+    tree.astLnum = "**";
+    tree.astValue = funcname;
+    tree.astType = "function";
+    tree.astLeaves = leaves;
+    
+    return tree;
+}
 /* Accepts troValue, assignes to BASIC variable, and returns internal_assign_object
  * @params troValue Variable to assign into
  * @params rh the value, resolved
  */
-bStatus.addAsBasicVar = function(lnum, troValue, rh) {
+bS.addAsBasicVar = function(lnum, troValue, rh) {
     if (troValue.arrFull !== undefined) { // assign to existing array
         if (Array.isArray(rh)) throw lang.illegalType(lnum, rh); // no ragged array!
         let arr = eval("troValue.arrFull"+troValue.arrKey);
@@ -647,13 +868,13 @@ bStatus.addAsBasicVar = function(lnum, troValue, rh) {
     else {
         let varname = troValue.toUpperCase();
         //println("input varname: "+varname);
-        let type = JStoBASICtype(rh);
         if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname);
-        bStatus.vars[varname] = new BasicVar(rh, type);
+        let type = JStoBASICtype(rh);
+        bS.vars[varname] = new BasicVar(rh, type);
         return {asgnVarName: varname, asgnValue: rh};
     }
 }
-bStatus.builtin = {
+bS.builtin = {
 /*
 @param lnum line number
 @param args instance of the SyntaxTreeReturnObj
@@ -661,15 +882,14 @@ bStatus.builtin = {
 if no args were given (e.g. "10 NEXT()"), args[0] will be: {troType: null, troValue: , troNextLine: 11}
 if no arg text were given (e.g. "10 NEXT"), args will have zero length
 */
-"=" : {f:function(lnum, stmtnum, args) {
-    // THIS FUNCTION MUST BE COPIED TO 'INPUT'
+"=" : {argc:2, f:function(lnum, stmtnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
 
     var rh = resolve(args[1]);
     if (rh === undefined) throw lang.refError(lnum, "RH:"+args[1].troValue);
 
-    if (isNumable(rh)) rh = rh*1 // if string we got can be cast to number, do it
+    if (isNumable(rh)) rh = tonum(rh) // if string we got can be cast to number, do it
 
     //println(lnum+" = lh: "+Object.entries(args[0]));
     //println(lnum+" = rh raw: "+Object.entries(args[1]));
@@ -677,9 +897,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     //try { println(lnum+" = rh resolved entries: "+Object.entries(rh)); }
     //catch (_) {}
 
-    return bStatus.addAsBasicVar(lnum, troValue, rh);
+    return bS.addAsBasicVar(lnum, troValue, rh);
 }},
-"IN" : {f:function(lnum, stmtnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
+"IN" : {argc:2, f:function(lnum, stmtnum, args) { // almost same as =, but don't actually make new variable. Used by FOR statement
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var troValue = args[0].troValue;
 
@@ -696,126 +916,142 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return {asgnVarName: varname, asgnValue: rh};
     }
 }},
-"==" : {f:function(lnum, stmtnum, args) {
-    return twoArg(lnum, stmtnum, args, (lh,rh) => lh == rh);
+"==" : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArgNul(lnum, stmtnum, args, (lh,rh) => lh == rh);
 }},
-"<>" : {f:function(lnum, stmtnum, args) {
+"<>" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (lh,rh) => lh != rh);
 }},
-"><" : {f:function(lnum, stmtnum, args) {
+"><" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (lh,rh) => lh != rh);
 }},
-"<=" : {f:function(lnum, stmtnum, args) {
+"<=" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh <= rh);
 }},
-"=<" : {f:function(lnum, stmtnum, args) {
+"=<" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh <= rh);
 }},
-">=" : {f:function(lnum, stmtnum, args) {
+">=" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >= rh);
 }},
-"=>" : {f:function(lnum, stmtnum, args) {
+"=>" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >= rh);
 }},
-"<" : {f:function(lnum, stmtnum, args) {
+"<" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh < rh);
 }},
-">" : {f:function(lnum, stmtnum, args) {
+">" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh > rh);
 }},
-"<<" : {f:function(lnum, stmtnum, args) {
+"<<" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh << rh);
 }},
-">>" : {f:function(lnum, stmtnum, args) {
+">>" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh >>> rh);
 }},
-"UNARYMINUS" : {f:function(lnum, stmtnum, args) {
+"UNARYMINUS" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => -lh);
 }},
-"UNARYPLUS" : {f:function(lnum, stmtnum, args) {
+"UNARYPLUS" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => +lh);
 }},
-"UNARYLOGICNOT" : {f:function(lnum, stmtnum, args) {
+"UNARYLOGICNOT" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => !(lh));
 }},
-"UNARYBNOT" : {f:function(lnum, stmtnum, args) {
+"UNARYBNOT" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => ~(lh));
 }},
-"BAND" : {f:function(lnum, stmtnum, args) {
+"BAND" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh & rh);
 }},
-"BOR" : {f:function(lnum, stmtnum, args) {
+"BOR" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh | rh);
 }},
-"BXOR" : {f:function(lnum, stmtnum, args) {
+"BXOR" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh ^ rh);
 }},
-"!" : {f:function(lnum, stmtnum, args) { // Haskell-style CONS
+"!" : {argc:2, f:function(lnum, stmtnum, args) { // Haskell-style CONS
     return twoArg(lnum, stmtnum, args, (lh,rh) => {
-        if (Array.isArray(lh))
-            throw lang.illegalType(lnum, lh); // NO ragged array!
-        if (!Array.isArray(rh))
-            throw lang.illegalType(lnum, rh);
-        return [lh].concat(rh);
+        if (Array.isArray(rh) && Array.isArray(lh))
+            throw lang.illegalType(lnum, lh); // NO ragged array for BASIC array!
+        
+        if (Array.isArray(rh)) {
+            return [lh].concat(rh);
+        }
+        else if (rh.mType === "list") {
+            rh.mVal = [lh].concat(rh.mVal);
+            return rh;
+        }
+        else throw lang.illegalType(lnum, rh);
     });
 }},
-"~" : {f:function(lnum, stmtnum, args) { // array PUSH
+"~" : {argc:2, f:function(lnum, stmtnum, args) { // array PUSH
     return twoArg(lnum, stmtnum, args, (lh,rh) => {
-        if (!Array.isArray(lh))
-            throw lang.illegalType(lnum, lh);
-        if (Array.isArray(rh))
-            throw lang.illegalType(lnum, rh); // NO ragged array!
-        return lh.concat([rh]);
+        if (Array.isArray(lh) && Array.isArray(rh))
+            throw lang.illegalType(lnum, rh); // NO ragged array for BASIC array!
+        
+        if (Array.isArray(lh)) {
+            return lh.concat([rh]);
+        }
+        else if (lh.mType === "list") {
+            lh.mVal = [lh.mVal].concat([rh]);
+            return lh;
+        }
+        else throw lang.illegalType(lnum, lh);
     });
 }},
-"#" : {f:function(lnum, stmtnum, args) { // array CONCAT
+"#" : {argc:2, f:function(lnum, stmtnum, args) { // array CONCAT
     return twoArg(lnum, stmtnum, args, (lh,rh) => {
-        if (!Array.isArray(rh))
-            throw lang.illegalType(lnum, rh);
-        if (!Array.isArray(lh))
-            throw lang.illegalType(lnum, lh);
-        return lh.concat(rh);
+        if (Array.isArray(lh) && Array.isArray(rh)) {
+            return lh.concat(rh);
+        }
+        else if (lh.mType == "list" && rh.mType == "list") {
+            let newMval = lh.mVal.concat(rh.mVal);
+            return new BasicListMonad(newMval);
+        }
+        else
+            throw lang.illegalType(lnum);
     });
 }},
-"+" : {f:function(lnum, stmtnum, args) { // addition, string concat
-    return twoArg(lnum, stmtnum, args, (lh,rh) => (!isNaN(lh) && !isNaN(rh)) ? (lh*1 + rh*1) : (lh + rh));
+"+" : {argc:2, f:function(lnum, stmtnum, args) { // addition, string concat
+    return twoArg(lnum, stmtnum, args, (lh,rh) => (!isNaN(lh) && !isNaN(rh)) ? (tonum(lh) + tonum(rh)) : (lh + rh));
 }},
-"-" : {f:function(lnum, stmtnum, args) {
+"-" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh - rh);
 }},
-"*" : {f:function(lnum, stmtnum, args) {
+"*" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => lh * rh);
 }},
-"/" : {f:function(lnum, stmtnum, args) {
+"/" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
         if (rh == 0) throw lang.divByZero;
         return lh / rh;
     });
 }},
-"\\" : {f:function(lnum, stmtnum, args) { // integer division, rounded towards zero
+"\\" : {argc:2, f:function(lnum, stmtnum, args) { // integer division, rounded towards zero
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
         if (rh == 0) throw lang.divByZero;
         return (lh / rh)|0;
     });
 }},
-"MOD" : {f:function(lnum, stmtnum, args) {
+"MOD" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
         if (rh == 0) throw lang.divByZero;
         return lh % rh;
     });
 }},
-"^" : {f:function(lnum, stmtnum, args) {
+"^" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (lh,rh) => {
         let r = Math.pow(lh, rh);
-        if (isNaN(r)) throw lang.badFunctionCallFormat();
+        if (isNaN(r)) throw lang.badFunctionCallFormat(lnum);
         if (!isFinite(r)) throw lang.divByZero;
         return r;
     });
 }},
-"TO" : {f:function(lnum, stmtnum, args) {
+"TO" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArgNum(lnum, stmtnum, args, (from, to) => new ForGen(from, to, 1));
 }},
-"STEP" : {f:function(lnum, stmtnum, args) {
+"STEP" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (gen, step) => {
         if (!isGenerator(gen)) throw lang.illegalType(lnum, gen);
         return new ForGen(gen.start, gen.end, step);
@@ -831,7 +1067,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return eval(arraydec);
     });
 }},
-"PRINT" : {f:function(lnum, stmtnum, args, seps) {
+"PRINT" : {argc:1, f:function(lnum, stmtnum, args, seps) {
     if (args.length == 0)
         println();
     else {
@@ -844,7 +1080,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
             }
 
             var rsvArg = resolve(args[llll]);
-            if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
+            //if (rsvArg === undefined && args[llll] !== undefined && args[llll].troType != "null") throw lang.refError(lnum, args[llll].troValue);
 
             //serial.println(`${lnum} PRINT ${lang.ord(llll)} arg: ${Object.entries(args[llll])}, resolved: ${rsvArg}`);
 
@@ -863,7 +1099,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 }},
-"EMIT" : {f:function(lnum, stmtnum, args, seps) {
+"EMIT" : {argc:1, f:function(lnum, stmtnum, args, seps) {
     if (args.length == 0)
         println();
     else {
@@ -896,13 +1132,13 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     if (args[args.length - 1] !== undefined && args[args.length - 1].troType != "null") println();
 }},
-"POKE" : {f:function(lnum, stmtnum, args) {
+"POKE" : {argc:2, f:function(lnum, stmtnum, args) {
     twoArgNum(lnum, stmtnum, args, (lh,rh) => sys.poke(lh, rh));
 }},
-"PEEK" : {f:function(lnum, stmtnum, args) {
+"PEEK" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => sys.peek(lh));
 }},
-"GOTO" : {f:function(lnum, stmtnum, args) {
+"GOTO" : {argc:1, f:function(lnum, stmtnum, args) {
     // search from gotoLabels first
     let line = gotoLabels[args[0].troValue];
     // if not found, use resolved variable
@@ -911,30 +1147,30 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     return new JumpObj(line, 0, lnum, line);
 }},
-"GOSUB" : {f:function(lnum, stmtnum, args) {
+"GOSUB" : {argc:1, f:function(lnum, stmtnum, args) {
     // search from gotoLabels first
     let line = gotoLabels[args[0].troValue];
     // if not found, use resolved variable
     if (line === undefined) line = resolve(args[0]);
     if (line < 0) throw lang.syntaxfehler(lnum, line);
 
-    bStatus.gosubStack.push([lnum, stmtnum + 1]);
+    bS.gosubStack.push([lnum, stmtnum + 1]);
     //println(lnum+" GOSUB into "+lh);
     return new JumpObj(line, 0, lnum, line);
 }},
 "RETURN" : {f:function(lnum, stmtnum, args) {
-    var r = bStatus.gosubStack.pop();
+    var r = bS.gosubStack.pop();
     if (r === undefined) throw lang.nowhereToReturn(lnum);
     //println(lnum+" RETURN to "+r);
     return new JumpObj(r[0], r[1], lnum, r);
 }},
-"CLEAR" : {f:function(lnum, stmtnum, args) {
-    bStatus.vars = initBvars();
+"CLEAR" : {argc:0, f:function(lnum, stmtnum, args) {
+    bS.vars = initBvars();
 }},
-"PLOT" : {f:function(lnum, stmtnum, args) {
+"PLOT" : {argc:3, f:function(lnum, stmtnum, args) {
     threeArgNum(lnum, stmtnum, args, (xpos, ypos, color) => graphics.plotPixel(xpos, ypos, color));
 }},
-"AND" : {f:function(lnum, stmtnum, args) {
+"AND" : {argc:2, f:function(lnum, stmtnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map((it) => resolve(it));
     rsvArg.forEach((v) => {
@@ -947,7 +1183,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
     return argum[0] && argum[1];
 }},
-"OR" : {f:function(lnum, stmtnum, args) {
+"OR" : {argc:2, f:function(lnum, stmtnum, args) {
     if (args.length != 2) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     var rsvArg = args.map((it) => resolve(it));
     rsvArg.forEach((v) => {
@@ -960,32 +1196,32 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     });
     return argum[0] || argum[1];
 }},
-"RND" : {f:function(lnum, stmtnum, args) {
+"RND" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => {
         if (!(args.length > 0 && args[0].troValue === 0))
-            bStatus.rnd = Math.random();//(bStatus.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
-        return bStatus.rnd;
+            bS.rnd = Math.random();//(bS.rnd * 214013 + 2531011) % 16777216; // GW-BASIC does this
+        return bS.rnd;
     });
 }},
-"ROUND" : {f:function(lnum, stmtnum, args) {
+"ROUND" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => Math.round(lh));
 }},
-"FLOOR" : {f:function(lnum, stmtnum, args) {
+"FLOOR" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => Math.floor(lh));
 }},
-"INT" : {f:function(lnum, stmtnum, args) { // synonymous to FLOOR
+"INT" : {argc:1, f:function(lnum, stmtnum, args) { // synonymous to FLOOR
     return oneArgNum(lnum, stmtnum, args, (lh) => Math.floor(lh));
 }},
-"CEIL" : {f:function(lnum, stmtnum, args) {
+"CEIL" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => Math.ceil(lh));
 }},
-"FIX" : {f:function(lnum, stmtnum, args) {
+"FIX" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => (lh|0));
 }},
-"CHR" : {f:function(lnum, stmtnum, args) {
+"CHR" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => String.fromCharCode(lh));
 }},
-"TEST" : {f:function(lnum, stmtnum, args) {
+"TEST" : {argc:1, f:function(lnum, stmtnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     return resolve(args[0]);
 }},
@@ -999,12 +1235,12 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     // assign new variable
     // the var itself will have head of the array, and the head itself will be removed from the array
-    bStatus.vars[varname] = new BasicVar(asgnObj.asgnValue[0], JStoBASICtype(asgnObj.asgnValue.shift()));
+    bS.vars[varname] = new BasicVar(asgnObj.asgnValue[0], JStoBASICtype(asgnObj.asgnValue.shift()));
     // stores entire array (sans head) into temporary storage
-    bStatus.vars["for var "+varname] = new BasicVar(asgnObj.asgnValue, "array");
+    bS.vars["for var "+varname] = new BasicVar(asgnObj.asgnValue, "array");
     // put the varname to forstack
-    bStatus.forLnums[varname] = [lnum, stmtnum];
-    bStatus.forStack.push(varname);
+    bS.forLnums[varname] = [lnum, stmtnum];
+    bS.forStack.push(varname);
 }},
 "FOR" : {f:function(lnum, stmtnum, args) { // generator model
     var asgnObj = resolve(args[0]);
@@ -1017,18 +1253,18 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     // assign new variable
     // the var itself will have head of the array, and the head itself will be removed from the array
-    bStatus.vars[varname] = new BasicVar(generator.start, "num");
+    bS.vars[varname] = new BasicVar(generator.start, "num");
     // stores entire array (sans head) into temporary storage
-    bStatus.vars["for var "+varname] = new BasicVar(generator, "generator");
+    bS.vars["for var "+varname] = new BasicVar(generator, "generator");
     // put the varname to forstack
-    bStatus.forLnums[varname] = [lnum, stmtnum];
-    bStatus.forStack.push(varname);
+    bS.forLnums[varname] = [lnum, stmtnum];
+    bS.forStack.push(varname);
 }},
 "NEXT" : {f:function(lnum, stmtnum, args) {
     // if no args were given
     if (args.length == 0 || (args.length == 1 && args.troType == "null")) {
         // go to most recent FOR
-        var forVarname = bStatus.forStack.pop();
+        var forVarname = bS.forStack.pop();
         //serial.println(lnum+" NEXT > forVarname = "+forVarname);
         if (forVarname === undefined) {
             throw lang.nextWithoutFor(lnum);
@@ -1036,24 +1272,24 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
         if (TRACEON) serial.println("[BASIC.FOR] looping "+forVarname);
 
-        var forVar = bStatus.vars["for var "+forVarname].bvLiteral;
+        var forVar = bS.vars["for var "+forVarname].bvLiteral;
 
         if (isGenerator(forVar))
-            bStatus.vars[forVarname].bvLiteral = genGetNext(forVar, bStatus.vars[forVarname].bvLiteral);
+            bS.vars[forVarname].bvLiteral = genGetNext(forVar, bS.vars[forVarname].bvLiteral);
         else
-            bStatus.vars[forVarname].bvLiteral = forVar.shift();
+            bS.vars[forVarname].bvLiteral = forVar.shift();
 
-        if ((bStatus.vars[forVarname].bvLiteral !== undefined)) {
+        if ((bS.vars[forVarname].bvLiteral !== undefined)) {
             // feed popped value back, we're not done yet
-            bStatus.forStack.push(forVarname);
-            let forLnum = bStatus.forLnums[forVarname]
+            bS.forStack.push(forVarname);
+            let forLnum = bS.forLnums[forVarname]
             return new JumpObj(forLnum[0], forLnum[1]+1, lnum, [forLnum[0], forLnum[1]+1]); // goto the statement RIGHT AFTER the FOR-declaration
         }
         else {
             if (isGenerator(forVar))
-                bStatus.vars[forVarname].bvLiteral = forVar.current; // true BASIC compatibility for generator
+                bS.vars[forVarname].bvLiteral = forVar.current; // true BASIC compatibility for generator
             else
-                bStatus.vars[forVarname] === undefined; // unregister the variable
+                bS.vars[forVarname] === undefined; // unregister the variable
 
             return new JumpObj(lnum, stmtnum + 1, lnum, [lnum, stmtnum + 1]);
         }
@@ -1098,7 +1334,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 | `-----------------
 `-----------------
 */
-"INPUT" : {f:function(lnum, stmtnum, args) {
+"INPUT" : {argc:1, f:function(lnum, stmtnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     let troValue = args[0].troValue;
 
@@ -1107,87 +1343,87 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 
     // if string we got can be cast to number, do it
     // NOTE: empty string will be cast to 0, which corresponds to GW-BASIC
-    if (!isNaN(rh)) rh = rh*1
+    if (!isNaN(rh)) rh = tonum(rh)
 
-    return bStatus.addAsBasicVar(lnum, troValue, rh);
+    return bS.addAsBasicVar(lnum, troValue, rh);
 }},
-"CIN" : {f:function(lnum, stmtnum, args) {
+"CIN" : {argc:0, f:function(lnum, stmtnum, args) {
     return sys.read().trim();
 }},
-"END" : {f:function(lnum, stmtnum, args) {
+"END" : {argc:0, f:function(lnum, stmtnum, args) {
     serial.println("Program terminated in "+lnum);
     return new JumpObj(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER - 1, lnum, undefined); // GOTO far-far-away
 }},
-"SPC" : {f:function(lnum, stmtnum, args) {
+"SPC" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (lh) => " ".repeat(lh));
 }},
-"LEFT" : {f:function(lnum, stmtnum, args) {
+"LEFT" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (str, len) => str.substring(0, len));
 }},
-"MID" : {f:function(lnum, stmtnum, args) {
+"MID" : {argc:3, f:function(lnum, stmtnum, args) {
     return threeArg(lnum, stmtnum, args, (str, start, len) => str.substring(start-INDEX_BASE, start-INDEX_BASE+len));
 }},
-"RIGHT" : {f:function(lnum, stmtnum, args) {
+"RIGHT" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (str, len) => str.substring(str.length - len, str.length));
 }},
-"SGN" : {f:function(lnum, stmtnum, args) {
+"SGN" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => (it > 0) ? 1 : (it < 0) ? -1 : 0);
 }},
-"ABS" : {f:function(lnum, stmtnum, args) {
+"ABS" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.abs(it));
 }},
-"SIN" : {f:function(lnum, stmtnum, args) {
+"SIN" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.sin(it));
 }},
-"COS" : {f:function(lnum, stmtnum, args) {
+"COS" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.cos(it));
 }},
-"TAN" : {f:function(lnum, stmtnum, args) {
+"TAN" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.tan(it));
 }},
-"EXP" : {f:function(lnum, stmtnum, args) {
+"EXP" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.exp(it));
 }},
-"ASN" : {f:function(lnum, stmtnum, args) {
+"ASN" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.asin(it));
 }},
-"ACO" : {f:function(lnum, stmtnum, args) {
+"ACO" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.acos(it));
 }},
-"ATN" : {f:function(lnum, stmtnum, args) {
+"ATN" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.atan(it));
 }},
-"SQR" : {f:function(lnum, stmtnum, args) {
+"SQR" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.sqrt(it));
 }},
-"CBR" : {f:function(lnum, stmtnum, args) {
+"CBR" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.cbrt(it));
 }},
-"SINH" : {f:function(lnum, stmtnum, args) {
+"SINH" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.sinh(it));
 }},
-"COSH" : {f:function(lnum, stmtnum, args) {
+"COSH" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.cosh(it));
 }},
-"TANH" : {f:function(lnum, stmtnum, args) {
+"TANH" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.tanh(it));
 }},
-"LOG" : {f:function(lnum, stmtnum, args) {
+"LOG" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArgNum(lnum, stmtnum, args, (it) => Math.log(it));
 }},
-"RESTORE" : {f:function(lnum, stmtnum, args) {
+"RESTORE" : {argc:0, f:function(lnum, stmtnum, args) {
     DATA_CURSOR = 0;
 }},
-"READ" : {f:function(lnum, stmtnum, args) {
+"READ" : {argc:1, f:function(lnum, stmtnum, args) {
     if (args.length != 1) throw lang.syntaxfehler(lnum, args.length+lang.aG);
     let troValue = args[0].troValue;
 
     let rh = DATA_CONSTS[DATA_CURSOR++];
     if (rh === undefined) throw lang.outOfData(lnum);
 
-    return bStatus.addAsBasicVar(lnum, troValue, rh);
+    return bS.addAsBasicVar(lnum, troValue, rh);
 }},
-"DGET" : {f:function(lnum, stmtnum, args) {
+"DGET" : {argc:0, f:function(lnum, stmtnum, args) {
     let r = DATA_CONSTS[DATA_CURSOR++];
     if (r === undefined) throw lang.outOfData(lnum);
     return r;
@@ -1205,31 +1441,29 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 }},
 /* Syopsis: MAP function, functor
  */
-"MAP" : {f:function(lnum, stmtnum, args) {
+"MAP" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (fn, functor) => {
-        // TODO test only works with DEFUN'd functions
-        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (!isRunnable(fn)) throw lang.badFunctionCallFormat(lnum, "first argument is not a function: got "+JStoBASICtype(fn));
         if (!isGenerator(functor) && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, "not a mappable type: "+functor+((typeof functor == "object") ? Object.entries(functor) : ""));
         // generator?
         if (isGenerator(functor)) functor = genToArray(functor);
 
-        return functor.map(it => bStatus.getDefunThunk(lnum, stmtnum, fn)(lnum, stmtnum, [it]));
+        return functor.map(it => bS.getDefunThunk(fn)(lnum, stmtnum, [it]));
     });
 }},
 /* Synopsis: FOLD function, init_value, functor
  * a function must accept two arguments, of which first argument will be an accumulator
  */
-"FOLD" : {f:function(lnum, stmtnum, args) {
+"FOLD" : {argc:3, f:function(lnum, stmtnum, args) {
     return threeArg(lnum, stmtnum, args, (fn, init, functor) => {
-        // TODO test only works with DEFUN'd functions
-        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (!isRunnable(fn)) throw lang.badFunctionCallFormat(lnum, "first argument is not a function: got "+JStoBASICtype(fn));
         if (!isGenerator(functor) && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, `not a mappable type '${Object.entries(args[2])}': `+functor+((typeof functor == "object") ? Object.entries(functor) : ""));
         // generator?
         if (isGenerator(functor)) functor = genToArray(functor);
 
         let akku = init;
         functor.forEach(it => {
-            akku = bStatus.getDefunThunk(lnum, stmtnum, fn)(lnum, stmtnum, [akku, it]);
+            akku = bS.getDefunThunk(fn)(lnum, stmtnum, [akku, it]);
         });
 
         return akku;
@@ -1237,15 +1471,14 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
 }},
 /* Syopsis: FILTER function, functor
  */
-"FILTER" : {f:function(lnum, stmtnum, args) {
+"FILTER" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (fn, functor) => {
-        // TODO test only works with DEFUN'd functions
-        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (!isRunnable(fn)) throw lang.badFunctionCallFormat(lnum, "first argument is not a function: got "+JStoBASICtype(fn));
         if (!isGenerator(functor) && !Array.isArray(functor)) throw lang.syntaxfehler(lnum, `not a mappable type '${Object.entries(args[1])}': `+functor+((typeof functor == "object") ? Object.entries(functor) : (typeof functor)));
         // generator?
         if (isGenerator(functor)) functor = genToArray(functor);
 
-        return functor.filter(it => bStatus.getDefunThunk(lnum, stmtnum, fn)(lnum, stmtnum, [it]));
+        return functor.filter(it => bS.getDefunThunk(fn)(lnum, stmtnum, [it]));
     });
 }},
 /* GOTO and GOSUB won't work but that's probably the best...? */
@@ -1270,20 +1503,20 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     let jmpTarget = args[testvalue];
 
     if (jmpFun !== "GOTO" && jmpFun !== "GOSUB")
-        throw lang.badFunctionCallFormat(`Not a jump statement: ${jmpFun}`)
+        throw lang.badFunctionCallFormat(lnum, `Not a jump statement: ${jmpFun}`)
 
     if (jmpTarget === undefined)
         return undefined;
 
-    return bStatus.builtin[jmpFun].f(lnum, stmtnum, [jmpTarget]);
+    return bS.builtin[jmpFun].f(lnum, stmtnum, [jmpTarget]);
 }},
-"MIN" : {f:function(lnum, stmtnum, args) {
+"MIN" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (lh,rh) => (lh > rh) ? rh : lh);
 }},
-"MAX" : {f:function(lnum, stmtnum, args) {
+"MAX" : {argc:2, f:function(lnum, stmtnum, args) {
     return twoArg(lnum, stmtnum, args, (lh,rh) => (lh < rh) ? rh : lh);
 }},
-"GETKEYSDOWN" : {f:function(lnum, stmtnum, args) {
+"GETKEYSDOWN" : {argc:0, f:function(lnum, stmtnum, args) {
     let keys = [];
     sys.poke(-40, 255);
     for (let k = -41; k >= -48; k--) {
@@ -1291,10 +1524,9 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     }
     return keys;
 }},
-"~<" : {f:function(lnum, stmtnum, args) { // CURRY operator
+"~<" : {argc:2, f:function(lnum, stmtnum, args) { // CURRY operator
     return twoArg(lnum, stmtnum, args, (fn, value) => {
-        // TODO test only works with DEFUN'd functions
-        if (fn.astLeaves === undefined) throw lang.badFunctionCallFormat("Only works with DEFUN'd functions yet");
+        if (!isAST(fn)) throw lang.badFunctionCallFormat(lnum, "left-hand is not a function: got "+JStoBASICtype(fn));
 
         if (DBGON) {
             serial.println("[BASIC.BUILTIN.CURRY] currying this function tree...");
@@ -1313,55 +1545,218 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return curriedTree;
     });
 }},
-"TYPEOF" : {f:function(lnum, stmtnum, args) {
-    return oneArg(lnum, stmtnum, args, bv => {
-        if (bv.Type === undefined || !(bv instanceof BasicVar))
-            return JStoBASICtype(bv);
+"TYPEOF" : {argc:1, f:function(lnum, stmtnum, args) {
+    return oneArgNul(lnum, stmtnum, args, bv => {
+        if (bv === undefined) return "undefined";
+        if (bv.bvType === undefined || !(bv instanceof BasicVar)) {
+            let typestr = JStoBASICtype(bv);
+            if (typestr == "monad")
+                return bv.mType+"-"+typestr;
+            else return typestr;
+        }
         return bv.bvType;
     });
 }},
-"LEN" : {f:function(lnum, stmtnum, args) {
+"LEN" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArg(lnum, stmtnum, args, lh => {
         if (lh.length === undefined) throw lang.illegalType();
         return lh.length;
     });
 }},
-"HEAD" : {f:function(lnum, stmtnum, args) {
+"HEAD" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArg(lnum, stmtnum, args, lh => {
         if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
         return lh[0];
     });
 }},
-"TAIL" : {f:function(lnum, stmtnum, args) {
+"TAIL" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArg(lnum, stmtnum, args, lh => {
         if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
         return lh.slice(1, lh.length);
     });
 }},
-"INIT" : {f:function(lnum, stmtnum, args) {
+"INIT" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArg(lnum, stmtnum, args, lh => {
         if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
         return lh.slice(0, lh.length - 1);
     });
 }},
-"LAST" : {f:function(lnum, stmtnum, args) {
+"LAST" : {argc:1, f:function(lnum, stmtnum, args) {
     return oneArg(lnum, stmtnum, args, lh => {
         if (lh.length === undefined || lh.length < 1) throw lang.illegalType();
         return lh[lh.length - 1];
     });
 }},
-"CLS" : {f:function(lnum, stmtnum, args) {
+"CLS" : {argc:0, f:function(lnum, stmtnum, args) {
     con.clear();
 }},
-// synopsis: ([a] ~> b) $ a, returns b
-"$" : {f:function(lnum, stmtnum, args) {
-    return twoArg(lnum, stmtnum, args, (fn, arg) => {
-        if (JStoBASICtype(fn) != "usrdefun") throw lang.illegalType(lnum, "LH:"+fn);
-        // check arg count for fn
-        let fnArgCount = countArgs(fn);
-        if (fnArgCount != 1) throw lang.badFunctionCallFormat("The function must accept only one parameter but this function wants "+fnArgCount);
-        let thenewfunction = bStatus.getDefunThunk(lnum, stmtnum, fn);
-        return thenewfunction(lnum, stmtnum, [arg]);
+"$" : {argc:2, f:function(lnum, stmtnum, args) {
+    let fn = resolve(args[0]);
+    let value = resolve(args[1]); // FIXME undefined must be allowed as we cannot distinguish between tree-with-value-of-undefined and just undefined
+    
+    if (DBGON) {
+        serial.println("[BASIC.BUILTIN.APPLY] applying this function tree... "+fn);
+        serial.println(astToString(fn));
+        serial.println("[BASIC.BUILTIN.APPLY] with this value: "+value);
+        if (value !== undefined)
+            serial.println(Object.entries(value));
+    }
+    
+    if (fn.mType == "funseq") {
+        return getMonadEvalFun(fn)(lnum, stmtnum, [value]);
+    }
+    else {
+        let valueTree = new BasicAST();
+        valueTree.astLnum = lnum;
+        valueTree.astType = JStoBASICtype(value);
+        valueTree.astValue = value;
+        
+        
+        let newTree = new BasicAST();
+        newTree.astLnum = lnum;
+        newTree.astValue = fn;
+        newTree.astType = "usrdefun";
+        newTree.astLeaves = [valueTree];
+
+        if (DBGON) {
+            serial.println("[BASIC.BUILTIN.APPLY] Here's your applied tree:");
+            serial.println(astToString(newTree));
+        }
+        
+        return bF._executeSyntaxTree(lnum, stmtnum, newTree, 0);
+    }
+}},
+"REDUCE" : {noprod:1, argc:1, f:function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, bv => {
+        if (isAST(bv)) {            
+            if (DBGON) {
+                serial.println("[BASIC.BUILTIN.REDUCE] reducing:");
+                serial.println(astToString(bv));
+                /*if (tree.astType == "usrdefun") {
+                    serial.println("[BASIC.BUILTIN.REDUCE] usrdefun unpack:");
+                    serial.println(astToString(tree.astValue));
+                }*/
+            }
+            
+            let reduced = bF._uncapAST(bv, it => {
+                // TODO beta-eta reduction
+                return it;
+            });
+            
+            if (DBGON) {
+                serial.println("[BASIC.BUILTIN.REDUCE] reduced: "+reduced);
+                serial.println(astToString(reduced));
+            }
+            
+            // re-wrap because tree-executor wants encapsulated function
+            let newTree = new BasicAST();
+            newTree.astLnum = lnum;
+            newTree.astType = JStoBASICtype(reduced);
+            newTree.astValue = reduced;
+            
+            return newTree;
+        }
+        else {
+            return bv;
+        }
+    });
+}},
+/** type: m a -> (a -> m b) -> m b
+ * @param m a monad
+ * @param fnb a function that takes a monadic value from m and returns a new monad. IT'S ENTIRELY YOUR RESPONSIBILITY TO MAKE SURE THIS FUNCTION TO RETURN RIGHT KIND OF MONAD!
+ * @return another monad
+ */
+">>=" : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (ma, a_to_mb) => {
+        if (!isMonad(ma)) throw lang.badFunctionCallFormat(lnum, "left-hand is not a monad: got "+JStoBASICtype(ma));
+        if (!isRunnable(a_to_mb)) throw lang.badFunctionCallFormat(lnum, "right-hand is not a usrdefun: got "+JStoBASICtype(a_to_mb));
+        
+        if (DBGON) {
+            serial.println("[BASIC.BIND] binder:");
+            serial.println(monadToString(ma));
+            serial.println("[BASIC.BIND] bindee:");
+            serial.println(astToString(a_to_mb));
+        }
+        
+        let a = ma.mVal;
+        let mb = bS.getDefunThunk(a_to_mb)(lnum, stmtnum, [a]);
+        
+        if (!isMonad(mb)) throw lang.badFunctionCallFormat(lnum, "right-hand function did not return a monad");
+                  
+        if (DBGON) {
+            serial.println("[BASIC.BIND] bound monad:");
+            serial.println(monadToString(mb));
+        }
+        
+        return mb;
+    });
+}},
+/** type: m a -> m b -> m b
+ * @param m a monad
+ * @param fnb a function that returns a new monad. IT'S ENTIRELY YOUR RESPONSIBILITY TO MAKE SURE THIS FUNCTION TO RETURN RIGHT KIND OF MONAD!
+ * @return another monad
+ */
+">>~" : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (ma, mb) => {
+        if (!isMonad(ma)) throw lang.badFunctionCallFormat(lnum, "left-hand is not a monad: got "+JStoBASICtype(ma));
+        if (!isMonad(mb)) throw lang.badFunctionCallFormat(lnum, "right-hand is not a monad: got "+JStoBASICtype(mb));
+        
+        if (DBGON) {
+            serial.println("[BASIC.BIND] binder:");
+            serial.println(monadToString(ma));
+            serial.println("[BASIC.BIND] bindee:");
+            serial.println(monadToString(mb));
+        }
+        
+        let a = ma.mVal;
+        let b = mb.mVal;
+        
+        return mb;
+    });
+}},
+/** type: (b -> c) -> (a -> b) -> (a -> c)
+ * @param fa a function or a funseq-monad
+ * @param fb a function or a funseq-monad
+ * @return another monad
+ */
+"." : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (fa, fb) => {
+        if (!isRunnable(fa)) throw lang.badFunctionCallFormat(lnum, "left-hand is not a function/funseq: got"+JStoBASICtype(fa));
+        if (!isRunnable(fb)) throw lang.badFunctionCallFormat(lnum, "left-hand is not a function/funseq: got"+JStoBASICtype(fb));
+                  
+        let ma = (isAST(fa)) ? [fa] : fa.mVal;
+        let mb = (isAST(fb)) ? [fb] : fb.mVal;
+        
+        let mc = mb.concat(ma);
+        return new BasicFunSeq(mc);
+    });
+}},
+"MLIST" : {noprod:1, argc:1, f:function(lnum, stmtnum, args) {
+    return oneArgNul(lnum, stmtnum, args, fn => {
+        return new BasicListMonad([fn]);
+    });
+}},
+"MRET" : {argc:1, f:function(lnum, stmtnum, args) {
+    return oneArgNul(lnum, stmtnum, args, fn => {
+        return new BasicMemoMonad(fn);
+    });
+}},
+"MJOIN" : {argc:1, f:function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, m => {
+        if (!isMonad(m)) throw lang.illegalType(lnum, m);
+        return m.mVal;
+    });
+}},
+/*"MEVAL" : {argc:1, f:function(lnum, stmtnum, args) {
+    return varArg(lnum, stmtnum, args, rgs => {
+        let m = rgs[0];
+        let args = rgs.slice(1, rgs.length);
+        return getMonadEvalFun(m)(lnum, stmtnum, args);
+    });
+}},*/
+"GOTOYX" : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (y, x) => {
+        con.move(y + (1-INDEX_BASE),x + (1-INDEX_BASE));
     });
 }},
 "OPTIONDEBUG" : {f:function(lnum, stmtnum, args) {
@@ -1376,66 +1771,51 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         TRACEON = (1 == lh|0);
     });
 }},
-"RESOLVE" : {f:function(lnum, stmtnum, args) {
-    if (DBGON) {
-        return oneArg(lnum, stmtnum, args, (it) => {
-            if (it.astValue !== undefined) {
-                println(lnum+" RESOLVE PRINTTREE")
-                println(astToString(it));
-                if (typeof it.astValue == "object") {
-                    if (it.astValue.astValue !== undefined) {
-                        println(lnum+" RESOLVE PRINTTREE ASTVALUE PRINTTREE");
-                        println(astToString(it.astValue));
-                    }
-                    else {
-                        println(lnum+" RESOLVE PRINTTREE ASTVALUE");
-                        println(it.astValue);
-                    }
+"PRINTMONAD" : {debugonly:1, argc:1, f:function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, (it) => {
+        println(monadToString(it));
+    });
+}}, 
+"RESOLVE" : {debugonly:1, argc:1, f:function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, (it) => {
+        if (isAST(it)) {
+            println(lnum+" RESOLVE PRINTTREE")
+            println(astToString(it));
+            if (typeof it.astValue == "object") {
+                if (isAST(it.astValue)) {
+                    println(lnum+" RESOLVE PRINTTREE ASTVALUE PRINTTREE");
+                    println(astToString(it.astValue));
+                }
+                else {
+                    println(lnum+" RESOLVE PRINTTREE ASTVALUE");
+                    println(it.astValue);
                 }
             }
-            else
-                println(it);
-        });
-    }
-    else {
-        throw lang.syntaxfehler(lnum);
-    }
+        }
+        else
+            println(it);
+    });
 }},
-"RESOLVEVAR" : {f:function(lnum, stmtnum, args) {
-    if (DBGON) {
-        return oneArg(lnum, stmtnum, args, (it) => {
-            let v = bStatus.vars[args[0].troValue];
-            if (v === undefined) println("Undefined variable: "+args[0].troValue);
-            else println(`type: ${v.bvType}, value: ${v.bvLiteral}`);
-        });
-    }
-    else {
-        throw lang.syntaxfehler(lnum);
-    }
+"RESOLVEVAR" : {debugonly:1, argc:1, f:function(lnum, stmtnum, args) {
+    return oneArg(lnum, stmtnum, args, (it) => {
+        let v = bS.vars[args[0].troValue];
+        if (v === undefined) println("Undefined variable: "+args[0].troValue);
+        else println(`type: ${v.bvType}, value: ${v.bvLiteral}`);
+    });
 }},
-"UNRESOLVE" : {f:function(lnum, stmtnum, args) {
-    if (DBGON) {
-        println(args[0]);
-    }
-    else {
-        throw lang.syntaxfehler(lnum);
-    }
+"UNRESOLVE" : {debugonly:1, argc:1, f:function(lnum, stmtnum, args) {
+    println(args[0]);
 }},
-"UNRESOLVE0" : {f:function(lnum, stmtnum, args) {
-    if (DBGON) {
-        println(Object.entries(args[0]));
-    }
-    else {
-        throw lang.syntaxfehler(lnum);
-    }
+"UNRESOLVE0" : {debugonly:1, argc:1, f:function(lnum, stmtnum, args) {
+    println(Object.entries(args[0]));
 }}
 };
-Object.freeze(bStatus.builtin);
-let bF = {};
-bF._1os = {"!":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1,":":1,"$":1};
-bF._2os = {"<":1,"=":1,">":1,"~":1,"-":1,"$":1,"*":1};
-bF._3os = {"<":1,"=":1,">":1,"~":1,"-":1,"$":1,"*":1}
-bF._uos = {"+":1,"-":1,"NOT":1,"BNOT":1};
+Object.freeze(bS.builtin);
+let bF = {}; // BASIC functions
+bF._1os = {"!":1,"~":1,"#":1,"<":1,"=":1,">":1,"*":1,"+":1,"-":1,"/":1,"^":1,":":1,"$":1,".":1,"@":1,"\\":1,"%":1,"|":1,"`":1};
+//bF._2os = {"<":1,"=":1,">":1,"~":1,"-":1,"$":1,"*":1,"!":1,"#":1};
+//bF._3os = {"<":1,"=":1,">":1,"~":1,"-":1,"$":1,"*":1}
+bF._uos = {"+":1,"-":1,"NOT":1,"BNOT":1,"^":1,"@":1,"`":1};
 bF._isNum = function(code) {
     return (code >= 0x30 && code <= 0x39) || code == 0x5F;
 };
@@ -1448,12 +1828,12 @@ bF._isNumSep = function(code) {
 bF._is1o = function(code) {
     return bF._1os[String.fromCharCode(code)]
 };
-bF._is2o = function(code) {
+/*bF._is2o = function(code) {
     return bF._2os[String.fromCharCode(code)]
 };
 bF._is3o = function(code) {
     return bF._3os[String.fromCharCode(code)]
-};
+};*/
 bF._isUnary = function(code) {
     return bF._uos[String.fromCharCode(code)]
 }
@@ -1473,34 +1853,38 @@ bF._isSep = function(code) {
     return code == 0x2C || code == 0x3B;
 };
 // define operator precedence here...
-// NOTE: do NOT put falsy value here!!
+// NOTE: do NOT put falsy value (e.g. 0) here!!
 bF._opPrc = {
     // function call in itself has highest precedence
-    "^":1,
-    "*":2,"/":2,"\\":2,
-    "MOD":3,
-    "+":4,"-":4,
-    "NOT":5,"BNOT":5,
-    "<<":6,">>":6,
-    "<":7,">":7,"<=":7,"=<":7,">=":7,"=>":7,
-    "==":8,"<>":8,"><":8,
-    "MIN":10,"MAX":10,
-    "BAND":20,
-    "BXOR":21,
-    "BOR":22,
-    "AND":30,
-    "OR":31,
-    "TO":40,
-    "STEP":41,
-    "!":50,"~":51, // array CONS and PUSH
-    "#":52, // array concat
-    "~<": 100, // curry operator
-    "~>": 101, // closure operator
-    "$": 200, // apply operator
-    "=":999,
-    "IN":1000
-};
-bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"~>":1,"$":1}; // ~< and ~> cannot have same associativity
+    "`":10, // MJOIN
+    "^":20,
+    "*":30,"/":30,"\\":20,
+    "MOD":40,
+    "+":50,"-":50,
+    "NOT":60,"BNOT":60,
+    "<<":70,">>":70,
+    "<":80,">":80,"<=":80,"=<":80,">=":80,"=>":80,
+    "==":90,"<>":90,"><":90,
+    "MIN":100,"MAX":100,
+    "BAND":200,
+    "BXOR":201,
+    "BOR":202,
+    "AND":300,
+    "OR":301,
+    "TO":400,
+    "STEP":401,
+    "!":500,"~":501, // array CONS and PUSH
+    "#":502, // array concat
+    ".": 600, // compo operator
+    "$": 600, // apply operator
+    "~<": 601, // curry operator
+    "@":700, // MRET
+    "~>": 1000, // closure operator
+    ">>~": 1000, // monad sequnce operator
+    ">>=": 1000, // monad bind operator
+    "=":9999,"IN":9999
+}; // when to ops have same index of prc but different in associativity, right associative op gets higher priority (at least for the current parser implementation)
+bF._opRh = {"^":1,"=":1,"!":1,"IN":1,"~>":1,"$":1,".":1,">>=":1,">>~":1,">!>":1,"@":1,"`":1}; // ~< and ~> cannot have same associativity
 // these names appear on executeSyntaxTree as "exceptional terms" on parsing (regular function calls are not "exceptional terms")
 bF._tokenise = function(lnum, cmd) {
     var _debugprintStateTransition = false;
@@ -1623,16 +2007,13 @@ bF._tokenise = function(lnum, cmd) {
             }
         }
         else if ("op" == mode) {
-            if (bF._is2o(charCode) && bF._opPrc[sb + char]) {
-                sb += char;
-                mode = "o2";
+            if (bF._is1o(charCode)) {
+                tokens.push(sb); sb = "" + char; states.push(mode);
+                mode = "op";
             }
             else if (bF._isUnary(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
             }
-            else if (bF._is1o(charCode)) {
-                throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
-            }
             else if (bF._isNum(charCode)) {
                 tokens.push(sb); sb = "" + char; states.push(mode);
                 mode = "num";
@@ -1655,68 +2036,6 @@ bF._tokenise = function(lnum, cmd) {
             }
             else {
                 tokens.push(sb); sb = "" + char; states.push(mode);
-                mode = "lit";
-            }
-        }
-        else if ("o2" == mode) {
-            if (bF._is3o(charCode) && bF._opPrc[sb + char]) {
-                sb += char;
-                mode = "o3";
-            }
-            else if (bF._is1o(charCode) || bF._is2o(charCode)) {
-                throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
-            }
-            else if (bF._isNum(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "num";
-            }
-            else if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; states.push("op");
-                mode = "qot";
-            }
-            else if (" " == char) {
-                tokens.push(sb); sb = ""; states.push("op");
-                mode = "limbo";
-            }
-            else if (bF._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "paren"
-            }
-            else if (bF._isSep(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "sep";
-            }
-            else {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "lit";
-            }
-        }
-        else if ("o3" == mode) {
-            if (bF._is1o(charCode) || bF._is2o(charCode) || bF._is3o(charCode)) {
-                throw lang.syntaxfehler(lnum, lang.badOperatorFormat);
-            }
-            else if (bF._isNum(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "num";
-            }
-            else if (0x22 == charCode) {
-                tokens.push(sb); sb = ""; states.push("op");
-                mode = "qot";
-            }
-            else if (" " == char) {
-                tokens.push(sb); sb = ""; states.push("op");
-                mode = "limbo";
-            }
-            else if (bF._isParen(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "paren"
-            }
-            else if (bF._isSep(charCode)) {
-                tokens.push(sb); sb = "" + char; states.push("op");
-                mode = "sep";
-            }
-            else {
-                tokens.push(sb); sb = "" + char; states.push("op");
                 mode = "lit";
             }
         }
@@ -1893,29 +2212,34 @@ bF._tokenise = function(lnum, cmd) {
     }
 
     if (tokens.length != states.length) {
-        throw new InternalError("size of tokens and states does not match (line: "+lnum+")\n"+
+        throw new BASICerror("size of tokens and states does not match (line: "+lnum+")\n"+
         tokens+"\n"+states);
     }
 
     return { "tokens": tokens, "states": states };
 };
-bF._parserElaboration = function(lnum, tokens, states) {
-    var _debugprintElaboration = false;
-    if (_debugprintElaboration) println("@@ ELABORATION @@");
-    var k = 0;
+bF._parserElaboration = function(lnum, ltokens, lstates) {
+    let _debugprintElaboration = (!PROD) && true;
+    if (_debugprintElaboration) serial.println("@@ ELABORATION @@");
+    
+    let tokens = cloneObject(ltokens);
+    let states = cloneObject(lstates);
+    
+    let k = 0;
 
     // NOTE: malformed numbers (e.g. "_b3", "_", "__") must be re-marked as literal or syntax error
-
+    
     while (k < states.length) { // using while loop because array size will change during the execution
+        // turn errenously checked as number back into a literal
         if (states[k] == "num" && !reNumber.test(tokens[k]))
             states[k] = "lit";
+        // turn back into an op if operator is errenously checked as a literal
         else if (states[k] == "lit" && bF._opPrc[tokens[k].toUpperCase()] !== undefined)
             states[k] = "op";
-        else if (tokens[k].toUpperCase() == "TRUE" || tokens[k].toUpperCase() == "FALSE")
+        // turn TRUE and FALSE into boolean
+        else if ((tokens[k].toUpperCase() == "TRUE" || tokens[k].toUpperCase() == "FALSE") && states[k] != "qot")
             states[k] = "bool";
-        else if (tokens[k] == ":" && states[k] == "op")
-            states[k] = "seq";
-
+        
         // decimalise hex/bin numbers (because Nashorn does not support binary literal)
         if (states[k] == "num") {
             if (tokens[k].toUpperCase().startsWith("0B")) {
@@ -1923,17 +2247,105 @@ bF._parserElaboration = function(lnum, tokens, states) {
             }
         }
 
+        k += 1;
+    }
+        
+    k = 0; let l = states.length;
+    while (k < l) {
+        let lookahead012 = tokens[k]+tokens[k+1]+tokens[k+2];
+        let lookahead01 = tokens[k]+tokens[k+1]
+        
+        // turn three consecutive ops into a trigraph
+        if (k < states.length - 3 && states[k] == "op" && states[k+1] == "op" && states[k+2] == "op" && bF._opPrc[lookahead012]) {
+            if (_debugprintElaboration) serial.println(`[ParserElaboration] Line ${lnum}: Trigraph (${lookahead012}) found starting from the ${lang.ord(k+1)} token of [${tokens}]`);
+            
+            tokens[k] = lookahead012
+            
+            // remove two future elements by splicing them
+            let oldtkn = cloneObject(tokens);
+            let oldsts = cloneObject(states);
+            tokens = oldtkn.slice(0, k+1).concat(oldtkn.slice(k+3, oldtkn.length));
+            states = oldsts.slice(0, k+1).concat(oldsts.slice(k+3, oldsts.length));
+            l -= 2;
+        }
+        // turn two consecutive ops into a digraph
+        else if (k < states.length - 2 && states[k] == "op" && states[k+1] == "op" && bF._opPrc[lookahead01]) {
+            if (_debugprintElaboration) serial.println(`[ParserElaboration] Line ${lnum}: Digraph (${lookahead01}) found starting from the ${lang.ord(k+1)} token of [${tokens}]`);
+            
+            tokens[k] = lookahead01;
+            
+            // remove two future elements by splicing them
+            let oldtkn = cloneObject(tokens);
+            let oldsts = cloneObject(states);
+            tokens = oldtkn.slice(0, k+1).concat(oldtkn.slice(k+2, oldtkn.length));
+            states = oldsts.slice(0, k+1).concat(oldsts.slice(k+2, oldsts.length));
+            l -= 1;
+        }
+        // turn (:) into a seq
+        else if (tokens[k] == ":" && states[k] == "op")
+            states[k] = "seq";
 
         k += 1;
     }
+    
+    return {"tokens":tokens, "states":states};
 };
+/**
+ * Destructively transforms an AST (won't unpack capsulated trees by default)
+ * 
+ * To NOT modify the tree, make sure you're not modifying any properties of the object */
 bF._recurseApplyAST = function(tree, action) {
-    if (tree.astLeaves === undefined || tree.astLeaves[0] === undefined)
-        return action(tree);
-    else {
-        action(tree);
-        tree.astLeaves.forEach(it => bF._recurseApplyAST(it, action))
+    if (!isAST(tree)) throw new BASICerror(`tree is not a AST (${tree})`);
+    
+    if (tree.astLeaves !== undefined && tree.astLeaves[0] === undefined) {
+        /*if (DBGON) {
+            serial.println(`RECURSE astleaf`);
+            serial.println(astToString(tree));
+        }*/
+        
+        return action(tree) || tree;
     }
+    else {
+        let newLeaves = tree.astLeaves.map(it => bF._recurseApplyAST(it, action))
+        
+        /*if (DBGON) {
+            serial.println(`RECURSE ast`);
+            serial.println(astToString(tree));
+        }*/
+        
+        let newTree = action(tree);
+        
+        if (newTree !== undefined) {
+            tree.astLnum = newTree.astLnum;
+            tree.astValue = newTree.astValue;
+            tree.astSeps = newTree.astSeps;
+            tree.astType = newTree.astType;
+            // weave astLeaves
+            for (let k = 0; k < tree.astLeaves.length; k++) {
+                if (newLeaves[k] !== undefined) tree.astLeaves[k] = newLeaves[k];
+            }
+        }
+    }
+}
+/**
+ * Returns a copy of BasicAST where its 'capsulated' trees are fully uncapsulated.
+ */
+bF._uncapAST = function(tree, action) {
+    let expr = cloneObject(tree);
+    bF._recurseApplyAST(expr, it => {
+        if (isAST(it.astValue)) {
+            let capTree = bF._uncapAST(it.astValue, action);
+            it.astLnum = capTree.astLnum;
+            it.astValue = capTree.astValue;
+            it.astSeps = capTree.astSeps;
+            it.astType = capTree.astType;
+            it.astLeaves = capTree.astLeaves;
+        }
+        
+        return action(it);
+    });
+    action(expr);
+    return expr;
 }
 /** EBNF notation:
 (* quick reference to EBNF *)
@@ -2238,7 +2650,7 @@ bF._parseStmt = function(lnum, tokens, states, recDepth) {
         treeHead.astLeaves[0].astLeaves = defunArgDeclSeps.map(i=>bF._parseIdent(lnum, [tokens[i]], [states[i]], recDepth + 1));
 
         // parse function body
-        let parseFunction = (DEFUNS_BUILD_DEFUNS) ? bF._parseStmt : bF._parseExpr;
+        let parseFunction = bF._parseExpr;
         treeHead.astLeaves[1] = parseFunction(lnum,
             tokens.slice(parenEnd + 2, tokens.length),
             states.slice(parenEnd + 2, states.length),
@@ -2386,6 +2798,8 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
     let parenStart = -1;
     let parenEnd = -1;
 
+    let uptkn = "";
+    
     // Scan for unmatched parens and mark off the right operator we must deal with
     // every function_call need to re-scan because it is recursively called
     for (let k = 0; k < tokens.length; k++) {
@@ -2402,12 +2816,14 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
 
         // determine the right operator to deal with
         if (parenDepth == 0) {
+            let uptkn = tokens[k].toUpperCase();
+            
             if (states[k] == "op" && bF.isSemanticLiteral(tokens[k-1], states[k-1]) &&
-                    ((bF._opPrc[tokens[k].toUpperCase()] > topmostOpPrc) ||
-                        (!bF._opRh[tokens[k].toUpperCase()] && bF._opPrc[tokens[k].toUpperCase()] == topmostOpPrc))
+                    ((bF._opPrc[uptkn] > topmostOpPrc) ||
+                        (!bF._opRh[uptkn] && bF._opPrc[uptkn] == topmostOpPrc))
             ) {
-                topmostOp = tokens[k].toUpperCase();
-                topmostOpPrc = bF._opPrc[tokens[k].toUpperCase()];
+                topmostOp = uptkn;
+                topmostOpPrc = bF._opPrc[uptkn];
                 operatorPos = k;
             }
         }
@@ -2462,7 +2878,7 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
 
     // ## case for:
     //    | kywd , expr (* kywd = ? words that exists on the list of predefined function that are not operators ? ; *)
-    if (bStatus.builtin[headTkn] && headSta == "lit" && !bF._opPrc[headTkn] &&
+    if (bS.builtin[headTkn] && headSta == "lit" && !bF._opPrc[headTkn] &&
         states[1] != "paren"
     ) {
         bF.parserPrintdbgline('e', 'Builtin Function Call w/o Paren', lnum, recDepth);
@@ -2522,7 +2938,9 @@ bF._parseExpr = function(lnum, tokens, states, recDepth, ifMode) {
             else if (topmostOp === "+") treeHead.astValue = "UNARYPLUS"
             else if (topmostOp === "NOT") treeHead.astValue = "UNARYLOGICNOT"
             else if (topmostOp === "BNOT") treeHead.astValue = "UNARYBNOT"
-            else throw new ParserError(`Unknown unary op '${topmostOp}'`)
+            else if (topmostOp === "@") treeHead.astValue = "MRET"
+            else if (topmostOp === "`") treeHead.astValue = "MJOIN"
+            else throw new ParserError(`Unknown unary op '${topmostOp}'`);
 
             treeHead.astLeaves[0] = bF._parseExpr(lnum,
                 tokens.slice(operatorPos + 1, tokens.length),
@@ -2809,15 +3227,15 @@ bF._parseLit = function(lnum, tokens, states, recDepth, functionMode) {
     return treeHead;
 }
 /**
- * @return: Array of [recurseIndex, orderlyIndex], both corresponds to the de-bruijn indexing
+ * @return: Array of [recurseIndex, orderlyIndex], where recurseIndex is in reverse and orderlyIndex is not
  */
-bF._findDeBruijnIndex = function(varname) {
+bF._findDeBruijnIndex = function(varname, offset) {
     let recurseIndex = -1;
     let orderlyIndex = -1;
     for (recurseIndex = 0; recurseIndex < lambdaBoundVars.length; recurseIndex++) {
         orderlyIndex = lambdaBoundVars[recurseIndex].findIndex(it => it == varname);
         if (orderlyIndex != -1)
-            return [recurseIndex, orderlyIndex];
+            return [recurseIndex + (offset || 0), orderlyIndex];
     }
     throw new ParserError("Unbound variable: "+varname);
 }
@@ -2828,9 +3246,9 @@ bF._pruneTree = function(lnum, tree, recDepth) {
     if (tree === undefined) return;
     
     if (DBGON) {
-        serial.println("[Parser.PRUNE] pruning following subtree:");
+        serial.println("[Parser.PRUNE] pruning following subtree, lambdaBoundVars = "+Object.entries(lambdaBoundVars)); // theLambdaBoundVars() were not formatted for this use case!
         serial.println(astToString(tree));
-        if (tree.astValue !== undefined && tree.astValue.astValue !== undefined) {
+        if (isAST(tree) && isAST(tree.astValue)) {
             serial.println("[Parser.PRUNE] unpacking astValue:");
             serial.println(astToString(tree.astValue));
         }
@@ -2852,7 +3270,7 @@ bF._pruneTree = function(lnum, tree, recDepth) {
         let vars = nameTree.astLeaves.map((it, i) => {
             if (it.astType !== "lit") throw new ParserError("Malformed bound variable for function definition; tree:\n"+astToString(nameTree));
             return it.astValue;
-        }).reverse();
+        });//.reverse();
         
         lambdaBoundVars.unshift(vars);
         
@@ -2897,11 +3315,18 @@ bF._pruneTree = function(lnum, tree, recDepth) {
         
         // rename the parameters
         bF._recurseApplyAST(exprTree, (it) => {
-            if (it.astType == "lit" || it.astType == "function") {
+            if (it.astType == "lit" || it.astType == "function") {                
                 // check if parameter name is valid
                 // if the name is invalid, regard it as a global variable (i.e. do nothing)
                 try {
-                    it.astValue = bF._findDeBruijnIndex(it.astValue);
+                    let dbi = bF._findDeBruijnIndex(it.astValue);
+                    
+                    if (DBGON) {
+                        serial.println(`index for ${it.astValue}: ${dbi}`)
+                    }
+                    
+                    
+                    it.astValue = dbi;
                     it.astType = "defun_args";
                 }
                 catch (_) {}
@@ -2941,7 +3366,7 @@ bF._pruneTree = function(lnum, tree, recDepth) {
     if (DBGON) {
         serial.println("[Parser.PRUNE] pruned subtree:");
         serial.println(astToString(tree));
-        if (tree.astValue !== undefined && tree.astValue.astValue !== undefined) {
+        if (isAST(tree) && isAST(tree.astValue)) {
             serial.println("[Parser.PRUNE] unpacking astValue:");
             serial.println(astToString(tree.astValue));
         }
@@ -2960,8 +3385,9 @@ let JStoBASICtype = function(object) {
     else if (object === undefined) return "null";
     else if (object.arrName !== undefined) return "internal_arrindexing_lazy";
     else if (object.asgnVarName !== undefined) return "internal_assignment_object";
-    else if (object instanceof ForGen || isGenerator(object)) return "generator";
-    else if (object instanceof BasicAST || object.astLeaves !== undefined) return "usrdefun";
+    else if (isGenerator(object)) return "generator";
+    else if (isAST(object)) return "usrdefun";
+    else if (isMonad(object)) return "monad";
     else if (Array.isArray(object)) return "array";
     else if (isNumable(object)) return "num";
     else if (typeof object === "string" || object instanceof String) return "string";
@@ -2984,9 +3410,9 @@ let JumpObj = function(targetLnum, targetStmtNum, fromLnum, rawValue) {
 bF._makeRunnableFunctionFromExprTree = function(lnum, stmtnum, expression, args, recDepth, _debugExec, recWedge) {
     // register variables
     let defunArgs = args.map(it => {
-        let rit = resolve(it)
+        let rit = resolve(it);
         return [JStoBASICtype(rit), rit];
-    }).reverse();
+    });//.reverse();
     lambdaBoundVars.unshift(defunArgs);
     
     if (_debugExec) {
@@ -3038,13 +3464,13 @@ bF._makeRunnableFunctionFromExprTree = function(lnum, stmtnum, expression, args,
         });
     };bindVar(expression, 0);
     
-
+    
     if (_debugExec) {
         serial.println(recWedge+"usrdefun dereference final tree:");
         serial.println(astToString(expression));
     }
     
-    return bStatus.getDefunThunk(lnum, stmtnum, expression, true);
+    return bS.getDefunThunk(expression, true);
 }
 /**
  * @param lnum line number of BASIC
@@ -3055,6 +3481,11 @@ bF._makeRunnableFunctionFromExprTree = function(lnum, stmtnum, expression, args,
  */
 bF._troNOP = function(lnum, stmtnum) { return new SyntaxTreeReturnObj("null", undefined, [lnum, stmtnum+1]); }
 bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
+    if (syntaxTree == undefined) return bF._troNOP(lnum, stmtnum);
+    if (syntaxTree.astLeaves === undefined && syntaxTree.astValue === undefined) {
+        throw new BASICerror("not a syntax tree");
+    }
+    
     if (lnum === undefined || stmtnum === undefined) throw Error(`Line or statement number is undefined: (${lnum},${stmtnum})`);
 
     let _debugExec = (!PROD) && true;
@@ -3068,17 +3499,18 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
         serial.println(astToString(syntaxTree));
     }
 
-    if (syntaxTree == undefined) return bF._troNOP(lnum, stmtnum);
-
-    let callingUsrdefun = (syntaxTree.astType == "usrdefun" && syntaxTree.astLeaves[0] !== undefined); // usually (~<) will make this 'true'
+    let callingUsrdefun = (syntaxTree.astType == "usrdefun" && syntaxTree.astLeaves[0] !== undefined);
+    // do NOT substitute (syntaxTree.astType == "usrdefun") with isAST; doing so will break (=) operator
+    // calling usrdefun without any args will make leaves[0] to be null-node but not undefined
+    // funseq-monad will be dealt with on (func === undefined) branch
     
-    if (syntaxTree.astValue == undefined) { // empty meaningless parens
+    if (syntaxTree.astValue == undefined && syntaxTree.mVal == undefined) { // empty meaningless parens
         if (syntaxTree.astLeaves.length > 1) throw Error("WTF");
         return bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth);
     }
     // array indexing in the tree (caused by indexing array within recursive DEFUN)
     else if (syntaxTree.astType == "array" && syntaxTree.astLeaves[0] !== undefined) {
-        let indexer = bStatus.getArrayIndexFun(lnum, stmtnum, "substituted array", syntaxTree.astValue);
+        let indexer = bS.getArrayIndexFun(lnum, stmtnum, "substituted array", syntaxTree.astValue);
         let args = syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1));
         let retVal = indexer(lnum, stmtnum, args);
         if (_debugExec) serial.println(recWedge+`indexing substituted array(${Object.entries(args)}) = ${Object.entries(retVal)}`);
@@ -3091,10 +3523,10 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
     // closure
     // type: closure_args ~> (expr)
     else if (syntaxTree.astType == "op" && syntaxTree.astValue == "~>") {
-        throw new InternalError("Untended closure"); // closure definition must be 'pruned' by the parser
+        throw new BASICerror("Untended closure"); // closure definition must be 'pruned' by the parser
     }
     else if (syntaxTree.astType == "function" && syntaxTree.astValue == "DEFUN") {
-        throw new InternalError("Untended DEFUN"); // DEFUN must be 'pruned' by the parser
+        throw new BASICerror("Untended DEFUN"); // DEFUN must be 'pruned' by the parser
     }
     else if (syntaxTree.astType == "function" || syntaxTree.astType == "op" || callingUsrdefun) {
         if (_debugExec) serial.println(recWedge+"function|operator");
@@ -3108,10 +3540,12 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
                     syntaxTree.astLeaves.map(it => bF._executeSyntaxTree(lnum, stmtnum, it, recDepth + 1)), // the args
                     recDepth, _debugExec, recWedge
                 )
-            : (bStatus.builtin[funcName] === undefined)
+            : (bS.builtin[funcName] === undefined)
                 ? undefined
-            : bStatus.builtin[funcName].f;
+            : (!DBGON && bS.builtin[funcName].debugonly) ? "NO_DBG4U" : (PROD && bS.builtin[funcName].noprod) ? "NO_PRODREADY" : bS.builtin[funcName].f;
 
+        if (func === "NO_DBG4U") throw lang.syntaxfehler(lnum);
+        if (func === "NO_PRODREADY") throw lang.syntaxfehler(lnum);
 
         if ("IF" == funcName) {
             if (syntaxTree.astLeaves.length != 2 && syntaxTree.astLeaves.length != 3) throw lang.syntaxfehler(lnum);
@@ -3125,7 +3559,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             }
 
             try {
-                var iftest = bStatus.builtin["TEST"].f(lnum, stmtnum, [testedval]);
+                var iftest = bS.builtin["TEST"].f(lnum, stmtnum, [testedval]);
 
                 let r = (!iftest && syntaxTree.astLeaves[2] !== undefined) ?
                         bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[2], recDepth + 1)
@@ -3142,7 +3576,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             }
         }
         else if ("ON" == funcName) {
-            if (syntaxTree.astLeaves.length < 3) throw lang.badFunctionCallFormat();
+            if (syntaxTree.astLeaves.length < 3) throw lang.badFunctionCallFormat(lnum);
 
             let testValue = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[0], recDepth + 1);
             let functionName = syntaxTree.astLeaves[1].astValue;
@@ -3151,7 +3585,7 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
                 arrays.push(bF._executeSyntaxTree(lnum, stmtnum, syntaxTree.astLeaves[k], recDepth + 1));
 
             try  {
-                let r = bStatus.builtin["ON"].f(lnum, stmtnum, [functionName, testValue].concat(arrays))
+                let r = bS.builtin["ON"].f(lnum, stmtnum, [functionName, testValue].concat(arrays))
                 let r2 = new SyntaxTreeReturnObj(JStoBASICtype(r.jmpReturningValue), r.jmpReturningValue, r.jmpNext);
                 if (_debugExec) serial.println(tearLine);
                 return r2;
@@ -3166,14 +3600,14 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             
             if (_debugExec) {
                 serial.println(recWedge+"fn call name: "+funcName);
-                serial.println(recWedge+"fn call args: "+(args.map(it => it.troType+" "+it.troValue)).join(", "));
+                serial.println(recWedge+"fn call args: "+(args.map(it => (it == undefined) ? it : (it.troType+" "+it.troValue)).join(", ")));
             }
                         
             // func not in builtins (e.g. array access, user-defined function defuns)
             if (func === undefined) {
-                var someVar = bStatus.vars[funcName];
+                var someVar = bS.vars[funcName];
 
-                if (DBGON) {
+                if (someVar !== undefined && DBGON) {
                     serial.println(recWedge+`variable dereference of '${funcName}' : ${someVar.bvLiteral} (bvType: ${someVar.bvType})`);
                     if (typeof someVar.bvLiteral == "object")
                         serial.println(recWedge+"variable as an object : "+Object.entries(someVar.bvLiteral));
@@ -3183,13 +3617,16 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
                     throw lang.syntaxfehler(lnum, funcName + " is undefined");
                 }
                 else if ("array" == someVar.bvType) {
-                    func = bStatus.getArrayIndexFun(lnum, stmtnum, funcName, someVar.bvLiteral);
+                    func = bS.getArrayIndexFun(lnum, stmtnum, funcName, someVar.bvLiteral);
                 }
                 else if ("usrdefun" == someVar.bvType) {
                     // dereference usrdefun
                     let expression = cloneObject(someVar.bvLiteral);
                     lambdaBoundVarsAppended = true;
                     func = bF._makeRunnableFunctionFromExprTree(lnum, stmtnum, expression, args, recDepth, _debugExec, recWedge);
+                }
+                else if ("monad" == someVar.bvType) {
+                    func = getMonadEvalFun(someVar.bvLiteral);
                 }
                 else {
                     throw lang.syntaxfehler(lnum, funcName + " is not a function or an array");
@@ -3203,15 +3640,15 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
             }
 
             let funcCallResult = func(lnum, stmtnum, args, syntaxTree.astSeps);
-
+            
             if (funcCallResult instanceof SyntaxTreeReturnObj) return funcCallResult;
-
+            
             let retVal = (funcCallResult instanceof JumpObj) ? funcCallResult.jmpReturningValue : funcCallResult;
-
+            
             let theRealRet = new SyntaxTreeReturnObj(
-                    JStoBASICtype(retVal),
-                    retVal,
-                    (funcCallResult instanceof JumpObj) ? funcCallResult.jmpNext : [lnum, stmtnum + 1]
+                JStoBASICtype(retVal),
+                retVal,
+                (funcCallResult instanceof JumpObj) ? funcCallResult.jmpNext : [lnum, stmtnum + 1]
             );
             
             // unregister variables
@@ -3236,15 +3673,15 @@ bF._executeSyntaxTree = function(lnum, stmtnum, syntaxTree, recDepth) {
         return theVar;
     }
     else if (syntaxTree.astType == "num") {
-        if (_debugExec) serial.println(recWedge+"num "+((syntaxTree.astValue)*1));
-        let r = new SyntaxTreeReturnObj(syntaxTree.astType, (syntaxTree.astValue)*1, [lnum, stmtnum + 1]);
+        if (_debugExec) serial.println(recWedge+"num "+(tonum(syntaxTree.astValue)));
+        let r = new SyntaxTreeReturnObj(syntaxTree.astType, tonum(syntaxTree.astValue), [lnum, stmtnum + 1]);
         if (_debugExec) serial.println(tearLine);
         return r;
     }
     else if (syntaxTree.astType == "lit" || literalTypes.includes(syntaxTree.astType)) {
         if (_debugExec) {
             serial.println(recWedge+"literal with astType: "+syntaxTree.astType+", astValue: "+syntaxTree.astValue);
-            if (syntaxTree.astValue.astValue !== undefined) {
+            if (isAST(syntaxTree.astValue)) {
                 serial.println(recWedge+"astValue is a tree, unpacking: \n"+astToString(syntaxTree.astValue));
             }
         }
@@ -3280,12 +3717,14 @@ bF._interpretLine = function(lnum, cmd) {
 
 
     // ELABORATION : distinguish numbers and operators from literals
-    bF._parserElaboration(lnum, tokens, states);
-
+    let newtoks = bF._parserElaboration(lnum, tokens, states);
+    tokens = newtoks.tokens;
+    states = newtoks.states;
+    
     // PARSING (SYNTAX ANALYSIS)
     let syntaxTrees = bF._parseTokens(lnum, tokens, states).map(it => {
         if (lambdaBoundVars.length != 0)
-            throw new InternalError("lambdaBoundVars not empty");
+            throw new BASICerror("lambdaBoundVars not empty");
         return bF._pruneTree(lnum, it, 0)
     });
 
@@ -3304,7 +3743,7 @@ bF._executeAndGet = function(lnum, stmtnum, syntaxTree) {
 
     // EXECUTE
     try {
-        if (lambdaBoundVars.length != 0) throw new InternalError();
+        if (lambdaBoundVars.length != 0) throw new BASICerror();
         var execResult = bF._executeSyntaxTree(lnum, stmtnum, syntaxTree, 0);
 
         if (DBGON) serial.println(`Line ${lnum} TRO: ${Object.entries(execResult)}`);
@@ -3347,7 +3786,7 @@ bF.system = function(args) { // SYSTEM function
 };
 bF.new = function(args) { // NEW function
     if (args) cmdbuf = [];
-    bStatus.vars = initBvars();
+    bS.vars = initBvars();
     gotoLabels = {};
     lambdaBoundVars = [];
     DATA_CONSTS = [];
@@ -3490,28 +3929,49 @@ bF.save = function(args) { // SAVE function
 bF.load = function(args) { // LOAD function
     if (args[1] === undefined) throw lang.missingOperand;
     var fileOpened = fs.open(args[1], "R");
-    if (!fileOpened) {
-        fileOpened = fs.open(args[1]+".BAS", "R");
-    }
-    if (!fileOpened) {
-        fileOpened = fs.open(args[1]+".bas", "R");
-    }
-    if (!fileOpened) {
-        throw lang.noSuchFile;
-        return;
-    }
-    var prg = fs.readAll();
+    
+        
+    if (replUsrConfirmed || cmdbuf.length == 0) {
+        if (!fileOpened) {
+            fileOpened = fs.open(args[1]+".BAS", "R");
+        }
+        if (!fileOpened) {
+            fileOpened = fs.open(args[1]+".bas", "R");
+        }
+        if (!fileOpened) {
+            throw lang.noSuchFile;
+            return;
+        }
+        var prg = fs.readAll();
 
-    // reset the environment
-    bF.new(true);
+        // reset the environment
+        bF.new(true);
 
-    // read the source
-    prg.split('\n').forEach((line) => {
-        var i = line.indexOf(" ");
-        var lnum = line.slice(0, i);
-        if (isNaN(lnum)) throw lang.illegalType();
-        cmdbuf[lnum] = line.slice(i + 1, line.length);
-    });
+        // read the source
+        prg.split('\n').forEach((line) => {
+            var i = line.indexOf(" ");
+            var lnum = line.slice(0, i);
+            if (isNaN(lnum)) throw lang.illegalType();
+            cmdbuf[lnum] = line.slice(i + 1, line.length);
+        });
+    }
+    else {
+        replCmdBuf = ["load"].concat(args);
+        println("Unsaved program will be lost, are you sure? (type 'yes' to confirm)");
+    }
+};
+bF.yes = function() {
+    if (replCmdBuf.length > 0) {
+        replUsrConfirmed = true;
+        
+        bF[replCmdBuf[0].toLowerCase()](replCmdBuf.slice(1, replCmdBuf.length));
+        
+        replCmdBuf = [];
+        replUsrConfirmed = false;
+    }
+    else {
+        throw lang.syntaxfehler("interactive", "nothing to confirm!");
+    }
 };
 bF.catalog = function(args) { // CATALOG function
     if (args[1] === undefined) args[1] = "\\";

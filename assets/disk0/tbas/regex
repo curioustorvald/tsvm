@@ -1,4 +1,4 @@
-Nuke comments:
+Nuke comments until no match left:
 
 /\*[ -~\n]+?\*/|//[^\n]*
 
@@ -10,4 +10,10 @@ replace into
 
 \n
 
-until there's no match left
+until no match left
+
+     (4 spaces)
+     
+replace into
+
+\t

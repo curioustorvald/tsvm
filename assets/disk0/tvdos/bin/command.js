@@ -9,7 +9,12 @@ let DEBUG_PRINT = true;
 
 let errorlevel = 0;
 
+
+const termWidth = con.getmaxyx()[1];
+const termHeight = con.getmaxyx()[0];
 const welcome_text = "TSVM Disk Operating System, version " + _TVDOS.VERSION;
+const greetLeftPad = (termWidth - welcome_text.length - 6) >> 1;
+const greetRightPad = termWidth - greetLeftPad - welcome_text.length - 6;
 
 function print_prompt_text() {
     if (goFancy) {
@@ -38,11 +43,15 @@ function print_prompt_text() {
 
 function greet() {
     if (goFancy) {
-        con.color_pair(0,253);
-        //print(welcome_text + " ".repeat(_fsh.scrwidth - welcome_text.length));
-        print(welcome_text + " ".repeat(80 - welcome_text.length));
         con.color_pair(239,255);
-        println();
+        con.clear();
+        con.color_pair(253,255);
+        print('  ');con.addch(17);
+        con.color_pair(0,253);
+        print(" ".repeat(greetLeftPad)+welcome_text+" ".repeat(greetRightPad));
+        con.color_pair(253,255);
+        con.addch(16);
+        con.move(3,1);
     }
     else
         println(welcome_text);
@@ -62,6 +71,31 @@ function trimStartRevSlash(s) {
 }
 
 let shell = {};
+shell.replaceVarCall = function(value) {
+// syntax:
+// line = literal [varcall] [literal] ;
+// varcall = "$" ident ;
+// ident = ? regex: [A-Za-z_]+ ? ;
+// literal = ? you know what it is ? ;
+    let replaceMap = [];
+    let varMode = false;
+    let sb = '';
+    for (let i=0; i<value.length; i++) {
+        let char = value.charAt(i);
+        let cp = value.charCodeAt(i);
+        if (!varMode && char == '$') {
+            replaceMap.push({s:sb,r:false});
+            sb = ''; varMode = true;
+        }
+        else if (varMode && !(cp >= 48 && cp <= 57 || cp >= 65 && cp <= 90 || cp == 95 || cp >= 97 && cp <= 122)) {
+            replaceMap.push({s:sb,r:true});
+            sb = ''+char; varMode = false;
+        }
+        else sb += char;
+    }; replaceMap.push({s:sb,r:(varMode)});
+
+    return replaceMap.map(it => (it.r) ? _TVDOS.variables[it.s] : it.s).join('');
+}
 shell.getPwd = function() { return shell_pwd; }
 shell.getCurrentDrive = function() { return CURRENT_DRIVE; }
 // example input: echo "the string" > subdir\test.txt
@@ -211,7 +245,7 @@ shell.coreutils = {
     },
     echo: function(args) {
         if (args[1] !== undefined) {
-            args.forEach(function(it,i) { if (i > 0) print(it+" ") });
+            args.forEach(function(it,i) { if (i > 0) print(shell.replaceVarCall(it)+" ") });
         }
         println();
     },
@@ -245,8 +279,7 @@ shell.coreutils = {
                     println(_TVDOS.variables[key])
             }
             else {
-                // TODO parse %var_name% line
-                _TVDOS.variables[key] = value;
+                _TVDOS.variables[key] = shell.replaceVarCall(value);
             }
         }
     },

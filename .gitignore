@@ -51,3 +51,5 @@ tmp_*
 *.out
 *.pdf
 *.toc
+
+assets/disk0/home/basic/*

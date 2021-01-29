@@ -22,16 +22,16 @@ public class AppLoader {
         appConfig.resizable = false;
         appConfig.title = appTitle;
         appConfig.forceExit = true;
-        appConfig.width = 560;
-        appConfig.height = 448;
+        appConfig.width = 720;//480;
+        appConfig.height = 480;//128;
 
 
         // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
 
-        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{GenericBios.INSTANCE});
-        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
+        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{GenericBios.INSTANCE});
+        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
         new LwjglApplication(new VMGUI(vm, appConfig), appConfig);
     }
 
