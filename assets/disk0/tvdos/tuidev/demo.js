@@ -56,12 +56,42 @@ class Demo extends SimpleScreen {
     constructor(title) {
         super(title);
         let mainCanvas = new Canvas("main");
+        con.curs_set(0);
+
         mainCanvas.redraw = () => {
 
         }
+
+        this.ballX = 1 + ((Math.random() * this.termWidth)|0);
+        this.ballY = 1 + ((Math.random() * (this.termHeight-1))|0)
+        this.ballMomentumX = (Math.random() < 0.5) ? -1 : 1;
+        this.ballMomentumY = (Math.random() < 0.5) ? -1 : 1;
+        this.collision = 0;
+
         mainCanvas.update = () => {
-            con.move(2 + (Math.random()*(this.termHeight - 1)), 1 + (Math.random()*this.termWidth));
-            con.addch(0xB3 + (Math.random()*39));
+            // erase a track
+            con.mvaddch(this.ballY, this.ballX, 0);
+
+            // collide
+            if (this.ballX <= 1) this.ballMomentumX = 1;
+            if (this.ballX >= this.termWidth) this.ballMomentumX = -1;
+            if (this.ballY <= 2) this.ballMomentumY = 1;
+            if (this.ballY >= this.termHeight) this.ballMomentumY = -1;
+
+            // collision counter
+            if (this.ballX <= 1 || this.ballX >= this.termWidth || this.ballY <= 2 || this.ballY >= this.termHeight) {
+                this.collision += 1;
+                this.title = "Ctrl-C to exit - "+this.collision;
+                this.drawTitlebar();
+            }
+
+            // move
+            this.ballX += this.ballMomentumX;
+            this.ballY += this.ballMomentumY;
+
+            // draw
+            con.mvaddch(this.ballY, this.ballX, 2);
+            sys.spin();sys.spin();sys.spin();sys.spin();
         }
 
         this.mainCanvas = mainCanvas
