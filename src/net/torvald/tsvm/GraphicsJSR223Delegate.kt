@@ -88,7 +88,6 @@ class GraphicsJSR223Delegate(val vm: VM) {
 
 
             it.putChar(cx, cy, c.toByte())
-            it.setCursorPos(cx + 1, cy)
         }
     }
 

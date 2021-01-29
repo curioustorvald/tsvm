@@ -21,7 +21,7 @@ function print_prompt_text() {
         con.color_pair(239,161);
         print(" "+CURRENT_DRIVE+":");
         con.color_pair(161,253);
-        con.addch(16);
+        con.addch(16);con.curs_right();
         con.color_pair(0,253);
         print(" \\"+shell_pwd.join("\\").substring(1)+" ");
         if (errorlevel != 0) {
@@ -29,8 +29,8 @@ function print_prompt_text() {
             print("["+errorlevel+"] ");
         }
         con.color_pair(253,255);
-        con.addch(16);
-        con.addch(32);
+        con.addch(16);con.curs_right();
+        con.addch(32);con.curs_right();
         con.color_pair(239,255);
     }
     else {
@@ -46,11 +46,11 @@ function greet() {
         con.color_pair(239,255);
         con.clear();
         con.color_pair(253,255);
-        print('  ');con.addch(17);
+        print('  ');con.addch(17);con.curs_right();
         con.color_pair(0,253);
         print(" ".repeat(greetLeftPad)+welcome_text+" ".repeat(greetRightPad));
         con.color_pair(253,255);
-        con.addch(16);print('  ');
+        con.addch(16);con.curs_right();print('  ');
         con.move(3,1);
     }
     else

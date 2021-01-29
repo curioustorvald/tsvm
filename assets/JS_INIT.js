@@ -394,6 +394,22 @@ con.getmaxyx = function() {
 con.getyx = function() {
     return graphics.getCursorYX();
 };
+con.curs_up = function() {
+    let c = graphics.getCursorYX();
+    con.move(c[0]-1,c[1]);
+};
+con.curs_down = function() {
+    let c = graphics.getCursorYX();
+    con.move(c[0]+1,c[1]);
+};
+con.curs_left = function() {
+    let c = graphics.getCursorYX();
+    con.move(c[0],c[1]-1);
+};
+con.curs_right = function() {
+    let c = graphics.getCursorYX();
+    con.move(c[0],c[1]+1);
+};
 con.hitterminate = function() { // ^C
     sys.poke(-40, 1);
     return (sys.peek(-41) == 31 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));

@@ -69,7 +69,7 @@ let repaint = function() {
             if (cx >= 0 && cx < termW) {
                 con.move(cy, cx);
                 if (char != 10 && char != 13)
-                    con.addch(char);
+                    con.addch(char);con.curs_right();
             }
             cx += 1;
         }

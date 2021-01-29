@@ -26,11 +26,12 @@ class SimpleScreen {
 
         con.move(1,1);
         con.color_pair(253,255);
-        print('  ');con.addch(17);
+        print('  ');con.addch(17);con.curs_right();
         con.color_pair(0,253);
         print(" ".repeat(titleLeftPad)+this.title+" ".repeat(titleRightPad));
         con.color_pair(253,255);
-        con.addch(16);print('  ');
+        con.addch(16);con.curs_right();print('  ');
+        con.move(3,1);
     }
     redraw() {
         con.color_pair(239,255);
