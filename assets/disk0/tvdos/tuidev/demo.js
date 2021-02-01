@@ -69,7 +69,7 @@ class TextList extends UIItem {
         this.selection = (isNaN(selection)) ? 0 : selection|0;
         this.visible = true;
         this.scroll = 0;
-        this.keyLatched = false;
+        this.redrawReq = false;
     }
 
     getInternalHeight() {
@@ -100,29 +100,28 @@ class TextList extends UIItem {
         }
     }
 
-    update() {
-        let keys = con.poll_keys();
-        let redraw = false;
-
-        // un-latch
-        if (this.keyLatched && keys[0] == 0) {
-            this.keyLatched = false;
-        }
-
-        // up
-        if (!this.keyLatched && keys[0] == 19 && (this.selection + this.scroll) > 0) {
+    cursorUp() {
+        if ((this.selection + this.scroll) > 0) {
             this.selection -= 1;
-            redraw = true;
+            this.redrawReq = true;
         }
-        // down
-        else if (!this.keyLatched && keys[0] == 20 && (this.selection + this.scroll) < this.item.length - 1) {
-            this.selection += 1;
-            redraw = true;
-        }
+    }
 
-        // finally update key latched state
-        this.keyLatched = keys[0] != 0;
-        return redraw;
+    cursorDown() {
+        if ((this.selection + this.scroll) < this.item.length - 1) {
+            this.selection += 1;
+            this.redrawReq = true;
+        }
+    }
+
+    getSelection() {
+        return {index: (this.scroll + this.selection), item: this.item[this.scroll + this.selection]};
+    }
+
+    update() {
+        let r = this.redrawReq;
+        this.redrawReq = false;
+        return r;
     }
 }
 
@@ -135,46 +134,38 @@ class Demo extends SimpleScreen {
         mainCanvas.selector = new TextList(40, 31, ["The", "Quick", "Brown", "Fox", "Jumps"]);
 
         mainCanvas.redraw = () => {
-            mainCanvas.selector.redraw(1,1);
+            mainCanvas.selector.redraw(1,2);
         }
 
-        this.ballX = 1 + ((Math.random() * this.termWidth)|0);
-        this.ballY = 1 + ((Math.random() * (this.termHeight-1))|0)
-        this.ballMomentumX = (Math.random() < 0.5) ? -1 : 1;
-        this.ballMomentumY = (Math.random() < 0.5) ? -1 : 1;
-        this.collision = 0;
+        this.keyLatched = false;
 
         mainCanvas.update = () => {
-            // erase a track
-            /*con.mvaddch(this.ballY, this.ballX, 0);
+            let keys = con.poll_keys();
+            let redraw = false;
 
-            // collide
-            if (this.ballX <= 1) this.ballMomentumX = 1;
-            if (this.ballX >= this.termWidth) this.ballMomentumX = -1;
-            if (this.ballY <= 2) this.ballMomentumY = 1;
-            if (this.ballY >= this.termHeight) this.ballMomentumY = -1;
-
-            // collision counter
-            if (this.ballX <= 1 || this.ballX >= this.termWidth || this.ballY <= 2 || this.ballY >= this.termHeight) {
-                this.collision += 1;
-                this.title = "Ctrl-C to exit - "+this.collision;
-                this.drawTitlebar();
+            // un-latch
+            if (this.keyLatched && keys[0] == 0) {
+                this.keyLatched = false;
             }
 
-            // move
-            this.ballX += this.ballMomentumX;
-            this.ballY += this.ballMomentumY;
-
-            // draw
-            con.mvaddch(this.ballY, this.ballX, 2);*/
-            //sys.spin();sys.spin();sys.spin();sys.spin();
-
-
-            if (mainCanvas.selector.update()) {
-                mainCanvas.selector.redraw(1,1);
+            // up
+            if (!this.keyLatched && keys[0] == 19) {
+                mainCanvas.selector.cursorUp();
             }
-            con.mvaddch(20,20); print("TEXT");
+            // down
+            else if (!this.keyLatched && keys[0] == 20) {
+                mainCanvas.selector.cursorDown();
+            }
 
+            if (mainCanvas.selector.update())
+                mainCanvas.selector.redraw(1,2);
+
+            if (this.keyLatched && keys[0] == 66) {
+                con.mvaddch(20,20); print("SEL:"+mainCanvas.selector.getSelection().item);
+            }
+
+            // finally update key latched state
+            this.keyLatched = keys[0] != 0;
         }
 
 
