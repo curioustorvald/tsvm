@@ -141,34 +141,38 @@ From the start of the memory space:
 2 bytes
     argument for "command" (arg1: Byte, arg2: Byte)
     write to this address FIRST and then write to "command" to execute the command
-86 bytes
+76 bytes
     *Unused*
-IF hires_text THEN
-    418 bytes
-        *Unused*
-    2 bytes
-        Cursor position in: (y*64 + x)
-    5120 bytes
-        Text fore/back colours, 16 colours, LSB is foreground
-    5120 bytes
-        Text buffer of 80x64 (7x7 character size)
-ELSE
-    2978 bytes
-        *Unused*
-    2 bytes
-        Cursor position in: (y*32 + x)
-    2560 bytes
-        Text foreground colours
-    2560 bytes
-        Text background colours
-    2560 bytes
-        Text buffer of 80x32 (7x14 character size, and yes: actual character data is on the bottom)
+
+2988 bytes
+    DMA Sprite Area - 18 bytes each, total of 166 sprites
+    1 byte
+        Sprite width
+    1 byte
+        Sprite height
+    12 bytes - signed fixed point
+        Affine transformation A,B,C,D,X,Y
+    1 byte
+        Attributes
+        0b 0000 00vp
+        (p: 0 for above-all, 1 for below-text, v: show/hide)
+    3 bytes
+        Pointer to raw pixmap data in Scratchpad Memory
+
+2 bytes
+    Cursor position in: (y*32 + x)
+2560 bytes
+    Text foreground colours
+2560 bytes
+    Text background colours
+2560 bytes
+    Text buffer of 80x32 (7x14 character size, and yes: actual character data is on the bottom)
 FI
 512 bytes
     Palette stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
     Palette number 255 is always full transparent (bits being all zero)
 
-Optional Sprite Card (VRAM Bank 1 (256 kB))
+(DRAFT) Optional Sprite Card (VRAM Bank 1 (256 kB))
 250880 bytes
     Secondary framebuffer
 533 bytes: Sprite attribute table
