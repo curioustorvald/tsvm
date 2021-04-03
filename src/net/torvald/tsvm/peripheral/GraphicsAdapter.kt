@@ -1,10 +1,7 @@
 package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
-import com.badlogic.gdx.graphics.Color
-import com.badlogic.gdx.graphics.GL20
-import com.badlogic.gdx.graphics.Pixmap
-import com.badlogic.gdx.graphics.Texture
+import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import net.torvald.UnsafeHelper
@@ -106,6 +103,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var textTex = Texture(textPixmap)
 
     private val outFBOs = Array(2) { FrameBuffer(Pixmap.Format.RGBA8888, WIDTH, HEIGHT, false) }
+    private val outFBObatch = SpriteBatch()
+    private val outFBOcamera = OrthographicCamera(WIDTH.toFloat(), HEIGHT.toFloat())
+
 
     private val memTextCursorPosOffset = 2978L
     private val memTextForeOffset = 2980L
@@ -145,6 +145,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private fun toTtyTextOffset(x: Int, y: Int) = y * TEXT_COLS + x
 
     init {
+        outFBOcamera.setToOrtho(false)
+        outFBOcamera.update()
+        outFBObatch.projectionMatrix = outFBOcamera.combined
+
         framebuffer.blending = Pixmap.Blending.None
         textForePixmap.blending = Pixmap.Blending.None
         textBackPixmap.blending = Pixmap.Blending.None
@@ -565,6 +569,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     }
 
     override fun dispose() {
+        testTex.dispose()
         framebuffer.dispose()
         rendertex.dispose()
         spriteAndTextArea.destroy()
@@ -575,6 +580,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         textShader.dispose()
         faketex.dispose()
         outFBOs.forEach { it.dispose() }
+        outFBObatch.dispose()
 
         try { textForeTex.dispose() } catch (_: Throwable) {}
         try { textBackTex.dispose() } catch (_: Throwable) {}
@@ -588,16 +594,17 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
-    open fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
+    open fun render(delta: Float, uiBatch: SpriteBatch, uiCamera: Camera, xoff: Float, yoff: Float) {
         rendertex.dispose()
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
         outFBOs[1].inUse {
-            batch.shader = null
-            batch.inUse {
-                blendNormal(batch)
-                batch.color = decayColor
-                batch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+            outFBObatch.shader = null
+            outFBObatch.projectionMatrix = outFBOcamera.combined
+            outFBObatch.inUse {
+                blendNormal(outFBObatch)
+                outFBObatch.color = decayColor
+                outFBObatch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
         }
 
@@ -609,31 +616,32 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
-            batch.shader = null
-            batch.inUse {
-                blendNormal(batch)
+            outFBObatch.shader = null
+            outFBObatch.projectionMatrix = outFBOcamera.combined
+            outFBObatch.inUse {
+                blendNormal(outFBObatch)
 
                 // clear screen
-                batch.color = if (theme.startsWith("pmlcd")) LCD_BASE_COL else clearCol
-                batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+                outFBObatch.color = if (theme.startsWith("pmlcd")) LCD_BASE_COL else clearCol
+                outFBObatch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
 
                 // initiialise draw
-                batch.color = Color.WHITE
-                batch.shader = paletteShader
+                outFBObatch.color = Color.WHITE
+                outFBObatch.shader = paletteShader
 
                 // feed palette data
                 // must be done every time the shader is "actually loaded"
                 // try this: if above line precedes 'batch.shader = paletteShader', it won't work
-                batch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
-                if (theme.startsWith("pmlcd")) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+                outFBObatch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+                if (theme.startsWith("pmlcd")) outFBObatch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                 // draw framebuffer
-                batch.draw(rendertex, 0f, 0f)
+                outFBObatch.draw(rendertex, 0f, 0f)
 
                 // draw texts or sprites
 
-                batch.color = Color.WHITE
+                outFBObatch.color = Color.WHITE
 
                 if (!graphicsUseSprites) {
                     // draw texts
@@ -695,7 +703,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                     chrrom0.bind(1)
                     faketex.bind(0)
 
-                    batch.shader = textShader
+                    outFBObatch.shader = textShader
                     textShader.setUniformi("foreColours", 4)
                     textShader.setUniformi("backColours", 3)
                     textShader.setUniformi("tilemap", 2)
@@ -705,14 +713,14 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                     textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
                     textShader.setUniformf("tilesInAtlas", 16f, 16f)
                     textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
-                    if (theme.startsWith("pmlcd")) batch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+                    if (theme.startsWith("pmlcd")) outFBObatch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
-                    batch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+                    outFBObatch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
-                    batch.shader = null
+                    outFBObatch.shader = null
                 } else {
                     // draw sprites
-                    batch.shader = paletteShader
+                    outFBObatch.shader = paletteShader
 
                     // feed palette data
                     // must be done every time the shader is "actually loaded"
@@ -723,28 +731,42 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
             }
 
-            batch.shader = null
+            outFBObatch.shader = null
 
         }
 
         outFBOs[1].inUse {
-            batch.shader = null
-            batch.inUse {
-                blendNormal(batch)
+            outFBObatch.shader = null
+            outFBObatch.projectionMatrix = outFBOcamera.combined
+            outFBObatch.inUse {
+                blendNormal(outFBObatch)
 
-                batch.color = decayColor
-                batch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+                outFBObatch.color = decayColor
+                outFBObatch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
         }
 
-        batch.shader = null
-        batch.inUse {
+        outFBOs[1].inUse {
+            outFBObatch.shader = null
+            outFBObatch.projectionMatrix = outFBOcamera.combined
+            outFBObatch.inUse {
+                blendNormal(outFBObatch)
+                outFBObatch.color = Color.WHITE
+                outFBObatch.draw(testTex, 0f, 0f)
+            }
+        }
+
+        uiBatch.shader = null
+        uiBatch.projectionMatrix = uiCamera.combined
+        uiBatch.inUse {
             Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
-            blendNormal(batch)
+            blendNormal(uiBatch)
 
-            batch.color = Color.WHITE
-            batch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
+            uiBatch.color = Color.WHITE
+            //uiBatch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
+            uiBatch.draw(testTex, 0f, 0f)
+            uiBatch.draw(outFBOs[1].colorBufferTexture, 0f, 0f)
         }
 
 
@@ -755,6 +777,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         }
 
     }
+
+    private val testTex = Texture("./assets/pal.png");
 
     private fun blendNormal(batch: SpriteBatch) {
         Gdx.gl.glEnable(GL20.GL_TEXTURE_2D)

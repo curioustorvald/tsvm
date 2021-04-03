@@ -3,39 +3,50 @@ package net.torvald.tsvm
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
-import com.badlogic.gdx.graphics.OrthographicCamera
+import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
 import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
-import net.torvald.tsvm.peripheral.CharacterLCDdisplay
-import net.torvald.tsvm.peripheral.GenericBios
-import net.torvald.tsvm.peripheral.GraphicsAdapter
-import net.torvald.tsvm.peripheral.TexticsAdapter
+import net.torvald.tsvm.peripheral.*
 import java.io.File
 
 fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).contentEquals(other)
 
 class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
 
-    lateinit var gpu: GraphicsAdapter
-
     lateinit var batch: SpriteBatch
     lateinit var camera: OrthographicCamera
 
+    lateinit var gpu: GraphicsAdapter
     lateinit var vmRunner: VMRunner
-
     lateinit var coroutineJob: Job
-
     lateinit var memvwr: Memvwr
+    lateinit var fullscreenQuad: Mesh
 
     val usememvwr = false
 
     override fun create() {
         super.create()
 
+        fullscreenQuad = Mesh(
+                true, 4, 6,
+                VertexAttribute.Position(),
+                VertexAttribute.ColorUnpacked(),
+                VertexAttribute.TexCoords(0)
+        )
+        updateFullscreenQuad(appConfig.width, appConfig.height)
+
+        batch = SpriteBatch()
+        camera = OrthographicCamera(appConfig.width.toFloat(), appConfig.height.toFloat())
+        camera.setToOrtho(false)
+        camera.update()
+        batch.projectionMatrix = camera.combined
+        //Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
+
+
         //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
-        gpu = TexticsAdapter(vm)
-        //gpu = CharacterLCDdisplay(vm)
+        //gpu = TexticsAdapter(vm)
+        gpu = CharacterLCDdisplay(vm)
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GPU_AND_TERM,
@@ -46,13 +57,6 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
         )
 
         Gdx.input.inputProcessor = vm.getIO()
-
-        batch = SpriteBatch()
-        camera = OrthographicCamera(appConfig.width.toFloat(), appConfig.height.toFloat())
-        camera.setToOrtho(false)
-        camera.update()
-        batch.projectionMatrix = camera.combined
-        Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
         vm.getPrintStream = { gpu.getPrintStream() }
         vm.getErrorStream = { gpu.getErrorStream() }
@@ -71,6 +75,9 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
     private var updateRate = 1f / 60f
 
     override fun render() {
+        gdxClearAndSetBlend(.094f, .094f, .094f, 0f)
+        setCameraPosition(0f, 0f)
+
         Gdx.graphics.setTitle("${AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond}")
 
         if (usememvwr) memvwr.update()
@@ -99,14 +106,37 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
     private fun renderGame(delta: Float) {
-        gpu.render(delta, batch, 0f, 0f)
-
+        gpu.render(delta, batch, camera,  0f, 0f)
+        //batch.inUse { batch.draw(testTex, 0f, 0f) }
     }
 
+    private fun setCameraPosition(newX: Float, newY: Float) {
+        camera.position.set((-newX + appConfig.width / 2), (-newY + appConfig.height / 2), 0f) // deliberate integer division
+        camera.update()
+        batch.setProjectionMatrix(camera.combined)
+    }
+
+    private fun gdxClearAndSetBlend(r: Float, g: Float, b: Float, a: Float) {
+        Gdx.gl.glClearColor(r,g,b,a)
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+        Gdx.gl.glEnable(GL20.GL_TEXTURE_2D)
+        Gdx.gl.glEnable(GL20.GL_BLEND)
+    }
+
+    private fun updateFullscreenQuad(WIDTH: Int, HEIGHT: Int) { // NOT y-flipped quads!
+        fullscreenQuad.setVertices(floatArrayOf(
+                0f, 0f, 0f, 1f, 1f, 1f, 1f, 0f, 1f,
+                WIDTH.toFloat(), 0f, 0f, 1f, 1f, 1f, 1f, 1f, 1f,
+                WIDTH.toFloat(), HEIGHT.toFloat(), 0f, 1f, 1f, 1f, 1f, 1f, 0f,
+                0f, HEIGHT.toFloat(), 0f, 1f, 1f, 1f, 1f, 0f, 0f
+        ))
+        fullscreenQuad.setIndices(shortArrayOf(0, 1, 2, 2, 3, 0))
+    }
 
     override fun dispose() {
         super.dispose()
         batch.dispose()
+        fullscreenQuad.dispose()
         coroutineJob.cancel()
         vm.dispose()
     }

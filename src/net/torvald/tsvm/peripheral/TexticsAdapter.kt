@@ -1,5 +1,6 @@
 package net.torvald.tsvm.peripheral
 
+import com.badlogic.gdx.graphics.Camera
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.GL20
 import com.badlogic.gdx.graphics.Texture
@@ -62,8 +63,8 @@ class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
     private val ALIGN = (HEIGHT - TEX_HEIGHT).absoluteValue / 2f
     private val phosphorCol = crtColor[theme.substring(4)] ?: crtColor["white"]
 
-    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
-        super.render(delta, batch, xoff, yoff)
+    override fun render(delta: Float, batch: SpriteBatch, camera: Camera, xoff: Float, yoff: Float) {
+        super.render(delta, batch, camera, xoff, yoff)
 
 
         batch.inUse {

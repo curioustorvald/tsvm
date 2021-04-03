@@ -26,7 +26,7 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         }
     }
 
-    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
+    /*override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
         /*batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE
@@ -34,8 +34,7 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         }
         super.render(delta, batch, xoff+200, yoff-200)
         */
-        super.render(delta, batch, xoff, yoff)
-    }
+    }*/
 
     override fun dispose() {
         machine.dispose()
