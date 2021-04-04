@@ -10,7 +10,7 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
 )
 ) {
 
-    private val machine = Texture("./assets/8025_textonly.png")
+    private val machine = Texture("./assets/4016_portable_full.png")
 
     override fun peek(addr: Long): Byte? {
         return when (addr) {
@@ -26,15 +26,14 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         }
     }
 
-    /*override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
-        /*batch.shader = null
+    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
+        super.render(delta, batch, xoff+74, yoff+102)
+        batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE
             batch.draw(machine, xoff, yoff)
         }
-        super.render(delta, batch, xoff+200, yoff-200)
-        */
-    }*/
+    }
 
     override fun dispose() {
         machine.dispose()
