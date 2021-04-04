@@ -27,7 +27,9 @@ data class AdapterConfig(
     val chrRomPath: String,
     val decay: Float,
     val fragShader: String,
-    val paletteShader: String = DRAW_SHADER_FRAG
+    val paletteShader: String = DRAW_SHADER_FRAG,
+    val drawScale: Float = 1f,
+    val scaleFiltered: Boolean = false,
 )
 
 data class SuperGraphicsAddonConfig(
@@ -755,7 +757,11 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             blendNormal(uiBatch)
 
             uiBatch.color = Color.WHITE
-            uiBatch.draw(outFBOregion[1], xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
+            outFBOregion[1].texture.setFilter(
+                if (config.scaleFiltered) Texture.TextureFilter.Linear else Texture.TextureFilter.Nearest,
+                if (config.scaleFiltered) Texture.TextureFilter.Linear else Texture.TextureFilter.Nearest
+            )
+            uiBatch.draw(outFBOregion[1], xoff, HEIGHT * config.drawScale + yoff, WIDTH * config.drawScale, -HEIGHT * config.drawScale)
         }
 
 
