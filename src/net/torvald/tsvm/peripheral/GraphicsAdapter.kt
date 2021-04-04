@@ -752,8 +752,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
         uiBatch.inUse {
             uiBatch.shader = null
-            Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
-            Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+            //Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
+            //Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
             blendNormal(uiBatch)
 
             uiBatch.color = Color.WHITE
