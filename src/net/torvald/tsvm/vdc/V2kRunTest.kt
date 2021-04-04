@@ -89,7 +89,7 @@ class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdap
     }
 
     private fun renderGame(delta: Float) {
-        gpu.render(delta, batch, camera, 0f, 0f)
+        gpu.render(delta, batch, 0f, 0f)
 
     }
 

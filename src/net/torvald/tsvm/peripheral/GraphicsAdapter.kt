@@ -3,7 +3,9 @@ package net.torvald.tsvm.peripheral
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.math.Matrix4
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
@@ -103,8 +105,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var textTex = Texture(textPixmap)
 
     private val outFBOs = Array(2) { FrameBuffer(Pixmap.Format.RGBA8888, WIDTH, HEIGHT, false) }
+    private val outFBOregion = Array(2) { TextureRegion(outFBOs[it].colorBufferTexture) }
     private val outFBObatch = SpriteBatch()
-    private val outFBOcamera = OrthographicCamera(WIDTH.toFloat(), HEIGHT.toFloat())
 
 
     private val memTextCursorPosOffset = 2978L
@@ -145,9 +147,12 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private fun toTtyTextOffset(x: Int, y: Int) = y * TEXT_COLS + x
 
     init {
-        outFBOcamera.setToOrtho(false)
-        outFBOcamera.update()
-        outFBObatch.projectionMatrix = outFBOcamera.combined
+        // no orthographic camera, must be "raw" Matrix4
+        val m = Matrix4()
+        m.setToOrtho2D(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
+        outFBObatch.projectionMatrix = m
+
+
 
         framebuffer.blending = Pixmap.Blending.None
         textForePixmap.blending = Pixmap.Blending.None
@@ -594,17 +599,16 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
-    open fun render(delta: Float, uiBatch: SpriteBatch, uiCamera: Camera, xoff: Float, yoff: Float) {
+    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float) {
         rendertex.dispose()
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
         outFBOs[1].inUse {
-            outFBObatch.shader = null
-            outFBObatch.projectionMatrix = outFBOcamera.combined
             outFBObatch.inUse {
+                outFBObatch.shader = null
                 blendNormal(outFBObatch)
                 outFBObatch.color = decayColor
-                outFBObatch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+                outFBObatch.draw(outFBOregion[0], 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
         }
 
@@ -616,9 +620,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
-            outFBObatch.shader = null
-            outFBObatch.projectionMatrix = outFBOcamera.combined
             outFBObatch.inUse {
+                outFBObatch.shader = null
+
                 blendNormal(outFBObatch)
 
                 // clear screen
@@ -736,37 +740,22 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         }
 
         outFBOs[1].inUse {
-            outFBObatch.shader = null
-            outFBObatch.projectionMatrix = outFBOcamera.combined
             outFBObatch.inUse {
+                outFBObatch.shader = null
                 blendNormal(outFBObatch)
-
                 outFBObatch.color = decayColor
-                outFBObatch.draw(outFBOs[0].colorBufferTexture, 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
+                outFBObatch.draw(outFBOregion[0], 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
         }
 
-        outFBOs[1].inUse {
-            outFBObatch.shader = null
-            outFBObatch.projectionMatrix = outFBOcamera.combined
-            outFBObatch.inUse {
-                blendNormal(outFBObatch)
-                outFBObatch.color = Color.WHITE
-                outFBObatch.draw(testTex, 0f, 0f)
-            }
-        }
-
-        uiBatch.shader = null
-        uiBatch.projectionMatrix = uiCamera.combined
         uiBatch.inUse {
+            uiBatch.shader = null
             Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
             blendNormal(uiBatch)
 
             uiBatch.color = Color.WHITE
-            //uiBatch.draw(outFBOs[1].colorBufferTexture, xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
-            uiBatch.draw(testTex, 0f, 0f)
-            uiBatch.draw(outFBOs[1].colorBufferTexture, 0f, 0f)
+            uiBatch.draw(outFBOregion[1], xoff, HEIGHT.toFloat() + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
         }
 
 

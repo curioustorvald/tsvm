@@ -106,7 +106,7 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
     private fun renderGame(delta: Float) {
-        gpu.render(delta, batch, camera,  0f, 0f)
+        gpu.render(delta, batch, 0f, 0f)
         //batch.inUse { batch.draw(testTex, 0f, 0f) }
     }
 
