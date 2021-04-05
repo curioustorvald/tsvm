@@ -41,7 +41,9 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     init {
         //blockTransferPorts[1].attachDevice(TestFunctionGenerator())
         //blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets")))
-        blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets/disk0")))
+        //blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets/disk0")))
+
+        // for testers: use EmulInstance
     }
 
     private fun composeBlockTransferStatus(portno: Int): Int {

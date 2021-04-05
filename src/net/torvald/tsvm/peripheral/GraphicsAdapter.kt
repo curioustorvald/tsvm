@@ -36,6 +36,9 @@ data class SuperGraphicsAddonConfig(
     val hasSecondBank: Boolean = false
 )
 
+class ReferenceGraphicsAdapter(vm: VM) : GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+class ReferenceLikeLCD(vm: VM) : GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
+
 /**
  * NOTE: if TTY size is greater than 80*32, SEGFAULT will occur because text buffer is fixed in size
  */

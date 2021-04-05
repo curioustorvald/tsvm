@@ -12,7 +12,18 @@ import java.io.File
 
 fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).contentEquals(other)
 
-class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
+
+data class EmulInstance(
+    val appConfig: LwjglApplicationConfiguration,
+    val vm: VM,
+    val display: String,
+    val diskPath: String = "assets/disk0"
+)
+
+class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
+
+    val appConfig = loaderInfo.appConfig
+    val vm = loaderInfo.vm
 
     lateinit var batch: SpriteBatch
     lateinit var camera: OrthographicCamera
@@ -41,13 +52,14 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
         camera.setToOrtho(false)
         camera.update()
         batch.projectionMatrix = camera.combined
-        //Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
 
 
-        //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
-        //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
-        //gpu = TexticsAdapter(vm)
-        gpu = CharacterLCDdisplay(vm)
+        val loadedClass = Class.forName(loaderInfo.display)
+        val loadedClassConstructor = loadedClass.getConstructor(vm::class.java)
+        val loadedClassInstance = loadedClassConstructor.newInstance(vm)
+        gpu = (loadedClassInstance as GraphicsAdapter)
+
+        vm.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File(loaderInfo.diskPath)))
 
         vm.peripheralTable[1] = PeripheralEntry(
             VM.PERITYPE_GPU_AND_TERM,
