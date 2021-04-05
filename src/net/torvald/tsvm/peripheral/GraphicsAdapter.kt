@@ -66,26 +66,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
     protected val unusedArea = ByteArray(92)
 
-    protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
-        config.paletteShader
-        /*if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
-            DRAW_SHADER_FRAG_LCD_NOINV
-        else if (theme.startsWith("pmlcd"))
-            DRAW_SHADER_FRAG_LCD
-        else
-            DRAW_SHADER_FRAG*/
-    )
-    protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT,
-        config.fragShader
-        /*if (theme.startsWith("crt_") && !theme.endsWith("color"))
-            TEXT_TILING_SHADER_MONOCHROME
-        else if (theme.startsWith("pmlcd") && !theme.endsWith("_inverted"))
-            TEXT_TILING_SHADER_LCD_NOINV
-        else if (theme.startsWith("pmlcd"))
-            TEXT_TILING_SHADER_LCD
-        else
-            TEXT_TILING_SHADER_COLOUR*/
-    )
+    protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, config.paletteShader)
+    protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, config.fragShader)
 
     override var blinkCursor = true
     override var ttyRawMode = false
@@ -832,10 +814,6 @@ varying vec4 v_color;
 varying vec2 v_texCoords;
 uniform sampler2D u_texture;
 uniform vec4 pal[256];
-
-float rand(vec2 co){
-    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
-}
 
 void main(void) {
     gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];

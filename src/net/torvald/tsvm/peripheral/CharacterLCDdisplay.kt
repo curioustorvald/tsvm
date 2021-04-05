@@ -8,14 +8,14 @@ import net.torvald.terrarumsansbitmap.gdx.TextureRegionPack
 import net.torvald.tsvm.VM
 
 class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
-    "pmlcd_inverted", 240, 64, 40, 8, 249, 255, 262144L, "lcd2.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD, 2f
+    "pmlcd_inverted", 240, 64, 40, 8, 254, 255, 262144L, "lcd2.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD, 2f
 )
 ) {
 
     private val machine = Texture("./assets/4008_portable_full.png")
     private val lcdFont = TextureRegionPack(Texture("./assets/lcd.png"), 12, 16)
 
-    override fun peek(addr: Long): Byte? {
+    /*override fun peek(addr: Long): Byte? {
         return when (addr) {
             in 0 until 250880 -> (-1).toByte()
             else -> super.peek(addr)
@@ -27,7 +27,7 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
             in 0 until 250880 -> { /*do nothing*/ }
             else -> super.poke(addr, byte)
         }
-    }
+    }*/
 
     override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
         batch.shader = null

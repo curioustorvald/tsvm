@@ -45,6 +45,7 @@ class VMGUI(val vm: VM, val appConfig: LwjglApplicationConfiguration) : Applicat
 
 
         //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+        //gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
         //gpu = TexticsAdapter(vm)
         gpu = CharacterLCDdisplay(vm)
 

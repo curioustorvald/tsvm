@@ -84,6 +84,19 @@ MMIO
 
 88 RW: Rom mapping
 
+89 RO: BMS flags
+    0b b000 00ca
+    a: 1 if charging (accepting power from the AC adapter)
+    c: 1 if battery is detected
+    b: 1 if the device is battery-operated
+
+    if the device is battery-operated but currently running off of an AC adapter and there is no battery inserted,
+    the flag would be 1000 0001
+
+90 RO: BMS calculated battery percentage where 255 is 100%
+91 RO: BMS battery voltage multiplied by 10 (127 = "12.7 V")
+
+
 4076..4079 RW: 8-bit status code for the port
 4080..4083 RO: 8-bit status code for connected device
 
