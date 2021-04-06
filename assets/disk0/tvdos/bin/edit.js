@@ -5,7 +5,7 @@ let cursorCol = 0;
 
 let windowSize = con.getmaxyx();
 let paintWidth = windowSize[1]-4;
-let paintHeight = windowSize[0]-2;
+let paintHeight = windowSize[0]-1;
 let scrollPeek = Math.ceil((paintHeight / 7));
 
 const menubarItems = ["File","Edit","View"];
@@ -63,9 +63,9 @@ function drawMain() {
 
     // print line number
     con.color_pair(COL_LNUMFORE, COL_LNUMBACK);
-    for (let y = 2; y < windowSize[0]; y++) {
-        con.move(y,1);
-        let lnum = scroll+y-1;
+    for (let y = 0; y <= paintHeight; y++) {
+        con.move(y+2, 1);
+        let lnum = scroll + y + 1;
         if (lnum >= 1000) print(`${lnum}`);
         else if (lnum >= 100) print(`${lnum} `);
         else if (lnum >= 10) print(` ${lnum} `);
@@ -74,9 +74,9 @@ function drawMain() {
 
     // print status line
     con.color_pair(COL_BACK, COL_TEXT);
-    let statusMsg = ` Ln ${cursorRow+1} Col ${cursorCol+1}`;
-    for (let x = 1; x <= windowSize[1]; x++) {
-        con.mvaddch(windowSize[0], x, ""+statusMsg.charCodeAt(x-1));
+    let lctxt = `${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
+    for (let i = 0; i < lctxt.length; i++) {
+        con.mvaddch(1, windowSize[1] - lctxt.length + i, lctxt.charCodeAt(i));
     }
 
     con.move(2,5); con.color_pair(COL_TEXT, COL_BACK);
