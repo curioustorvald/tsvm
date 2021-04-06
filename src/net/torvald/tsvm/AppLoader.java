@@ -30,7 +30,7 @@ public class AppLoader {
         // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
-        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{QuickBios.INSTANCE});
+        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{QuickBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
 
         EmulInstance reference = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0");
