@@ -8,7 +8,7 @@ import net.torvald.terrarumsansbitmap.gdx.TextureRegionPack
 import net.torvald.tsvm.VM
 
 class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
-    "pmlcd_inverted", 240, 64, 40, 8, 254, 255, 262144L, "lcd2.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD, 2f
+    "pmlcd_inverted", 240, 64, 40, 8, 252, 255, 262144L, "lcd2.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD, 2f
 )
 ) {
 
