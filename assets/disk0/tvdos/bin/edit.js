@@ -1,5 +1,5 @@
 let scroll = 0;
-let textbuffer = [""];
+let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
 let cursorRow = 0;
 let cursorCol = 0;
 
@@ -9,6 +9,10 @@ let paintHeight = windowSize[0]-2;
 let scrollPeek = Math.ceil((paintHeight / 7));
 
 const menubarItems = ["File","Edit","View"];
+const menubarFile = ["New","Open","Save","Save as","Exit"];
+const menubarEdit = ["Undo","Redo","Cut","Copy","Paste","Select All","Deselect"];
+const menubarView = ["Go To Line"];
+const menubarContents = [menubarFile, menubarEdit, menubarView];
 const COL_TEXT = 252;
 const COL_BACK = 255;
 const COL_SUPERTEXT = 239;
@@ -24,18 +28,21 @@ function reset_status() {
     cursorCol = 0;
 }
 
-function redraw() {
+function drawInit() {
     windowSize = con.getmaxyx();
     scrollPeek = Math.ceil((paintHeight / 6));
     paintWidth = windowSize[1]-4;
     paintHeight = windowSize[0]-2;
+}
 
+function drawMain() {
+    drawInit();
     con.clear();
 
     // print menubar
     con.color_pair(COL_BACK, COL_TEXT);
     menubarItems.forEach(v=>{
-        print(" ");
+        print(String.fromCharCode(222));
         for (let i = 0; i < v.length; i++) {
             let c = v.charCodeAt(i);
             if (c >= 65 && c <= 90)
@@ -47,7 +54,7 @@ function redraw() {
         }
         print(" ");
     });
-
+    // fill rest of the space on the line
     con.color_pair(COL_BACK, COL_TEXT);
     let cursPos = con.getyx();
     for (let i = cursPos[1]; i <= windowSize[1]; i++) {
@@ -75,4 +82,56 @@ function redraw() {
     con.move(2,5); con.color_pair(COL_TEXT, COL_BACK);
 }
 
-redraw();
+function drawMenubarBase(index) {
+    drawInit();
+    con.clear();
+
+    // print menubar
+    con.color_pair(COL_BACK, COL_TEXT);
+    menubarItems.forEach((v,i)=>{
+        if (index == i) {
+            con.color_pair(COL_TEXT, COL_BACK);
+            print(String.fromCharCode(221));
+            print(v);
+            print(String.fromCharCode(222));
+        }
+        else {
+            con.color_pair(COL_BACK, COL_TEXT);
+            print(` ${v} `);
+        }
+
+    });
+    // fill rest of the space on the line
+    con.color_pair(COL_BACK, COL_TEXT);
+    let cursPos = con.getyx();
+    for (let i = cursPos[1]; i <= windowSize[1]; i++) {
+        con.mvaddch(1, i, 0);
+    }
+
+    // print menu items
+    let menuHeight = paintHeight - 1;
+    menubarContents[index].forEach((v,i) => {
+        con.color_pair(COL_TEXT, COL_BACK);
+
+        con.move(3 + (i % menuHeight), 2 + 12 * ((i / menuHeight)|0));
+        print(v);
+    });
+}
+
+function drawTextLine(paintRow) {
+    for(let x = 0; x < paintWidth; x++) {
+        let charCode = (undefined === textbuffer[scroll + paintRow]) ? 0 : textbuffer[scroll + paintRow].charCodeAt(x)|0; // or-zero to convert NaN into 0
+        con.mvaddch(2+paintRow, 5+x, charCode);
+    }
+}
+
+function drawTextbuffer() {
+    for (let k = 0; k < paintHeight; k++) {
+        drawTextLine(k)
+    }
+    con.move(2 + cursorRow, 5 + cursorCol);
+}
+
+drawMenubarBase(0);
+drawMain();
+drawTextbuffer();
