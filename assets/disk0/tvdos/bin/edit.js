@@ -1,5 +1,6 @@
 let scroll = 0;
-let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs", "The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
+//let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs", "The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
+let textbuffer = [""];
 let cursorRow = 0;
 let cursorCol = 0;
 let exit = false;
@@ -138,6 +139,7 @@ function drawTextbuffer() {
 }
 
 function displayBulletin(text) {
+    bulletinShown = true;
     let txt = text.substring(0, windowWidth - 10);
     con.move(windowHeight - 1, (windowWidth - txt.length) / 2);
     con.color_pair(COL_BACK, COL_TEXT);
@@ -146,6 +148,7 @@ function displayBulletin(text) {
     gotoText();
 }
 function dismissBulletin() {
+    bulletinShown = false;
     drawTextLine(paintHeight - 1);
     gotoText();
 }
@@ -155,42 +158,49 @@ function gotoText() {
 }
 
 function hitCtrlS() {
+    sys.poke(-40, 1);
     return (sys.peek(-41) == 47 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
 }
 function hitCtrlX() {
+    sys.poke(-40, 1);
     return (sys.peek(-41) == 52 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
 }
 function hitAny() {
+    sys.poke(-40, 1);
     return sys.peek(-41) != 0;
+}
+
+function appendText(code) {
+    if (textbuffer[cursorRow] === undefined)
+        textbuffer[cursorRow] = String.fromCharCode(code);
+    else
+        textbuffer[cursorRow] += String.fromCharCode(code);
+
+    cursorCol += 1;
+    drawTextLine(cursorRow - scroll);
+    gotoText();
 }
 
 reset_status();
 drawMain();
 drawTextbuffer();
 
-let keyDown = false;
+let bulletinShown = false;
 while (!exit) {
-    // capture keys down
-    sys.poke(-40, 1);
+    let key = con.getch();
 
-    if (!keyDown) {
-        if (hitAny()) keyDown = true;
+    serial.println(key);
 
-        if (hitCtrlX()) {
-            exit = true;
-        }
-        else if (hitCtrlS()) {
-            displayBulletin("Wrote NaN lines");
-        }
-        else if (hitAny()) {
+    if (key == 24) // Ctrl-X
+        exit = true;
+    else if (key == 19 && !bulletinShown) {
+        displayBulletin(`Wrote ${100 + ((Math.random() * 900)|0)} lines`);
+    }
+    else if (key >= 32) { // printables (excludes \n)
+        if (bulletinShown) {
             dismissBulletin();
         }
-    }
 
-    sys.poke(-40, 1);
-    if (keyDown && !hitAny()) {
-        keyDown = false;
+        appendText(key);
     }
-
-    serial.println("keydown = "+keyDown);
 }
