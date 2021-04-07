@@ -1,13 +1,14 @@
 let scroll = 0;
-let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
+let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs", "The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
 let cursorRow = 0;
 let cursorCol = 0;
 let exit = false;
 let scene = -1; // -1: main, 0: filemenu, 1: editmenu , ...
 
-let windowSize = con.getmaxyx();
-let paintWidth = windowSize[1]-4;
-let paintHeight = windowSize[0]-1;
+let windowWidth = con.getmaxyx()[1];
+let windowHeight = con.getmaxyx()[0];
+let paintWidth = windowWidth - 4;
+let paintHeight = windowHeight - 1;
 let scrollPeek = Math.ceil((paintHeight / 7));
 
 //const menubarItems = ["File","Edit","View"];
@@ -32,10 +33,11 @@ function reset_status() {
 }
 
 function drawInit() {
-    windowSize = con.getmaxyx();
+    windowWidth = con.getmaxyx()[1];
+    windowHeight = con.getmaxyx()[0];
     scrollPeek = Math.ceil((paintHeight / 6));
-    paintWidth = windowSize[1]-4;
-    paintHeight = windowSize[0]-2;
+    paintWidth = windowWidth-4;
+    paintHeight = windowHeight-2;
 }
 
 function drawMain() {
@@ -60,7 +62,7 @@ function drawMain() {
     // fill rest of the space on the line
     con.color_pair(COL_BACK, COL_TEXT);
     let cursPos = con.getyx();
-    for (let i = cursPos[1]; i <= windowSize[1]; i++) {
+    for (let i = cursPos[1]; i <= windowWidth; i++) {
         con.mvaddch(1, i, 0);
     }
 
@@ -79,7 +81,7 @@ function drawMain() {
     con.color_pair(COL_BACK, COL_TEXT);
     let lctxt = `${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
     for (let i = 0; i < lctxt.length; i++) {
-        con.mvaddch(1, windowSize[1] - lctxt.length + i, lctxt.charCodeAt(i));
+        con.mvaddch(1, windowWidth- lctxt.length + i, lctxt.charCodeAt(i));
     }
 
     con.move(2,5); con.color_pair(COL_TEXT, COL_BACK);
@@ -107,7 +109,7 @@ function drawMenubarBase(index) {
     // fill rest of the space on the line
     con.color_pair(COL_BACK, COL_TEXT);
     let cursPos = con.getyx();
-    for (let i = cursPos[1]; i <= windowSize[1]; i++) {
+    for (let i = cursPos[1]; i <= windowWidth; i++) {
         con.mvaddch(1, i, 0);
     }
 
@@ -132,23 +134,63 @@ function drawTextbuffer() {
     for (let k = 0; k < paintHeight; k++) {
         drawTextLine(k)
     }
+    gotoText();
+}
+
+function displayBulletin(text) {
+    let txt = text.substring(0, windowWidth - 10);
+    con.move(windowHeight - 1, (windowWidth - txt.length) / 2);
+    con.color_pair(COL_BACK, COL_TEXT);
+    print(`[${txt}]`);
+    con.color_pair(COL_TEXT, COL_BACK);
+    gotoText();
+}
+function dismissBulletin() {
+    drawTextLine(paintHeight - 1);
+    gotoText();
+}
+
+function gotoText() {
     con.move(2 + cursorRow, 5 + cursorCol);
 }
 
 function hitCtrlS() {
-    sys.poke(-40, 1);
     return (sys.peek(-41) == 47 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
 }
-
 function hitCtrlX() {
-    sys.poke(-40, 1);
     return (sys.peek(-41) == 52 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
+}
+function hitAny() {
+    return sys.peek(-41) != 0;
 }
 
 reset_status();
 drawMain();
+drawTextbuffer();
+
+let keyDown = false;
 while (!exit) {
-    if (hitCtrlX()) exit = true;
+    // capture keys down
+    sys.poke(-40, 1);
 
+    if (!keyDown) {
+        if (hitAny()) keyDown = true;
 
+        if (hitCtrlX()) {
+            exit = true;
+        }
+        else if (hitCtrlS()) {
+            displayBulletin("Wrote NaN lines");
+        }
+        else if (hitAny()) {
+            dismissBulletin();
+        }
+    }
+
+    sys.poke(-40, 1);
+    if (keyDown && !hitAny()) {
+        keyDown = false;
+    }
+
+    serial.println("keydown = "+keyDown);
 }
