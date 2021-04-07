@@ -2,13 +2,16 @@ let scroll = 0;
 let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
 let cursorRow = 0;
 let cursorCol = 0;
+let exit = false;
+let scene = -1; // -1: main, 0: filemenu, 1: editmenu , ...
 
 let windowSize = con.getmaxyx();
 let paintWidth = windowSize[1]-4;
 let paintHeight = windowSize[0]-1;
 let scrollPeek = Math.ceil((paintHeight / 7));
 
-const menubarItems = ["File","Edit","View"];
+//const menubarItems = ["File","Edit","View"];
+const menubarItems = [`^S${String.fromCharCode(221)}save`,`^X${String.fromCharCode(221)}exit`];
 const menubarFile = ["New","Open","Save","Save as","Exit"];
 const menubarEdit = ["Undo","Redo","Cut","Copy","Paste","Select All","Deselect"];
 const menubarView = ["Go To Line"];
@@ -45,7 +48,7 @@ function drawMain() {
         print(String.fromCharCode(222));
         for (let i = 0; i < v.length; i++) {
             let c = v.charCodeAt(i);
-            if (c >= 65 && c <= 90)
+            if (c >= 65 && c <= 90 || c == 94)
                 con.color_pair(COL_TEXT, COL_BACK);
             else
                 con.color_pair(COL_BACK, COL_TEXT);
@@ -132,6 +135,20 @@ function drawTextbuffer() {
     con.move(2 + cursorRow, 5 + cursorCol);
 }
 
-drawMenubarBase(0);
+function hitCtrlS() {
+    sys.poke(-40, 1);
+    return (sys.peek(-41) == 47 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
+}
+
+function hitCtrlX() {
+    sys.poke(-40, 1);
+    return (sys.peek(-41) == 52 && (sys.peek(-42) == 129 || sys.peek(-42) == 130));
+}
+
+reset_status();
 drawMain();
-drawTextbuffer();
+while (!exit) {
+    if (hitCtrlX()) exit = true;
+
+
+}
