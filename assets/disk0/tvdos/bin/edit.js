@@ -1,3 +1,13 @@
+let filename = undefined;
+
+if (exec_args !== undefined && exec_args[1] !== undefined) {
+    filename = exec_args[1];
+}
+else {
+    println("File to edit?");
+    filename = read();
+}
+
 let scroll = 0;
 //let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs", "The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
 let textbuffer = [""];
@@ -204,3 +214,6 @@ while (!exit) {
         appendText(key);
     }
 }
+
+con.clear();
+return 0;
