@@ -217,6 +217,16 @@ function appendText(code) {
     gotoText();
 }
 
+function appendLine() {
+    textbuffer.push("");
+    cursorRow += 1;
+    cursorCol = 0;
+    drawLnCol();
+    gotoText();
+
+    // TODO touch screen scroll vars
+}
+
 reset_status();
 drawMain();
 drawTextbuffer();
@@ -237,6 +247,11 @@ while (!exit) {
     else if (key == 19 && !bulletinShown) {
         writeout();
         displayBulletin(`Wrote ${textbuffer.length} lines`);
+    }
+    else if (key == 8) { // Bksp
+    }
+    else if (key == 13) { // Return / ^M
+        appendLine();
     }
     else if (key >= 32) { // printables (excludes \n)
         if (bulletinShown) {
