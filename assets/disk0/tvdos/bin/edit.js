@@ -43,6 +43,8 @@ function reset_status() {
     cursorCol = 0;
 }
 
+// DRAWING FUNCTIONS //
+
 function drawInit() {
     windowWidth = con.getmaxyx()[1];
     windowHeight = con.getmaxyx()[0];
@@ -51,7 +53,18 @@ function drawInit() {
     paintHeight = windowHeight-2;
 }
 
+function drawLnCol() {
+    con.curs_set(0);
+    con.color_pair(COL_BACK, COL_TEXT);
+    let lctxt = `${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
+    for (let i = 0; i < lctxt.length; i++) {
+        con.mvaddch(1, windowWidth- lctxt.length + i, lctxt.charCodeAt(i));
+    }
+    con.color_pair(COL_TEXT, COL_BACK);
+}
+
 function drawMain() {
+    con.curs_set(0);
     drawInit();
     con.clear();
 
@@ -89,16 +102,13 @@ function drawMain() {
     }
 
     // print status line
-    con.color_pair(COL_BACK, COL_TEXT);
-    let lctxt = `${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
-    for (let i = 0; i < lctxt.length; i++) {
-        con.mvaddch(1, windowWidth- lctxt.length + i, lctxt.charCodeAt(i));
-    }
+    drawLnCol();
 
     con.move(2,5); con.color_pair(COL_TEXT, COL_BACK);
 }
 
 function drawMenubarBase(index) {
+    con.curs_set(0);
     drawInit();
     con.clear();
 
@@ -135,6 +145,7 @@ function drawMenubarBase(index) {
 }
 
 function drawTextLine(paintRow) {
+    con.curs_set(0);
     for(let x = 0; x < paintWidth; x++) {
         let charCode = (undefined === textbuffer[scroll + paintRow]) ? 0 : textbuffer[scroll + paintRow].charCodeAt(x)|0; // or-zero to convert NaN into 0
         con.mvaddch(2+paintRow, 5+x, charCode);
@@ -142,6 +153,7 @@ function drawTextLine(paintRow) {
 }
 
 function drawTextbuffer() {
+    con.curs_set(0);
     for (let k = 0; k < paintHeight; k++) {
         drawTextLine(k)
     }
@@ -149,11 +161,12 @@ function drawTextbuffer() {
 }
 
 function displayBulletin(text) {
+    con.curs_set(0);
     bulletinShown = true;
     let txt = text.substring(0, windowWidth - 10);
     con.move(windowHeight - 1, (windowWidth - txt.length) / 2);
     con.color_pair(COL_BACK, COL_TEXT);
-    print(`[${txt}]`);
+    print(` ${txt} `);
     con.color_pair(COL_TEXT, COL_BACK);
     gotoText();
 }
@@ -165,7 +178,19 @@ function dismissBulletin() {
 
 function gotoText() {
     con.move(2 + cursorRow, 5 + cursorCol);
+    con.curs_set(1);
 }
+
+
+// FUNCTIONING FUNCTIONS (LOL) //
+
+function writeout() {
+    var driveLetter = _G.shell.getCurrentDrive();
+    filesystem.open(driveLetter, filename, "W");
+    filesystem.write(driveLetter, textbuffer.join('\n'));
+}
+
+// KEYBOARDING FUNCTIONS //
 
 function hitCtrlS() {
     sys.poke(-40, 1);
@@ -188,6 +213,7 @@ function appendText(code) {
 
     cursorCol += 1;
     drawTextLine(cursorRow - scroll);
+    drawLnCol();
     gotoText();
 }
 
@@ -196,15 +222,21 @@ drawMain();
 drawTextbuffer();
 
 let bulletinShown = false;
+
+// TODO for existing file, show [ Read $n Lines ]
+// TODO for new file, show [ New File ]
+displayBulletin(`Wrote ${textbuffer.length} Lines`);
+
 while (!exit) {
     let key = con.getch();
 
-    serial.println(key);
+    serial.println(`[edit.js] keycode = ${key}`);
 
     if (key == 24) // Ctrl-X
         exit = true;
     else if (key == 19 && !bulletinShown) {
-        displayBulletin(`Wrote ${100 + ((Math.random() * 900)|0)} lines`);
+        writeout();
+        displayBulletin(`Wrote ${textbuffer.length} lines`);
     }
     else if (key >= 32) { // printables (excludes \n)
         if (bulletinShown) {
