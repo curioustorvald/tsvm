@@ -53,12 +53,24 @@ function drawInit() {
     paintHeight = windowHeight-2;
 }
 
+function drawLineNumbers() {
+    con.color_pair(COL_LNUMFORE, COL_LNUMBACK);
+    for (let y = 0; y <= paintHeight; y++) {
+        con.move(y+2, 1);
+        let lnum = scroll + y + 1;
+        if (lnum >= 1000) print(`${lnum}`);
+        else if (lnum >= 100) print(`${lnum} `);
+        else if (lnum >= 10) print(` ${lnum} `);
+        else print(`  ${lnum} `);
+    }
+}
+
 function drawLnCol() {
     con.curs_set(0);
     con.color_pair(COL_BACK, COL_TEXT);
-    let lctxt = `${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
-    for (let i = 0; i < lctxt.length; i++) {
-        con.mvaddch(1, windowWidth- lctxt.length + i, lctxt.charCodeAt(i));
+    let lctxt = `  ${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
+    for (let i = 0; i < lctxt.length + (cursorCol < 9); i++) {
+        con.mvaddch(1, windowWidth - lctxt.length + (cursorCol >= 9) + i, lctxt.charCodeAt(i));
     }
     con.color_pair(COL_TEXT, COL_BACK);
 }
@@ -91,15 +103,7 @@ function drawMain() {
     }
 
     // print line number
-    con.color_pair(COL_LNUMFORE, COL_LNUMBACK);
-    for (let y = 0; y <= paintHeight; y++) {
-        con.move(y+2, 1);
-        let lnum = scroll + y + 1;
-        if (lnum >= 1000) print(`${lnum}`);
-        else if (lnum >= 100) print(`${lnum} `);
-        else if (lnum >= 10) print(` ${lnum} `);
-        else print(`  ${lnum} `);
-    }
+    drawLineNumbers();
 
     // print status line
     drawLnCol();
@@ -145,6 +149,7 @@ function drawMenubarBase(index) {
 }
 
 function drawTextLine(paintRow) {
+    con.color_pair(COL_TEXT, COL_BACK);
     con.curs_set(0);
     for(let x = 0; x < paintWidth; x++) {
         let charCode = (undefined === textbuffer[scroll + paintRow]) ? 0 : textbuffer[scroll + paintRow].charCodeAt(x)|0; // or-zero to convert NaN into 0
@@ -153,7 +158,6 @@ function drawTextLine(paintRow) {
 }
 
 function drawTextbuffer() {
-    con.curs_set(0);
     for (let k = 0; k < paintHeight; k++) {
         drawTextLine(k)
     }
@@ -177,7 +181,7 @@ function dismissBulletin() {
 }
 
 function gotoText() {
-    con.move(2 + cursorRow, 5 + cursorCol);
+    con.move(2 + cursorRow - scroll, 5 + cursorCol);
     con.curs_set(1);
 }
 
@@ -222,9 +226,14 @@ function appendLine() {
     cursorRow += 1;
     cursorCol = 0;
     drawLnCol();
-    gotoText();
 
-    // TODO touch screen scroll vars
+    if (cursorRow > windowHeight - scrollPeek) {
+        scroll += 1;
+        drawLineNumbers();
+        drawTextbuffer();
+    }
+
+    gotoText();
 }
 
 reset_status();

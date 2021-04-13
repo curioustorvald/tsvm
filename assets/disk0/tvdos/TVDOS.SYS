@@ -128,7 +128,7 @@ var GL = eval(filesystem.readAll("A"));
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
 var execApp = (cmdsrc, args) => {
-    var execAppPrg = eval("var _appStub=function(exec_args){"+cmdsrc+"};_appStub;"); // making 'exec_args' a app-level global
+    var execAppPrg = eval("var _appStub=function(exec_args){\n"+cmdsrc+"\n};_appStub;"); // making 'exec_args' a app-level global
     return execAppPrg(args);
 }
 
