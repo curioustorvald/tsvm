@@ -24,12 +24,18 @@ if (editingExistingFile) {
     serial.println(textbuffer);
 }
 
-
 let windowWidth = con.getmaxyx()[1];
 let windowHeight = con.getmaxyx()[0];
 let paintWidth = windowWidth - 4;
 let paintHeight = windowHeight - 1;
 let scrollPeek = Math.ceil((paintHeight / 7));
+function drawInit() {
+    windowWidth = con.getmaxyx()[1];
+    windowHeight = con.getmaxyx()[0];
+    paintWidth = windowWidth - 4;
+    paintHeight = windowHeight - 1;
+    scrollPeek = Math.ceil((paintHeight / 7));
+}
 
 //const menubarItems = ["File","Edit","View"];
 const menubarItems = [`^S${String.fromCharCode(221)}save`,`^X${String.fromCharCode(221)}exit`];
@@ -54,17 +60,9 @@ function reset_status() {
 
 // DRAWING FUNCTIONS //
 
-function drawInit() {
-    windowWidth = con.getmaxyx()[1];
-    windowHeight = con.getmaxyx()[0];
-    scrollPeek = Math.ceil((paintHeight / 6));
-    paintWidth = windowWidth-4;
-    paintHeight = windowHeight-2;
-}
-
 function drawLineNumbers() {
     con.color_pair(COL_LNUMFORE, COL_LNUMBACK);
-    for (let y = 0; y <= paintHeight; y++) {
+    for (let y = 0; y < paintHeight; y++) {
         con.move(y+2, 1);
         let lnum = scroll + y + 1;
         if (lnum >= 1000) print(`${lnum}`);
@@ -185,7 +183,7 @@ function displayBulletin(text) {
 }
 function dismissBulletin() {
     bulletinShown = false;
-    drawTextLine(paintHeight - 1);
+    drawTextLine(paintHeight - 2);
     gotoText();
 }
 
@@ -235,7 +233,7 @@ function appendLine() {
     cursorCol = 0;
     drawLnCol();
 
-    if (cursorRow > windowHeight - scrollPeek) {
+    if (cursorRow >= windowHeight - scrollPeek) {
         scroll += 1;
         drawLineNumbers();
         drawTextbuffer();
