@@ -1,6 +1,7 @@
 package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.Input
 import com.badlogic.gdx.InputProcessor
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.VM
@@ -252,8 +253,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     }
 
     override fun keyTyped(p0: Char): Boolean {
-        if (keyboardInputRequested && !ttySpecialKeyLatched && p0.toInt() > 0) {
-            //println("[IO] Key typed: ${p0.toInt()}")
+        if (keyboardInputRequested && p0.toInt() > 0) {
+            //println("[IO] key typed = ${p0.toInt()}")
             keyboardBuffer.appendHead(p0.toByte())
             return true
         }
@@ -267,7 +268,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     }
 
     override fun keyUp(p0: Int): Boolean {
-        ttySpecialKeyLatched = false
+        //ttySpecialKeyLatched = false
         return true
     }
 
@@ -279,16 +280,29 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     private var uptimeCounterLatched = false
     private var RTClatched = false
     private var rawInputFunctionLatched = false
-    private var ttySpecialKeyLatched = false
-    //                              UP DN LE RI
-    private var specialKey = listOf(19,20,21,22).toSortedSet()
+    private var specialKeys = hashMapOf(
+        Input.Keys.HOME to 199.toByte(),
+        Input.Keys.UP to 200.toByte(),
+        Input.Keys.PAGE_UP to 201.toByte(),
+        Input.Keys.LEFT to 203.toByte(),
+        Input.Keys.RIGHT to 205.toByte(),
+        Input.Keys.END to 207.toByte(),
+        Input.Keys.DOWN to 208.toByte(),
+        Input.Keys.PAGE_DOWN to 209.toByte(),
+        Input.Keys.INSERT to 210.toByte(),
+        Input.Keys.FORWARD_DEL to 211.toByte()
+    )
     override fun keyDown(p0: Int): Boolean {
-        if (keyboardInputRequested && !ttySpecialKeyLatched && p0 in specialKey) {
-            //println("[IO] Key down: $p0")
-            keyboardBuffer.appendHead(p0.toByte())
+        if (keyboardInputRequested) {
+            specialKeys[p0]?.let {
+                //println("[IO] key special = ${it.toUInt()}")
+                keyboardBuffer.appendHead(it)
+            }
+            return true
         }
-
-        return true
+        else {
+            return false
+        }
     }
 
     override fun touchDown(p0: Int, p1: Int, p2: Int, p3: Int): Boolean {

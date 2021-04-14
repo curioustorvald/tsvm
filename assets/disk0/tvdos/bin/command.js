@@ -98,6 +98,7 @@ shell.replaceVarCall = function(value) {
     return replaceMap.map(it => (it.r) ? _TVDOS.variables[it.s] : it.s).join('');
 }
 shell.getPwd = function() { return shell_pwd; }
+shell.getPwdString = function() { return "\\" + (shell_pwd.concat([""])).join("\\"); }
 shell.getCurrentDrive = function() { return CURRENT_DRIVE; }
 // example input: echo "the string" > subdir\test.txt
 shell.parse = function(input) {
@@ -422,12 +423,12 @@ if (goInteractive) {
                 print(s);
             }
             // backspace
-            else if (key === 8 && cmdbuf.length > 0) {
+            else if (key === con.KEY_BACKSPACE && cmdbuf.length > 0) {
                 cmdbuf = cmdbuf.substring(0, cmdbuf.length - 1);
                 print(String.fromCharCode(key));
             }
             // enter
-            else if (key === 10 || key === 13) {
+            else if (key === 10 || key === con.KEY_RETURN) {
                 println();
                 try {
                     errorlevel = 0; // reset the number
@@ -451,7 +452,7 @@ if (goInteractive) {
                 }
             }
             // up arrow
-            else if (key === 19 && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
+            else if (key === con.KEY_UP && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
                 cmdHistoryScroll += 1;
 
                 // back the cursor in order to type new cmd
@@ -463,7 +464,7 @@ if (goInteractive) {
 
             }
             // down arrow
-            else if (key === 20) {
+            else if (key === con.KEY_DOWN) {
                 if (cmdHistoryScroll > 0) {
                     // back the cursor in order to type new cmd
                     var x = 0;

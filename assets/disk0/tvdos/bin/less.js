@@ -88,24 +88,27 @@ con.move(termH + 1, 2);
 while (true) {
     // read a key
     key = con.getch();
+
+    //serial.println("key = "+key);
+
     // do something with key read
     /*Q*/if (key == 113 || key == 81) break;
     /*R*/else if (key == 114 || key == 82) repaint();
-    /*up*/else if (key == 19) {
+    /*up*/else if (key == con.KEY_UP) {
         scroll -= scrollSize;
         if (scroll < 0) scroll = 0;
         repaint();
     }
-    /*down*/else if (key == 20) {
+    /*down*/else if (key == con.KEY_DOWN) {
         scroll += scrollSize;
         if (scroll > lineToBytes.length - termH) scroll = lineToBytes.length - termH;
         repaint();
     }
-    /*left*/else if (key == 21 && pan > 0) {
+    /*left*/else if (key == con.KEY_LEFT && pan > 0) {
         pan -= panSize;
         repaint();
     }
-    /*right*/else if (key == 22 && pan < maxPan - termW) {
+    /*right*/else if (key == con.KEY_RIGHT && pan < maxPan - termW) {
         pan += panSize;
         repaint();
     }
@@ -113,7 +116,7 @@ while (true) {
         print(String.fromCharCode(key));
         numbuf = (numbuf * 10) + (key - 48);
     }
-    /*bksp*/else if (key == 8) {
+    /*bksp*/else if (key == con.KEY_BACKSPACE) {
         if (numbuf > 0) print(String.fromCharCode(key));
         numbuf = (numbuf / 10)|0;
     }
@@ -129,14 +132,14 @@ while (true) {
     }
 
 
-    if (!(key >= 48 && key <= 57 || key == 8)) {
+    if (!(key >= 48 && key <= 57 || key == con.KEY_BACKSPACE)) {
         resetKeyReadStatus();
         con.move(termH + 1, 1);
         print(":"+" ".repeat(termW - 2));
         con.move(termH + 1, 2);
     }
 
-    serial.println("numbuf = "+numbuf);
+    //serial.println("numbuf = "+numbuf);
 }
 
 con.move(termH + 1, 1);

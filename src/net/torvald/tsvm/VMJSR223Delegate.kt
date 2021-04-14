@@ -52,6 +52,22 @@ class VMJSR223Delegate(val vm: VM) {
     /**
      * @return key being hit, of which:
      * a-zA-Z1-9: corresponding ASCII code
+     *
+     * Up: 200
+     * Left: 203
+     * Down: 208
+     * Right: 205
+     *
+     * PgUp: 201
+     * PgDn: 209
+     * Home: 199
+     * End: 207
+     * Ins: 201
+     * Del: 211
+     *
+     * Return: 13 (^M)
+     * Bksp: 8 (^H)
+     *
      * ^A-^Z: 1 through 26
      */
     fun readKey(): Int {

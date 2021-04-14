@@ -376,6 +376,18 @@ String.prototype.trimNull = function() {
 }
 // ncurses-like terminal control
 var con = {};
+con.KEY_HOME = 199;
+con.KEY_UP = 200;
+con.KEY_PAGE_UP = 201;
+con.KEY_LEFT = 203;
+con.KEY_RIGHT = 205
+con.KEY_END = 207;
+con.KEY_DOWN = 208
+con.KEY_PAGE_DOWN = 209;
+con.KEY_INSERT = 210;
+con.KEY_DELETE = 211;
+con.KEY_BACKSPACE = 8;
+con.KEY_RETURN = 13;
 con.getch = function() {
     return sys.readKey();
 };
@@ -458,7 +470,7 @@ con.poll_keys = function() {
     return [-41,-42,-43,-44,-45,-46,-47,-48].map(it => sys.peek(it));
 };
 Object.freeze(con);
-// system management  function
+// system management function
 var system = {};
 system.maxmem = function() {
     return sys.peek(-65) | (sys.peek(-66) << 8) | (sys.peek(-67) << 16) | (sys.peek(-68) << 24);

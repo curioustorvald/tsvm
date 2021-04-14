@@ -7,14 +7,23 @@ else {
     println("File to edit?");
     filename = read();
 }
+let driveLetter = _G.shell.getCurrentDrive();
+let filePath = _G.shell.getPwdString() + filename;
 
 let scroll = 0;
-//let textbuffer = ["The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs", "The quick brown fox","jumps over a lazy dog 12345678901234567890", "Pack my box with", "five dozen liquor jugs"];
 let textbuffer = [""];
 let cursorRow = 0;
 let cursorCol = 0;
 let exit = false;
 let scene = -1; // -1: main, 0: filemenu, 1: editmenu , ...
+
+// load existing file if it's there
+let editingExistingFile = filesystem.open(driveLetter, filePath, "R");
+if (editingExistingFile) {
+    textbuffer = filesystem.readAll(driveLetter).split("\n");
+    serial.println(textbuffer);
+}
+
 
 let windowWidth = con.getmaxyx()[1];
 let windowHeight = con.getmaxyx()[0];
@@ -189,8 +198,7 @@ function gotoText() {
 // FUNCTIONING FUNCTIONS (LOL) //
 
 function writeout() {
-    var driveLetter = _G.shell.getCurrentDrive();
-    filesystem.open(driveLetter, filename, "W");
+    filesystem.open(driveLetter, filePath, "W");
     filesystem.write(driveLetter, textbuffer.join('\n'));
 }
 
@@ -236,15 +244,19 @@ function appendLine() {
     gotoText();
 }
 
-reset_status();
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
 drawMain();
 drawTextbuffer();
 
 let bulletinShown = false;
 
-// TODO for existing file, show [ Read $n Lines ]
-// TODO for new file, show [ New File ]
-displayBulletin(`Wrote ${textbuffer.length} Lines`);
+// show "welcome" message
+if (!editingExistingFile)
+    displayBulletin(`New File`);
+else
+    displayBulletin(`Read ${textbuffer.length} Lines`);
+
 
 while (!exit) {
     let key = con.getch();
@@ -257,9 +269,9 @@ while (!exit) {
         writeout();
         displayBulletin(`Wrote ${textbuffer.length} lines`);
     }
-    else if (key == 8) { // Bksp
+    else if (key == con.KEY_BACKSPACE) { // Bksp
     }
-    else if (key == 13) { // Return / ^M
+    else if (key == con.KEY_RETURN) { // Return
         appendLine();
     }
     else if (key >= 32) { // printables (excludes \n)
