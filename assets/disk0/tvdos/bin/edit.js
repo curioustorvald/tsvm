@@ -160,8 +160,18 @@ function drawMenubarBase(index) {
 function drawTextLine(paintRow) {
     con.color_pair(COL_TEXT, COL_BACK);
     con.curs_set(0);
-    for(let x = 0; x < paintWidth; x++) {
-        let charCode = (undefined === textbuffer[scroll + paintRow]) ? 0 : textbuffer[scroll + paintRow].charCodeAt(x + scrollHor)|0; // or-zero to convert NaN into 0
+    for (let x = 0; x < paintWidth; x++) {
+        let text = textbuffer[scroll + paintRow];
+        let charCode =
+            // nonexisting text row
+            (undefined === textbuffer[scroll + paintRow]) ? 0 :
+            // left scroll indicator
+            (x == 0 && scrollHor > 0) ? 17 :
+            // right scroll indicator
+            (x == paintWidth - 1 && x + scrollHor + 1 < text.length) ? 16 :
+            // plain text
+            text.charCodeAt(x + scrollHor)|0; // or-zero to convert NaN into 0
+
         con.mvaddch(PAINT_START_Y + paintRow, PAINT_START_X + x, charCode);
     }
 }
