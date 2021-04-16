@@ -331,6 +331,12 @@ while (!exit) {
     else if (key == con.KEY_RIGHT && cursorCol < textbuffer[cursorRow].length) {
         nextCol(); drawLnCol(); gotoText();
     }
+    else if (key == con.KEY_HOME) {
+        cursorCol = 0; scrollHor = 0; drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_END)  {
+        cursorCol = textbuffer[cursorRow].length; scrollHor = textbuffer[cursorRow].length - paintWidth + 2; drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
+    }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
         appendText(key);
     }
