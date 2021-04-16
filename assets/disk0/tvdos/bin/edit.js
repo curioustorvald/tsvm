@@ -262,25 +262,38 @@ function appendLine() {
 
 function nextCol() {
     if (cursorCol < textbuffer[cursorRow].length) {
-        let cx = con.getyx()[1];
         cursorCol += 1;
-        if (cursorCol >= paintWidth && cx == paintWidth + PAINT_START_X - 1) {
-            scrollHor += 1;
-            drawTextLine(cursorRow - scroll);
-        }
+        updateScrollState();
     }
 }
 
 function prevCol() {
     if (cursorCol > 0) {
-        let cx = con.getyx()[1];
-        serial.println(`cx=${cx}; cursorCol: ${cursorCol}->${cursorCol-1}; scrollHor=${scrollHor}`);
         cursorCol -= 1;
-        if (scrollHor > 0 && cursorCol == scrollHor && cx == PAINT_START_X + 1) {
-            scrollHor -= 1;
-            drawTextLine(cursorRow - scroll);
-        }
+        updateScrollState();
     }
+}
+
+function updateScrollState() {
+    gotoText(); // update cursor pos
+    let cursorPos = con.getyx();
+    let cx = cursorPos[1]; let cy = cursorPos[0];
+    let tlen = textbuffer[cursorRow].length;
+
+    serial.println(`paintSize: ${paintWidth}x${paintHeight}, cursYX:${cursorPos} cursCol: ${cursorCol} scrH: ${scrollHor}`);
+
+    // update horizontal scroll stats
+    if (cursorCol >= paintWidth - 1 && cx == paintWidth - 1 + PAINT_START_X) {
+        scrollHor += 1;
+        drawTextLine(cursorRow - scroll);
+    }
+    else if (scrollHor > 0 && cursorCol == scrollHor && cx < PAINT_START_X + 1) {
+        scrollHor -= 1;
+        drawTextLine(cursorRow - scroll);
+    }
+
+    // update vertical scroll stats
+
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -292,8 +305,6 @@ drawTextbuffer();
 if (!editingExistingFile)
     displayBulletin(`New File`);
 else {
-    // move to right end of the first line
-    cursorCol = textbuffer[0].length;
     drawLnCol();
     displayBulletin(`Read ${textbuffer.length} Lines`);
 }
