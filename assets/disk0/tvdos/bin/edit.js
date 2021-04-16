@@ -243,7 +243,10 @@ function appendText(code) {
 }
 
 function appendLine() {
-    textbuffer.push("");
+    //textbuffer.push("");
+    let s1 = textbuffer[cursorRow].substring(0, cursorCol);
+    let s2 = textbuffer[cursorRow].substring(cursorCol);
+    textbuffer.splice(cursorRow, 1, s1, s2);
 
     // reset horizontal scroll before going to the next line
     scrollHor = 0;
@@ -256,8 +259,9 @@ function appendLine() {
     if (cursorRow >= windowHeight - scrollPeek) {
         scroll += 1;
         drawLineNumbers();
-        drawTextbuffer();
     }
+
+    drawTextbuffer();
 }
 
 function nextCol() {
@@ -332,10 +336,13 @@ while (!exit) {
         nextCol(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_HOME) {
-        cursorCol = 0; scrollHor = 0; drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
+        cursorCol = 0; scrollHor = 0;
+        drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_END)  {
-        cursorCol = textbuffer[cursorRow].length; scrollHor = textbuffer[cursorRow].length - paintWidth + 2; drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
+        cursorCol = textbuffer[cursorRow].length;
+        scrollHor = textbuffer[cursorRow].length - paintWidth + 2;
+        drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
         appendText(key);
