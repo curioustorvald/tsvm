@@ -170,7 +170,7 @@ function drawTextLine(paintRow) {
             // right scroll indicator
             (x == paintWidth - 1 && x + scrollHor + 1 < text.length) ? 16 :
             // plain text
-            text.charCodeAt(x + scrollHor)|0; // or-zero to convert NaN into 0
+            text.charCodeAt(x + scrollHor); // NaN will be returned for nonexisting char but con.addch will cast NaN into zero
 
         con.mvaddch(PAINT_START_Y + paintRow, PAINT_START_X + x, charCode);
     }
@@ -262,17 +262,24 @@ function appendLine() {
 
 function nextCol() {
     if (cursorCol < textbuffer[cursorRow].length) {
+        let cx = con.getyx()[1];
         cursorCol += 1;
-        if (cursorCol >= paintWidth)
+        if (cursorCol >= paintWidth && cx == paintWidth + PAINT_START_X - 1) {
             scrollHor += 1;
+            drawTextLine(cursorRow - scroll);
+        }
     }
 }
 
 function prevCol() {
     if (cursorCol > 0) {
+        let cx = con.getyx()[1];
+        serial.println(`cx=${cx}; cursorCol: ${cursorCol}->${cursorCol-1}; scrollHor=${scrollHor}`);
         cursorCol -= 1;
-        if (scrollHor > 0 && cursorCol == scrollHor)
+        if (scrollHor > 0 && cursorCol == scrollHor && cx == PAINT_START_X + 1) {
             scrollHor -= 1;
+            drawTextLine(cursorRow - scroll);
+        }
     }
 }
 
