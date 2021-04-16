@@ -1,3 +1,18 @@
+//const menubarItems = ["File","Edit","View"];
+const menubarItems = [`^S${String.fromCharCode(221)}save`,`^X${String.fromCharCode(221)}exit`];
+const menubarFile = ["New","Open","Save","Save as","Exit"];
+const menubarEdit = ["Undo","Redo","Cut","Copy","Paste","Select All","Deselect"];
+const menubarView = ["Go To Line"];
+const menubarContents = [menubarFile, menubarEdit, menubarView];
+const COL_TEXT = 252;
+const COL_BACK = 255;
+const COL_SUPERTEXT = 239;
+const COL_DIMTEXT = 249;
+const COL_LNUMBACK = 18;
+const COL_LNUMFORE = 252;
+const PAINT_START_X = 5;
+const PAINT_START_Y = 2;
+
 let filename = undefined;
 
 if (exec_args !== undefined && exec_args[1] !== undefined) {
@@ -11,6 +26,7 @@ let driveLetter = _G.shell.getCurrentDrive();
 let filePath = _G.shell.getPwdString() + filename;
 
 let scroll = 0;
+let scrollHor = 0;
 let textbuffer = [""];
 let cursorRow = 0;
 let cursorCol = 0;
@@ -26,30 +42,16 @@ if (editingExistingFile) {
 
 let windowWidth = con.getmaxyx()[1];
 let windowHeight = con.getmaxyx()[0];
-let paintWidth = windowWidth - 4;
-let paintHeight = windowHeight - 1;
+let paintWidth = windowWidth - PAINT_START_X + 1;
+let paintHeight = windowHeight - PAINT_START_Y + 1;
 let scrollPeek = Math.ceil((paintHeight / 7));
 function drawInit() {
     windowWidth = con.getmaxyx()[1];
     windowHeight = con.getmaxyx()[0];
-    paintWidth = windowWidth - 4;
-    paintHeight = windowHeight - 1;
+    paintWidth = windowWidth - PAINT_START_X + 1;
+    paintHeight = windowHeight - PAINT_START_Y + 1;
     scrollPeek = Math.ceil((paintHeight / 7));
 }
-
-//const menubarItems = ["File","Edit","View"];
-const menubarItems = [`^S${String.fromCharCode(221)}save`,`^X${String.fromCharCode(221)}exit`];
-const menubarFile = ["New","Open","Save","Save as","Exit"];
-const menubarEdit = ["Undo","Redo","Cut","Copy","Paste","Select All","Deselect"];
-const menubarView = ["Go To Line"];
-const menubarContents = [menubarFile, menubarEdit, menubarView];
-const COL_TEXT = 252;
-const COL_BACK = 255;
-const COL_SUPERTEXT = 239;
-const COL_DIMTEXT = 249;
-const COL_LNUMBACK = 18;
-const COL_LNUMFORE = 252;
-
 
 function reset_status() {
     scroll = 0;
@@ -63,7 +65,7 @@ function reset_status() {
 function drawLineNumbers() {
     con.color_pair(COL_LNUMFORE, COL_LNUMBACK);
     for (let y = 0; y < paintHeight; y++) {
-        con.move(y+2, 1);
+        con.move(y + PAINT_START_Y, 1);
         let lnum = scroll + y + 1;
         if (lnum >= 1000) print(`${lnum}`);
         else if (lnum >= 100) print(`${lnum} `);
@@ -115,7 +117,7 @@ function drawMain() {
     // print status line
     drawLnCol();
 
-    con.move(2,5); con.color_pair(COL_TEXT, COL_BACK);
+    con.move(PAINT_START_Y, PAINT_START_X); con.color_pair(COL_TEXT, COL_BACK);
 }
 
 function drawMenubarBase(index) {
@@ -159,8 +161,8 @@ function drawTextLine(paintRow) {
     con.color_pair(COL_TEXT, COL_BACK);
     con.curs_set(0);
     for(let x = 0; x < paintWidth; x++) {
-        let charCode = (undefined === textbuffer[scroll + paintRow]) ? 0 : textbuffer[scroll + paintRow].charCodeAt(x)|0; // or-zero to convert NaN into 0
-        con.mvaddch(2+paintRow, 5+x, charCode);
+        let charCode = (undefined === textbuffer[scroll + paintRow]) ? 0 : textbuffer[scroll + paintRow].charCodeAt(x + scrollHor)|0; // or-zero to convert NaN into 0
+        con.mvaddch(PAINT_START_Y + paintRow, PAINT_START_X + x, charCode);
     }
 }
 
@@ -188,7 +190,7 @@ function dismissBulletin() {
 }
 
 function gotoText() {
-    con.move(2 + cursorRow - scroll, 5 + cursorCol);
+    con.move(PAINT_START_Y + cursorRow - scroll, PAINT_START_X + cursorCol - scrollHor);
     con.curs_set(1);
 }
 
@@ -224,7 +226,7 @@ function appendText(code) {
         //textbuffer[cursorRow] += String.fromCharCode(code);
     }
 
-    cursorCol += 1;
+    nextCol();
     drawTextLine(cursorRow - scroll);
     drawLnCol();
     gotoText();
@@ -232,17 +234,36 @@ function appendText(code) {
 
 function appendLine() {
     textbuffer.push("");
+
+    // reset horizontal scroll before going to the next line
+    scrollHor = 0;
+    drawTextLine(cursorRow - scroll);
+
+    // go to the next line
     cursorRow += 1;
     cursorCol = 0;
-    drawLnCol();
 
     if (cursorRow >= windowHeight - scrollPeek) {
         scroll += 1;
         drawLineNumbers();
         drawTextbuffer();
     }
+}
 
-    gotoText();
+function nextCol() {
+    if (cursorCol < textbuffer[cursorRow].length) {
+        cursorCol += 1;
+        if (cursorCol >= paintWidth)
+            scrollHor += 1;
+    }
+}
+
+function prevCol() {
+    if (cursorCol > 0) {
+        cursorCol -= 1;
+        if (scrollHor > 0 && cursorCol == scrollHor)
+            scrollHor -= 1;
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -274,13 +295,13 @@ while (!exit) {
     else if (key == con.KEY_BACKSPACE) { // Bksp
     }
     else if (key == con.KEY_RETURN) { // Return
-        appendLine();
+        appendLine(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_LEFT && cursorCol > 0) {
-        cursorCol -= 1; drawLnCol(); gotoText();
+        prevCol(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_RIGHT && cursorCol < textbuffer[cursorRow].length) {
-        cursorCol += 1; drawLnCol(); gotoText();
+        nextCol(); drawLnCol(); gotoText();
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
         appendText(key);
