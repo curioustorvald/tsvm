@@ -16,12 +16,12 @@ let cursorRow = 0;
 let cursorCol = 0;
 let exit = false;
 let scene = -1; // -1: main, 0: filemenu, 1: editmenu , ...
+let bulletinShown = false;
 
 // load existing file if it's there
 let editingExistingFile = filesystem.open(driveLetter, filePath, "R");
 if (editingExistingFile) {
     textbuffer = filesystem.readAll(driveLetter).split("\n");
-    serial.println(textbuffer);
 }
 
 let windowWidth = con.getmaxyx()[1];
@@ -218,8 +218,11 @@ function hitAny() {
 function appendText(code) {
     if (textbuffer[cursorRow] === undefined)
         textbuffer[cursorRow] = String.fromCharCode(code);
-    else
-        textbuffer[cursorRow] += String.fromCharCode(code);
+    else {
+        let s = textbuffer[cursorRow].substring(0);
+        textbuffer[cursorRow] = s.substring(0, cursorCol) + String.fromCharCode(code) + s.substring(cursorCol);
+        //textbuffer[cursorRow] += String.fromCharCode(code);
+    }
 
     cursorCol += 1;
     drawTextLine(cursorRow - scroll);
@@ -247,19 +250,20 @@ function appendLine() {
 drawMain();
 drawTextbuffer();
 
-let bulletinShown = false;
-
 // show "welcome" message
 if (!editingExistingFile)
     displayBulletin(`New File`);
-else
+else {
+    // move to right end of the first line
+    cursorCol = textbuffer[0].length;
+    drawLnCol();
     displayBulletin(`Read ${textbuffer.length} Lines`);
-
+}
 
 while (!exit) {
     let key = con.getch();
 
-    serial.println(`[edit.js] keycode = ${key}`);
+    if (bulletinShown) dismissBulletin();
 
     if (key == 24) // Ctrl-X
         exit = true;
@@ -272,11 +276,13 @@ while (!exit) {
     else if (key == con.KEY_RETURN) { // Return
         appendLine();
     }
-    else if (key >= 32) { // printables (excludes \n)
-        if (bulletinShown) {
-            dismissBulletin();
-        }
-
+    else if (key == con.KEY_LEFT && cursorCol > 0) {
+        cursorCol -= 1; drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_RIGHT && cursorCol < textbuffer[cursorRow].length) {
+        cursorCol += 1; drawLnCol(); gotoText();
+    }
+    else if (key >= 32 && key < 128) { // printables (excludes \n)
         appendText(key);
     }
 }
