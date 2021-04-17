@@ -285,7 +285,7 @@ function cursorMoveRelative(odx, ody) {
     let cursorPos = con.getyx();
 
     let dx = odx; let dy = ody;
-    let px = cursorPos[1]; let py = cursorPos[0];
+    let px = cursorPos[1] - PAINT_START_X; let py = cursorPos[0] - PAINT_START_Y;
     let nx = px + dx; let ny = py + dy;
     let oldScroll = scroll;
     let oldScrollHor = scrollHor;
@@ -295,9 +295,10 @@ function cursorMoveRelative(odx, ody) {
         dx = Math.min(cursoringCol, textbuffer[cursorRow].length) - cursorCol + 1;
     else if (cursorCol + dx < 0)
         dx = -cursorCol;
+
     if (cursorRow + dy > textbuffer.length)
         dy = textbuffer.length - cursorRow;
-    else if (cursorCol + dy < 0)
+    else if (cursorRow + dy < 0)
         dy = -cursorRow;
 
 
@@ -328,8 +329,8 @@ function cursorMoveRelative(odx, ody) {
     // update vertical scroll stats
     if (dy != 0) {
         if (ny > paintHeight) {
-            scroll += (ny - paintWidth - scrollPeek);
-            ny = paintWidth - scrollPeek
+            scroll += (ny - paintHeight - scrollPeek);
+            ny = paintHeight - scrollPeek
         }
         else if (ny < 0) {
             let scrollToTop = (scroll - dy <= 0);
@@ -343,6 +344,8 @@ function cursorMoveRelative(odx, ody) {
         }
     }
 
+    serial.println(`dY:${dy} nY:${ny} scrY:${scroll} row:${cursorRow}`);
+
     // update screendraw
     if (oldScroll != scroll) {
         drawTextbuffer(); drawLineNumbers();
@@ -351,7 +354,7 @@ function cursorMoveRelative(odx, ody) {
         drawTextLine(ny);
     }
 
-    gotoText();
+    drawLnCol(); gotoText();
 }
 
 // will try to put the cursor at the right end of the screen as long as the text length is longer than the window width
