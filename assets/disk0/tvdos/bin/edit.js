@@ -235,13 +235,9 @@ function appendText(code) {
     else {
         let s = textbuffer[cursorRow].substring(0);
         textbuffer[cursorRow] = s.substring(0, cursorCol) + String.fromCharCode(code) + s.substring(cursorCol);
-        //textbuffer[cursorRow] += String.fromCharCode(code);
     }
 
-    nextCol();
-    drawTextLine(cursorRow - scroll);
-    drawLnCol();
-    gotoText();
+    cursorMoveRelative(1,0);
 }
 
 function appendLine() {
@@ -267,69 +263,106 @@ function appendLine() {
     drawTextbuffer();
 }
 
-function nextCol() {
-    if (cursorCol < textbuffer[cursorRow].length) {
-        cursorCol += 1; cursoringCol = cursorCol; // do NOT inc/dec on cursoringCol
-        updateScrollState(true, false);
+function backspaceOnce() {
+    // delete a linebreak
+    if (cursorCol == 0 && cursorRow > 0) {
+        let s1 = textbuffer[cursorRow - 1];
+        let s2 = textbuffer[cursorRow];
+        textbuffer.splice(cursorRow - 1, 2, s1+s2);
+        cursorMoveRelative(0,-1); cursorMoveRelative(Number.MAX_SAFE_INTEGER, 0); cursorHorAbsolute(s1.length);
+    }
+    // delete a character
+    else if (cursorCol > 0) {
+        let s = textbuffer[cursorRow].substring(0);
+        textbuffer[cursorRow] = s.substring(0, cursorCol - 1) + s.substring(cursorCol);
+        cursorMoveRelative(-1,0);
     }
 }
 
-function prevCol() {
-    if (cursorCol > 0) {
-        cursorCol -= 1; cursoringCol = cursorCol; // do NOT inc/dec on cursoringCol
-        updateScrollState(true, false);
-    }
-}
-
-function nextRow() {
-    if (cursorRow < textbuffer.length - 1) {
-        cursorRow += 1;
-        updateScrollState(false, true);
-    }
-}
-
-function prevRow() {
-    if (cursorRow > 0) {
-        cursorRow -= 1;
-        updateScrollState(false, true);
-    }
-}
-
-function updateScrollState(hor, vert) {
-    gotoText(); // update cursor pos
+// this one actually cares about the current scrolling stats
+function cursorMoveRelative(odx, ody) {
+    //gotoText(); // update cursor pos
     let cursorPos = con.getyx();
-    let cx = cursorPos[1]; let cy = cursorPos[0];
+
+    let dx = odx; let dy = ody;
+    let px = cursorPos[1]; let py = cursorPos[0];
+    let nx = px + dx; let ny = py + dy;
+    let oldScroll = scroll;
+    let oldScrollHor = scrollHor;
+
+    // clamp dx/dy
+    if (cursorCol + dx > Math.min(cursoringCol, textbuffer[cursorRow].length))
+        dx = Math.min(cursoringCol, textbuffer[cursorRow].length) - cursorCol + 1;
+    else if (cursorCol + dx < 0)
+        dx = -cursorCol;
+    if (cursorRow + dy > textbuffer.length)
+        dy = textbuffer.length - cursorRow;
+    else if (cursorCol + dy < 0)
+        dy = -cursorRow;
+
+
+    // move editor cursor
+    cursorRow += dy;
+    if (cursorRow < 0) cursorRow = 0;
+    else if (cursorRow >= textbuffer.length) cursorRow = textbuffer.length - 1;
+
     let tlen = textbuffer[cursorRow].length;
 
-    serial.println(`paintSize: ${paintWidth}x${paintHeight}, cursYX:${cursorPos} cursCol: ${cursorCol} scrH: ${scrollHor}`);
+    cursorCol += dx; cursoringCol = cursorCol;
+    if (cursorCol < 0) cursorCol = 0;
+    else if (cursorCol >= tlen + 1) cursorCol = tlen + 1;
+
 
     // update horizontal scroll stats
-    if (hor) {
-        if (cursorCol >= paintWidth - 1 && cx == paintWidth - 1 + PAINT_START_X) {
-            scrollHor += 1;
-            drawTextLine(cursorRow - scroll);
+    if (dx != 0) {
+        if (nx > paintWidth) {
+            scrollHor += (nx - paintWidth);
+            nx = paintWidth;
         }
-        else if (scrollHor > 0 && cursorCol == scrollHor && cx < PAINT_START_X + 1) {
-            scrollHor -= 1;
-            drawTextLine(cursorRow - scroll);
+        else if (nx < 0) {
+            scrollHor += nx; // plus-assigning because nx is less than zero
+            nx = 0;
         }
     }
 
     // update vertical scroll stats
-    if (vert) {
-        cursorCol = Math.min(tlen, cursoringCol); // move the column pointer intelligently, just like any decent text editor would do
-
-        if (cursorRow >= paintHeight - 1 && cy == paintHeight - 1 + PAINT_START_Y) {
-            scroll += 1;
-            drawTextbuffer();
-            drawLineNumbers();
+    if (dy != 0) {
+        if (ny > paintHeight) {
+            scroll += (ny - paintWidth - scrollPeek);
+            ny = paintWidth - scrollPeek
         }
-        else if (scroll > 0 && cursorRow == scroll && cy < PAINT_START_Y + 1) {
-            scroll -= 1;
-            drawTextbuffer();
-            drawLineNumbers();
+        else if (ny < 0) {
+            let scrollToTop = (scroll - dy <= 0);
+            if (scrollToTop) {
+                scroll = 0;
+            }
+            else {
+                scroll += ny + paintHeight - scrollPeek; // ny is less than zero
+            }
+            ny = 0;
         }
     }
+
+    // update screendraw
+    if (oldScroll != scroll) {
+        drawTextbuffer(); drawLineNumbers();
+    }
+    else if (oldScrollHor != scrollHor) {
+        drawTextLine(ny);
+    }
+
+    gotoText();
+}
+
+// will try to put the cursor at the right end of the screen as long as the text length is longer than the window width
+function cursorHorAbsolute(pos) {
+    let position = pos
+    if (position > textbuffer[cursorRow].length) textbuffer[cursorRow].length;
+
+    cursorCol = position;
+    scrollHor = position - paintWidth + 2;
+    if (scrollHor < 0) scrollHor = 0;
+    drawTextLine(cursorRow - scroll);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -357,49 +390,37 @@ while (!exit) {
         displayBulletin(`Wrote ${textbuffer.length} lines`);
     }
     else if (key == con.KEY_BACKSPACE) { // Bksp
+        backspaceOnce(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_RETURN) { // Return
         appendLine(); drawLineNumbers(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_LEFT) {
-        prevCol(); drawLnCol(); gotoText();
+        cursorMoveRelative(-1,0);
     }
     else if (key == con.KEY_RIGHT) {
-        nextCol(); drawLnCol(); gotoText();
+        cursorMoveRelative(1,0);
     }
     else if (key == con.KEY_UP) {
-        prevRow(); drawLnCol(); gotoText();
+        cursorMoveRelative(0,-1);
     }
     else if (key == con.KEY_DOWN) {
-        nextRow(); drawLnCol(); gotoText();
+        cursorMoveRelative(0,1);
     }
     else if (key == con.KEY_PAGE_UP) {
-        cursorRow -= paintHeight - 1;
-        scroll -= paintHeight - 1;
-        if (cursorRow < 0) cursorRow = 0;
-        if (scroll < 0) scroll = 0;
-        drawTextbuffer(); drawLineNumbers(); drawLnCol(); gotoText();
+        cursorMoveRelative(0, -paintHeight + 1);
     }
     else if (key == con.KEY_PAGE_DOWN) {
-        cursorRow += paintHeight - 1;
-        scroll += paintHeight - 1;
-        if (cursorRow > textbuffer.length - 1) cursorRow = textbuffer.length - 1;
-        if (scroll > textbuffer.length - paintHeight + 2) scroll = textbuffer.length - paintHeight + 2;
-        else if (scroll < 0) scroll = 0;
-        drawTextbuffer(); drawLineNumbers(); drawLnCol(); gotoText();
+        cursorMoveRelative(0, paintHeight - 1);
     }
     else if (key == con.KEY_HOME) {
-        cursorCol = 0; scrollHor = 0; cursoringCol = cursorCol;
-        drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
+        cursorMoveRelative(-Number.MAX_SAFE_INTEGER, 0);
     }
     else if (key == con.KEY_END)  {
-        cursorCol = textbuffer[cursorRow].length;
-        scrollHor = textbuffer[cursorRow].length - paintWidth + 2;
-        if (scrollHor < 0) scrollHor = 0;
-        drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
+        cursorMoveRelative(Number.MAX_SAFE_INTEGER, 0);
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
-        appendText(key);
+        appendText(key); drawLnCol(); gotoText();
     }
 }
 
