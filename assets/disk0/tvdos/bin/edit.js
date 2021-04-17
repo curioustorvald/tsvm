@@ -33,6 +33,7 @@ let cursorCol = 0;
 let exit = false;
 let scene = -1; // -1: main, 0: filemenu, 1: editmenu , ...
 let bulletinShown = false;
+let cursoringCol = 0;
 
 // load existing file if it's there
 let editingExistingFile = filesystem.open(driveLetter, filePath, "R");
@@ -58,6 +59,7 @@ function reset_status() {
     textbuffer = [""];
     cursorRow = 0;
     cursorCol = 0;
+    cursoringCol = cursorCol;
 }
 
 // DRAWING FUNCTIONS //
@@ -255,6 +257,7 @@ function appendLine() {
     // go to the next line
     cursorRow += 1;
     cursorCol = 0;
+    cursoringCol = cursorCol;
 
     if (cursorRow >= windowHeight - scrollPeek) {
         scroll += 1;
@@ -266,19 +269,33 @@ function appendLine() {
 
 function nextCol() {
     if (cursorCol < textbuffer[cursorRow].length) {
-        cursorCol += 1;
-        updateScrollState();
+        cursorCol += 1; cursoringCol = cursorCol; // do NOT inc/dec on cursoringCol
+        updateScrollState(true, false);
     }
 }
 
 function prevCol() {
     if (cursorCol > 0) {
-        cursorCol -= 1;
-        updateScrollState();
+        cursorCol -= 1; cursoringCol = cursorCol; // do NOT inc/dec on cursoringCol
+        updateScrollState(true, false);
     }
 }
 
-function updateScrollState() {
+function nextRow() {
+    if (cursorRow < textbuffer.length) {
+        cursorRow += 1;
+        updateScrollState(false, true);
+    }
+}
+
+function prevRow() {
+    if (cursorRow > 0) {
+        cursorRow -= 1;
+        updateScrollState(false, true);
+    }
+}
+
+function updateScrollState(hor, vert) {
     gotoText(); // update cursor pos
     let cursorPos = con.getyx();
     let cx = cursorPos[1]; let cy = cursorPos[0];
@@ -287,17 +304,30 @@ function updateScrollState() {
     serial.println(`paintSize: ${paintWidth}x${paintHeight}, cursYX:${cursorPos} cursCol: ${cursorCol} scrH: ${scrollHor}`);
 
     // update horizontal scroll stats
-    if (cursorCol >= paintWidth - 1 && cx == paintWidth - 1 + PAINT_START_X) {
-        scrollHor += 1;
-        drawTextLine(cursorRow - scroll);
-    }
-    else if (scrollHor > 0 && cursorCol == scrollHor && cx < PAINT_START_X + 1) {
-        scrollHor -= 1;
-        drawTextLine(cursorRow - scroll);
+    if (hor) {
+        if (cursorCol >= paintWidth - 1 && cx == paintWidth - 1 + PAINT_START_X) {
+            scrollHor += 1;
+            drawTextLine(cursorRow - scroll);
+        }
+        else if (scrollHor > 0 && cursorCol == scrollHor && cx < PAINT_START_X + 1) {
+            scrollHor -= 1;
+            drawTextLine(cursorRow - scroll);
+        }
     }
 
     // update vertical scroll stats
+    if (vert) {
+        cursorCol = Math.min(tlen, cursoringCol); // move the column pointer intelligently, just like any decent text editor would do
 
+        if (cursorRow >= paintHeight - 1 && cy == paintHeight - 1 + PAINT_START_Y) {
+            scrollHor += 1;
+            drawTextbuffer();
+        }
+        else if (scroll > 0 && cursorRow == scroll && cy < PAINT_START_Y + 1) {
+            scrollHor -= 1;
+            drawTextbuffer();
+        }
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -335,8 +365,14 @@ while (!exit) {
     else if (key == con.KEY_RIGHT && cursorCol < textbuffer[cursorRow].length) {
         nextCol(); drawLnCol(); gotoText();
     }
+    else if (key == con.KEY_UP && cursorRow > 0) {
+        prevRow(); drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_DOWN && cursorRow < textbuffer.length) {
+        nextRow(); drawLnCol(); gotoText();
+    }
     else if (key == con.KEY_HOME) {
-        cursorCol = 0; scrollHor = 0;
+        cursorCol = 0; scrollHor = 0; cursoringCol = cursorCol;
         drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_END)  {
