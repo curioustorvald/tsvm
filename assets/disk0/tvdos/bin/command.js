@@ -32,9 +32,10 @@ function print_prompt_text() {
         con.color_pair(253,255);
         con.addch(16);con.curs_right();
         con.addch(32);con.curs_right();
-        con.color_pair(239,255);
+        con.color_pair(253,255);
     }
     else {
+        con.color_pair(253,255);
         if (errorlevel != 0)
             print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT);
         else

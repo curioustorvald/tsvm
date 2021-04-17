@@ -1250,11 +1250,11 @@ void main() {
 
         val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
             "crt_color",
-            560, 448, 80, 32, 252, 255, 256.kB(), "FontROM7x14.png", 0.32f, TEXT_TILING_SHADER_COLOUR
+            560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0.32f, TEXT_TILING_SHADER_COLOUR
         )
         val DEFAULT_CONFIG_PMLCD = AdapterConfig(
             "pmlcd_inverted",
-            560, 448, 80, 32, 252, 255, 256.kB(), "FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
+            560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
         )
 
 

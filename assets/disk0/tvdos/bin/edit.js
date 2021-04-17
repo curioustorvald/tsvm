@@ -4,12 +4,12 @@ const menubarFile = ["New","Open","Save","Save as","Exit"];
 const menubarEdit = ["Undo","Redo","Cut","Copy","Paste","Select All","Deselect"];
 const menubarView = ["Go To Line"];
 const menubarContents = [menubarFile, menubarEdit, menubarView];
-const COL_TEXT = 252;
+const COL_TEXT = 253;
 const COL_BACK = 255;
 const COL_SUPERTEXT = 239;
 const COL_DIMTEXT = 249;
 const COL_LNUMBACK = 18;
-const COL_LNUMFORE = 252;
+const COL_LNUMFORE = 253;
 const PAINT_START_X = 5;
 const PAINT_START_Y = 2;
 
@@ -55,21 +55,21 @@ function drawInit() {
 }
 
 function reset_status() {
-    scroll = 0;
     textbuffer = [""];
-    cursorRow = 0;
-    cursorCol = 0;
-    cursoringCol = cursorCol;
+    scroll = 0; scrollHor = 0;
+    cursorRow = 0; cursorCol = 0; cursoringCol = cursorCol;
 }
 
 // DRAWING FUNCTIONS //
 
 function drawLineNumbers() {
+    con.curs_set(0);
     con.color_pair(COL_LNUMFORE, COL_LNUMBACK);
     for (let y = 0; y < paintHeight; y++) {
         con.move(y + PAINT_START_Y, 1);
         let lnum = scroll + y + 1;
-        if (lnum >= 1000) print(`${lnum}`);
+        if (lnum - 1 >= textbuffer.length) print('    ');
+        else if (lnum >= 1000) print(`${lnum}`);
         else if (lnum >= 100) print(`${lnum} `);
         else if (lnum >= 10) print(` ${lnum} `);
         else print(`  ${lnum} `);
@@ -160,8 +160,8 @@ function drawMenubarBase(index) {
 }
 
 function drawTextLine(paintRow) {
-    con.color_pair(COL_TEXT, COL_BACK);
     con.curs_set(0);
+    con.color_pair(COL_TEXT, COL_BACK);
     for (let x = 0; x < paintWidth; x++) {
         let text = textbuffer[scroll + paintRow];
         let charCode =
@@ -282,7 +282,7 @@ function prevCol() {
 }
 
 function nextRow() {
-    if (cursorRow < textbuffer.length) {
+    if (cursorRow < textbuffer.length - 1) {
         cursorRow += 1;
         updateScrollState(false, true);
     }
@@ -320,12 +320,14 @@ function updateScrollState(hor, vert) {
         cursorCol = Math.min(tlen, cursoringCol); // move the column pointer intelligently, just like any decent text editor would do
 
         if (cursorRow >= paintHeight - 1 && cy == paintHeight - 1 + PAINT_START_Y) {
-            scrollHor += 1;
+            scroll += 1;
             drawTextbuffer();
+            drawLineNumbers();
         }
         else if (scroll > 0 && cursorRow == scroll && cy < PAINT_START_Y + 1) {
-            scrollHor -= 1;
+            scroll -= 1;
             drawTextbuffer();
+            drawLineNumbers();
         }
     }
 }
@@ -357,19 +359,34 @@ while (!exit) {
     else if (key == con.KEY_BACKSPACE) { // Bksp
     }
     else if (key == con.KEY_RETURN) { // Return
-        appendLine(); drawLnCol(); gotoText();
+        appendLine(); drawLineNumbers(); drawLnCol(); gotoText();
     }
-    else if (key == con.KEY_LEFT && cursorCol > 0) {
+    else if (key == con.KEY_LEFT) {
         prevCol(); drawLnCol(); gotoText();
     }
-    else if (key == con.KEY_RIGHT && cursorCol < textbuffer[cursorRow].length) {
+    else if (key == con.KEY_RIGHT) {
         nextCol(); drawLnCol(); gotoText();
     }
-    else if (key == con.KEY_UP && cursorRow > 0) {
+    else if (key == con.KEY_UP) {
         prevRow(); drawLnCol(); gotoText();
     }
-    else if (key == con.KEY_DOWN && cursorRow < textbuffer.length) {
+    else if (key == con.KEY_DOWN) {
         nextRow(); drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_PAGE_UP) {
+        cursorRow -= paintHeight - 1;
+        scroll -= paintHeight - 1;
+        if (cursorRow < 0) cursorRow = 0;
+        if (scroll < 0) scroll = 0;
+        drawTextbuffer(); drawLineNumbers(); drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_PAGE_DOWN) {
+        cursorRow += paintHeight - 1;
+        scroll += paintHeight - 1;
+        if (cursorRow > textbuffer.length - 1) cursorRow = textbuffer.length - 1;
+        if (scroll > textbuffer.length - paintHeight + 2) scroll = textbuffer.length - paintHeight + 2;
+        else if (scroll < 0) scroll = 0;
+        drawTextbuffer(); drawLineNumbers(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_HOME) {
         cursorCol = 0; scrollHor = 0; cursoringCol = cursorCol;
@@ -378,6 +395,7 @@ while (!exit) {
     else if (key == con.KEY_END)  {
         cursorCol = textbuffer[cursorRow].length;
         scrollHor = textbuffer[cursorRow].length - paintWidth + 2;
+        if (scrollHor < 0) scrollHor = 0;
         drawTextLine(cursorRow - scroll); drawLnCol(); gotoText();
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
