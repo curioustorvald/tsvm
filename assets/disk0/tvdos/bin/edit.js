@@ -296,7 +296,7 @@ function cursorMoveRelative(odx, ody) {
     else if (cursorCol + dx < 0)
         dx = -cursorCol;
 
-    if (cursorRow + dy > textbuffer.length)
+    if (cursorRow + dy > textbuffer.length - 1)
         dy = textbuffer.length - cursorRow;
     else if (cursorRow + dy < 0)
         dy = -cursorRow;
@@ -328,23 +328,25 @@ function cursorMoveRelative(odx, ody) {
 
     // update vertical scroll stats
     if (dy != 0) {
-        if (ny > paintHeight) {
-            scroll += (ny - paintHeight - scrollPeek);
-            ny = paintHeight - scrollPeek
+        let stride = paintHeight - 1 - scrollPeek;
+
+        if (ny > stride) {
+            scroll += ny - stride;
+            ny = stride;
         }
-        else if (ny < 0) {
-            let scrollToTop = (scroll - dy <= 0);
-            if (scrollToTop) {
+        else if (ny < 0 + scrollPeek) {
+            scroll += ny - scrollPeek; // ny is less than zero
+            ny = 1;
+
+            // scroll to the top?
+            if (scroll <= -1) { // scroll of -1 would result to show "Line 0" on screen
                 scroll = 0;
+                ny = 0;
             }
-            else {
-                scroll += ny + paintHeight - scrollPeek; // ny is less than zero
-            }
-            ny = 0;
         }
     }
 
-    serial.println(`dY:${dy} nY:${ny} scrY:${scroll} row:${cursorRow}`);
+    serial.println(`dY:${dy} nY:${ny} scrY:${scroll} row:${cursorRow} | wDim:${paintHeight}R ${paintWidth}C peek:${scrollPeek}`);
 
     // update screendraw
     if (oldScroll != scroll) {
