@@ -10,8 +10,10 @@ const COL_SUPERTEXT = 239;
 const COL_DIMTEXT = 249;
 const COL_LNUMBACK = 18;
 const COL_LNUMFORE = 253;
+const COL_CARET_ROW = 81;
 const PAINT_START_X = 5;
 const PAINT_START_Y = 2;
+const BIG_STRIDE = 32;
 
 let filename = undefined;
 
@@ -53,6 +55,7 @@ function drawInit() {
     paintHeight = windowHeight - PAINT_START_Y + 1;
     scrollPeek = Math.ceil((paintHeight / 7));
 }
+const scrollHorPeek = 1; // to accommodate the scroll indicator
 
 function reset_status() {
     textbuffer = [""];
@@ -160,13 +163,16 @@ function drawMenubarBase(index) {
 }
 
 function drawTextLine(paintRow) {
+    if (paintRow < 0 || paintRow >= paintHeight) return;
+    let theRealLine = scroll + paintRow
     con.curs_set(0);
-    con.color_pair(COL_TEXT, COL_BACK);
+    con.color_pair(COL_TEXT, (theRealLine == cursorRow) ? COL_CARET_ROW : COL_BACK);
+
     for (let x = 0; x < paintWidth; x++) {
-        let text = textbuffer[scroll + paintRow];
+        let text = textbuffer[theRealLine];
         let charCode =
             // nonexisting text row
-            (undefined === textbuffer[scroll + paintRow]) ? 0 :
+            (undefined === textbuffer[theRealLine]) ? 0 :
             // left scroll indicator
             (x == 0 && scrollHor > 0) ? 17 :
             // right scroll indicator
@@ -316,13 +322,21 @@ function cursorMoveRelative(odx, ody) {
 
     // update horizontal scroll stats
     if (dx != 0) {
-        if (nx > paintWidth) {
-            scrollHor += (nx - paintWidth);
-            nx = paintWidth;
+        let stride = paintWidth - 1;
+
+        if (nx > stride) {
+            scrollHor += nx - stride;
+            nx = stride;
         }
-        else if (nx < 0) {
-            scrollHor += nx; // plus-assigning because nx is less than zero
-            nx = 0;
+        else if (nx < 0 + scrollHorPeek) {
+            scrollHor += nx - scrollHorPeek; // nx is less than zero
+            nx = 1;
+
+            // scroll to the left?
+            if (scrollHor <= -1) {
+                scrollHor = 0;
+                nx = 0;
+            }
         }
     }
 
@@ -354,6 +368,11 @@ function cursorMoveRelative(odx, ody) {
     }
     else if (oldScrollHor != scrollHor) {
         drawTextLine(ny);
+    }
+    // remove old caret highlights
+    if (dy != 0 && COL_CARET_ROW !== undefined) {
+        drawTextLine(cursorRow - dy);
+        drawTextLine(cursorRow);
     }
 
     drawLnCol(); gotoText();
@@ -419,10 +438,10 @@ while (!exit) {
         cursorMoveRelative(0, paintHeight - 1);
     }
     else if (key == con.KEY_HOME) {
-        cursorMoveRelative(-Number.MAX_SAFE_INTEGER, 0);
+        cursorMoveRelative(-BIG_STRIDE, 0);
     }
     else if (key == con.KEY_END)  {
-        cursorMoveRelative(Number.MAX_SAFE_INTEGER, 0);
+        cursorMoveRelative(BIG_STRIDE, 0);
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
         appendText(key); drawLnCol(); gotoText();
