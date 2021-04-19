@@ -242,8 +242,6 @@ function appendText(code) {
         let s = textbuffer[cursorRow].substring(0);
         textbuffer[cursorRow] = s.substring(0, cursorCol) + String.fromCharCode(code) + s.substring(cursorCol);
     }
-
-    cursorMoveRelative(1,0);
 }
 
 function appendLine() {
@@ -290,22 +288,24 @@ function cursorMoveRelative(odx, ody) {
     //gotoText(); // update cursor pos
     let cursorPos = con.getyx();
 
-    let dx = odx; let dy = ody;
+    let dx = odx + (cursoringCol - cursorCol);
+    let dy = ody;
     let px = cursorPos[1] - PAINT_START_X; let py = cursorPos[0] - PAINT_START_Y;
     let nx = px + dx; let ny = py + dy;
     let oldScroll = scroll;
     let oldScrollHor = scrollHor;
 
     // clamp dx/dy
-    if (cursorCol + dx > Math.min(cursoringCol, textbuffer[cursorRow].length))
-        dx = Math.min(cursoringCol, textbuffer[cursorRow].length) - cursorCol + 1;
-    else if (cursorCol + dx < 0)
-        dx = -cursorCol;
-
     if (cursorRow + dy > textbuffer.length - 1)
         dy = textbuffer.length - cursorRow;
     else if (cursorRow + dy < 0)
         dy = -cursorRow;
+
+    // set new dx if destination col is outside of the line
+    if (cursorCol + dx > textbuffer[cursorRow + dy].length)
+        dx -= (cursorCol + dx) - textbuffer[cursorRow].length + 1
+    else if (cursorCol + dx < 0)
+        dx = -cursorCol;
 
 
     // move editor cursor
@@ -322,7 +322,7 @@ function cursorMoveRelative(odx, ody) {
 
     // update horizontal scroll stats
     if (dx != 0) {
-        let stride = paintWidth - 1;
+        let stride = paintWidth - 1 - scrollHorPeek;
 
         if (nx > stride) {
             scrollHor += nx - stride;
@@ -444,7 +444,7 @@ while (!exit) {
         cursorMoveRelative(BIG_STRIDE, 0);
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
-        appendText(key); drawLnCol(); gotoText();
+        appendText(key); cursorMoveRelative(1,0); drawTextLine(cursorRow - scroll);
     }
 }
 
