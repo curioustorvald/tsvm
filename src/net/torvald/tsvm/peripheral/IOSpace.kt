@@ -37,6 +37,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     )
     /*private*/ val blockTransferPorts = Array(4) { BlockTransferPort(vm, it) }
 
+    private val peripheralFast = UnsafeHelper.allocate(1024)
+
     private val keyEventBuffers = ByteArray(8)
 
     init {
@@ -45,6 +47,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         //blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets/disk0")))
 
         // for testers: use EmulInstance
+
+        peripheralFast.fillWith(0)
     }
 
     private fun composeBlockTransferStatus(portno: Int): Int {
@@ -98,6 +102,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 80..87 -> rtc.ushr((adi - 80) * 8).and(255).toByte()
 
             88L -> vm.romMapping.toByte()
+
+            in 1024..2047 -> peripheralFast[addr - 1024]
 
             4076L -> blockTransferPorts[0].statusCode.toByte()
             4077L -> blockTransferPorts[1].statusCode.toByte()
@@ -157,6 +163,8 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
 
             88L -> vm.romMapping = bi
 
+            in 1024..2047 -> peripheralFast[addr - 1024] = byte
+
             4076L -> blockTransferPorts[0].statusCode = bi
             4077L -> blockTransferPorts[1].statusCode = bi
             4078L -> blockTransferPorts[2].statusCode = bi
@@ -203,6 +211,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     override fun dispose() {
         blockTransferRx.forEach { it.destroy() }
         blockTransferTx.forEach { it.destroy() }
+        peripheralFast.destroy()
     }
 
     private var mouseX: Short = 0

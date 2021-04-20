@@ -41,6 +41,7 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         val batPerc = "89"
         val batVolt = "5.1"
         val batText = "  $batPerc% ${batVolt}V"
+        val msg = (1024L until 1048L).map { vm.getIO().mmio_read(it)!!.toInt().and(255) }
         vm.poke(-69,2)
         val time_t = currentTimeInMills()
         val min = (time_t / 60000) % 60
@@ -57,6 +58,10 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
             for (x in clock.indices) {
                 val ccode = clock[x].toInt()
                 batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + x * lcdFont.tileW, y)
+            }
+            for (x in msg.indices) {
+                val ccode = msg[x]
+                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + (x + 6) * lcdFont.tileW, y)
             }
             for (x in batText.indices) {
                 val ccode = batText[x].toInt()

@@ -9,13 +9,20 @@ let DEBUG_PRINT = true;
 
 let errorlevel = 0;
 
-
 const termWidth = con.getmaxyx()[1];
 const termHeight = con.getmaxyx()[0];
 const welcome_text = (termWidth > 40) ? "TSVM Disk Operating System, version " + _TVDOS.VERSION
     : "TSVM Disk Operating System " + _TVDOS.VERSION;
 const greetLeftPad = (termWidth - welcome_text.length - 6) >> 1;
 const greetRightPad = termWidth - greetLeftPad - welcome_text.length - 6;
+
+function makeHash() {
+	let e = "YBNDRFG8EJKMCPQXOTLVWIS2A345H769";
+	let m = e.length;
+	return e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)] + e[Math.floor(Math.random()*m)]
+}
+
+const shellID = makeHash();
 
 function print_prompt_text() {
     if (goFancy) {
@@ -57,6 +64,12 @@ function greet() {
     }
     else
         println(welcome_text);
+}
+
+function sendLcdMsg(s) {
+    for (let i = 1024; i < 1048; i++) {
+        sys.poke(-i-1, (s === undefined) ? 0 : s.charCodeAt(i - 1024)|0);
+    }
 }
 
 function trimStartRevSlash(s) {
@@ -362,14 +375,24 @@ shell.execute = function(line) {
                 });
             }
             else {
-                return execApp(programCode, tokens)|0; // return value of undefined will cast into 0
+                if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = [];
+                _G.shellProgramTitles.push(cmd.toUpperCase())
+                sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
+                serial.println(_G.shellProgramTitles);
+
+                let ret = execApp(programCode, tokens)|0; // return value of undefined will cast into 0
+
+                _G.shellProgramTitles.pop();
+                sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
+                serial.println(_G.shellProgramTitles);
+
+                return ret;
             }
         }
     }
 };
 Object.freeze(shell);
 _G.shell = shell;
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
