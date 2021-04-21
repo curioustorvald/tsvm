@@ -43,11 +43,11 @@ if (editingExistingFile) {
     textbuffer = filesystem.readAll(driveLetter).split("\n");
 }
 
-let windowWidth = con.getmaxyx()[1];
-let windowHeight = con.getmaxyx()[0];
-let paintWidth = windowWidth - PAINT_START_X + 1;
-let paintHeight = windowHeight - PAINT_START_Y + 1;
-let scrollPeek = Math.ceil((paintHeight / 7));
+let windowWidth = 0;
+let windowHeight = 0;
+let paintWidth = 0;
+let paintHeight = 0;
+let scrollPeek = 0;
 function drawInit() {
     windowWidth = con.getmaxyx()[1];
     windowHeight = con.getmaxyx()[0];
@@ -300,7 +300,7 @@ function cursorMoveRelative(odx, ody) {
 
     // set new dx if destination col is outside of the line
     if (cursorCol + dx > textbuffer[cursorRow + dy].length)
-        dx -= (cursorCol + dx) - textbuffer[cursorRow].length + 1
+        dx = textbuffer[cursorRow].length - cursorCol;
     else if (cursorCol + dx < 0)
         dx = -cursorCol;
 
@@ -352,7 +352,7 @@ function cursorMoveRelative(odx, ody) {
         drawTextbuffer(); drawLineNumbers();
     }
     else if (oldScrollHor != scrollHor) {
-        drawTextLine(ny);
+        drawTextLine(cursorRow - scroll);
     }
     // remove old caret highlights
     if (dy != 0 && COL_CARET_ROW !== undefined) {
