@@ -356,8 +356,8 @@ function cursorMoveRelative(odx, ody) {
     }
     // remove old caret highlights
     if (dy != 0 && COL_CARET_ROW !== undefined) {
-        drawTextLine(cursorRow - dy);
-        drawTextLine(cursorRow);
+        drawTextLine(cursorRow - scroll - dy);
+        drawTextLine(cursorRow - scroll);
     }
 
     drawLnCol(); gotoText();
@@ -417,10 +417,10 @@ while (!exit) {
         cursorMoveRelative(-BIG_STRIDE,1);
     }
     else if (key == con.KEY_PAGE_UP) {
-        cursorMoveRelative(0, -paintHeight + 1);
+        cursorMoveRelative(0, -paintHeight + scrollPeek);
     }
     else if (key == con.KEY_PAGE_DOWN) {
-        cursorMoveRelative(0, paintHeight - 1);
+        cursorMoveRelative(0, paintHeight - scrollPeek);
     }
     else if (key == con.KEY_HOME) {
         cursorMoveRelative(-BIG_STRIDE, 0);
