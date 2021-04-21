@@ -13,7 +13,7 @@ const COL_LNUMFORE = 253;
 const COL_CARET_ROW = 81;
 const PAINT_START_X = 5;
 const PAINT_START_Y = 2;
-const BIG_STRIDE = 32;
+const BIG_STRIDE = 10000;
 
 let filename = undefined;
 
@@ -286,18 +286,15 @@ function backspaceOnce() {
 // this one actually cares about the current scrolling stats
 function cursorMoveRelative(odx, ody) {
     //gotoText(); // update cursor pos
-    let cursorPos = con.getyx();
 
-    let dx = odx + (cursoringCol - cursorCol);
+    let dx = odx;// + (cursoringCol - cursorCol);
     let dy = ody;
-    let px = cursorPos[1] - PAINT_START_X; let py = cursorPos[0] - PAINT_START_Y;
-    let nx = px + dx; let ny = py + dy;
     let oldScroll = scroll;
     let oldScrollHor = scrollHor;
 
     // clamp dx/dy
     if (cursorRow + dy > textbuffer.length - 1)
-        dy = textbuffer.length - cursorRow;
+        dy = (textbuffer.length - 1) - cursorRow;
     else if (cursorRow + dy < 0)
         dy = -cursorRow;
 
@@ -307,60 +304,48 @@ function cursorMoveRelative(odx, ody) {
     else if (cursorCol + dx < 0)
         dx = -cursorCol;
 
-
-    // move editor cursor
-    cursorRow += dy;
-    if (cursorRow < 0) cursorRow = 0;
-    else if (cursorRow >= textbuffer.length) cursorRow = textbuffer.length - 1;
-
-    let tlen = textbuffer[cursorRow].length;
-
-    cursorCol += dx; cursoringCol = cursorCol;
-    if (cursorCol < 0) cursorCol = 0;
-    else if (cursorCol >= tlen + 1) cursorCol = tlen + 1;
-
-
     // update horizontal scroll stats
+    let nextCol = cursorCol + dx;
     if (dx != 0) {
-        let stride = paintWidth - 1 - scrollHorPeek;
+        let visible = paintWidth - 1 - scrollHorPeek;
 
-        if (nx > stride) {
-            scrollHor += nx - stride;
-            nx = stride;
+        if (nextCol - scrollHor > visible) {
+            scrollHor = nextCol - visible;
         }
-        else if (nx < 0 + scrollHorPeek) {
-            scrollHor += nx - scrollHorPeek; // nx is less than zero
-            nx = 1;
-
+        else if (nextCol - scrollHor < 0 + scrollHorPeek) {
+            scrollHor = nextCol - scrollHorPeek; // nextCol is less than zero
             // scroll to the left?
             if (scrollHor <= -1) {
                 scrollHor = 0;
-                nx = 0;
             }
         }
     }
 
     // update vertical scroll stats
+    let nextRow = cursorRow + dy;
     if (dy != 0) {
-        let stride = paintHeight - 1 - scrollPeek;
+        let visible = paintHeight - 1 - scrollPeek;
 
-        if (ny > stride) {
-            scroll += ny - stride;
-            ny = stride;
+        if (nextRow - scroll > visible) {
+            scroll = nextRow - visible;
         }
-        else if (ny < 0 + scrollPeek) {
-            scroll += ny - scrollPeek; // ny is less than zero
-            ny = 1;
-
+        else if (nextRow - scroll < 0 + scrollPeek) {
+            scroll = nextRow - scrollPeek; // nextRow is less than zero
             // scroll to the top?
             if (scroll <= -1) { // scroll of -1 would result to show "Line 0" on screen
                 scroll = 0;
-                ny = 0;
             }
         }
     }
 
-    serial.println(`dY:${dy} nY:${ny} scrY:${scroll} row:${cursorRow} | wDim:${paintHeight}R ${paintWidth}C peek:${scrollPeek}`);
+
+    // move editor cursor
+    cursoringCol += dx;
+    cursorRow = nextRow;
+    cursorCol = nextCol;
+
+
+    serial.println(`d ${dx} ${dy}; n ${nextCol} ${nextRow}; scr ${scrollHor} ${scroll}; R ${cursorRow} C ${cursorCol} | wDim:${paintHeight}R ${paintWidth}C peek:${scrollPeek}`);
 
     // update screendraw
     if (oldScroll != scroll) {
@@ -426,10 +411,10 @@ while (!exit) {
         cursorMoveRelative(1,0);
     }
     else if (key == con.KEY_UP) {
-        cursorMoveRelative(0,-1);
+        cursorMoveRelative(-BIG_STRIDE,-1);
     }
     else if (key == con.KEY_DOWN) {
-        cursorMoveRelative(0,1);
+        cursorMoveRelative(-BIG_STRIDE,1);
     }
     else if (key == con.KEY_PAGE_UP) {
         cursorMoveRelative(0, -paintHeight + 1);
