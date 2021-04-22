@@ -185,8 +185,10 @@ function drawTextLineAbsolute(rowNumber, paintOffsetX) {
     }
 }
 
-function drawTextbuffer() {
-    for (let k = scroll; k < scroll + paintHeight; k++) {
+function drawTextbuffer(from, toExclusive) {
+    let lineStart = from || scroll;
+    let lineEnd = toExclusive || scroll + paintHeight;
+    for (let k = lineStart; k < lineEnd; k++) {
         drawTextLineAbsolute(k, (k == cursorRow) ? scrollHor : 0);
     }
     gotoText();
@@ -260,12 +262,10 @@ function appendLine() {
     cursorCol = 0;
     cursoringCol = cursorCol;
 
-    if (cursorRow >= windowHeight - scrollPeek) {
+    if (cursorRow >= windowHeight - scrollPeek)
         scroll += 1;
-        drawLineNumbers();
-    }
 
-    drawTextbuffer();
+    drawTextbuffer(); drawLineNumbers();
 }
 
 function backspaceOnce() {
@@ -274,13 +274,24 @@ function backspaceOnce() {
         let s1 = textbuffer[cursorRow - 1];
         let s2 = textbuffer[cursorRow];
         textbuffer.splice(cursorRow - 1, 2, s1+s2);
-        cursorMoveRelative(0,-1); cursorMoveRelative(Number.MAX_SAFE_INTEGER, 0); cursorHorAbsolute(s1.length);
+        // move cursor and possibly scrollHor
+        cursorMoveRelative(0,-1); cursorMoveRelative(Number.MAX_SAFE_INTEGER, 0);
+        cursorHorAbsolute(s1.length);
+        cursoringCol = cursorCol;
+        // end of repositioning
+        drawTextbuffer(cursorRow);
+        drawLineNumbers();
     }
     // delete a character
     else if (cursorCol > 0) {
         let s = textbuffer[cursorRow].substring(0);
         textbuffer[cursorRow] = s.substring(0, cursorCol - 1) + s.substring(cursorCol);
+        // identical to con.KEY_LEFT
+        cursoringCol = cursorCol - 1;
+        if (cursoringCol < 0) cursoringCol = 0;
         cursorMoveRelative(-1,0);
+        // end of con.KEY_LEFT
+        drawTextLineAbsolute(cursorRow, scrollHor);
     }
 }
 
@@ -413,10 +424,11 @@ while (!exit) {
         displayBulletin(`Wrote ${textbuffer.length} lines`);
     }
     else if (key == con.KEY_BACKSPACE) { // Bksp
-        backspaceOnce(); drawLnCol(); gotoText();
+        backspaceOnce();
+        drawLnCol(); gotoText();
     }
     else if (key == con.KEY_RETURN) { // Return
-        appendLine(); drawLineNumbers(); drawLnCol(); gotoText();
+        appendLine(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_LEFT) {
         cursoringCol = cursorCol - 1;
