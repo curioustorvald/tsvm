@@ -378,13 +378,13 @@ shell.execute = function(line) {
                 if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = [];
                 _G.shellProgramTitles.push(cmd.toUpperCase())
                 sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
-                serial.println(_G.shellProgramTitles);
+                //serial.println(_G.shellProgramTitles);
 
                 let ret = execApp(programCode, tokens)|0; // return value of undefined will cast into 0
 
                 _G.shellProgramTitles.pop();
                 sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
-                serial.println(_G.shellProgramTitles);
+                //serial.println(_G.shellProgramTitles);
 
                 return ret;
             }

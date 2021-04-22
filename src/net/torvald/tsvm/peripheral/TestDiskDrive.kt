@@ -118,6 +118,9 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         return sendSize
     }
 
+    private lateinit var writeBuffer: ByteArray
+    private var writeBufferUsage = 0
+
     /** Computer's attempt to startSend() will result in calling this very function.
      * In such cases, `inputData` will be the message the computer sends.
      *
@@ -125,20 +128,18 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
      */
     override fun writeoutImpl(inputData: ByteArray) {
         if (writeMode) {
+            //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
+            //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
+
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
 
-            inputData.forEach {
-                if (writeModeLength > 0) {
-                    //writeBuffer.write(it.toInt())
-                    //writeModeLength -= 1
-                    file.writeBytes(inputData.sliceArray(0 until writeModeLength))
-                    writeModeLength = 0
-                }
-            }
+            System.arraycopy(inputData, 0, writeBuffer, writeBufferUsage, minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE))
+            writeBufferUsage += inputData.size
 
-            if (writeModeLength <= 0) {
+            if (writeBufferUsage >= writeModeLength) {
                 writeMode = false
-                //writeBuffer.reset()
+                // commit to the disk
+                file.writeBytes(writeBuffer)
             }
         }
         else {
@@ -375,6 +376,8 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 }
                 writeMode = true
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
+                writeBuffer = ByteArray(writeModeLength)
+                writeBufferUsage = 0
                 statusCode = STATE_CODE_STANDBY
             }
             else
