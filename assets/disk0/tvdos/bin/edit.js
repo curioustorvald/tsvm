@@ -71,7 +71,7 @@ function drawLineNumbers() {
     for (let y = 0; y < paintHeight; y++) {
         con.move(y + PAINT_START_Y, 1);
         let lnum = scroll + y + 1;
-        if (lnum - 1 >= textbuffer.length) print('    ');
+        if (lnum < 1 || lnum - 1 >= textbuffer.length) print('    ');
         else if (lnum >= 1000) print(`${lnum}`);
         else if (lnum >= 100) print(`${lnum} `);
         else if (lnum >= 10) print(` ${lnum} `);
@@ -311,10 +311,11 @@ function cursorMoveRelative(odx, ody) {
         dy = -cursorRow;
 
     let nextRow = cursorRow + dy;
+    let nextRowLen = textbuffer[nextRow].length;
 
     // clamp dx
-    if (cursorCol + dx > textbuffer[nextRow].length)
-        dx = (textbuffer[nextRow].length) - cursorCol;
+    if (cursorCol + dx > nextRowLen)
+        dx = (nextRowLen) - cursorCol;
     else if (cursorCol + dx < 0)
         dx = -cursorCol;
 
@@ -322,7 +323,7 @@ function cursorMoveRelative(odx, ody) {
 
     // set dx to the value that makes cursor to follow the minof(textlen, cursoringCol)
     if (cursoringCol != nextCol) {
-        dx = Math.min(cursoringCol, textbuffer[nextRow].length) - cursorCol;
+        dx = Math.min(cursoringCol, nextRowLen) - cursorCol;
     }
 
     nextCol = cursorCol + dx;
@@ -341,15 +342,15 @@ function cursorMoveRelative(odx, ody) {
         // NOTE: this scroll clamping is moved outside of go-left/go-right if-statements above because
         // vertical movements can disrupt horizontal scrolls as well due to the cursoringCol variable
 
-        // scroll to the left?
-        if (scrollHor <= -1)
-            scrollHor = 0;
         // scroll to the right?
-        else if (scrollHor > textbuffer[nextRow].length - paintWidth + scrollHorPeek)
+        if (nextRowLen > paintWidth && scrollHor > nextRowLen - paintWidth + scrollHorPeek)
             // to prevent overscrolling that might happen after some complex navigation, AND
             // to make sure text cursor to be placed at the right end of the screen where "more line arrow"
             // goes which also makes editing field 1 character wider
-            scrollHor = textbuffer[nextRow].length - paintWidth + scrollHorPeek;
+            scrollHor = nextRowLen - paintWidth + scrollHorPeek;
+        // scroll to the left? (order is important!)
+        if (scrollHor <= -1 || nextRowLen < paintWidth - scrollHorPeek)
+            scrollHor = 0;
     }
 
     // update vertical scroll stats
@@ -368,11 +369,11 @@ function cursorMoveRelative(odx, ody) {
         // "normally" when you go right at the end of the line, you appear at the start of the next line
 
         // scroll to the bottom?
-        if (scroll > textbuffer.length - paintHeight)
+        if (textbuffer.length > paintHeight && scroll > textbuffer.length - paintHeight)
             // to make sure not show buncha empty lines
             scroll = textbuffer.length - paintHeight;
-        // scroll to the top?
-        else if (scroll <= -1)
+        // scroll to the top? (order is important!)
+        if (scroll <= -1)
             scroll = 0; // scroll of -1 would result to show "Line 0" on screen
     }
 
