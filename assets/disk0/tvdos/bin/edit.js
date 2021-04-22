@@ -236,12 +236,12 @@ function hitAny() {
     return sys.peek(-41) != 0;
 }
 
-function appendText(code) {
-    if (textbuffer[cursorRow] === undefined)
-        textbuffer[cursorRow] = String.fromCharCode(code);
+function insertChar(code, row, col) {
+    if (textbuffer[row] === undefined)
+        textbuffer[row] = String.fromCharCode(code);
     else {
-        let s = textbuffer[cursorRow].substring(0);
-        textbuffer[cursorRow] = s.substring(0, cursorCol) + String.fromCharCode(code) + s.substring(cursorCol);
+        let s = textbuffer[row].substring(0);
+        textbuffer[row] = s.substring(0, col) + String.fromCharCode(code) + s.substring(col);
     }
 }
 
@@ -322,13 +322,18 @@ function cursorMoveRelative(odx, ody) {
 
         if (nextCol - scrollHor > visible) {
             scrollHor = nextCol - visible;
+            // scroll to the right?
+            if (scrollHor > textbuffer[nextRow].length - paintWidth + scrollHorPeek)
+                // to prevent overscrolling that might happen after some complex navigation, AND
+                // to make sure text cursor to be placed at the right end of the screen where "more line arrow"
+                // goes which also makes editing field 1 character wider
+                scrollHor = textbuffer[nextRow].length - paintWidth + scrollHorPeek;
         }
         else if (nextCol - scrollHor < 0 + scrollHorPeek) {
             scrollHor = nextCol - scrollHorPeek; // nextCol is less than zero
             // scroll to the left?
-            if (scrollHor <= -1) {
+            if (scrollHor <= -1)
                 scrollHor = 0;
-            }
         }
     }
 
@@ -338,13 +343,16 @@ function cursorMoveRelative(odx, ody) {
 
         if (nextRow - scroll > visible) {
             scroll = nextRow - visible;
+            // scroll to the bottom?
+            if (scroll > textbuffer.length - paintHeight)
+                // to make sure not show buncha empty lines
+                scroll = textbuffer.length - paintHeight;
         }
         else if (nextRow - scroll < 0 + scrollPeek) {
             scroll = nextRow - scrollPeek; // nextRow is less than zero
             // scroll to the top?
-            if (scroll <= -1) { // scroll of -1 would result to show "Line 0" on screen
-                scroll = 0;
-            }
+            if (scroll <= -1)
+                scroll = 0; // scroll of -1 would result to show "Line 0" on screen
         }
     }
 
@@ -441,7 +449,13 @@ while (!exit) {
         cursorMoveRelative(BIG_STRIDE, 0);
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
-        appendText(key); cursorMoveRelative(1,0); drawTextLineAbsolute(cursorRow, scrollHor);
+        insertChar(key, cursorRow, cursorCol);
+        // identical to con.KEY_RIGHT
+        cursoringCol = cursorCol + 1;
+        if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
+        cursorMoveRelative(1,0);
+        // end of con.KEY_RIGHT
+        drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
     }
 }
 
