@@ -14,6 +14,7 @@ const COL_CARET_ROW = 81;
 const PAINT_START_X = 5;
 const PAINT_START_Y = 2;
 const BIG_STRIDE = 10000;
+const TAB_SIZE = 4;
 
 let filename = undefined;
 
@@ -171,7 +172,8 @@ function drawTextLineAbsolute(rowNumber, paintOffsetX) {
     con.color_pair(COL_TEXT, (rowNumber == cursorRow) ? COL_CARET_ROW : COL_BACK);
 
     for (let x = 0; x < paintWidth; x++) {
-        let text = textbuffer[rowNumber] + String.fromCharCode(254);
+        let text = textbuffer[rowNumber];
+        if (rowNumber < textbuffer.length - 1) text += String.fromCharCode(254);
         let charCode =
             // nonexisting text row
             (undefined === textbuffer[rowNumber]) ? 0 :
@@ -471,6 +473,19 @@ while (!exit) {
     else if (key == con.KEY_END)  {
         cursoringCol = textbuffer[cursorRow].length;
         cursorMoveRelative(BIG_STRIDE, 0);
+    }
+    else if (key == con.KEY_TAB) { // insert spaces appropriately
+        let tabsize = TAB_SIZE - (cursorCol % TAB_SIZE);
+
+        for (let k = 0; k < tabsize; k++) {
+            insertChar(32, cursorRow, cursorCol);
+            // identical to con.KEY_RIGHT
+            cursoringCol = cursorCol + 1;
+            if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
+            cursorMoveRelative(1,0);
+            // end of con.KEY_RIGHT
+        }
+        drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
         insertChar(key, cursorRow, cursorCol);

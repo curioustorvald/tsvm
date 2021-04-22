@@ -387,6 +387,7 @@ con.KEY_PAGE_DOWN = 209;
 con.KEY_INSERT = 210;
 con.KEY_DELETE = 211;
 con.KEY_BACKSPACE = 8;
+con.KEY_TAB = 9;
 con.KEY_RETURN = 13;
 con.getch = function() {
     return sys.readKey();
