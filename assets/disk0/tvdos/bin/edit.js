@@ -447,10 +447,10 @@ while (!exit) {
         cursorMoveRelative(0,1);
     }
     else if (key == con.KEY_PAGE_UP) {
-        cursorMoveRelative(0, -paintHeight + 1);
+        cursorMoveRelative(0, -paintHeight + scrollPeek);
     }
     else if (key == con.KEY_PAGE_DOWN) {
-        cursorMoveRelative(0, paintHeight - 1);
+        cursorMoveRelative(0, paintHeight - scrollPeek);
     }
     else if (key == con.KEY_HOME) {
         cursoringCol = 0;
