@@ -170,7 +170,7 @@ function drawTextLineAbsolute(rowNumber, paintOffsetX) {
     con.color_pair(COL_TEXT, (rowNumber == cursorRow) ? COL_CARET_ROW : COL_BACK);
 
     for (let x = 0; x < paintWidth; x++) {
-        let text = textbuffer[rowNumber];
+        let text = textbuffer[rowNumber] + String.fromCharCode(254);
         let charCode =
             // nonexisting text row
             (undefined === textbuffer[rowNumber]) ? 0 :
@@ -382,7 +382,8 @@ function cursorMoveRelative(odx, ody) {
     cursorCol = nextCol;
 
 
-    serial.println(`d ${dx} ${dy}; n ${nextCol} ${nextRow}; scr ${scrollHor} ${scroll}; R ${cursorRow} C ${cursorCol} | wDim:${paintHeight}R ${paintWidth}C peek:${scrollPeek}`);
+    //serial.println(`d ${dx} ${dy}; n ${nextCol} ${nextRow}; scr ${scrollHor} ${scroll}; R ${cursorRow} C ${cursorCol} | wDim:${paintHeight}R ${paintWidth}C peek:${scrollPeek}`);
+
 
     // update screendraw
     if (oldScroll != scroll) {
