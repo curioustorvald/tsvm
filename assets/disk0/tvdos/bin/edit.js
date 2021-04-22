@@ -162,31 +162,32 @@ function drawMenubarBase(index) {
     });
 }
 
-function drawTextLine(paintRow) {
+function drawTextLineAbsolute(rowNumber, paintOffsetX) {
+    let paintRow = rowNumber - scroll;
+
     if (paintRow < 0 || paintRow >= paintHeight) return;
-    let theRealLine = scroll + paintRow
     con.curs_set(0);
-    con.color_pair(COL_TEXT, (theRealLine == cursorRow) ? COL_CARET_ROW : COL_BACK);
+    con.color_pair(COL_TEXT, (rowNumber == cursorRow) ? COL_CARET_ROW : COL_BACK);
 
     for (let x = 0; x < paintWidth; x++) {
-        let text = textbuffer[theRealLine];
+        let text = textbuffer[rowNumber];
         let charCode =
             // nonexisting text row
-            (undefined === textbuffer[theRealLine]) ? 0 :
+            (undefined === textbuffer[rowNumber]) ? 0 :
             // left scroll indicator
-            (x == 0 && scrollHor > 0) ? 17 :
+            (x == 0 && paintOffsetX > 0) ? 17 :
             // right scroll indicator
-            (x == paintWidth - 1 && x + scrollHor + 1 < text.length) ? 16 :
+            (x == paintWidth - 1 && x + paintOffsetX + 1 < text.length) ? 16 :
             // plain text
-            text.charCodeAt(x + scrollHor); // NaN will be returned for nonexisting char but con.addch will cast NaN into zero
+            text.charCodeAt(x + paintOffsetX); // NaN will be returned for nonexisting char but con.addch will cast NaN into zero
 
         con.mvaddch(PAINT_START_Y + paintRow, PAINT_START_X + x, charCode);
     }
 }
 
 function drawTextbuffer() {
-    for (let k = 0; k < paintHeight; k++) {
-        drawTextLine(k)
+    for (let k = scroll; k < scroll + paintHeight; k++) {
+        drawTextLineAbsolute(k, (k == cursorRow) ? scrollHor : 0);
     }
     gotoText();
 }
@@ -203,7 +204,7 @@ function displayBulletin(text) {
 }
 function dismissBulletin() {
     bulletinShown = false;
-    drawTextLine(paintHeight - 2);
+    drawTextLineAbsolute(scroll + paintHeight - 2, scrollHor);
     gotoText();
 }
 
@@ -252,7 +253,7 @@ function appendLine() {
 
     // reset horizontal scroll before going to the next line
     scrollHor = 0;
-    drawTextLine(cursorRow - scroll);
+    drawTextLineAbsolute(cursorRow, scrollHor);
 
     // go to the next line
     cursorRow += 1;
@@ -287,25 +288,35 @@ function backspaceOnce() {
 function cursorMoveRelative(odx, ody) {
     //gotoText(); // update cursor pos
 
-    let dx = odx;// + (cursoringCol - cursorCol);
+    let dx = odx;
     let dy = ody;
     let oldScroll = scroll;
     let oldScrollHor = scrollHor;
 
-    // clamp dx/dy
+    // clamp dy
     if (cursorRow + dy > textbuffer.length - 1)
         dy = (textbuffer.length - 1) - cursorRow;
     else if (cursorRow + dy < 0)
         dy = -cursorRow;
 
-    // set new dx if destination col is outside of the line
-    if (cursorCol + dx > textbuffer[cursorRow + dy].length)
-        dx = textbuffer[cursorRow].length - cursorCol;
+    let nextRow = cursorRow + dy;
+
+    // clamp dx
+    if (cursorCol + dx > textbuffer[nextRow].length)
+        dx = (textbuffer[nextRow].length) - cursorCol;
     else if (cursorCol + dx < 0)
         dx = -cursorCol;
 
-    // update horizontal scroll stats
     let nextCol = cursorCol + dx;
+
+    // set dx to the value that makes cursor to follow the minof(textlen, cursoringCol)
+    if (cursoringCol != nextCol) {
+        dx = Math.min(cursoringCol, textbuffer[nextRow].length) - cursorCol;
+    }
+
+    nextCol = cursorCol + dx;
+
+    // update horizontal scroll stats
     if (dx != 0) {
         let visible = paintWidth - 1 - scrollHorPeek;
 
@@ -322,7 +333,6 @@ function cursorMoveRelative(odx, ody) {
     }
 
     // update vertical scroll stats
-    let nextRow = cursorRow + dy;
     if (dy != 0) {
         let visible = paintHeight - 1 - scrollPeek;
 
@@ -340,7 +350,6 @@ function cursorMoveRelative(odx, ody) {
 
 
     // move editor cursor
-    cursoringCol += dx;
     cursorRow = nextRow;
     cursorCol = nextCol;
 
@@ -351,13 +360,10 @@ function cursorMoveRelative(odx, ody) {
     if (oldScroll != scroll) {
         drawTextbuffer(); drawLineNumbers();
     }
-    else if (oldScrollHor != scrollHor) {
-        drawTextLine(cursorRow - scroll);
-    }
-    // remove old caret highlights
-    if (dy != 0 && COL_CARET_ROW !== undefined) {
-        drawTextLine(cursorRow - dy);
-        drawTextLine(cursorRow);
+    // remove caret highlights and reset horizontal scrolling from the old line
+    else if (dy != 0 || oldScrollHor != scrollHor) {
+        drawTextLineAbsolute(cursorRow, scrollHor);
+        if (dy != 0) drawTextLineAbsolute(cursorRow - dy, 0);
     }
 
     drawLnCol(); gotoText();
@@ -371,7 +377,7 @@ function cursorHorAbsolute(pos) {
     cursorCol = position;
     scrollHor = position - paintWidth + 2;
     if (scrollHor < 0) scrollHor = 0;
-    drawTextLine(cursorRow - scroll);
+    drawTextLineAbsolute(cursorRow, scrollHor);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -405,16 +411,20 @@ while (!exit) {
         appendLine(); drawLineNumbers(); drawLnCol(); gotoText();
     }
     else if (key == con.KEY_LEFT) {
+        cursoringCol = cursorCol - 1;
+        if (cursoringCol < 0) cursoringCol = 0;
         cursorMoveRelative(-1,0);
     }
     else if (key == con.KEY_RIGHT) {
+        cursoringCol = cursorCol + 1;
+        if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
         cursorMoveRelative(1,0);
     }
     else if (key == con.KEY_UP) {
-        cursorMoveRelative(-BIG_STRIDE,-1);
+        cursorMoveRelative(0,-1);
     }
     else if (key == con.KEY_DOWN) {
-        cursorMoveRelative(-BIG_STRIDE,1);
+        cursorMoveRelative(0,1);
     }
     else if (key == con.KEY_PAGE_UP) {
         cursorMoveRelative(0, -paintHeight + 1);
@@ -423,13 +433,15 @@ while (!exit) {
         cursorMoveRelative(0, paintHeight - 1);
     }
     else if (key == con.KEY_HOME) {
+        cursoringCol = 0;
         cursorMoveRelative(-BIG_STRIDE, 0);
     }
     else if (key == con.KEY_END)  {
+        cursoringCol = textbuffer[cursorRow].length;
         cursorMoveRelative(BIG_STRIDE, 0);
     }
     else if (key >= 32 && key < 128) { // printables (excludes \n)
-        appendText(key); cursorMoveRelative(1,0); drawTextLine(cursorRow - scroll);
+        appendText(key); cursorMoveRelative(1,0); drawTextLineAbsolute(cursorRow, scrollHor);
     }
 }
 
