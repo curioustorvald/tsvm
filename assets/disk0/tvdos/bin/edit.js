@@ -333,19 +333,23 @@ function cursorMoveRelative(odx, ody) {
 
         if (nextCol - scrollHor > visible) {
             scrollHor = nextCol - visible;
-            // scroll to the right?
-            if (scrollHor > textbuffer[nextRow].length - paintWidth + scrollHorPeek)
-                // to prevent overscrolling that might happen after some complex navigation, AND
-                // to make sure text cursor to be placed at the right end of the screen where "more line arrow"
-                // goes which also makes editing field 1 character wider
-                scrollHor = textbuffer[nextRow].length - paintWidth + scrollHorPeek;
         }
         else if (nextCol - scrollHor < 0 + scrollHorPeek) {
             scrollHor = nextCol - scrollHorPeek; // nextCol is less than zero
-            // scroll to the left?
-            if (scrollHor <= -1)
-                scrollHor = 0;
         }
+
+        // NOTE: this scroll clamping is moved outside of go-left/go-right if-statements above because
+        // vertical movements can disrupt horizontal scrolls as well due to the cursoringCol variable
+
+        // scroll to the left?
+        if (scrollHor <= -1)
+            scrollHor = 0;
+        // scroll to the right?
+        else if (scrollHor > textbuffer[nextRow].length - paintWidth + scrollHorPeek)
+            // to prevent overscrolling that might happen after some complex navigation, AND
+            // to make sure text cursor to be placed at the right end of the screen where "more line arrow"
+            // goes which also makes editing field 1 character wider
+            scrollHor = textbuffer[nextRow].length - paintWidth + scrollHorPeek;
     }
 
     // update vertical scroll stats
@@ -354,17 +358,22 @@ function cursorMoveRelative(odx, ody) {
 
         if (nextRow - scroll > visible) {
             scroll = nextRow - visible;
-            // scroll to the bottom?
-            if (scroll > textbuffer.length - paintHeight)
-                // to make sure not show buncha empty lines
-                scroll = textbuffer.length - paintHeight;
         }
         else if (nextRow - scroll < 0 + scrollPeek) {
             scroll = nextRow - scrollPeek; // nextRow is less than zero
-            // scroll to the top?
-            if (scroll <= -1)
-                scroll = 0; // scroll of -1 would result to show "Line 0" on screen
         }
+
+        // NOTE: future-proofing here -- scroll clamping is moved outside of go-up/go-down
+        // if-statements above because horizontal movements can disrupt vertical scrolls as well because
+        // "normally" when you go right at the end of the line, you appear at the start of the next line
+
+        // scroll to the bottom?
+        if (scroll > textbuffer.length - paintHeight)
+            // to make sure not show buncha empty lines
+            scroll = textbuffer.length - paintHeight;
+        // scroll to the top?
+        else if (scroll <= -1)
+            scroll = 0; // scroll of -1 would result to show "Line 0" on screen
     }
 
 
