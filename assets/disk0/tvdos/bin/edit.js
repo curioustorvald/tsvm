@@ -72,6 +72,7 @@ function drawLineNumbers() {
         con.move(y + PAINT_START_Y, 1);
         let lnum = scroll + y + 1;
         if (lnum < 1 || lnum - 1 >= textbuffer.length) print('    ');
+        else if (lnum >= 10000) print(`${String.fromCharCode(64+lnum/10000)}${(""+lnum%10000).padStart(4,'0')}`);
         else if (lnum >= 1000) print(`${lnum}`);
         else if (lnum >= 100) print(`${lnum} `);
         else if (lnum >= 10) print(` ${lnum} `);
