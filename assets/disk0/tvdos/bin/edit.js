@@ -1,5 +1,5 @@
 //const menubarItems = ["File","Edit","View"];
-const menubarItems = [`^S${String.fromCharCode(221)}save`,`^X${String.fromCharCode(221)}exit`];
+const menubarItems = [`^S${String.fromCharCode(221)}save`,`^Q${String.fromCharCode(221)}quit`];
 const menubarFile = ["New","Open","Save","Save as","Exit"];
 const menubarEdit = ["Undo","Redo","Cut","Copy","Paste","Select All","Deselect"];
 const menubarView = ["Go To Line"];
@@ -426,7 +426,7 @@ while (!exit) {
 
     if (bulletinShown) dismissBulletin();
 
-    if (key == 24) // Ctrl-X
+    if (key == 17) // Ctrl-Q
         exit = true;
     else if (key == 19 && !bulletinShown) {
         writeout();
