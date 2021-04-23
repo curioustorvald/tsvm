@@ -47,6 +47,9 @@ class VM(
 
     val startTime: Long
 
+    var resetDown = false
+    var stopDown = false
+
     var romMapping = 255
         internal set
 

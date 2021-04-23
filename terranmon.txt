@@ -73,6 +73,10 @@ MMIO
 40..47 RO: Key Press buffer
     stores keys that are held down. Can accomodate 8-key rollover (in keyboard geeks' terms)
     0x0 is written for the empty area; numbers are always sorted
+48..51 RO: System flags
+    48: 0b r000 000t
+        t: STOP button (should raise SIGTERM)
+        r: RESET button (should reset the system)
 
 64..67 RO: User area memory size in bytes
 68 WO: Counter latch

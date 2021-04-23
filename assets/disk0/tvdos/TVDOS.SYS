@@ -20,7 +20,17 @@ class SIG {
     }
 }
 const SIGTERM = new SIG("TERM",15);
-const SIGSEGV = new SIG("SEGV",11)
+const SIGSEGV = new SIG("SEGV",11);
+
+function generateRandomHashStr(len) {
+    let cs = 'qwfpgarstdzxcvbjluyhneiokmQWFPGARSTDZXCVBJLUYHNEIOKM';
+    let s = '';
+    for (let i = 0; i < len; i++) {
+        s += cs[(Math.random()*cs.length)|0];
+    }
+    return s;
+}
+
 // define TVDOS
 var _TVDOS = {};
 _TVDOS.VERSION = "1.0";
@@ -147,13 +157,26 @@ Object.freeze(filesystem);
 filesystem.open("A", "tvdos/gl.js", "R");
 var GL = eval(filesystem.readAll("A"));
 
+let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`;
+let injectIntChk = (s, n) => {
+    // primitive way of injecting a code; will replace a JS string that matches the regex...
+    let k = s
+        .replace(/while *\([^\n]+\) *{/, "$& "+n+"();")
+        .replace(/for *\([^\n]+\) *{/, "$& "+n+"();");
+    serial.println(k);
+    return k;
+}
+
 // @param cmdsrc JS source code
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
 // @return status returned by the program
 var execApp = (cmdsrc, args) => {
+    var intchkFunName = `tvdosSIGTERM_${generateRandomHashStr(16)}`;
     var execAppPrg = eval(
-`var _appStub=function(exec_args){${cmdsrc}\n};_appStub`); // making 'exec_args' a app-level global
+`var ${intchkFunName} = function(){ ${checkTerm} };` +
+`var _appStub=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
+`_appStub`); // making 'exec_args' a app-level global
 
     var status = 0;
 

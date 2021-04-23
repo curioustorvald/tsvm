@@ -94,6 +94,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             38L -> keyboardInputRequested.toInt().toByte()
             39L -> rawInputFunctionLatched.toInt().toByte()
             in 40..47 -> keyEventBuffers[adi - 40]
+            48L -> ((vm.resetDown.toInt() shl 7) or (vm.stopDown.toInt())).toByte()
 
             in 64..67 -> vm.memsize.shr((adi - 64) * 8).toByte()
             68L -> (uptimeCounterLatched.toInt() or RTClatched.toInt().shl(1)).toByte()
