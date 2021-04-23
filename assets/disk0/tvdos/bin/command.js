@@ -380,13 +380,13 @@ shell.execute = function(line) {
                 sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
                 //serial.println(_G.shellProgramTitles);
 
-                let ret = execApp(programCode, tokens)|0; // return value of undefined will cast into 0
+                let ret = execApp(programCode, tokens); // return value of undefined will cast into 0
 
                 _G.shellProgramTitles.pop();
                 sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
                 //serial.println(_G.shellProgramTitles);
 
-                return ret;
+                return (ret == undefined) ? 0 : ret;
             }
         }
     }
@@ -457,13 +457,14 @@ if (goInteractive) {
                 try {
                     errorlevel = 0; // reset the number
                     errorlevel = shell.execute(cmdbuf);
-                    if (isNaN(errorlevel)) errorlevel = 2;
+                    //if (isNaN(errorlevel)) errorlevel = 2;
+                    serial.printerr(`errorlevel: ${errorlevel}`);
                 }
                 catch (e) {
                     printerrln("\n"+(e.stack || e));
-                    if (errorlevel === 0 || isNaN(errorlevel)) {
-                        errorlevel = 1; // generic failure
-                    }
+                    //if (errorlevel === 0 || isNaN(errorlevel)) {
+                    //    errorlevel = 1; // generic failure
+                    //}
                 }
                 finally {
                     if (cmdbuf.trim().length > 0)

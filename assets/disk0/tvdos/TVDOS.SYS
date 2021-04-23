@@ -128,7 +128,18 @@ var GL = eval(filesystem.readAll("A"));
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
 var execApp = (cmdsrc, args) => {
-    var execAppPrg = eval("var _appStub=function(exec_args){\n"+cmdsrc+"\n};_appStub;"); // making 'exec_args' a app-level global
+    var execAppPrg = eval(
+`function InterruptedException(m){this.message=m;this.stack=(new Error()).stack;};` +
+`InterruptedException.prototype=Object.create(Error.prototype);` +
+`InterruptedException.prototype.name='InterruptedException';` +
+`InterruptedException.prototype.constructor=InterruptedException;` +
+`var _appStub=function(exec_args){${cmdsrc}
+};try {_appStub;}
+catch (e){
+    if (e instanceof InterruptedException) 'SIGTERM';
+    else 1;
+}`); // making 'exec_args' a app-level global
+
     return execAppPrg(args);
 }
 
