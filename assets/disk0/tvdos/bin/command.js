@@ -300,7 +300,7 @@ shell.coreutils = {
         }
     },
     dir: function(args) {
-        var pathstr = (args[1] !== undefined) ? args[1] : "\\"+shell_pwd.join("\\");
+        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
 
         // check if path is valid
         var pathOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
@@ -309,6 +309,15 @@ shell.coreutils = {
         var port = filesystem._toPorts(CURRENT_DRIVE)[0]
         com.sendMessage(port, "LIST");
         println(com.pullMessage(port));
+    },
+    cat: function(args) {
+        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
+
+        var pathOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        if (!pathOpened) { printerrln("File not found"); return; }
+        let contents = filesystem.readAll(CURRENT_DRIVE);
+        // TODO just print out what's there
+        print(contents);
     }
 };
 shell.coreutils.chdir = shell.coreutils.cd;

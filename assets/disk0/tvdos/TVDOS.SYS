@@ -6,6 +6,13 @@ function InterruptedException(m) {
 InterruptedException.prototype = Object.create(Error.prototype);
 InterruptedException.prototype.name = 'InterruptedException';
 InterruptedException.prototype.constructor = InterruptedException;
+function IllegalAccessException(m) {
+    this.message = m;
+    this.stack = (new Error()).stack;
+};
+IllegalAccessException.prototype = Object.create(Error.prototype);
+IllegalAccessException.prototype.name = 'IllegalAccessException';
+IllegalAccessException.prototype.constructor = IllegalAccessException;
 class SIG {
     constructor(name, number) {
         this.name = "SIG" + name;
@@ -155,9 +162,12 @@ var execApp = (cmdsrc, args) => {
         return status;
     }
     catch (e) {
-        serial.printerr(`app execution interrupted -- ${e}\n${e.stack}`);
+        serial.printerr(`app execution interrupted -- ${e}\n${e.stack || "(stack trace unavailable)"}`);
+        //serial.printerr(Object.entries(e));
         if (e instanceof InterruptedException)
             return SIGTERM;
+        else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
+            return SIGSEGV;
         else
             return (undefined == status) ? 0 : status;
     }

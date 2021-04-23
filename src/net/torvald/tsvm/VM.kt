@@ -10,6 +10,10 @@ import java.io.OutputStream
 import java.util.*
 import kotlin.math.ceil
 
+
+class ErrorIllegalAccess(vm: VM, addr: Long) : RuntimeException("Segmentation fault at 0x${addr.toString(16).padStart(8, '0')} on VM id ${vm.id}")
+
+
 /**
  * A class representing an instance of a Virtual Machine
  */
@@ -19,9 +23,6 @@ class VM(
     val worldInterface: WorldInterface,
     val roms: Array<VMProgramRom?> // first ROM must contain the BIOS
 ) {
-
-    class ErrorIllegalAccess(val addr: Long) : RuntimeException("Segmentation fault at 0x${addr.toString(16).padStart(8, '0')}")
-
 
     val id = java.util.Random().nextInt()
 
@@ -117,10 +118,10 @@ class VM(
     internal fun poke(addr: Long, value: Byte) {
         val (memspace, offset) = translateAddr(addr)
         if (memspace == null)
-            throw ErrorIllegalAccess(addr)
+            throw ErrorIllegalAccess(this, addr)
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
-                throw ErrorIllegalAccess(addr)
+                throw ErrorIllegalAccess(this, addr)
             else
                 memspace.set(offset, value)
         }
@@ -134,7 +135,7 @@ class VM(
             null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
-                throw ErrorIllegalAccess(addr)
+                throw ErrorIllegalAccess(this, addr)
             else
                 memspace.get(offset)
         }
