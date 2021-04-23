@@ -386,7 +386,7 @@ shell.execute = function(line) {
                 sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
                 //serial.println(_G.shellProgramTitles);
 
-                return (ret == undefined) ? 0 : ret;
+                return ret;
             }
         }
     }
@@ -457,8 +457,14 @@ if (goInteractive) {
                 try {
                     errorlevel = 0; // reset the number
                     errorlevel = shell.execute(cmdbuf);
-                    //if (isNaN(errorlevel)) errorlevel = 2;
-                    serial.printerr(`errorlevel: ${errorlevel}`);
+                    let rawE = errorlevel;
+
+                    if (errorlevel instanceof SIG)
+                        errorlevel = errorlevel.name;
+                    else if (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel))
+                        errorlevel = 0;
+
+                    serial.printerr(`errorlevel: ${errorlevel} (raw: ${rawE})`);
                 }
                 catch (e) {
                     printerrln("\n"+(e.stack || e));
