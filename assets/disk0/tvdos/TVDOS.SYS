@@ -162,7 +162,8 @@ let injectIntChk = (s, n) => {
     // primitive way of injecting a code; will replace a JS string that matches the regex...
     let k = s
         .replace(/while *\([^\n]+\) *{/, "$& "+n+"();")
-        .replace(/for *\([^\n]+\) *{/, "$& "+n+"();");
+        .replace(/for *\([^\n]+\) *{/, "$& "+n+"();")
+        .replace(/do *{/, "$& "+n+"();");
     //serial.println(k);
     return k;
 }
