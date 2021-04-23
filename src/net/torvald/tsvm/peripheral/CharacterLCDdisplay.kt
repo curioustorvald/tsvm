@@ -70,6 +70,8 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         }
     }
 
+
+
     fun currentTimeInMills(): Long {
         vm.poke(-69, -1)
         var r = 0L

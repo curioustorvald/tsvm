@@ -163,7 +163,7 @@ let injectIntChk = (s, n) => {
     let k = s
         .replace(/while *\([^\n]+\) *{/, "$& "+n+"();")
         .replace(/for *\([^\n]+\) *{/, "$& "+n+"();");
-    serial.println(k);
+    //serial.println(k);
     return k;
 }
 
@@ -178,22 +178,7 @@ var execApp = (cmdsrc, args) => {
 `var _appStub=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
 `_appStub`); // making 'exec_args' a app-level global
 
-    var status = 0;
-
-    try {
-        status = execAppPrg(args);
-        return status;
-    }
-    catch (e) {
-        serial.printerr(`app execution interrupted -- ${e}\n${e.stack || "(stack trace unavailable)"}`);
-        //serial.printerr(Object.entries(e));
-        if (e instanceof InterruptedException)
-            return SIGTERM;
-        else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
-            return SIGSEGV;
-        else
-            return (undefined == status) ? 0 : status;
-    }
+    return execAppPrg(args);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

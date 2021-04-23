@@ -252,6 +252,20 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             RTClatched = false
             rtc = vm.worldInterface.currentTimeInMills()
         }
+
+        // SIGTERM key combination: Ctrl+Shift+T+R
+        vm.stopDown = Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT) &&
+                Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) &&
+                Gdx.input.isKeyPressed(Input.Keys.T) &&
+                Gdx.input.isKeyPressed(Input.Keys.R)
+        if (vm.stopDown) println("[VM-${vm.id}] SIGTERM requested")
+
+        // RESET key combination: Ctrl+Shift+R+S
+        vm.resetDown = Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT) &&
+                Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) &&
+                Gdx.input.isKeyPressed(Input.Keys.R) &&
+                Gdx.input.isKeyPressed(Input.Keys.S)
+        if (vm.resetDown) println("[VM-${vm.id}] RESET requested")
     }
 
     override fun touchUp(p0: Int, p1: Int, p2: Int, p3: Int): Boolean {

@@ -447,7 +447,8 @@ if (goInteractive) {
         var cmdbuf = "";
 
         while (true) {
-            var key = con.getch();
+            let key = con.getch();
+            let gotError = false;
 
             // printable chars
             if (key >= 32 && key <= 126) {
@@ -466,22 +467,27 @@ if (goInteractive) {
                 try {
                     errorlevel = 0; // reset the number
                     errorlevel = shell.execute(cmdbuf);
-                    let rawE = errorlevel;
-
-                    if (errorlevel instanceof SIG)
-                        errorlevel = errorlevel.name;
-                    else if (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel))
-                        errorlevel = 0;
-
-                    serial.printerr(`errorlevel: ${errorlevel} (raw: ${rawE})`);
                 }
                 catch (e) {
-                    printerrln("\n"+(e.stack || e));
-                    //if (errorlevel === 0 || isNaN(errorlevel)) {
-                    //    errorlevel = 1; // generic failure
-                    //}
+                    gotError = true;
+
+                    serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`);
+
+                    if (`${e}`.startsWith("InterruptedException"))
+                        errorlevel = SIGTERM.name;
+                    else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
+                        errorlevel = SIGSEGV.name;
+                    // exception catched means something went wrong, so if errorlevel is found to be zero, force set to 1.
+                    else
+                        errorlevel = 1;
                 }
                 finally {
+                    // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
+                    if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
+                        errorlevel = 0;
+
+                    serial.printerr(`errorlevel: ${errorlevel}`);
+
                     if (cmdbuf.trim().length > 0)
                         cmdHistory.push(cmdbuf);
 

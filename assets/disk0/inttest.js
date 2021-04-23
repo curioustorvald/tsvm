@@ -1,1 +1,1 @@
-throw new InterruptedException("lol");
+throw new InterruptedException();
