@@ -45,7 +45,7 @@ class VM(
     var getErrorStream: () -> OutputStream = { TODO() }
     var getInputStream: () -> InputStream = { TODO() }
 
-    val startTime: Long
+    var startTime: Long = -1
 
     var resetDown = false
     var stopDown = false
@@ -54,6 +54,10 @@ class VM(
         internal set
 
     init {
+        init()
+    }
+
+    fun init() {
         peripheralTable[0] = PeripheralEntry(
             "io",
             IOSpace(this),

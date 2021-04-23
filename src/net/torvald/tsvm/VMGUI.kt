@@ -84,6 +84,17 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
         }
     }
 
+    private var rebootRequested = false
+
+    private fun reboot() {
+        coroutineJob.cancel("reboot requested")
+
+        vmRunner = VMRunnerFactory(vm, "js")
+        coroutineJob = GlobalScope.launch {
+            vmRunner.executeCommand(vm.roms[0]!!.readAll())
+        }
+    }
+
     private var updateAkku = 0.0
     private var updateRate = 1f / 60f
 
@@ -113,14 +124,21 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
     private var latch = true
 
     private fun updateGame(delta: Float) {
+        if (!vm.resetDown && rebootRequested) {
+            reboot()
+            vm.init()
+            rebootRequested = false
+        }
+
         vm.update(delta)
+
+        if (vm.resetDown) rebootRequested = true
     }
 
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
     private fun renderGame(delta: Float) {
         gpu.render(delta, batch, 0f, 0f)
-        //batch.inUse { batch.draw(testTex, 0f, 0f) }
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {
