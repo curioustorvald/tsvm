@@ -393,7 +393,7 @@ con.getch = function() {
     return sys.readKey();
 };
 con.move = function(y, x) {
-    print(String.fromCharCode(27,91)+(y|0)+";"+(x|0)+"H");
+    print("\x1B["+(y|0)+";"+(x|0)+"H");
 };
 con.addch = function(c) {
     graphics.putSymbol(c|0);
@@ -437,33 +437,33 @@ con.resetkeybuf = function() {
     sys.poke(-45, 0); sys.poke(-46, 0); sys.poke(-47, 0); sys.poke(-48, 0);
 };
 con.video_reverse = function() {
-    print(String.fromCharCode(27,91)+"7m");
+    print("\x1B[7m");
 };
 con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
-        print(String.fromCharCode(27,91)+"38;5;255m");
+        print("\x1B[38;5;255m");
     else
-        print(String.fromCharCode(27,91)+(((n|0) % 8)+30)+"m");
+        print("\x1B["+(((n|0) % 8)+30)+"m");
 };
 con.color_back = function(n) { // 0..7; -1 for transparent
     if (n < 0)
-        print(String.fromCharCode(27,91)+"48;5;255m");
+        print("\x1B[48;5;255m");
     else
-        print(String.fromCharCode(27,91)+(((n|0) % 8)+40)+"m");
+        print("\x1B["+(((n|0) % 8)+40)+"m");
 };
 con.color_pair = function(fore, back) { // 0..255
-    print(String.fromCharCode(27,91)+"38;5;"+fore+"m");
-    print(String.fromCharCode(27,91)+"48;5;"+back+"m");
+    print("\x1B[38;5;"+fore+"m");
+    print("\x1B[48;5;"+back+"m");
 };
 con.clear = function() {
-    print(String.fromCharCode(27,91)+"2J");
+    print("\x1B[2J");
 };
 // @params arg 0 to hide, nonzero to show
 con.curs_set = function(arg) {
-    print(String.fromCharCode(27,91)+"?25"+(((arg|0) == 0) ? "l" : "h"));
+    print("\x1B[?25"+(((arg|0) == 0) ? "l" : "h"));
 };
 con.reset_graphics = function() {
-    print(String.fromCharCode(27,91,109));
+    print("\x1B[m");
 };
 // returns current key-down status
 con.poll_keys = function() {

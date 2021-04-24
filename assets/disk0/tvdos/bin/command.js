@@ -66,10 +66,32 @@ function greet() {
         println(welcome_text);
 }
 
-function sendLcdMsg(s) {
-    for (let i = 1024; i < 1048; i++) {
-        sys.poke(-i-1, (s === undefined) ? 0 : s.charCodeAt(i - 1024)|0);
-    }
+/*uninterruptible*/ function sendLcdMsg(s) {
+    // making it uninterruptible
+    sys.poke(-1025, (s === undefined) ? 0 : s.charCodeAt(0)|0);
+    sys.poke(-1026, (s === undefined) ? 0 : s.charCodeAt(1)|0);
+    sys.poke(-1027, (s === undefined) ? 0 : s.charCodeAt(2)|0);
+    sys.poke(-1028, (s === undefined) ? 0 : s.charCodeAt(3)|0);
+    sys.poke(-1029, (s === undefined) ? 0 : s.charCodeAt(4)|0);
+    sys.poke(-1030, (s === undefined) ? 0 : s.charCodeAt(5)|0);
+    sys.poke(-1031, (s === undefined) ? 0 : s.charCodeAt(6)|0);
+    sys.poke(-1032, (s === undefined) ? 0 : s.charCodeAt(7)|0);
+    sys.poke(-1033, (s === undefined) ? 0 : s.charCodeAt(8)|0);
+    sys.poke(-1034, (s === undefined) ? 0 : s.charCodeAt(9)|0);
+    sys.poke(-1035, (s === undefined) ? 0 : s.charCodeAt(10)|0);
+    sys.poke(-1036, (s === undefined) ? 0 : s.charCodeAt(11)|0);
+    sys.poke(-1037, (s === undefined) ? 0 : s.charCodeAt(12)|0);
+    sys.poke(-1038, (s === undefined) ? 0 : s.charCodeAt(13)|0);
+    sys.poke(-1039, (s === undefined) ? 0 : s.charCodeAt(14)|0);
+    sys.poke(-1040, (s === undefined) ? 0 : s.charCodeAt(15)|0);
+    sys.poke(-1041, (s === undefined) ? 0 : s.charCodeAt(16)|0);
+    sys.poke(-1042, (s === undefined) ? 0 : s.charCodeAt(17)|0);
+    sys.poke(-1043, (s === undefined) ? 0 : s.charCodeAt(18)|0);
+    sys.poke(-1044, (s === undefined) ? 0 : s.charCodeAt(19)|0);
+    sys.poke(-1045, (s === undefined) ? 0 : s.charCodeAt(20)|0);
+    sys.poke(-1046, (s === undefined) ? 0 : s.charCodeAt(21)|0);
+    sys.poke(-1047, (s === undefined) ? 0 : s.charCodeAt(22)|0);
+    sys.poke(-1048, (s === undefined) ? 0 : s.charCodeAt(23)|0);
 }
 
 function trimStartRevSlash(s) {
@@ -384,18 +406,44 @@ shell.execute = function(line) {
                 });
             }
             else {
-                if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = [];
-                _G.shellProgramTitles.push(cmd.toUpperCase())
-                sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
-                //serial.println(_G.shellProgramTitles);
+                let gotError = false;
 
-                let ret = execApp(programCode, tokens); // return value of undefined will cast into 0
+                try {
+                    errorlevel = 0; // reset the number
 
-                _G.shellProgramTitles.pop();
-                sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
-                //serial.println(_G.shellProgramTitles);
+                    if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = [];
+                    _G.shellProgramTitles.push(cmd.toUpperCase())
+                    sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
+                    //serial.println(_G.shellProgramTitles);
 
-                return ret;
+                    errorlevel = execApp(programCode, tokens); // return value of undefined will cast into 0
+                }
+                catch (e) {
+                    gotError = true;
+
+                    serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`);
+
+                    if (`${e}`.startsWith("InterruptedException"))
+                        errorlevel = SIGTERM.name;
+                    else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
+                        errorlevel = SIGSEGV.name;
+                    // exception catched means something went wrong, so if errorlevel is found to be zero, force set to 1.
+                    else
+                        errorlevel = 1;
+                }
+                finally {
+                    // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
+                    if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
+                        errorlevel = 0;
+
+                    serial.printerr(`errorlevel: ${errorlevel}`);
+
+                    _G.shellProgramTitles.pop();
+                    sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
+                    //serial.println(_G.shellProgramTitles);
+
+                    return errorlevel;
+                }
             }
         }
     }
@@ -448,7 +496,6 @@ if (goInteractive) {
 
         while (true) {
             let key = con.getch();
-            let gotError = false;
 
             // printable chars
             if (key >= 32 && key <= 126) {
@@ -464,38 +511,16 @@ if (goInteractive) {
             // enter
             else if (key === 10 || key === con.KEY_RETURN) {
                 println();
-                try {
-                    errorlevel = 0; // reset the number
-                    errorlevel = shell.execute(cmdbuf);
-                }
-                catch (e) {
-                    gotError = true;
 
-                    serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`);
+                shell.execute(cmdbuf);
 
-                    if (`${e}`.startsWith("InterruptedException"))
-                        errorlevel = SIGTERM.name;
-                    else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
-                        errorlevel = SIGSEGV.name;
-                    // exception catched means something went wrong, so if errorlevel is found to be zero, force set to 1.
-                    else
-                        errorlevel = 1;
-                }
-                finally {
-                    // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
-                    if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
-                        errorlevel = 0;
+                if (cmdbuf.trim().length > 0)
+                    cmdHistory.push(cmdbuf);
 
-                    serial.printerr(`errorlevel: ${errorlevel}`);
+                cmdHistoryScroll = 0;
+                con.curs_set(1);
 
-                    if (cmdbuf.trim().length > 0)
-                        cmdHistory.push(cmdbuf);
-
-                    cmdHistoryScroll = 0;
-                    con.curs_set(1);
-
-                    break;
-                }
+                break;
             }
             // up arrow
             else if (key === con.KEY_UP && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
