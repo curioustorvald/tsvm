@@ -8,10 +8,9 @@ import java.io.FileReader
 import javax.script.ScriptEngineManager
 
 abstract class VMRunner(val extension: String) {
-
     abstract suspend fun executeCommand(command: String)
     abstract suspend fun evalGlobal(command: String)
-
+    abstract fun close()
 }
 
 object VMRunnerFactory {
@@ -39,6 +38,10 @@ object VMRunnerFactory {
                     }
 
                     override suspend fun evalGlobal(command: String) {
+                        TODO("Not yet implemented")
+                    }
+
+                    override fun close() {
                         TODO("Not yet implemented")
                     }
                 }
@@ -83,6 +86,10 @@ object VMRunnerFactory {
 
                     override suspend fun evalGlobal(command: String) {
                         context.eval("js", "\"use strict\";" + sanitiseJS(command))
+                    }
+
+                    override fun close() {
+                        context.close(true)
                     }
                 }
             }

@@ -27,7 +27,7 @@ con.mvaddch(y+1,1+x*8+7-b,imgc[(imgh[y][x]>>b&1)<<1|imgl[y][x]>>b&1])
 con.move(8,1+(40-t.length>>1))
 print(t)
 // wait arbitrary time
-for (let b=0;b<system.maxmem()*10;b++) {
+for (let b=0;b<333333;b++) {
     sys.poke(0,(Math.random()*255)|0)
     sys.poke(0,0)
 }

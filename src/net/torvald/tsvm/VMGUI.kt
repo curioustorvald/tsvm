@@ -54,6 +54,10 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
         batch.projectionMatrix = camera.combined
 
 
+        init()
+    }
+
+    private fun init() {
         val loadedClass = Class.forName(loaderInfo.display)
         val loadedClassConstructor = loadedClass.getConstructor(vm::class.java)
         val loadedClassInstance = loadedClassConstructor.newInstance(vm)
@@ -87,12 +91,11 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
     private var rebootRequested = false
 
     private fun reboot() {
+        vmRunner.close()
         coroutineJob.cancel("reboot requested")
 
-        vmRunner = VMRunnerFactory(vm, "js")
-        coroutineJob = GlobalScope.launch {
-            vmRunner.executeCommand(vm.roms[0]!!.readAll())
-        }
+        vm.init()
+        init()
     }
 
     private var updateAkku = 0.0
@@ -121,12 +124,9 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
         renderGame(dt)
     }
 
-    private var latch = true
-
     private fun updateGame(delta: Float) {
         if (!vm.resetDown && rebootRequested) {
             reboot()
-            vm.init()
             rebootRequested = false
         }
 
