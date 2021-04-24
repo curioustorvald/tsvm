@@ -476,9 +476,6 @@ var system = {};
 system.maxmem = function() {
     return sys.peek(-65) | (sys.peek(-66) << 8) | (sys.peek(-67) << 16) | (sys.peek(-68) << 24);
 };
-system.halt = function() {
-    exit();
-};
 Object.freeze(system);
 // some utilities functions
 
