@@ -620,8 +620,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 // feed palette data
                 // must be done every time the shader is "actually loaded"
                 // try this: if above line precedes 'batch.shader = paletteShader', it won't work
-                outFBObatch.shader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
-                if (theme.startsWith("pmlcd")) outFBObatch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+                paletteShader.setUniform4fv("pal", paletteOfFloats, 0, paletteOfFloats.size)
+                paletteShader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                 // draw framebuffer
                 outFBObatch.draw(rendertex, 0f, 0f)
@@ -647,11 +647,6 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                             var fore =
                                 if (drawCursor) ttyFore else spriteAndTextArea[memTextForeOffset + addr].toInt()
                                     .and(255)
-
-                            if (!theme.contains("color")) {
-                                if (back == 255) back = 0
-                                if (fore == 255) fore = 0
-                            }
 
                             textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
                             textPixmap.drawPixel(x, y)
@@ -700,7 +695,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                     textShader.setUniformf("screenDimension", WIDTH.toFloat(), HEIGHT.toFloat())
                     textShader.setUniformf("tilesInAtlas", 16f, 16f)
                     textShader.setUniformf("atlasTexSize", chrrom0.width.toFloat(), chrrom0.height.toFloat())
-                    if (theme.startsWith("pmlcd")) outFBObatch.shader.setUniformf("lcdBaseCol", LCD_BASE_COL)
+                    textShader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                     outFBObatch.draw(faketex, 0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat())
 
@@ -830,7 +825,7 @@ uniform vec4 lcdBaseCol;
 
 void main(void) {
     vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
-    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+    float lum = ceil((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.

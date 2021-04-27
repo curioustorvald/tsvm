@@ -38,7 +38,7 @@ public class AppLoader {
         EmulInstance term = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.TexticsAdapter", "assets/disk0");
         EmulInstance portable = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.CharacterLCDdisplay", "assets/disk0");
 
-        new LwjglApplication(new VMGUI(reference), appConfig);
+        new LwjglApplication(new VMGUI(portable), appConfig);
     }
 
     public static ShaderProgram loadShaderFromFile(String vert, String frag) {

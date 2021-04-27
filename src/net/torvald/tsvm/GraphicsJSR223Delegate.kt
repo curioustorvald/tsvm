@@ -28,15 +28,11 @@ class GraphicsJSR223Delegate(val vm: VM) {
     }
 
     fun loadBulk(fromAddr: Int, toAddr: Int, length: Int) {
-        getFirstGPU()?.let {
-            it._loadbulk(fromAddr, toAddr, length)
-        }
+        getFirstGPU()?._loadbulk(fromAddr, toAddr, length)
     }
 
     fun storeBulk(fromAddr: Int, toAddr: Int, length: Int) {
-        getFirstGPU()?.let {
-            it._storebulk(fromAddr, toAddr, length)
-        }
+        getFirstGPU()?._storebulk(fromAddr, toAddr, length)
     }
 
     fun plotPixel(x: Int, y: Int, color: Int) {
@@ -74,9 +70,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
     }
 
     fun clearText() {
-        getFirstGPU()?.let {
-            it.eraseInDisp(2)
-        }
+        getFirstGPU()?.eraseInDisp(2)
     }
 
     fun clearPixels(col: Int) {
