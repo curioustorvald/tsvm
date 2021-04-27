@@ -79,6 +79,11 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
+    fun clearPixels(col: Int) {
+        getFirstGPU()?.poke(250884L, col.toByte())
+        getFirstGPU()?.poke(250883L, 2)
+    }
+
     /**
      * prints a char as-is; won't interpret them as an escape sequence
      */

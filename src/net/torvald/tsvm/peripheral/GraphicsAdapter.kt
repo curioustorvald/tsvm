@@ -14,6 +14,7 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
+import kotlin.math.roundToInt
 
 data class AdapterConfig(
     val theme: String,
@@ -262,12 +263,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 }
             }
             2 -> {
-                framebuffer.setColor(
-                    paletteOfFloats[arg1 * 4],
-                    paletteOfFloats[arg1 * 4 + 1],
-                    paletteOfFloats[arg1 * 4 + 2],
-                    paletteOfFloats[arg1 * 4 + 3]
-                )
+                framebuffer.setColor(0f,0f,0f,arg1 / 255f)
                 framebuffer.fill()
             }
         }
@@ -767,9 +763,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     }
 
     private fun peekPalette(offset: Int): Byte {
-        if (offset == 255) return 0 // palette 255 is always transparent
-
-        // FIXME always return zero?
+        if (offset >= 255 * 2) return 0 // palette 255 is always transparent
 
         val highvalue = paletteOfFloats[offset * 2] // R, B
         val lowvalue = paletteOfFloats[offset * 2 + 1] // G, A
@@ -778,7 +772,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
     private fun pokePalette(offset: Int, byte: Byte) {
         // palette 255 is always transparent
-        if (offset < 255) {
+        if (offset < 255 * 2) {
             val highvalue = byte.toInt().and(0xF0).ushr(4) / 15f
             val lowvalue = byte.toInt().and(0x0F) / 15f
 
