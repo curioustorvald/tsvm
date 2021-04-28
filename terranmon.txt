@@ -178,7 +178,7 @@ From the start of the memory space:
         Pointer to raw pixmap data in Scratchpad Memory
 
 2 bytes
-    Cursor position in: (y*32 + x)
+    Cursor position in: (y*80 + x)
 2560 bytes
     Text foreground colours
 2560 bytes

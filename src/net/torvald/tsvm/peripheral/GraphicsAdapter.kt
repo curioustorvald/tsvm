@@ -557,7 +557,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     }
 
     override fun dispose() {
-        testTex.dispose()
+        //testTex.dispose()
         framebuffer.dispose()
         rendertex.dispose()
         spriteAndTextArea.destroy()
@@ -749,7 +749,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
     }
 
-    private val testTex = Texture("./assets/pal.png");
+    //private val testTex = Texture("./assets/pal.png");
 
     private fun blendNormal(batch: SpriteBatch) {
         Gdx.gl.glEnable(GL20.GL_TEXTURE_2D)
