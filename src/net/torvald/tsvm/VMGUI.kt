@@ -107,7 +107,7 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
 
         // update window title with contents of the  'built-in status display'
         val msg = (1024L until 1048L).map { cp437toUni[vm.getIO().mmio_read(it)!!.toInt().and(255)] }.joinToString("").trim()
-        Gdx.graphics.setTitle("[$msg] $EMDASH F: ${Gdx.graphics.framesPerSecond}")
+        Gdx.graphics.setTitle("$msg $EMDASH F: ${Gdx.graphics.framesPerSecond}")
 
         if (usememvwr) memvwr.update()
 
