@@ -321,6 +321,19 @@ if (!Object.entries) {
         return resArray;
     };
 }
+// haskell-inspired array functions
+Array.prototype.head = function() {
+    return this[0]
+}
+Array.prototype.last = function() {
+    return this[this.length - 1]
+}
+Array.prototype.tail = function() {
+    return this.slice(1)
+}
+Array.prototype.init = function() {
+    return this.slice(0, this.length - 1)
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 //  NOTE TO PROGRAMMERS: this JS_INIT script does not, and must not be invoked with strict mode  //
