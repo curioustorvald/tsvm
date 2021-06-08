@@ -578,7 +578,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     }
 
     private var textCursorBlinkTimer = 0f
-    private val textCursorBlinkInterval = 0.5f
+    private val textCursorBlinkInterval = 0.25f
     private var textCursorIsOn = true
     private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
@@ -744,7 +744,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
         textCursorBlinkTimer += delta
         if (textCursorBlinkTimer > textCursorBlinkInterval) {
-            textCursorBlinkTimer -= 0.5f
+            textCursorBlinkTimer -= 0.25f
             textCursorIsOn = !textCursorIsOn
         }
 

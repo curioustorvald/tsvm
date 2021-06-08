@@ -28,7 +28,7 @@ open class TexticsAdapter(vm: VM, config: AdapterConfig = AdapterConfig(
     companion object {
         val crtColor = hashMapOf(
             "white" to Color(0xe4eaffff.toInt()),
-            "amber" to Color(0xffb700ff.toInt()),
+            "amber" to Color(0xffd600ff.toInt()),
             "green" to Color(0x4aff00ff)
         )
     }
