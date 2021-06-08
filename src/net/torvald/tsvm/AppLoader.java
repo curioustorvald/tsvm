@@ -23,24 +23,26 @@ public class AppLoader {
         appConfig.resizable = false;
         appConfig.title = appTitle;
         appConfig.forceExit = true;
-        appConfig.width = 560;//720;
-        appConfig.height = 448;//480;
+        appConfig.width = 810;//720;
+        appConfig.height = 300;//480;
 
 
-        // val vm = VM(64.kB(), TheRealWorld(), arrayOf(GenericBios))
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE});
+        VM vm = new VM(256 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
 
         // uncomment to target the TerranBASIC runner
-        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
+        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
 
         EmulInstance reference = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0");
         EmulInstance reference2 = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", "assets/disk0");
         EmulInstance term = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.TexticsAdapter", "assets/disk0");
         EmulInstance portable = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.CharacterLCDdisplay", "assets/disk0");
 
-        new LwjglApplication(new VMGUI(reference), appConfig);
+        EmulInstance wp = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.WpTerm", "assets/wpdisk");
+
+        new LwjglApplication(new VMGUI(wp), appConfig);
     }
 
     public static ShaderProgram loadShaderFromFile(String vert, String frag) {

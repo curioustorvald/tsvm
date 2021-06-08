@@ -6,20 +6,15 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.startsWith
 import java.io.File
 
-interface VMProgramRom {
-    fun readAll(): String
-    operator fun get(addr: Int): Byte
-}
-
-object GenericBios : VMProgramRom {
+open class VMProgramRom(path: String) {
     private val contents: ByteArray
 
     init {
-        val bytes = File("./assets/bios/bios1.bin").readBytes()
+        val bytes = File(path).readBytes()
         contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
     }
 
-    override fun readAll(): String {
+    fun readAll(): String {
         // check if bios is compressed in gzip
         return if (contents.startsWith(GZIP_HEADER))
             CompressorDelegate.decomp(contents).toString(VM.CHARSET)
@@ -27,100 +22,14 @@ object GenericBios : VMProgramRom {
             contents.toString(VM.CHARSET)
     }
 
-    override fun get(addr: Int): Byte = contents[addr]
+    fun get(addr: Int): Byte = contents[addr]
 }
 
-object QuickBios : VMProgramRom {
-    private val contents: ByteArray
-
-    init {
-        val bytes = File("./assets/bios/quick.js").readBytes()
-        contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
-    }
-
-    override fun readAll(): String {
-        // check if bios is compressed in gzip
-        return if (contents.startsWith(GZIP_HEADER))
-            CompressorDelegate.decomp(contents).toString(VM.CHARSET)
-        else
-            contents.toString(VM.CHARSET)
-    }
-
-    override fun get(addr: Int): Byte = contents[addr]
-}
-
-object BasicBios : VMProgramRom {
-    private val contents: ByteArray
-
-    init {
-        val bytes = File("./assets/bios/basicbios.js").readBytes()
-        contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
-    }
-
-    override fun readAll(): String {
-        // check if bios is compressed in gzip
-        return if (contents.startsWith(GZIP_HEADER))
-            CompressorDelegate.decomp(contents).toString(VM.CHARSET)
-        else
-            contents.toString(VM.CHARSET)
-    }
-
-    override fun get(addr: Int): Byte = contents[addr]
-}
-
-object TandemBios : VMProgramRom {
-    private val contents: ByteArray
-
-    init {
-        val bytes = File("./assets/bios/tandemport.js").readBytes()
-        contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
-    }
-
-    override fun readAll(): String {
-        // check if bios is compressed in gzip
-        return if (contents.startsWith(GZIP_HEADER))
-            CompressorDelegate.decomp(contents).toString(VM.CHARSET)
-        else
-            contents.toString(VM.CHARSET)
-    }
-
-    override fun get(addr: Int): Byte = contents[addr]
-}
-
-object BasicRom : VMProgramRom {
-    private val contents: ByteArray
-
-    init {
-        val bytes = File("./assets/bios/basic.bin").readBytes()
-        contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
-    }
-
-    override fun readAll(): String {
-        // check if bios is compressed in gzip
-        return if (contents.startsWith(GZIP_HEADER))
-            CompressorDelegate.decomp(contents).toString(VM.CHARSET)
-        else
-            contents.toString(VM.CHARSET)
-    }
-
-    override fun get(addr: Int): Byte = contents[addr]
-}
-
-object TBASRelBios : VMProgramRom {
-    private val contents: ByteArray
-
-    init {
-        val bytes = File("./assets/bios/tbasdist.js").readBytes()
-        contents = bytes.sliceArray(0 until minOf(65536, bytes.size))
-    }
-
-    override fun readAll(): String {
-        // check if bios is compressed in gzip
-        return if (contents.startsWith(GZIP_HEADER))
-            CompressorDelegate.decomp(contents).toString(VM.CHARSET)
-        else
-            contents.toString(VM.CHARSET)
-    }
-
-    override fun get(addr: Int): Byte = contents[addr]
-}
+object GenericBios : VMProgramRom("./assets/bios/bios1.bin")
+object OEMBios : VMProgramRom("./assets/bios/TBMBIOS.js")
+object QuickBios : VMProgramRom("./assets/bios/quick.js")
+object BasicBios : VMProgramRom("./assets/bios/basicbios.js")
+object TandemBios : VMProgramRom("./assets/bios/tandemport.js")
+object BasicRom : VMProgramRom("./assets/bios/basic.bin")
+object TBASRelBios : VMProgramRom("./assets/bios/tbasdist.js")
+object WPBios : VMProgramRom("./assets/bios/wp.js")

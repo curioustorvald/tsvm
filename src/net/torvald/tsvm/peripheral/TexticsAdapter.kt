@@ -9,7 +9,7 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
 
-class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
+open class TexticsAdapter(vm: VM, config: AdapterConfig = AdapterConfig(
     "crt_white",
     720,
     480,
@@ -21,19 +21,7 @@ class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
     "./hp2640.png",
     0.32f,
     GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
-)) {
-/*class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
-    "crt_color",
-    560,
-    448,
-    80,
-    32,
-    254,
-    255,
-    256.kB(),
-    "./cp437_fira_code.png",
-    0.64f
-)) {*/
+)) : GraphicsAdapter(vm, config) {
 
     private val crtGradTex = Texture("./assets/crt_grad.png")
 
@@ -88,3 +76,17 @@ class TexticsAdapter(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         super.dispose()
     }
 }
+
+class WpTerm(vm: VM) : TexticsAdapter(vm = vm, AdapterConfig(
+    "crt_amber",
+    810,
+    300,
+    90,
+    20,
+    254,
+    0,
+    256.kB(),
+    "./hp2640.png",
+    0.32f,
+    GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
+))
