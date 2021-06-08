@@ -20,7 +20,11 @@ let caretRight = 80
 
 let scroll = 0
 let scrollHor = 0
-let textbuffer = ["Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum."]
+let paragraphs = [
+'Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry\'s standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum.',
+'Contrary to popular belief, Lorem Ipsum is not simply random text. It has roots in a piece of classical Latin literature from 45 BC, making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, looked up one of the more obscure Latin words, consectetur, from a Lorem Ipsum passage, and going through the cites of the word in classical literature, discovered the undoubtable source. Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC. This book is a treatise on the theory of ethics, very popular during the Renaissance. The first line of Lorem Ipsum, "Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.',
+'The standard chunk of Lorem Ipsum used since the 1500s is reproduced below for those interested. Sections 1.10.32 and 1.10.33 from "de Finibus Bonorum et Malorum" by Cicero are also reproduced in their exact original form, accompanied by English versions from the 1914 translation by H. Rackham.'
+]
 let cursorRow = 0
 let cursorCol = 0
 let page = 0
@@ -29,7 +33,7 @@ let bulletinShown = false
 let cursoringCol = 0
 
 let filename = "NEWFILE"
-let modified = true
+let modified = false
 
 let windowWidth = 0
 let windowHeight = 0
@@ -51,16 +55,18 @@ function drawInit() {
 const scrollHorPeek = 1; // to accommodate the scroll indicator
 
 function drawMenubar() {
-    con.move(1,2)
-    print(`FILE:${(modified) ? '*' : ' '}${filename}`)
+    let icon = (modified) ? '*' : '-'
+    let fnamestr = `${icon} ${filename} ${icon}`
+    con.move(1,(windowWidth - fnamestr.length) / 2)
+    print(fnamestr)
 }
 
 function drawPRC() {
-    con.move(1,2+20+6)
+    con.move(1,2)
     print(`PG:${page+1} LN:${cursorRow+1} COL:${cursorCol+1}     `)
 
 
-    let rb = MEM - textbuffer.map(it => it.length).reduce((acc,i) => acc + i)
+    let rb = MEM - paragraphs.map(it => it.length).reduce((acc,i) => acc + i)
     let rp = (rb/100)|0
     let s = `   REMAIN:${(rp/10)|0}.${rp%10}K`
     con.move(1,windowWidth - s.length)
@@ -74,18 +80,21 @@ function drawTextbuffer(from, toExclusive) {
     let printbuf = []
     for (let i = 0; i < paintHeight; i++) { printbuf.push('') }
     let vr = 0; let vc = 0 // virtual row/column
-    let text = textbuffer.slice(lineStart, lineEnd).join('\n')
+    let text = paragraphs.slice(lineStart, lineEnd).join('\n')
 
     serial.println(`paintWidth = ${paintWidth}`)
 
     for (let i = 0; i < text.length; i++) {
+        let cM2 = text.charCodeAt(i-2)
+        let cM1 = text.charCodeAt(i-1)
         let c = text.charCodeAt(i)
         let c1 = text.charCodeAt(i+1)
         let c2 = text.charCodeAt(i+2)
 
-        serial.println(`i:${i} char:'${String.fromCharCode(c,c1)}' Ln ${vr} Col ${vc}`)
+        serial.println(`i:${i} char:'${String.fromCharCode(cM2,cM1,32,c,32,c1,c2)}' Ln ${vr} Col ${vc}`)
 
         if (c == 10) {
+            printbuf[vr] += String.fromCharCode(254)
             vr += 1;vc = 0
             printbuf[vr] = ''
         }
@@ -99,14 +108,20 @@ function drawTextbuffer(from, toExclusive) {
             printbuf[vr] += String.fromCharCode(c)
         }
         else if (vc == paintWidth - 1) {
-            if (c == 32 || c1 == 32) {
+            if (32 == c || 32 == c1) {
                 printbuf[vr] += String.fromCharCode(c)
                 vr += 1;vc = 0
 
                 if (c1 == 32) i += 1
             }
+            else if (32 == cM2) {
+                // todo delet last char
+                printbuf[vr] = printbuf[vr].substring(0, printbuf[vr].length - 1)
+                vr += 1; vc = 1
+                printbuf[vr] += String.fromCharCode(cM1, c)
+            }
             else {
-                printbuf[vr] += '-'
+                printbuf[vr] += (45 == cM1 || 32 == cM1) ? ' ' : '-'
                 vr += 1;vc = 0
                 printbuf[vr] += String.fromCharCode(c)
                 vc += 1
