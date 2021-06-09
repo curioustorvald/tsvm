@@ -24,7 +24,7 @@ public class AppLoader {
         appConfig.title = appTitle;
         appConfig.forceExit = true;
         appConfig.width = 810;//720;
-        appConfig.height = 300;//480;
+        appConfig.height = 360;//480;
 
 
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});

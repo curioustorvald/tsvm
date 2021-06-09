@@ -81,13 +81,13 @@ class Term(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
 class WpTerm(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
     "crt_amber",
     810,
-    300,
+    360,
     90,
     20,
     254,
     0,
     256.kB(),
-    "./hp2640.png",
+    "./wpfont.png",
     0.32f,
     GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
 ))
