@@ -1,6 +1,5 @@
 package net.torvald.tsvm.peripheral
 
-import com.badlogic.gdx.graphics.Camera
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.GL20
 import com.badlogic.gdx.graphics.Texture
@@ -9,19 +8,7 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
 
-open class TexticsAdapter(vm: VM, config: AdapterConfig = AdapterConfig(
-    "crt_white",
-    720,
-    480,
-    80,
-    32,
-    254,
-    0,
-    256.kB(),
-    "./hp2640.png",
-    0.32f,
-    GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
-)) : GraphicsAdapter(vm, config) {
+open class TexticsAdapterBase(vm: VM, config: AdapterConfig) : GraphicsAdapter(vm, config) {
 
     private val crtGradTex = Texture("./assets/crt_grad.png")
 
@@ -77,7 +64,21 @@ open class TexticsAdapter(vm: VM, config: AdapterConfig = AdapterConfig(
     }
 }
 
-class WpTerm(vm: VM) : TexticsAdapter(vm = vm, AdapterConfig(
+class Term(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
+    "crt_white",
+    720,
+    480,
+    80,
+    32,
+    254,
+    0,
+    256.kB(),
+    "./hp2640.png",
+    0.32f,
+    GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
+))
+
+class WpTerm(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
     "crt_amber",
     810,
     300,

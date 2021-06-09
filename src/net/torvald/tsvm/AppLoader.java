@@ -37,7 +37,7 @@ public class AppLoader {
 
         EmulInstance reference = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0");
         EmulInstance reference2 = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", "assets/disk0");
-        EmulInstance term = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.TexticsAdapter", "assets/disk0");
+        EmulInstance term = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.Term", "assets/disk0");
         EmulInstance portable = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.CharacterLCDdisplay", "assets/disk0");
 
         EmulInstance wp = new EmulInstance(appConfig, vm, "net.torvald.tsvm.peripheral.WpTerm", "assets/wpdisk");

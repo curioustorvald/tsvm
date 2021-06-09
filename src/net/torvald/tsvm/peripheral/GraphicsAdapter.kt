@@ -916,20 +916,23 @@ int getTileFromColor(vec4 color) {
     return _colToInt(color) & 0xFFFFF;
 }
 
+uniform float sgmp = 4.3;
+float sgmcomp = 2.0 / (1.0 + exp(-sgmp)) - 1.001; // making sure everything sits within [0..1)
+
 float sigmoid(float x) {
-    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
 }
 
 vec4 sigmoid(vec4 x) {
-    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
 }
 
 float invsigmoid(float x) {
-    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
 }
 
 vec4 invsigmoid(vec4 x) {
-    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
 }
 
 vec4 sigmoidmix(vec4 a, vec4 b, float x) {
@@ -1023,20 +1026,23 @@ vec4 grey(vec4 color) {
     return vec4(lum, lum, lum, color.a);
 }
 
+uniform float sgmp = 4.3;
+float sgmcomp = 2.0 / (1.0 + exp(-sgmp)) - 1.001; // making sure everything sits within [0..1)
+
 float sigmoid(float x) {
-    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
 }
 
 vec4 sigmoid(vec4 x) {
-    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
 }
 
 float invsigmoid(float x) {
-    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
 }
 
 vec4 invsigmoid(vec4 x) {
-    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
 }
 
 vec4 sigmoidmix(vec4 a, vec4 b, float x) {
