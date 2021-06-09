@@ -801,7 +801,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         private val LCD_BASE_COL = Color(0xa1a99cff.toInt())
 
         val DRAW_SHADER_FRAG = """
-#version 120
+#version 130
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -814,7 +814,7 @@ void main(void) {
         """.trimIndent()
 
         val DRAW_SHADER_FRAG_LCD = """
-#version 120
+#version 130
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -835,7 +835,7 @@ void main(void) {
         """.trimIndent()
 
         val DRAW_SHADER_FRAG_LCD_NOINV = """
-#version 120
+#version 130
 
 varying vec4 v_color;
 varying vec2 v_texCoords;
@@ -856,7 +856,7 @@ void main(void) {
         """.trimIndent()
 
         val DRAW_SHADER_VERT = """
-#version 120
+#version 130
 
 attribute vec4 a_position;
 attribute vec4 a_color;
@@ -875,7 +875,7 @@ void main() {
         """.trimIndent()
 
         val TEXT_TILING_SHADER_COLOUR = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -916,23 +916,41 @@ int getTileFromColor(vec4 color) {
     return _colToInt(color) & 0xFFFFF;
 }
 
-uniform float sgmp = 4.3;
+uniform float sgmp = 6.3;
 float sgmcomp = 2.0 / (1.0 + exp(-sgmp)) - 1.001; // making sure everything sits within [0..1)
 
 float sigmoid(float x) {
-    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
+    return (2.0 / (1.0 + exp(-sgmp * 2 * (x - 0.5))) - 1.0) / sgmcomp;
 }
 
 vec4 sigmoid(vec4 x) {
-    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
+    return (2.0 / (1.0 + exp(-sgmp * 2 * (x - 0.5))) - 1.0) / sgmcomp;
 }
 
-float invsigmoid(float x) {
-    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
+float invsigmoid(float x) {    
+    return 0.5 / sgmp * log((1 + sgmcomp * 2.0 * (x - 0.5)) / (1 - sgmcomp * 2.0 * (x - 0.5))) + 0.5;
 }
 
 vec4 invsigmoid(vec4 x) {
-    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
+    return 0.5 / sgmp * log((1 + sgmcomp * 2.0 * (x - 0.5)) / (1 - sgmcomp * 2.0 * (x - 0.5))) + 0.5;
+}
+
+vec4 lin(vec4 v) {
+    float r = (v.r <= 0.04045) ? v.r / 12.92 : pow((v.r + 0.055) / 1.055, 2.4);
+    float g = (v.g <= 0.04045) ? v.g / 12.92 : pow((v.g + 0.055) / 1.055, 2.4);
+    float b = (v.b <= 0.04045) ? v.b / 12.92 : pow((v.b + 0.055) / 1.055, 2.4);
+    return vec4(r, g, b, v.a);
+}
+
+vec4 unlin(vec4 v) {
+    float r = (v.r <= 0.0031308) ? 12.92 * v.r : 1.055 * pow(v.r, 1.0 / 2.4) - 0.055;
+    float g = (v.g <= 0.0031308) ? 12.92 * v.g : 1.055 * pow(v.g, 1.0 / 2.4) - 0.055;
+    float b = (v.b <= 0.0031308) ? 12.92 * v.b : 1.055 * pow(v.b, 1.0 / 2.4) - 0.055;
+    return vec4(r, g, b, v.a);
+}
+
+vec4 linmix(vec4 a, vec4 b, float x) {
+    return unlin(mix(lin(a), lin(b), x));
 }
 
 vec4 sigmoidmix(vec4 a, vec4 b, float x) {
@@ -975,12 +993,12 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = sigmoidmix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
         val TEXT_TILING_SHADER_MONOCHROME = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -1045,8 +1063,26 @@ vec4 invsigmoid(vec4 x) {
     return 0.5 / sgmp * log((1 + sgmcomp * 2.0 * (x - 0.5)) / (1 - sgmcomp * 2.0 * (x - 0.5))) + 0.5;
 }
 
+vec4 lin(vec4 v) {
+    float r = (v.r <= 0.04045) ? v.r / 12.92 : pow((v.r + 0.055) / 1.055, 2.4);
+    float g = (v.g <= 0.04045) ? v.g / 12.92 : pow((v.g + 0.055) / 1.055, 2.4);
+    float b = (v.b <= 0.04045) ? v.b / 12.92 : pow((v.b + 0.055) / 1.055, 2.4);
+    return vec4(r, g, b, v.a);
+}
+
+vec4 unlin(vec4 v) {
+    float r = (v.r <= 0.0031308) ? 12.92 * v.r : 1.055 * pow(v.r, 1.0 / 2.4) - 0.055;
+    float g = (v.g <= 0.0031308) ? 12.92 * v.g : 1.055 * pow(v.g, 1.0 / 2.4) - 0.055;
+    float b = (v.b <= 0.0031308) ? 12.92 * v.b : 1.055 * pow(v.b, 1.0 / 2.4) - 0.055;
+    return vec4(r, g, b, v.a);
+}
+
+vec4 linmix(vec4 a, vec4 b, float x) {
+    return unlin(mix(lin(a), lin(b), x));
+}
+
 vec4 sigmoidmix(vec4 a, vec4 b, float x) {
-    return (mix(invsigmoid(a), invsigmoid(b), x));
+    return sigmoid(mix(invsigmoid(a), invsigmoid(b), x));
 }
 
 void main() {
@@ -1085,12 +1121,12 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = sigmoidmix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
         val TEXT_TILING_SHADER_LCD = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -1187,7 +1223,7 @@ void main() {
 """.trimIndent()
 
         val TEXT_TILING_SHADER_LCD_NOINV = """
-#version 120
+#version 130
 #ifdef GL_ES
 precision mediump float;
 #endif
