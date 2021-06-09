@@ -52,8 +52,8 @@ open class TexticsAdapter(vm: VM, config: AdapterConfig = AdapterConfig(
     private val phosphorCol = crtColor[theme.substring(4)] ?: crtColor["white"]
 
     override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
-        super.render(delta, batch, xoff, yoff)
 
+        super.render(delta, batch, xoff, yoff)
 
         batch.inUse {
             batch.enableBlending()

@@ -916,6 +916,26 @@ int getTileFromColor(vec4 color) {
     return _colToInt(color) & 0xFFFFF;
 }
 
+float sigmoid(float x) {
+    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+}
+
+vec4 sigmoid(vec4 x) {
+    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+}
+
+float invsigmoid(float x) {
+    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+}
+
+vec4 invsigmoid(vec4 x) {
+    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+}
+
+vec4 sigmoidmix(vec4 a, vec4 b, float x) {
+    return sigmoid(mix(invsigmoid(a), invsigmoid(b), x));
+}
+
 void main() {
 
     // READ THE FUCKING MANUAL, YOU DONKEY !! //
@@ -952,7 +972,7 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = mix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = sigmoidmix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
@@ -1003,6 +1023,26 @@ vec4 grey(vec4 color) {
     return vec4(lum, lum, lum, color.a);
 }
 
+float sigmoid(float x) {
+    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+}
+
+vec4 sigmoid(vec4 x) {
+    return 2.0 / (1.0 + exp(-6.333 * x)) - 1.0;
+}
+
+float invsigmoid(float x) {
+    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+}
+
+vec4 invsigmoid(vec4 x) {
+    return (1.0 / 6.333) * log((1.0 + x) / (1.0 - x));
+}
+
+vec4 sigmoidmix(vec4 a, vec4 b, float x) {
+    return sigmoid(mix(invsigmoid(a), invsigmoid(b), x));
+}
+
 void main() {
 
     // READ THE FUCKING MANUAL, YOU DONKEY !! //
@@ -1039,7 +1079,7 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = mix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = sigmoidmix(backColFromMap, foreColFromMap, tileCol.r);
 }
 """.trimIndent()
 
