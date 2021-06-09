@@ -1026,27 +1026,27 @@ vec4 grey(vec4 color) {
     return vec4(lum, lum, lum, color.a);
 }
 
-uniform float sgmp = 4.3;
+uniform float sgmp = 6.3;
 float sgmcomp = 2.0 / (1.0 + exp(-sgmp)) - 1.001; // making sure everything sits within [0..1)
 
 float sigmoid(float x) {
-    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
+    return (2.0 / (1.0 + exp(-sgmp * 2 * (x - 0.5))) - 1.0) / sgmcomp;
 }
 
 vec4 sigmoid(vec4 x) {
-    return (2.0 / (1.0 + exp(-sgmp * x)) - 1.0) / sgmcomp;
+    return (2.0 / (1.0 + exp(-sgmp * 2 * (x - 0.5))) - 1.0) / sgmcomp;
 }
 
-float invsigmoid(float x) {
-    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
+float invsigmoid(float x) {    
+    return 0.5 / sgmp * log((1 + sgmcomp * 2.0 * (x - 0.5)) / (1 - sgmcomp * 2.0 * (x - 0.5))) + 0.5;
 }
 
 vec4 invsigmoid(vec4 x) {
-    return (1.0 / sgmp) * log((1.0 + sgmcomp * x) / (1.0 - sgmcomp * x));
+    return 0.5 / sgmp * log((1 + sgmcomp * 2.0 * (x - 0.5)) / (1 - sgmcomp * 2.0 * (x - 0.5))) + 0.5;
 }
 
 vec4 sigmoidmix(vec4 a, vec4 b, float x) {
-    return sigmoid(mix(invsigmoid(a), invsigmoid(b), x));
+    return (mix(invsigmoid(a), invsigmoid(b), x));
 }
 
 void main() {
