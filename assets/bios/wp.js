@@ -14,9 +14,7 @@ const NO_LINEHEAD_PUNCT = [33,34,39,41,44,46,58,59,62,63,93,125]
 const NO_LINELAST_PUNCT = [34,39,40,60,91,123]
 
 let PAGE_HEIGHT = 56
-
-let caretLeft = 10
-let caretRight = 80
+let PAGE_WIDTH = 80
 
 let scroll = 0
 let scrollHor = 0
@@ -41,12 +39,17 @@ let paintWidth = 0
 let paintHeight = 0
 let scrollPeek = 0
 let PAINT_START_X = 0
+let caretLeft = 0
+let caretRight = 0
 function drawInit() {
     windowWidth = con.getmaxyx()[1]
     windowHeight = con.getmaxyx()[0]
+    caretLeft = (windowWidth - PAGE_WIDTH) >> 1
+    caretRight = caretLeft + PAGE_WIDTH
+
     PAINT_START_X = caretLeft + 1
 
-    paintWidth = caretRight - caretLeft + 1
+    paintWidth = caretRight - caretLeft
     paintHeight = windowHeight - PAINT_START_Y + 1
 
     scrollPeek = Math.ceil((paintHeight / 7))
@@ -148,6 +151,21 @@ function gotoText() {
     con.curs_set(1)
 }
 
+function drawColumnInd() {
+    for (let k = 0; k < windowWidth; k++) {
+        let off = k - caretLeft + 1
+        let char = 0xBC
+        if (off % 10 == 0) char = 0xB0 + (off/10|0)
+        if (off == 1) char = 0xB0
+        if (k == caretRight - 1) char = 0xBA
+        if (off % 10 == 5) char = 0xBB
+        if (off <= 0 || off > paintWidth) char = 0xBC
+        if (off - 1 == cursorCol) char += 16
+
+        con.mvaddch(2, PAINT_START_X + off - 1, char)
+    }
+}
+
 function drawMain() {
     con.curs_set(0)
     drawInit()
@@ -158,13 +176,9 @@ function drawMain() {
     drawPRC()
 
     // column indicator
-    con.move(2,1)
-    for (let k = 0; k < 9; k++) print(`${k}....:....`)
-    con.color_pair(COL_BACK, COL_TEXT)
-    con.mvaddch(2,1+caretLeft,91)
-    con.mvaddch(2,1+caretRight,93)
+    drawColumnInd()
 
-    con.color_pair(COL_TEXT, COL_BACK)
+
 }
 
 
