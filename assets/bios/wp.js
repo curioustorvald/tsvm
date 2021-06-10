@@ -34,7 +34,7 @@ let cursoringCol = 0
 let filename = "NEWFILE"
 let modified = false
 let editorMode = 1 // 0: Visual Mode, 1: Edit Mode, 2: Command Mode; just like the good ol' Vi
-const editorModeLabel = ["VISUAL MODE (hit I to EDIT, hit : to enter a COMMAND)", "EDIT MODE (hit ESC to Visual Mode)", ":"]
+const editorModeLabel = ["VISUAL MODE (hit I to EDIT, hit : to enter a COMMAND)", "EDIT MODE (hit ESC for Visual Mode)", ":"]
 let cmdbuf = ""
 
 let windowWidth = 0
