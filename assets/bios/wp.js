@@ -13,8 +13,9 @@ const MEM = system.maxmem()
 const NO_LINEHEAD_PUNCT = [33,34,39,41,44,46,58,59,62,63,93,125]
 const NO_LINELAST_PUNCT = [34,39,40,60,91,123]
 
-let PAGE_HEIGHT = 56
+let PAGE_HEIGHT = 60
 let PAGE_WIDTH = 80
+// 80x60  -> 720x1080 text area; with 72px margin for each side, paper resolution is 864x1224, which is quite close to 1:sqrt(2) ratio
 
 let scroll = 0
 let scrollHor = 0
@@ -32,6 +33,9 @@ let cursoringCol = 0
 
 let filename = "NEWFILE"
 let modified = false
+let editorMode = 1 // 0: Visual Mode, 1: Edit Mode, 2: Command Mode; just like the good ol' Vi
+const editorModeLabel = ["VISUAL MODE (hit I to EDIT, hit : to enter a COMMAND)", "EDIT MODE (hit ESC to Visual Mode)", ":"]
+let cmdbuf = ""
 
 let windowWidth = 0
 let windowHeight = 0
@@ -50,7 +54,7 @@ function drawInit() {
     PAINT_START_X = caretLeft + 1
 
     paintWidth = caretRight - caretLeft
-    paintHeight = windowHeight - PAINT_START_Y + 1
+    paintHeight = windowHeight - PAINT_START_Y
 
     scrollPeek = Math.ceil((paintHeight / 7))
 
@@ -130,8 +134,8 @@ function drawTextbuffer(from, toExclusive) {
                 vc += 1
             }
         }
-        else if (c >= 32) {
-            printbuf[vr] += String.fromCharCode(c)
+        else if (c >= 32 && c <= 175 || c >= 224 && c <= 253) {
+            printbuf[vr] += String.fromCharCode((c == 32) ? 250 : c)
             vc += 1
         }
 
@@ -166,6 +170,18 @@ function drawColumnInd() {
     }
 }
 
+function drawCmdbuf() {
+    con.color_pair(COL_TEXT, COL_BACK)
+    con.move(windowHeight, 2)
+    for (let i = 2; i <= windowWidth - 1; i++) {
+        print(' ')
+    }
+    con.move(windowHeight, 2)
+    print(editorModeLabel[editorMode])
+
+    if (2 == editorMode) print(cmdbuf)
+}
+
 function drawMain() {
     con.curs_set(0)
     drawInit()
@@ -174,10 +190,8 @@ function drawMain() {
 
     drawMenubar()
     drawPRC()
-
-    // column indicator
     drawColumnInd()
-
+    drawCmdbuf()
 
 }
 
