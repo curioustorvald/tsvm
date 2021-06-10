@@ -1,4 +1,4 @@
-const COL_TEXT = 253
+const COL_TEXT = 239
 const COL_BACK = 255
 const COL_SUPERTEXT = 239
 const COL_DIMTEXT = 249
@@ -49,6 +49,14 @@ let PAINT_START_X = 0
 let caretLeft = 0
 let caretRight = 0
 function drawInit() {
+    // wipe screen
+    for (let i = 0; i < 80*32; i++) {
+        sys.poke(-1302529 - i, COL_TEXT)
+        sys.poke(-1305089 - i, COL_BACK)
+        sys.poke(-1307649 - i, 0)
+    }
+
+    // set variables
     windowWidth = con.getmaxyx()[1]
     windowHeight = con.getmaxyx()[0]
     caretLeft = (windowWidth - PAGE_WIDTH) >> 1
@@ -149,12 +157,19 @@ function typesetAndPrint(from, toExclusive) {
             vc += 1
         }
 
-        if (vr > paintHeight || c === undefined) break;
+        //if (vr > paintHeight || c === undefined) break;
     }
 
     for (let y = 0; y < paintHeight; y++) {
-        con.move(3+y, 1+caretLeft)
-        print(printbuf[y] || '')
+        //con.move(3+y, 1+caretLeft)
+        //print(printbuf[y] || '')
+        let str = printbuf[y] || ''
+        for (let x = 0; x < str.length; x++) {
+            sys.poke(
+                -1307649 - ((y+2) * windowWidth + caretLeft) - x,
+                str.charCodeAt(x)
+            )
+        }
     }
 
     if (TYPESET_DEBUG_PRINT) {
@@ -188,7 +203,6 @@ function drawColumnInd() {
 }
 
 function drawCmdbuf() {
-    con.color_pair(COL_TEXT, COL_BACK)
     con.move(windowHeight, 2)
     for (let i = 2; i <= windowWidth - 1; i++) {
         print(' ')
@@ -202,7 +216,6 @@ function drawCmdbuf() {
 function drawMain() {
     con.curs_set(0)
     drawInit()
-    con.clear()
     con.color_pair(COL_TEXT, COL_BACK)
 
     drawMenubar()
