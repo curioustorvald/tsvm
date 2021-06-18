@@ -28,16 +28,16 @@ let PAGE_WIDTH = 80
 
 let scroll = 0
 let scrollHor = 0
-/*let paragraphs = [
+let paragraphs = [
 'Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry\'s standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum.',
 'Contrary to popular belief, Lorem Ipsum is not simply random text. It has roots in a piece of classical Latin literature from 45 BC, making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, looked up one of the more obscure Latin words, consectetur, from a Lorem Ipsum passage, and going through the cites of the word in classical literature, discovered the undoubtable source. Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC. This book is a treatise on the theory of ethics, very popular during the Renaissance. The first line of Lorem Ipsum, "Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.',
 'The standard chunk of Lorem Ipsum used since the 1500s is reproduced below for those interested. Sections 1.10.32 and 1.10.33 from "de Finibus Bonorum et Malorum" by Cicero are also reproduced in their exact original form, accompanied by English versions from the 1914 translation by H. Rackham.'
-]*/
-let paragraphs = [
+]
+/*let paragraphs = [
 'Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry\'s standard dummy text ever since the 1500s,  when an unknown printer took a galley  of type and scrambled it  to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting,remaining essentially unchanged.It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing  software like Aldus PageMaker  including versions of Lorem Ipsum.',
 'Contrary to popular belief, Lorem Ipsum is not simply random text.  It has roots in a piece of classical Latin literature from  45 BC,  making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, looked up one of the more obscure Latin words,  consectetur,  from a Lorem Ipsum passage, and going through the cites of the word in classical literature, discovered the undoubtable source.  Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC.  This book is a treatise on the theory of ethics, very popular during the Renaissance.The first line of Lorem Ipsum,"Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.',
 'The standard chunk of Lorem Ipsum used since the 1500s is reproduced below for those interested. Sections 1.10.32 and 1.10.33 from "de Finibus Bonorum et Malorum" by Cicero are also reproduced in their exact original form, accompanied by English versions from the 1914 translation by H. Rackham.'
-]
+]*/
 let typeset = {lineIndices: [], lineValidated: [], strategy: TYPESET_STRATEGY_LESSRAGGED} // index 0 == 2nd line
 let cursorRow = 0
 let cursorCol = 0
@@ -109,23 +109,20 @@ function drawPRC() {
     print(s)
 }
 
-function typesetAndPrint(from, toExclusive) {
-    let lineStart = from || scroll
-    let lineEnd = toExclusive || scroll + paintHeight
-
+function typesetLessRagged(lineStart, lineEnd) {
     let printbuf = []
     let lineIndices = []
-    let lineValidated = []
-    for (let i = 0; i < paintHeight; i++) { printbuf.push('') }
+    for (let i = lineStart; i < lineEnd; i++) { printbuf.push('') }
+
     let vr = 0; let vc = 0 // virtual row/column
     let text = paragraphs.slice(lineStart, lineEnd).join('\n')
 
-    function ln(i) {
+    let ln = function(i) {
         vr += 1;vc = 0
         lineIndices.push(i)
     }
 
-    for (let i = 0; i < text.length; i++) {
+     for (let i = 0; i < text.length; i++) {
         let cM2 = text.charCodeAt(i-2)
         let cM1 = text.charCodeAt(i-1)
         let c = text.charCodeAt(i)
@@ -179,6 +176,16 @@ function typesetAndPrint(from, toExclusive) {
 
         //if (vr > paintHeight || c === undefined) break;
     }
+
+    return [printbuf, lineIndices]
+}
+
+function typesetAndPrint(from, toExclusive) {
+    let lineStart = from || scroll
+    let lineEnd = toExclusive || scroll + paintHeight
+
+    let lineValidated = []
+    let [printbuf, lineIndices] = typesetLessRagged(lineStart, lineEnd)
 
     for (let y = 0; y < paintHeight; y++) {
         //con.move(3+y, 1+caretLeft)
