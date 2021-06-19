@@ -236,12 +236,12 @@ function typesetJustified(lineStart, lineEnd) {
         let justLen = words.map(o => o.value).join('').length
 
 
-        words.forEach(o => serial.println(`${o.type}\t${o.value}`))
+        words.forEach((o,i) => serial.println(`${i}\t${o.type}\t${o.value}`))
         serial.println(`linelength: ${justLen}`)
 
 
         // try simple join
-        if (justLen == paintWidth || justLen == paintWidth + 1 && "sp" == words.last().type) {
+        if (justLen == paintWidth && "tx" == words.last().type || justLen == paintWidth + 1 && "tx" != words.last().type) {
             serial.println("cond 1")
             printbuf.push(words.map(o => o.value).join(''))
             lineIndices.push(textCursor)
@@ -249,13 +249,24 @@ function typesetJustified(lineStart, lineEnd) {
         // try fitting a line by removing a word then adding spaces
         else if (justLen > paintWidth) {
             serial.println("cond 2")
+
+            let lastSpaces = []
             // nuke non-text words
-            while ("tx" != words.last().type) justLen -= words.pop().value.length
+            while ("tx" != words.last().type) {
+                let pw = words.pop()
+                lastSpaces.unshift(pw)
+                justLen -= pw.value.length
+            }
             // also nuke the last word
             let lastWord = words.pop().value
+            let penultSpaces = []
             justLen -= lastWord.length // new linelength -= length of the last word
             // nuke spaces before the last word
-            while ("tx" != words.last().type) justLen -= words.pop().value.length
+            while ("tx" != words.last().type) {
+                let pw = words.pop()
+                penultSpaces.unshift(pw)
+                justLen -= pw.value.length
+            }
 
             let pns = [], sps = []
             words.forEach((o,i) => {
@@ -266,22 +277,46 @@ function typesetJustified(lineStart, lineEnd) {
             })
 
             let spcToFill = paintWidth - justLen
+            let expandAgain = 0
             // make a decision to contract or expand
             // contract
             if (lastWord.length >= 4 && pns.length >= 2) { // TODO add condition to contract puncts
-                TODO()
+
+                serial.println(words.length)
+                serial.println(`spcToContract: ${spcToFill}`)
+                serial.println(pns)
+
+                // contract puncts
+                if (pns.length > 0) {
+                    pns.shuffle() // strats: '.'s first, ','s second, then others
+                    for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
+                        serial.println(`-pn #${j} (${pns[j]})`)
+                        words[pns[j] + 1].value = ''; justLen -= 1
+                    }
+                }
+
+                words = words.concat(penultSpaces, wordobj("tx", lastWord), lastSpaces)
+                justLen += penultSpaces.map(o => o.value.length).sum()
+                justLen += lastWord.length
+                justLen += lastSpaces.map(o => o.value.length).sum()
+
+                serial.println(`justLen after expansion: ${justLen}`)
+
+                expandAgain = paintWidth - justLen
             }
+
             // expand
-            else if (!(lastWord.length >= 4 && pns.length >= 3)) {
+            if (expandAgain > 0 || !(lastWord.length >= 4 && pns.length >= 2)) {
                 // expand puncts
                 if (pns.length > 0) {
                     pns.shuffle() // strats: '.'s first, ','s second, then others
                     for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
                         serial.println(`pn #${j} (${pns[j]})`)
-                        words[pns[j] + 1].value = SYM_TWOSPC
+                        words[pns[j] + 1].value = SYM_TWOSPC; justLen += 1
                     }
 
-                    justLen += (Math.min(spcToFill, pns.length) > 0) //wtf? why not increment every time you insert TWOSPC?
+                    //justLen += (Math.min(spcToFill, pns.length) > 0) //wtf? why not increment every time you insert TWOSPC?
+                    // TODO resolve issue of "type specimen \n ook."
                 }
 
                 spcToFill = paintWidth - justLen
@@ -293,12 +328,16 @@ function typesetJustified(lineStart, lineEnd) {
                         sps.shuffle() // strategy: randomise :p
                         for (let j = 0; j < Math.min(spcToFill, sps.length); j++) {
                             serial.println(`sp #${j}`)
-                            words[sps[j]].value = SYM_TWOSPC
+                            words[sps[j]].value = SYM_TWOSPC; justLen += 1
                         }
 
-                        justLen += (Math.min(spcToFill, sps.length) > 0) //wtf? why not increment every time you insert TWOSPC?
+                        //justLen += (Math.min(spcToFill, sps.length) > 0) //wtf? why not increment every time you insert TWOSPC?
                     }
                 }
+
+                serial.println("penultSpaces")
+                serial.println(penultSpaces)
+                words = words.concat(penultSpaces)
             }
 
 

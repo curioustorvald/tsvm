@@ -353,6 +353,12 @@ Array.prototype.shuffle = function() {
 
     return this;
 }
+Array.prototype.sum = function(selector) {
+    return this.reduce((acc,val) => acc + ((selector === undefined) ? val : selector(val)), 0)
+}
+Array.prototype.max = function(selector) {
+    return this.reduce((acc,val) => (((selector === undefined) ? val : selector(val)) > acc) ? ((selector === undefined) ? val : selector(val)) : acc, 0)
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 //  NOTE TO PROGRAMMERS: this JS_INIT script does not, and must not be invoked with strict mode  //
