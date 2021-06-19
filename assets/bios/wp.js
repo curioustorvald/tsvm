@@ -115,14 +115,16 @@ function typesetLessRagged(lineStart, lineEnd) {
     for (let i = lineStart; i < lineEnd; i++) { printbuf.push('') }
 
     let vr = 0; let vc = 0 // virtual row/column
-    let text = paragraphs.slice(lineStart, lineEnd).join('\n')
+    let text = (typeset.lineIndices[lineStart] !== undefined)
+        ? paragraphs.join('\n').slice(typeset.lineIndices[lineStart], typeset.lineIndices[lineEnd] || 9999999)
+        : paragraphs.join('\n')
 
     let ln = function(i) {
         vr += 1;vc = 0
         lineIndices.push(i)
     }
 
-     for (let i = 0; i < text.length; i++) {
+    for (let i = 0; i < text.length; i++) {
         let cM2 = text.charCodeAt(i-2)
         let cM1 = text.charCodeAt(i-1)
         let c = text.charCodeAt(i)
@@ -174,7 +176,7 @@ function typesetLessRagged(lineStart, lineEnd) {
             vc += 1
         }
 
-        //if (vr > paintHeight || c === undefined) break;
+        if (vr > paintHeight || c === undefined) break;
     }
 
     return [printbuf, lineIndices]
@@ -182,7 +184,7 @@ function typesetLessRagged(lineStart, lineEnd) {
 
 function typesetAndPrint(from, toExclusive) {
     let lineStart = from || scroll
-    let lineEnd = toExclusive || scroll + paintHeight
+    let lineEnd = toExclusive || lineStart + paintHeight
 
     let lineValidated = []
     let [printbuf, lineIndices] = typesetLessRagged(lineStart, lineEnd)
@@ -191,10 +193,10 @@ function typesetAndPrint(from, toExclusive) {
         //con.move(3+y, 1+caretLeft)
         //print(printbuf[y] || '')
         let str = printbuf[y] || ''
-        for (let x = 0; x < str.length; x++) {
+        for (let x = 0; x < paintWidth; x++) {
             sys.poke(
                 -1307649 - ((y+2) * windowWidth + caretLeft) - x,
-                str.charCodeAt(x)
+                str.charCodeAt(x) || 0
             )
         }
     }
@@ -202,7 +204,9 @@ function typesetAndPrint(from, toExclusive) {
     if (TYPESET_DEBUG_PRINT) {
         for (let y = 0; y < paintHeight; y++) {
             con.move(3+y, 1)
-            print((lineIndices[y-1]+1)|0 || '-')
+            print('     ')
+            con.move(3+y, 1)
+            print((lineIndices[y-1+lineStart]+1)|0 || '-')
         }
     }
 
@@ -265,3 +269,4 @@ function drawMain() {
 
 drawMain()
 typesetAndPrint()
+typesetAndPrint(5)
