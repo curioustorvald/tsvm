@@ -250,36 +250,38 @@ function typesetJustified(lineStart, lineEnd) {
         else if (justLen > paintWidth) {
             serial.println("cond 2")
             // nuke non-text words
-            while ("tx" != words.last().type) {
-                justLen -= words.pop().value.length
-            }
+            while ("tx" != words.last().type) justLen -= words.pop().value.length
             // also nuke the last word
             let lastWord = words.pop().value
             justLen -= lastWord.length // new linelength -= length of the last word
             // nuke spaces before the last word
-            let extraSpaces = ''
-            while ("sp" == words.last().type) {
-                let extraSpcLen = words.pop().value.length
-                extraSpaces += SYM_SPC.repeat(extraSpcLen)
-                justLen -= extraSpcLen
-            }
+            while ("tx" != words.last().type) justLen -= words.pop().value.length
 
-            let pns = []; words.forEach((o,i)=>{ if ("pn" == o.type && i < words.length) { pns.push(i) } })
+            let pns = [], sps = []
+            words.forEach((o,i) => {
+                if (i < words.length - 1) {
+                    if ("sp" == o.type) sps.push(i)
+                    else if ("pn" == o.type) pns.push(i)
+                }
+            })
+
             let spcToFill = paintWidth - justLen
-            // make decision to contract or expand
+            // make a decision to contract or expand
+            // contract
+            if (lastWord.length >= 4 && pns.length >= 2) { // TODO add condition to contract puncts
+                TODO()
+            }
             // expand
-            if (!(lastWord.length >= 4 && pns.length >= 3)) {
+            else if (!(lastWord.length >= 4 && pns.length >= 3)) {
                 // expand puncts
                 if (pns.length > 0) {
-                    pns.shuffle()
-                    for (let j = 0; j < spcToFill; j++) {
-                        serial.println(`pn #${j}`)
-
+                    pns.shuffle() // strats: '.'s first, ','s second, then others
+                    for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
+                        serial.println(`pn #${j} (${pns[j]})`)
                         words[pns[j] + 1].value = SYM_TWOSPC
-
-                        words.push(wordobj("sp", extraSpaces))
-                        justLen += words.last().value.length
                     }
+
+                    justLen += (Math.min(spcToFill, pns.length) > 0) //wtf? why not increment every time you insert TWOSPC?
                 }
 
                 spcToFill = paintWidth - justLen
@@ -287,13 +289,19 @@ function typesetJustified(lineStart, lineEnd) {
 
                 // still got spaces to expand?
                 if (spcToFill > 0) {
-                    TODO()
+                    if (sps.length > 0) {
+                        sps.shuffle() // strategy: randomise :p
+                        for (let j = 0; j < Math.min(spcToFill, sps.length); j++) {
+                            serial.println(`sp #${j}`)
+                            words[sps[j]].value = SYM_TWOSPC
+                        }
+
+                        justLen += (Math.min(spcToFill, sps.length) > 0) //wtf? why not increment every time you insert TWOSPC?
+                    }
                 }
             }
-            // contract
-            else if (lastWord.length >= 4 && pns.length >= 3) {
-                TODO()
-            }
+
+
 
             //words.forEach((o,i) => serial.println(`${i} ${o.type} '${o.value}'`))
 
@@ -314,7 +322,7 @@ function typesetJustified(lineStart, lineEnd) {
 
         textCursor += justLen
 
-        if (printbuf.length > 2) break
+        if (printbuf.length > 4) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
 
