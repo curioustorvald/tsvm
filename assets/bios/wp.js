@@ -187,6 +187,10 @@ function typesetLessRagged(lineStart, lineEnd) {
     return [printbuf, lineIndices]
 }
 
+function getRealLength(text) {
+    return text.replaceAll(SYM_TWOSPC, ' ').replaceAll(SYM_LF, '').replaceAll(SYM_FF, '').length
+}
+
 function typesetJustified(lineStart, lineEnd) {
     function wordobj(t,v) { return {type:t, value:v} }
     function wordTypeOf(c, c1) {
@@ -314,9 +318,6 @@ function typesetJustified(lineStart, lineEnd) {
                         serial.println(`pn #${j} (${pns[j]})`)
                         words[pns[j] + 1].value = SYM_TWOSPC; justLen += 1
                     }
-
-                    //justLen += (Math.min(spcToFill, pns.length) > 0) //wtf? why not increment every time you insert TWOSPC?
-                    // TODO resolve issue of "type specimen \n ook."
                 }
 
                 spcToFill = paintWidth - justLen
@@ -330,8 +331,6 @@ function typesetJustified(lineStart, lineEnd) {
                             serial.println(`sp #${j}`)
                             words[sps[j]].value = SYM_TWOSPC; justLen += 1
                         }
-
-                        //justLen += (Math.min(spcToFill, sps.length) > 0) //wtf? why not increment every time you insert TWOSPC?
                     }
                 }
 
@@ -358,10 +357,9 @@ function typesetJustified(lineStart, lineEnd) {
 
 
 
+        textCursor += getRealLength(printbuf.last())
 
-        textCursor += justLen
-
-        if (printbuf.length > 4) break
+        if (printbuf.length > 5) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
 
