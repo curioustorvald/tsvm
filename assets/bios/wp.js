@@ -15,12 +15,17 @@ const NO_LINELAST_PUNCT = [34,39,40,60,91,123]
 
 const TYPESET_DEBUG_PRINT = true
 
-// bits:
-// 0: set to justify; unset to ragged
-// 1: set to hyphenate
-const TYPESET_STRATEGY_RAGGEDRIGHT = 1024 + 0b00000000 // not implemented yet!
-const TYPESET_STRATEGY_LESSRAGGED = 1024 + 0b00000010
-const TYPESET_STRATEGY_JUSTIFIED = 1024 + 0b00000011 // not implemented yet!
+const SYM_SPC = String.fromCharCode(250)
+const SYM_TWOSPC = String.fromCharCode(251,252)
+const SYM_FF = String.fromCharCode(253)
+const SYM_LF = String.fromCharCode(254)
+
+
+const TYPESET_STRATEGY_DONOTHING = 0 // not implemented yet!
+const TYPESET_STRATEGY_RAGGEDRIGHT = 1 // not implemented yet!
+const TYPESET_STRATEGY_LESSRAGGED = 2
+const TYPESET_STRATEGY_JUSTIFIED = 3 // not implemented yet!
+const typesetStrats = [undefined, undefined, typesetLessRagged, typesetJustified]
 
 let PAGE_HEIGHT = 60
 let PAGE_WIDTH = 80
@@ -38,7 +43,7 @@ let paragraphs = [
 'Contrary to popular belief, Lorem Ipsum is not simply random text.  It has roots in a piece of classical Latin literature from  45 BC,  making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, looked up one of the more obscure Latin words,  consectetur,  from a Lorem Ipsum passage, and going through the cites of the word in classical literature, discovered the undoubtable source.  Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC.  This book is a treatise on the theory of ethics, very popular during the Renaissance.The first line of Lorem Ipsum,"Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.',
 'The standard chunk of Lorem Ipsum used since the 1500s is reproduced below for those interested. Sections 1.10.32 and 1.10.33 from "de Finibus Bonorum et Malorum" by Cicero are also reproduced in their exact original form, accompanied by English versions from the 1914 translation by H. Rackham.'
 ]*/
-let typeset = {lineIndices: [], lineValidated: [], strategy: TYPESET_STRATEGY_LESSRAGGED} // index 0 == 2nd line
+let typeset = {lineIndices: [], lineValidated: [], strategy: TYPESET_STRATEGY_JUSTIFIED} // index 0 == 2nd line
 let cursorRow = 0
 let cursorCol = 0
 let page = 0
@@ -134,7 +139,7 @@ function typesetLessRagged(lineStart, lineEnd) {
         //serial.println(`i:${i} char:'${String.fromCharCode(cM2,cM1,32,c,32,c1,c2)}' Ln ${vr} Col ${vc}`)
 
         if (c == 10) {
-            printbuf[vr] += String.fromCharCode(254)
+            printbuf[vr] += SYM_LF
             ln(i+1)
             printbuf[vr] = ''
         }
@@ -176,7 +181,143 @@ function typesetLessRagged(lineStart, lineEnd) {
             vc += 1
         }
 
-        if (vr > paintHeight || c === undefined) break;
+        if (vr > paintHeight || c === undefined) break
+    }
+
+    return [printbuf, lineIndices]
+}
+
+function typesetJustified(lineStart, lineEnd) {
+    function wordobj(t,v) { return {type:t, value:v} }
+    function wordTypeOf(c, c1) {
+        if (c == " ") return "sp"
+        else if ((c1 == " " || c1 == "\n") && (NO_LINEHEAD_PUNCT.includes(c.charCodeAt(0)) || NO_LINELAST_PUNCT.includes(c.charCodeAt(0)))) return "pn"
+        else return "tx"
+    }
+
+    let printbuf = []
+    let lineIndices = []
+
+    let text = (typeset.lineIndices[lineStart] !== undefined)
+        ? paragraphs.join('\n').slice(typeset.lineIndices[lineStart], typeset.lineIndices[lineEnd] || 9999999)
+        : paragraphs.join('\n')
+
+    let textCursor = 0
+    while (true) {
+
+        let status = wordTypeOf(text.charAt(textCursor), text.charAt(textCursor+1)) // state of the state machine
+        let words = [wordobj(status, "")] // {type: "tx/sp/pn", value: ""}
+        let linelen = 0
+
+        while (linelen <= paintWidth || status == "tx") {
+
+            let c = text.charAt(textCursor + linelen)
+            let c1 = text.charAt(textCursor + linelen + 1)
+
+            let newStatus = wordTypeOf(c, c1)
+
+            if (status != newStatus) {
+                status = newStatus
+                words.push(wordobj(status, ""))
+            }
+
+            if ("tx" == status) {
+                words.last().value += c; linelen += 1
+            }
+            else if ("sp" == status) {
+                words.last().value += SYM_SPC; linelen += 1
+            }
+            else if ("pn" == status) {
+                words.last().value += c; linelen += 1
+            }
+        }
+
+
+        let justLen = words.map(o => o.value).join('').length
+
+
+        words.forEach(o => serial.println(`${o.type}\t${o.value}`))
+        serial.println(`linelength: ${justLen}`)
+
+
+        // try simple join
+        if (justLen == paintWidth || justLen == paintWidth + 1 && "sp" == words.last().type) {
+            serial.println("cond 1")
+            printbuf.push(words.map(o => o.value).join(''))
+            lineIndices.push(textCursor)
+        }
+        // try fitting a line by removing a word then adding spaces
+        else if (justLen > paintWidth) {
+            serial.println("cond 2")
+            // nuke non-text words
+            while ("tx" != words.last().type) {
+                justLen -= words.pop().value.length
+            }
+            // also nuke the last word
+            let lastWord = words.pop().value
+            justLen -= lastWord.length // new linelength -= length of the last word
+            // nuke spaces before the last word
+            let extraSpaces = ''
+            while ("sp" == words.last().type) {
+                let extraSpcLen = words.pop().value.length
+                extraSpaces += SYM_SPC.repeat(extraSpcLen)
+                justLen -= extraSpcLen
+            }
+
+            let pns = []; words.forEach((o,i)=>{ if ("pn" == o.type && i < words.length) { pns.push(i) } })
+            let spcToFill = paintWidth - justLen
+            // make decision to contract or expand
+            // expand
+            if (!(lastWord.length >= 4 && pns.length >= 3)) {
+                // expand puncts
+                if (pns.length > 0) {
+                    pns.shuffle()
+                    for (let j = 0; j < spcToFill; j++) {
+                        serial.println(`pn #${j}`)
+
+                        words[pns[j] + 1].value = SYM_TWOSPC
+
+                        words.push(wordobj("sp", extraSpaces))
+                        justLen += words.last().value.length
+                    }
+                }
+
+                spcToFill = paintWidth - justLen
+                serial.println(`spcToFill after expanding puncts: ${spcToFill}`)
+
+                // still got spaces to expand?
+                if (spcToFill > 0) {
+                    TODO()
+                }
+            }
+            // contract
+            else if (lastWord.length >= 4 && pns.length >= 3) {
+                TODO()
+            }
+
+            //words.forEach((o,i) => serial.println(`${i} ${o.type} '${o.value}'`))
+
+            printbuf.push(words.map(o => o.value).join(''))
+            lineIndices.push(textCursor)
+
+            serial.println(`newlinelength: ${justLen}`)
+        }
+        // do <some other thing>
+        else {
+            serial.println("cond 3")
+            printbuf.push(words.map(o => o.value).join(''))
+            lineIndices.push(textCursor)
+        }
+
+
+
+
+        textCursor += justLen
+
+        if (printbuf.length > 2) break
+        if (printbuf.length > paintHeight || textCursor >= text.length) break
+
+
     }
 
     return [printbuf, lineIndices]
@@ -187,13 +328,11 @@ function typesetAndPrint(from, toExclusive) {
     let lineEnd = toExclusive || lineStart + paintHeight
 
     let lineValidated = []
-    let [printbuf, lineIndices] = typesetLessRagged(lineStart, lineEnd)
+    let [printbuf, lineIndices] = typesetStrats[typeset.strategy](lineStart, lineEnd)
 
     for (let y = 0; y < paintHeight; y++) {
-        //con.move(3+y, 1+caretLeft)
-        //print(printbuf[y] || '')
         let str = printbuf[y] || ''
-        for (let x = 0; x < paintWidth; x++) {
+        for (let x = 0; x < paintWidth + 3; x++) {
             sys.poke(
                 -1307649 - ((y+2) * windowWidth + caretLeft) - x,
                 str.charCodeAt(x) || 0
@@ -269,4 +408,3 @@ function drawMain() {
 
 drawMain()
 typesetAndPrint()
-typesetAndPrint(5)
