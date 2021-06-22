@@ -36,7 +36,7 @@ const TYPESET_STRATEGY_JUSTIFIED = 3 // not implemented yet!
 const typesetStrats = [undefined, undefined, typesetLessRagged, typesetJustified]
 
 let PAGE_HEIGHT = 60
-let PAGE_WIDTH = 80
+let PAGE_WIDTH = 80 // minimum possible value is 3
 // 80x60  -> 720x1080 text area; with 72px margin for each side, paper resolution is 864x1224, which is quite close to 1:sqrt(2) ratio
 
 let scroll = 0
@@ -374,7 +374,7 @@ function typesetJustified(lineStart, lineEnd) {
                 }
             }
             // expand spaces
-            else if (!isLineEnd && justLen < paintWidth) {
+            else if (recDepth < 5 && !isLineEnd && justLen < paintWidth) {
                 printdbg("EXPAND  SPACES   BETWEEN")
 
                 let expandTargets = normalSpc.shuffle().concat(spcAfterPunct.shuffle())
