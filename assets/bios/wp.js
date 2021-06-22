@@ -192,11 +192,21 @@ function getRealLength(text) {
 }
 
 function typesetJustified(lineStart, lineEnd) {
+    const pnTier = {'.':1, ',':2}
     function wordobj(t,v) { return {type:t, value:v} }
     function wordTypeOf(c, c1) {
         if (c == " ") return "sp"
         else if ((c1 == " " || c1 == "\n") && (NO_LINEHEAD_PUNCT.includes(c.charCodeAt(0)) || NO_LINELAST_PUNCT.includes(c.charCodeAt(0)))) return "pn"
         else return "tx"
+    }
+    function shufflePNs(pns) {
+        let pnsWithSortID = pns.map(it => {
+            let rndnum = (Math.random() * 65536)|0
+            let tier = pnTier[it.value] || 16
+            return {key: (tier-1) * 65536 + rndnum, value: it}
+        })
+        pnsWithSortID.sort((it, other) => it.key - other.key)
+        return pnsWithSortID.map(it => it.value)
     }
 
     let printbuf = []
@@ -292,10 +302,10 @@ function typesetJustified(lineStart, lineEnd) {
 
                 // contract puncts
                 if (pns.length > 0) {
-                    pns.shuffle() // strats: '.'s first, ','s second, then others
+                    shufflePNs(pns).reverse() // strats: '.'s last, ','s second-last, then others
                     for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
                         serial.println(`-pn #${j} (${pns[j]})`)
-                        words[pns[j] + 1].value = ''; justLen -= 1
+                        words[pns[j] + 1].value = ''; justLen -= 1; textCursor += 1
                     }
                 }
 
@@ -313,7 +323,7 @@ function typesetJustified(lineStart, lineEnd) {
             if (expandAgain > 0 || !(lastWord.length >= 4 && pns.length >= 2)) {
                 // expand puncts
                 if (pns.length > 0) {
-                    pns.shuffle() // strats: '.'s first, ','s second, then others
+                    shufflePNs(pns) // strats: '.'s first, ','s second, then others
                     for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
                         serial.println(`pn #${j} (${pns[j]})`)
                         words[pns[j] + 1].value = SYM_TWOSPC; justLen += 1
