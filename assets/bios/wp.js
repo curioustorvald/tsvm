@@ -10,10 +10,6 @@ const TAB_SIZE = 4
 const PAINT_START_Y = 3
 const MEM = system.maxmem()
 
-const NO_LINEHEAD_PUNCT = [33,34,39,41,44,46,58,59,62,63,93,125]
-const NO_LINELAST_PUNCT = [34,39,40,60,91,123]
-const THIN_PUNCT = [',', '.']
-
 const TYPESET_DEBUG_PRINT = true
 
 const SYM_SPC = String.fromCharCode(250)
@@ -21,6 +17,12 @@ const SYM_TWOSPC = String.fromCharCode(251,252)
 const SYM_FF = String.fromCharCode(253)
 const SYM_LF = String.fromCharCode(254)
 const SYM_HYPHEN = '-'
+
+const NO_LINEHEAD_PUNCT = [33,34,39,41,44,46,58,59,62,63,93,125]
+const NO_LINELAST_PUNCT = [34,39,40,60,91,123]
+const THIN_PUNCT = [',','.',SYM_LF]
+
+const NO_PRINT_CHAR = [0,252,253,254]
 
 function typesetSymToVisual(code) {
     return (code >= 250 && code < 255) ? 32 : code
@@ -34,11 +36,16 @@ const TYPESET_STRATEGY_JUSTIFIED = 3 // not implemented yet!
 const typesetStrats = [undefined, undefined, typesetLessRagged, typesetJustified]
 
 let PAGE_HEIGHT = 60
-let PAGE_WIDTH = 72
+let PAGE_WIDTH = 70
 // 80x60  -> 720x1080 text area; with 72px margin for each side, paper resolution is 864x1224, which is quite close to 1:sqrt(2) ratio
 
 let scroll = 0
 let scrollHor = 0
+/*let paragraphs = [
+'Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry\'s standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum.',
+'Contrary to popular belief, Lorem Ipsum is not simply random text. It has roots in a piece of classical Latin literature from 45 BC, making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, looked up one of the more obscure Latin words, consectetur, from a Lorem Ipsum passage, and going through the cites of the word in classical literature, discovered the undoubtable source. Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC. This book is a treatise on the theory of ethics, very popular during the Renaissance. The first line of Lorem Ipsum, "Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.',
+'The standard chunk of Lorem Ipsum used since the 1500s is reproduced below for those interested. Sections 1.10.32 and 1.10.33 from "de Finibus Bonorum et Malorum" by Cicero are also reproduced in their exact original form, accompanied by English versions from the 1914 translation by H. Rackham.'
+]*/
 let paragraphs = [
 'Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry\'s standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum.',
 'Contrary to popular belief, Lorem Ipsum is not simply random text. It has roots in a piece of classical Latin literature from 45 BC, making it over 2000 years old. Richard McClintock, a Latin professor at Hampden-Sydney College in Virginia, looked up one of the more obscure Latin words, consectetur, from a Lorem Ipsum passage, and going through the cites of the word in classical literature, discovered the undoubtable source. Lorem Ipsum comes from sections 1.10.32 and 1.10.33 of "de Finibus Bonorum et Malorum" (The Extremes of Good and Evil) by Cicero, written in 45 BC. This book is a treatise on the theory of ethics, very popular during the Renaissance. The first line of Lorem Ipsum, "Lorem ipsum dolor sit amet..", comes from a line in section 1.10.32.',
@@ -200,6 +207,7 @@ function getRealLength(text) {
 function typesetJustified(lineStart, lineEnd) {
     const pnTier = {'.':1, ',':2}
     function wordobj(t,v) { return {type:t, value:v} }
+    function getWordLen(o) { return (o.type.startsWith("ct")) ? 0 : o.value.length }
     function wordTypeOf(c, c1) {
         if (c == " ") return "sp"
         else if ((c1 == " " || c1 == "\n") && (NO_LINEHEAD_PUNCT.includes(c.charCodeAt(0)) || NO_LINELAST_PUNCT.includes(c.charCodeAt(0)))) return "pn"
@@ -225,12 +233,13 @@ function typesetJustified(lineStart, lineEnd) {
 
     let textCursor = 0
     let lc = 1
+    let isParHead = true
     while (true) {
 
         let _status = wordTypeOf(text.charAt(textCursor), text.charAt(textCursor+1)) // state of the state machine
         let _linelen = 0
 
-        let words = [wordobj(_status, "")] // {type: "tx/sp/pn", value: ""}
+        let words = [wordobj(_status, "")] // {type: "tx/sp/pn/ct", value: ""}
 
         // fill in words array
         while (_linelen <= paintWidth || _status == "tx") {
@@ -246,7 +255,12 @@ function typesetJustified(lineStart, lineEnd) {
                 words.push(wordobj(_status, ""))
             }
 
-            if ("tx" == _status) {
+            if (c == '\n') {
+                words.last().type = "ct_lf"
+                words.last().value = SYM_LF
+                break
+            }
+            else if ("tx" == _status) {
                 words.last().value += c; _linelen += 1
             }
             else if ("sp" == _status) {
@@ -255,60 +269,84 @@ function typesetJustified(lineStart, lineEnd) {
             else if ("pn" == _status) {
                 words.last().value += c; _linelen += 1
             }
+
+
+            if (c1 == '\n') {
+                words.push(wordobj("ct_lf", SYM_LF))
+                break
+            }
         }
 
 
 
         function tryJustify(recDepth, adjust, fuckit) {
             let spacesRemoved = 0
+            let isLineEnd = (words.last().type == "ct_lf")
             // trim spaces at the end of the line
             while ("sp" == words.last().type) {
-                spacesRemoved += words.pop().value.length
+                spacesRemoved += getWordLen(words.pop())
             }
             // trim spaces at the head of the line
-            /*while ("sp" == words.head().type) {
-                spacesRemoved += words.shift().value.length
-            }*/
+            while (!isParHead && "sp" == words.head().type) {
+                let rlen = getWordLen(words.shift())
+                spacesRemoved -= rlen
+            }
 
-            adjust -= spacesRemoved
+            printdbg(`spacesRemoved = ${spacesRemoved}`)
+            //printdbg(`Space trim-nugding ${-spacesRemoved} characters`)
+            //adjust -= spacesRemoved
 
             let spcAfterPunct = [] // indices in the WORDS
             words.forEach((o,i,a) => {
-                if (i > 0 && THIN_PUNCT.includes(a[i-1].value) && o.value.length > 0 && o.type == "sp") {
+                if (i > 0 && THIN_PUNCT.includes(a[i-1].value) && getWordLen(o) > 0 && o.type == "sp") {
                     spcAfterPunct.push(i)
                 }
             })
             let normalSpc = [] // indices in the WORDS
             words.forEach((o,i,a) => {
-                if (i > 0 && !THIN_PUNCT.includes(a[i-1].value) && o.value.length > 0 && o.type == "sp") {
+                if (i > 0 && !THIN_PUNCT.includes(a[i-1].value) && getWordLen(o) > 0 && o.type == "sp") {
                     normalSpc.push(i)
                 }
             })
 
 
             let justBuf = words.reduce((s,o) => s+o.value, '')
-            let justLen = justBuf.length
+            let justLen = words.reduce((s,o) => s+getWordLen(o), 0)
 
-            printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}]<${adjust}>`)
+            printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}${(isLineEnd) ? "\\\\" : "]"}<${adjust}>`)
 
             // termination condition
             if (fuckit || (justLen == paintWidth + 1 && THIN_PUNCT.includes(words.last().value) || justLen == paintWidth)) {
                 printdbg("TERMINATE")
+
+                if (isLineEnd) {
+                    printdbg("Line end detected, nudging 1 character")
+                    adjust += 1
+                }
+
                 printbuf.push(justBuf.slice(0))
-                printdbg(`Cursor advance: ${paintWidth + 1 + spacesRemoved}`)
+                printdbg(`Cursor advance: ${justLen + adjust}`)
 
                 // NOTE: a dangling-lette-r simply does not happen; do the math! *tapping forehead with index finder*
 
-                printdbg(`[${justBuf.split('').map(s => typesetSymToVisual(s.charCodeAt(0))).reduce((a,c) => a + String.fromCharCode(c),'')}]<${adjust}>`)
-                return justLen + spacesRemoved + adjust
+                printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}${(isLineEnd) ? "\\\\" : "]"}<${adjust}>`)
+
+                let justedTextLen = 0
+                let lastLine = printbuf.last()
+                for (let i = 0; i < lastLine.length; i++) {
+                    justedTextLen += 1 - NO_PRINT_CHAR.includes(lastLine.charCodeAt(i))
+                }
+                printdbg(`justedTextLen = ${justedTextLen}`)
+                return justedTextLen + adjust
             }
             // try hyphenation
-            else if (justLen > paintWidth && words.last().value.length >= 4 && justLen - words.last().value.length <= paintWidth - 3 && !words.last().value.includes(SYM_HYPHEN)) {
+            else if (justLen > paintWidth && getWordLen(words.last()) >= 4 && justLen - getWordLen(words.last()) <= paintWidth - 3 && !words.last().value.includes(SYM_HYPHEN)) {
                 printdbg("HYP-HEN-ATE")
-                let lengthBeforeLastWord = justLen - words.last().value.length
+                let lengthBeforeLastWord = justLen - getWordLen(words.last())
                 let lengthAfterHyphen = justLen
 
                 words.last().value = words.last().value.slice(0, paintWidth - lengthBeforeLastWord - 1) + SYM_HYPHEN
+                printdbg(`hyphenate-nugding -1 characters`)
                 adjust -= 1 // hyphen is inserted therefore the actual line length is 1 character less
             }
             // try contract puncts
@@ -316,36 +354,38 @@ function typesetJustified(lineStart, lineEnd) {
                 printdbg("CONTRACT,PUNCT")
 
                 let contractTargets = spcAfterPunct.shuffle()
-                printdbg(`contract targets: ${contractTargets.join()}`)
+                printdbg(`contract targets: ${contractTargets.join()}, amount: ${justLen - paintWidth}`)
 
                 for (let i = 0; i < Math.min(contractTargets.length, justLen - paintWidth); i++) {
                     words[contractTargets[i]].value = ''
                 }
 
-                adjust += words.last().value.length // the last word is going to be appended
+                //adjust += getWordLen(words.last()) // the last word is going to be appended
+                printdbg(`contract-nugding ${justLen - paintWidth} characters`)
+                adjust += justLen - paintWidth // the last word is going to be appended
             }
             // if any concatenation is impossible, recurse without last word (spaces will be trimmed on recursion), so that if-clauses below would treat them
             else if (justLen > paintWidth && spcAfterPunct.length < justLen - paintWidth) {
                 printdbg("TOSS OUT LAST")
                 while ("tx" == words.last().type) {
-                    let poplen = words.pop().value.length
+                    let poplen = getWordLen(words.pop())
                     //adjust -= poplen
                 }
             }
             // expand spaces
-            else if (justLen < paintWidth) {
+            else if (!isLineEnd && justLen < paintWidth) {
                 printdbg("EXPAND  SPACES   BETWEEN")
 
                 let expandTargets = normalSpc.shuffle().concat(spcAfterPunct.shuffle())
-                printdbg(`expand targets: ${expandTargets.join()}`)
+                printdbg(`expand targets: ${expandTargets.join()}, amount: ${paintWidth - justLen}`)
 
                 for (let i = 0; i < Math.min(expandTargets.length, paintWidth - justLen); i++) {
                     let old = words[expandTargets[i]].value
                     words[expandTargets[i]].value = (SYM_SPC == old) ? SYM_TWOSPC :
-                        (SYM_TWOSPC == old) ? ` ${SYM_SPC} ` :
-                        (` ${SYM_SPC} ` == old) ? ` ${SYM_TWOSPC} ` :
-                        (` ${SYM_SPC} ` == old) ? `  ${SYM_SPC}  ` :
-                        (old.length % 2 == 0) ? (' ' + old) : (old + ' ')
+                        (SYM_TWOSPC == old) ? `\x00${SYM_SPC}\x00` :
+                        (` ${SYM_SPC} ` == old) ? `\x00${SYM_TWOSPC}\x00` :
+                        (` ${SYM_SPC} ` == old) ? `\x00\x00${SYM_SPC}\x00\x00` :
+                        (old.length % 2 == 0) ? ('\x00' + old) : (old + '\x00')
                     //adjust += 1
                 }
             }
@@ -361,14 +401,19 @@ function typesetJustified(lineStart, lineEnd) {
         }
 
 
-        words.forEach((o,i) => printdbg(`${i}\t${o.type}\t${o.value}`))
 
+
+        words.forEach((o,i) => printdbg(`${i}\t${o.type}\t${o.value}`))
         textCursor += tryJustify(0,0)
+
+        isParHead = false
+
         lc += 1
 
-        //textCursor += getRealLength(printbuf.last())
 
-        if (printbuf.length > 6) break
+
+
+        if (printbuf.length > 5) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
         printdbg("======================")
