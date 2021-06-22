@@ -266,9 +266,11 @@ function typesetJustified(lineStart, lineEnd) {
                 spacesRemoved += words.pop().value.length
             }
             // trim spaces at the head of the line
-            while ("sp" == words.head().type) {
+            /*while ("sp" == words.head().type) {
                 spacesRemoved += words.shift().value.length
-            }
+            }*/
+
+            adjust -= spacesRemoved
 
             let spcAfterPunct = [] // indices in the WORDS
             words.forEach((o,i,a) => {
@@ -276,11 +278,18 @@ function typesetJustified(lineStart, lineEnd) {
                     spcAfterPunct.push(i)
                 }
             })
+            let normalSpc = [] // indices in the WORDS
+            words.forEach((o,i,a) => {
+                if (i > 0 && !THIN_PUNCT.includes(a[i-1].value) && o.value.length > 0 && o.type == "sp") {
+                    normalSpc.push(i)
+                }
+            })
+
 
             let justBuf = words.reduce((s,o) => s+o.value, '')
             let justLen = justBuf.length
 
-            printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}]`)
+            printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}]<${adjust}>`)
 
             // termination condition
             if (fuckit || (justLen == paintWidth + 1 && THIN_PUNCT.includes(words.last().value) || justLen == paintWidth)) {
@@ -288,7 +297,9 @@ function typesetJustified(lineStart, lineEnd) {
                 printbuf.push(justBuf.slice(0))
                 printdbg(`Cursor advance: ${paintWidth + 1 + spacesRemoved}`)
 
-                printdbg(`[${justBuf.split('').map(s => typesetSymToVisual(s.charCodeAt(0))).reduce((a,c) => a + String.fromCharCode(c),'')}]`)
+                // NOTE: a dangling-lette-r simply does not happen; do the math! *tapping forehead with index finder*
+
+                printdbg(`[${justBuf.split('').map(s => typesetSymToVisual(s.charCodeAt(0))).reduce((a,c) => a + String.fromCharCode(c),'')}]<${adjust}>`)
                 return justLen + spacesRemoved + adjust
             }
             // try hyphenation
@@ -303,36 +314,46 @@ function typesetJustified(lineStart, lineEnd) {
             // try contract puncts
             else if (justLen > paintWidth && spcAfterPunct.length >= justLen - paintWidth) {
                 printdbg("CONTRACT,PUNCT")
-                printdbg(`spcAfterPunct = ${spcAfterPunct.join()}`)
 
-                let shuffledPNs = spcAfterPunct.shuffle()
+                let contractTargets = spcAfterPunct.shuffle()
+                printdbg(`contract targets: ${contractTargets.join()}`)
 
-                printdbg(`shuffledPNs = [${shuffledPNs.join()}]`)
-                printdbg(`extraLen = ${justLen - paintWidth}`)
-                printdbg(`pns count = ${shuffledPNs.length}`)
-                printdbg(`words = ${words.map(o=>o.value).join()}`)
-                for (let i = 0; i < Math.min(shuffledPNs.length, justLen - paintWidth); i++) {
-                    printdbg(`i = ${i}`)
-                    printdbg(`cut index = ${shuffledPNs[i]}`)
-                    printdbg(`cut word = ${words[shuffledPNs[i]].type} ${words[shuffledPNs[i]].value}`)
-                    words[shuffledPNs[i]].value = ''
+                for (let i = 0; i < Math.min(contractTargets.length, justLen - paintWidth); i++) {
+                    words[contractTargets[i]].value = ''
                 }
+
+                adjust += words.last().value.length // the last word is going to be appended
             }
             // if any concatenation is impossible, recurse without last word (spaces will be trimmed on recursion), so that if-clauses below would treat them
             else if (justLen > paintWidth && spcAfterPunct.length < justLen - paintWidth) {
                 printdbg("TOSS OUT LAST")
                 while ("tx" == words.last().type) {
-                    words.pop().value.length
+                    let poplen = words.pop().value.length
+                    //adjust -= poplen
                 }
             }
             // expand spaces
-            //else if (justLen < paintWidth) {
+            else if (justLen < paintWidth) {
+                printdbg("EXPAND  SPACES   BETWEEN")
 
-            //}
+                let expandTargets = normalSpc.shuffle().concat(spcAfterPunct.shuffle())
+                printdbg(`expand targets: ${expandTargets.join()}`)
+
+                for (let i = 0; i < Math.min(expandTargets.length, paintWidth - justLen); i++) {
+                    let old = words[expandTargets[i]].value
+                    words[expandTargets[i]].value = (SYM_SPC == old) ? SYM_TWOSPC :
+                        (SYM_TWOSPC == old) ? ` ${SYM_SPC} ` :
+                        (` ${SYM_SPC} ` == old) ? ` ${SYM_TWOSPC} ` :
+                        (` ${SYM_SPC} ` == old) ? `  ${SYM_SPC}  ` :
+                        (old.length % 2 == 0) ? (' ' + old) : (old + ' ')
+                    //adjust += 1
+                }
+            }
             // fuckit
             else {
                 printdbg("GIVE UP")
                 return tryJustify(recDepth + 1, adjust, true)
+
             }
 
             //printdbg(`[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}]`)
@@ -347,7 +368,7 @@ function typesetJustified(lineStart, lineEnd) {
 
         //textCursor += getRealLength(printbuf.last())
 
-        if (printbuf.length > 1) break
+        if (printbuf.length > 6) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
         printdbg("======================")
