@@ -280,21 +280,21 @@ function typesetJustified(lineStart, lineEnd) {
 
 
         function tryJustify(recDepth, adjust, fuckit) {
-            let spacesRemoved = 0
             let isLineEnd = (words.last().type == "ct_lf")
             // trim spaces at the end of the line
             while ("sp" == words.last().type) {
-                spacesRemoved += getWordLen(words.pop())
+                words.pop()
             }
             // trim spaces at the head of the line
+            // "pull" the words when removing preceding spaces
+            let pullLen = 0
             while (!isParHead && "sp" == words.head().type) {
-                let rlen = getWordLen(words.shift())
-                spacesRemoved -= rlen
+                pullLen += getWordLen(words.shift())
             }
 
-            printdbg(`spacesRemoved = ${spacesRemoved}`)
-            //printdbg(`Space trim-nugding ${-spacesRemoved} characters`)
-            //adjust -= spacesRemoved
+            printdbg(`Pulled ${pullLen} characters`)
+            adjust += pullLen
+
 
             let spcAfterPunct = [] // indices in the WORDS
             words.forEach((o,i,a) => {
@@ -325,19 +325,20 @@ function typesetJustified(lineStart, lineEnd) {
                 }
 
                 printbuf.push(justBuf.slice(0))
-                printdbg(`Cursor advance: ${justLen + adjust}`)
-
-                // NOTE: a dangling-lette-r simply does not happen; do the math! *tapping forehead with index finder*
-
-                printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}${(isLineEnd) ? "\\\\" : "]"}<${adjust}>`)
 
                 let justedTextLen = 0
                 let lastLine = printbuf.last()
                 for (let i = 0; i < lastLine.length; i++) {
                     justedTextLen += 1 - NO_PRINT_CHAR.includes(lastLine.charCodeAt(i))
                 }
-                printdbg(`justedTextLen = ${justedTextLen}`)
-                return justedTextLen + adjust
+                let cursorAdvance = justedTextLen + adjust
+
+                printdbg(`Cursor advance: ${cursorAdvance}`)
+
+                // NOTE: a dangling-lette-r simply does not happen; do the math! *tapping forehead with index finder*
+
+                printdbg(`(${justLen}/${cursorAdvance})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}${(isLineEnd) ? "\\\\" : "]"}<${adjust}>`)
+                return cursorAdvance
             }
             // try hyphenation
             else if (justLen > paintWidth && getWordLen(words.last()) >= 4 && justLen - getWordLen(words.last()) <= paintWidth - 3 && !words.last().value.includes(SYM_HYPHEN)) {
@@ -383,8 +384,8 @@ function typesetJustified(lineStart, lineEnd) {
                     let old = words[expandTargets[i]].value
                     words[expandTargets[i]].value = (SYM_SPC == old) ? SYM_TWOSPC :
                         (SYM_TWOSPC == old) ? `\x00${SYM_SPC}\x00` :
-                        (` ${SYM_SPC} ` == old) ? `\x00${SYM_TWOSPC}\x00` :
-                        (` ${SYM_SPC} ` == old) ? `\x00\x00${SYM_SPC}\x00\x00` :
+                        (`\x00${SYM_SPC}\x00` == old) ? `\x00${SYM_TWOSPC}\x00` :
+                        (`\x00${SYM_TWOSPC}\x00` == old) ? `\x00\x00${SYM_SPC}\x00\x00` :
                         (old.length % 2 == 0) ? ('\x00' + old) : (old + '\x00')
                     //adjust += 1
                 }
@@ -413,7 +414,7 @@ function typesetJustified(lineStart, lineEnd) {
 
 
 
-        if (printbuf.length > 5) break
+        //if (printbuf.length > 10) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
         printdbg("======================")
