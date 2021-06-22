@@ -12,6 +12,7 @@ const MEM = system.maxmem()
 
 const NO_LINEHEAD_PUNCT = [33,34,39,41,44,46,58,59,62,63,93,125]
 const NO_LINELAST_PUNCT = [34,39,40,60,91,123]
+const THIN_PUNCT = [',', '.']
 
 const TYPESET_DEBUG_PRINT = true
 
@@ -19,6 +20,11 @@ const SYM_SPC = String.fromCharCode(250)
 const SYM_TWOSPC = String.fromCharCode(251,252)
 const SYM_FF = String.fromCharCode(253)
 const SYM_LF = String.fromCharCode(254)
+const SYM_HYPHEN = '-'
+
+function typesetSymToVisual(code) {
+    return (code >= 250 && code < 255) ? 32 : code
+}
 
 
 const TYPESET_STRATEGY_DONOTHING = 0 // not implemented yet!
@@ -208,6 +214,7 @@ function typesetJustified(lineStart, lineEnd) {
         pnsWithSortID.sort((it, other) => it.key - other.key)
         return pnsWithSortID.map(it => it.value)
     }
+    function printdbg(msg) { serial.println(`L${lc}\t${msg}`) }
 
     let printbuf = []
     let lineIndices = []
@@ -217,181 +224,133 @@ function typesetJustified(lineStart, lineEnd) {
         : paragraphs.join('\n')
 
     let textCursor = 0
+    let lc = 1
     while (true) {
 
-        let status = wordTypeOf(text.charAt(textCursor), text.charAt(textCursor+1)) // state of the state machine
-        let words = [wordobj(status, "")] // {type: "tx/sp/pn", value: ""}
-        let linelen = 0
+        let _status = wordTypeOf(text.charAt(textCursor), text.charAt(textCursor+1)) // state of the state machine
+        let _linelen = 0
 
-        while (linelen <= paintWidth || status == "tx") {
+        let words = [wordobj(_status, "")] // {type: "tx/sp/pn", value: ""}
 
-            let c = text.charAt(textCursor + linelen)
-            let c1 = text.charAt(textCursor + linelen + 1)
+        // fill in words array
+        while (_linelen <= paintWidth || _status == "tx") {
+
+            let c = text.charAt(textCursor + _linelen)
+            let c1 = text.charAt(textCursor + _linelen + 1)
 
             let newStatus = wordTypeOf(c, c1)
 
-            if (status != newStatus) {
-                status = newStatus
-                words.push(wordobj(status, ""))
+            if (_status != newStatus) {
+                if (newStatus != "tx" && _linelen > paintWidth) break
+                _status = newStatus
+                words.push(wordobj(_status, ""))
             }
 
-            if ("tx" == status) {
-                words.last().value += c; linelen += 1
+            if ("tx" == _status) {
+                words.last().value += c; _linelen += 1
             }
-            else if ("sp" == status) {
-                words.last().value += SYM_SPC; linelen += 1
+            else if ("sp" == _status) {
+                words.last().value += SYM_SPC; _linelen += 1
             }
-            else if ("pn" == status) {
-                words.last().value += c; linelen += 1
+            else if ("pn" == _status) {
+                words.last().value += c; _linelen += 1
             }
         }
 
 
-        let justLen = words.map(o => o.value).join('').length
 
-
-        words.forEach((o,i) => serial.println(`${i}\t${o.type}\t${o.value}`))
-        serial.println(`linelength: ${justLen}`)
-
-
-        // try simple join
-        if (justLen == paintWidth && "tx" == words.last().type || justLen == paintWidth + 1 && "tx" != words.last().type) {
-            serial.println("cond 1")
-            printbuf.push(words.map(o => o.value).join(''))
-            lineIndices.push(textCursor)
-        }
-        // try fitting a line by removing a word then adding spaces
-        else if (justLen > paintWidth) {
-            serial.println("cond 2")
-
-            let lastSpaces = []
-            let lastSpacesLen = 0
-            // nuke non-text words
-            while ("tx" != words.last().type) {
-                let pw = words.pop()
-                lastSpaces.unshift(pw)
-                lastSpacesLen += pw.value.length
-                justLen -= pw.value.length
+        function tryJustify(recDepth, adjust, fuckit) {
+            let spacesRemoved = 0
+            // trim spaces at the end of the line
+            while ("sp" == words.last().type) {
+                spacesRemoved += words.pop().value.length
             }
-            // also nuke the last word
-            let lastWord = words.pop().value
-            let penultSpaces = []
-            let penultSpacesLen = 0
-            justLen -= lastWord.length // new linelength -= length of the last word
-            // nuke spaces before the last word
-            while ("tx" != words.last().type) {
-                let pw = words.pop()
-                penultSpaces.unshift(pw)
-                penultSpacesLen += pw.value.length
-                justLen -= pw.value.length
+            // trim spaces at the head of the line
+            while ("sp" == words.head().type) {
+                spacesRemoved += words.shift().value.length
             }
 
-            let pns = [], sps = []
-            words.forEach((o,i) => {
-                if (i < words.length - 1) {
-                    if ("sp" == o.type) sps.push(i)
-                    else if ("pn" == o.type) pns.push(i)
+            let spcAfterPunct = [] // indices in the WORDS
+            words.forEach((o,i,a) => {
+                if (i > 0 && THIN_PUNCT.includes(a[i-1].value) && o.value.length > 0 && o.type == "sp") {
+                    spcAfterPunct.push(i)
                 }
             })
 
-            let spcToFill = paintWidth - justLen
-            let expandAgain = 0
+            let justBuf = words.reduce((s,o) => s+o.value, '')
+            let justLen = justBuf.length
 
-            // see if we can hyphenate
-            let testLineLen = justLen + penultSpacesLen
-            let hyphenated = false
-            if (testLineLen <= paintWidth - 3 && lastWord.length >= 4) {
-                let hypWord = lastWord.slice(0, paintWidth - testLineLen - 1)
-                words = words.concat(penultSpaces)
-                words.push(wordobj("tx", hypWord + '-'))
-                let addedLen = penultSpacesLen + hypWord.length + 1
-                justLen += addedLen
-                textCursor -= 1
-                hyphenated = true
+            printdbg(`(${justLen})[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}]`)
+
+            // termination condition
+            if (fuckit || (justLen == paintWidth + 1 && THIN_PUNCT.includes(words.last().value) || justLen == paintWidth)) {
+                printdbg("TERMINATE")
+                printbuf.push(justBuf.slice(0))
+                printdbg(`Cursor advance: ${paintWidth + 1 + spacesRemoved}`)
+
+                printdbg(`[${justBuf.split('').map(s => typesetSymToVisual(s.charCodeAt(0))).reduce((a,c) => a + String.fromCharCode(c),'')}]`)
+                return justLen + spacesRemoved + adjust
+            }
+            // try hyphenation
+            else if (justLen > paintWidth && words.last().value.length >= 4 && justLen - words.last().value.length <= paintWidth - 3 && !words.last().value.includes(SYM_HYPHEN)) {
+                printdbg("HYP-HEN-ATE")
+                let lengthBeforeLastWord = justLen - words.last().value.length
+                let lengthAfterHyphen = justLen
+
+                words.last().value = words.last().value.slice(0, paintWidth - lengthBeforeLastWord - 1) + SYM_HYPHEN
+                adjust -= 1 // hyphen is inserted therefore the actual line length is 1 character less
+            }
+            // try contract puncts
+            else if (justLen > paintWidth && spcAfterPunct.length >= justLen - paintWidth) {
+                printdbg("CONTRACT,PUNCT")
+                printdbg(`spcAfterPunct = ${spcAfterPunct.join()}`)
+
+                let shuffledPNs = spcAfterPunct.shuffle()
+
+                printdbg(`shuffledPNs = [${shuffledPNs.join()}]`)
+                printdbg(`extraLen = ${justLen - paintWidth}`)
+                printdbg(`pns count = ${shuffledPNs.length}`)
+                printdbg(`words = ${words.map(o=>o.value).join()}`)
+                for (let i = 0; i < Math.min(shuffledPNs.length, justLen - paintWidth); i++) {
+                    printdbg(`i = ${i}`)
+                    printdbg(`cut index = ${shuffledPNs[i]}`)
+                    printdbg(`cut word = ${words[shuffledPNs[i]].type} ${words[shuffledPNs[i]].value}`)
+                    words[shuffledPNs[i]].value = ''
+                }
+            }
+            // if any concatenation is impossible, recurse without last word (spaces will be trimmed on recursion), so that if-clauses below would treat them
+            else if (justLen > paintWidth && spcAfterPunct.length < justLen - paintWidth) {
+                printdbg("TOSS OUT LAST")
+                while ("tx" == words.last().type) {
+                    words.pop().value.length
+                }
+            }
+            // expand spaces
+            //else if (justLen < paintWidth) {
+
+            //}
+            // fuckit
+            else {
+                printdbg("GIVE UP")
+                return tryJustify(recDepth + 1, adjust, true)
             }
 
-
-            // make a decision to contract or expand
-            // contract
-            if (!hyphenated && lastWord.length >= 4 && pns.length >= 2) { // TODO add condition to contract puncts
-
-                serial.println(words.length)
-                serial.println(`spcToContract: ${spcToFill}`)
-                serial.println(pns)
-
-                // contract puncts
-                if (pns.length > 0) {
-                    shufflePNs(pns).reverse() // strats: '.'s last, ','s second-last, then others
-                    for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
-                        serial.println(`-pn #${j} (${pns[j]})`)
-                        words[pns[j] + 1].value = ''; justLen -= 1; textCursor += 1
-                    }
-                }
-
-                words = words.concat(penultSpaces, wordobj("tx", lastWord), lastSpaces)
-                justLen += penultSpacesLen
-                justLen += lastWord.length
-                justLen += lastSpacesLen
-
-                serial.println(`justLen after expansion: ${justLen}`)
-
-                expandAgain = paintWidth - justLen
-            }
-
-            // expand
-            if (!hyphenated && (expandAgain > 0 || !(lastWord.length >= 4 && pns.length >= 2))) {
-                // expand puncts
-                if (pns.length > 0) {
-                    shufflePNs(pns) // strats: '.'s first, ','s second, then others
-                    for (let j = 0; j < Math.min(spcToFill, pns.length); j++) {
-                        serial.println(`pn #${j} (${pns[j]})`)
-                        words[pns[j] + 1].value = SYM_TWOSPC; justLen += 1
-                    }
-                }
-
-                spcToFill = paintWidth - justLen
-                serial.println(`spcToFill after expanding puncts: ${spcToFill}`)
-
-                // still got spaces to expand?
-                if (spcToFill > 0) {
-                    if (sps.length > 0) {
-                        sps.shuffle() // strategy: randomise :p
-                        for (let j = 0; j < Math.min(spcToFill, sps.length); j++) {
-                            serial.println(`sp #${j}`)
-                            words[sps[j]].value = SYM_TWOSPC; justLen += 1
-                        }
-                    }
-                }
-
-                serial.println("penultSpaces")
-                serial.println(penultSpaces)
-                words = words.concat(penultSpaces)
-            }
-
-
-
-            //words.forEach((o,i) => serial.println(`${i} ${o.type} '${o.value}'`))
-
-            printbuf.push(words.map(o => o.value).join(''))
-            lineIndices.push(textCursor)
-
-            serial.println(`newlinelength: ${justLen}`)
-        }
-        // do <some other thing>
-        else {
-            serial.println("cond 3")
-            printbuf.push(words.map(o => o.value).join(''))
-            lineIndices.push(textCursor)
+            //printdbg(`[${words.flatMap(o => o.value.split('').map(s => typesetSymToVisual(s.charCodeAt(0)))).reduce((a,c) => a + String.fromCharCode(c),'')}]`)
+            return tryJustify(recDepth + 1, adjust)
         }
 
 
+        words.forEach((o,i) => printdbg(`${i}\t${o.type}\t${o.value}`))
 
-        textCursor += getRealLength(printbuf.last())
+        textCursor += tryJustify(0,0)
+        lc += 1
 
-        if (printbuf.length > 7) break
+        //textCursor += getRealLength(printbuf.last())
+
+        if (printbuf.length > 1) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
-
+        printdbg("======================")
     }
 
     return [printbuf, lineIndices]
