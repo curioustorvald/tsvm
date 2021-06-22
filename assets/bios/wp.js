@@ -28,7 +28,7 @@ const TYPESET_STRATEGY_JUSTIFIED = 3 // not implemented yet!
 const typesetStrats = [undefined, undefined, typesetLessRagged, typesetJustified]
 
 let PAGE_HEIGHT = 60
-let PAGE_WIDTH = 80
+let PAGE_WIDTH = 72
 // 80x60  -> 720x1080 text area; with 72px margin for each side, paper resolution is 864x1224, which is quite close to 1:sqrt(2) ratio
 
 let scroll = 0
@@ -265,20 +265,24 @@ function typesetJustified(lineStart, lineEnd) {
             serial.println("cond 2")
 
             let lastSpaces = []
+            let lastSpacesLen = 0
             // nuke non-text words
             while ("tx" != words.last().type) {
                 let pw = words.pop()
                 lastSpaces.unshift(pw)
+                lastSpacesLen += pw.value.length
                 justLen -= pw.value.length
             }
             // also nuke the last word
             let lastWord = words.pop().value
             let penultSpaces = []
+            let penultSpacesLen = 0
             justLen -= lastWord.length // new linelength -= length of the last word
             // nuke spaces before the last word
             while ("tx" != words.last().type) {
                 let pw = words.pop()
                 penultSpaces.unshift(pw)
+                penultSpacesLen += pw.value.length
                 justLen -= pw.value.length
             }
 
@@ -292,9 +296,24 @@ function typesetJustified(lineStart, lineEnd) {
 
             let spcToFill = paintWidth - justLen
             let expandAgain = 0
+
+            // see if we can hyphenate
+            let testLineLen = justLen + penultSpacesLen
+            let hyphenated = false
+            if (testLineLen <= paintWidth - 3 && lastWord.length >= 4) {
+                let hypWord = lastWord.slice(0, paintWidth - testLineLen - 1)
+                words = words.concat(penultSpaces)
+                words.push(wordobj("tx", hypWord + '-'))
+                let addedLen = penultSpacesLen + hypWord.length + 1
+                justLen += addedLen
+                textCursor -= 1
+                hyphenated = true
+            }
+
+
             // make a decision to contract or expand
             // contract
-            if (lastWord.length >= 4 && pns.length >= 2) { // TODO add condition to contract puncts
+            if (!hyphenated && lastWord.length >= 4 && pns.length >= 2) { // TODO add condition to contract puncts
 
                 serial.println(words.length)
                 serial.println(`spcToContract: ${spcToFill}`)
@@ -310,9 +329,9 @@ function typesetJustified(lineStart, lineEnd) {
                 }
 
                 words = words.concat(penultSpaces, wordobj("tx", lastWord), lastSpaces)
-                justLen += penultSpaces.map(o => o.value.length).sum()
+                justLen += penultSpacesLen
                 justLen += lastWord.length
-                justLen += lastSpaces.map(o => o.value.length).sum()
+                justLen += lastSpacesLen
 
                 serial.println(`justLen after expansion: ${justLen}`)
 
@@ -320,7 +339,7 @@ function typesetJustified(lineStart, lineEnd) {
             }
 
             // expand
-            if (expandAgain > 0 || !(lastWord.length >= 4 && pns.length >= 2)) {
+            if (!hyphenated && (expandAgain > 0 || !(lastWord.length >= 4 && pns.length >= 2))) {
                 // expand puncts
                 if (pns.length > 0) {
                     shufflePNs(pns) // strats: '.'s first, ','s second, then others
@@ -369,7 +388,7 @@ function typesetJustified(lineStart, lineEnd) {
 
         textCursor += getRealLength(printbuf.last())
 
-        if (printbuf.length > 5) break
+        if (printbuf.length > 7) break
         if (printbuf.length > paintHeight || textCursor >= text.length) break
 
 
