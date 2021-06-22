@@ -36,7 +36,7 @@ const TYPESET_STRATEGY_JUSTIFIED = 3 // not implemented yet!
 const typesetStrats = [undefined, undefined, typesetLessRagged, typesetJustified]
 
 let PAGE_HEIGHT = 60
-let PAGE_WIDTH = 70
+let PAGE_WIDTH = 80
 // 80x60  -> 720x1080 text area; with 72px margin for each side, paper resolution is 864x1224, which is quite close to 1:sqrt(2) ratio
 
 let scroll = 0
@@ -365,7 +365,7 @@ function typesetJustified(lineStart, lineEnd) {
                 printdbg(`contract-nugding ${justLen - paintWidth} characters`)
                 adjust += justLen - paintWidth // the last word is going to be appended
             }
-            // if any concatenation is impossible, recurse without last word (spaces will be trimmed on recursion), so that if-clauses below would treat them
+            // if any contraction is impossible, recurse without last word (spaces will be trimmed on recursion), so that if-clauses below would treat them
             else if (justLen > paintWidth && spcAfterPunct.length < justLen - paintWidth) {
                 printdbg("TOSS OUT LAST")
                 while ("tx" == words.last().type) {
