@@ -32,7 +32,7 @@ function typesetSymToVisual(code) {
 const TYPESET_STRATEGY_DONOTHING = 0 // not implemented yet!
 const TYPESET_STRATEGY_RAGGEDRIGHT = 1 // not implemented yet!
 const TYPESET_STRATEGY_LESSRAGGED = 2
-const TYPESET_STRATEGY_JUSTIFIED = 3 // not implemented yet!
+const TYPESET_STRATEGY_JUSTIFIED = 3
 const typesetStrats = [undefined, undefined, typesetLessRagged, typesetJustified]
 
 let PAGE_HEIGHT = 60
@@ -222,7 +222,7 @@ function typesetJustified(lineStart, lineEnd) {
         pnsWithSortID.sort((it, other) => it.key - other.key)
         return pnsWithSortID.map(it => it.value)
     }
-    function printdbg(msg) { serial.println(`L${lc}\t${msg}`) }
+    function printdbg(msg) { serial.println(`L${lc+1}\t${msg}`) }
 
     let printbuf = []
     let lineIndices = []
@@ -232,7 +232,7 @@ function typesetJustified(lineStart, lineEnd) {
         : paragraphs.join('\n')
 
     let textCursor = 0
-    let lc = 1
+    let lc = 0
     let isParHead = true
     while (true) {
 
@@ -282,18 +282,26 @@ function typesetJustified(lineStart, lineEnd) {
         function tryJustify(recDepth, adjust, fuckit) {
             let isLineEnd = (words.last().type == "ct_lf")
             // trim spaces at the end of the line
-            while ("sp" == words.last().type) {
-                words.pop()
+            if ("sp" == words.last().type) {
+                while ("sp" == words.last().type) {
+                    words.pop()
+                }
+
+                return tryJustify(recDepth, adjust)
             }
             // trim spaces at the head of the line
             // "pull" the words when removing preceding spaces
-            let pullLen = 0
-            while (!isParHead && "sp" == words.head().type) {
-                pullLen += getWordLen(words.shift())
-            }
+            else if (!isParHead && "sp" == words.head().type) {
+                let pullLen = 0
+                while (!isParHead && "sp" == words.head().type) {
+                    pullLen += getWordLen(words.shift())
+                }
 
-            printdbg(`Pulled ${pullLen} characters`)
-            adjust += pullLen
+                printdbg(`Pulled ${pullLen} characters`)
+                adjust += pullLen
+
+                return tryJustify(recDepth, adjust)
+            }
 
 
             let spcAfterPunct = [] // indices in the WORDS
@@ -405,7 +413,23 @@ function typesetJustified(lineStart, lineEnd) {
 
 
         words.forEach((o,i) => printdbg(`${i}\t${o.type}\t${o.value}`))
-        textCursor += tryJustify(0,0)
+        let justed = tryJustify(0,0)
+        textCursor += justed
+
+        let lastLineInd = (lineIndices.last() || 0) - 1
+        if (lc > 0) {
+            let lineHeadChar = printbuf.last().charCodeAt(0)
+            // add the number of nonprintables to the lastLineInd;
+            // lastLineInd currently points to the column where the current line ends, which is not something we want
+            while (text.charCodeAt(lastLineInd) != lineHeadChar) {
+                if (lastLineInd > text.length) break
+                lastLineInd += 1
+            }
+            lineIndices[lineIndices.length - 1] = lastLineInd
+        }
+
+        // push a "wrong" value so that it can be fixed up later
+        lineIndices.push(lastLineInd + justed)
 
         isParHead = false
 
