@@ -2,7 +2,6 @@ package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.peripheral.GraphicsAdapter
-import sun.nio.ch.DirectBuffer
 
 class GraphicsJSR223Delegate(val vm: VM) {
 
@@ -27,13 +26,13 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
-    fun loadBulk(fromAddr: Int, toAddr: Int, length: Int) {
+    /*fun loadBulk(fromAddr: Int, toAddr: Int, length: Int) {
         getFirstGPU()?._loadbulk(fromAddr, toAddr, length)
     }
 
     fun storeBulk(fromAddr: Int, toAddr: Int, length: Int) {
         getFirstGPU()?._storebulk(fromAddr, toAddr, length)
-    }
+    }*/
 
     fun plotPixel(x: Int, y: Int, color: Int) {
         getFirstGPU()?.let {
@@ -90,7 +89,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
-    private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
+    /*private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
         UnsafeHelper.memcpy(
             vm.usermem.ptr + fromAddr,
             (this.framebuffer.pixels as DirectBuffer).address() + toAddr,
@@ -104,7 +103,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
             vm.usermem.ptr + toAddr,
             length.toLong()
         )
-    }
+    }*/
 
     private fun GraphicsAdapter._loadSprite(spriteNum: Int, ptr: Int) {
         UnsafeHelper.memcpy(

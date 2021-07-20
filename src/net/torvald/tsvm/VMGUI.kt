@@ -2,7 +2,6 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
-import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
@@ -14,7 +13,6 @@ fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).cont
 
 
 data class EmulInstance(
-    val appConfig: LwjglApplicationConfiguration,
     val vm: VM,
     val display: String,
     val diskPath: String = "assets/disk0"
@@ -22,7 +20,6 @@ data class EmulInstance(
 
 class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
 
-    val appConfig = loaderInfo.appConfig
     val vm = loaderInfo.vm
 
     lateinit var batch: SpriteBatch
@@ -45,10 +42,10 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
                 VertexAttribute.ColorUnpacked(),
                 VertexAttribute.TexCoords(0)
         )
-        updateFullscreenQuad(appConfig.width, appConfig.height)
+        updateFullscreenQuad(AppLoader.WIDTH, AppLoader.HEIGHT)
 
         batch = SpriteBatch()
-        camera = OrthographicCamera(appConfig.width.toFloat(), appConfig.height.toFloat())
+        camera = OrthographicCamera(AppLoader.WIDTH.toFloat(), AppLoader.HEIGHT.toFloat())
         camera.setToOrtho(false)
         camera.update()
         batch.projectionMatrix = camera.combined
@@ -144,7 +141,7 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {
-        camera.position.set((-newX + appConfig.width / 2), (-newY + appConfig.height / 2), 0f) // deliberate integer division
+        camera.position.set((-newX + AppLoader.WIDTH / 2), (-newY + AppLoader.HEIGHT / 2), 0f) // deliberate integer division
         camera.update()
         batch.setProjectionMatrix(camera.combined)
     }

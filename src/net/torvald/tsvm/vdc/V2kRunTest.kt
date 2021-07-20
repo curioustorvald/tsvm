@@ -2,8 +2,8 @@ package net.torvald.tsvm.vdc
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
-import com.badlogic.gdx.backends.lwjgl.LwjglApplication
-import com.badlogic.gdx.backends.lwjgl.LwjglApplicationConfiguration
+import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application
+import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShaderProgram
@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
 import net.torvald.tsvm.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 
-class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdapter() {
+class V2kRunTest : ApplicationAdapter() {
 
     val vm = VM(64.kB(), TheRealWorld(), arrayOf())
     lateinit var gpu: GraphicsAdapter
@@ -40,11 +40,11 @@ class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdap
         )
 
         batch = SpriteBatch()
-        camera = OrthographicCamera(appConfig.width.toFloat(), appConfig.height.toFloat())
+        camera = OrthographicCamera(AppLoader.WIDTH.toFloat(), AppLoader.WIDTH.toFloat())
         camera.setToOrtho(false)
         camera.update()
         batch.projectionMatrix = camera.combined
-        Gdx.gl20.glViewport(0, 0, appConfig.width, appConfig.height)
+        Gdx.gl20.glViewport(0, 0, AppLoader.WIDTH, AppLoader.HEIGHT)
 
         vm.getPrintStream = { gpu.getPrintStream() }
         vm.getErrorStream = { gpu.getErrorStream() }
@@ -103,15 +103,13 @@ class V2kRunTest(val appConfig: LwjglApplicationConfiguration) : ApplicationAdap
 
 fun main() {
     ShaderProgram.pedantic = false
-    val appConfig = LwjglApplicationConfiguration()
-    appConfig.foregroundFPS = 60
-    appConfig.backgroundFPS = 60
-    appConfig.vSyncEnabled = false
-    appConfig.useGL30 = true
-    appConfig.resizable = false
-    appConfig.title = "Videotron2K Test"
-    appConfig.forceExit = true
-    appConfig.width = 560
-    appConfig.height = 448
-    LwjglApplication(V2kRunTest(appConfig), appConfig)
+
+    val appConfig = Lwjgl3ApplicationConfiguration()
+    appConfig.setIdleFPS(60)
+    appConfig.setForegroundFPS(60)
+    appConfig.useVsync(false)
+    appConfig.setResizable(false)
+    appConfig.setTitle("Videotron2K Test")
+    appConfig.setWindowedMode(560, 448)
+    Lwjgl3Application(V2kRunTest(), appConfig)
 }

@@ -11,5 +11,8 @@
     <orderEntry type="library" name="org.jetbrains.kotlinx:kotlinx-coroutines-core:1.4.1" level="project" />
     <orderEntry type="library" name="org.graalvm.js:js-scriptengine:20.3.0" level="project" />
     <orderEntry type="library" name="org.graalvm.js:js:20.3.0" level="project" />
+    <orderEntry type="library" name="com.badlogicgames.gdx:gdx:1.10.0" level="project" />
+    <orderEntry type="library" name="com.badlogicgames.gdx:gdx-backend-lwjgl3:1.10.0" level="project" />
+    <orderEntry type="library" name="com.badlogicgames.gdx:gdx-platform:1.10.0" level="project" />
   </component>
 </module>

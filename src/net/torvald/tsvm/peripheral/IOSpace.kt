@@ -287,7 +287,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         }
     }
 
-    override fun scrolled(p0: Int): Boolean {
+    override fun scrolled(p0: Float, p1: Float): Boolean {
         return false
     }
 
