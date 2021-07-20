@@ -1,11 +1,3 @@
 Manifest-Version: 1.0
 Main-Class: net.torvald.tsvm.AppLoader
-Class-Path: GetCpuName.jar TerranVirtualDisk.jar annotations-13.0.jar co
- mmons-codec-1.10.jar commons-csv-1.2.jar gdx-backend-lwjgl-natives.jar 
- gdx-backend-lwjgl.jar gdx-natives.jar gdx.jar graal-sdk-20.3.0.jar icu4
- j-67.1.jar jnlp.jar js-20.3.0.jar js-scriptengine-20.3.0.jar kotlin-ref
- lect.jar kotlin-stlib-1.4.0.jar kotlin-stdlib-common-1.4.0.jar kotlin-s
- tdlib-jdk7.jar kotlin-stdlib-jdk8.jar kotlin-stdlib.jar kotlin-test.jar
-  kotlinx-coroutines-core-1.4.1.jar regex-20.3.0.jar truffle-api-20.3.0.
- jar
 

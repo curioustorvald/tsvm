@@ -12,8 +12,8 @@ public class AppLoader {
     public static String appTitle = "Totally Simple Virtual Machine";
     public static Lwjgl3ApplicationConfiguration appConfig;
 
-    public static int WIDTH = 810;//720;
-    public static int HEIGHT = 360;//480;
+    public static int WIDTH = 560;//810;//720;
+    public static int HEIGHT = 448;//360;//480;
 
     public static void main(String[] args) {
         ShaderProgram.pedantic = false;
@@ -31,10 +31,10 @@ public class AppLoader {
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
         //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE});
-        VM vm = new VM(128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
+        //VM vm = new VM(128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
 
         // uncomment to target the TerranBASIC runner
-        //VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
+        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
 
         EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0");
         EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", "assets/disk0");
@@ -43,7 +43,7 @@ public class AppLoader {
 
         EmulInstance wp = new EmulInstance(vm, "net.torvald.tsvm.peripheral.WpTerm", "assets/wpdisk");
 
-        new Lwjgl3Application(new VMGUI(wp), appConfig);
+        new Lwjgl3Application(new VMGUI(reference), appConfig);
     }
 
     public static ShaderProgram loadShaderFromFile(String vert, String frag) {

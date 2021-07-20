@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="GetCpuName">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/lib/GetCpuName.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
