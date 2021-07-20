@@ -17,5 +17,6 @@
     <orderEntry type="library" name="TerranVirtualDisk" level="project" />
     <orderEntry type="library" name="GetCpuName" level="project" />
     <orderEntry type="library" name="gdx-platform-1.10.0-natives-desktop" level="project" />
+    <orderEntry type="library" name="js-21.1.0-edit" level="project" />
   </component>
 </module>
