@@ -156,10 +156,14 @@ From the start of the memory space:
     command (writing to this memory address changes the status)
         1: reset palette to default
         2: fill framebuffer with given colour (arg1)
-2 bytes
+12 bytes
     argument for "command" (arg1: Byte, arg2: Byte)
     write to this address FIRST and then write to "command" to execute the command
-76 bytes
+2 bytes
+    framebuffer scroll X
+2 bytes
+    framebuffer scroll Y
+62 bytes
     *Unused*
 
 2988 bytes

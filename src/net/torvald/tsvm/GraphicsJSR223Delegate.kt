@@ -2,6 +2,7 @@ package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.peripheral.fmod
 
 class GraphicsJSR223Delegate(val vm: VM) {
 
@@ -39,6 +40,23 @@ class GraphicsJSR223Delegate(val vm: VM) {
             if (x in 0 until it.config.width && y in 0 until it.config.height) {
                 it.poke(y.toLong() * it.config.width + x, color.toByte())
             }
+        }
+    }
+
+    /**
+     * Sets absolute position of scrolling
+     */
+    fun setFramebufferScroll(x: Int, y: Int) {
+        getFirstGPU()?.let {
+            it.framebufferScrollX = x
+            it.framebufferScrollY = y
+        }
+    }
+
+    fun scrollFrame(xdelta: Int, ydelta: Int) {
+        getFirstGPU()?.let {
+            it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.framebuffer.width
+            it.framebufferScrollY = (it.framebufferScrollY + ydelta) fmod it.framebuffer.height
         }
     }
 

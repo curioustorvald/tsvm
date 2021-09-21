@@ -81,6 +81,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var currentChrRom = 0
     private var chrWidth = 7f
     private var chrHeight = 14f
+    var framebufferScrollX = 0
+    var framebufferScrollY = 0
 
     override var ttyFore: Int = TTY_FORE_DEFAULT // cannot be Byte
     override var ttyBack: Int = TTY_BACK_DEFAULT // cannot be Byte
@@ -178,6 +180,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val adi = addr.toInt()
         return when (addr) {
             in 0 until 250880 -> framebuffer.pixels.get(adi)//framebuffer.getPixel(adi % WIDTH, adi / WIDTH).toByte()
+            250896L -> framebufferScrollX.toByte()
+            250897L -> framebufferScrollX.ushr(8).toByte()
+            250898L -> framebufferScrollY.toByte()
+            250899L -> framebufferScrollY.ushr(8).toByte()
             in 250880 until 250972 -> unusedArea[adi - 250880]
             in 250972 until 261632 -> spriteAndTextArea[addr - 250972]
             in 261632 until 262144 -> peekPalette(adi - 261632)
@@ -201,6 +207,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 unusedArea[adi - 250880] = byte
                 runCommand(byte)
             }
+            250896L -> framebufferScrollX = framebufferScrollX.and(0xFFFFFF00.toInt()).or(bi)
+            250897L -> framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8)
+            250898L -> framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi)
+            250899L -> framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8)
             in 250880 until 250972 -> unusedArea[adi - 250880] = byte
             in 250972 until 261632 -> spriteAndTextArea[addr - 250972] = byte
             in 261632 until 262144 -> pokePalette(adi - 261632, byte)
@@ -587,6 +597,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         rendertex.dispose()
         rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
 
+        val texOffX = (framebufferScrollX fmod framebuffer.width) * -1f
+        val texOffY = (framebufferScrollY fmod framebuffer.height) * 1f
+
         outFBOs[1].inUse {
             outFBObatch.inUse {
                 outFBObatch.shader = null
@@ -625,7 +638,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 paletteShader.setUniformf("lcdBaseCol", LCD_BASE_COL)
 
                 // draw framebuffer
-                outFBObatch.draw(rendertex, 0f, 0f)
+                outFBObatch.draw(rendertex, texOffX, texOffY)
+                outFBObatch.draw(rendertex, texOffX + framebuffer.width, texOffY)
+                outFBObatch.draw(rendertex, texOffX + framebuffer.width, texOffY - framebuffer.height)
+                outFBObatch.draw(rendertex, texOffX, texOffY - framebuffer.height)
 
                 // draw texts or sprites
 
@@ -1589,6 +1605,10 @@ void main() {
             0
         )
     }
+}
+
+infix fun Int.fmod(other: Int): Int {
+    return Math.floorMod(this, other)
 }
 
 fun FrameBuffer.inUse(action: () -> Unit) {
