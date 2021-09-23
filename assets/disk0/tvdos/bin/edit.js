@@ -240,10 +240,6 @@ function hitAny() {
     sys.poke(-40, 255);sys.spin();
     return sys.peek(-41) != 0;
 }
-function getch() {
-    sys.poke(-40, 255);
-    return sys.peek(-41);
-}
 
 function insertChar(code, row, col) {
     if (textbuffer[row] === undefined)
@@ -431,83 +427,77 @@ else {
 }
 
 while (!exit) {
-    let key = getch();
+    let key = con.getch();
     // TODO: either implement the new strobing-getch() by yourself or modify the sys.getch() so that CTRL-alph would return correct numbers
-    if (key != 0) {
 
-        serial.println(`getch = ${key}`)
+//    serial.println(`getch = ${key}`)
 
-        if (bulletinShown) dismissBulletin();
+    if (bulletinShown) dismissBulletin();
 
-        sys.poke(-40, 255)
-        serial.println(`strobe: ${sys.peek(-41)}\t${sys.peek(-42)}`)
+    if (key == 17) // Ctrl-Q
+        exit = true;
+    else if (key == 19 && !bulletinShown) {
+        writeout();
+        displayBulletin(`Wrote ${textbuffer.length} lines`);
+    }
+    else if (key == con.KEY_BACKSPACE) { // Bksp
+        backspaceOnce();
+        drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_RETURN) { // Return
+        appendLine(); drawLnCol(); gotoText();
+    }
+    else if (key == con.KEY_LEFT) {
+        cursoringCol = cursorCol - 1;
+        if (cursoringCol < 0) cursoringCol = 0;
+        cursorMoveRelative(-1,0);
+    }
+    else if (key == con.KEY_RIGHT) {
+        cursoringCol = cursorCol + 1;
+        if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
+        cursorMoveRelative(1,0);
+    }
+    else if (key == con.KEY_UP) {
+        cursorMoveRelative(0,-1);
+    }
+    else if (key == con.KEY_DOWN) {
+        cursorMoveRelative(0,1);
+    }
+    else if (key == con.KEY_PAGE_UP) {
+        cursorMoveRelative(0, -paintHeight + scrollPeek);
+    }
+    else if (key == con.KEY_PAGE_DOWN) {
+        cursorMoveRelative(0, paintHeight - scrollPeek);
+    }
+    else if (key == con.KEY_HOME) {
+        cursoringCol = 0;
+        cursorMoveRelative(-BIG_STRIDE, 0);
+    }
+    else if (key == con.KEY_END)  {
+        cursoringCol = textbuffer[cursorRow].length;
+        cursorMoveRelative(BIG_STRIDE, 0);
+    }
+    else if (key == con.KEY_TAB) { // insert spaces appropriately
+        let tabsize = TAB_SIZE - (cursorCol % TAB_SIZE);
 
-
-        if (hitCtrlQ()) // Ctrl-Q
-            exit = true;
-        else if (hitCtrlS() && !bulletinShown) {
-            writeout();
-            displayBulletin(`Wrote ${textbuffer.length} lines`);
-        }
-        else if (key == con.KEY_BACKSPACE) { // Bksp
-            backspaceOnce();
-            drawLnCol(); gotoText();
-        }
-        else if (key == con.KEY_RETURN) { // Return
-            appendLine(); drawLnCol(); gotoText();
-        }
-        else if (key == con.KEY_LEFT) {
-            cursoringCol = cursorCol - 1;
-            if (cursoringCol < 0) cursoringCol = 0;
-            cursorMoveRelative(-1,0);
-        }
-        else if (key == con.KEY_RIGHT) {
-            cursoringCol = cursorCol + 1;
-            if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
-            cursorMoveRelative(1,0);
-        }
-        else if (key == con.KEY_UP) {
-            cursorMoveRelative(0,-1);
-        }
-        else if (key == con.KEY_DOWN) {
-            cursorMoveRelative(0,1);
-        }
-        else if (key == con.KEY_PAGE_UP) {
-            cursorMoveRelative(0, -paintHeight + scrollPeek);
-        }
-        else if (key == con.KEY_PAGE_DOWN) {
-            cursorMoveRelative(0, paintHeight - scrollPeek);
-        }
-        else if (key == con.KEY_HOME) {
-            cursoringCol = 0;
-            cursorMoveRelative(-BIG_STRIDE, 0);
-        }
-        else if (key == con.KEY_END)  {
-            cursoringCol = textbuffer[cursorRow].length;
-            cursorMoveRelative(BIG_STRIDE, 0);
-        }
-        else if (key == con.KEY_TAB) { // insert spaces appropriately
-            let tabsize = TAB_SIZE - (cursorCol % TAB_SIZE);
-
-            for (let k = 0; k < tabsize; k++) {
-                insertChar(32, cursorRow, cursorCol);
-                // identical to con.KEY_RIGHT
-                cursoringCol = cursorCol + 1;
-                if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
-                cursorMoveRelative(1,0);
-                // end of con.KEY_RIGHT
-            }
-            drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
-        }
-        else if (key >= 32 && key < 128) { // printables (excludes \n)
-            insertChar(key, cursorRow, cursorCol);
+        for (let k = 0; k < tabsize; k++) {
+            insertChar(32, cursorRow, cursorCol);
             // identical to con.KEY_RIGHT
             cursoringCol = cursorCol + 1;
             if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
             cursorMoveRelative(1,0);
             // end of con.KEY_RIGHT
-            drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
         }
+        drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
+    }
+    else if (key >= 32 && key < 128) { // printables (excludes \n)
+        insertChar(key, cursorRow, cursorCol);
+        // identical to con.KEY_RIGHT
+        cursoringCol = cursorCol + 1;
+        if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
+        cursorMoveRelative(1,0);
+        // end of con.KEY_RIGHT
+        drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
     }
 }
 

@@ -318,9 +318,14 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     )
     override fun keyDown(p0: Int): Boolean {
         if (keyboardInputRequested) {
-            specialKeys[p0]?.let {
-                //println("[IO] key special = ${it.toUInt()}")
-                keyboardBuffer.appendHead(it)
+            if (p0 in Input.Keys.A..Input.Keys.Z && (Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) || Gdx.input.isKeyPressed(Input.Keys.CONTROL_RIGHT))) {
+                keyboardBuffer.appendHead((p0 - 28).toByte())
+            }
+            else {
+                specialKeys[p0]?.let {
+                    //println("[IO] key special = ${it.toUInt()}")
+                    keyboardBuffer.appendHead(it)
+                }
             }
             return true
         }
