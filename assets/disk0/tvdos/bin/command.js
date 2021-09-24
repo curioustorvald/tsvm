@@ -253,9 +253,9 @@ shell.coreutils = {
         if (DEBUG_PRINT) serial.println("command.js > cd > pathstr = "+path.string);
 
         // check if path is valid
-        filesystem.open(CURRENT_DRIVE, path.string, 'R');
-        var dirOpened = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
-        if (!dirOpened) { printerrln("CHDIR failed for '"+path.string+"'"); return; } // if file is not opened, FALSE will be returned
+        var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'R');
+        var isDir = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
+        if (!isDir) { printerrln("CHDIR failed for '"+path.string+"'"); return dirOpenedStatus; } // if file is not opened, IO error code will be returned
 
         shell_pwd = path.pwd;
     },
@@ -268,9 +268,9 @@ shell.coreutils = {
         if (DEBUG_PRINT) serial.println("command.js > mkdir > pathstr = "+path.string);
 
         // check if path is valid
-        var dirOpened = filesystem.open(CURRENT_DRIVE, path.string, 'W');
+        var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'W');
         var mkdird = filesystem.mkDir(CURRENT_DRIVE);
-        if (!mkdird) { printerrln("MKDIR failed for '"+path.string+"'"); return; }
+        if (!mkdird) { printerrln("MKDIR failed for '"+path.string+"'"); return dirOpenedStatus; }
     },
     cls: function(args) {
         con.clear();
@@ -326,8 +326,8 @@ shell.coreutils = {
         var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
 
         // check if path is valid
-        var pathOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (!pathOpened) { printerrln("File not found"); return; }
+        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
 
         var port = filesystem._toPorts(CURRENT_DRIVE)[0]
         com.sendMessage(port, "LIST");
@@ -336,8 +336,8 @@ shell.coreutils = {
     cat: function(args) {
         var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
 
-        var pathOpened = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (!pathOpened) { printerrln("File not found"); return; }
+        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
         let contents = filesystem.readAll(CURRENT_DRIVE);
         // TODO just print out what's there
         print(contents);
@@ -381,7 +381,7 @@ shell.execute = function(line) {
                     serial.println("[command.js > shell.execute] file search path: "+path);
                 }
 
-                if (filesystem.open(CURRENT_DRIVE, path, "R")) {
+                if (0 == filesystem.open(CURRENT_DRIVE, path, "R")) {
                     fileExists = true;
                     break searchLoop;
                 }

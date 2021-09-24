@@ -5,7 +5,7 @@ function hitCtrlQ(keys) {
 println("Hit Ctrl+Shift+T+R to exit")
 
 while (true) {
-    con.scankeys((char, keys, counter) => {
-        println(`${keys}\t'${char}' (${counter})`)
+    input.withEvent(event => {
+        println(event)
     })
 }

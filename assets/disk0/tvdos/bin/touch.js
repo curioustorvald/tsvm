@@ -11,10 +11,10 @@ if (exec_args[1] === undefined) {
 let path = _G.shell.resolvePathInput(exec_args[2] || exec_args[1]).string;
 let driveLetter = _G.shell.getCurrentDrive();
 let noNewFile = (exec_args[1] == "/c" || exec_args[1] == "/C");
-let fileOpened = filesystem.open(driveLetter, path, "W");
-if (!fileOpened) {
+let fileOpenedStatus = filesystem.open(driveLetter, path, "W");
+if (fileOpenedStatus != 0) {
     printerrln("TOUCH: Can't open "+driveLetter+":\\"+path+" due to IO error");
-    return 1;
+    return fileOpenedStatus;
 }
 
 if (!noNewFile) {

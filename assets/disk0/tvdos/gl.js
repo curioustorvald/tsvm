@@ -4,7 +4,7 @@ TVDOS Graphics Library
 Has no affiliation with OpenGL by Khronos Group
  */
 
-var GL = {};
+const GL = {};
 
 // bytes should be able to handle both JSArray and Java ByteArray (toString = "[B")?
 GL.Texture = function(w, h, bytes) {

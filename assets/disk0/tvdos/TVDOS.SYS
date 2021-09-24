@@ -32,7 +32,7 @@ function generateRandomHashStr(len) {
 }
 
 // define TVDOS
-var _TVDOS = {};
+const _TVDOS = {};
 _TVDOS.VERSION = "1.0";
 _TVDOS.DRIVES = {}; // Object where key-value pair is <drive-letter> : [serial-port, drive-number]
 // actually figure out the drive letter association
@@ -48,6 +48,7 @@ _TVDOS.getPath = function() {
 _TVDOS.variables = {
     DOSDIR: "\\tvdos",
     LANG: "EN",
+    KEYBOARD: "us_qwerty",
     PATH: "\\tvdos\\bin;\\tbas;\\home",
     PATHEXT: ".com;.bat;.js",
     HELPPATH: "\\tvdos\\help",
@@ -58,7 +59,7 @@ Object.freeze(_TVDOS);
 
 ///////////////////////////////////////////////////////////////////////////////
 
-var filesystem = {};
+const filesystem = {};
 filesystem._toPorts = (driveLetter) => {
     if (driveLetter.toUpperCase === undefined) {
         throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
@@ -91,8 +92,7 @@ filesystem.open = (driveLetter, path, operationMode) => {
     }
 
     com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
-    var response = com.getStatusCode(port[0]);
-    return (response == 0);
+    return com.getStatusCode(port[0]);
 };
 // @return the entire contents of the file in String
 filesystem.readAll = (driveLetter) => {
@@ -153,9 +153,104 @@ Object.freeze(filesystem);
 
 ///////////////////////////////////////////////////////////////////////////////
 
+const input = {};
+const inputwork = {};
+
+inputwork.keymap = [];
+
+input.changeKeyLayout = function(name) {
+    let res0 = filesystem.open("A",`tvdos/${name.toLowerCase()}.key`,"R");
+    if (res0 != 0 && inputwork.keymap.length == 0) throw new Error(`I/O Error ${res0} - A:\\tvdos\\${name.toLowerCase()}.key`);
+    try {
+        inputwork.keymap = eval(filesystem.readAll("A"));
+    }
+    catch (e) {
+        printerrln(e);
+        return -1;
+    }
+}
+
+// load initial key layout
+input.changeKeyLayout(_TVDOS.variables.KEYBOARD || "us_qwerty");
+
+// states to run the keyboard input
+inputwork.stroboTime = 4294967296*0;
+inputwork.stroboDelays = [0,250000000,0,25000000,0]; // 250ms, 25ms
+inputwork.stroboStatus = 0; // 0: first key, 1: waiting for initial delay, 2: repeating key, 3: waiting for repeat delay
+inputwork.oldKeys = [];
+inputwork.oldMouse = [];
+inputwork.repeatCount = 0;
+
+/**
+ * callback: takes one argument of object which
+ *  [ <eventname>, args ]
+ * where:
+ *  "key_down", <key symbol string>, <repeat count>, keycode0, keycode1 .. keycode7
+ *  "key_change", <key symbol string (what went up)>, 0, keycode0, keycode1 .. keycode7 (remaining keys that are held down)
+ *  "mouse_down", pos-x, pos-y, 1 // yes there's only one mouse button :p
+ *  "mouse_up", pos-x, pos-y, 0
+ *  "mouse_move", pos-x, pos-y, <button down?>, oldpos-x, oldpos-y
+ */
+input.withEvent = function(callback) {
+
+    // TODO mouse event
+    function arrayEq(a,b) {
+        for (let i = 0; i < a.length; ++i) {
+            if (a[i] !== b[i]) return false;
+        }
+        return true;
+    }
+
+    function arrayDiff(a,b) {
+        return a.filter(x => !b.includes(x));
+    }
+
+    function keysToStr(keys) {
+        let shiftin = keys.includes(59) || keys.includes(60);
+        let headkey = keys.head();
+        return (inputwork.keymap[headkey] == undefined) ? undefined : (shiftin) ? (inputwork.keymap[headkey][1] || inputwork.keymap[headkey][0]) : inputwork.keymap[headkey][0];
+    }
+
+    sys.poke(-40, 255);
+    let keys = [sys.peek(-41),sys.peek(-42),sys.peek(-43),sys.peek(-44),sys.peek(-45),sys.peek(-46),sys.peek(-47),sys.peek(-48)];
+    let mouse = [sys.peek(-33) | (sys.peek(-34) << 8), sys.peek(-35) | (sys.peek(-36) << 8), sys.peek(-37)];
+
+    if (inputwork.stroboStatus % 2 == 0 && keys[0] != 0) {
+        inputwork.stroboStatus += 1;
+        inputwork.stroboTime = sys.nanoTime();
+        inputwork.repeatCount += 1;
+
+        callback(["key_down", keysToStr(keys), inputwork.repeatCount].concat(keys));
+    }
+    else if (!arrayEq(keys, inputwork.oldKeys) || keys[0] == 0) {
+        inputwork.stroboStatus = 0;
+        inputwork.repeatCount = 0;
+
+        if (inputwork.oldKeys[0] != 0)
+            callback(["key_change", keysToStr(arrayDiff(inputwork.oldKeys, keys)), inputwork.repeatCount].concat(keys));
+    }
+    else if (inputwork.stroboStatus % 2 == 1 && sys.nanoTime() - inputwork.stroboTime < inputwork.stroboDelays[inputwork.stroboStatus]) {
+        sys.spin();
+    }
+    else {
+        inputwork.stroboStatus += 1;
+        if (inputwork.stroboStatus >= 4) {
+            inputwork.stroboStatus = 2;
+        }
+    }
+
+    inputwork.oldKeys = keys;
+    inputwork.oldMouse = mouse;
+
+};
+
+Object.freeze(input);
+
+///////////////////////////////////////////////////////////////////////////////
+
 // install other stuffs
 filesystem.open("A", "tvdos/gl.js", "R");
-var GL = eval(filesystem.readAll("A"));
+const GL = eval(filesystem.readAll("A"));
 
 let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`;
 let injectIntChk = (s, n) => {

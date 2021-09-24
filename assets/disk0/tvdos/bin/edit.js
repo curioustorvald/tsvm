@@ -39,7 +39,7 @@ let bulletinShown = false;
 let cursoringCol = 0;
 
 // load existing file if it's there
-let editingExistingFile = filesystem.open(driveLetter, filePath, "R");
+let editingExistingFile = (0 == filesystem.open(driveLetter, filePath, "R"));
 if (editingExistingFile) {
     textbuffer = filesystem.readAll(driveLetter).split("\n");
 }

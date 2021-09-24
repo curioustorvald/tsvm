@@ -427,51 +427,6 @@ con.KEY_DELETE = 211;
 con.KEY_BACKSPACE = 8;
 con.KEY_TAB = 9;
 con.KEY_RETURN = 13;
-let _79kfQgystrobocounter = 4294967296*0; // 0L
-let _pur82anstrobotime = 4294967296*0;
-let _acpgrUzstrobodelays = [0,250000000,0,25000000,0]; // 250ms, 25ms
-let _sT9mpKGstrobostatus = 0; // 0: first key, 1: waiting for initial delay, 2: repeating key, 3: waiting for repeat delay
-let _9gyFcs7oldkeys = [];
-let _qtkf932repeatcnt932repeatcnt = 0;
-let _x93paQZshiftin = false;
-// basically a multi-key version of con.getch() with GDX keycodes
-con.scankeys = function(callback) {
-    // TODO: char as a first argument of callback, which needs KeyboardLayout(QWERTY, Colemak, Dvorak, etc)
-    function arrayEq(a,b) {
-        for (var i = 0; i < a.length; ++i) {
-            if (a[i] !== b[i]) return false;
-        }
-        return true;
-    }
-
-    sys.poke(-40, 255);
-    let keys = [sys.peek(-41),sys.peek(-42),sys.peek(-43),sys.peek(-44),sys.peek(-45),sys.peek(-46),sys.peek(-47),sys.peek(-48)];
-    if (_sT9mpKGstrobostatus % 2 == 0 && keys[0] != 0) {
-        _sT9mpKGstrobostatus += 1;
-        _pur82anstrobotime = sys.nanoTime();
-        _qtkf932repeatcnt += 1;
-        _x93paQZshiftin = keys.includes(59) || keys.includes(60);
-
-        callback('x', keys, _qtkf932repeatcnt);
-    }
-    else if (!arrayEq(keys, _9gyFcs7oldkeys) || keys[0] == 0) {
-        _sT9mpKGstrobostatus = 0;
-        _qtkf932repeatcnt = 0;
-        _x93paQZshiftin = keys.includes(59) || keys.includes(60);
-    }
-    else if (_sT9mpKGstrobostatus % 2 == 1 && sys.nanoTime() - _pur82anstrobotime < _acpgrUzstrobodelays[_sT9mpKGstrobostatus]) {
-        sys.spin();
-    }
-    else {
-        _sT9mpKGstrobostatus += 1;
-        if (_sT9mpKGstrobostatus >= 4) {
-            _sT9mpKGstrobostatus = 2;
-        }
-    }
-
-    _9gyFcs7oldkeys = keys;
-//    sys.spin();
-};
 con.getch = function() {
     return sys.readKey();
 };
