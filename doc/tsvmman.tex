@@ -1,0 +1,256 @@
+ 
+% !TEX TS-program = LuaLaTeX
+
+%% Copyright (c) 2021 CuriousTorvald.
+
+\documentclass[10pt, stock, openany, chapter]{memoir}
+
+
+\usepackage{fontspec}
+\setmainfont[Ligatures=TeX]{TeX Gyre Heros}
+\newfontfamily\condensedfont{TeX Gyre Heros Cn}
+\newfontfamily\monofont[Ligatures={NoCommon, NoDiscretionary, NoHistoric, NoRequired, NoContextual}]{TeX Gyre Cursor}
+
+
+\usepackage{fapapersize}
+\usefapapersize{148mm,210mm,15mm,15mm,20mm,15mm} % A5 paper
+\usepackage{afterpage}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{tabulary}
+\usepackage{longtable}
+\usepackage[table]{xcolor}
+\usepackage{ltablex}
+\usepackage{parskip}
+\usepackage{multicol}
+\usepackage{soul}
+\usepackage{verbatim}
+\usepackage{etoolbox}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage{amsmath,amssymb}
+\usepackage{calc}
+\usepackage{ifthen}
+\usepackage[pdf]{graphviz}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{makeidx}
+\usepackage{multirow}
+\usepackage{textcomp}
+\usepackage{makecell}
+\usepackage{anyfontsize}
+\usepackage{cancel}
+\usepackage{lineno} % debug
+
+
+\renewcommand\theadalign{bc}
+
+\makeatletter
+\newlength{\mytextsize}
+\setlength{\mytextsize}{\f@size pt}
+\newlength{\mybaselineskip}
+\setlength{\mybaselineskip}{1.3\mytextsize}
+\patchcmd{\verbatim@input}{\@verbatim}{\scriptsize\@verbatim}{}{}
+\makeatother
+\setlength{\baselineskip}{\mybaselineskip}
+
+\frenchspacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{\mytextsize}
+\setsecnumdepth{subsection}
+
+%% More compact itemize %%
+\newenvironment{itemlist}{\vspace{0pt}\itemize}{\enditemize}
+
+%% Idioms %%
+\hyphenation{Java-script}
+\hyphenation{ECMA-script}
+
+\newcommand\forceindent{\hskip1.5em}
+
+%% BASIC operators %%
+\newcommand\tildechar{{\large\raisebox{-0.22ex}{\char`\~}}}
+
+% Title styling
+\pretitle{\begin{flushright}}
+\posttitle{\par\end{flushright}}
+\preauthor{\begin{flushright}}
+\postauthor{\par\end{flushright}}
+
+% new sections are new page
+%\let\oldsection\chapter
+%\renewcommand\chapter{\clearpage\oldsection}
+
+% shorten spaces before section header
+\setbeforesubsecskip{\mytextsize}
+\setbeforesubsubsecskip{\mytextsize}
+
+% extra space for table
+\setlength{\extrarowheight}{0.166ex}
+
+% chapter title -- no now page after
+\renewcommand\chapterheadstart{} % kill the drop
+\renewcommand\afterchapternum{\vskip 0.5em} % space between number and title
+\setlength{\afterchapskip}{\baselineskip} % reduce space after chapter title
+\makeatletter
+\renewcommand\memendofchapterhook{%
+\m@mindentafterchapter\@afterheading}
+\makeatother
+
+
+\definecolor{lgrey}{HTML}{eeeeee}
+\sethlcolor{lgrey}
+\renewcommand{\thefootnote}{\fnsymbol{footnote}}
+\newcommand{\code}[1]{{\monofont\hl{\,#1\,}}}
+\newcommand{\codebf}[1]{{\monofont \textbf{\hl{\,#1\,}}}}
+%%\newcommand{\codeline}[1]{{\monofont\hl{\,#1\,}}}
+\newcommand{\codeline}[1]{%
+\colorbox{lgrey}{%
+\begin{tabular*}{\textwidth}{l}%
+\monofont #1 \\% TODO fill the cell with \hl colour
+\end{tabular*}%
+}}
+
+\newtcolorbox{lgreybox}[1][]{%
+  breakable,
+  enhanced,
+  colback=lgrey,
+  attach title to upper,
+  fontupper=\monofont,
+  #1
+}
+
+\definecolor{sourcecomment}{HTML}{888888}
+
+\lstset{frame=tb,
+  language=[Visual]Basic,
+  aboveskip=3mm,
+  belowskip=3mm,
+  showstringspaces=false,
+  columns=flexible,
+  basicstyle={\small\ttfamily},
+  numbers=none,
+  numberstyle=\textbf,
+  keywordstyle=,
+  commentstyle=\color{sourcecomment},
+  stringstyle=\textbf,
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=3
+}
+
+\newcommand{\cnttoenglish}[2]{{%
+\ifthenelse{#1=1}{one}{%
+\ifthenelse{#1=2}{two}{%
+\ifthenelse{#1=3}{three}{%
+\ifthenelse{#1=4}{four}{%
+\ifthenelse{#1=5}{five}{%
+\ifthenelse{#1=6}{six}{%
+\ifthenelse{#1=7}{seven}{%
+\ifthenelse{#1=8}{eight}{%
+\ifthenelse{#1=9}{nine}{%
+\ifthenelse{#1=10}{ten}{%
+\ifthenelse{#1=11}{eleven}{%
+\ifthenelse{#1=12}{twelve}{%
+\arabic{#1}%
+}}}}}}}}}}}}} \ifthenelse{#1=1}{#2}{#2s}}
+
+\addtocontents{toc}{\protect\thispagestyle{empty}} % no page number for the TOC header page
+\aliaspagestyle{part}{empty} % aliasing PART as empty so that page number would not be printed
+\aliaspagestyle{chapter}{section} % aliasing CHAPTER as section so that page numbering style would be the same as section
+
+
+% The title
+\newcommand{\thismachine}{TSVM}
+\newcommand{\tsvmver}{1.2}
+\newcommand{\theedition}{Zeroth Edition}
+\newcommand{\thepublishingdate}{0000-00-00}
+\newcommand{\oreallypress}{\begingroup\hspace{0.083em}\large\textbf{O'REALLY\raisebox{1ex}{\scriptsize ?}} \large Press\endgroup}
+
+\title{\HUGE\textbf{\MakeUppercase{\thismachine} \\ PROGRAMMING GUIDE} \\ \Large \vspace{1em} For Version \tsvmver\hspace{0.75em}|\hspace{0.75em}\theedition}
+\date{}
+\author{}
+\hypersetup{
+	pdfauthor={CuriousTorvald},
+	pdftitle={\thismachine\ Programming Guide for Version \tsvmver, \theedition},
+	unicode=true,
+	pdfcreator=\oreallypress
+}
+
+\makeindex
+\begin{document}
+
+\maketitle{}
+\thispagestyle{empty}
+\vfill
+\oreallypress
+
+\newpage
+
+\input{meta}
+\thispagestyle{empty}
+
+\newpage
+
+\setcounter{page}{3}
+\tableofcontents*
+
+
+%\linenumbers % debug
+
+\openright
+\chapter{Introduction}
+\input{intro}
+\openany
+
+% \input{changesmeta}
+
+\part{The Virtual Machine}
+
+\chapter{Virtual Machine}
+\input{implementation}
+
+\part{TVDOS}
+\input{tvdos}
+
+\chapter{Bibliography}
+\input{bibliography}
+
+{
+\let\clearpage\relax
+\chapter*{\ \\ Disclaimers}
+
+\oreallypress{} is entirely fictional publishing entity; \oreallypress{} has no affiliation whatsoever with any of the real-world publishers.
+
+% Level of humour used in this document is \emph{super-corny}. Do not use this atrocious humour for a purpose of real-world entertainment; we take no responsibility for the consequences---losing your friends, get shunned by people, etc.
+}
+
+\chapter{Copyright}
+
+The source code for \thismachine\ and this documentation are distributed under the following terms:
+
+\copyright\ 2020-- \ Minjae Song (``CuriousTorvald'')
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the ``Software''), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED ``AS IS'', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+\printindex
+
+\afterpage{\pagestyle{empty}\null\newpage}
+
+\end{document}

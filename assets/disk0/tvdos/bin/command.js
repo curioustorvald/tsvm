@@ -432,8 +432,9 @@ shell.execute = function(line) {
                         errorlevel = SIGTERM.name;
                     else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
                         errorlevel = SIGSEGV.name;
+
                     // exception catched means something went wrong, so if errorlevel is found to be zero, force set to 1.
-                    else
+                    if (errorlevel === 0 || errorlevel == undefined)
                         errorlevel = 1;
                 }
                 finally {
