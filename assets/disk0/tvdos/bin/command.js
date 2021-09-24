@@ -319,6 +319,10 @@ shell.coreutils = {
             }
             else {
                 _TVDOS.variables[key] = shell.replaceVarCall(value);
+
+                // if key is KEYBOARD, reload the keyboard layout
+                if ("KEYBOARD" == key)
+                    input.changeKeyLayout(_TVDOS.variables.KEYBOARD || "us_qwerty");
             }
         }
     },
