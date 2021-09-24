@@ -49,7 +49,7 @@ tmp_*
 *.aux
 *.log
 *.out
-*.pdf
+tsvmman.pdf
 *.toc
 
 assets/disk0/home/basic/*

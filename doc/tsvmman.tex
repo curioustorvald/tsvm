@@ -9,6 +9,7 @@
 \usepackage{fontspec}
 \setmainfont[Ligatures=TeX]{TeX Gyre Heros}
 \newfontfamily\condensedfont{TeX Gyre Heros Cn}
+\newfontfamily\titlefont{TeX Gyre Schola}
 \newfontfamily\monofont[Ligatures={NoCommon, NoDiscretionary, NoHistoric, NoRequired, NoContextual}]{TeX Gyre Cursor}
 
 
@@ -72,10 +73,10 @@
 \newcommand\tildechar{{\large\raisebox{-0.22ex}{\char`\~}}}
 
 % Title styling
-\pretitle{\begin{flushright}}
-\posttitle{\par\end{flushright}}
-\preauthor{\begin{flushright}}
-\postauthor{\par\end{flushright}}
+% \pretitle{\begin{flushright}}
+% \posttitle{\par\end{flushright}}
+% \preauthor{\begin{flushright}}
+% \postauthor{\par\end{flushright}}
 
 % new sections are new page
 %\let\oldsection\chapter
@@ -167,7 +168,7 @@
 \newcommand{\thepublishingdate}{0000-00-00}
 \newcommand{\oreallypress}{\begingroup\hspace{0.083em}\large\textbf{O'REALLY\raisebox{1ex}{\scriptsize ?}} \large Press\endgroup}
 
-\title{\HUGE\textbf{\MakeUppercase{\thismachine} \\ PROGRAMMING GUIDE} \\ \Large \vspace{1em} For Version \tsvmver\hspace{0.75em}|\hspace{0.75em}\theedition}
+\title{\vskip56pt \includegraphics[width=0.555\textwidth]{tsvmlogo_large} \vskip3pt \titlefont\Huge\textbf{PROGRAMMING GUIDE} \\ \Large \vspace{1.2em} For Version \tsvmver\hspace{0.75em}|\hspace{0.75em}\theedition}
 \date{}
 \author{}
 \hypersetup{
