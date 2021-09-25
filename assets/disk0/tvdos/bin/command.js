@@ -31,7 +31,7 @@ function print_prompt_text() {
         con.color_pair(161,253);
         con.addch(16);con.curs_right();
         con.color_pair(0,253);
-        print(" \\"+shell_pwd.join("\\").substring(1)+" ");
+        print(" /"+shell_pwd.join("/").substring(1)+" ");
         if (errorlevel != 0) {
             con.color_pair(166,253);
             print("["+errorlevel+"] ");
@@ -44,9 +44,9 @@ function print_prompt_text() {
     else {
         con.color_pair(253,255);
         if (errorlevel != 0)
-            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT);
+            print(CURRENT_DRIVE + ":/" + shell_pwd.join("/") + " [" + errorlevel + "]" + PROMPT_TEXT);
         else
-            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
+            print(CURRENT_DRIVE + ":/" + shell_pwd.join("/") + PROMPT_TEXT);
     }
 }
 
@@ -207,13 +207,13 @@ shell.parse = function(input) {
     return tokens;
 }
 shell.resolvePathInput = function(input) {
-    // replace slashes into revslashes
-    var pathstr = input.replaceAll('/','\\\\');
-    var startsWithSlash = input.startsWith('\\');
+    // replace revslashes into rslashes
+    var pathstr = input.replaceAll('\\','/');
+    var startsWithSlash = input.startsWith('/');
     var newPwd = [];
 
     // split them into an array while filtering empty elements except for the root 'head'
-    var ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("\\").filter(function(it) { return (it.length > 0); }));
+    var ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("/").filter(function(it) { return (it.length > 0); }));
 
     serial.println("command.js > resolvePathInput > ipwd = "+ipwd);
     serial.println("command.js > resolvePathInput > newPwd = "+newPwd);
@@ -231,7 +231,7 @@ shell.resolvePathInput = function(input) {
     });
 
     // construct new pathstr from pwd arr so it will be sanitised
-    pathstr = newPwd.join('\\').substring(1);
+    pathstr = newPwd.join('/').substring(1);
 
     return { string: pathstr, pwd: newPwd };
 }
@@ -246,7 +246,7 @@ shell.coreutils = {
  */
     cd: function(args) {
         if (args[1] === undefined) {
-            println(CURRENT_DRIVE+":"+shell_pwd.join("\\"));
+            println(CURRENT_DRIVE+":"+shell_pwd.join("/"));
             return
         }
         var path = shell.resolvePathInput(args[1])
@@ -366,7 +366,7 @@ shell.execute = function(line) {
         // search through PATH for execution
 
         var fileExists = false;
-        var searchDir = (cmd.startsWith("\\")) ? [""] : ["\\"+shell_pwd.join("\\")].concat(_TVDOS.getPath());
+        var searchDir = (cmd.startsWith("/")) ? [""] : ["/"+shell_pwd.join("/")].concat(_TVDOS.getPath());
 
         var pathExt = []; // it seems Nashorn does not like 'let' too much? this line gets ignored sometimes
         // fill pathExt using %PATHEXT% but also capitalise them
