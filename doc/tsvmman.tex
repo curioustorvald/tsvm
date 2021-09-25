@@ -41,6 +41,7 @@
 \usepackage{makecell}
 \usepackage{anyfontsize}
 \usepackage{cancel}
+\usepackage{outlines}
 \usepackage{lineno} % debug
 
 
@@ -71,6 +72,9 @@
 
 %% BASIC operators %%
 \newcommand\tildechar{{\large\raisebox{-0.22ex}{\char`\~}}}
+\newcommand{\instbit}[1]{\mbox{\scriptsize #1}}
+\newcommand{\instbitrange}[2]{~\instbit{#1} \hfill \instbit{#2}~}
+
 
 % Title styling
 % \pretitle{\begin{flushright}}
@@ -124,7 +128,7 @@
 \definecolor{sourcecomment}{HTML}{888888}
 
 \lstset{frame=tb,
-  language=[Visual]Basic,
+  language=Java,
   aboveskip=3mm,
   belowskip=3mm,
   showstringspaces=false,
@@ -214,7 +218,9 @@
 \part{TVDOS}
 \input{tvdos}
 
-\chapter{Bibliography}
+\part*{Bibliography}
+
+\chapter*{Bibliography}
 \input{bibliography}
 
 {
@@ -226,7 +232,7 @@
 % Level of humour used in this document is \emph{super-corny}. Do not use this atrocious humour for a purpose of real-world entertainment; we take no responsibility for the consequences---losing your friends, get shunned by people, etc.
 }
 
-\chapter{Copyright}
+\chapter*{Copyright}
 
 The source code for \thismachine\ and this documentation are distributed under the following terms:
 

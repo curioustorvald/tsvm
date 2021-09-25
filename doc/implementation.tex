@@ -2,7 +2,7 @@
 
 Some pheripherals such as disk drives are connected through the ``Serial Communication''.
 
-Unlike the name suggests, Serial Communication is not at all \emph{serial}; it's more like a \emph{block commuication}.
+Unlike the name suggests, Serial Communication is not at all \emph{serial}; it's more like a \emph{block communication}.
 
 \section{Concept of Block Communication}
 
@@ -10,8 +10,75 @@ Sender and Receiver are somehow connected and the commuication channel between t
 
 While read/write is being processed, each side emits ``busy'' flag indicating they are \emph{busy}. Sending/receiving data while one side is busy is considered as an undefined behaviour.
 
-The status flags and blocks are memory-mapped to these address:
+
+\section{The COM-library}
+
+portNo is a number of the port in 0--3, 0 being the first port.
+
+\begin{outline}
+\1\textbf{sendMessage}(portNo: Int, message: String)
+\\sends message to the port and returns status code the other machine emits
+\1\textbf{fetchResponse}(portNo: Int)
+\\fetches the message composed by other device to this machine
+\1\textbf{sendMessageGetBytes}(portNo: Int, message: String)
+\\sends message, waits for responce, then returns the received message
+\1\textbf{waitUntilReady}(portNo: Int)
+\\blocks the program until the other device is ready
+\1\textbf{pullMessage}(portNo: Int)
+\\make other device to initiate sending and returns the message receive from the other device. NOTE: this is not a function you're looking for it you're just getting the response after the sendMessage; use fetchResponse for that
+\1\textbf{getStatusCode}(portNo: Int)
+\\returns the status code of the other device
+\1\textbf{getDeviceStatus}(portNo: Int)
+\\returns the status message of the other device. Different types of devices may have different messages
+\1\textbf{areYouThere}(portNo: Int)
+\\returns true if there is other device connected and is working
+\end{outline}
+
+
+\subsection{Code Example: Get File from a Disk Drive}
+
+\begin{lstlisting}
+com.sendMessage(0, "DEVRST\x17")  // resets the disk drive
+com.sendMessage(0, 'OPENR"my-awesome.txt",1')  // tells the disk drive to open a file named 'my-awesome.txt' from drive number 1 for reading
+let status = com.getStatusCode(0)
+if (0 == status){
+	com.sendMessage(0, "READ")  // tells the disk drive that I'm about to read the file just opened
+	status = com.getStatusCode(0)
+	if (0 == status) {
+		println("Reading file...")
+		let g = com.pullMessage(0)  // will negotiate with the disk drive and read the entire file
+		println("Here's your file:")
+		println(g)
+	} else printerrln("I/O Error " + status)
+} else printerrln("I/O Error " + status)
+\end{lstlisting}
+
+
+\subsection{Code Example: Write Text to a Disk Drive}
+
+\begin{lstlisting}
+com.sendMessage(0, "DEVRST\x17")  // resets the disk drive
+com.sendMessage(0, 'OPENW"my-awesomer.txt",1')  // tells the disk drive to open a file named 'my-awesomer.txt' from drive number 1 for writing
+let status = com.getStatusCode(0)
+if (0 == status){
+	com.sendMessage(0, "WRITE1234")  // tells the disk drive that I'm about to write to the file just opened. 1234 is a size of the text to write
+	status = com.getStatusCode(0)
+	if (0 == status) {
+		println("Writing file...")
+		com.sendMessage(0, myAwesomeText)  // myAwesomeText must be in the same length as what we have told to the disk drive
+		com.sendMessage(0, "FLUSH")  // tells the disk drive to empty out whatever is left on its internal buffer, and puts the drive to ready-mode
+		com.sendMessage(0, "CLOSE")  // tells the disk drive to close the file
+	} else printerrln("I/O Error " + status)
+} else printerrln("I/O Error " + status)
+\end{lstlisting}
+
+
+
+\section{Communication MMIO and How It Actually Works}
+
+The status flags and transfer/receive blocks are memory-mapped to these address:
 \footnote{RW stands for read-write status. RW means both reading and writing is posseble, RO means it's read-only}
+
 
 \begin{tabulary}{\textwidth}{rcL}
 Address & RW & Description \\
@@ -37,6 +104,68 @@ Address & RW & Description \\
 -12289..-16384 & RW & Message Block for Port 3 \\
 -16385..-20480 & RW & Message Block for Port 4
 \end{tabulary}
+
+\subsection{Transfer Status Bits and Transfer Control}
+
+The com-port will behave differently if you're writing or reading on the address. In other words, you cannot read what you have just wrote because reading will put the port in different state.
+
+\begin{figure}[h]
+\begin{center}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{32mm}@{}p{12mm}@{}p{12mm}@{}p{16mm}@{}p{24mm}l}
+\\
+\instbitrange{7}{0} &
+\multicolumn{1}{c}{\instbit{15}} &
+\instbitrange{14}{12} &
+\instbitrange{11}{8} \\
+\cline{1-4}
+\multicolumn{1}{|c}{size-LSB} &
+\multicolumn{1}{||c|}{read} &
+\multicolumn{1}{c|}{000} &
+\multicolumn{1}{c|}{size-MSB} &
+\ Status Bits \\
+\cline{1-4}
+
+\end{tabular}
+\begin{tabular}{p{10mm}@{}p{20mm}@{}p{16mm}@{}p{16mm}@{}p{16mm}@{}p{20mm}@{}p{24mm}l}
+\\
+\instbitrange{7}{6} &
+\instbitrange{5}{4} &
+\multicolumn{1}{c}{\instbit{3}} &
+\multicolumn{1}{c}{\instbit{2}} &
+\multicolumn{1}{c}{\instbit{1}} &
+\multicolumn{1}{c}{\instbit{0}} & \\
+\cline{1-6}
+\multicolumn{1}{|c|}{00} &
+\multicolumn{1}{c|}{M/S} &
+\multicolumn{1}{c|}{T/R} &
+\multicolumn{1}{c|}{busy} &
+\multicolumn{1}{c|}{ready} &
+\multicolumn{1}{c|}{hello} &
+\ Control Bits \\
+\cline{1-6}
+
+\end{tabular}
+\end{center}
+\caption{Transfer Status and Transfer Control Bits}
+\label{fig:transfer-status-bits}
+\end{figure}
+
+\begin{outline}
+\1\textbf{size-LSB/MSB} --- size of the data within the block
+ \2\textbf{read}: from the other device
+ \\\textbf{write}: what the device is about to send
+ \\size of zero must be interpreted as 4096
+\1\textbf{read} --- bit is set if the other device \emph{hasNext}, unset otherwise or the device is not present
+\1\textbf{M/S} --- Master/Slave setup of the other device. Typically a disk drive is slave-only (01), a computer is both (11)
+\1\textbf{T/R} --- Send-Receive mode for the port. Set the bit to send from the port, unset to read
+\1\textbf{busy} --- device busy/transfer trigger
+ \2\textbf{read}: the port is receiving something if the bit is set
+ \\\textbf{write}: setting this bit initiates transfer. If T/R bit is set, the device will send out, otherwise the other device will start the transfer
+\1\textbf{ready} --- write to indicate this device is ready to receive; read to know if the other device is ready
+\1\textbf{hello} --- bit is set if other device is connected
+\end{outline}
+
 
 
 \chapter{Human Interface}
