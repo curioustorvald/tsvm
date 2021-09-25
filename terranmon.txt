@@ -163,23 +163,10 @@ From the start of the memory space:
     framebuffer scroll X
 2 bytes
     framebuffer scroll Y
-62 bytes
-    *Unused*
-
-2988 bytes
-    DMA Sprite Area - 18 bytes each, total of 166 sprites
-    1 byte
-        Sprite width
-    1 byte
-        Sprite height
-    12 bytes - signed fixed point
-        Affine transformation A,B,C,D,X,Y
-    1 byte
-        Attributes
-        0b 0000 00vp
-        (p: 0 for above-all, 1 for below-text, v: show/hide)
-    3 bytes
-        Pointer to raw pixmap data in Scratchpad Memory
+896 bytes
+    horizontal scroll offset for scanlines
+2154 bytes
+    unused
 
 2 bytes
     Cursor position in: (y*80 + x)
@@ -197,20 +184,39 @@ FI
 (DRAFT) Optional Sprite Card (VRAM Bank 1 (256 kB))
 250880 bytes
     Secondary framebuffer
-533 bytes: Sprite attribute table
-    (41 sprites total, of which 1 is GUI cursor)
+
+SPRITE FORMAT DRAFT 1
+
+    533 bytes: Sprite attribute table
+        (41 sprites total, of which 1 is GUI cursor)
+        12 bytes - signed fixed point
+            X-position
+            Y-position
+            Transform matrix A..D
+        1 bytes
+            0b 0000 00vp
+            (p: 0 for above-all, 1 for below-text, v: show/hide)
+    10496 bytes: Sprite table
+        256 bytes
+            16x16 texture for the sprite
+    235 bytes:
+        unused
+
+SPRITE FORMAT DRAFT 2
+
+    DMA Sprite Area - 18 bytes each, total of ??? sprites
+    1 byte
+        Sprite width
+    1 byte
+        Sprite height
     12 bytes - signed fixed point
-        X-position
-        Y-position
-        Transform matrix A..D
-    1 bytes
+        Affine transformation A,B,C,D,X,Y
+    1 byte
+        Attributes
         0b 0000 00vp
         (p: 0 for above-all, 1 for below-text, v: show/hide)
-10496 bytes: Sprite table
-    256 bytes
-        16x16 texture for the sprite
-235 bytes:
-    unused
+    3 bytes
+        Pointer to raw pixmap data in Scratchpad Memory
 
 MMIO
 
