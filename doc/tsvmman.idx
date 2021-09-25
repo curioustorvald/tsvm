@@ -1,3 +1,11 @@
-\indexentry{keycodes|hyperpage}{13}
+\indexentry{block communication|hyperpage}{8}
+\indexentry{com (library)|hyperpage}{8}
+\indexentry{MMIO-com|hyperpage}{10}
+\indexentry{keycodes|hyperpage}{12}
 \indexentry{code page|hyperpage}{14}
-\indexentry{colour palette|hyperpage}{15}
+\indexentry{colour palette|hyperpage}{16}
+\indexentry{MMIO-graphics|hyperpage}{18}
+\indexentry{boot process|hyperpage}{21}
+\indexentry{filesystem (DOS)|hyperpage}{23}
+\indexentry{filesystem (library)|hyperpage}{23}
+\indexentry{gl (DOS)|hyperpage}{24}

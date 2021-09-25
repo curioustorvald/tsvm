@@ -1,7 +1,69 @@
 \chapter{Introduction}
 
-TVDOS is a Disk Operating System (usually) bundled with the distribution of the \thismachine.
+\thedos\ is a Disk Operating System (usually) bundled with the distribution of the \thismachine.
 
-All TVDOS-related features requires the DOS to be fully loaded.
+All \thedos-related features requires the DOS to be fully loaded.
 
-\chapter{Filesystem}
+
+
+
+\chapter{Bootstrapping}
+
+\index{boot process}\thedos\ goes through follwing progress to deliver the \code{A:/} prompt:
+
+\section{Probing Bootable Devices}
+BIOS
+
+\section{The Bootloader}
+LOADBOOT
+
+Then the Bootsector will try to read and execute \code{A:/tvdos/TVDOS.SYS}
+
+\section{TVDOS.SYS}
+\thedos.SYS will load system libraries and variables and then will try to run the boot script by executing \code{A:\\AUTOEXEC.BAT}
+
+\section{AUTOEXEC.BAT}
+
+AUTOEXEC can setup user-specific variables (e.g. keyboard layout) and launch the command shell of your choice, \code{COMMAND} is the most common shell.
+
+Variables can be set or changed using \textbf{SET} commands.
+
+
+
+\chapter{DOS Commands}
+
+
+\chapter{DOS Libraries}
+
+\section{Filesystem}
+
+\index{filesystem (DOS)}Each port is assigned to different drive letters, and the device currently booted on is always drive \textbf{A}.
+
+\section{The Filesystem Library}
+
+\index{filesystem (library)}Functions in the filesystem libraries can be found under the \textbf{filesystem} namespace.
+
+\begin{outline}
+\1\textbf{open}(driveLetter: String, path: String, operationMode: String)
+\\Opens a file on the specified drive.
+ \2Operation Mode: \textbf{R} for read, \textbf{W} for overwrite, \textbf{A} for append
+\1\textbf{readAll}(driveLetter: String)
+\\Reads entire content of the file and return it as a string.
+\1\textbf{write}(driveLetter: String, bytes: String)
+\\Writes bytes onto the file opened for specified drive.
+\1\textbf{isDirectory}(driveLetter: String)
+\\Returns true if the file opened for the drive is a directory.
+\1\textbf{mkDir}(driveLetter: String)
+\\Creates a directory of opened path for the drive. Usage:
+\\\code{filesystem.open("A", "path/to/nonexisting/directory", "W"); filesystem.mkDir("A")}
+\1\textbf{touch}(driveLetter: String)
+\\Updates a last-modified date of the opened file. If file does not exist, creates one.
+\1\textbf{mkFile}(driveLetter: String)
+\\Creates a file of opened path for the drive. Usage:
+\\\code{filesystem.open("A", "path/to/nonexisting/file", "W"); filesystem.mkFile("A")}
+\end{outline}
+
+
+\section{The Graphics Library}
+
+\index{gl (DOS)}Functions in the graphics libraries can be found under the \textbf{gl} namespace.

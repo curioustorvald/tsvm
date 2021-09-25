@@ -6,32 +6,33 @@ Unlike the name suggests, Serial Communication is not at all \emph{serial}; it's
 
 \section{Concept of Block Communication}
 
-Sender and Receiver are somehow connected and the commuication channel between two devices are open as long as both sides are connected and being recognised. There are two blocks per port: send-block and receive-block, and the contents of the blocks are memory-mapped\footnote{Both blocks are mapped to the same port; writing to the address writes to the send-block while reading reads from the receive-block. Reading from write-block or writing to the read-block is not possible}. \emph{Write} writes sender's send-block onto the receiver's receive-block while \emph{Read} pulls the message from the receiver's send-block and writes to sender's receive-block.
+\index{block communication}Sender and Receiver are somehow connected and the communication channel between two devices are open as long as both sides are connected and being recognised. There are two blocks per port: send-block and receive-block, and the contents of the blocks are memory-mapped\footnote{Both blocks are mapped to the same port; writing to the address writes to the send-block while reading reads from the receive-block. Reading from write-block or writing to the read-block is not possible}. \emph{Write} writes sender's send-block onto the receiver's receive-block while \emph{Read} pulls the message from the receiver's send-block and writes to sender's receive-block.
 
 While read/write is being processed, each side emits ``busy'' flag indicating they are \emph{busy}. Sending/receiving data while one side is busy is considered as an undefined behaviour.
 
 
-\section{The COM-library}
+\section{The Com Library}
 
-portNo is a number of the port in 0--3, 0 being the first port.
+\index{com (library)}portNo is a number of the port in 0--3, 0 being the first port.
 
 \begin{outline}
 \1\textbf{sendMessage}(portNo: Int, message: String)
-\\sends message to the port and returns status code the other machine emits
+\\Sends message to the port and returns status code the other machine emits.
 \1\textbf{fetchResponse}(portNo: Int)
-\\fetches the message composed by other device to this machine
+\\Fetches the message composed by other device to this machine.
 \1\textbf{sendMessageGetBytes}(portNo: Int, message: String)
-\\sends message, waits for responce, then returns the received message
+\\Sends message, waits for responce, then returns the received message.
 \1\textbf{waitUntilReady}(portNo: Int)
-\\blocks the program until the other device is ready
+\\Blocks the program until the other device is ready.
 \1\textbf{pullMessage}(portNo: Int)
-\\make other device to initiate sending and returns the message receive from the other device. NOTE: this is not a function you're looking for it you're just getting the response after the sendMessage; use fetchResponse for that
+\\Make other device to initiate sending and returns the message receive from the other device.
+\\NOTE: this is not a function you're looking for it you're just getting the response after the sendMessage; use fetchResponse for that.
 \1\textbf{getStatusCode}(portNo: Int)
-\\returns the status code of the other device
+\\Returns the status code of the other device.
 \1\textbf{getDeviceStatus}(portNo: Int)
-\\returns the status message of the other device. Different types of devices may have different messages
+\\Returns the status message of the other device. Different types of devices may have different messages.
 \1\textbf{areYouThere}(portNo: Int)
-\\returns true if there is other device connected and is working
+\\Returns true if there is other device connected and is working.
 \end{outline}
 
 
@@ -76,29 +77,17 @@ if (0 == status){
 
 \section{Communication MMIO and How It Actually Works}
 
-The status flags and transfer/receive blocks are memory-mapped to these address:
+\index{MMIO-com}The status flags and transfer/receive blocks are memory-mapped to these address:
 \footnote{RW stands for read-write status. RW means both reading and writing is posseble, RO means it's read-only}
 
 
 \begin{tabulary}{\textwidth}{rcL}
 Address & RW & Description \\
 \hline
--4077 & RW & Status Code (-128--127) for Writing Port 1 \\
--4078 & RW & Status Code (-128--127) for Writing Port 2 \\
--4079 & RW & Status Code (-128--127) for Writing Port 3 \\
--4080 & RW & Status Code (-128--127) for Writing Port 4 \\
--4081 & RO & Status Code (-128--127) of the Receiver 1 \\
--4082 & RO & Status Code (-128--127) of the Receiver 2 \\
--4083 & RO & Status Code (-128--127) of the Receiver 3 \\
--4084 & RO & Status Code (-128--127) of the Receiver 4 \\
--4085..-4086 & RO & Transfer Status Bits for Port 1 \\
--4087..-4088 & RO & Transfer Status Bits for Port 2 \\
--4089..-4090 & RO & Transfer Status Bits for Port 3 \\
--4091..-4092 & RO & Transfer Status Bits for Port 4 \\
--4093 & RW & Transfer Control for Port 1 \\
--4094 & RW & Transfer Control for Port 1 \\
--4095 & RW & Transfer Control for Port 1 \\
--4096 & RW & Transfer Control for Port 1 \\
+-4077..-4080 & RW & Status Code (-128--127) for Writing Port 1--4 \\
+-4081..-4084 & RO & Status Code (-128--127) of the Receiver 1--4 \\
+-4085..-4092 & RO & Transfer Status Bits for Port 1--4 (two bytes per port) \\
+-4093..-4096 & RW & Transfer Control for Port 1--4 \\
 -4097..-8192 & RW &   Message Block for Port 1 \\
 -8193..-12288 & RW &  Message Block for Port 2 \\
 -12289..-16384 & RW & Message Block for Port 3 \\
@@ -171,8 +160,11 @@ The com-port will behave differently if you're writing or reading on the address
 \chapter{Human Interface}
 
 
+\section{Keyboard}
 
-\section{Keycodes}
+TODO
+
+\subsection{Keycodes}
 
 \index{keycodes}This is a table of keycodes recognised by the LibGDX, a framework that \thismachine\ runs on.
 
@@ -291,12 +283,21 @@ F12 & 142 \\
 \end{longtable}
 
 
+\section{Mouse}
+
+TODO
+
+
 
 \chapter{Text and Graphics Display}
 
+TODO: Textbuf, pixelbuf, draw order
 
+\section{Text Buffer}
 
-\section{Code Page}
+TODO
+
+\subsection{Code Page}
 \label{codepage}
 
 \index{code page}By default \thismachine\ uses slightly modified version of CP-437, this is a character map of it:
@@ -308,7 +309,12 @@ F12 & 142 \\
 }
 \newpage
 
-\section{Colour Palette}
+
+\section{Frame Buffer}
+
+TODO
+
+\subsection{Colour Palette}
 \label{colourpalette}
 
 \index{colour palette}By default the reference graphics adapter of the \thismachine\ uses following colour palette:
@@ -316,7 +322,7 @@ F12 & 142 \\
 {\centering
 \includegraphics[width=\linewidth]{tsvmpal.png}
 \captionof{figure}{\thismachine\ Colour Palette}
-\label{fig:codepage}
+\label{fig:colourpalette}
 }
 
 {\centering
@@ -612,7 +618,7 @@ F12 & 142 \\
 
 \section{Graphics MMIO}
 
-
+\index{MMIO-graphics}
 
 \begin{tabulary}{\textwidth}{rL}
 Address & Description \\

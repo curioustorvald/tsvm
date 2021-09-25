@@ -1,10 +1,30 @@
 \begin{theindex}
 
-  \item code page, \hyperpage{14}
-  \item colour palette, \hyperpage{15}
+  \item block communication, \hyperpage{8}
+  \item boot process, \hyperpage{21}
 
   \indexspace
 
-  \item keycodes, \hyperpage{13}
+  \item code page, \hyperpage{14}
+  \item colour palette, \hyperpage{16}
+  \item com (library), \hyperpage{8}
+
+  \indexspace
+
+  \item filesystem (DOS), \hyperpage{23}
+  \item filesystem (library), \hyperpage{23}
+
+  \indexspace
+
+  \item gl (DOS), \hyperpage{24}
+
+  \indexspace
+
+  \item keycodes, \hyperpage{12}
+
+  \indexspace
+
+  \item MMIO-com, \hyperpage{10}
+  \item MMIO-graphics, \hyperpage{18}
 
 \end{theindex}
