@@ -78,6 +78,13 @@ class GraphicsJSR223Delegate(val vm: VM) {
         return intArrayOf(-1, -1)
     }
 
+    fun setCursorYX(cy: Int, cx: Int) {
+        getFirstGPU()?.let {
+            it.setCursorPos(cy - 1, cx - 1)
+        }
+    }
+
+
     fun setBackground(r: Int, g: Int, b: Int) {
         getFirstGPU()?.let {
             it.poke(250880, r.toByte())
@@ -104,6 +111,12 @@ class GraphicsJSR223Delegate(val vm: VM) {
 
 
             it.putChar(cx, cy, c.toByte())
+        }
+    }
+
+    fun putSymbolAt(cy: Int, cx: Int, c: Int) {
+        getFirstGPU()?.let {
+            it.putChar(cx - 1, cy - 1, c.toByte())
         }
     }
 
