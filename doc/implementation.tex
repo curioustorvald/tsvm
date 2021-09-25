@@ -2,26 +2,87 @@
 
 \section{Specs}
 
+\begin{outline}
+\1 16 MB memory space with maximum 8 MB of scratchpad memory
+\1 7 peripheral card slots, each can map 1 MB of memory to the memory space
+\1 Standard graphics adapter on slot 1, with 256 simultaneous colours, 560\times448 pixels framebuffer and 80-column 32-row text buffer
+\1 Built-in mouse input support
+\1 4 serial ports to connect disk drives, modems and other computers
+\end{outline}
+
+There are three memories on the system: Hardware Memory (8 MB), Scratchpad Memory (up to 8 MB) and Program Memory (infinite!)
+
+Your Javascript program is stored into the Program Memory, and since its capacity is limitless, you can put large graphics directly into your Javascript source code, but Program Memory is the slowest of all three memories. For faster graphics, you need to store them on the Scratchpad Memory and DMA-Copy them to the graphics adapter.
 
 \section{Built-in Commands}
 
+\subsection{Standard Input and Output}
+
+\index{stdio (library)}These are standard input/output functions:
+
+\begin{outline}
+\1\textbf{print}(string) --- prints a string without new line.
+\1\textbf{println}(string) --- prints a string with a new line.
+\1\textbf{printerr}(string) --- prints a string to error output without new line.
+\1\textbf{printerrln}(string) --- prints a string to error output with a new line.
+\1\textbf{read}() --- reads a string from keyboard. Hit Return to finish reading.
+\end{outline}
+
+
+
 \subsection{Console}
+
+\index{console (library)}Console library contains functions for screen text manipulation.
+
+\namespaceis{Console}{con}
+
+\begin{outline}
+\end{outline}
 
 
 
 \subsection{System}
 
+\index{system (library)}System library has functions to get the status of the system.
+
+\namespaceis{System}{system}
+
+\begin{outline}
+\1\textbf{maxmem}() --- returns size of the Scratchpad Memory in bytes.
+\end{outline}
+
 
 
 \subsection{Gzip}
+
+\index{gzip (library)}TODO
+
+\namespaceis{Gzip}{gzip}
+
+\begin{outline}
+\end{outline}
 
 
 
 \subsection{Base64}
 
+\index{base64 (library)}Base64 allows encoding of binary data into ASCII-strings and vice-versa.
+
+\namespaceis{Base64}{base64}
+
+\begin{outline}
+\end{outline}
+
 
 
 \subsection{Sys}
+
+Sys library allows programmers to manipulate the system in low-level.
+
+\namespaceis{Sys}{sys}
+
+\begin{outline}
+\end{outline}
 
 
 

@@ -1,30 +1,43 @@
 \begin{theindex}
 
-  \item block communication, \hyperpage{8}
-  \item boot process, \hyperpage{21}
+  \item base64 (library), \hyperpage{8}
+  \item block communication, \hyperpage{9}
+  \item boot process, \hyperpage{22}
 
   \indexspace
 
-  \item code page, \hyperpage{14}
-  \item colour palette, \hyperpage{16}
-  \item com (library), \hyperpage{8}
+  \item code page, \hyperpage{15}
+  \item colour palette, \hyperpage{17}
+  \item com (library), \hyperpage{9}
+  \item con (library), \hyperpage{8}
+  \item console (library), \hyperpage{8}
 
   \indexspace
 
-  \item filesystem (DOS), \hyperpage{23}
-  \item filesystem (library), \hyperpage{23}
+  \item filesystem (DOS), \hyperpage{24}
 
   \indexspace
 
-  \item gl (DOS), \hyperpage{24}
+  \item gl (DOS), \hyperpage{25}
+  \item gzip (library), \hyperpage{8}
 
   \indexspace
 
-  \item keycodes, \hyperpage{12}
+  \item input (DOS), \hyperpage{25}
 
   \indexspace
 
-  \item MMIO-com, \hyperpage{10}
-  \item MMIO-graphics, \hyperpage{18}
+  \item keycodes, \hyperpage{13}
+
+  \indexspace
+
+  \item MMIO-com, \hyperpage{11}
+  \item MMIO-graphics, \hyperpage{19}
+
+  \indexspace
+
+  \item stdio (library), \hyperpage{7}
+  \item sys (library), \hyperpage{8}
+  \item system (library), \hyperpage{8}
 
 \end{theindex}
