@@ -607,11 +607,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
             if (xoff in -559..559) {
                 for (x in xs) {
-                    //framebuffer2.drawPixel(x, y, framebuffer.getPixel(x + xs.first - xoff, y))
-
                     // this only works because framebuffer is guaranteed to be 8bpp
                     framebuffer2.pixels.put(y*560+x,
-                        framebuffer.pixels.get(y*560 + (x - xoff).coerceIn(0, 559))
+                        framebuffer.pixels.get(y*560 + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
                     )
                 }
             }
