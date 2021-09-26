@@ -1,6 +1,7 @@
 package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
 
@@ -58,6 +59,22 @@ class GraphicsJSR223Delegate(val vm: VM) {
             it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.framebuffer.width
             it.framebufferScrollY = (it.framebufferScrollY + ydelta) fmod it.framebuffer.height
         }
+    }
+
+    fun setLineOffset(line: Int, offset: Int) {
+        getFirstGPU()?.let {
+            it.poke(250900L + 2*line, offset.shr(8).toByte()) // absolutely not USHR
+            it.poke(250901L + 2*line, offset.toByte())
+        }
+    }
+
+    fun getLineOffset(line: Int): Int {
+        getFirstGPU()?.let {
+            var xoff = it.peek(250900L + 2*line)!!.toUint().shl(8) or it.peek(250901L + 2*line)!!.toUint()
+            if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+            return xoff
+        }
+        return 0
     }
 
     fun getPixelDimension(): IntArray {
@@ -139,14 +156,14 @@ class GraphicsJSR223Delegate(val vm: VM) {
     private fun GraphicsAdapter._loadSprite(spriteNum: Int, ptr: Int) {
         UnsafeHelper.memcpy(
             vm.usermem.ptr + ptr,
-            (this.spriteAndTextArea).ptr + (260 * spriteNum) + 4,
+            (this.textArea).ptr + (260 * spriteNum) + 4,
             256
         )
     }
 
     private fun GraphicsAdapter._storeSprite(spriteNum: Int, ptr: Int) {
         UnsafeHelper.memcpy(
-            (this.spriteAndTextArea).ptr + (260 * spriteNum) + 4,
+            (this.textArea).ptr + (260 * spriteNum) + 4,
             vm.usermem.ptr + ptr,
             256
         )

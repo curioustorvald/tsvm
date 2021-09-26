@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import com.badlogic.gdx.math.Matrix4
 import net.torvald.UnsafeHelper
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.AppLoader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
@@ -14,7 +15,6 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.experimental.and
-import kotlin.math.roundToInt
 
 data class AdapterConfig(
     val theme: String,
@@ -59,6 +59,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     protected val TAB_SIZE = 8
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
+    internal val framebuffer2 = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
         val rgba = DEFAULT_PALETTE[it / 4]
@@ -68,8 +69,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     protected val chrrom0 = Texture("./assets/"+config.chrRomPath)
     protected val faketex: Texture
 
-    internal val spriteAndTextArea = UnsafeHelper.allocate(10660L)
-    protected val unusedArea = ByteArray(92)
+    internal val textArea = UnsafeHelper.allocate(7682)
+    internal val unusedArea = UnsafeHelper.allocate(1024)
 
     protected val paletteShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, config.paletteShader)
     protected val textShader = AppLoader.loadShaderInline(DRAW_SHADER_VERT, config.fragShader)
@@ -100,15 +101,15 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private val outFBObatch = SpriteBatch()
 
 
-    private val memTextCursorPosOffset = 2978L
-    private val memTextForeOffset = 2980L
-    private val memTextBackOffset = 2980L + 2560
-    private val memTextOffset = 2980L + 2560 + 2560
+    private val memTextCursorPosOffset = 0L
+    private val memTextForeOffset = 2L
+    private val memTextBackOffset = 2L + 2560
+    private val memTextOffset = 2L + 2560 + 2560
     private val TEXT_AREA_SIZE = TEXT_COLS * TEXT_ROWS
 
     override var rawCursorPos: Int
-        get() = spriteAndTextArea.getShort(memTextCursorPosOffset).toInt()
-        set(value) { spriteAndTextArea.setShort(memTextCursorPosOffset, value.toShort()) }
+        get() = textArea.getShort(memTextCursorPosOffset).toInt()
+        set(value) { textArea.setShort(memTextCursorPosOffset, value.toShort()) }
 
     override fun getCursorPos() = rawCursorPos % TEXT_COLS to rawCursorPos / TEXT_COLS
 
@@ -144,12 +145,14 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         outFBObatch.projectionMatrix = m
 
 
-
         framebuffer.blending = Pixmap.Blending.None
+        framebuffer2.blending = Pixmap.Blending.None
         textForePixmap.blending = Pixmap.Blending.None
         textBackPixmap.blending = Pixmap.Blending.None
         framebuffer.setColor(-1)
         framebuffer.fill()
+
+        unusedArea.fillWith(0)
 
         val pm = Pixmap(1, 1, Pixmap.Format.RGBA8888)
         pm.drawPixel(0, 0, -1)
@@ -159,10 +162,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         // initialise with NONZERO value; value zero corresponds to opaque black, and it will paint the whole screen black
         // when in text mode, and that's undesired behaviour
         // -1 is preferred because it points to the colour CLEAR, and it's constant.
-        spriteAndTextArea.fillWith(-1)
+        textArea.fillWith(-1)
         // fill text area with 0
         for (k in 0 until TEXT_ROWS * TEXT_COLS) {
-            spriteAndTextArea[k + memTextOffset] = 0
+            textArea[k + memTextOffset] = 0
         }
 
         if (theme.contains("color")) {
@@ -173,7 +176,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
         setCursorPos(0, 0)
 
-        println(framebuffer.pixels.limit())
+        println("Framebuffer pixels limit: ${framebuffer.pixels.limit()}")
     }
 
     override fun peek(addr: Long): Byte? {
@@ -184,8 +187,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             250897L -> framebufferScrollX.ushr(8).toByte()
             250898L -> framebufferScrollY.toByte()
             250899L -> framebufferScrollY.ushr(8).toByte()
-            in 250880 until 250972 -> unusedArea[adi - 250880]
-            in 250972 until 261632 -> spriteAndTextArea[addr - 250972]
+            in 250880 until 250880+1024 -> unusedArea[addr - 250880]
+            in 253950 until 261632 -> textArea[addr - 253950]
             in 261632 until 262144 -> peekPalette(adi - 261632)
             in 0 until VM.HW_RESERVE_SIZE -> {
                 println("[GraphicsAdapter] mirroring with input address $addr")
@@ -204,15 +207,15 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 framebuffer.pixels.put(adi, byte)
             }
             250883L -> {
-                unusedArea[adi - 250880] = byte
+                unusedArea[addr - 250880] = byte
                 runCommand(byte)
             }
             250896L -> framebufferScrollX = framebufferScrollX.and(0xFFFFFF00.toInt()).or(bi)
             250897L -> framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8)
             250898L -> framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi)
             250899L -> framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8)
-            in 250880 until 250972 -> unusedArea[adi - 250880] = byte
-            in 250972 until 261632 -> spriteAndTextArea[addr - 250972] = byte
+            in 250880 until 250880+1024 -> unusedArea[addr - 250880] = byte
+            in 253950 until 261632 -> textArea[addr - 253950] = byte
             in 261632 until 262144 -> pokePalette(adi - 261632, byte)
             in 0 until VM.HW_RESERVE_SIZE -> {
                 println("[GraphicsAdapter] mirroring with input address $addr")
@@ -287,9 +290,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
     override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
         val textOff = toTtyTextOffset(x, y)
-        spriteAndTextArea[memTextForeOffset + textOff] = foreColour
-        spriteAndTextArea[memTextBackOffset + textOff] = backColour
-        spriteAndTextArea[memTextOffset + textOff] = text
+        textArea[memTextForeOffset + textOff] = foreColour
+        textArea[memTextBackOffset + textOff] = backColour
+        textArea[memTextOffset + textOff] = text
     }
 
     override fun cursorUp(arg: Int) {
@@ -338,11 +341,11 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 val foreBits = ttyFore or ttyFore.shl(8) or ttyFore.shl(16) or ttyFore.shl(24)
                 val backBits = ttyBack or ttyBack.shl(8) or ttyBack.shl(16) or ttyBack.shl(24)
                 for (i in 0 until TEXT_COLS * TEXT_ROWS step 4) {
-                    spriteAndTextArea.setInt(memTextForeOffset + i, foreBits)
-                    spriteAndTextArea.setInt(memTextBackOffset + i, backBits)
-                    spriteAndTextArea.setInt(memTextOffset + i, 0)
+                    textArea.setInt(memTextForeOffset + i, foreBits)
+                    textArea.setInt(memTextBackOffset + i, backBits)
+                    textArea.setInt(memTextOffset + i, 0)
                 }
-                spriteAndTextArea.setShort(memTextCursorPosOffset, 0)
+                textArea.setShort(memTextCursorPosOffset, 0)
             }
             else -> TODO()
         }
@@ -358,24 +361,24 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     override fun scrollUp(arg: Int) {
         val displacement = arg.toLong() * TEXT_COLS
         UnsafeHelper.memcpy(
-            spriteAndTextArea.ptr + memTextOffset + displacement,
-            spriteAndTextArea.ptr + memTextOffset,
+            textArea.ptr + memTextOffset + displacement,
+            textArea.ptr + memTextOffset,
             TEXT_AREA_SIZE - displacement
         )
         UnsafeHelper.memcpy(
-            spriteAndTextArea.ptr + memTextBackOffset + displacement,
-            spriteAndTextArea.ptr + memTextBackOffset,
+            textArea.ptr + memTextBackOffset + displacement,
+            textArea.ptr + memTextBackOffset,
             TEXT_AREA_SIZE - displacement
         )
         UnsafeHelper.memcpy(
-            spriteAndTextArea.ptr + memTextForeOffset + displacement,
-            spriteAndTextArea.ptr + memTextForeOffset,
+            textArea.ptr + memTextForeOffset + displacement,
+            textArea.ptr + memTextForeOffset,
             TEXT_AREA_SIZE - displacement
         )
         for (i in 0 until displacement) {
-            spriteAndTextArea[memTextOffset + TEXT_AREA_SIZE - displacement + i] = 0
-            spriteAndTextArea[memTextBackOffset + TEXT_AREA_SIZE - displacement + i] = ttyBack.toByte()
-            spriteAndTextArea[memTextForeOffset + TEXT_AREA_SIZE - displacement + i] = ttyFore.toByte()
+            textArea[memTextOffset + TEXT_AREA_SIZE - displacement + i] = 0
+            textArea[memTextBackOffset + TEXT_AREA_SIZE - displacement + i] = ttyBack.toByte()
+            textArea[memTextForeOffset + TEXT_AREA_SIZE - displacement + i] = ttyFore.toByte()
         }
     }
 
@@ -383,24 +386,24 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     override fun scrollDown(arg: Int) {
         val displacement = arg.toLong() * TEXT_COLS
         UnsafeHelper.memcpy(
-            spriteAndTextArea.ptr + memTextOffset,
-            spriteAndTextArea.ptr + memTextOffset + displacement,
+            textArea.ptr + memTextOffset,
+            textArea.ptr + memTextOffset + displacement,
             TEXT_AREA_SIZE - displacement
         )
         UnsafeHelper.memcpy(
-            spriteAndTextArea.ptr + memTextBackOffset,
-            spriteAndTextArea.ptr + memTextBackOffset + displacement,
+            textArea.ptr + memTextBackOffset,
+            textArea.ptr + memTextBackOffset + displacement,
             TEXT_AREA_SIZE - displacement
         )
         UnsafeHelper.memcpy(
-            spriteAndTextArea.ptr + memTextForeOffset,
-            spriteAndTextArea.ptr + memTextForeOffset + displacement,
+            textArea.ptr + memTextForeOffset,
+            textArea.ptr + memTextForeOffset + displacement,
             TEXT_AREA_SIZE - displacement
         )
         for (i in 0 until displacement) {
-            spriteAndTextArea[memTextOffset + TEXT_AREA_SIZE + i] = 0
-            spriteAndTextArea[memTextBackOffset + TEXT_AREA_SIZE + i] = ttyBack.toByte()
-            spriteAndTextArea[memTextForeOffset + TEXT_AREA_SIZE + i] = ttyFore.toByte()
+            textArea[memTextOffset + TEXT_AREA_SIZE + i] = 0
+            textArea[memTextBackOffset + TEXT_AREA_SIZE + i] = ttyBack.toByte()
+            textArea[memTextForeOffset + TEXT_AREA_SIZE + i] = ttyFore.toByte()
         }
     }
 
@@ -570,8 +573,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     override fun dispose() {
         //testTex.dispose()
         framebuffer.dispose()
+        framebuffer2.dispose()
         rendertex.dispose()
-        spriteAndTextArea.destroy()
+        textArea.destroy()
         textForePixmap.dispose()
         textBackPixmap.dispose()
         textPixmap.dispose()
@@ -585,6 +589,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         try { textBackTex.dispose() } catch (_: Throwable) {}
 
         chrrom0.dispose()
+        unusedArea.destroy()
     }
 
     private var textCursorBlinkTimer = 0f
@@ -594,8 +599,27 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
     open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float) {
+        framebuffer2.setColor(-1);framebuffer2.fill()
+        for (y in 0 until 448) {
+            var xoff = unusedArea[20L + 2*y].toUint().shl(8) or unusedArea[20L + 2*y + 1].toUint()
+            if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+            val xs = (0+xoff).coerceIn(0,559) .. (559+xoff).coerceIn(0,559)
+
+            if (xoff in -559..559) {
+                for (x in xs) {
+                    //framebuffer2.drawPixel(x, y, framebuffer.getPixel(x + xs.first - xoff, y))
+
+                    // this only works because framebuffer is guaranteed to be 8bpp
+                    framebuffer2.pixels.put(y*560+x,
+                        framebuffer.pixels.get(y*560 + (x - xoff).coerceIn(0, 559))
+                    )
+                }
+            }
+        }
+
+
         rendertex.dispose()
-        rendertex = Texture(framebuffer, Pixmap.Format.RGBA8888, false)
+        rendertex = Texture(framebuffer2, Pixmap.Format.RGBA8888, false)
 
         val texOffX = (framebufferScrollX fmod framebuffer.width) * -1f
         val texOffY = (framebufferScrollY fmod framebuffer.height) * 1f
@@ -657,12 +681,12 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                             val drawCursor = blinkCursor && textCursorIsOn && cx == x && cy == y
                             val addr = y.toLong() * TEXT_COLS + x
                             val char =
-                                if (drawCursor) 0xFF else spriteAndTextArea[memTextOffset + addr].toInt().and(255)
+                                if (drawCursor) 0xFF else textArea[memTextOffset + addr].toInt().and(255)
                             var back =
-                                if (drawCursor) ttyBack else spriteAndTextArea[memTextBackOffset + addr].toInt()
+                                if (drawCursor) ttyBack else textArea[memTextBackOffset + addr].toInt()
                                     .and(255)
                             var fore =
-                                if (drawCursor) ttyFore else spriteAndTextArea[memTextForeOffset + addr].toInt()
+                                if (drawCursor) ttyFore else textArea[memTextForeOffset + addr].toInt()
                                     .and(255)
 
                             textPixmap.setColor(Color(0f, 0f, char / 255f, 1f))
