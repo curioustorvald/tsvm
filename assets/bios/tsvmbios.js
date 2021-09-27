@@ -11,7 +11,7 @@ for(let i=0;i<2560;i++)graphics.putSymbolAt(1+(i/80)|0,1+(i%80),239);
 // draw logo
 for(let i=0;i<logo.length;i++){graphics.plotPixel(i%560,95+(i/560)|0,logo[i])}
 // scramble lines
-let m=4;let r=()=>{let i=Math.random()*2-1;return(i<0)?i-1:i+1};
+let m=5;let r=()=>{let i=Math.random()*2-1;return(i<0)?i-1:i+1};
 let o=[];for(let y=0;y<164;y++){
 let k=Math.round(r()*560/m)|0;
 o.push(k);graphics.setLineOffset(95+y,k*m);}
@@ -22,7 +22,7 @@ for(let i=0;i<2560;i++)graphics.putSymbolAt(1+(i/80)|0,1+(i%80),0);
 let tmr=0;let n=560*2;while(n>0){
 for(let y=0;y<164;y++){o[y]-=Math.sign(o[y]);graphics.setLineOffset(95+y,o[y]*m);}
 // wait for timer
-tmr=sys.nanoTime();while(sys.nanoTime()-tmr<250000*m)Math.sqrt(tmr) // waste some cpu time
+tmr=sys.nanoTime();while(sys.nanoTime()-tmr<300000*m)Math.sqrt(tmr) // waste some cpu time
 n-=m;}
 
 
@@ -75,7 +75,7 @@ Object.freeze(_BIOS);
 tmr = sys.nanoTime();
 while (sys.nanoTime() - tmr < 2147483648) sys.spin();
 // clear screen
-graphics.clearPixels(255);con.color_pair(254,255);
+graphics.clearPixels(255);con.color_pair(239,255);
 con.clear();con.move(1,1);
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -15,10 +15,12 @@ fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).cont
 data class EmulInstance(
     val vm: VM,
     val display: String,
-    val diskPath: String = "assets/disk0"
+    val diskPath: String = "assets/disk0",
+    val drawWidth: Int,
+    val drawHeight: Int
 )
 
-class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
+class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHeight: Int) : ApplicationAdapter() {
 
     val vm = loaderInfo.vm
 
@@ -137,7 +139,10 @@ class VMGUI(val loaderInfo: EmulInstance) : ApplicationAdapter() {
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
     private fun renderGame(delta: Float) {
-        gpu.render(delta, batch, 0f, 0f)
+        val clearCol = gpu.getBackgroundColour()
+        Gdx.gl.glClearColor(clearCol.r, clearCol.g, clearCol.b, clearCol.a)
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+        gpu.render(delta, batch, (viewportWidth - loaderInfo.drawWidth).div(2).toFloat(), (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {

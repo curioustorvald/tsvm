@@ -42,7 +42,7 @@ function print_prompt_text() {
         con.color_pair(253,255);
     }
     else {
-        con.color_pair(253,255);
+//        con.color_pair(253,255);
         if (errorlevel != 0)
             print(CURRENT_DRIVE + ":/" + shell_pwd.join("/") + " [" + errorlevel + "]" + PROMPT_TEXT);
         else
@@ -490,13 +490,13 @@ else {
 
 let cmdExit = false;
 if (goInteractive) {
-    con.reset_graphics();
+    con.curs_set(1);
     greet();
 
     let cmdHistory = []; // zeroth element is the oldest
     let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
     while (!cmdExit) {
-        con.reset_graphics();
+        con.curs_set(1);
         print_prompt_text();
 
         var cmdbuf = "";

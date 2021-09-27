@@ -598,18 +598,22 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
+    fun getBackgroundColour() = Color(unusedArea[0].toInt().and(15).toFloat() / 15f,
+        unusedArea[1].toInt().and(15).toFloat() / 15f,
+        unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
+
     open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float) {
         framebuffer2.setColor(-1);framebuffer2.fill()
-        for (y in 0 until 448) {
+        for (y in 0 until config.height) {
             var xoff = unusedArea[20L + 2*y].toUint().shl(8) or unusedArea[20L + 2*y + 1].toUint()
             if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
-            val xs = (0+xoff).coerceIn(0,559) .. (559+xoff).coerceIn(0,559)
+            val xs = (0+xoff).coerceIn(0,config.width-1) .. (config.width-1+xoff).coerceIn(0,config.width-1)
 
-            if (xoff in -559..559) {
+            if (xoff in -(config.width-1)..config.width-1) {
                 for (x in xs) {
                     // this only works because framebuffer is guaranteed to be 8bpp
-                    framebuffer2.pixels.put(y*560+x,
-                        framebuffer.pixels.get(y*560 + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
+                    framebuffer2.pixels.put(y*config.width+x,
+                        framebuffer.pixels.get(y*config.width + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
                     )
                 }
             }
@@ -633,9 +637,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
 
         outFBOs[0].inUse {
-            val clearCol = Color(unusedArea[0].toInt().and(15).toFloat() / 15f,
-                unusedArea[1].toInt().and(15).toFloat() / 15f,
-                unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
+            val clearCol = getBackgroundColour()
             Gdx.gl.glClearColor(0f, 0f, 0f, 1f)
             Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
