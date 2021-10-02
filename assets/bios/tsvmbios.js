@@ -58,7 +58,7 @@ con.move(21,(80-uramstr.length)/2);println(uramstr);
 
 // probe bootable device
 
-var _BIOS = {};
+/*var _BIOS = {};
 
 // Syntax: [Port, Drive-number]
 // Port #0-3: Serial port 1-4
@@ -66,7 +66,7 @@ var _BIOS = {};
 // Drive-number always starts at 1
 _BIOS.FIRST_BOOTABLE_PORT = [0,1]; // ah screw it
 
-Object.freeze(_BIOS);
+Object.freeze(_BIOS);*/
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -92,7 +92,9 @@ while (portNumber < 4) {
 	portNumber += 1;
 }
 if (portNumber < 4) {
-	eval(com.fetchResponse(portNumber).trimNull());
+//	eval(com.fetchResponse(portNumber).trimNull());
+    // using Function() so that BIOS variables won't get leaked in
+	{Function("\"use strict\";var _BIOS={};_BIOS.FIRST_BOOTABLE_PORT=[0,1];Object.freeze(_BIOS);"+com.fetchResponse(portNumber).trimNull())()};
 }
 else {
 	printerrln("No bootable medium found.");
