@@ -109,13 +109,14 @@ function drawMain() {
 
             con.addch(c); con.curs_right();
         }
-        print(" ");
+//        print(" ");
     });
     // fill rest of the space on the line
     con.color_pair(COL_BACK, COL_TEXT);
     let cursPos = con.getyx();
-    for (let i = cursPos[1]; i <= windowWidth; i++) {
-        con.mvaddch(1, i, 0);
+    con.addch(179)
+    for (let i = cursPos[1]+1; i <= windowWidth; i++) {
+        con.mvaddch(1, i, filename.codePointAt(i-cursPos[1]-1));
     }
 
     // print line number
@@ -127,7 +128,7 @@ function drawMain() {
     con.move(PAINT_START_Y, PAINT_START_X); con.color_pair(COL_TEXT, COL_BACK);
 }
 
-function drawMenubarBase(index) {
+/*function drawMenubarBase(index) {
     con.curs_set(0);
     drawInit();
     con.clear();
@@ -162,7 +163,7 @@ function drawMenubarBase(index) {
         con.move(3 + (i % menuHeight), 2 + 12 * ((i / menuHeight)|0));
         print(v);
     });
-}
+}*/
 
 function drawTextLineAbsolute(rowNumber, paintOffsetX) {
     let paintRow = rowNumber - scroll;
