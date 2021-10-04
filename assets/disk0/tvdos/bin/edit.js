@@ -426,6 +426,13 @@ else {
     displayBulletin(`Read ${textbuffer.length} Lines`);
 }
 
+// if a key was held down when the app launched, wait for key to go up
+while (1) {
+    sys.poke(-40, 255);
+    if (sys.peek(-41) == 0) break;
+    sys.spin();
+}
+
 while (!exit) {
     input.withEvent(event => {
     let eventName = event[0]
