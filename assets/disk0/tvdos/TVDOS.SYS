@@ -180,6 +180,7 @@ inputwork.stroboStatus = 0; // 0: first key, 1: waiting for initial delay, 2: re
 inputwork.oldKeys = [];
 inputwork.oldMouse = [];
 inputwork.repeatCount = 0;
+//inputwork.keyChanged = false;
 
 /**
  * callback: takes one argument of object which
@@ -206,28 +207,61 @@ input.withEvent = function(callback) {
     }
 
     function keysToStr(keys) {
-        let shiftin = keys.includes(59) || keys.includes(60);
+        //let shiftin = keys.includes(59) || keys.includes(60);
         let headkey = keys.head();
-        return (inputwork.keymap[headkey] == undefined) ? undefined : (shiftin) ? (inputwork.keymap[headkey][1] || inputwork.keymap[headkey][0]) : inputwork.keymap[headkey][0];
+        //return (inputwork.keymap[headkey] == undefined) ? undefined : (shiftin) ? (inputwork.keymap[headkey][1] || inputwork.keymap[headkey][0]) : inputwork.keymap[headkey][0];
+        return (inputwork.keymap[headkey] == undefined) ? undefined : inputwork.keymap[headkey];
     }
 
     sys.poke(-40, 255);
     let keys = [sys.peek(-41),sys.peek(-42),sys.peek(-43),sys.peek(-44),sys.peek(-45),sys.peek(-46),sys.peek(-47),sys.peek(-48)];
     let mouse = [sys.peek(-33) | (sys.peek(-34) << 8), sys.peek(-35) | (sys.peek(-36) << 8), sys.peek(-37)];
+    let keyChanged = !arrayEq(keys, inputwork.oldKeys)
+    let keyDiff = arrayDiff(keys, inputwork.oldKeys)
+
+    // FIXME does not work with QMK's "LT(1,KC_ENT)" or something similar
+    //if (keys.sum() > 0) serial.println(`! captured=${keys.join()}`)
 
     if (inputwork.stroboStatus % 2 == 0 && keys[0] != 0) {
         inputwork.stroboStatus += 1;
         inputwork.stroboTime = sys.nanoTime();
         inputwork.repeatCount += 1;
 
-        callback(["key_down", keysToStr(keys), inputwork.repeatCount].concat(keys));
+        let shiftin = keys.includes(59) || keys.includes(60);
+        let keysym0 = keysToStr(keys);
+        let newKeysym0 = keysToStr(keyDiff);
+        let keysym = (keysym0 === undefined) ? undefined : (shiftin && keysym0[1]) ? keysym0[1] : keysym0[0];
+        let newKeysym = (newKeysym0 === undefined) ? undefined : (shiftin && newKeysym0[1]) ? newKeysym0[1] : newKeysym0[0];
+
+
+        //serial.println(`keys=${keys.join()}; oldkeys=${inputwork.oldKeys}; keyDiff=${keyDiff}`)
+        //serial.println(`keysym=${keysym}; newkeysym=${newKeysym}`)
+
+        if (!keyChanged) {
+            callback(["key_down", keysym, inputwork.repeatCount].concat(keys));
+        }
+        else if (newKeysym !== undefined) {
+            callback(["key_down", newKeysym, inputwork.repeatCount].concat(keys));
+        }
+
+
+        inputwork.oldKeys = keys; // don't put this outside of if-cascade
     }
-    else if (!arrayEq(keys, inputwork.oldKeys) || keys[0] == 0) {
+    else if (keyChanged || keys[0] == 0) {
         inputwork.stroboStatus = 0;
         inputwork.repeatCount = 0;
 
-        if (inputwork.oldKeys[0] != 0)
-            callback(["key_change", keysToStr(arrayDiff(inputwork.oldKeys, keys)), inputwork.repeatCount].concat(keys));
+        if (keys[0] == 0)
+            inputwork.keyChanged = false;
+
+        if (keyChanged) {
+            //callback(["key_change", keysToStr(arrayDiff(keys, inputwork.oldKeys)), inputwork.repeatCount].concat(keys));
+
+            //serial.println(`$ oldkeys=${inputwork.oldKeys}; newkeys=${keys}`)
+            //serial.println(`$ keydiff=${arrayDiff(keys, inputwork.oldKeys)}; newkeysym=${keysToStr(arrayDiff(keys, inputwork.oldKeys))}`)
+
+            //inputwork.keyChanged = keysToStr(arrayDiff(keys, inputwork.oldKeys));
+        }
     }
     else if (inputwork.stroboStatus % 2 == 1 && sys.nanoTime() - inputwork.stroboTime < inputwork.stroboDelays[inputwork.stroboStatus]) {
         sys.spin();
@@ -239,7 +273,6 @@ input.withEvent = function(callback) {
         }
     }
 
-    inputwork.oldKeys = keys;
     inputwork.oldMouse = mouse;
 
 };

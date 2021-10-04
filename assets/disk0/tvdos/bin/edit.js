@@ -241,12 +241,12 @@ function hitAny() {
     return sys.peek(-41) != 0;
 }
 
-function insertChar(code, row, col) {
+function insertChar(character, row, col) {
     if (textbuffer[row] === undefined)
-        textbuffer[row] = String.fromCharCode(code);
+        textbuffer[row] = character;
     else {
         let s = textbuffer[row].substring(0);
-        textbuffer[row] = s.substring(0, col) + String.fromCharCode(code) + s.substring(col);
+        textbuffer[row] = s.substring(0, col) + character + s.substring(col);
     }
 }
 
@@ -427,57 +427,64 @@ else {
 }
 
 while (!exit) {
-    let key = con.getch();
+    input.withEvent(event => {
+    let eventName = event[0]
+    if (eventName == "key_down") {
+
+    let keysym = event[1]
+    let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
+    let keycode = keycodes[0]
+
     // TODO: either implement the new strobing-getch() by yourself or modify the sys.getch() so that CTRL-alph would return correct numbers
 
 //    serial.println(`getch = ${key}`)
 
     if (bulletinShown) dismissBulletin();
 
-    if (key == 17) // Ctrl-Q
+    if (keysym == "q" && keycodes[1] == 129) // Ctrl-Q
         exit = true;
-    else if (key == 19 && !bulletinShown) {
+    else if (keysym == "s" && keycodes[1] == 129 && !bulletinShown) {
         writeout();
         displayBulletin(`Wrote ${textbuffer.length} lines`);
     }
-    else if (key == con.KEY_BACKSPACE) { // Bksp
+    else if (keycode == 67) { // Bksp
         backspaceOnce();
         drawLnCol(); gotoText();
     }
-    else if (key == con.KEY_RETURN) { // Return
+    else if (keycode == 66) { // Return
         appendLine(); drawLnCol(); gotoText();
     }
-    else if (key == con.KEY_LEFT) {
+    else if (keysym == "<LEFT>") {
         cursoringCol = cursorCol - 1;
         if (cursoringCol < 0) cursoringCol = 0;
         cursorMoveRelative(-1,0);
     }
-    else if (key == con.KEY_RIGHT) {
+    else if (keysym == "<RIGHT>") {
         cursoringCol = cursorCol + 1;
         if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
         cursorMoveRelative(1,0);
     }
-    else if (key == con.KEY_UP) {
+    else if (keysym == "<UP>") {
         cursorMoveRelative(0,-1);
     }
-    else if (key == con.KEY_DOWN) {
+    else if (keysym == "<DOWN>") {
         cursorMoveRelative(0,1);
     }
-    else if (key == con.KEY_PAGE_UP) {
+    else if (keysym == "<PAGE_UP>") {
         cursorMoveRelative(0, -paintHeight + scrollPeek);
     }
-    else if (key == con.KEY_PAGE_DOWN) {
+    else if (keysym == "<PAGE_DOWN>") {
         cursorMoveRelative(0, paintHeight - scrollPeek);
     }
-    else if (key == con.KEY_HOME) {
+    else if (keysym == "<HOME>") {
         cursoringCol = 0;
         cursorMoveRelative(-BIG_STRIDE, 0);
     }
-    else if (key == con.KEY_END)  {
+    else if (keysym == "<END>")  {
         cursoringCol = textbuffer[cursorRow].length;
         cursorMoveRelative(BIG_STRIDE, 0);
     }
-    else if (key == con.KEY_TAB) { // insert spaces appropriately
+    else if (keysym == "<TAB>") { // insert spaces appropriately
         let tabsize = TAB_SIZE - (cursorCol % TAB_SIZE);
 
         for (let k = 0; k < tabsize; k++) {
@@ -490,8 +497,8 @@ while (!exit) {
         }
         drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
     }
-    else if (key >= 32 && key < 128) { // printables (excludes \n)
-        insertChar(key, cursorRow, cursorCol);
+    else if (keysym.length == 1 || !keysym.startsWith("<")) { // printables (excludes \n)
+        insertChar(keysym, cursorRow, cursorCol);
         // identical to con.KEY_RIGHT
         cursoringCol = cursorCol + 1;
         if (cursoringCol > textbuffer[cursorRow].length) cursoringCol = textbuffer[cursorRow].length;
@@ -499,6 +506,8 @@ while (!exit) {
         // end of con.KEY_RIGHT
         drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
     }
+
+    }})
 }
 
 con.clear();
