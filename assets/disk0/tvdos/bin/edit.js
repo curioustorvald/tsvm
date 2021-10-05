@@ -84,9 +84,14 @@ function drawLineNumbers() {
 function drawLnCol() {
     con.curs_set(0);
     con.color_pair(COL_BACK, COL_TEXT);
-    let lctxt = `  ${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
+
+    drawMenubarBase();
+
+    let lctxt = `${String.fromCharCode(25)}${cursorRow+1}:${cursorCol+1}`;
+    con.move(1, windowWidth - lctxt.length - 2); con.addch(222);
+    con.curs_right(); con.addch(221);
     for (let i = 0; i < lctxt.length + (cursorCol < 9); i++) {
-        con.mvaddch(1, windowWidth - lctxt.length + (cursorCol >= 9) + i, lctxt.charCodeAt(i));
+        con.curs_right(); con.addch(lctxt.charCodeAt(i));
     }
     con.color_pair(COL_TEXT, COL_BACK);
 }
@@ -96,7 +101,20 @@ function drawMain() {
     drawInit();
     con.clear();
 
+//    printMenubarBase();
+
+    // print line number
+    drawLineNumbers();
+
+    // print status line
+    drawLnCol();
+
+    con.move(PAINT_START_Y, PAINT_START_X); con.color_pair(COL_TEXT, COL_BACK);
+}
+
+function drawMenubarBase() {
     // print menubar
+    con.move(1,1);
     con.color_pair(COL_BACK, COL_TEXT);
     menubarItems.forEach(v=>{
         print(String.fromCharCode(222));
@@ -111,59 +129,15 @@ function drawMain() {
         }
 //        print(" ");
     });
-    // fill rest of the space on the line
+    // fill rest of the space on the line with filename
     con.color_pair(COL_BACK, COL_TEXT);
+    con.addch(222);con.curs_right();
+    con.addch(221);con.curs_right();
     let cursPos = con.getyx();
-    con.addch(179)
-    for (let i = cursPos[1]+1; i <= windowWidth; i++) {
-        con.mvaddch(1, i, filename.codePointAt(i-cursPos[1]-1));
+    for (let i = cursPos[1]; i < windowWidth; i++) {
+        con.mvaddch(1, i, filename.codePointAt(i-cursPos[1]));
     }
-
-    // print line number
-    drawLineNumbers();
-
-    // print status line
-    drawLnCol();
-
-    con.move(PAINT_START_Y, PAINT_START_X); con.color_pair(COL_TEXT, COL_BACK);
 }
-
-/*function drawMenubarBase(index) {
-    con.curs_set(0);
-    drawInit();
-    con.clear();
-
-    // print menubar
-    con.color_pair(COL_BACK, COL_TEXT);
-    menubarItems.forEach((v,i)=>{
-        if (index == i) {
-            con.color_pair(COL_TEXT, COL_BACK);
-            print(String.fromCharCode(221));
-            print(v);
-            print(String.fromCharCode(222));
-        }
-        else {
-            con.color_pair(COL_BACK, COL_TEXT);
-            print(` ${v} `);
-        }
-
-    });
-    // fill rest of the space on the line
-    con.color_pair(COL_BACK, COL_TEXT);
-    let cursPos = con.getyx();
-    for (let i = cursPos[1]; i <= windowWidth; i++) {
-        con.mvaddch(1, i, 0);
-    }
-
-    // print menu items
-    let menuHeight = paintHeight - 1;
-    menubarContents[index].forEach((v,i) => {
-        con.color_pair(COL_TEXT, COL_BACK);
-
-        con.move(3 + (i % menuHeight), 2 + 12 * ((i / menuHeight)|0));
-        print(v);
-    });
-}*/
 
 function drawTextLineAbsolute(rowNumber, paintOffsetX) {
     let paintRow = rowNumber - scroll;

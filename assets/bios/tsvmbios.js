@@ -5,7 +5,7 @@ let logo = gzip.decomp(base64.atob("H4sICJoBTGECA3Rzdm1sb2dvLnJhdwDtneu2nCoQhPf7
 
 // display logo in kickin' ass-style of panasonic
 // hide entire framebuffer with black text to hide the slow image drawing
-
+/*
 con.color_pair(0,0);
 for(let i=0;i<2560;i++)graphics.putSymbolAt(1+(i/80)|0,1+(i%80),239);
 // draw logo
@@ -24,9 +24,10 @@ for(let y=0;y<164;y++){o[y]-=Math.sign(o[y]);graphics.setLineOffset(95+y,o[y]*m)
 // wait for timer
 tmr=sys.nanoTime();while(sys.nanoTime()-tmr<300000*m)Math.sqrt(tmr) // waste some cpu time
 n-=m;}
+*/
 
 
-/*
+
 // display logo in mundane, true-to-msx way
 graphics.setFramebufferScroll(0,-164);
 // hide entire framebuffer with black text to hide the slow image drawing
@@ -44,7 +45,7 @@ let tmr=sys.nanoTime();
 let tlen=1073741824;
 while(1){let tdiff=sys.nanoTime()-tmr;if(tdiff>=tlen)break;
 graphics.setFramebufferScroll(0,-((1.0-tdiff/tlen)*164)|0);}
-*/
+
 
 // show how much ram is there
 con.color_pair(239,4);
