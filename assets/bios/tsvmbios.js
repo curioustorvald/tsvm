@@ -16,7 +16,7 @@ let o=[];for(let y=0;y<164;y++){
 let k=Math.round(r()*560/m)|0;
 o.push(k);graphics.setLineOffset(95+y,k*m);}
 // unhide screen
-graphics.setBackground(0,0,15);con.color_pair(239,255);
+graphics.setBackground(0,4,15);con.color_pair(239,255);
 for(let i=0;i<2560;i++)graphics.putSymbolAt(1+(i/80)|0,1+(i%80),0);
 // unscramble
 let tmr=0;let n=560*2;while(n>0){
@@ -36,7 +36,7 @@ for(let i=0;i<2560;i++)graphics.putSymbolAt(1+(i/80)|0,1+(i%80),239);
 // draw logo
 for(let i=0;i<logo.length;i++){graphics.plotPixel(i%560,95+(i/560)|0,logo[i])}
 // cover up bottom part with text characters (!)
-graphics.setBackground(0,0,15);con.color_pair(4,255);
+graphics.setBackground(0,4,15);con.color_pair(14,255);
 for(let y=1;y<19;y++)for(let x=1;x<81;x++)graphics.putSymbolAt(y,x,32);
 for(let x=1;x<81;x++)graphics.putSymbolAt(19,x,220);
 for(let y=20;y<33;y++)for(let x=1;x<81;x++)graphics.putSymbolAt(y,x,219);
@@ -48,7 +48,7 @@ graphics.setFramebufferScroll(0,-((1.0-tdiff/tlen)*164)|0);}
 
 
 // show how much ram is there
-con.color_pair(239,4);
+con.color_pair(239,14);
 let vramstr="VIDEO RAM : 256 Kbytes";
 let uramstr=` USER RAM : ${system.maxmem()>>>10} Kbytes`;
 con.move(20,(80-vramstr.length)/2);println(vramstr);
