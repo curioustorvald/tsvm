@@ -66,6 +66,7 @@ object VMRunnerFactory {
                         bind.putMember("gzip", CompressorDelegate)
                         bind.putMember("base64", Base64Delegate)
                         bind.putMember("com", SerialHelperDelegate(vm))
+                        bind.putMember("dma", DMADelegate(vm))
 
                         val fr = FileReader("./assets/JS_INIT.js")
                         val prg = fr.readText()
