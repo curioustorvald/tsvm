@@ -3,13 +3,12 @@ package net.torvald.tsvm;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
-import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
 import net.torvald.tsvm.peripheral.*;
 
 public class AppLoader {
 
-    public static String appTitle = "Totally Simple Virtual Machine";
+    public static String appTitle = "tsvm";
     public static Lwjgl3ApplicationConfiguration appConfig;
 
     public static int WIDTH = 640;//810;//720;
