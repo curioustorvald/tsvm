@@ -156,6 +156,11 @@ From the start of the memory space:
     command (writing to this memory address changes the status)
         1: reset palette to default
         2: fill framebuffer with given colour (arg1)
+        3: do '1' then do '2'
+        4: copy Low Font ROM (char 0–127) to mapping area
+        5: copy Low Font ROM (char 128–255) to mapping area
+        6: write contents of the font ROM mapping area to the Low Font ROM
+        7: write contents of the font ROM mapping area to the High Font ROM
 12 bytes
     argument for "command" (arg1: Byte, arg2: Byte)
     write to this address FIRST and then write to "command" to execute the command
@@ -165,8 +170,10 @@ From the start of the memory space:
     framebuffer scroll Y
 896 bytes
     horizontal scroll offset for scanlines
-2154 bytes
+234 bytes
     unused
+1920
+    mapped to font ROM
 
 2 bytes
     Cursor position in: (y*80 + x)

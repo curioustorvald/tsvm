@@ -2,6 +2,7 @@ package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
+import com.badlogic.gdx.graphics.g2d.Gdx2DPixmap
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
@@ -66,7 +67,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected val chrrom0 = Texture("./assets/"+config.chrRomPath)
+    protected val chrrom0 = Texture(Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA)))
     protected val faketex: Texture
 
     internal val textArea = UnsafeHelper.allocate(7682)
@@ -84,6 +85,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
     private var chrHeight = 14f
     var framebufferScrollX = 0
     var framebufferScrollY = 0
+    private var fontRomMappingMode = 0 // 0: low, 1: high
+    private var mappedFontRom = ByteArray(1920)
 
     override var ttyFore: Int = TTY_FORE_DEFAULT // cannot be Byte
     override var ttyBack: Int = TTY_BACK_DEFAULT // cannot be Byte
@@ -187,6 +190,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             250897L -> framebufferScrollX.ushr(8).toByte()
             250898L -> framebufferScrollY.toByte()
             250899L -> framebufferScrollY.ushr(8).toByte()
+            in 252030 until 252030+1920 -> mappedFontRom[adi- 252030]
             in 250880 until 250880+1024 -> unusedArea[addr - 250880]
             in 253950 until 261632 -> textArea[addr - 253950]
             in 261632 until 262144 -> peekPalette(adi - 261632)
@@ -214,6 +218,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             250897L -> framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8)
             250898L -> framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi)
             250899L -> framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8)
+            in 252030 until 252030+1920 -> mappedFontRom[adi- 252030] = byte
             in 250880 until 250880+1024 -> unusedArea[addr - 250880] = byte
             in 253950 until 261632 -> textArea[addr - 253950] = byte
             in 261632 until 262144 -> pokePalette(adi - 261632, byte)
@@ -280,8 +285,82 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 framebuffer.setColor(0f,0f,0f,arg1 / 255f)
                 framebuffer.fill()
             }
+            3 -> {
+                for (it in 0 until 1024) {
+                    val rgba = DEFAULT_PALETTE[it / 4]
+                    val channel = it % 4
+                    rgba.shr((3 - channel) * 8).and(255) / 255f
+                }
+                framebuffer.setColor(0f,0f,0f,arg1 / 255f)
+                framebuffer.fill()
+            }
+            4, 5 -> readFontRom(opcode - 4)
+            6, 7 -> writeFontRom(opcode - 6)
         }
     }
+
+    /**
+     * @param mode 0-Low, 1-High
+     */
+    open fun readFontRom(mode: Int) {
+        // max char size: 8*15
+        fontRomMappingMode = mode
+        val cw = config.width / config.textCols
+        val ch = config.height / config.textRows
+        if (cw > 8 || ch > 15) throw UnsupportedOperationException()
+
+        chrrom0.textureData.prepare()
+        val pixmap = chrrom0.textureData.consumePixmap()
+        val scanline = ByteArray(cw)
+        val dataOffset = mode * chrrom0.width * chrrom0.height / 2
+
+        for (char in 0 until 128) {
+            for (line in 0 until ch) {
+                pixmap.pixels.position((char / 16) * (cw * 16 * ch) + (char % 16) * cw + dataOffset)
+                pixmap.pixels.get(scanline)
+                var word = 0
+                for (bm in 0 until scanline.size) {
+                    val pixel = (scanline[bm] < 0).toInt()
+                    word = word or (pixel shl (scanline.size - 1 - bm))
+                }
+                mappedFontRom[char * ch + line]
+            }
+        }
+
+        pixmap.dispose()
+    }
+
+    /**
+     * @param mode 0-Low, 1-High
+     */
+    open fun writeFontRom(mode: Int) {
+        // max char size: 8*15
+        fontRomMappingMode = mode
+        val cw = config.width / config.textCols
+        val ch = config.height / config.textRows
+
+        if (cw > 8 || ch > 15) throw UnsupportedOperationException()
+
+        chrrom0.textureData.prepare()
+        val pixmap = chrrom0.textureData.consumePixmap()
+        val scanline = ByteArray(cw)
+        val dataOffset = mode * chrrom0.width * chrrom0.height / 2
+
+        for (char in 0 until 128) {
+            for (line in 0 until ch) {
+                val word = mappedFontRom[char * ch + line]
+                for (bm in 0 until scanline.size) {
+                    val pixel = 255 * (word and (1 shl (scanline.size - 1 - bm)).toByte() < 0).toInt()
+                    scanline[bm] = pixel.toByte()
+                }
+                pixmap.pixels.position((char / 16) * (cw * 16 * ch) + (char % 16) * cw + dataOffset)
+                pixmap.pixels.put(scanline)
+            }
+        }
+
+        pixmap.dispose()
+    }
+
 
     override fun resetTtyStatus() {
         ttyFore = TTY_FORE_DEFAULT
@@ -1033,7 +1112,7 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
 }
 """.trimIndent()
 
@@ -1161,7 +1240,7 @@ void main() {
     vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.r);
+    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
 }
 """.trimIndent()
 
@@ -1247,7 +1326,7 @@ void main() {
 
     vec4 palCol = vec4(1.0);
     // apply colour
-    if (tileCol.r > 0) {
+    if (tileCol.a > 0) {
         palCol = foreColFromMap;
     }
     else {
@@ -1344,7 +1423,7 @@ void main() {
 
     vec4 palCol = vec4(1.0);
     // apply colour
-    if (tileCol.r > 0) {
+    if (tileCol.a > 0) {
         palCol = foreColFromMap;
     }
     else {
