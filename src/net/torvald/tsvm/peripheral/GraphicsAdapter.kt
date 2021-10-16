@@ -67,7 +67,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected val chrrom0 = Texture(Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA)))
+    protected var chrrom0 = Texture(Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA)))
     protected val faketex: Texture
 
     internal val textArea = UnsafeHelper.allocate(7682)
@@ -357,6 +357,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 pixmap.pixels.put(scanline)
             }
         }
+
+        chrrom0.dispose()
+        chrrom0 = Texture(pixmap)
 
         pixmap.dispose()
     }
