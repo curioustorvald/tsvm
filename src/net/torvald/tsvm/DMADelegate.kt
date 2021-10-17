@@ -20,6 +20,7 @@ class DMADelegate(val vm: VM) {
             UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + from, data, UnsafeHelper.getArrayOffset(data), length.toLong())
             it.framebuffer.pixels.position(offset)
             it.framebuffer.pixels.put(data)
+            it.framebuffer.pixels.position(0) // rewinding to avoid graphical glitch
         }
     }
 
@@ -37,6 +38,7 @@ class DMADelegate(val vm: VM) {
             val data = ByteArray(length)
             it.framebuffer.pixels.position(from)
             it.framebuffer.pixels.get(data)
+            it.framebuffer.pixels.position(0) // rewinding to avoid graphical glitch
             UnsafeHelper.memcpyRaw(data, UnsafeHelper.getArrayOffset(data), null, vm.usermem.ptr + to, length.toLong())
         }
     }

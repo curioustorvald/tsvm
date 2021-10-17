@@ -6,7 +6,9 @@ import com.badlogic.gdx.graphics.g2d.Gdx2DPixmap
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.graphics.glutils.PixmapTextureData
 import com.badlogic.gdx.math.Matrix4
+import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.AppLoader
@@ -67,7 +69,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected var chrrom0 = Texture(Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA)))
+    protected var chrrom = Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA))
+    protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)
     protected val faketex: Texture
 
     internal val textArea = UnsafeHelper.allocate(7682)
@@ -161,6 +164,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         pm.drawPixel(0, 0, -1)
         faketex = Texture(pm)
         pm.dispose()
+
 
         // initialise with NONZERO value; value zero corresponds to opaque black, and it will paint the whole screen black
         // when in text mode, and that's undesired behaviour
@@ -309,25 +313,27 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val ch = config.height / config.textRows
         if (cw > 8 || ch > 15) throw UnsupportedOperationException()
 
-        chrrom0.textureData.prepare()
-        val pixmap = chrrom0.textureData.consumePixmap()
+        val pixmap = chrrom
         val scanline = ByteArray(cw)
         val dataOffset = mode * chrrom0.width * chrrom0.height / 2
 
         for (char in 0 until 128) {
+            val px = (char % 16) * cw; val py = (char / 16) * ch
+            val off = dataOffset + (py * 16 * cw) + px
             for (line in 0 until ch) {
-                pixmap.pixels.position((char / 16) * (cw * 16 * ch) + (char % 16) * cw + dataOffset)
+                pixmap.pixels.position(off + (line * 16 * cw))
                 pixmap.pixels.get(scanline)
+                pixmap.pixels.position(0) // rewinding to avoid graphical glitch
                 var word = 0
                 for (bm in 0 until scanline.size) {
                     val pixel = (scanline[bm] < 0).toInt()
                     word = word or (pixel shl (scanline.size - 1 - bm))
                 }
-                mappedFontRom[char * ch + line]
+                mappedFontRom[char * ch + line] = word.toByte()
             }
         }
 
-        pixmap.dispose()
+//        try { pixmap.dispose() } catch (e: GdxRuntimeException) {}
     }
 
     /**
@@ -341,27 +347,25 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
 
         if (cw > 8 || ch > 15) throw UnsupportedOperationException()
 
-        chrrom0.textureData.prepare()
-        val pixmap = chrrom0.textureData.consumePixmap()
+        val pixmap = chrrom
         val scanline = ByteArray(cw)
         val dataOffset = mode * chrrom0.width * chrrom0.height / 2
 
         for (char in 0 until 128) {
+            val px = (char % 16) * cw; val py = (char / 16) * ch
+            val off = dataOffset + (py * 16 * cw) + px
             for (line in 0 until ch) {
-                val word = mappedFontRom[char * ch + line]
+                val word = mappedFontRom[char * ch + line].toInt()
                 for (bm in 0 until scanline.size) {
-                    val pixel = 255 * (word and (1 shl (scanline.size - 1 - bm)).toByte() < 0).toInt()
+                    val pixel = 255 * ((word shr (cw - 1 - bm)) and 1)
                     scanline[bm] = pixel.toByte()
                 }
-                pixmap.pixels.position((char / 16) * (cw * 16 * ch) + (char % 16) * cw + dataOffset)
+                pixmap.pixels.position(off + (line * 16 * cw))
                 pixmap.pixels.put(scanline)
+                pixmap.pixels.position(0) // rewinding to avoid graphical glitch
             }
         }
 
-        chrrom0.dispose()
-        chrrom0 = Texture(pixmap)
-
-        pixmap.dispose()
     }
 
 
@@ -671,6 +675,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         try { textBackTex.dispose() } catch (_: Throwable) {}
 
         chrrom0.dispose()
+        chrrom.dispose()
         unusedArea.destroy()
     }
 
@@ -685,6 +690,10 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
 
     open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float) {
+        // must reset positions as pixmaps expect them to be zero
+        framebuffer.pixels.position(0)
+        chrrom.pixels.position(0)
+
         framebuffer2.setColor(-1);framebuffer2.fill()
         for (y in 0 until config.height) {
             var xoff = unusedArea[20L + 2*y].toUint().shl(8) or unusedArea[20L + 2*y + 1].toUint()
@@ -702,6 +711,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         }
 
 
+        chrrom0.dispose()
+        chrrom0 = Texture(chrrom)
         rendertex.dispose()
         rendertex = Texture(framebuffer2, Pixmap.Format.RGBA8888, false)
 
