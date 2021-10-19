@@ -69,7 +69,8 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected var chrrom = Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA))
+    protected fun getOriginalChrrom() = Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA))
+    protected var chrrom: Pixmap = getOriginalChrrom()
     protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)
     protected val faketex: Texture
 
@@ -298,8 +299,9 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 framebuffer.setColor(0f,0f,0f,arg1 / 255f)
                 framebuffer.fill()
             }
-            4, 5 -> readFontRom(opcode - 4)
-            6, 7 -> writeFontRom(opcode - 6)
+            16, 17 -> readFontRom(opcode - 16)
+            18, 19 -> writeFontRom(opcode - 18)
+            20, 21 -> resetFontRom(opcode - 20)
         }
     }
 
@@ -366,6 +368,23 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
             }
         }
 
+    }
+
+    /**
+     * @param mode 0-Low, 1-High
+     */
+    open fun resetFontRom(mode: Int) {
+        val pixmap = getOriginalChrrom()
+        val data = ByteArray(chrrom0.width * chrrom0.height / 2)
+        val dataOffset = mode * chrrom0.width * chrrom0.height / 2
+        pixmap.pixels.position(dataOffset)
+        pixmap.pixels.get(data)
+
+        chrrom.pixels.position(dataOffset)
+        chrrom.pixels.put(data)
+        chrrom.pixels.position(0)
+
+        pixmap.dispose()
     }
 
 

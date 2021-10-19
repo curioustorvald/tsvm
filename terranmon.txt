@@ -157,10 +157,13 @@ From the start of the memory space:
         1: reset palette to default
         2: fill framebuffer with given colour (arg1)
         3: do '1' then do '2'
-        4: copy Low Font ROM (char 0–127) to mapping area
-        5: copy High Font ROM (char 128–255) to mapping area
-        6: write contents of the font ROM mapping area to the Low Font ROM
-        7: write contents of the font ROM mapping area to the High Font ROM
+
+        16: copy Low Font ROM (char 0–127) to mapping area
+        17: copy High Font ROM (char 128–255) to mapping area
+        18: write contents of the font ROM mapping area to the Low Font ROM
+        19: write contents of the font ROM mapping area to the High Font ROM
+        20: reset Low Font ROM to default
+        21: reset High Font ROM to default
 12 bytes
     argument for "command" (arg1: Byte, arg2: Byte)
     write to this address FIRST and then write to "command" to execute the command

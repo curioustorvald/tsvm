@@ -1,4 +1,10 @@
-sys.poke(-1299460, 4)
+if ("reset" == (exec_args[1] || "").toLowerCase()) {
+    sys.poke(-1299460, 20)
+    sys.poke(-1299460, 21)
+    return 0
+}
+
+sys.poke(-1299460, 16)
 
 let off = -1300607 - (14*0x4F)
 let char = [0,42,85,62,65,85,65,81,93,65,62,0,0,0]
@@ -22,7 +28,7 @@ for (let k = 0; k < 14*128; k += 14) {
 }
 
 
-sys.poke(-1299460, 6)
+sys.poke(-1299460, 18)
 
 for (let y=0; y < 16; y++) {
     for (let x = 0; x < 16; x++) {
