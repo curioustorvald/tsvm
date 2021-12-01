@@ -2,6 +2,7 @@
 // Version 1.0 Release Date 2020-12-28
 // Version 1.1 Release Date 2021-01-28
 // Version 1.2 Release Date 2021-05-05
+// Version 1.2.1 Release Date 2021-12-01
 
 /*
 Copyright (c) 2020-2021 CuriousTorvald

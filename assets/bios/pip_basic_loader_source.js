@@ -2,6 +2,7 @@
 // Version 1.0 Release Date 2020-12-28
 // Version 1.1 Release Date 2021-01-28
 // Version 1.2 Release Date 2021-05-05
+// Version 1.2.1 Release Date 2021-12-01
 
 /*
 Copyright (c) 2020-2021 CuriousTorvald
@@ -25,7 +26,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
  */
 
-const THEVERSION = "1.2"
+const THEVERSION = "1.2.1"
 
 const PROD = true
 let INDEX_BASE = 0
@@ -783,6 +784,7 @@ bS.addAsBasicVar = function(lnum, troValue, rh) {
         let varname = troValue.toUpperCase()
         //println("input varname: "+varname)
         if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname)
+        if (bS.builtin[varname]) throw lang.asgnOnConst(lnum, varname)
         let type = JStoBASICtype(rh)
         bS.vars[varname] = new BasicVar(rh, type)
         return {asgnVarName: varname, asgnValue: rh}
@@ -1729,6 +1731,40 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         let ret = []
         fns.forEach(fn => ret = ret.concat(functor.map(it => bS.builtin["~<"].f(lnum, stmtnum, [fn, it]))))
         return ret
+    })
+}},
+/** Writes to the serial device and blocks until a status code is returned
+ * @param device number (int), message (str)
+ * @return status code from the device.
+ */
+"CPUT" : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArg(lnum, stmtnum, args, (devnum, msg) => {
+        if (!isNumable(devnum)) throw lang.illegalType(lnum, "LH:"+Object.entries(devnum))
+        com.sendMessage(devnum, msg)
+        return com.getStatusCode(devnum)
+    })
+}},
+/** Reads the entire message (may be larger than 4096 bytes) from the serial device to the scratchpad memory
+ * @param device number (int), destination pointer (int)
+ * @return length of the message being read; specified memory will be filled with the actual message
+ */
+"CGET" : {argc:2, f:function(lnum, stmtnum, args) {
+    return twoArgNum(lnum, stmtnum, args, (devnum, ptr) => {
+        let msg = com.pullMessage(devnum)
+        let len = msg.length|0
+        for (let i = 0; i < len; i++) {
+            sys.poke(ptr + i, msg.charCodeAt(i))
+        }
+        return len
+    })
+}},
+/** Gets the status code of the serial device
+ * @param device number (int)
+ * @return status code 0..255
+ */
+"CSTA" : {argc:2, f:function(lnum, stmtnum, args) {
+    return oneArgNum(lnum, stmtnum, args, (devnum) => {
+        return com.getStatusCode(devnum)
     })
 }},
 "OPTIONDEBUG" : {f:function(lnum, stmtnum, args) {
