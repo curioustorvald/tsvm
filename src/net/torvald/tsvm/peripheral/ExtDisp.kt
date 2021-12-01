@@ -111,7 +111,7 @@ class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase {
     }
 
     override fun dispose() {
-        framebuffer.dispose()
+        try { framebuffer.dispose() } catch (e: Throwable) {}
         try { tex.dispose() } catch (e: Throwable) {}
     }
 
