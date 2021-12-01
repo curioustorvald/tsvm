@@ -11,6 +11,8 @@ import kotlin.experimental.and
 
 class IOSpace(val vm: VM) : PeriBase, InputProcessor {
 
+    override val typestring = "io"
+
     override fun getVM(): VM {
         return vm
     }

@@ -59,7 +59,6 @@ class VM(
 
     fun init() {
         peripheralTable[0] = PeripheralEntry(
-            "io",
             IOSpace(this),
             HW_RESERVE_SIZE,
             MMIO_SIZE.toInt() - 256,
@@ -196,12 +195,21 @@ class VM(
     internal data class VMNativePtr(val address: Int, val size: Int)
 }
 
-data class PeripheralEntry(
-    val type: String = "null",
+class PeripheralEntry(
     val peripheral: PeriBase? = null,
     val memsize: Long = 0,
     val mmioSize: Int = 0,
-    val interruptCount: Int = 0 // max: 4
+    val interruptCount: Int = 0, // max: 4
+) {
+    val type = peripheral?.typestring
+}
+
+class PeripheralEntry2(
+    val memsize: Long = 0,
+    val mmioSize: Int = 0,
+    val interruptCount: Int = 0, // max: 4
+    val peripheralClassname: String,
+    vararg val args: Any
 )
 
 fun Int.kB() = this * 1024L

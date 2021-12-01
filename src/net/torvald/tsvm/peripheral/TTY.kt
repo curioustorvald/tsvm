@@ -8,6 +8,8 @@ import java.io.OutputStream
 
 class TTY(val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
 
+    override val typestring = VM.PERITYPE_GPU_AND_TERM
+
     companion object {
         const val TEXT_ROWS = 25
         const val TEXT_COLS = 80

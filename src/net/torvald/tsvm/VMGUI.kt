@@ -11,14 +11,28 @@ import java.io.File
 
 fun ByteArray.startsWith(other: ByteArray) = this.sliceArray(other.indices).contentEquals(other)
 
-
-data class EmulInstance(
+class EmulInstance(
     val vm: VM,
-    val display: String,
+    val display: String?,
     val diskPath: String = "assets/disk0",
     val drawWidth: Int,
-    val drawHeight: Int
-)
+    val drawHeight: Int,
+) {
+
+    var extraPeripherals: List<Pair<Int, PeripheralEntry2>> = listOf(); private set
+
+    constructor(
+        vm: VM,
+        display: String?,
+        diskPath: String = "assets/disk0",
+        drawWidth: Int,
+        drawHeight: Int,
+        extraPeripherals: List<Pair<Int, PeripheralEntry2>>
+    ) : this(vm, display, diskPath, drawWidth, drawHeight) {
+        this.extraPeripherals = extraPeripherals
+    }
+
+}
 
 class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHeight: Int) : ApplicationAdapter() {
 
@@ -27,7 +41,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     lateinit var batch: SpriteBatch
     lateinit var camera: OrthographicCamera
 
-    lateinit var gpu: GraphicsAdapter
+    var gpu: GraphicsAdapter? = null
     lateinit var vmRunner: VMRunner
     lateinit var coroutineJob: Job
     lateinit var memvwr: Memvwr
@@ -57,26 +71,47 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     }
 
     private fun init() {
-        val loadedClass = Class.forName(loaderInfo.display)
-        val loadedClassConstructor = loadedClass.getConstructor(vm::class.java)
-        val loadedClassInstance = loadedClassConstructor.newInstance(vm)
-        gpu = (loadedClassInstance as GraphicsAdapter)
+        if (loaderInfo.display != null) {
+            val loadedClass = Class.forName(loaderInfo.display)
+            val loadedClassConstructor = loadedClass.getConstructor(vm::class.java)
+            val loadedClassInstance = loadedClassConstructor.newInstance(vm)
+            gpu = (loadedClassInstance as GraphicsAdapter)
 
-        vm.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File(loaderInfo.diskPath)))
+            vm.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File(loaderInfo.diskPath)))
 
-        vm.peripheralTable[1] = PeripheralEntry(
-            VM.PERITYPE_GPU_AND_TERM,
-            gpu,
-            GraphicsAdapter.VRAM_SIZE,
-            16,
-            0
-        )
+            vm.peripheralTable[1] = PeripheralEntry(
+                gpu,
+                GraphicsAdapter.VRAM_SIZE,
+                16,
+                0
+            )
+
+            vm.getPrintStream = { gpu!!.getPrintStream() }
+            vm.getErrorStream = { gpu!!.getErrorStream() }
+            vm.getInputStream = { gpu!!.getInputStream() }
+        }
+        else {
+            vm.getPrintStream = { System.out }
+            vm.getErrorStream = { System.err }
+            vm.getInputStream = { System.`in` }
+        }
+
+        loaderInfo.extraPeripherals.forEach { (port, peri) ->
+            val typeargs = peri.args.map { it.javaClass }.toTypedArray()
+
+            val loadedClass = Class.forName(peri.peripheralClassname)
+            val loadedClassConstructor = loadedClass.getConstructor(*typeargs)
+            val loadedClassInstance = loadedClassConstructor.newInstance(*peri.args)
+
+            vm.peripheralTable[port] = PeripheralEntry(
+                loadedClassInstance as PeriBase,
+                peri.memsize,
+                peri.mmioSize,
+                peri.interruptCount
+            )
+        }
 
         Gdx.input.inputProcessor = vm.getIO()
-
-        vm.getPrintStream = { gpu.getPrintStream() }
-        vm.getErrorStream = { gpu.getErrorStream() }
-        vm.getInputStream = { gpu.getInputStream() }
 
         if (usememvwr) memvwr = Memvwr(vm)
 
@@ -138,11 +173,21 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
 
+    private val defaultGuiBackgroundColour = Color(0x444444ff)
+
     private fun renderGame(delta: Float) {
-        val clearCol = gpu.getBackgroundColour()
+        val clearCol = gpu?.getBackgroundColour() ?: defaultGuiBackgroundColour
         Gdx.gl.glClearColor(clearCol.r, clearCol.g, clearCol.b, clearCol.a)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
-        gpu.render(delta, batch, (viewportWidth - loaderInfo.drawWidth).div(2).toFloat(), (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
+        gpu?.render(delta, batch, (viewportWidth - loaderInfo.drawWidth).div(2).toFloat(), (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
+
+        vm.findPeribyType("oled")?.let {
+            val disp = it.peripheral as ExtDisp
+
+            disp.render(batch,
+                (viewportWidth - loaderInfo.drawWidth).div(2).toFloat() + (gpu?.config?.width ?: 0),
+                (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
+        }
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {

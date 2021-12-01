@@ -49,6 +49,8 @@ class ReferenceLikeLCD(vm: VM) : GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CON
 open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: SuperGraphicsAddonConfig = SuperGraphicsAddonConfig()) :
     GlassTty(config.textRows, config.textCols), PeriBase {
 
+    override val typestring = VM.PERITYPE_GPU_AND_TERM
+
     override fun getVM(): VM {
         return vm
     }

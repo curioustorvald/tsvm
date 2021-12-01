@@ -4,6 +4,8 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
+import kotlin.Pair;
+import kotlin.collections.CollectionsKt;
 import net.torvald.tsvm.peripheral.*;
 
 public class AppLoader {
@@ -33,16 +35,26 @@ public class AppLoader {
 //        VM vm = new VM(128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
         VM vm = new VM(2048 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE});
 
+        VM pipvm = new VM(4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE});
+
         // uncomment to target the TerranBASIC runner
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
 
         EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0", 560, 448);
-        EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", "assets/disk0", 560, 447);
+        EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", "assets/disk0", 560, 448);
         EmulInstance term = new EmulInstance(vm, "net.torvald.tsvm.peripheral.Term", "assets/disk0", 720, 480);
         EmulInstance portable = new EmulInstance(vm, "net.torvald.tsvm.peripheral.CharacterLCDdisplay", "assets/disk0", 628, 302);
         EmulInstance wp = new EmulInstance(vm, "net.torvald.tsvm.peripheral.WpTerm", "assets/wpdisk", 810, 360);
 
-        new Lwjgl3Application(new VMGUI(reference, WIDTH, HEIGHT), appConfig);
+        EmulInstance pip = new EmulInstance(pipvm, null, "assets/disk0", 640, 480, CollectionsKt.listOf(new Pair(1, new PeripheralEntry2(
+                32768L,
+                1,
+                0,
+                "net.torvald.tsvm.peripheral.ExtDisp",
+                pipvm, 160, 140
+        ))));
+
+        new Lwjgl3Application(new VMGUI(pip, WIDTH, HEIGHT), appConfig);
     }
 
     public static ShaderProgram loadShaderFromFile(String vert, String frag) {

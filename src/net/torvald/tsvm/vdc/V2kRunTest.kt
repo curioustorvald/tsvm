@@ -32,7 +32,6 @@ class V2kRunTest : ApplicationAdapter() {
         gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
 
         vm.peripheralTable[1] = PeripheralEntry(
-            VM.PERITYPE_GPU_AND_TERM,
             gpu,
             GraphicsAdapter.VRAM_SIZE,
             16,

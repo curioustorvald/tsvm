@@ -20,4 +20,6 @@ interface PeriBase {
     fun dispose()
 
     fun getVM(): VM
+
+    val typestring: String
 }
