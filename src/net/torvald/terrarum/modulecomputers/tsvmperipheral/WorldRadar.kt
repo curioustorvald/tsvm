@@ -77,6 +77,8 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
         return sendSize
     }
 
+    private var oldCmdbuf = HashMap<Int,Byte>(1024)
+
     override fun writeoutImpl(inputData: ByteArray) {
         val inputString = inputData.trimNull().toString(VM.CHARSET)
 
@@ -116,8 +118,8 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
                 }
             }}
 
-            cmdbuf.keys.sorted().forEach { key ->
-                val value = cmdbuf[key]!!.toInt()
+            (oldCmdbuf.keys union cmdbuf.keys).sorted().forEach { key ->
+                val value = (cmdbuf[key] ?: AIR_OUT).toInt()
                 val x = key % 256
                 val y = key / 256
                 messageComposeBuffer.write(y)
@@ -125,6 +127,7 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
                 messageComposeBuffer.write(value)
             }
 
+            oldCmdbuf = cmdbuf
         }
     }
 }
