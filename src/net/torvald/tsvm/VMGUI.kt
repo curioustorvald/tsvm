@@ -5,6 +5,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
+import net.torvald.terrarum.modulecomputers.tsvmperipheral.WorldRadar
 import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
 import net.torvald.tsvm.peripheral.*
 import java.io.File
@@ -95,6 +96,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             vm.getErrorStream = { System.err }
             vm.getInputStream = { System.`in` }
         }
+
+        vm.getIO().blockTransferPorts[1].attachDevice(WorldRadar(Gdx.files.internal("test_assets/test_terrain.png")))
 
         loaderInfo.extraPeripherals.forEach { (port, peri) ->
             val typeargs = peri.args.map { it.javaClass }.toTypedArray()

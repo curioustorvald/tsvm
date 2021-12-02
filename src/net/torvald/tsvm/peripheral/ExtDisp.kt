@@ -97,6 +97,10 @@ class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase {
             in 0 until width * height -> {
                 framebuffer.pixels.put(adi, byte)
             }
+            (width * height).toLong() -> {
+                framebuffer.setColor(bi.shl(24) or bi.shr(16) or bi.shl(8) or bi)
+                framebuffer.fill()
+            }
             in 0 until nextPowerOfTwo(width * height) -> { /* do nothing */ }
             else -> poke(addr % nextPowerOfTwo(width * height), byte)
         }
