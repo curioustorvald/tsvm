@@ -107,10 +107,6 @@ Description: reads one block of file. Any subsequent read attempts will return n
 
 Description: closes any file that is open.
 
-    LOAD"<path to file>",<drive number>
-
-Description: loads a file onto the main memory. The pointer to the file will be sent back to the host device.
-
     LOADBOOT,<drive number>
 
 Description: loads a bootloader so that it can be read by the host device through the serial connection.
