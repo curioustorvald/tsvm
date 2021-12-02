@@ -13,10 +13,10 @@ import java.io.ByteArrayOutputStream
  */
 class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
 
-    private val W = 160
-    private val H = 140
+    private val W = 162
+    private val H = 142
 
-    private val world = ByteArray(W*H)
+    private val world = ByteArray(256*256)
 
     private val AIR = 0.toByte()
     private val DIRT = 1.toByte()
@@ -32,9 +32,9 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
         statusCode = TestDiskDrive.STATE_CODE_STANDBY
 
         val worldTex = Pixmap(pngfile)
-        for (y in 0 until 140) { for (x in 0 until 160) {
+        for (y in 0 until worldTex.height) { for (x in 0 until worldTex.width) {
             val c = worldTex.getPixel(x, y)
-            world[y * W + x] = when (c) {
+            world[y * worldTex.width + x] = when (c) {
                 0x46712dff -> GRASS
                 0x9b9a9bff.toInt() -> STONE
                 0x6a5130ff -> DIRT
@@ -101,8 +101,8 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
             resetBuf()
             val cmdbuf = HashMap<Int,Byte>(1024)
 
-            for (y in 1 until H-1) { for (x in 1 until W-1) {
-                val yx = y.shl(8) or x
+            for (y in 1..H-2) { for (x in 1..W-2) {
+                val yx = (y-1).shl(8) or x
                 val i = y * W + x
                 val nearby = listOf(i-W,i-1,i+1,i+W).map { world[it] } // up, left, right, down
                 val block = world[i]
