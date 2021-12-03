@@ -29,13 +29,16 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         }
     }*/
 
-    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
+    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean) {
         batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE
             batch.draw(machine, xoff, yoff)
         }
-        super.render(delta, batch, xoff+74, yoff+102)
+        if (!flipY)
+            super.render(delta, batch, xoff+74, yoff+102, flipY)
+        else
+            super.render(delta, batch, xoff+74, yoff+72, flipY)
 
         // draw BMS and RTC
         val batPerc = "89"
@@ -51,21 +54,23 @@ class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
         batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE
-            val y = yoff + 102 + config.height * config.drawScale
+            val y = if (!flipY) yoff + 102 + config.height * config.drawScale else yoff + 56
+            val sx = lcdFont.tileW.toFloat()
+            val sy = lcdFont.tileH * (if (flipY) -1f else 1f)
             for (x in 0 until config.textCols) {
-                batch.draw(lcdFont.get(0,0), xoff+74 + x * lcdFont.tileW, y)
+                batch.draw(lcdFont.get(0,0), xoff+74 + x * lcdFont.tileW, y, sx, sy)
             }
             for (x in clock.indices) {
                 val ccode = clock[x].toInt()
-                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + x * lcdFont.tileW, y)
+                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + x * lcdFont.tileW, y, sx, sy)
             }
             for (x in msg.indices) {
                 val ccode = msg[x]
-                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + (x + 6) * lcdFont.tileW, y)
+                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + (x + 6) * lcdFont.tileW, y, sx, sy)
             }
             for (x in batText.indices) {
                 val ccode = batText[x].toInt()
-                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + (config.textCols - batText.length + x) * lcdFont.tileW, y)
+                batch.draw(lcdFont.get(ccode % 16, ccode / 16), xoff+74 + (config.textCols - batText.length + x) * lcdFont.tileW, y, sx, sy)
             }
         }
     }

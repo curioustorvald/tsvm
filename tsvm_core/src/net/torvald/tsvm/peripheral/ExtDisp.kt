@@ -43,7 +43,7 @@ class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase {
 
     private lateinit var tex: Texture
 
-    open fun render(uiBatch: SpriteBatch, xoff: Float, yoff: Float) {
+    open fun render(uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false) {
         framebuffer.pixels.position(0)
 
         tex = Texture(framebuffer)
@@ -51,7 +51,10 @@ class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase {
         uiBatch.inUse {
             uiBatch.color = Color.WHITE
             uiBatch.shader = drawShader
-            uiBatch.draw(tex, xoff, yoff)
+            if (!flipY)
+                uiBatch.draw(tex, xoff, yoff)
+            else
+                uiBatch.draw(tex, xoff, yoff + tex.height, tex.width.toFloat(), -tex.height.toFloat())
         }
 
         tex.dispose()

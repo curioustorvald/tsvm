@@ -38,9 +38,9 @@ open class TexticsAdapterBase(vm: VM, config: AdapterConfig) : GraphicsAdapter(v
     private val ALIGN = (HEIGHT - TEX_HEIGHT).absoluteValue / 2f
     private val phosphorCol = crtColor[theme.substring(4)] ?: crtColor["white"]
 
-    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float) {
+    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean) {
 
-        super.render(delta, batch, xoff, yoff)
+        super.render(delta, batch, xoff, yoff, flipY)
 
         batch.inUse {
             batch.enableBlending()

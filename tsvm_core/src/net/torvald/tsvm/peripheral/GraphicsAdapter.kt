@@ -710,7 +710,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         unusedArea[1].toInt().and(15).toFloat() / 15f,
         unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
 
-    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float) {
+    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false) {
         // must reset positions as pixmaps expect them to be zero
         framebuffer.pixels.position(0)
         chrrom.pixels.position(0)
@@ -892,7 +892,12 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
                 if (config.scaleFiltered) Texture.TextureFilter.Linear else Texture.TextureFilter.Nearest,
                 if (config.scaleFiltered) Texture.TextureFilter.Linear else Texture.TextureFilter.Nearest
             )
-            uiBatch.draw(outFBOregion[1], xoff, HEIGHT * config.drawScale + yoff, WIDTH * config.drawScale, -HEIGHT * config.drawScale)
+
+            if (!flipY)
+                uiBatch.draw(outFBOregion[1], xoff, HEIGHT * config.drawScale + yoff, WIDTH * config.drawScale, -HEIGHT * config.drawScale)
+            else
+                uiBatch.draw(outFBOregion[1], xoff, yoff, WIDTH * config.drawScale, HEIGHT * config.drawScale)
+
         }
 
 
