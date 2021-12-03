@@ -2,7 +2,10 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/tsvm.iml" filepath="$PROJECT_DIR$/tsvm.iml" />
+      <module fileurl="file://$PROJECT_DIR$/TerranBASICexecutable/TerranBASICexecutable.iml" filepath="$PROJECT_DIR$/TerranBASICexecutable/TerranBASICexecutable.iml" />
+      <module fileurl="file://$PROJECT_DIR$/tsvm_core/tsvm_core.iml" filepath="$PROJECT_DIR$/tsvm_core/tsvm_core.iml" />
+      <module fileurl="file://$PROJECT_DIR$/tsvm_dummymodule.iml" filepath="$PROJECT_DIR$/tsvm_dummymodule.iml" />
+      <module fileurl="file://$PROJECT_DIR$/tsvm_executable.iml" filepath="$PROJECT_DIR$/tsvm_executable.iml" />
     </modules>
   </component>
 </project>
