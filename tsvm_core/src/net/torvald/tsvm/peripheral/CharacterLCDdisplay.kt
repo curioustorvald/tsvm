@@ -7,7 +7,7 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.TsvmTextureRegionPack
 import net.torvald.tsvm.VM
 
-class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(vm, AdapterConfig(
+class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, AdapterConfig(
     "pmlcd_inverted", 240, 64, 40, 8, 253, 255, 262144L, "lcd2.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD, 2f
 )
 ) {

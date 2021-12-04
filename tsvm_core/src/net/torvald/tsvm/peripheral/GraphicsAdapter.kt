@@ -40,13 +40,13 @@ data class SuperGraphicsAddonConfig(
     val hasSecondBank: Boolean = false
 )
 
-class ReferenceGraphicsAdapter(vm: VM) : GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
-class ReferenceLikeLCD(vm: VM) : GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
+class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
 
 /**
  * NOTE: if TTY size is greater than 80*32, SEGFAULT will occur because text buffer is fixed in size
  */
-open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: SuperGraphicsAddonConfig = SuperGraphicsAddonConfig()) :
+open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val config: AdapterConfig, val sgr: SuperGraphicsAddonConfig = SuperGraphicsAddonConfig()) :
     GlassTty(config.textRows, config.textCols), PeriBase {
 
     override val typestring = VM.PERITYPE_GPU_AND_TERM
@@ -71,7 +71,7 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected fun getOriginalChrrom() = Pixmap(Gdx2DPixmap(Gdx.files.internal("./assets/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA))
+    protected fun getOriginalChrrom() = Pixmap(Gdx2DPixmap(Gdx.files.internal("$assetsRoot/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA))
     protected var chrrom: Pixmap = getOriginalChrrom()
     protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)
     protected val faketex: Texture
@@ -908,8 +908,6 @@ open class GraphicsAdapter(val vm: VM, val config: AdapterConfig, val sgr: Super
         }
 
     }
-
-    //private val testTex = Texture("./assets/pal.png");
 
     private fun blendNormal(batch: SpriteBatch) {
         Gdx.gl.glEnable(GL20.GL_TEXTURE_2D)

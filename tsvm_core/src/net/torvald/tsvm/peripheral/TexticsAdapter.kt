@@ -8,7 +8,7 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
 
-open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(vm, config) {
+open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(assetsRoot, vm, config) {
 
     private val crtGradTex = Texture("$assetsRoot/crt_grad.png")
 
