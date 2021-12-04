@@ -15,7 +15,7 @@ object VMRunnerFactory {
 
     private var firstTime = true
 
-    operator fun invoke(vm: VM, extension: String): VMRunner {
+    operator fun invoke(assetsRoot: String, vm: VM, extension: String): VMRunner {
 
         if (firstTime) {
             firstTime = false
@@ -66,7 +66,7 @@ object VMRunnerFactory {
                         bind.putMember("com", SerialHelperDelegate(vm))
                         bind.putMember("dma", DMADelegate(vm))
 
-                        val fr = FileReader("./assets/JS_INIT.js")
+                        val fr = FileReader("$assetsRoot/JS_INIT.js")
                         val prg = fr.readText()
                         fr.close()
                         context.eval("js", sanitiseJS(prg))

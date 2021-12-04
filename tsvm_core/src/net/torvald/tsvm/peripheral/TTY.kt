@@ -6,7 +6,7 @@ import net.torvald.tsvm.VM
 import java.io.InputStream
 import java.io.OutputStream
 
-class TTY(val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
+class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
 
     override val typestring = VM.PERITYPE_GPU_AND_TERM
 
@@ -15,7 +15,7 @@ class TTY(val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
         const val TEXT_COLS = 80
     }
 
-    private val chrrom = Texture("./assets/tty.png")
+    private val chrrom = Texture("$assetsRoot/tty.png")
     private val textBuffer = UnsafeHelper.allocate(TEXT_ROWS * TEXT_COLS * 2L)
     override var rawCursorPos = 0
     

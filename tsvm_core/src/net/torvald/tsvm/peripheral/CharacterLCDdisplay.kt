@@ -7,13 +7,13 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.TextureRegionPack
 import net.torvald.tsvm.VM
 
-class CharacterLCDdisplay(vm: VM) : GraphicsAdapter(vm, AdapterConfig(
+class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(vm, AdapterConfig(
     "pmlcd_inverted", 240, 64, 40, 8, 253, 255, 262144L, "lcd2.png", 0.7f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD, 2f
 )
 ) {
 
-    private val machine = Texture("./assets/4008_portable_full.png")
-    private val lcdFont = TextureRegionPack(Texture("./assets/lcd.png"), 12, 16)
+    private val machine = Texture("$assetsRoot/4008_portable_full.png")
+    private val lcdFont = TextureRegionPack(Texture("$assetsRoot/lcd.png"), 12, 16)
 
     /*override fun peek(addr: Long): Byte? {
         return when (addr) {

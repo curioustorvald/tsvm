@@ -8,9 +8,9 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
 
-open class TexticsAdapterBase(vm: VM, config: AdapterConfig) : GraphicsAdapter(vm, config) {
+open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(vm, config) {
 
-    private val crtGradTex = Texture("./assets/crt_grad.png")
+    private val crtGradTex = Texture("$assetsRoot/crt_grad.png")
 
     companion object {
         val crtColor = hashMapOf(
@@ -64,7 +64,7 @@ open class TexticsAdapterBase(vm: VM, config: AdapterConfig) : GraphicsAdapter(v
     }
 }
 
-class Term(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
+class Term(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, AdapterConfig(
     "crt_white",
     720,
     480,
@@ -78,7 +78,7 @@ class Term(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
     GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
 ))
 
-class WpTerm(vm: VM) : TexticsAdapterBase(vm, AdapterConfig(
+class WpTerm(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, AdapterConfig(
     "crt_amber",
     810,
     360,
