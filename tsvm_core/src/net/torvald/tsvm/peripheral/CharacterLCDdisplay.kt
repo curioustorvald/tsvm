@@ -4,7 +4,7 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
-import net.torvald.tsvm.TextureRegionPack
+import net.torvald.tsvm.TsvmTextureRegionPack
 import net.torvald.tsvm.VM
 
 class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(vm, AdapterConfig(
@@ -13,7 +13,7 @@ class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(vm, Adap
 ) {
 
     private val machine = Texture("$assetsRoot/4008_portable_full.png")
-    private val lcdFont = TextureRegionPack(Texture("$assetsRoot/lcd.png"), 12, 16)
+    private val lcdFont = TsvmTextureRegionPack(Texture("$assetsRoot/lcd.png"), 12, 16)
 
     /*override fun peek(addr: Long): Byte? {
         return when (addr) {

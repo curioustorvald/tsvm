@@ -32,7 +32,7 @@ import com.badlogic.gdx.utils.Disposable
 /**
  * Created by minjaesong on 2017-06-15.
  */
-class TextureRegionPack(
+internal class TsvmTextureRegionPack(
         val texture: Texture,
         val tileW: Int,
         val tileH: Int,
