@@ -4,6 +4,7 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.GL20
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
@@ -38,9 +39,16 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
     private val ALIGN = (HEIGHT - TEX_HEIGHT).absoluteValue / 2f
     private val phosphorCol = crtColor[theme.substring(4)] ?: crtColor["white"]
 
-    override fun render(delta: Float, batch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean) {
+    override fun render(
+        delta: Float,
+        batch: SpriteBatch,
+        xoff: Float,
+        yoff: Float,
+        flipY: Boolean,
+        uiFBO: FrameBuffer?
+    ) {
 
-        super.render(delta, batch, xoff, yoff, flipY)
+        super.render(delta, batch, xoff, yoff, flipY, uiFBO)
 
         batch.inUse {
             batch.enableBlending()

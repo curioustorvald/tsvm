@@ -6,11 +6,10 @@ import com.badlogic.gdx.graphics.g2d.Gdx2DPixmap
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
-import com.badlogic.gdx.graphics.glutils.PixmapTextureData
 import com.badlogic.gdx.math.Matrix4
-import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
+import net.torvald.tsvm.FBM
 import net.torvald.tsvm.LoadShader
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
@@ -710,7 +709,10 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         unusedArea[1].toInt().and(15).toFloat() / 15f,
         unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
 
-    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false) {
+    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false,  uiFBO: FrameBuffer? = null) {
+        uiFBO?.end()
+
+
         // must reset positions as pixmaps expect them to be zero
         framebuffer.pixels.position(0)
         chrrom.pixels.position(0)
@@ -880,6 +882,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 outFBObatch.draw(outFBOregion[0], 0f, HEIGHT.toFloat(), WIDTH.toFloat(), -HEIGHT.toFloat())
             }
         }
+        uiFBO?.begin()
 
         uiBatch.inUse {
             uiBatch.shader = null
@@ -1753,9 +1756,9 @@ internal infix fun Int.fmod(other: Int): Int {
 }
 
 internal fun FrameBuffer.inUse(action: () -> Unit) {
-    this.begin()
+    FBM.begin(this)
     action()
-    this.end()
+    FBM.end()
 }
 
 internal fun SpriteBatch.inUse(action: () -> Unit) {
