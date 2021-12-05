@@ -212,4 +212,4 @@ class PeripheralEntry2(
     vararg val args: Any
 )
 
-fun Int.kB() = this * 1024L
+internal fun Int.kB() = this * 1024L

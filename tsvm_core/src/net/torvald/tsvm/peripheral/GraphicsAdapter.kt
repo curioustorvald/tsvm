@@ -1748,17 +1748,17 @@ void main() {
     }
 }
 
-infix fun Int.fmod(other: Int): Int {
+internal infix fun Int.fmod(other: Int): Int {
     return Math.floorMod(this, other)
 }
 
-fun FrameBuffer.inUse(action: () -> Unit) {
+internal fun FrameBuffer.inUse(action: () -> Unit) {
     this.begin()
     action()
     this.end()
 }
 
-fun SpriteBatch.inUse(action: () -> Unit) {
+internal fun SpriteBatch.inUse(action: () -> Unit) {
     this.begin()
     action()
     this.end()
