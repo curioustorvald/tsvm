@@ -67,9 +67,9 @@ chrmap[25],
 chrmap[26],
 chrmap[27],
 chrmap[28],
-chrmap[18]+chrmap[10],
-chrmap[18]+chrmap[11],
-chrmap[18]+chrmap[33],
+chrmap[28]+chrmap[20],
+chrmap[28]+chrmap[21],
+chrmap[28]+chrmap[33],
 chrmap[29],
 chrmap[30],
 chrmap[30]+chrmap[24],
@@ -163,26 +163,22 @@ function hangulDecode(codepoints) {
         let codepoint = codepoints[i]
         let c1 = codepoints[i+1]
 
-
-        serial.println(codepoint.toString(16))
-        serial.println(String.fromCharCode(codepoint))
-
-
         if (0xAC00 <= codepoint && codepoint <= 0xD7A3) {
             let i = ((codepoint - 0xAC00) / 588)|0
             let p = ((codepoint - 0xAC00) / 28 % 21)|0
             let f = (codepoint - 0xAC00) % 28
             s += (hangulIdisasm[i] + hangulPdisasm[p] + hangulFdisasm[f])
-            if (0xAC00 <= c1 && c1 <= 0xD7A3) s += ' '
+//            if (0xAC00 <= c1 && c1 <= 0xD7A3) s += ' '
         }
         else if (0x20A9 == codepoint) s += chrmap[50]
         else {
             s += String.fromCharCode(codepoint)
-            if (0xAC00 <= c1 && c1 <= 0xD7A3) s += ' '
+//            if (0xAC00 <= c1 && c1 <= 0xD7A3) s += ' '
         }
     }
 
     return s
 }
 
+//console.log(hangulDecode(Array.from(str).map(it => it.codePointAt(0))))
 println(hangulDecode(utf8decode(str)))
