@@ -17,99 +17,99 @@ let chrmap = {
 12: '\xD2', // ㅍ
 13: '\xD3', // ㅎ
 
-10: '\xD4', // ㅏ
-11: '\xD5', // ㅐ
-12: '\xD6', // ㅑ
-13: '\xD7', // ㅒ
-14: '\xB5', // ㅓ
-15: '\xB6', // ㅔ
-16: '\xB7', // ㅕ
-17: '\xB8', // ㅖ
-18: '\xBD', // ㅗ
-19: '\xBE', // ㅛ
-20: '\xC6', // ㅜ
-21: '\xC7', // ㅠ
-22: '\xD8', // ㅡ
-23: '\xCF', // ㅣ
+20: '\xD4', // ㅏ
+21: '\xD5', // ㅐ
+22: '\xD6', // ㅑ
+23: '\xD7', // ㅒ
+24: '\xB5', // ㅓ
+25: '\xB6', // ㅔ
+26: '\xB7', // ㅕ
+27: '\xB8', // ㅖ
+28: '\xBD', // ㅗ
+29: '\xBE', // ㅛ
+30: '\xC6', // ㅜ
+31: '\xC7', // ㅠ
+32: '\xD8', // ㅡ
+33: '\xCF', // ㅣ
 
-30: '\x9D', // ₩
+50: '\x9D', // ₩
 }
 
 let hangulIdisasm = [
-'\xA6',
-'\xA6\xA6',
-'\xA7',
-'\xA8',
-'\xA8\xA8',
-'\xA9',
-'\xAA',
-'\xAB',
-'\xAB\xAB',
-'\xAC',
-'\xAC\xAC',
-'\xAD',
-'\xAE',
-'\xAE\xAE',
-'\xAF',
-'\xD0',
-'\xD1',
-'\xD2',
-'\xD3',
+chrmap[0],
+chrmap[0]+chrmap[0],
+chrmap[1],
+chrmap[2],
+chrmap[2]+chrmap[2],
+chrmap[3],
+chrmap[4],
+chrmap[5],
+chrmap[5]+chrmap[5],
+chrmap[6],
+chrmap[6]+chrmap[6],
+chrmap[7],
+chrmap[8],
+chrmap[8]+chrmap[8],
+chrmap[9],
+chrmap[10],
+chrmap[11],
+chrmap[12],
+chrmap[13],
 ]
 
 let hangulPdisasm = [
-'\xD4',
-'\xD5',
-'\xD6',
-'\xD7',
-'\xB5',
-'\xB6',
-'\xB7',
-'\xB8',
-'\xBD',
-'\xBD\xD4',
-'\xBD\xD5',
-'\xBD\xCF',
-'\xBE',
-'\xC6',
-'\xC6\xB5',
-'\xC6\xB6',
-'\xC6\xCF',
-'\xC7',
-'\xD8',
-'\xD8\xCF',
-'\xCF',
+chrmap[20],
+chrmap[21],
+chrmap[22],
+chrmap[23],
+chrmap[24],
+chrmap[25],
+chrmap[26],
+chrmap[27],
+chrmap[28],
+chrmap[18]+chrmap[10],
+chrmap[18]+chrmap[11],
+chrmap[18]+chrmap[33],
+chrmap[29],
+chrmap[30],
+chrmap[30]+chrmap[24],
+chrmap[30]+chrmap[25],
+chrmap[30]+chrmap[33],
+chrmap[31],
+chrmap[32],
+chrmap[32]+chrmap[33],
+chrmap[33],
 ]
 
 let hangulFdisasm = [
 '',
-'\xA6',
-'\xA6\xA6',
-'\xA6\xAC',
-'\xA7',
-'\xA7\xAE',
-'\xA7\xD3',
-'\xA8',
-'\xA9',
-'\xA9\xA6',
-'\xA9\xAA',
-'\xA9\xAB',
-'\xA9\xAC',
-'\xA9\xD1',
-'\xA9\xD2',
-'\xA9\xD3',
-'\xAA',
-'\xAB',
-'\xAB\xAC',
-'\xAC',
-'\xAC\xAC',
-'\xAD',
-'\xAE',
-'\xAF',
-'\xD0',
-'\xD1',
-'\xD2',
-'\xD3',
+chrmap[0],
+chrmap[0]+chrmap[0],
+chrmap[0]+chrmap[6],
+chrmap[1],
+chrmap[1]+chrmap[8],
+chrmap[1]+chrmap[13],
+chrmap[2],
+chrmap[3],
+chrmap[3]+chrmap[0],
+chrmap[3]+chrmap[4],
+chrmap[3]+chrmap[5],
+chrmap[3]+chrmap[6],
+chrmap[3]+chrmap[11],
+chrmap[3]+chrmap[12],
+chrmap[3]+chrmap[13],
+chrmap[4],
+chrmap[5],
+chrmap[5]+chrmap[6],
+chrmap[6],
+chrmap[6]+chrmap[6],
+chrmap[7],
+chrmap[8],
+chrmap[9],
+chrmap[10],
+chrmap[11],
+chrmap[12],
+chrmap[13],
 ]
 
 let UTF8_ACCEPT = 0
@@ -175,7 +175,7 @@ function hangulDecode(codepoints) {
             s += (hangulIdisasm[i] + hangulPdisasm[p] + hangulFdisasm[f])
             if (0xAC00 <= c1 && c1 <= 0xD7A3) s += ' '
         }
-        else if (0x20A9 == codepoint) s += '\x9D'
+        else if (0x20A9 == codepoint) s += chrmap[50]
         else {
             s += String.fromCharCode(codepoint)
             if (0xAC00 <= c1 && c1 <= 0xD7A3) s += ' '
