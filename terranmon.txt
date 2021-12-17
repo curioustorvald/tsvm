@@ -177,6 +177,7 @@ From the start of the memory space:
     unused
 1920
     mapped to font ROM
+    Font Mapping area holds 128 characters in consecutive order, each character is always 15 bytes.
 
 2 bytes
     Cursor position in: (y*80 + x)

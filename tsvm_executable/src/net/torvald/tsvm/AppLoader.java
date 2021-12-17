@@ -1,6 +1,5 @@
 package net.torvald.tsvm;
 
-import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
@@ -49,6 +48,6 @@ public class AppLoader {
                 pipvm, 160, 140
         ))));
 
-        new Lwjgl3Application(new VMGUI(pip, WIDTH, HEIGHT), appConfig);
+        new Lwjgl3Application(new VMGUI(reference, WIDTH, HEIGHT), appConfig);
     }
 }

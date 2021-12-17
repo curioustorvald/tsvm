@@ -9,6 +9,7 @@ import net.torvald.terrarum.modulecomputers.tsvmperipheral.WorldRadar
 import net.torvald.tsvm.peripheral.*
 import java.io.File
 
+
 class EmulInstance(
     val vm: VM,
     val display: String?,
@@ -71,8 +72,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private fun init() {
         if (loaderInfo.display != null) {
             val loadedClass = Class.forName(loaderInfo.display)
-            val loadedClassConstructor = loadedClass.getConstructor(vm::class.java)
-            val loadedClassInstance = loadedClassConstructor.newInstance(vm)
+            val loadedClassConstructor = loadedClass.getConstructor(String::class.java, vm::class.java)
+            val loadedClassInstance = loadedClassConstructor.newInstance("./assets", vm)
             gpu = (loadedClassInstance as GraphicsAdapter)
 
             vm.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File(loaderInfo.diskPath)))
