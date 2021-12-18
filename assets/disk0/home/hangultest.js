@@ -35,6 +35,41 @@ let chrmap = {
 50: '\x9D', // ₩
 }
 
+/*
+let chrmap = {
+ 0: '\uFFA1', // ㄱ
+ 1: '\uFFA4', // ㄴ
+ 2: '\uFFA7', // ㄷ
+ 3: '\uFFA9', // ㄹ
+ 4: '\uFFB1', // ㅁ
+ 5: '\uFFB2', // ㅂ
+ 6: '\uFFB5', // ㅅ
+ 7: '\uFFB7', // ㅇ
+ 8: '\uFFB8', // ㅈ
+ 9: '\uFFBA', // ㅊ
+10: '\uFFBB', // ㅋ
+11: '\uFFBC', // ㅌ
+12: '\uFFBD', // ㅍ
+13: '\uFFBE', // ㅎ
+
+20: '\uFFC2', // ㅏ
+21: '\uFFC3', // ㅐ
+22: '\uFFC4', // ㅑ
+23: '\uFFC5', // ㅒ
+24: '\uFFC6', // ㅓ
+25: '\uFFC7', // ㅔ
+26: '\uFFCA', // ㅕ
+27: '\uFFCB', // ㅖ
+28: '\uFFCC', // ㅗ
+29: '\uFFD2', // ㅛ
+30: '\uFFD3', // ㅜ
+31: '\uFFD7', // ㅠ
+32: '\uFFDA', // ㅡ
+33: '\uFFDC', // ㅣ
+
+50: '\u20A9', // ₩
+}*/
+
 let hangulIdisasm = [
 chrmap[0],
 chrmap[0]+chrmap[0],
