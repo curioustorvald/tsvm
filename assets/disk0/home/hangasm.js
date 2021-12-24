@@ -127,10 +127,6 @@ function toLineChar(i,p,f) {
     /* 1 | 3 */out[1+dbl] = fbuf[0]
     /* 3 | 5 */out[3+dbl] = fbuf[1]
 
-//    serial.println(`ipf: ${i} ${p} ${f}`)
-//    serial.println(out)
-
-
     if (out.length > 4) {
         out[0] = enc.i[out[0]]
         out[1] = 0x20
@@ -151,20 +147,19 @@ function toLineChar(i,p,f) {
 
 
 function printHangul(char) {
-    let [cy,cx] = con.getyx()
-
-//    serial.println("chars:")
-//    serial.println(char)
-
     char.forEach((v,i)=>{
-        con.mvaddch(cy+(i%2),cx+(i/2),v)
-//        serial.println(v.toString(16))
+        con.addch(v)
+        if (i % 2 == 0)
+            con.curs_down()
+        else {
+            let c = graphics.getCursorYX();
+            con.move(c[0]-1,c[1]+1);
+        }
     })
-    con.move(cy+(char.length%2),cx+(char.length/2))
 }
 
 
-let text = "동해물과 백두산이 마르고 닳도록 7비트 한글조합"
+/*let text = "동해물과 백두산이 마르고 닳도록 7비트 한글조합"
 
 //con.clear()
 //con.move(1,1)
@@ -178,4 +173,24 @@ unicode.utf8toCodepoints(text).forEach(cp=>{
     else {
         print(String.fromCharCode(cp))
     }
-})
+})*/
+
+
+// load unicode module to the TVDOS
+if (unicode.uniprint) {
+    unicode.uniprint.push([
+        c => 0xAC00 <= c && c <= 0xD7A3,
+        c => {
+            let i = ((c - 0xAC00) / 588)|0
+            let p = ((c - 0xAC00) / 28 % 21)|0
+            let f = (c - 0xAC00) % 28
+            printHangul(toLineChar(i,p,f))
+        }
+    ])
+
+    println("조합한글 커널모듈이 로드되었습니다.")
+}
+else {
+    println("Failed to load Assembly Hangul kernel module: incompatible DOS version")
+}
+

@@ -115,6 +115,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private val memTextOffset = 2L + 2560 + 2560
     private val TEXT_AREA_SIZE = TEXT_COLS * TEXT_ROWS
 
+    override var halfrowMode = true//false
+
     override var rawCursorPos: Int
         get() = textArea.getShort(memTextCursorPosOffset).toInt()
         set(value) { textArea.setShort(memTextCursorPosOffset, value.toShort()) }
@@ -127,7 +129,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
         if (newx >= TEXT_COLS) {
             newx = 0
-            newy += 1
+            newy += 1 + halfrowMode.toInt()
         }
         else if (newx < 0) {
             newx = 0
@@ -196,6 +198,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             250897L -> framebufferScrollX.ushr(8).toByte()
             250898L -> framebufferScrollY.toByte()
             250899L -> framebufferScrollY.ushr(8).toByte()
+            251796L -> halfrowMode.toInt().toByte()
             in 252030 until 252030+1920 -> mappedFontRom[adi- 252030]
             in 250880 until 250880+1024 -> unusedArea[addr - 250880]
             in 253950 until 261632 -> textArea[addr - 253950]
@@ -224,6 +227,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             250897L -> framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8)
             250898L -> framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi)
             250899L -> framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8)
+            251796L -> halfrowMode = (bi and 1) == 1
             in 252030 until 252030+1920 -> mappedFontRom[adi- 252030] = byte
             in 250880 until 250880+1024 -> unusedArea[addr - 250880] = byte
             in 253950 until 261632 -> textArea[addr - 253950] = byte
@@ -590,7 +594,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun crlf() {
         val (_, y) = getCursorPos()
-        val newy = y + 1
+        val newy = y + 1 + halfrowMode.toInt()
         setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
         if (newy >= TEXT_ROWS) scrollUp(1)
     }

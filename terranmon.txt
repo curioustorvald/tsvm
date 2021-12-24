@@ -173,7 +173,11 @@ From the start of the memory space:
     framebuffer scroll Y
 896 bytes
     horizontal scroll offset for scanlines
-234 bytes
+1 bytes
+    terminal configuration #0
+    0b 0000 000h
+    h: halfrow mode
+233 bytes
     unused
 1920
     mapped to font ROM
@@ -187,7 +191,6 @@ From the start of the memory space:
     Text background colours
 2560 bytes
     Text buffer of 80x32 (7x14 character size, and yes: actual character data is on the bottom)
-FI
 512 bytes
     Palette stored in following pattern: 0b rrrr gggg, 0b bbbb aaaa, ....
     Palette number 255 is always full transparent (bits being all zero)

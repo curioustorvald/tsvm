@@ -393,7 +393,7 @@ function println(s) {
     if (s === undefined)
         sys.print("\n");
     else
-        sys.println(s);
+        print(s+"\n");
 }
 function printerr(s) {
     print("\x1B[31m"+s+"\x1B[m");
@@ -440,7 +440,7 @@ con.mvaddch = function(y, x, c) {
     con.move(y, x); con.addch(c);
 };
 con.getmaxyx = function() {
-    return graphics.getTermDimension();
+    return graphics.getTermDimension(); // [rows, cols]
 };
 con.getyx = function() {
     return graphics.getCursorYX();

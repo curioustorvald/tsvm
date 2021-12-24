@@ -315,6 +315,34 @@ unicode.utf8toCodepoints = function(utf8text) {
      }
      return codepoints
 }
+
+// array of array: [predicate_for_coderange: (Codepoint) -> Boolean , printing_function: (Codepoint) -> Unit_that_does_screen_drawing]
+// Usage: unicode.uniprint.push[(c) => 0xAC00 <= c && c <= 0xD7A3, printHalfRowHangul]
+unicode.uniprint = [];
+unicode.uniprint.push([c => (0 <= c && c <= 255), c => { sys.print(String.fromCodePoint(c)) }]);
+// @return [predicate, printing function]
+unicode.getUniprint = (c) => {
+    for (let k = 0; k < unicode.uniprint.length; k++) {
+        if (unicode.uniprint[k][0](c))
+            return unicode.uniprint[k]
+}}
+
+print = function(str) {
+    if ((typeof str === 'string' || str instanceof String) && str.length > 0) {
+        let cp = unicode.utf8toCodepoints(str)
+        let q = unicode.getUniprint(cp[0])
+        cp.forEach(c => {
+            if (q[0](c)) {
+                q[1](c)
+            }
+            else {
+                q = unicode.getUniprint(c)
+                q[1](c)
+            }
+        })
+    }
+}
+
 Object.freeze(unicode);
 
 ///////////////////////////////////////////////////////////////////////////////
