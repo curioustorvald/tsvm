@@ -332,7 +332,11 @@ print = function(str) {
         let cp = unicode.utf8toCodepoints(str)
         let q = unicode.getUniprint(cp[0])
         cp.forEach(c => {
-            if (q[0](c)) {
+            if (q == undefined) {
+                con.addch(4)
+                con.curs_right()
+            }
+            else if (q[0](c)) {
                 q[1](c)
             }
             else {
