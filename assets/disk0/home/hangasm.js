@@ -110,7 +110,7 @@ i:[
 ],p:[
 0xc6,0x8e,0x8f,0xae,0xaf,0xce,0xcf,0xee,0xef,0xb0,0xb1,0xb2,0xb5,0xb6,0xfe
 ],f:[
-0x20,0xd0,0xd1,0xd2,0xd3,0xd4,0xd5,0xd6,0xd7,0xd8,0xdb,0xdc,0xdd,0xde,0xdf
+0x20,0xd0,0xd1,0xd2,0xd3,0xd4,0xd5,0xd6,0xd7,0xd8,0x13,0x14,0x15,0x16,0x17
 ]
 }
 
@@ -145,19 +145,27 @@ function toLineChar(i,p,f) {
     return out
 }
 
+let cursReturn = () => {
+    let c = graphics.getCursorYX()
+    con.move(c[0]-1,c[1]+1)
+}
 
-function printHangul(char) {
+let printHangul = (char) => {
     char.forEach((v,i)=>{
         con.addch(v)
         if (i % 2 == 0)
             con.curs_down()
-        else {
-            let c = graphics.getCursorYX();
-            con.move(c[0]-1,c[1]+1);
-        }
+        else
+           cursReturn()
     })
 }
 
+let printComma = (char) => {
+    con.addch(char)
+    con.curs_down()
+    con.addch(127)
+    cursReturn()
+}
 
 /*let text = "동해물과 백두산이 마르고 닳도록 7비트 한글조합"
 
@@ -178,13 +186,18 @@ unicode.utf8toCodepoints(text).forEach(cp=>{
 
 // load unicode module to the TVDOS
 if (unicode.uniprint) {
-    unicode.uniprint.push([
-        c => 0xAC00 <= c && c <= 0xD7A3,
+    unicode.uniprint.unshift([
+        c => 0x2C == c || 0x3B == c || (0xAC00 <= c && c <= 0xD7A3),
         c => {
-            let i = ((c - 0xAC00) / 588)|0
-            let p = ((c - 0xAC00) / 28 % 21)|0
-            let f = (c - 0xAC00) % 28
-            printHangul(toLineChar(i,p,f))
+            if (0x2C == c || 0x3B == c) {
+                printComma(c)
+            }
+            else {
+                let i = ((c - 0xAC00) / 588)|0
+                let p = ((c - 0xAC00) / 28 % 21)|0
+                let f = (c - 0xAC00) % 28
+                printHangul(toLineChar(i,p,f))
+            }
         }
     ])
 
