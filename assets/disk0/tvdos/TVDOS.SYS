@@ -330,17 +330,14 @@ unicode.getUniprint = (c) => {
 print = function(str) {
     if ((typeof str === 'string' || str instanceof String) && str.length > 0) {
         let cp = unicode.utf8toCodepoints(str)
-        let q = unicode.getUniprint(cp[0])
         cp.forEach(c => {
-            if (q == undefined) {
+            let q = unicode.getUniprint(c)
+
+            if (q == undefined || !q[0](c)) {
                 con.addch(4)
                 con.curs_right()
             }
-            else if (q[0](c)) {
-                q[1](c)
-            }
             else {
-                q = unicode.getUniprint(c)
                 q[1](c)
             }
         })

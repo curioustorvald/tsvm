@@ -97,7 +97,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
 
     fun setCursorYX(cy: Int, cx: Int) {
         getFirstGPU()?.let {
-            it.setCursorPos(cy - 1, cx - 1)
+            it.setCursorPos(cx - 1, cy - 1)
         }
     }
 

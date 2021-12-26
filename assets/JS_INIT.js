@@ -431,7 +431,10 @@ con.getch = function() {
     return sys.readKey();
 };
 con.move = function(y, x) {
-    print("\x1B["+(y|0)+";"+(x|0)+"H");
+    //print("\x1B["+(y|0)+";"+(x|0)+"H");
+    // NOT using ANSI escape sequence as it conflicts with some multilingual drive which redefines PRINT function
+    // and obviously this method is faster albeit less genuine :p
+    graphics.setCursorYX(y|0, x|0);
 };
 con.addch = function(c) {
     graphics.putSymbol(c|0);
@@ -446,20 +449,20 @@ con.getyx = function() {
     return graphics.getCursorYX();
 };
 con.curs_up = function() {
-    let c = graphics.getCursorYX();
-    con.move(c[0]-1,c[1]);
+    let [y,x] = graphics.getCursorYX();
+    con.move(y-1,x);
 };
 con.curs_down = function() {
-    let c = graphics.getCursorYX();
-    con.move(c[0]+1,c[1]);
+    let [y,x] = graphics.getCursorYX();
+    con.move(y+1,x);
 };
 con.curs_left = function() {
-    let c = graphics.getCursorYX();
-    con.move(c[0],c[1]-1);
+    let [y,x] = graphics.getCursorYX();
+    con.move(y,x-1);
 };
 con.curs_right = function() {
-    let c = graphics.getCursorYX();
-    con.move(c[0],c[1]+1);
+    let [y,x] = graphics.getCursorYX();
+    con.move(y,x+1);
 };
 con.hitterminate = function() { // ^C
     sys.poke(-40, 1);
