@@ -202,8 +202,10 @@ if (unicode.uniprint) {
     ])
 
     println("조합한글 커널모듈이 로드되었습니다.")
+    return 0
 }
 else {
     println("Failed to load Assembly Hangul kernel module: incompatible DOS version")
+    return 1
 }
 
