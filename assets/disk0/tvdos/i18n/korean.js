@@ -200,6 +200,9 @@ let printComma = (char) => {
 
 // load unicode module to the TVDOS
 if (unicode.uniprint) {
+
+    let [termh, termw] = con.getmaxyx()
+
     unicode.uniprint.unshift([
         c => 0x2C == c || 0x3B == c || (0xAC00 <= c && c <= 0xD7A3),
         c => {
@@ -210,7 +213,10 @@ if (unicode.uniprint) {
                 let i = ((c - 0xAC00) / 588)|0
                 let p = ((c - 0xAC00) / 28 % 21)|0
                 let f = (c - 0xAC00) % 28
-                printHangul(toLineChar(i,p,f))
+                let char = toLineChar(i,p,f)
+                let w = Math.ceil(char.length / 2.0)|0
+                if (con.getyx()[1] + w > termw) println()
+                printHangul(char)
             }
         }
     ])
