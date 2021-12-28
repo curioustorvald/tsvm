@@ -115,7 +115,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private val memTextOffset = 2L + 2560 + 2560
     private val TEXT_AREA_SIZE = TEXT_COLS * TEXT_ROWS
 
-    override var halfrowMode = true//false
+    override var halfrowMode = false
 
     override var rawCursorPos: Int
         get() = textArea.getShort(memTextCursorPosOffset).toInt()

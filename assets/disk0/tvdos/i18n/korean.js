@@ -1,4 +1,35 @@
+let status = 0
+let workarea = sys.malloc(1920)
 
+// install LOCHRROM
+status = filesystem.open("A", "/tvdos/i18n/hang_lo.chr", "R")
+if (status != 0) {
+    printerrln("hang_lo.chr not found")
+    sys.free(workarea)
+    return status
+}
+dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
+for (let i = 0; i < 1920; i++) sys.poke(-1300607 - i, sys.peek(workarea + i))
+sys.poke(-1299460, 18)
+
+
+// install HICHRROM
+status = filesystem.open("A", "/tvdos/i18n/hang_hi.chr", "R")
+if (status != 0) {
+    printerrln("hang_hi.chr not found")
+    sys.free(workarea)
+    sys.poke(-1299460, 20) // clean up the crap
+    return status
+}
+dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
+for (let i = 0; i < 1920; i++) sys.poke(-1300607 - i, sys.peek(workarea + i))
+sys.poke(-1299460, 19)
+
+
+
+sys.free(workarea)
+
+graphics.setHalfrowMode(true)
 /*
  * A character is defined as one of:
  * 1. [I,x] (Initial only)
@@ -166,23 +197,6 @@ let printComma = (char) => {
     con.addch(127)
     cursReturn()
 }
-
-/*let text = "동해물과 백두산이 마르고 닳도록 7비트 한글조합"
-
-//con.clear()
-//con.move(1,1)
-unicode.utf8toCodepoints(text).forEach(cp=>{
-    if (0xAC00 <= cp && cp <= 0xD7A3) {
-        let i = ((cp - 0xAC00) / 588)|0
-        let p = ((cp - 0xAC00) / 28 % 21)|0
-        let f = (cp - 0xAC00) % 28
-        printHangul(toLineChar(i,p,f))
-    }
-    else {
-        print(String.fromCharCode(cp))
-    }
-})*/
-
 
 // load unicode module to the TVDOS
 if (unicode.uniprint) {

@@ -96,9 +96,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
     }
 
     fun setCursorYX(cy: Int, cx: Int) {
-        getFirstGPU()?.let {
-            it.setCursorPos(cx - 1, cy - 1)
-        }
+        getFirstGPU()?.setCursorPos(cx - 1, cy - 1)
     }
 
 
@@ -132,9 +130,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
     }
 
     fun putSymbolAt(cy: Int, cx: Int, c: Int) {
-        getFirstGPU()?.let {
-            it.putChar(cx - 1, cy - 1, c.toByte())
-        }
+        getFirstGPU()?.putChar(cx - 1, cy - 1, c.toByte())
     }
 
     /*private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
@@ -152,6 +148,10 @@ class GraphicsJSR223Delegate(val vm: VM) {
             length.toLong()
         )
     }*/
+
+    fun setHalfrowMode(set: Boolean) {
+        getFirstGPU()?.halfrowMode = set
+    }
 
     private fun GraphicsAdapter._loadSprite(spriteNum: Int, ptr: Int) {
         UnsafeHelper.memcpy(

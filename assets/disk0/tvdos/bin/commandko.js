@@ -11,8 +11,8 @@ let errorlevel = 0;
 
 const termWidth = con.getmaxyx()[1];
 const termHeight = con.getmaxyx()[0];
-const welcome_text = (termWidth > 40) ? "TSVM Disk Operating System, version " + _TVDOS.VERSION
-    : "TSVM Disk Operating System " + _TVDOS.VERSION;
+const welcome_text = (termWidth > 40) ? "TSVM 한글 DOS, 버전 " + _TVDOS.VERSION
+    : "TSVM 한글 DOS " + _TVDOS.VERSION;
 const greetLeftPad = (termWidth - welcome_text.length - 6) >> 1;
 const greetRightPad = termWidth - greetLeftPad - welcome_text.length - 6;
 
@@ -255,7 +255,7 @@ shell.coreutils = {
         // check if path is valid
         var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'R');
         var isDir = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
-        if (!isDir) { printerrln("CHDIR failed for '"+path.string+"'"); return dirOpenedStatus; } // if file is not opened, IO error code will be returned
+        if (!isDir) { printerrln("디렉토리 '"+path.string+"'가 없습니다."); return dirOpenedStatus; } // if file is not opened, IO error code will be returned
 
         shell_pwd = path.pwd;
     },
@@ -270,7 +270,7 @@ shell.coreutils = {
         // check if path is valid
         var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'W');
         var mkdird = filesystem.mkDir(CURRENT_DRIVE);
-        if (!mkdird) { printerrln("MKDIR failed for '"+path.string+"'"); return dirOpenedStatus; }
+        if (!mkdird) { printerrln("디렉토리 생성 실패: '"+path.string+"'"); return dirOpenedStatus; }
     },
     cls: function(args) {
         con.clear();
@@ -313,7 +313,7 @@ shell.coreutils = {
             // if value is undefined, show what envvar[key] has
             if (value === undefined) {
                 if (_TVDOS.variables[key] === undefined)
-                    println("Environment variable '"+key+"' not found");
+                    println("환경변수 '"+key+"'이(가) 없습니다.");
                 else
                     println(_TVDOS.variables[key])
             }
@@ -331,7 +331,7 @@ shell.coreutils = {
 
         // check if path is valid
         var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
+        if (pathOpenedStatus != 0) { printerrln("파일이 없습니다"); return pathOpenedStatus; }
 
         var port = filesystem._toPorts(CURRENT_DRIVE)[0]
         com.sendMessage(port, "LIST");
@@ -341,7 +341,7 @@ shell.coreutils = {
         var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
 
         var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
+        if (pathOpenedStatus != 0) { printerrln("파일이 없습니다"); return pathOpenedStatus; }
         let contents = filesystem.readAll(CURRENT_DRIVE);
         // TODO just print out what's there
         print(contents);
@@ -393,7 +393,7 @@ shell.execute = function(line) {
         }
 
         if (!fileExists) {
-            printerrln('Bad command or filename: "'+cmd+'"');
+            printerrln('명령어 또는 파일 이름이 틀립니다: "'+cmd+'"');
             return 127;
         }
         else {
@@ -480,7 +480,7 @@ if (exec_args[1] !== undefined) {
         goInteractive = true;
     }
     else {
-        printerrln("Invalid switch: "+exec_args[1]);
+        printerrln("잘못된 스위치: "+exec_args[1]);
         return 1;
     }
 }
