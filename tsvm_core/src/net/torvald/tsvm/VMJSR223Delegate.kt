@@ -126,7 +126,11 @@ class VMJSR223Delegate(val vm: VM) {
     }
 
     fun spin() {
-        Thread.sleep(4L);
+        Thread.sleep(4L)
+    }
+
+    fun sleep(time: Long) {
+        Thread.sleep(time)
     }
 
     fun waitForMemChg(addr: Int, andMask: Int, xorMask: Int) {
