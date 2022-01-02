@@ -54,6 +54,12 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
+    fun getFramebufferScroll(): IntArray {
+        getFirstGPU()?.let { return intArrayOf(it.framebufferScrollX, it.framebufferScrollY) }
+        return intArrayOf(0, 0)
+    }
+
+
     fun scrollFrame(xdelta: Int, ydelta: Int) {
         getFirstGPU()?.let {
             it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.framebuffer.width

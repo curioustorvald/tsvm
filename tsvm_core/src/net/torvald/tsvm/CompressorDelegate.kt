@@ -22,6 +22,8 @@ object CompressorDelegate {
         return bout.toByteArray()
     }*/
 
+    fun comp(str: String) = comp(str.toByteArray(VM.CHARSET))
+
     fun comp(ba: ByteArray): ByteArray {
         val baos = ByteArrayOutputStream()
         val gz = GZIPOutputStream(baos)
@@ -29,6 +31,8 @@ object CompressorDelegate {
         baos.flush(); baos.close()
         return baos.toByteArray()
     }
+
+    fun decomp(str: String) = decomp(str.toByteArray(VM.CHARSET))
 
     fun decomp(ba: ByteArray): ByteArray {
         val bais = ByteArrayInputStream(ba)

@@ -35,13 +35,13 @@ GL.SpriteSheet = function(tilew, tileh, tex) {
     }
 
     this.getOffX = function(x) { // THIS, or: GL.SpriteSheet.prototype.getOffX
-        var tx = this.tileWidth * x;
+        var tx = this.tileWidth * (x|0);
         if (tx + this.tileWidth > this.texture.width) throw "Sprite x-offset of "+tx+" is greater than sprite width "+this.texture.width;
         return tx;
     };
 
     this.getOffY = function(y) {
-        var ty = this.tileHeight * y;
+        var ty = this.tileHeight * (y|0);
         if (ty + this.tileHeight > this.texture.height) throw "Sprite y-offset of "+ty+" is greater than sprite height "+this.texture.height;
         return ty;
     };
@@ -106,24 +106,42 @@ GL.drawTexImage = function(texture, x, y, fgcol, bgcol) {
 GL.drawTexImageOver = function(texture, x, y, fgcol) {
     GL.drawTexPatternOver(texture, x, y, texture.width, texture.height, fgcol);
 };
-GL.drawSprite = function(sheet, xi, yi, x, y) {
+/*
+ * @param xi x-index in the spritesheet, ZERO-BASED INDEX
+ * @param yi y-index in the spritesheet, ZERO-BASED INDEX
+ * @param x x-position on the framebuffer where the sprite will be drawn
+ * @param y y-position on the framebuffer where the sprite will be drawn
+ * @param overrideFG if the value is set and the current pixel of the sheet is not 255, plots this colour instead
+ * @param overrideBG if the value is set and the current pixel of the sheet is 255, plots this colour instead
+ */
+GL.drawSprite = function(sheet, xi, yi, x, y, overrideFG, overrideBG) {
     var offx = sheet.getOffX(xi);
     var offy = sheet.getOffY(yi);
     for (var ty = 0; ty < sheet.tileHeight; ty++) {
         for (var tx = 0; tx < sheet.tileWidth; tx++) {
             var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
-            graphics.plotPixel(x + tx, y + ty, c);
+            if ((c & 255) == 255)
+                graphics.plotPixel(x + tx, (y + ty)|0, (overrideBG !== undefined) ? overrideBG : c);
+            else
+                graphics.plotPixel(x + tx, (y + ty)|0, (overrideFG !== undefined) ? overrideFG : c);
         }
     }
 };
-GL.drawSpriteOver = function(sheet, xi, yi, x, y) {
+/*
+ * @param xi x-index in the spritesheet, ZERO-BASED INDEX
+ * @param yi y-index in the spritesheet, ZERO-BASED INDEX
+ * @param x x-position on the framebuffer where the sprite will be drawn
+ * @param y y-position on the framebuffer where the sprite will be drawn
+ * @param overrideFG if the value is set and the current pixel of the sheet is not 255, plots this colour instead
+ */
+GL.drawSpriteOver = function(sheet, xi, yi, x, y, overrideFG) {
     var offx = sheet.getOffX(xi);
     var offy = sheet.getOffY(yi);
     for (var ty = 0; ty < sheet.tileHeight; ty++) {
         for (var tx = 0; tx < sheet.tileWidth; tx++) {
             var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
             if ((c & 255) != 255) {
-                graphics.plotPixel(x + tx, y + ty, c);
+                graphics.plotPixel(x + tx, (y + ty)|0, overrideFG || c);
             }
         }
     }
