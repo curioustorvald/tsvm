@@ -64,7 +64,7 @@ print = function(str) {
             let c = cp[i]
 
             if (10 == c || 13 == c) {
-                curs = (Math.ceil(curs / COLS)|0) * COLS
+                curs = ((curs / COLS)|0) * COLS + COLS
             }
             else {
                 paintGlyph(c, 1+(curs % COLS), 1+(curs / COLS), ttyBack, ttyFore, scrollY)
