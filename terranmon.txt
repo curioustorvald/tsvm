@@ -171,18 +171,13 @@ From the start of the memory space:
     framebuffer scroll X
 2 bytes
     framebuffer scroll Y
-896 bytes
-    horizontal scroll offset for scanlines
-1 bytes
-    terminal configuration #0
-    0b 0000 000h
-    h: halfrow mode
-233 bytes
+2 bytes
     unused
-1920
+1128 bytes
+    "copper" instructions (282 words)
+1920 bytes
     mapped to font ROM
     Font Mapping area holds 128 characters in consecutive order, each character is always 15 bytes.
-
 2 bytes
     Cursor position in: (y*80 + x)
 2560 bytes
@@ -258,3 +253,18 @@ MMIO
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it
+
+Copper Commands
+
+WAITFOR 3,32
+    80·03 46 00 (0x004603: offset on the framebuffer)
+SCROLLX 569
+    A0·39 02 00
+SCROLLY 321
+    B0·41 01 00
+SETPAL 5 (15 2 8 15)
+    C0·05·F2 8F (0x05: Palette number, 0xF28F: RGBA colour)
+SETBG (15 2 8 15)
+    D0·00·F2 8F (0xF28F: RGBA colour)
+END (pseudocommand of WAITFOR)
+    80·FF FF FF
