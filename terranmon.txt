@@ -171,11 +171,11 @@ From the start of the memory space:
     framebuffer scroll X
 2 bytes
     framebuffer scroll Y
-2 bytes
+896 bytes
+    horizontal scroll offset for scanlines
+234 bytes
     unused
-1128 bytes
-    "copper" instructions (282 words)
-1920 bytes
+1920
     mapped to font ROM
     Font Mapping area holds 128 characters in consecutive order, each character is always 15 bytes.
 2 bytes
@@ -192,7 +192,9 @@ From the start of the memory space:
 
 (DRAFT) Optional Sprite Card (VRAM Bank 1 (256 kB))
 250880 bytes
-    Secondary framebuffer
+    One of:
+        Secondary layer
+        Other 8-bit of the primary framebuffer (4K colour mode)
 
 SPRITE FORMAT DRAFT 1
 
@@ -254,7 +256,7 @@ MMIO
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it
 
-Copper Commands
+Copper Commands (suggestion withdrawn)
 
 WAITFOR 3,32
     80·03 46 00 (0x004603: offset on the framebuffer)
