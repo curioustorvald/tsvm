@@ -8,6 +8,7 @@ import javax.script.ScriptEngineManager
 abstract class VMRunner(val extension: String) {
     abstract suspend fun executeCommand(command: String)
     abstract suspend fun evalGlobal(command: String)
+    abstract fun eval(command: String)
     abstract fun close()
 }
 
@@ -65,6 +66,7 @@ object VMRunnerFactory {
                         bind.putMember("base64", Base64Delegate)
                         bind.putMember("com", SerialHelperDelegate(vm))
                         bind.putMember("dma", DMADelegate(vm))
+                        bind.putMember("parallel", Parallel(vm))
 
                         val fr = FileReader("$assetsRoot/JS_INIT.js")
                         val prg = fr.readText()
@@ -82,6 +84,16 @@ object VMRunnerFactory {
                             throw e
                         }
                     }
+
+                    override fun eval(command: String) {
+                        try {
+                            context.eval("js", encapsulateJS(sanitiseJS(command)))
+                        }
+                        catch (e: javax.script.ScriptException) {
+                            System.err.println("ScriptException from the script:")
+                            System.err.println(command.substring(0, minOf(1024, command.length)))
+                            throw e
+                        }                    }
 
                     override suspend fun evalGlobal(command: String) {
                         context.eval("js", "\"use strict\";" + sanitiseJS(command))

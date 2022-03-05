@@ -1,5 +1,6 @@
 package net.torvald.tsvm
 
+import kotlinx.coroutines.Job
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.tsvm.peripheral.IOSpace
@@ -19,6 +20,7 @@ class ErrorIllegalAccess(vm: VM, addr: Long) : RuntimeException("Segmentation fa
  */
 
 class VM(
+    val assetsDir: String,
     _memsize: Long,
     val worldInterface: WorldInterface,
     val roms: Array<VMProgramRom?> // first ROM must contain the BIOS
@@ -26,8 +28,10 @@ class VM(
 
     val id = java.util.Random().nextInt()
 
+    internal val contexts = ArrayList<Thread>()
+
     val memsize = minOf(USER_SPACE_SIZE, _memsize.toLong())
-    private val MALLOC_UNIT = 64
+    val MALLOC_UNIT = 64
     private val mallocBlockSize = (memsize / MALLOC_UNIT).toInt()
 
     internal val usermem = UnsafeHelper.allocate(memsize)
@@ -57,7 +61,15 @@ class VM(
         init()
     }
 
+    fun killAllContexts() {
+        contexts.forEach { it.interrupt() }
+        contexts.clear()
+    }
+
     fun init() {
+        killAllContexts()
+
+
         peripheralTable[0] = PeripheralEntry(
             IOSpace(this),
             HW_RESERVE_SIZE,
@@ -83,6 +95,7 @@ class VM(
     }
 
     fun dispose() {
+        killAllContexts()
         usermem.destroy()
         peripheralTable.forEach { it.peripheral?.dispose() }
     }
@@ -151,6 +164,7 @@ class VM(
 
     private val mallocMap = BitSet(mallocBlockSize)
     private val mallocSizes = HashMap<Int, Int>() // HashMap<Block Index, Block Count>
+    var allocatedBlockCount = 0; private set
 
     private fun findEmptySpace(blockSize: Int): Int? {
         var cursorHead = 0
@@ -180,6 +194,7 @@ class VM(
         val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
         val blockStart = findEmptySpace(allocBlocks) ?: throw OutOfMemoryError()
 
+        allocatedBlockCount += allocBlocks
         mallocSizes[blockStart] = allocBlocks
         return blockStart * MALLOC_UNIT
     }
@@ -190,6 +205,7 @@ class VM(
 
         mallocMap.set(index, index + count, false)
         mallocSizes.remove(index)
+        allocatedBlockCount -= count
     }
 
     internal data class VMNativePtr(val address: Int, val size: Int)

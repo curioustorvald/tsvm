@@ -123,7 +123,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         if (usememvwr) memvwr = Memvwr(vm)
 
 
-        vmRunner = VMRunnerFactory("./assets", vm, "js")
+        vmRunner = VMRunnerFactory(vm.assetsDir, vm, "js")
         coroutineJob = GlobalScope.launch {
             vmRunner.executeCommand(vm.roms[0]!!.readAll())
         }

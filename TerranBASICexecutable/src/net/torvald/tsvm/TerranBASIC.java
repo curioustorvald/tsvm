@@ -25,7 +25,7 @@ public class TerranBASIC {
 
         appConfig.setWindowedMode(WIDTH, HEIGHT);
 
-        VM tbasvm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
+        VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE});
         EmulInstance tbasrunner = new EmulInstance(tbasvm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0", 560, 448);
         new Lwjgl3Application(new VMGUI(tbasrunner, WIDTH, HEIGHT), appConfig);
     }

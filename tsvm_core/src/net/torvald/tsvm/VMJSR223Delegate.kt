@@ -1,5 +1,8 @@
 package net.torvald.tsvm
 
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import java.nio.charset.Charset
 
@@ -140,10 +143,32 @@ class VMJSR223Delegate(val vm: VM) {
     }
     fun waitForMemChg(addr: Int, andMask: Int) = waitForMemChg(addr, andMask, 0)
 
+    fun getUsedMem() = vm.allocatedBlockCount * vm.MALLOC_UNIT
 }
 
 class VMSerialDebugger(val vm: VM) {
     fun print(s: Any?) = System.out.print("$s")
     fun println(s: Any?) = System.out.println("$s")
     fun printerr(s: Any?) = System.err.println("$s")
+}
+
+class Parallel(val vm: VM) {
+    fun spawnNewContext(): VMRunner {
+        return VMRunnerFactory(vm.assetsDir, vm, "js")
+    }
+    fun attachProgram(context: VMRunner, program: String): Thread {
+        Thread { context.eval(program) }.let {
+            vm.contexts.add(it)
+            return it
+        }
+    }
+    fun launch(thread: Thread) {
+        thread.start()
+    }
+    fun suspend(thread: Thread) {
+        thread.suspend()
+    }
+    fun resume(thread: Thread) {
+        thread.resume()
+    }
 }
