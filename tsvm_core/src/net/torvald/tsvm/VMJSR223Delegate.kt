@@ -144,6 +144,11 @@ class VMJSR223Delegate(val vm: VM) {
     fun waitForMemChg(addr: Int, andMask: Int) = waitForMemChg(addr, andMask, 0)
 
     fun getUsedMem() = vm.allocatedBlockCount * vm.MALLOC_UNIT
+
+    fun getSysrq() = vm.sysrqDown
+    fun unsetSysrq() {
+        vm.sysrqDown = false
+    }
 }
 
 class VMSerialDebugger(val vm: VM) {
@@ -156,8 +161,8 @@ class Parallel(val vm: VM) {
     fun spawnNewContext(): VMRunner {
         return VMRunnerFactory(vm.assetsDir, vm, "js")
     }
-    fun attachProgram(context: VMRunner, program: String): Thread {
-        Thread { context.eval(program) }.let {
+    fun attachProgram(name: String, context: VMRunner, program: String): Thread {
+        Thread({ context.eval(program) }, name).let {
             vm.contexts.add(it)
             return it
         }
@@ -171,4 +176,11 @@ class Parallel(val vm: VM) {
     fun resume(thread: Thread) {
         thread.resume()
     }
+    fun kill(thread: Thread) {
+        thread.interrupt()
+        vm.contexts.remove(thread)
+    }
+    fun getThreadPool() = vm.contexts
 }
+
+class ParallelDummy()

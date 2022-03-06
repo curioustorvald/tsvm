@@ -53,6 +53,7 @@ class VM(
 
     var resetDown = false
     var stopDown = false
+    var sysrqDown = false
 
     var romMapping = 255
         internal set

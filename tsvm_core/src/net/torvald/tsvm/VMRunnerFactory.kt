@@ -6,9 +6,9 @@ import java.io.FileReader
 import javax.script.ScriptEngineManager
 
 abstract class VMRunner(val extension: String) {
-    abstract suspend fun executeCommand(command: String)
-    abstract suspend fun evalGlobal(command: String)
-    abstract fun eval(command: String)
+    abstract suspend fun evalGlobal(command: String) // Ring 0
+    abstract suspend fun executeCommand(command: String) // Ring 1
+    abstract fun eval(command: String) // Ring 2 (for child processes spawned using Parallel API)
     abstract fun close()
 }
 
@@ -47,6 +47,9 @@ object VMRunnerFactory {
             }*/
             "js" -> {
                 object : VMRunner(extension) {
+                    private val ringOneParallel = Parallel(vm)
+                    private val ringTwoParallel = ParallelDummy()
+
                     private val context = Context.newBuilder("js")
                         .allowHostAccess(HostAccess.ALL)
                         .allowHostClassLookup { false }
@@ -66,7 +69,7 @@ object VMRunnerFactory {
                         bind.putMember("base64", Base64Delegate)
                         bind.putMember("com", SerialHelperDelegate(vm))
                         bind.putMember("dma", DMADelegate(vm))
-                        bind.putMember("parallel", Parallel(vm))
+                        bind.putMember("parallel", ringOneParallel)
 
                         val fr = FileReader("$assetsRoot/JS_INIT.js")
                         val prg = fr.readText()
@@ -76,6 +79,7 @@ object VMRunnerFactory {
 
                     override suspend fun executeCommand(command: String) {
                         try {
+                            bind.putMember("parallel", ringOneParallel)
                             context.eval("js", encapsulateJS(sanitiseJS(command)))
                         }
                         catch (e: javax.script.ScriptException) {
@@ -87,6 +91,7 @@ object VMRunnerFactory {
 
                     override fun eval(command: String) {
                         try {
+                            bind.putMember("parallel", ringTwoParallel)
                             context.eval("js", encapsulateJS(sanitiseJS(command)))
                         }
                         catch (e: javax.script.ScriptException) {
@@ -96,6 +101,7 @@ object VMRunnerFactory {
                         }                    }
 
                     override suspend fun evalGlobal(command: String) {
+                        bind.putMember("parallel", ringOneParallel)
                         context.eval("js", "\"use strict\";" + sanitiseJS(command))
                     }
 

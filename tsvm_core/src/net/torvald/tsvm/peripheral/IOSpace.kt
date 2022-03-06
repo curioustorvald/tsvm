@@ -255,10 +255,10 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         }
 
         // SIGTERM key combination: Ctrl+Shift+T+R
-        vm.stopDown = Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT) &&
+        vm.stopDown = (Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT) &&
                 Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) &&
                 Gdx.input.isKeyPressed(Input.Keys.T) &&
-                Gdx.input.isKeyPressed(Input.Keys.R)
+                Gdx.input.isKeyPressed(Input.Keys.R)) || Gdx.input.isKeyPressed(Input.Keys.PAUSE)
         if (vm.stopDown) println("[VM-${vm.id}] SIGTERM requested")
 
         // RESET key combination: Ctrl+Shift+R+S
@@ -267,6 +267,13 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
                 Gdx.input.isKeyPressed(Input.Keys.R) &&
                 Gdx.input.isKeyPressed(Input.Keys.S)
         if (vm.resetDown) println("[VM-${vm.id}] RESET requested")
+
+        // SYSRQ key combination: Ctrl+Shift+S+Q
+        vm.sysrqDown = (Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT) &&
+                Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) &&
+                Gdx.input.isKeyPressed(Input.Keys.Q) &&
+                Gdx.input.isKeyPressed(Input.Keys.S)) || Gdx.input.isKeyPressed(Input.Keys.PRINT_SCREEN)
+        if (vm.sysrqDown) println("[VM-${vm.id}] SYSRQ requested")
     }
 
     override fun touchUp(p0: Int, p1: Int, p2: Int, p3: Int): Boolean {

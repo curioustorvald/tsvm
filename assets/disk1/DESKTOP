@@ -1,0 +1,65 @@
+con.move(2,1)
+
+
+
+let prog1 = "let k=3;while(1){print(k);sys.sleep(600);}"
+let prog2 = "let k=4;while(1){print(k);sys.sleep(500);}"
+let progIllegal = "parallel.spawnNewContext()"
+
+let context1 = parallel.spawnNewContext()
+let context2 = parallel.spawnNewContext()
+let contextIllegal = parallel.spawnNewContext()
+
+let runner1 = parallel.attachProgram("Program1", context1, prog1)
+let runner2 = parallel.attachProgram("Program2", context2, prog2)
+let runnerIllegal = parallel.attachProgram("ProgramIllegal", contextIllegal, progIllegal)
+
+con.move(2,1)
+parallel.launch(runner1)
+parallel.launch(runner2)
+
+
+
+
+function showTaskmgr() {
+    let contexts = parallel.getThreadPool()
+    con.clear()
+    contexts.forEach(it=>{
+        println("> "+it.getName())
+    })
+}
+
+
+let exit = false
+
+while (!exit) {
+
+    parallel.suspend(runner1)
+    parallel.suspend(runner2)
+        let [y,x] = con.getyx()
+        con.move(1,2)
+        print(`Used mem: ${sys.getUsedMem()}   ; ${Math.random()}    `)
+        con.move(y,x)
+    parallel.resume(runner1)
+    parallel.resume(runner2)
+
+    sys.spin()
+
+    if (sys.getSysrq()) exit = true
+}
+
+parallel.launch(runnerIllegal) // will throw TypeError with Unknown identifier
+
+sys.unsetSysrq()
+
+parallel.suspend(runner1)
+parallel.suspend(runner2)
+
+showTaskmgr() // will show three programs
+
+parallel.kill(runner1)
+parallel.kill(runner2)
+parallel.kill(runnerIllegal)
+//showTaskmgr() // will show nothing
+
+println("Threads killed")
