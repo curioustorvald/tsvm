@@ -520,6 +520,5 @@ system.maxmem = function() {
 Object.freeze(system);
 // some utilities functions
 
-if (Graal !== undefined && !Graal.isGraalRuntime()) {
-    serial.printerr("GraalVM compiler is not running, expect low performance");
-}
+// TypedArray re-implementation
+// TODO

@@ -94,6 +94,18 @@ filesystem.open = (driveLetter, path, operationMode) => {
     com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
     return com.getStatusCode(port[0]);
 };
+filesystem.getFileLen = (driveLetter) => {
+    var port = filesystem._toPorts(driveLetter);
+    com.sendMessage(port[0], "GETLEN");
+    var response = com.getStatusCode(port[0]);
+    if (135 == response) {
+        throw Error("File not opened");
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Reading a file failed with "+response);
+    }
+    return Number(com.pullMessage(port[0]));
+};
 // @return the entire contents of the file in String
 filesystem.readAll = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
@@ -107,6 +119,14 @@ filesystem.readAll = (driveLetter) => {
     }
     return com.pullMessage(port[0]);
 };
+filesystem.readAllBytes = (driveLetter) => {
+    var str = filesystem.readAll(driveLetter);
+    var bytes = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) {
+        bytes[i] = str.charCodeAt(i);
+    }
+    return bytes;
+};
 filesystem.write = (driveLetter, string) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "WRITE"+string.length);
@@ -119,6 +139,10 @@ filesystem.write = (driveLetter, string) => {
     }
     com.sendMessage(port[0], string);
     filesystem._flush(port[0]); filesystem._close(port[0]);
+};
+filesystem.writeBytes = (driveLetter, bytes) => {
+    var string = String.fromCharCode(...bytes);
+    filesystem.write(driveLetter, string);
 };
 filesystem.isDirectory = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);

@@ -49,7 +49,13 @@ Variables can be set or changed using \textbf{SET} commands.
  \2Operation Mode: \textbf{R} for read, \textbf{W} for overwrite, \textbf{A} for append
 \1\textbf{readAll}(driveLetter: String)
 \\Reads entire content of the file and return it as a string.
+\1\textbf{readAllBytes}(driveLetter: String)
+\\Reads entire content of the file and return it as a array of bytes.
+\1\textbf{getFileLen}(driveLetter: String)
+\\Returns a size of the file currently opened.
 \1\textbf{write}(driveLetter: String, bytes: String)
+\\Writes bytes onto the file opened for specified drive.
+\1\textbf{writeBytes}(driveLetter: String, bytes: ByteArray)
 \\Writes bytes onto the file opened for specified drive.
 \1\textbf{isDirectory}(driveLetter: String)
 \\Returns true if the file opened for the drive is a directory.

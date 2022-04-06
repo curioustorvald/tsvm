@@ -117,6 +117,10 @@ Description: loads a bootloader so that it can be read by the host device throug
 
 Description: changes the open file's file type (or its extension)
 
+    GETLEN
+
+Description: returns size of the file/number of files within the directory
+
     LIST
 
 Description: lists contents of the open (with OPENR) directory in READABLE FORMAT

@@ -241,6 +241,17 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                     return
                 }
             }
+            else if (inputString.startsWith("GETLEN")) {
+                // TODO temporary behaviour to ignore any arguments
+                resetBuf()
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    return
+                }
+
+                messageComposeBuffer.write(getSizeStr().toByteArray(VM.CHARSET))
+                statusCode = STATE_CODE_STANDBY
+            }
             else if (inputString.startsWith("LIST")) {
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
@@ -421,6 +432,16 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         }
 
         return if (sb.last() == '\n') sb.substring(0, sb.lastIndex) else sb.toString()
+    }
+
+    private fun getSizeStr(): String {
+        val sb = StringBuilder()
+        val isRoot = (file.absolutePath == rootPath.absolutePath)
+
+        if (file.isFile) sb.append(file.length())
+        else sb.append(file.listFiles().size)
+
+        return sb.toString()
     }
 
     private fun sanitisePath(s: String) = s.replace('\\','/').replace(Regex("""\?<>:\*\|"""),"-")
