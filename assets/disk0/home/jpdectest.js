@@ -22,7 +22,7 @@ println(`dim: ${imgw}x${imgh}`)
 println(`converting to displayable format...`)
 
 // convert colour
-graphics.imageToDisplayableFormat(imageData, -1048577, imgw*imgh, 4)
+graphics.imageToDisplayableFormat(imageData, -1048577, imgw, imgh, 4, true)
 
 sys.free(imageData)
 sys.free(infile)

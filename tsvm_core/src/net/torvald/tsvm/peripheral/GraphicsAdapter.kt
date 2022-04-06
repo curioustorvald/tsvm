@@ -1752,6 +1752,10 @@ void main() {
             -286331137,
             0
         )
+
+        val DEFAULT_PALETTE_NUMBERS = DEFAULT_PALETTE.map { // [[r,g,b,a], [r,g,b,a], [r,g,b,a], ...]
+            intArrayOf(it.ushr(24).and(255), it.ushr(16).and(255), it.ushr(9).and(255), it.and(255))
+        }
     }
 }
 
