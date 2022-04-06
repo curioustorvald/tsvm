@@ -118,8 +118,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     override var halfrowMode = false
 
     override var rawCursorPos: Int
-        get() = textArea.getShort(memTextCursorPosOffset).toInt()
-        set(value) { textArea.setShort(memTextCursorPosOffset, value.toShort()) }
+        get() = textArea.getShortFree(memTextCursorPosOffset).toInt()
+        set(value) { textArea.setShortFree(memTextCursorPosOffset, value.toShort()) }
 
     override fun getCursorPos() = rawCursorPos % TEXT_COLS to rawCursorPos / TEXT_COLS
 
@@ -451,11 +451,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 val foreBits = ttyFore or ttyFore.shl(8) or ttyFore.shl(16) or ttyFore.shl(24)
                 val backBits = ttyBack or ttyBack.shl(8) or ttyBack.shl(16) or ttyBack.shl(24)
                 for (i in 0 until TEXT_COLS * TEXT_ROWS step 4) {
-                    textArea.setInt(memTextForeOffset + i, foreBits)
-                    textArea.setInt(memTextBackOffset + i, backBits)
-                    textArea.setInt(memTextOffset + i, 0)
+                    textArea.setIntFree(memTextForeOffset + i, foreBits)
+                    textArea.setIntFree(memTextBackOffset + i, backBits)
+                    textArea.setIntFree(memTextOffset + i, 0)
                 }
-                textArea.setShort(memTextCursorPosOffset, 0)
+                textArea.setShortFree(memTextCursorPosOffset, 0)
             }
             else -> TODO()
         }
@@ -1754,7 +1754,16 @@ void main() {
         )
 
         val DEFAULT_PALETTE_NUMBERS = DEFAULT_PALETTE.map { // [[r,g,b,a], [r,g,b,a], [r,g,b,a], ...]
-            intArrayOf(it.ushr(24).and(255), it.ushr(16).and(255), it.ushr(9).and(255), it.and(255))
+            intArrayOf(it.ushr(24).and(255), it.ushr(16).and(255), it.ushr(8).and(255), it.and(255))
+        }
+
+        val DEFAULT_PALETTE_NUMBERS_FLOAT = DEFAULT_PALETTE.map { // [[r,g,b,a], [r,g,b,a], [r,g,b,a], ...]
+            floatArrayOf(
+                it.ushr(24).and(255).div(255f),
+                it.ushr(16).and(255).div(255f),
+                it.ushr(8).and(255).div(255f),
+                it.and(255).div(255f)
+            )
         }
     }
 }

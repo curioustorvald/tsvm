@@ -87,8 +87,8 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
         //// You may break the glass and use this tool when some fucking incomprehensible bugs ("vittujen vitun bugit")
         //// appear (e.g. getting garbage values when it fucking shouldn't)
 
-        //assert(!destroyed) { throw NullPointerException("The pointer is already destroyed ($this)") }
-        //if (index !in 0 until size) throw IndexOutOfBoundsException("Index: $index; alloc size: $size")
+        assert(!destroyed) { throw NullPointerException("The pointer is already destroyed ($this)") }
+        if (index !in 0 until size) throw IndexOutOfBoundsException("Index: $index; alloc size: $size")
     }
 
     operator fun get(index: Long): Byte {
@@ -101,36 +101,59 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
         UnsafeHelper.unsafe.putByte(ptr + index, value)
     }
 
-    // NOTE: get/set multibyte values are NOT BYTE-ALIGNED!
 
-    fun getFloat(index: Long): Float {
+    fun getFloatFree(index: Long): Float {
         checkNullPtr(index)
         return UnsafeHelper.unsafe.getFloat(ptr + index)
     }
+    fun getFloat(unit: Long): Float {
+        checkNullPtr(unit * 4L)
+        return UnsafeHelper.unsafe.getFloat(ptr + (unit * 4L))
+    }
 
-    fun getInt(index: Long): Int {
+    fun getIntFree(index: Long): Int {
         checkNullPtr(index)
         return UnsafeHelper.unsafe.getInt(ptr + index)
     }
+    fun getInt(unit: Long): Int {
+        checkNullPtr(unit * 4L)
+        return UnsafeHelper.unsafe.getInt(ptr + (unit * 4L))
+    }
 
-    fun getShort(index: Long): Short {
+    fun getShortFree(index: Long): Short {
         checkNullPtr(index)
         return UnsafeHelper.unsafe.getShort(ptr + index)
     }
+    fun getShort(unit: Long): Short {
+        checkNullPtr(unit * 2L)
+        return UnsafeHelper.unsafe.getShort(ptr + (unit * 2L))
+    }
 
-    fun setFloat(index: Long, value: Float) {
+    fun setFloatFree(index: Long, value: Float) {
         checkNullPtr(index)
         UnsafeHelper.unsafe.putFloat(ptr + index, value)
     }
+    fun setFloat(unit: Long, value: Float) {
+        checkNullPtr(unit * 4L)
+        UnsafeHelper.unsafe.putFloat(ptr + (unit * 4L), value)
+    }
 
-    fun setInt(index: Long, value: Int) {
+    fun setIntFree(index: Long, value: Int) {
         checkNullPtr(index)
         UnsafeHelper.unsafe.putInt(ptr + index, value)
     }
+    fun setInt(unit: Long, value: Int) {
+        checkNullPtr(unit * 4L)
+        UnsafeHelper.unsafe.putInt(ptr + (unit * 4L), value)
+    }
 
-    fun setShort(index: Long, value: Short) {
+    fun setShortFree(index: Long, value: Short) {
         checkNullPtr(index)
         UnsafeHelper.unsafe.putShort(ptr + index, value)
+    }
+    fun setShortUnit(unit: Long, value: Short) {
+        checkNullPtr(unit * 2L)
+        UnsafeHelper.unsafe.putShort(ptr + (unit * 2L), value)
     }
 
     fun fillWith(byte: Byte) {
