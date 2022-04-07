@@ -202,8 +202,10 @@ class GraphicsJSR223Delegate(val vm: VM) {
     }
 
     /**
-     * @param width0 new image width. If either width or height is zero, the resulting image will be proportionally scaled using the other value. If both are zero, original image dimension will be used.
-     * @param height0 new image height. If either width or height is zero, the resulting image will be proportionally scaled using the other value. If both are zero, original image dimension will be used.
+     * Special number for width and height:
+     * - If either width or height is zero, the resulting image will be proportionally scaled using the other value
+     * - If both are zero, original image dimension will be used.
+     * - If both are -1, image will be resized so that the entire picture fits into the screen.
      *
      * Will always return 4-channel image data
      */
@@ -216,8 +218,21 @@ class GraphicsJSR223Delegate(val vm: VM) {
         UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + srcFilePtr, data, UnsafeHelper.getArrayOffset(data), srcFileLen.toLong())
 
         val inPixmap = Pixmap(data, 0, data.size)
+        val gpu = getFirstGPU()
 
-        if (width <= 0 && height <= 0) {
+        if (width <= -1.0 && height <= -1.0 && gpu != null) {
+            if (inPixmap.width > inPixmap.height) {
+                val scale = inPixmap.height.toFloat() / inPixmap.width.toFloat()
+                width = gpu.config.width
+                height = (width * scale).roundToInt()
+            }
+            else {
+                val scale = inPixmap.width.toFloat() / inPixmap.height.toFloat()
+                height = gpu.config.height
+                width = (height * scale).roundToInt()
+            }
+        }
+        else if (width == 0 && height == 0) {
             width = inPixmap.width
             height = inPixmap.height
         }
