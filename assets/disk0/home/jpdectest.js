@@ -14,7 +14,7 @@ dma.comToRam(0, 0, infile, fileLen)
 println("decoding")
 
 // decode
-const [imgw, imgh, imageData] = graphics.decodeImageResample(infile, fileLen, 560, 448)
+const [imgw, imgh, imageData] = graphics.decodeImageResample(infile, fileLen, 0, 448)
 
 println(`dim: ${imgw}x${imgh}`)
 println(`converting to displayable format...`)

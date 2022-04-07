@@ -202,13 +202,34 @@ class GraphicsJSR223Delegate(val vm: VM) {
     }
 
     /**
+     * @param width0 new image width. If either width or height is zero, the resulting image will be proportionally scaled using the other value. If both are zero, original image dimension will be used.
+     * @param height0 new image height. If either width or height is zero, the resulting image will be proportionally scaled using the other value. If both are zero, original image dimension will be used.
+     *
      * Will always return 4-channel image data
      */
-    fun decodeImageResample(srcFilePtr: Int, srcFileLen: Int, width: Int, height: Int): IntArray {
+    fun decodeImageResample(srcFilePtr: Int, srcFileLen: Int, width0: Int, height0: Int): IntArray {
+        var width = width0
+        var height = height0
+
+
         val data = ByteArray(srcFileLen)
         UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + srcFilePtr, data, UnsafeHelper.getArrayOffset(data), srcFileLen.toLong())
 
         val inPixmap = Pixmap(data, 0, data.size)
+
+        if (width <= 0 && height <= 0) {
+            width = inPixmap.width
+            height = inPixmap.height
+        }
+        else if (width <= 0) {
+            val scale = inPixmap.width.toFloat() / inPixmap.height.toFloat()
+            width = (height * scale).roundToInt()
+        }
+        else if (height <= 0) {
+            val scale = inPixmap.width.toFloat() / inPixmap.height.toFloat()
+            height = (width * scale).roundToInt()
+        }
+
         val pixmap = Pixmap(width, height, Pixmap.Format.RGBA8888)
         inPixmap.filter = Pixmap.Filter.BiLinear
         pixmap.filter = Pixmap.Filter.BiLinear
