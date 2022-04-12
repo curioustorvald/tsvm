@@ -73,8 +73,8 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
 
     fun destroy() {
         if (!destroyed) {
-            println("[UnsafePtr] Destroying pointer $this; called from:")
-            printStackTrace(this)
+//            println("[UnsafePtr] Destroying pointer $this; called from:")
+//            printStackTrace(this)
 
             UnsafeHelper.unsafe.freeMemory(ptr)
 
@@ -88,7 +88,7 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
         //// appear (e.g. getting garbage values when it fucking shouldn't)
 
         assert(!destroyed) { throw NullPointerException("The pointer is already destroyed ($this)") }
-        if (index !in 0 until size) throw IndexOutOfBoundsException("Index: $index; alloc size: $size")
+        if (index !in 0 until size) throw IndexOutOfBoundsException("Index: $index; alloc size: $size; pointer: ${this}\n${Thread.currentThread().stackTrace.joinToString("\n", limit=10) { "    $it" }}")
     }
 
     operator fun get(index: Long): Byte {
