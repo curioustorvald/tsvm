@@ -65,7 +65,7 @@ object VMRunnerFactory {
                         bind.putMember("sys", VMJSR223Delegate(vm)) // TODO use delegator class to access peripheral (do not expose VM itself)
                         bind.putMember("graphics", GraphicsJSR223Delegate(vm))
                         bind.putMember("serial", VMSerialDebugger(vm))
-                        bind.putMember("gzip", CompressorDelegate)
+                        bind.putMember("gzip", CompressorDelegate(vm))
                         bind.putMember("base64", Base64Delegate)
                         bind.putMember("com", SerialHelperDelegate(vm))
                         bind.putMember("dma", DMADelegate(vm))

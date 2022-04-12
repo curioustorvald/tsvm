@@ -1,7 +1,7 @@
 package net.torvald.tsvm.peripheral
 
 import net.torvald.tsvm.CompressorDelegate
-import net.torvald.tsvm.CompressorDelegate.GZIP_HEADER
+import net.torvald.tsvm.CompressorDelegate.Companion.GZIP_HEADER
 import net.torvald.tsvm.VM
 import java.io.File
 

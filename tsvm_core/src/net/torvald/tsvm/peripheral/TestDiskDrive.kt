@@ -68,6 +68,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
     private var file = File(rootPath.toURI())
     //private var readModeLength = -1 // always 4096
     private var writeMode = false
+    private var appendMode = false
     private var writeModeLength = -1
 
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
@@ -127,7 +128,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
      * Disk drive must create desired side effects in accordance with the input message.
      */
     override fun writeoutImpl(inputData: ByteArray) {
-        if (writeMode) {
+        if (writeMode || appendMode) {
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
 
@@ -137,9 +138,14 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             writeBufferUsage += inputData.size
 
             if (writeBufferUsage >= writeModeLength) {
-                writeMode = false
                 // commit to the disk
-                file.writeBytes(writeBuffer)
+                if (appendMode)
+                    file.appendBytes(writeBuffer)
+                else if (writeMode)
+                    file.writeBytes(writeBuffer)
+
+                writeMode = false
+                appendMode = false
             }
         }
         else {
@@ -385,7 +391,8 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                     statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
                     return
                 }
-                writeMode = true
+                if (fileOpenMode == 1) { writeMode = true; appendMode = false }
+                else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
                 writeBuffer = ByteArray(writeModeLength)
                 writeBufferUsage = 0

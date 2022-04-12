@@ -141,7 +141,7 @@ filesystem.write = (driveLetter, string) => {
     filesystem._flush(port[0]); filesystem._close(port[0]);
 };
 filesystem.writeBytes = (driveLetter, bytes) => {
-    var string = String.fromCharCode(...bytes);
+    var string = String.fromCharCode.apply(null, bytes); // no spreading: has length limit
     filesystem.write(driveLetter, string);
 };
 filesystem.isDirectory = (driveLetter) => {

@@ -270,3 +270,31 @@ SETBG (15 2 8 15)
     D0·00·F2 8F (0xF28F: RGBA colour)
 END (pseudocommand of WAITFOR)
     80·FF FF FF
+
+--------------------------------------------------------------------------------
+
+TSVM MOV file format
+
+Endianness: Little
+
+\x1F T S V M M O V
+[METADATA]
+[FRAME0]
+[FRAME1]
+[FRAME2]
+...
+
+
+where:
+
+METADATA -
+    uint16 WIDTH
+    uint16 HEIGHT
+    uint16 FPS (0: play as fast as can)
+    uint24 NUMBER OF FRAMES
+    \x7C
+
+FRAME -
+    uint32 SIZE OF FRAMEDATA
+    *      FRAMEDATA COMPRESSED IN GZIP
+
