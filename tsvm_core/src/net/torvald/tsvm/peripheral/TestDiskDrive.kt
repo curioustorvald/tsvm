@@ -1,7 +1,6 @@
 package net.torvald.tsvm.peripheral
 
 import net.torvald.tsvm.VM
-import net.torvald.tsvm.VMJSR223Delegate
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -15,7 +14,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         const val STATE_CODE_OPERATION_FAILED = 1
 
         const val STATE_CODE_ILLEGAL_COMMAND = 128
-        const val STATE_CODE_FILE_NOT_FOUND = 129
+        const val STATE_CODE_NO_SUCH_FILE_EXISTS = 129
         const val STATE_CODE_FILE_ALREADY_OPENED = 130
         const val STATE_CODE_OPERATION_NOT_PERMITTED = 131
         const val STATE_CODE_READ_ONLY = 132
@@ -33,7 +32,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             errorMsgs[STATE_CODE_OPERATION_FAILED] = "OPERATION FAILED"
 
             errorMsgs[STATE_CODE_ILLEGAL_COMMAND] = "SYNTAX ERROR"
-            errorMsgs[STATE_CODE_FILE_NOT_FOUND] = "FILE NOT FOUND"
+            errorMsgs[STATE_CODE_NO_SUCH_FILE_EXISTS] = "NO SUCH FILE EXISTS"
             errorMsgs[STATE_CODE_FILE_ALREADY_OPENED] = "FILE ALREADY OPENED"
             errorMsgs[STATE_CODE_SYSTEM_IO_ERROR] = "IO ERROR ON SIMULATED DRIVE"
             errorMsgs[STATE_CODE_SYSTEM_SECURITY_ERROR] = "SECURITY ERROR ON SIMULATED DRIVE"
@@ -203,7 +202,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
 
                 if (openMode == 'R' && !file.exists()) {
                     printdbg("! file not found")
-                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    statusCode = STATE_CODE_NO_SUCH_FILE_EXISTS
                     return
                 }
 
@@ -305,7 +304,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 val bootFile = File(rootPath, "!BOOTSEC")
 
                 if (!bootFile.exists()) {
-                    statusCode = STATE_CODE_FILE_NOT_FOUND
+                    statusCode = STATE_CODE_NO_SUCH_FILE_EXISTS
                     return
                 }
                 val fis = FileInputStream(bootFile)
