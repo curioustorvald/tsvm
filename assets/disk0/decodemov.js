@@ -24,16 +24,29 @@ function readBytes(length) {
     return ret*/
 
     let ptr = sys.malloc(length)
-    let requiredBlocks = (readCount == 0) + Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
-    let port = filesystem._toPorts("A")
+    let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
+    let port = filesystem._toPorts("A")[0]
 
     let completedReads = 0
 
-    for (let bc = 0; bc < requiredBlocks; bc++) {
+    serial.println(`readBytes(${length}); readCount = ${readCount}`)
+
+    for (let bc = 0; bc < requiredBlocks + 1; bc++) {
+        if (completedReads >= length) break
+
         if (readCount % 4096 == 0) {
-            com.sendMessage(port[0], "READ")
-            let thisBlockLen = com.fetchResponse(port[0]) // [0, 4095]
-            let remaining = Math.min(4096, length - completedReads)
+            com.sendMessage(port, "READ")
+            let blockTransferStatus = ((sys.peek(-4085 - port*2) & 255) | ((sys.peek(-4086 - port*2) & 255) << 8))
+            let thisBlockLen = blockTransferStatus & 4095
+            if (thisBlockLen == 0) thisBlockLen = 4096 // [1, 4096]
+            let hasMore = (blockTransferStatus & 0x8000 != 0)
+
+
+            serial.println(`thisBlockLen = ${thisBlockLen}`)
+
+            let remaining = Math.min(thisBlockLen, length - completedReads)
+
+            serial.println(`Pulled a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
 
             // copy from read buffer to designated position
             sys.memcpy(-4097, ptr + readCount, remaining)
@@ -46,6 +59,8 @@ function readBytes(length) {
             let padding = 4096 - (readCount % 4096)
             let remaining = Math.min(padding, length - completedReads)
 
+            serial.println(`Reusing a block (${remaining}); readCount = ${readCount}, completedReads = ${completedReads}`)
+
             // copy from read buffer to designated position
             sys.memcpy(-4097 - padding, ptr + readCount, remaining)
 
@@ -54,6 +69,8 @@ function readBytes(length) {
             completedReads += remaining
         }
     }
+
+    serial.println(`END readBytes(${length}); readCount = ${readCount}\n`)
 
     return ptr
 }
@@ -87,6 +104,7 @@ let height = readShort()
 let fps = readShort()
 let frameCount = readInt() % 16777216
 
+serial.println(readCount) // must say 18
 serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
 
 let fbuf = sys.malloc(FBUF_SIZE)
