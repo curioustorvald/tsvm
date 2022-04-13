@@ -11,45 +11,37 @@ com.sendMessage(port, "DEVRST\x17")
 com.sendMessage(port, `OPENR"${filename}",1`)
 let statusCode = com.getStatusCode(port)
 
-if (statusCode != 0) return statusCode
+if (statusCode != 0) {
+    printerrln(`No such file (${statusCode})`)
+    return statusCode
+}
 
-//let bytes = filesystem.readAllBytes("A")
+com.sendMessage(port, "READ")
+statusCode = com.getStatusCode(port)
+if (statusCode != 0) {
+    printerrln("READ failed with "+statusCode)
+    return statusCode
+}
 
-//con.clear()
+con.clear(); con.curs_set(0)
 
 let readCount = 0
 
 function readBytes(length) {
-    /*let ret = new Int8Array(length)
-    for (let k = 0; k < length; k++) {
-        ret[k] = bytes[readCount]
-        readCount += 1
-    }
-    return ret*/
-
     let ptr = sys.malloc(length)
     let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
 
     let completedReads = 0
 
-    serial.println(`readBytes(${length}); readCount = ${readCount}`)
+    //serial.println(`readBytes(${length}); readCount = ${readCount}`)
 
     for (let bc = 0; bc < requiredBlocks + 1; bc++) {
         if (completedReads >= length) break
 
         if (readCount % 4096 == 0) {
-            serial.println("READ from serial")
-            com.sendMessage(port, "READ")
-            statusCode = com.getStatusCode(port)
-            if (statusCode != 0) {
-                printerrln("READ failed with "+statusCode)
-                return statusCode
-            }
+            //serial.println("READ from serial")
             // pull the actual message
             sys.poke(-4093 - port, 6);sys.sleep(0) // spinning is required as Graal run is desynced with the Java side
-
-            // FIXME READ won't fetch next block!
-
 
             let blockTransferStatus = ((sys.peek(-4085 - port*2) & 255) | ((sys.peek(-4086 - port*2) & 255) << 8))
             let thisBlockLen = blockTransferStatus & 4095
@@ -57,11 +49,11 @@ function readBytes(length) {
             let hasMore = (blockTransferStatus & 0x8000 != 0)
 
 
-            serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - k) & 255).toString(16).padStart(2,'0')).join()}]`)
+            //serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - k) & 255).toString(16).padStart(2,'0')).join()}]`)
 
             let remaining = Math.min(thisBlockLen, length - completedReads)
 
-            serial.println(`Pulled a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}, remaining = ${remaining}`)
+            //serial.println(`Pulled a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}, remaining = ${remaining}`)
 
             // copy from read buffer to designated position
             sys.memcpy(-4097, ptr + completedReads, remaining)
@@ -75,11 +67,11 @@ function readBytes(length) {
             let remaining = length - completedReads
             let thisBlockLen = Math.min(4096 - padding, length - completedReads)
 
-            serial.println(`padding = ${padding}; remaining = ${remaining}`)
+            //serial.println(`padding = ${padding}; remaining = ${remaining}`)
 
-            serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - padding - k) & 255).toString(16).padStart(2,'0')).join()}]`)
+            //serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - padding - k) & 255).toString(16).padStart(2,'0')).join()}]`)
 
-            serial.println(`Reusing a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
+            //serial.println(`Reusing a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
 
             // copy from read buffer to designated position
             sys.memcpy(-4097 - padding, ptr + completedReads, thisBlockLen)
@@ -90,7 +82,7 @@ function readBytes(length) {
         }
     }
 
-    serial.println(`END readBytes(${length}); readCount = ${readCount}\n`)
+    //serial.println(`END readBytes(${length}); readCount = ${readCount}\n`)
 
     return ptr
 }
@@ -99,7 +91,7 @@ function readInt() {
     let b = readBytes(4)
     let i = (sys.peek(b) & 255) | ((sys.peek(b+1) & 255) << 8) | ((sys.peek(b+2) & 255) << 16) | ((sys.peek(b+3) & 255) << 24)
 
-    serial.println(`readInt(); bytes: ${sys.peek(b)}, ${sys.peek(b+1)}, ${sys.peek(b+2)}, ${sys.peek(b+3)} = ${i}\n`)
+    //serial.println(`readInt(); bytes: ${sys.peek(b)}, ${sys.peek(b+1)}, ${sys.peek(b+2)}, ${sys.peek(b+3)} = ${i}\n`)
 
     sys.free(b)
     return i
@@ -109,7 +101,7 @@ function readShort() {
     let b = readBytes(2)
     let i = (sys.peek(b) & 255) | ((sys.peek(b+1) & 255) << 8)
 
-    serial.println(`readShort(); bytes: ${sys.peek(b)}, ${sys.peek(b+1)} = ${i}\n`)
+    //serial.println(`readShort(); bytes: ${sys.peek(b)}, ${sys.peek(b+1)} = ${i}\n`)
 
     sys.free(b)
     return i
@@ -135,24 +127,44 @@ if (!magicMatching) {
 
 let width = readShort()
 let height = readShort()
-let fps = readShort()
+let fps = readShort(); if (fps == 0) fps = 9999
+let frameTime = 1.0 / fps
 let frameCount = readInt() % 16777216
-
-serial.println(readCount) // must say 18
-serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
+let akku = frameTime
+let framesRendered = 0
+//serial.println(readCount) // must say 18
+//serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
 
 let fbuf = sys.malloc(FBUF_SIZE)
 
-for (let f = 0; f < frameCount; f++) {
-    serial.println(`Frame #${f+1}`)
+let startTime = sys.nanoTime()
+while (framesRendered < frameCount) {
+    //serial.println(`Frame #${f+1}`)
 
-    let payloadLen = readInt()
-    let gzippedPtr = readBytes(payloadLen)
+    let t1 = sys.nanoTime()
 
-    gzip.decompFromTo(gzippedPtr, payloadLen, fbuf) // should return FBUF_SIZE
+    if (akku >= frameTime) {
+        akku -= frameTime
 
-    dma.ramToFrame(fbuf, 0, FBUF_SIZE)
-    sys.free(gzippedPtr)
+        let payloadLen = readInt()
+        let gzippedPtr = readBytes(payloadLen)
+
+        gzip.decompFromTo(gzippedPtr, payloadLen, fbuf) // should return FBUF_SIZE
+
+        dma.ramToFrame(fbuf, 0, FBUF_SIZE)
+        sys.free(gzippedPtr)
+
+        framesRendered += 1
+    }
+    sys.sleep(1)
+
+    let t2 = sys.nanoTime()
+    akku += (t2 - t1) / 1000000000.0
 }
+let endTime = sys.nanoTime()
 
 sys.free(fbuf)
+
+let timeTook = (endTime - startTime) / 1000000000.0
+
+//println(`Actual FPS: ${frameCount / timeTook}`)
