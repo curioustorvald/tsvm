@@ -3,7 +3,9 @@ package net.torvald.tsvm
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
+import net.torvald.tsvm.peripheral.IOSpace
 import java.nio.charset.Charset
 
 /**
@@ -16,6 +18,24 @@ class VMJSR223Delegate(val vm: VM) {
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
+    fun memcpy(from: Int, to: Int, len: Int) {
+        val len = len.toLong()
+        // some special cases for native memcpy
+        val ioSpace = vm.peripheralTable[0].peripheral!! as IOSpace
+        // within scratchpad memory?
+        if (from in 0 until 8388608 && (to + len) in 0 until 8388608)
+            UnsafeHelper.memcpy(vm.usermem.ptr + from, vm.usermem.ptr + to, len)
+        // first serial read buffer -> usermem
+        else if (from in -4097 downTo -8192 && (to + len) in 0 until 8388608)
+            UnsafeHelper.memcpy(ioSpace.blockTransferRx[0].ptr + (-4097 - from), vm.usermem.ptr + to, len)
+        // usermem -> first serial write buffer
+        else if (from in 0 until 8388608 && (to + len) in -4097L downTo -8192L)
+            UnsafeHelper.memcpy(vm.usermem.ptr + from, ioSpace.blockTransferTx[0].ptr + (-4097 - to), len)
+        else
+            for (i in 0 until len) {
+                vm.poke(to + i, vm.peek(from + i)!!)
+            }
+    }
     fun mapRom(slot: Int) {
         vm.romMapping = slot.and(255)
     }

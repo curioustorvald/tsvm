@@ -11,6 +11,9 @@ class CompressorDelegate(val vm: VM) {
     fun comp(str: String) = Companion.comp(str)
     fun comp(ba: ByteArray) = Companion.comp(ba)
 
+    /**
+     * @return length of the bytes compressed
+     */
     fun compFromTo(input: Int, len: Int, output: Int): Int {
         val inbytes = ByteArray(len) { vm.peek(input.toLong() + it)!! }
         comp(inbytes).let {
@@ -45,6 +48,19 @@ class CompressorDelegate(val vm: VM) {
         val bytes = decomp(ba)
         bytes.forEachIndexed { index, byte ->
             vm.poke(pointer.toLong() + index, byte)
+        }
+    }
+
+    /**
+     * @return length of the bytes compressed
+     */
+    fun decompFromTo(input: Int, len: Int, output: Int): Int {
+        val inbytes = ByteArray(len) { vm.peek(input.toLong() + it)!! }
+        decomp(inbytes).let {
+            it.forEachIndexed { index, byte ->
+                vm.poke(output.toLong() + index, byte)
+            }
+            return it.size
         }
     }
 
