@@ -36,7 +36,7 @@ data class AdapterConfig(
 )
 
 data class SuperGraphicsAddonConfig(
-    val hasSecondBank: Boolean = false
+    val bankCount: Int = 1
 )
 
 class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
@@ -268,7 +268,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             8L -> lastUsedColour
             9L -> ttyFore.toByte()
             10L -> ttyBack.toByte()
-            11L -> 1
+            11L -> sgr.bankCount.toByte()
 
             in 0 until VM.MMIO_SIZE -> -1
             else -> null

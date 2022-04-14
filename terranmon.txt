@@ -241,17 +241,18 @@ MMIO
     Text mode rows
 6 RW
     Text-mode attributes
-    0b kkkk 00rc (k: currently using character rom, r: TTY Raw mode, c: Cursor blink)
+    0b 0000 00rc (r: TTY Raw mode, c: Cursor blink)
 7 RW
     Graphics-mode attributes
-    0b 0000 000g (g: Use sprites(wipes out text buffer))
+    0b 0000 rrrr (r: Resolution/colour depth)
 8 RO
     Last used colour (set by poking at the framebuffer)
 9 RW
     current TTY foreground colour (useful for print() function)
 10 RW
     current TTY background colour (useful for print() function)
-
+11 RO
+    Number of Banks, or VRAM size (1 = 256 kB, max 4)
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it
