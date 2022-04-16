@@ -292,10 +292,26 @@ METADATA -
     uint16 WIDTH
     uint16 HEIGHT
     uint16 FPS (0: play as fast as can)
-    uint24 NUMBER OF FRAMES
-    \x7C
+    uint32 NUMBER OF FRAMES
+    uint16 TYPE
+    byte[12] RESERVED
 
-FRAME -
+Type:
+    0: 256-Colour frame
+    1: 256-Colour frame with palette data
+    2: 4096-Colour frame (stored as two byte-planes)
+
+TYPE 0 FRAME -
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA COMPRESSED IN GZIP
 
+TYPE 1 FRAME -
+    byte[512] Palette Data
+    uint32 SIZE OF FRAMEDATA
+    *      FRAMEDATA COMPRESSED IN GZIP
+
+TYPE 2 FRAME -
+    uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
+    *      FRAMEDATA COMPRESSED IN GZIP
+    uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
+    *      FRAMEDATA COMPRESSED IN GZIP

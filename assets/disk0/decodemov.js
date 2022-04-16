@@ -130,6 +130,8 @@ let height = readShort()
 let fps = readShort(); if (fps == 0) fps = 9999
 let frameTime = 1.0 / fps
 let frameCount = readInt() % 16777216
+let type = readShort()
+sys.free(readBytes(12)) // skip 12 bytes
 let akku = frameTime
 let framesRendered = 0
 //serial.println(readCount) // must say 18
