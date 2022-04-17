@@ -63,7 +63,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected val TAB_SIZE = 8
 
     internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
-    internal val framebuffer2 = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
+    internal val framebuffer2 = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
         val rgba = DEFAULT_PALETTE[it / 4]
@@ -107,6 +107,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private val outFBOs = Array(2) { FrameBuffer(Pixmap.Format.RGBA8888, WIDTH, HEIGHT, false) }
     private val outFBOregion = Array(2) { TextureRegion(outFBOs[it].colorBufferTexture) }
     private val outFBObatch = SpriteBatch()
+
+    private var graphicsMode = 0
+    private var layerArrangement = 0
 
 
     private val memTextCursorPosOffset = 0L
@@ -269,6 +272,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             9L -> ttyFore.toByte()
             10L -> ttyBack.toByte()
             11L -> sgr.bankCount.toByte()
+            12L -> graphicsMode.toByte()
+            13L -> layerArrangement.toByte()
 
             in 0 until VM.MMIO_SIZE -> -1
             else -> null
@@ -276,7 +281,16 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     }
 
     override fun mmio_write(addr: Long, byte: Byte) {
-        TODO("Not yet implemented")
+        val bi = byte.toUint()
+        when (addr) {
+            6L -> setTextmodeAttributes(byte)
+            7L -> setGraphicsAttributes(byte)
+            9L -> { ttyFore = bi }
+            10L -> { ttyBack = bi }
+            12L -> { graphicsMode = bi }
+            13L -> { layerArrangement = bi }
+            else -> null
+        }
     }
 
     private fun runCommand(opcode: Byte) {
@@ -713,6 +727,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         unusedArea[1].toInt().and(15).toFloat() / 15f,
         unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
 
+    private val isRefSize = (config.width == 560 && config.height == 448)
+
     open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false,  uiFBO: FrameBuffer? = null) {
         uiFBO?.end()
 
@@ -722,21 +738,64 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom.pixels.position(0)
 
         framebuffer2.setColor(-1);framebuffer2.fill()
-        for (y in 0 until config.height) {
-            var xoff = unusedArea[20L + 2*y].toUint().shl(8) or unusedArea[20L + 2*y + 1].toUint()
-            if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
-            val xs = (0+xoff).coerceIn(0,config.width-1) .. (config.width-1+xoff).coerceIn(0,config.width-1)
+        if (isRefSize && graphicsMode == 1) {
+            val layerOrder = LAYERORDERS4[layerArrangement]
+            for (y in 0..223) {
+                var xoff = unusedArea[20L + 2 * y].toUint().shl(8) or unusedArea[20L + 2 * y + 1].toUint()
+                if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+                val xs =
+                    (0 + xoff).coerceIn(0, 279)..(279 + xoff).coerceIn(0, 279)
 
-            if (xoff in -(config.width-1)..config.width-1) {
-                for (x in xs) {
-                    // this only works because framebuffer is guaranteed to be 8bpp
-                    framebuffer2.pixels.put(y*config.width+x,
-                        framebuffer.pixels.get(y*config.width + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
-                    )
+                if (xoff in -(280 - 1) until 280) {
+                    for (x in xs) {
+                        val colour = layerOrder.map {
+                            val colourIndex = framebuffer.pixels.get(280 * 224 * it + (y * 224 + x)).toUint()
+                            Color(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
+                        }.fold(Color(0)) { dest, src ->
+                            // manually alpha compositing
+                            // out_color = {src_color * src_alpha + dest_color * dest_alpha * (1-src_alpha)} / out_alpha
+                            // see https://gamedev.stackexchange.com/a/115786
+                            val outAlpha = (1f - (1f - dest.a) * (1f - src.a)).coerceIn(0.0001f, 1f)
+
+                            // src.a + dest.a - src.a*dest.a)
+                            Color(
+                                (src.r * src.a + dest.r * dest.a * (1f - src.a)) / outAlpha,
+                                (src.g * src.a + dest.g * dest.a * (1f - src.a)) / outAlpha,
+                                (src.b * src.a + dest.b* dest.a * (1f - src.a)) / outAlpha,
+                                outAlpha
+                            )
+                        }
+                        
+                        framebuffer2.setColor(colour)
+                        framebuffer2.drawPixel(x*2, y*2)
+                        framebuffer2.drawPixel(x*2+1, y*2)
+                        framebuffer2.drawPixel(x*2, y*2+1)
+                        framebuffer2.drawPixel(x*2+1, y*2+1)
+                    }
                 }
             }
         }
+        else {
+            for (y in 0 until config.height) {
+                var xoff = unusedArea[20L + 2 * y].toUint().shl(8) or unusedArea[20L + 2 * y + 1].toUint()
+                if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+                val xs =
+                    (0 + xoff).coerceIn(0, config.width - 1)..(config.width - 1 + xoff).coerceIn(0, config.width - 1)
 
+                if (xoff in -(config.width - 1) until config.width) {
+                    for (x in xs) {
+                        // this only works because framebuffer is guaranteed to be 8bpp
+                        /*framebuffer2.pixels.put(
+                            y * config.width + x,
+                            framebuffer.pixels.get(y * config.width + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
+                        )*/
+                        val colourIndex = framebuffer.pixels.get(y * config.width + (x - xoff)).toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        framebuffer2.setColor(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
+                        framebuffer2.drawPixel(x, y)
+                    }
+                }
+            }
+        }
 
         chrrom0.dispose()
         chrrom0 = Texture(chrrom)
@@ -973,7 +1032,7 @@ uniform sampler2D u_texture;
 uniform vec4 pal[256];
 
 void main(void) {
-    gl_FragColor = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
+    gl_FragColor = texture2D(u_texture, v_texCoords);
 }
         """.trimIndent()
 
@@ -989,7 +1048,8 @@ float intensitySteps = 4.0;
 uniform vec4 lcdBaseCol;
 
 void main(void) {
-    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
+//    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
+    vec4 palCol = texture2D(u_texture, v_texCoords);
     float lum = ceil((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
 
@@ -1010,8 +1070,8 @@ float intensitySteps = 4.0;
 uniform vec4 lcdBaseCol;
 
 void main(void) {
-    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
-    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+//    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
+    vec4 palCol = texture2D(u_texture, v_texCoords);    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
@@ -1765,6 +1825,60 @@ void main() {
                 it.and(255).div(255f)
             )
         }
+
+        val LAYERORDERS4 = listOf( // [drawn first, second, third, fourth], zero-indexed
+            "1234",
+            "1243",
+            "1324",
+            "1342",
+            "1423",
+            "1432",
+            "2134",
+            "2143",
+            "2314",
+            "2341",
+            "2413",
+            "2431",
+            "3124",
+            "3142",
+            "3214",
+            "3241",
+            "3412",
+            "3421",
+            "4123",
+            "4132",
+            "4213",
+            "4231",
+            "4312",
+            "4321",
+        ).map { s -> (0..3).map { s[it].toInt() - 61 } }
+
+        val LAYERORDERS2 = listOf( // [drawn first, second], zero-indexed
+            "12",
+            "12",
+            "12",
+            "12",
+            "12",
+            "12",
+            "12",
+            "21",
+            "21",
+            "21",
+            "21",
+            "21",
+            "12",
+            "12",
+            "21",
+            "21",
+            "12",
+            "21",
+            "12",
+            "12",
+            "21",
+            "21",
+            "12",
+            "21",
+        ).map { s -> (0..1).map { s[it].toInt() - 61 } }
     }
 }
 

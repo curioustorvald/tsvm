@@ -253,6 +253,69 @@ MMIO
     current TTY background colour (useful for print() function)
 11 RO
     Number of Banks, or VRAM size (1 = 256 kB, max 4)
+12 RW
+    Graphics Mode
+    0: 560x448,  256 Colours, 1 layer
+    1: 280x224,  256 Colours, 4 layers
+    2: 280x224, 4096 Colours, 2 layers
+    3: 560x448,  256 Colours, 2 layers (if bank 2 is not installed, will fall back to mode 0)
+    4: 560x448, 4096 Colours, 1 layer  (if bank 2 is not installed, will fall back to mode 0)
+    4096 is also known as "direct colour mode" (4096 colours * 16 transparency -> 65536 colours)
+13 RW
+    Layer Arrangement
+    If 4 layers are used:
+     Num  LO<->HI
+        0	1234
+        1	1243
+        2	1324
+        3	1342
+        4	1423
+        5	1432
+        6	2134
+        7	2143
+        8	2314
+        9	2341
+        10	2413
+        11	2431
+        12	3124
+        13	3142
+        14	3214
+        15	3241
+        16	3412
+        17	3421
+        18	4123
+        19	4132
+        20	4213
+        21	4231
+        22	4312
+        23	4321
+    If 2 layers are used:
+     Num  LO<->HI
+        0	12
+        1	12
+        2	12
+        3	12
+        4	12
+        5	12
+        6	12
+        7	21
+        8	21
+        9	21
+        10	21
+        11	21
+        12	12
+        13	12
+        14	21
+        15	21
+        16	12
+        17	21
+        18	12
+        19	12
+        20	21
+        21	21
+        22	12
+        23	21
+    If 1 layer is used, this field will do nothing and always fall back to 0
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it
