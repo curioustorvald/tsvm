@@ -735,6 +735,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
         // must reset positions as pixmaps expect them to be zero
         framebuffer.pixels.position(0)
+        framebuffer2.pixels.position(0)
         chrrom.pixels.position(0)
 
         framebuffer2.setColor(-1);framebuffer2.fill()
@@ -748,8 +749,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
                 if (xoff in -(280 - 1) until 280) {
                     for (x in xs) {
-                        val colour = layerOrder.map {
-                            val colourIndex = framebuffer.pixels.get(280 * 224 * it + (y * 224 + x)).toUint()
+                        val colour = layerOrder.map { layer ->
+                            val colourIndex = framebuffer.pixels.get((280*224*layer) + (y * 280 + x)).toUint()
                             Color(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
                         }.fold(Color(0)) { dest, src ->
                             // manually alpha compositing
@@ -765,7 +766,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                                 outAlpha
                             )
                         }
-                        
+
                         framebuffer2.setColor(colour)
                         framebuffer2.drawPixel(x*2, y*2)
                         framebuffer2.drawPixel(x*2+1, y*2)
@@ -1851,7 +1852,7 @@ void main() {
             "4231",
             "4312",
             "4321",
-        ).map { s -> (0..3).map { s[it].toInt() - 61 } }
+        ).map { s -> (0..3).map { s[it].toInt() - 49 } }
 
         val LAYERORDERS2 = listOf( // [drawn first, second], zero-indexed
             "12",
@@ -1878,7 +1879,7 @@ void main() {
             "21",
             "12",
             "21",
-        ).map { s -> (0..1).map { s[it].toInt() - 61 } }
+        ).map { s -> (0..1).map { s[it].toInt() - 49 } }
     }
 }
 
