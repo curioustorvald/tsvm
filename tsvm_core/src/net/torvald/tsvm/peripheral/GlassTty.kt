@@ -31,7 +31,7 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract var ttyBack: Int
     abstract var ttyRawMode: Boolean
 
-    abstract var halfrowMode: Boolean
+//    abstract var halfrowMode: Boolean
 
     abstract fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte = ttyFore.toByte(), backColour: Byte = ttyBack.toByte())
 

@@ -167,17 +167,12 @@ From the start of the memory space:
 12 bytes
     argument for "command" (arg1: Byte, arg2: Byte)
     write to this address FIRST and then write to "command" to execute the command
-2 bytes
-    framebuffer scroll X
-2 bytes
-    framebuffer scroll Y
-896 bytes
-    horizontal scroll offset for scanlines
-234 bytes
+1134 bytes
     unused
 1920
     mapped to font ROM
     Font Mapping area holds 128 characters in consecutive order, each character is always 15 bytes.
+    (designer's note: it's still useful to divide the char rom to two halves, lower half being characters ROM and upper half being symbols ROM)
 2 bytes
     Cursor position in: (y*80 + x)
 2560 bytes
@@ -316,6 +311,12 @@ MMIO
         22	12
         23	21
     If 1 layer is used, this field will do nothing and always fall back to 0
+14..15 RW
+    framebuffer scroll X
+16..17 RW
+    framebuffer scroll Y
+1024..2047 RW
+    horizontal scroll offset for scanlines
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it

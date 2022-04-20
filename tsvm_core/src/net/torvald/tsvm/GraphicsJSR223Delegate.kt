@@ -67,7 +67,6 @@ class GraphicsJSR223Delegate(val vm: VM) {
         return intArrayOf(0, 0)
     }
 
-
     fun scrollFrame(xdelta: Int, ydelta: Int) {
         getFirstGPU()?.let {
             it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.framebuffer.width
@@ -77,19 +76,25 @@ class GraphicsJSR223Delegate(val vm: VM) {
 
     fun setLineOffset(line: Int, offset: Int) {
         getFirstGPU()?.let {
-            it.poke(250900L + 2*line, offset.shr(8).toByte()) // absolutely not USHR
-            it.poke(250901L + 2*line, offset.toByte())
+            it.scanlineOffsets[2L * line] = offset.toByte()
+            it.scanlineOffsets[2L * line + 1] = offset.shr(8).toByte() // absolutely not USHR
         }
     }
 
     fun getLineOffset(line: Int): Int {
         getFirstGPU()?.let {
-            var xoff = it.peek(250900L + 2*line)!!.toUint().shl(8) or it.peek(250901L + 2*line)!!.toUint()
+            var xoff = it.scanlineOffsets[2L * line].toUint() or it.scanlineOffsets[2L * line + 1].toUint().shl(8)
             if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
             return xoff
         }
         return 0
     }
+
+    fun setGraphicsMode(mode: Int) {
+        getFirstGPU()?.mmio_write(12L, mode.toByte())
+    }
+
+    fun getGraphicsMode() = getFirstGPU()?.mmio_read(12L)?.toUint() ?: 0
 
     fun getPixelDimension(): IntArray {
         getFirstGPU()?.let { return intArrayOf(it.framebuffer.width, it.framebuffer.height) }
@@ -163,9 +168,9 @@ class GraphicsJSR223Delegate(val vm: VM) {
         )
     }*/
 
-    fun setHalfrowMode(set: Boolean) {
+    /*fun setHalfrowMode(set: Boolean) {
         getFirstGPU()?.halfrowMode = set
-    }
+    }*/
 
     private fun GraphicsAdapter._loadSprite(spriteNum: Int, ptr: Int) {
         UnsafeHelper.memcpy(

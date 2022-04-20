@@ -31,7 +31,7 @@ class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), Peri
     override var blinkCursor = true
     override var ttyRawMode = false
 
-    override var halfrowMode = false
+//    override var halfrowMode = false
 
     override fun getCursorPos() = rawCursorPos % TEXT_COLS to rawCursorPos / TEXT_COLS
     /**

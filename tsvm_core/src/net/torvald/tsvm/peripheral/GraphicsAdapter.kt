@@ -77,6 +77,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     internal val textArea = UnsafeHelper.allocate(7682)
     internal val unusedArea = UnsafeHelper.allocate(1024)
+    internal val scanlineOffsets = UnsafeHelper.allocate(1024)
 
     protected val paletteShader = LoadShader(DRAW_SHADER_VERT, config.paletteShader)
     protected val textShader = LoadShader(DRAW_SHADER_VERT, config.fragShader)
@@ -118,7 +119,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private val memTextOffset = 2L + 2560 + 2560
     private val TEXT_AREA_SIZE = TEXT_COLS * TEXT_ROWS
 
-    override var halfrowMode = false
+//    override var halfrowMode = false
 
     override var rawCursorPos: Int
         get() = textArea.getShortFree(memTextCursorPosOffset).toInt()
@@ -132,7 +133,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
         if (newx >= TEXT_COLS) {
             newx = 0
-            newy += 1 + halfrowMode.toInt()
+            newy += 1 //+ halfrowMode.toInt()
         }
         else if (newx < 0) {
             newx = 0
@@ -166,6 +167,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         framebuffer.fill()
 
         unusedArea.fillWith(0)
+        scanlineOffsets.fillWith(0)
 
         val pm = Pixmap(1, 1, Pixmap.Format.RGBA8888)
         pm.drawPixel(0, 0, -1)
@@ -197,11 +199,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         val adi = addr.toInt()
         return when (addr) {
             in 0 until 250880 -> framebuffer.pixels.get(adi)//framebuffer.getPixel(adi % WIDTH, adi / WIDTH).toByte()
-            250896L -> framebufferScrollX.toByte()
-            250897L -> framebufferScrollX.ushr(8).toByte()
-            250898L -> framebufferScrollY.toByte()
-            250899L -> framebufferScrollY.ushr(8).toByte()
-            251796L -> halfrowMode.toInt().toByte()
             in 252030 until 252030+1920 -> mappedFontRom[adi- 252030]
             in 250880 until 250880+1024 -> unusedArea[addr - 250880]
             in 253950 until 261632 -> textArea[addr - 253950]
@@ -226,11 +223,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 unusedArea[addr - 250880] = byte
                 runCommand(byte)
             }
-            250896L -> framebufferScrollX = framebufferScrollX.and(0xFFFFFF00.toInt()).or(bi)
-            250897L -> framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8)
-            250898L -> framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi)
-            250899L -> framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8)
-            251796L -> halfrowMode = (bi and 1) == 1
             in 252030 until 252030+1920 -> mappedFontRom[adi- 252030] = byte
             in 250880 until 250880+1024 -> unusedArea[addr - 250880] = byte
             in 253950 until 261632 -> textArea[addr - 253950] = byte
@@ -274,6 +266,12 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             11L -> sgr.bankCount.toByte()
             12L -> graphicsMode.toByte()
             13L -> layerArrangement.toByte()
+            14L -> framebufferScrollX.toByte()
+            15L -> framebufferScrollX.ushr(8).toByte()
+            16L -> framebufferScrollY.toByte()
+            17L -> framebufferScrollY.ushr(8).toByte()
+
+            in 1024L..2047L -> scanlineOffsets[addr - 1024]
 
             in 0 until VM.MMIO_SIZE -> -1
             else -> null
@@ -289,6 +287,13 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             10L -> { ttyBack = bi }
             12L -> { graphicsMode = bi }
             13L -> { layerArrangement = bi }
+            14L -> { framebufferScrollX = framebufferScrollX.and(0xFFFFFF00.toInt()).or(bi) }
+            15L -> { framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8) }
+            16L -> { framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi) }
+            17L -> { framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8) }
+
+            in 1024L..2047L -> { scanlineOffsets[addr - 1024] = byte }
+
             else -> null
         }
     }
@@ -608,7 +613,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun crlf() {
         val (_, y) = getCursorPos()
-        val newy = y + 1 + halfrowMode.toInt()
+        val newy = y + 1 //+ halfrowMode.toInt()
         setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
         if (newy >= TEXT_ROWS) scrollUp(1)
     }
@@ -715,6 +720,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom0.dispose()
         chrrom.dispose()
         unusedArea.destroy()
+        scanlineOffsets.destroy()
     }
 
     private var textCursorBlinkTimer = 0f
@@ -742,10 +748,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         if (isRefSize && graphicsMode == 1) {
             val layerOrder = LAYERORDERS4[layerArrangement]
             for (y in 0..223) {
-                var xoff = unusedArea[20L + 2 * y].toUint().shl(8) or unusedArea[20L + 2 * y + 1].toUint()
+                var xoff = scanlineOffsets[2L * y].toUint().shl(8) or scanlineOffsets[2L * y + 1].toUint()
                 if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
-                val xs =
-                    (0 + xoff).coerceIn(0, 279)..(279 + xoff).coerceIn(0, 279)
+                val xs = (0 + xoff).coerceIn(0, 279)..(279 + xoff).coerceIn(0, 279)
 
                 if (xoff in -(280 - 1) until 280) {
                     for (x in xs) {
@@ -778,10 +783,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
         else {
             for (y in 0 until config.height) {
-                var xoff = unusedArea[20L + 2 * y].toUint().shl(8) or unusedArea[20L + 2 * y + 1].toUint()
+                var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
                 if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
-                val xs =
-                    (0 + xoff).coerceIn(0, config.width - 1)..(config.width - 1 + xoff).coerceIn(0, config.width - 1)
+                val xs = (0 + xoff).coerceIn(0, config.width - 1)..(config.width - 1 + xoff).coerceIn(0, config.width - 1)
 
                 if (xoff in -(config.width - 1) until config.width) {
                     for (x in xs) {
