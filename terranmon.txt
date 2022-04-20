@@ -256,6 +256,8 @@ MMIO
     3: 560x448,  256 Colours, 2 layers (if bank 2 is not installed, will fall back to mode 0)
     4: 560x448, 4096 Colours, 1 layer  (if bank 2 is not installed, will fall back to mode 0)
     4096 is also known as "direct colour mode" (4096 colours * 16 transparency -> 65536 colours)
+        Two layers are grouped to make a frame, "low layer" contains RG colours and "high layer" has BA colours,
+        Red and Blue occupies MSBs
 13 RW
     Layer Arrangement
     If 4 layers are used:

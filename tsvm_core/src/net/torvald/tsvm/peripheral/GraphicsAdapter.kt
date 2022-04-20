@@ -285,7 +285,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             7L -> setGraphicsAttributes(byte)
             9L -> { ttyFore = bi }
             10L -> { ttyBack = bi }
-            12L -> { graphicsMode = bi }
+            12L -> { if (bi >= 3 && sgr.bankCount == 1) graphicsMode = 0 else graphicsMode = bi }
             13L -> { layerArrangement = bi }
             14L -> { framebufferScrollX = framebufferScrollX.and(0xFFFFFF00.toInt()).or(bi) }
             15L -> { framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8) }
@@ -745,8 +745,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom.pixels.position(0)
 
         framebuffer2.setColor(-1);framebuffer2.fill()
-        if (isRefSize && graphicsMode == 1) {
-            val layerOrder = LAYERORDERS4[layerArrangement]
+        if (isRefSize && (graphicsMode == 1 || graphicsMode == 2)) {
+            val layerOrder = (if (graphicsMode == 1) LAYERORDERS4 else LAYERORDERS2)[layerArrangement]
             for (y in 0..223) {
                 var xoff = scanlineOffsets[2L * y].toUint().shl(8) or scanlineOffsets[2L * y + 1].toUint()
                 if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
@@ -755,8 +755,29 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 if (xoff in -(280 - 1) until 280) {
                     for (x in xs) {
                         val colour = layerOrder.map { layer ->
-                            val colourIndex = framebuffer.pixels.get((280*224*layer) + (y * 280 + x)).toUint()
-                            Color(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
+                            if (graphicsMode == 1) {
+                                val colourIndex = framebuffer.pixels.get((280 * 224 * layer) + (y * 280 + x)).toUint()
+                                Color(
+                                    paletteOfFloats[4 * colourIndex],
+                                    paletteOfFloats[4 * colourIndex + 1],
+                                    paletteOfFloats[4 * colourIndex + 2],
+                                    paletteOfFloats[4 * colourIndex + 3]
+                                )
+                            }
+                            else {
+                                val lowBits = framebuffer.pixels.get((280 * 224 * layer * 2) + (y * 280 + x)).toUint()
+                                val highBits = framebuffer.pixels.get((280 * 224 * (layer*2 + 1)) + (y * 280 + x)).toUint()
+                                val r = lowBits.ushr(4).and(15)
+                                val g = lowBits.and(15)
+                                val b = highBits.ushr(4).and(15)
+                                val a = highBits.and(15)
+                                Color(
+                                    r / 15f,
+                                    g / 15f,
+                                    b / 15f,
+                                    a / 15f
+                                )
+                            }
                         }.fold(Color(0)) { dest, src ->
                             // manually alpha compositing
                             // out_color = {src_color * src_alpha + dest_color * dest_alpha * (1-src_alpha)} / out_alpha
