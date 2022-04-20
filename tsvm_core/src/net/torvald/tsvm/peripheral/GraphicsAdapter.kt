@@ -782,8 +782,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                             // manually alpha compositing
                             // out_color = {src_color * src_alpha + dest_color * dest_alpha * (1-src_alpha)} / out_alpha
                             // see https://gamedev.stackexchange.com/a/115786
-                            val outAlpha = (1f - (1f - dest.a) * (1f - src.a)).coerceIn(0.0001f, 1f)
-
+                            val outAlpha = (dest.a + (1f - dest.a) * src.a).coerceIn(0.0001f, 1f) // identical to 1 - (1 - dest.a) * (1 - src.a) but this is more optimised form
+                            
                             // src.a + dest.a - src.a*dest.a)
                             Color(
                                 (src.r * src.a + dest.r * dest.a * (1f - src.a)) / outAlpha,
