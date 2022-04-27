@@ -366,6 +366,11 @@ Type:
     0: 256-Colour frame
     1: 256-Colour frame with palette data
     2: 4096-Colour frame (stored as two byte-planes)
+    16: Series of JPEGs
+    18: Series of PNGs
+    20: Series of TGAs
+    21: Series of TGA/GZs
+    255: Every frame specifies the type
 
 TYPE 0 FRAME -
     uint32 SIZE OF FRAMEDATA
@@ -381,3 +386,12 @@ TYPE 2 FRAME -
     *      FRAMEDATA COMPRESSED IN GZIP
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
     *      FRAMEDATA COMPRESSED IN GZIP
+
+TYPE 16+ FRAME -
+    uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
+    *      FRAMEDATA (COMPRESSED IN GZIP for TGA/GZ)
+
+TYPE 255 FRAME -
+    uint16 TYPE OF FRAMEDATA
+    uint32 SIZE OF FRAMEDATA
+    *      FRAMEDATA

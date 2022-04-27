@@ -40,6 +40,7 @@ data class SuperGraphicsAddonConfig(
 )
 
 class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+class ReferenceGraphicsAdapter2(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
 class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
 
 /**
@@ -197,7 +198,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         val adi = addr.toInt()
         if (framebuffer2 != null) {
             return when (addr - 262144) {
-                in 0 until 250880 -> framebuffer2[addr]
+                in 0 until 250880 -> framebuffer2[addr - 262144]
                 else -> null
             }
         }
@@ -222,7 +223,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             when (addr - 262144) {
                 in 0 until 250880 -> {
                     lastUsedColour = byte
-                    framebuffer2[addr] = byte
+                    framebuffer2[addr - 262144] = byte
                     return
                 }
             }
@@ -758,8 +759,32 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom.pixels.position(0)
 
         framebufferOut.setColor(-1);framebufferOut.fill()
-//        if (isRefSize && graphicsMode == 4 && )
-        if (isRefSize && (graphicsMode == 1 || graphicsMode == 2)) {
+        if (graphicsMode == 4 && framebuffer2 != null) {
+            for (y in 0 until HEIGHT) {
+                var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
+                if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+                val xs = (0 + xoff).coerceIn(0, WIDTH - 1)..(WIDTH - 1 + xoff).coerceIn(0, WIDTH - 1)
+
+                if (xoff in -(WIDTH - 1) until WIDTH) {
+                    for (x in xs) {
+                        val rg = framebuffer[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val ba = framebuffer2[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val r = rg.ushr(4).and(15)
+                        val g = rg.and(15)
+                        val b = ba.ushr(4).and(15)
+                        val a = ba.and(15)
+                        framebufferOut.setColor(
+                                r.shl(28) or r.shl(24) or
+                                g.shl(20) or g.shl(16) or
+                                b.shl(12) or b.shl(8) or
+                                a.shl(4) or a
+                        )
+                        framebufferOut.drawPixel(x, y)
+                    }
+                }
+            }
+        }
+        else if (isRefSize && (graphicsMode == 1 || graphicsMode == 2)) {
             val layerOrder = (if (graphicsMode == 1) LAYERORDERS4 else LAYERORDERS2)[layerArrangement]
             for (y in 0..223) {
                 var xoff = scanlineOffsets[2L * y].toUint().shl(8) or scanlineOffsets[2L * y + 1].toUint()

@@ -1,5 +1,5 @@
 if (!exec_args[1]) {
-    printerrln("Usage: jpdectest image.jpg")
+    printerrln("Usage: jpdectesthigh image.jpg")
 }
 
 filesystem.open("A", exec_args[1], "R")
@@ -24,8 +24,8 @@ println(`dim: ${imgw}x${imgh}`)
 println(`converting to displayable format...`)
 
 // convert colour
-graphics.setGraphicsMode(0)
-graphics.imageToDisplayableFormat(imageData, -1048577, imgw, imgh, 4, 1)
+graphics.setGraphicsMode(4)
+graphics.imageToDirectCol(imageData, -1048577, -1310721, imgw, imgh, 4, 0)
 
 sys.free(imageData)
 sys.free(infile)

@@ -37,7 +37,7 @@ public class AppLoader {
 
         String diskPath = "assets/disk0";
 
-        EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", diskPath, 560, 448);
+        EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter2", diskPath, 560, 448);
         EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", diskPath, 560, 448);
         EmulInstance term = new EmulInstance(vm, "net.torvald.tsvm.peripheral.Term", diskPath, 720, 480);
         EmulInstance portable = new EmulInstance(vm, "net.torvald.tsvm.peripheral.CharacterLCDdisplay", diskPath, 628, 302);

@@ -361,12 +361,32 @@ class GraphicsJSR223Delegate(val vm: VM) {
         3f/16f,5f/16f,1f/16f,
     )
 
-    private val bayerKernel = intArrayOf(
-        0,8,2,10,
-        12,4,14,6,
-        3,11,1,9,
-        15,7,13,5,
-    ).map { (it.toFloat() + 0.5f) / 16f }.toFloatArray()
+    private val bayerKernels = arrayOf(
+        intArrayOf(
+            0,8,2,10,
+            12,4,14,6,
+            3,11,1,9,
+            15,7,13,5,
+        ),
+        intArrayOf(
+            8,2,10,0,
+            4,14,6,12,
+            11,1,9,3,
+            7,13,5,15,
+        ),
+        intArrayOf(
+            7,13,5,15,
+            8,2,10,0,
+            4,14,6,12,
+            11,1,9,3,
+        ),
+        intArrayOf(
+            15,7,13,5,
+            0,8,2,10,
+            12,4,14,6,
+            3,11,1,9,
+        )
+    ).map{ it.map { (it.toFloat() + 0.5f) / 16f }.toFloatArray() }
 
     /**
      * This method always assume that you're using the default palette
@@ -382,7 +402,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
             for (k in 0L until len) {
                 val x = (k % width).toInt()
                 val y = (k / width).toInt()
-                val t = bayerKernel[4 * (y % 4) + (x % 4)]
+                val t = bayerKernels[0][4 * (y % 4) + (x % 4)]
 
                 val r = vm.peek(srcPtr + channels * k + 0)!!.toUint().toFloat() / 255f
                 val g = vm.peek(srcPtr + channels * k + 1)!!.toUint().toFloat() / 255f
@@ -470,6 +490,39 @@ class GraphicsJSR223Delegate(val vm: VM) {
                 val q = if (a < 8) 255.toByte() else clut[r*256 + g*16 + b]
                 vm.poke(destPtr + k*sign, q)
             }
+        }
+    }
+
+    fun imageToDirectCol(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, channels: Int, pattern: Int = 0) {
+        val useAlpha = (channels == 4)
+        val sign = if (destRG >= 0) 1 else -1
+        val len = width * height
+        if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
+
+        for (k in 0L until len) {
+            val x = (k % width).toInt()
+            val y = (k / width).toInt()
+            val t = bayerKernels[pattern][4 * (y % 4) + (x % 4)]
+
+            val r = vm.peek(srcPtr + channels * k + 0)!!.toUint().toFloat() / 255f
+            val g = vm.peek(srcPtr + channels * k + 1)!!.toUint().toFloat() / 255f
+            val b = vm.peek(srcPtr + channels * k + 2)!!.toUint().toFloat() / 255f
+            val a = if (useAlpha) vm.peek(srcPtr + channels * k + 3)!!.toUint().toFloat() / 255f else 1f
+
+            // default palette is 16-16-16 level RGB (plus 15 shades of grey)
+
+            val r1 = t / 15f + r
+            val g1 = t / 15f + g
+            val b1 = t / 15f + b
+            val a1 = t / 15f + a
+
+            val ra = floor(15f * r1)
+            val ga = floor(15f * g1)
+            val ba = floor(15f * b1)
+            val aa = floor(15f * a1)
+
+            vm.poke(destRG + k*sign, (ra.shl(4) or ga).toByte())
+            vm.poke(destBA + k*sign, (ba.shl(4) or aa).toByte())
         }
     }
 
