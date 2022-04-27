@@ -54,16 +54,17 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         return vm
     }
 
-    protected val WIDTH = config.width
-    protected val HEIGHT = config.height
-    protected val VRAM_SIZE = config.vramSize
+    val WIDTH = config.width
+    val HEIGHT = config.height
+    val VRAM_SIZE = config.vramSize
     protected val TTY_FORE_DEFAULT = config.ttyDefaultFore
     protected val TTY_BACK_DEFAULT = config.ttyDefaultBack
     protected val theme = config.theme
     protected val TAB_SIZE = 8
 
-    internal val framebuffer = Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
-    internal val framebuffer2 = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
+    internal val framebuffer = UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT)//Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
+    internal val framebuffer2 = if (sgr.bankCount >= 2) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT) else null
+    internal val framebufferOut = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
         val rgba = DEFAULT_PALETTE[it / 4]
@@ -159,12 +160,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         outFBObatch.projectionMatrix = m
 
 
-        framebuffer.blending = Pixmap.Blending.None
-        framebuffer2.blending = Pixmap.Blending.None
+        framebufferOut.blending = Pixmap.Blending.None
         textForePixmap.blending = Pixmap.Blending.None
         textBackPixmap.blending = Pixmap.Blending.None
-        framebuffer.setColor(-1)
-        framebuffer.fill()
+        framebuffer.fillWith(-1) // FF for palette mode, RGBA(15, 15, x, x) for direct colour
+        framebuffer2?.fillWith(-16) // RGBA(x, x, 15, 0) for direct colour
 
         unusedArea.fillWith(0)
         scanlineOffsets.fillWith(0)
@@ -191,14 +191,18 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
 
         setCursorPos(0, 0)
-
-        println("Framebuffer pixels limit: ${framebuffer.pixels.limit()}")
     }
 
     override fun peek(addr: Long): Byte? {
         val adi = addr.toInt()
+        if (framebuffer2 != null) {
+            return when (addr - 262144) {
+                in 0 until 250880 -> framebuffer2[addr]
+                else -> null
+            }
+        }
         return when (addr) {
-            in 0 until 250880 -> framebuffer.pixels.get(adi)//framebuffer.getPixel(adi % WIDTH, adi / WIDTH).toByte()
+            in 0 until 250880 -> framebuffer[addr]
             in 252030 until 252030+1920 -> mappedFontRom[adi- 252030]
             in 250880 until 250880+1024 -> unusedArea[addr - 250880]
             in 253950 until 261632 -> textArea[addr - 253950]
@@ -214,10 +218,19 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     override fun poke(addr: Long, byte: Byte) {
         val adi = addr.toInt()
         val bi = byte.toInt().and(255)
+        if (framebuffer2 != null) {
+            when (addr - 262144) {
+                in 0 until 250880 -> {
+                    lastUsedColour = byte
+                    framebuffer2[addr] = byte
+                    return
+                }
+            }
+        }
         when (addr) {
             in 0 until 250880 -> {
                 lastUsedColour = byte
-                framebuffer.pixels.put(adi, byte)
+                framebuffer[addr] = byte
             }
             250883L -> {
                 unusedArea[addr - 250880] = byte
@@ -311,8 +324,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 }
             }
             2 -> {
-                framebuffer.setColor(0f,0f,0f,arg1 / 255f)
-                framebuffer.fill()
+                framebuffer.fillWith(arg1.toByte())
+                framebuffer2?.fillWith(arg2.toByte())
             }
             3 -> {
                 for (it in 0 until 1024) {
@@ -320,8 +333,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                     val channel = it % 4
                     rgba.shr((3 - channel) * 8).and(255) / 255f
                 }
-                framebuffer.setColor(0f,0f,0f,arg1 / 255f)
-                framebuffer.fill()
+                framebuffer.fillWith(arg1.toByte())
+                framebuffer2?.fillWith(arg2.toByte())
             }
             16, 17 -> readFontRom(opcode - 16)
             18, 19 -> writeFontRom(opcode - 18)
@@ -335,8 +348,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     open fun readFontRom(mode: Int) {
         // max char size: 8*15
         fontRomMappingMode = mode
-        val cw = config.width / config.textCols
-        val ch = config.height / config.textRows
+        val cw = WIDTH / config.textCols
+        val ch = HEIGHT / config.textRows
         if (cw > 8 || ch > 15) throw UnsupportedOperationException()
 
         val pixmap = chrrom
@@ -368,8 +381,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     open fun writeFontRom(mode: Int) {
         // max char size: 8*15
         fontRomMappingMode = mode
-        val cw = config.width / config.textCols
-        val ch = config.height / config.textRows
+        val cw = WIDTH / config.textCols
+        val ch = HEIGHT / config.textRows
 
         if (cw > 8 || ch > 15) throw UnsupportedOperationException()
 
@@ -701,8 +714,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun dispose() {
         //testTex.dispose()
-        framebuffer.dispose()
-        framebuffer2.dispose()
+        framebuffer.destroy()
+        framebuffer2?.destroy()
+        framebufferOut.dispose()
         rendertex.dispose()
         textArea.destroy()
         textForePixmap.dispose()
@@ -733,18 +747,18 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         unusedArea[1].toInt().and(15).toFloat() / 15f,
         unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
 
-    private val isRefSize = (config.width == 560 && config.height == 448)
+    private val isRefSize = (WIDTH == 560 && HEIGHT == 448)
 
     open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false,  uiFBO: FrameBuffer? = null) {
         uiFBO?.end()
 
 
         // must reset positions as pixmaps expect them to be zero
-        framebuffer.pixels.position(0)
-        framebuffer2.pixels.position(0)
+        framebufferOut.pixels.position(0)
         chrrom.pixels.position(0)
 
-        framebuffer2.setColor(-1);framebuffer2.fill()
+        framebufferOut.setColor(-1);framebufferOut.fill()
+//        if (isRefSize && graphicsMode == 4 && )
         if (isRefSize && (graphicsMode == 1 || graphicsMode == 2)) {
             val layerOrder = (if (graphicsMode == 1) LAYERORDERS4 else LAYERORDERS2)[layerArrangement]
             for (y in 0..223) {
@@ -756,7 +770,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                     for (x in xs) {
                         val colour = layerOrder.map { layer ->
                             if (graphicsMode == 1) {
-                                val colourIndex = framebuffer.pixels.get((280 * 224 * layer) + (y * 280 + x)).toUint()
+                                val colourIndex = framebuffer[(280L * 224 * layer) + (y * 280 + x)].toUint()
                                 Color(
                                     paletteOfFloats[4 * colourIndex],
                                     paletteOfFloats[4 * colourIndex + 1],
@@ -765,8 +779,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                                 )
                             }
                             else {
-                                val lowBits = framebuffer.pixels.get((280 * 224 * layer * 2) + (y * 280 + x)).toUint()
-                                val highBits = framebuffer.pixels.get((280 * 224 * (layer*2 + 1)) + (y * 280 + x)).toUint()
+                                val lowBits = framebuffer[(280L * 224 * layer * 2) + (y * 280 + x)].toUint()
+                                val highBits = framebuffer[(280L * 224 * (layer*2 + 1)) + (y * 280 + x)].toUint()
                                 val r = lowBits.ushr(4).and(15)
                                 val g = lowBits.and(15)
                                 val b = highBits.ushr(4).and(15)
@@ -793,31 +807,31 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                             )
                         }
 
-                        framebuffer2.setColor(colour)
-                        framebuffer2.drawPixel(x*2, y*2)
-                        framebuffer2.drawPixel(x*2+1, y*2)
-                        framebuffer2.drawPixel(x*2, y*2+1)
-                        framebuffer2.drawPixel(x*2+1, y*2+1)
+                        framebufferOut.setColor(colour)
+                        framebufferOut.drawPixel(x*2, y*2)
+                        framebufferOut.drawPixel(x*2+1, y*2)
+                        framebufferOut.drawPixel(x*2, y*2+1)
+                        framebufferOut.drawPixel(x*2+1, y*2+1)
                     }
                 }
             }
         }
         else {
-            for (y in 0 until config.height) {
+            for (y in 0 until HEIGHT) {
                 var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
                 if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
-                val xs = (0 + xoff).coerceIn(0, config.width - 1)..(config.width - 1 + xoff).coerceIn(0, config.width - 1)
+                val xs = (0 + xoff).coerceIn(0, WIDTH - 1)..(WIDTH - 1 + xoff).coerceIn(0, WIDTH - 1)
 
-                if (xoff in -(config.width - 1) until config.width) {
+                if (xoff in -(WIDTH - 1) until WIDTH) {
                     for (x in xs) {
                         // this only works because framebuffer is guaranteed to be 8bpp
                         /*framebuffer2.pixels.put(
-                            y * config.width + x,
-                            framebuffer.pixels.get(y * config.width + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
+                            y * WIDTH + x,
+                            framebuffer.pixels.get(y * WIDTH + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
                         )*/
-                        val colourIndex = framebuffer.pixels.get(y * config.width + (x - xoff)).toUint() // coerceIn not required as (x - xoff) never escapes 0..559
-                        framebuffer2.setColor(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
-                        framebuffer2.drawPixel(x, y)
+                        val colourIndex = framebuffer[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        framebufferOut.setColor(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
+                        framebufferOut.drawPixel(x, y)
                     }
                 }
             }
@@ -826,10 +840,10 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom0.dispose()
         chrrom0 = Texture(chrrom)
         rendertex.dispose()
-        rendertex = Texture(framebuffer2, Pixmap.Format.RGBA8888, false)
+        rendertex = Texture(framebufferOut, Pixmap.Format.RGBA8888, false)
 
-        val texOffX = (framebufferScrollX fmod framebuffer.width) * -1f
-        val texOffY = (framebufferScrollY fmod framebuffer.height) * 1f
+        val texOffX = (framebufferScrollX fmod WIDTH) * -1f
+        val texOffY = (framebufferScrollY fmod HEIGHT) * 1f
 
         outFBOs[1].inUse {
             outFBObatch.inUse {
@@ -868,9 +882,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
                 // draw framebuffer
                 outFBObatch.draw(rendertex, texOffX, texOffY)
-                outFBObatch.draw(rendertex, texOffX + framebuffer.width, texOffY)
-                outFBObatch.draw(rendertex, texOffX + framebuffer.width, texOffY - framebuffer.height)
-                outFBObatch.draw(rendertex, texOffX, texOffY - framebuffer.height)
+                outFBObatch.draw(rendertex, texOffX + WIDTH, texOffY)
+                outFBObatch.draw(rendertex, texOffX + WIDTH, texOffY - HEIGHT)
+                outFBObatch.draw(rendertex, texOffX, texOffY - HEIGHT)
 
                 // draw texts or sprites
 

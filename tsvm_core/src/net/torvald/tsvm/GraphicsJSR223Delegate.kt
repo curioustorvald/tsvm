@@ -69,8 +69,8 @@ class GraphicsJSR223Delegate(val vm: VM) {
 
     fun scrollFrame(xdelta: Int, ydelta: Int) {
         getFirstGPU()?.let {
-            it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.framebuffer.width
-            it.framebufferScrollY = (it.framebufferScrollY + ydelta) fmod it.framebuffer.height
+            it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.WIDTH
+            it.framebufferScrollY = (it.framebufferScrollY + ydelta) fmod it.HEIGHT
         }
     }
 
@@ -97,7 +97,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
     fun getGraphicsMode() = getFirstGPU()?.mmio_read(12L)?.toUint() ?: 0
 
     fun getPixelDimension(): IntArray {
-        getFirstGPU()?.let { return intArrayOf(it.framebuffer.width, it.framebuffer.height) }
+        getFirstGPU()?.let { return intArrayOf(it.WIDTH, it.HEIGHT) }
         return intArrayOf(-1, -1)
     }
 

@@ -16,11 +16,7 @@ class DMADelegate(val vm: VM) {
 
     fun ramToFrame(from: Int, devnum: Int, offset: Int, length: Int) {
         (vm.peripheralTable[devnum].peripheral as? GraphicsAdapter)?.let {
-            val data = ByteArray(length)
-            UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + from, data, UnsafeHelper.getArrayOffset(data), length.toLong())
-            it.framebuffer.pixels.position(offset)
-            it.framebuffer.pixels.put(data)
-            it.framebuffer.pixels.position(0) // rewinding to avoid graphical glitch
+            UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + from, null, it.framebuffer.ptr + offset, length.toLong())
         }
     }
 
@@ -35,11 +31,7 @@ class DMADelegate(val vm: VM) {
 
     fun frameToRam(from: Int, to: Int, devnum: Int, length: Int) {
         (vm.peripheralTable[devnum].peripheral as? GraphicsAdapter)?.let {
-            val data = ByteArray(length)
-            it.framebuffer.pixels.position(from)
-            it.framebuffer.pixels.get(data)
-            it.framebuffer.pixels.position(0) // rewinding to avoid graphical glitch
-            UnsafeHelper.memcpyRaw(data, UnsafeHelper.getArrayOffset(data), null, vm.usermem.ptr + to, length.toLong())
+            UnsafeHelper.memcpyRaw(null, it.framebuffer.ptr + from, null, vm.usermem.ptr + to, length.toLong())
         }
     }
 
