@@ -137,13 +137,18 @@ let framesRendered = 0
 //serial.println(readCount) // must say 18
 //serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
 
-if (type != 0) {
-    printerrln("Not a type 0 mov")
+if (type != 16) {
+    printerrln("Not a type 16 mov")
     return 1
 }
 
-let fbuf = sys.malloc(FBUF_SIZE)
-graphics.setGraphicsMode(0)
+let fbuf1 = sys.malloc(FBUF_SIZE)
+let fbuf2 = sys.malloc(FBUF_SIZE)
+graphics.setGraphicsMode(4)
+
+let imagearea = sys.malloc(FBUF_SIZE)
+let decodearea1 = sys.malloc(FBUF_SIZE)
+let decodearea2 = sys.malloc(FBUF_SIZE)
 
 let startTime = sys.nanoTime()
 while (framesRendered < frameCount) {
@@ -155,12 +160,12 @@ while (framesRendered < frameCount) {
         akku -= frameTime
 
         let payloadLen = readInt()
-        let gzippedPtr = readBytes(payloadLen)
+        let jpgPtr = readBytes(payloadLen)
 
-        gzip.decompFromTo(gzippedPtr, payloadLen, fbuf) // should return FBUF_SIZE
+        graphics.decodeImageTo(jpgPtr, payloadLen, imagearea)
+        graphics.imageToDirectCol(imagearea, -1048577, -1310721, 560, 448, 3, framesRendered)
 
-        dma.ramToFrame(fbuf, 0, FBUF_SIZE)
-        sys.free(gzippedPtr)
+        sys.free(jpgPtr)
 
         framesRendered += 1
     }
@@ -171,7 +176,11 @@ while (framesRendered < frameCount) {
 }
 let endTime = sys.nanoTime()
 
-sys.free(fbuf)
+sys.free(fbuf1)
+sys.free(fbuf2)
+sys.free(imagearea)
+sys.free(decodearea1)
+sys.free(decodearea2)
 
 let timeTook = (endTime - startTime) / 1000000000.0
 

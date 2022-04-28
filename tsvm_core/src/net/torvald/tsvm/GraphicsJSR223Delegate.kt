@@ -502,7 +502,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
         for (k in 0L until len) {
             val x = (k % width).toInt()
             val y = (k / width).toInt()
-            val t = bayerKernels[pattern][4 * (y % 4) + (x % 4)]
+            val t = bayerKernels[pattern % bayerKernels.size][4 * (y % 4) + (x % 4)]
 
             val r = vm.peek(srcPtr + channels * k + 0)!!.toUint().toFloat() / 255f
             val g = vm.peek(srcPtr + channels * k + 1)!!.toUint().toFloat() / 255f

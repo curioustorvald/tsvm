@@ -137,13 +137,14 @@ let framesRendered = 0
 //serial.println(readCount) // must say 18
 //serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
 
-if (type != 0) {
-    printerrln("Not a type 0 mov")
+if (type != 2) {
+    printerrln("Not a type 2 mov")
     return 1
 }
 
-let fbuf = sys.malloc(FBUF_SIZE)
-graphics.setGraphicsMode(0)
+let fbuf1 = sys.malloc(FBUF_SIZE)
+let fbuf2 = sys.malloc(FBUF_SIZE)
+graphics.setGraphicsMode(4)
 
 let startTime = sys.nanoTime()
 while (framesRendered < frameCount) {
@@ -154,13 +155,20 @@ while (framesRendered < frameCount) {
     if (akku >= frameTime) {
         akku -= frameTime
 
-        let payloadLen = readInt()
-        let gzippedPtr = readBytes(payloadLen)
+        // plane 1
+        let payloadLen1 = readInt()
+        let gzippedPtr1 = readBytes(payloadLen1)
+        let payloadLen2 = readInt()
+        let gzippedPtr2 = readBytes(payloadLen2)
 
-        gzip.decompFromTo(gzippedPtr, payloadLen, fbuf) // should return FBUF_SIZE
+        gzip.decompFromTo(gzippedPtr1, payloadLen1, fbuf1) // should return FBUF_SIZE
+        gzip.decompFromTo(gzippedPtr2, payloadLen2, fbuf2) // should return FBUF_SIZE
+        dma.ramToFrame(fbuf1, 0, FBUF_SIZE)
+        dma.ramToFrame2(fbuf2, 0, FBUF_SIZE)
 
-        dma.ramToFrame(fbuf, 0, FBUF_SIZE)
-        sys.free(gzippedPtr)
+        sys.free(gzippedPtr1)
+        sys.free(gzippedPtr2)
+
 
         framesRendered += 1
     }
@@ -171,7 +179,8 @@ while (framesRendered < frameCount) {
 }
 let endTime = sys.nanoTime()
 
-sys.free(fbuf)
+sys.free(fbuf1)
+sys.free(fbuf2)
 
 let timeTook = (endTime - startTime) / 1000000000.0
 

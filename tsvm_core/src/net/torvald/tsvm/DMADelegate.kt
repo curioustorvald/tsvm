@@ -20,10 +20,25 @@ class DMADelegate(val vm: VM) {
         }
     }
 
+    fun ramToFrame2(from: Int, devnum: Int, offset: Int, length: Int) {
+        (vm.peripheralTable[devnum].peripheral as? GraphicsAdapter)?.let {
+            UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + from, null, it.framebuffer2!!.ptr + offset, length.toLong())
+        }
+    }
+
     fun ramToFrame(from: Int, to: Int, length: Int) {
         for (i in 0..7) {
             if (vm.peripheralTable[i].type == VM.PERITYPE_GPU_AND_TERM) {
                 ramToFrame(from, i, to, length)
+                return
+            }
+        }
+    }
+
+    fun ramToFrame2(from: Int, to: Int, length: Int) {
+        for (i in 0..7) {
+            if (vm.peripheralTable[i].type == VM.PERITYPE_GPU_AND_TERM) {
+                ramToFrame2(from, i, to, length)
                 return
             }
         }
