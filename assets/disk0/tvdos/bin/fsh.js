@@ -138,7 +138,7 @@ calendarWidget.draw = function(charXoff, charYoff) {
     let ordinalDay = ((timeInMinutes / (60*24))|0) % 120
     let offset = (ordinalDay / 7)|0
 
-    con.move(charXoff, charYoff)
+    con.move(charYoff, charXoff)
     print("Mo Ty Mi To Fr La Su Ve")
 
     for (let i = -3; i <= 3; i++) {
@@ -146,7 +146,7 @@ calendarWidget.draw = function(charXoff, charYoff) {
         let line = calendarWidget.dayLabels[lineOff]
         let textCol = 0
 
-        con.move(charXoff + 4 + i, charYoff)
+        con.move(charYoff + 4 + i, charXoff)
 
         for (let x = 0; x <= 23; x++) {
             let paintingDayOrd = lineOff*7 + ((x/3)|0)
@@ -166,6 +166,37 @@ calendarWidget.draw = function(charXoff, charYoff) {
     }
 }
 
+let todoWidget = new _fsh.Widget("com.fsh.todo_list", (_fsh.scrwidth - 8) / 2, 7*10)
+todoWidget.todoList = [["Hello, world!", true]]
+todoWidget.draw = function(charXoff, charYoff) {
+    con.color_pair(254, 255)
+    let xoff = charXoff * 7
+    let yoff = charYoff * 14 + 3
+
+    con.move(charYoff, charXoff)
+    print("========== TODO ==========")
+
+    for (let i = 0; i <= 12; i++) {
+        let list = todoWidget.todoList[i] || ["Click to add", null]
+
+        if (list[1] === null) con.color_pair(249, 255)
+        else con.color_pair(254, 255)
+
+        con.move(charYoff + i + 2, charXoff)
+        con.addch((list[1] === null) ? 43 : (list[1]) ? 0x9F : 0x9E)
+
+        if (i > todoWidget.todoList.length) {
+            for (let k = 0; k < 24; k++) {
+                con.mvaddch(charYoff + i + 2, charXoff + 2 + k, 95)
+            }
+        }
+        else {
+            con.move(charYoff + i + 2, charXoff + 2)
+            print(`${list[0]}`)
+        }
+    }
+}
+
 
 // change graphics mode and check if it's supported
 graphics.setGraphicsMode(3)
@@ -177,6 +208,7 @@ if (graphics.getGraphicsMode() == 0) {
 // register widgets
 _fsh.registerNewWidget(clockWidget)
 _fsh.registerNewWidget(calendarWidget)
+_fsh.registerNewWidget(todoWidget)
 
 // screen init
 con.color_pair(254, 255)
@@ -199,7 +231,8 @@ while (true) {
     if (getKeyPushed(0) == 67) break;
 
     _fsh.widgets["com.fsh.clock"].draw(25, 3);
-    _fsh.widgets["com.fsh.calendar"].draw(8, 12);
+    _fsh.widgets["com.fsh.calendar"].draw(12, 8);
+    _fsh.widgets["com.fsh.todo_list"].draw(10, 17);
 
     sys.spin();sys.spin()
 }
