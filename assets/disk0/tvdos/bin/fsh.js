@@ -9,7 +9,7 @@ function getKeyPushed(keyOrder) {
     return sys.peek(-41 - keyOrder);
 }
 
-var _fsh = {};
+let _fsh = {};
 _fsh.titlebarTex = new GL.Texture(2, 14, base64.atob("/u/+/v3+/f39/f39/f39/f39/P39/Pz8/Pv7+w=="));
 _fsh.scrdim = con.getmaxyx();
 _fsh.scrwidth = _fsh.scrdim[1];
@@ -66,7 +66,7 @@ _fsh.registerNewWidget = function(widget) {
     _fsh.widgets[widget.identifier] = widget;
 }
 
-var clockWidget = new _fsh.Widget("com.fsh.clock", _fsh.scrwidth - 8, 7*2);
+let clockWidget = new _fsh.Widget("com.fsh.clock", _fsh.scrwidth - 8, 7*2);
 clockWidget.numberSheet = new GL.SpriteSheet(19, 22, new GL.Texture(190, 22, gzip.decomp(base64.atob(
 "H4sIAAAAAAAAAMWVW3LEMAgE739aHcFJJV5ZMD2I9ToVfcl4GBr80HF8r/FaR1ozMuIyoUu87lEXI0al5qVR5AebSwchSaNE6Nyo1Nw5HXF3SfPT4Bshl"+
 "EycA8RD96mLlHbuhTgOrfLnUDZspafbSQWk56WEGvQEtWaWwgb8iz7a8AOXhsraO/q9Qw2/GnXovfVN+q2wM/p/oddn2cjF239GX3y11+SWCtc6FTHC1v"+
@@ -80,17 +80,17 @@ clockWidget.monthNames = ["Spring", "Summer", "Autumn", "Winter"];
 clockWidget.dayNames = ["Mondag  ", "Tysdag  ", "Midtveke", "Torsdag ", "Fredag  ", "Laurdag ", "Sundag  ", "Verddag "];
 clockWidget.draw = function(charXoff, charYoff) {
     con.color_pair(254, 255);
-    var xoff = charXoff * 7;
-    var yoff = charYoff * 14 + 3;
-    var timeInMinutes = ((sys.currentTimeInMills() / 60000)|0);
-    var mins = timeInMinutes % 60;
-    var hours = ((timeInMinutes / 60)|0) % 24;
-    var ordinalDay = ((timeInMinutes / (60*24))|0) % 120;
-    var visualDay = (ordinalDay % 30) + 1;
-    var months = ((timeInMinutes / (60*24*30))|0) % 4;
-    var dayName = ordinalDay % 7; // 0 for Mondag
+    let xoff = charXoff * 7;
+    let yoff = charYoff * 14 + 3;
+    let timeInMinutes = ((sys.currentTimeInMills() / 60000)|0);
+    let mins = timeInMinutes % 60;
+    let hours = ((timeInMinutes / 60)|0) % 24;
+    let ordinalDay = ((timeInMinutes / (60*24))|0) % 120;
+    let visualDay = (ordinalDay % 30) + 1;
+    let months = ((timeInMinutes / (60*24*30))|0) % 4;
+    let dayName = ordinalDay % 7; // 0 for Mondag
     if (ordinalDay == 119) dayName = 7; // Verddag
-    var years = ((timeInMinutes / (60*24*30*120))|0) + 125;
+    let years = ((timeInMinutes / (60*24*30*120))|0) + 125;
     // draw timepiece
     GL.drawSprite(clockWidget.numberSheet, (hours / 10)|0, 0, xoff, yoff, 1);
     GL.drawSprite(clockWidget.numberSheet, hours % 10, 0, xoff + 24, yoff, 1);
@@ -108,7 +108,7 @@ clockWidget.draw = function(charXoff, charYoff) {
 };
 
 
-var calendarWidget = new _fsh.Widget("com.fsh.calendar", (_fsh.scrwidth - 8) / 2, 7*6)
+let calendarWidget = new _fsh.Widget("com.fsh.calendar", (_fsh.scrwidth - 8) / 2, 7*6)
 calendarWidget.dayLabels = [
     " 1  2  3  4  5  6  7 \xFA\xFA",
     " 8  9 10 11 12 13 14 \xFA\xFA",
