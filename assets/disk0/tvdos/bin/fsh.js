@@ -128,7 +128,7 @@ calendarWidget.dayLabels = [
     "16 17 18 19 20 21 22 \xFA\xFA",
     "23 24 25 26 27 28 29 30"
 ]
-calendarWidget.seasonCols = [229,39,215,73,253]
+calendarWidget.seasonCols = [229,39,215,239,253]
 calendarWidget.draw = function(charXoff, charYoff) {
     con.color_pair(254, 255)
     let xoff = charXoff * 7
@@ -136,13 +136,14 @@ calendarWidget.draw = function(charXoff, charYoff) {
 
     let timeInMinutes = ((sys.currentTimeInMills() / 60000)|0)
     let ordinalDay = ((timeInMinutes / (60*24))|0) % 120
-    let offset = (ordinalDay / 7)|0
+    let offset = (119 == ordinalDay) ? 16 : (ordinalDay / 7)|0
+
 
     con.move(charYoff, charXoff)
     print("Mo Ty Mi To Fr La Su Ve")
 
     for (let i = -3; i <= 3; i++) {
-        let lineOff = (offset + i) % 17
+        let lineOff = (offset + i + 17) % 17 // adding 17 to prevent mod-ing on negative number
         let line = calendarWidget.dayLabels[lineOff]
         let textCol = 0
 
@@ -156,7 +157,7 @@ calendarWidget.draw = function(charXoff, charYoff) {
             // special colour for spaces between numbers
             if (x % 3 == 2) con.color_pair(255,255)
             // mark today
-            else if (paintingDayOrd == ordinalDay) con.color_pair(0,textCol)
+            else if (paintingDayOrd == ordinalDay && x < 21 || paintingDayOrd == 119 && ordinalDay == 119) con.color_pair(0,textCol)
             // paint normal day number with seasonal colour
             else con.color_pair(textCol,255)
 
@@ -197,6 +198,42 @@ todoWidget.draw = function(charXoff, charYoff) {
     }
 }
 
+let quickAccessWidget = new _fsh.Widget("com.fsh.quick_access", (_fsh.scrwidth - 8) / 2, 7*20)
+quickAccessWidget.entries = [
+    ["Files", "/tvdos/bin/explorer.js"],
+    ["Editor", "/tvdos/bin/edit.js"],
+    ["BASIC", "/tbas/basic.js"],
+    ["DOS Shell", "/tvdos/bin/command.js /fancy"]
+]
+quickAccessWidget.draw = function(charXoff, charYoff) {
+    con.color_pair(254, 255)
+    let xoff = charXoff * 7
+    let yoff = charYoff * 14 + 3
+
+    con.move(charYoff, charXoff)
+    print("====== QUICK ACCESS ======")
+
+    for (let i = 0; i <= 21; i++) {
+        let list = quickAccessWidget.entries[i] || ["Click to add", null]
+
+        if (list[1] === null) con.color_pair(249, 255)
+        else con.color_pair(254, 255)
+
+        con.move(charYoff + i + 2, charXoff)
+        con.addch((list[1] === null) ? 0xF9 : (list[1]) ? 7 : 0x7F)
+
+        if (i > quickAccessWidget.entries.length) {
+            for (let k = 0; k < 24; k++) {
+                con.mvaddch(charYoff + i + 2, charXoff + 2 + k, 95)
+            }
+        }
+        else {
+            con.move(charYoff + i + 2, charXoff + 2)
+            print(`${list[0]}`)
+        }
+    }
+}
+
 
 // change graphics mode and check if it's supported
 graphics.setGraphicsMode(3)
@@ -209,6 +246,7 @@ if (graphics.getGraphicsMode() == 0) {
 _fsh.registerNewWidget(clockWidget)
 _fsh.registerNewWidget(calendarWidget)
 _fsh.registerNewWidget(todoWidget)
+_fsh.registerNewWidget(quickAccessWidget)
 
 // screen init
 con.color_pair(254, 255)
@@ -233,6 +271,7 @@ while (true) {
     _fsh.widgets["com.fsh.clock"].draw(25, 3);
     _fsh.widgets["com.fsh.calendar"].draw(12, 8);
     _fsh.widgets["com.fsh.todo_list"].draw(10, 17);
+    _fsh.widgets["com.fsh.quick_access"].draw(47, 8);
 
     sys.spin();sys.spin()
 }
