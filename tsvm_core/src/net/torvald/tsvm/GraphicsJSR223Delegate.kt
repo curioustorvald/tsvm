@@ -52,6 +52,14 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
+    fun plotPixel2(x: Int, y: Int, color: Int) {
+        getFirstGPU()?.let {
+            if (x in 0 until it.config.width && y in 0 until it.config.height) {
+                it.poke(262144 + y.toLong() * it.config.width + x, color.toByte())
+            }
+        }
+    }
+
     /**
      * Sets absolute position of scrolling
      */
@@ -136,6 +144,11 @@ class GraphicsJSR223Delegate(val vm: VM) {
         getFirstGPU()?.poke(250883L, 2)
     }
 
+    fun clearPixels2(col: Int) {
+        getFirstGPU()?.poke(250884L, col.toByte())
+        getFirstGPU()?.poke(250883L, 4)
+    }
+
     /**
      * prints a char as-is; won't interpret them as an escape sequence
      */
@@ -211,7 +224,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
         pixmap.dispose()
 
         UnsafeHelper.memcpyRaw(outData, UnsafeHelper.getArrayOffset(outData), null, vm.usermem.ptr + destPixmapPtr, outData.size.toLong())
-        return intArrayOf(width, height, destPixmapPtr)
+        return intArrayOf(width, height, destPixmapPtr, outData.size / (width * height))
     }
 
     /**

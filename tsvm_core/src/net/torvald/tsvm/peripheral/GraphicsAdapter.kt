@@ -326,7 +326,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             }
             2 -> {
                 framebuffer.fillWith(arg1.toByte())
-                framebuffer2?.fillWith(arg2.toByte())
+            }
+            4 -> {
+                framebuffer2?.fillWith(arg1.toByte())
             }
             3 -> {
                 for (it in 0 until 1024) {
@@ -784,6 +786,54 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 }
             }
         }
+        else if (graphicsMode == 3 && framebuffer2 != null) {
+            val layerOrder = (if (graphicsMode == 1) LAYERORDERS4 else LAYERORDERS2)[layerArrangement]
+
+            val fb1 = if (layerOrder[0] == 0) framebuffer else framebuffer2
+            val fb2 = if (layerOrder[0] == 0) framebuffer2 else framebuffer
+
+            for (y in 0 until HEIGHT) {
+                var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
+                if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+                val xs = (0 + xoff).coerceIn(0, WIDTH - 1)..(WIDTH - 1 + xoff).coerceIn(0, WIDTH - 1)
+
+                if (xoff in -(WIDTH - 1) until WIDTH) {
+                    for (x in xs) {
+                        val colourIndex1 = fb1[y.toLong() * WIDTH + (x - xoff)].toUint()
+                        val colourIndex2 = fb2[y.toLong() * WIDTH + (x - xoff)].toUint()
+                        val colour1 = Color(
+                            paletteOfFloats[4 * colourIndex1],
+                            paletteOfFloats[4 * colourIndex1 + 1],
+                            paletteOfFloats[4 * colourIndex1 + 2],
+                            paletteOfFloats[4 * colourIndex1 + 3]
+                        )
+                        val colour2 = Color(
+                            paletteOfFloats[4 * colourIndex2],
+                            paletteOfFloats[4 * colourIndex2 + 1],
+                            paletteOfFloats[4 * colourIndex2 + 2],
+                            paletteOfFloats[4 * colourIndex2 + 3]
+                        )
+                        val colour = listOf(colour1, colour2).fold(Color(0)) { dest, src ->
+                            // manually alpha compositing
+                            // out_color = {src_color * src_alpha + dest_color * dest_alpha * (1-src_alpha)} / out_alpha
+                            // see https://gamedev.stackexchange.com/a/115786
+                            val outAlpha = (dest.a + (1f - dest.a) * src.a).coerceIn(0.0001f, 1f) // identical to 1 - (1 - dest.a) * (1 - src.a) but this is more optimised form
+
+                            // src.a + dest.a - src.a*dest.a)
+                            Color(
+                                (src.r * src.a + dest.r * dest.a * (1f - src.a)) / outAlpha,
+                                (src.g * src.a + dest.g * dest.a * (1f - src.a)) / outAlpha,
+                                (src.b * src.a + dest.b* dest.a * (1f - src.a)) / outAlpha,
+                                outAlpha
+                            )
+                        }
+
+                        framebufferOut.setColor(colour)
+                        framebufferOut.drawPixel(x, y)
+                    }
+                }
+            }
+        }
         else if (isRefSize && (graphicsMode == 1 || graphicsMode == 2)) {
             val layerOrder = (if (graphicsMode == 1) LAYERORDERS4 else LAYERORDERS2)[layerArrangement]
             for (y in 0..223) {
@@ -849,11 +899,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
                 if (xoff in -(WIDTH - 1) until WIDTH) {
                     for (x in xs) {
-                        // this only works because framebuffer is guaranteed to be 8bpp
-                        /*framebuffer2.pixels.put(
-                            y * WIDTH + x,
-                            framebuffer.pixels.get(y * WIDTH + (x - xoff)) // coerceIn not required as (x - xoff) never escapes 0..559
-                        )*/
                         val colourIndex = framebuffer[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
                         framebufferOut.setColor(paletteOfFloats[4*colourIndex], paletteOfFloats[4*colourIndex+1], paletteOfFloats[4*colourIndex+2], paletteOfFloats[4*colourIndex+3])
                         framebufferOut.drawPixel(x, y)

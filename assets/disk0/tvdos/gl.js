@@ -35,33 +35,34 @@ GL.SpriteSheet = function(tilew, tileh, tex) {
     }
 
     this.getOffX = function(x) { // THIS, or: GL.SpriteSheet.prototype.getOffX
-        var tx = this.tileWidth * (x|0);
+        let tx = this.tileWidth * (x|0);
         if (tx + this.tileWidth > this.texture.width) throw "Sprite x-offset of "+tx+" is greater than sprite width "+this.texture.width;
         return tx;
     };
 
     this.getOffY = function(y) {
-        var ty = this.tileHeight * (y|0);
+        let ty = this.tileHeight * (y|0);
         if (ty + this.tileHeight > this.texture.height) throw "Sprite y-offset of "+ty+" is greater than sprite height "+this.texture.height;
         return ty;
     };
 };
-GL.drawTexPattern = function(texture, x, y, width, height, fgcol, bgcol) {
+GL.drawTexPattern = function(texture, x, y, width, height, framebuffer, fgcol, bgcol) {
     if (!(texture instanceof GL.Texture) && !(texture instanceof GL.MonoTex)) throw Error("Texture is not a GL Texture types");
 
+    let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
     for (let yy = 0; yy < height; yy++) {
         for (let xx = 0; xx < width;) {
             let tx = xx % texture.width;
             let ty = yy % texture.height;
             if (texture instanceof GL.Texture) {
                 let c = texture.texData[ty * texture.width + tx];
-                graphics.plotPixel(x + xx, y + yy, c);
+                paint(x + xx, y + yy, c);
             }
             else if (texture instanceof GL.MonoTex) {
                 let octet = texture.texData[ty * (texture.width >> 3) + (tx >> 3)];
                 for (let i = 0; i < 8; i++) {
                     let bit = ((octet >>> (7 - i)) & 1 != 0)
-                    graphics.plotPixel(x + xx + i, y + yy, bit ? bgcol : fgcol);
+                    paint(x + xx + i, y + yy, bit ? bgcol : fgcol);
                 }
             }
 
@@ -69,24 +70,25 @@ GL.drawTexPattern = function(texture, x, y, width, height, fgcol, bgcol) {
         }
     }
 };
-GL.drawTexPatternOver = function(texture, x, y, width, height, fgcol) {
+GL.drawTexPatternOver = function(texture, x, y, width, height, framebuffer, fgcol) {
     if (!(texture instanceof GL.Texture) && !(texture instanceof GL.MonoTex)) throw Error("Texture is not a GL Texture types");
 
+    let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
     for (let yy = 0; yy < height; yy++) {
         for (let xx = 0; xx < width;) {
             let tx = xx % texture.width;
             let ty = yy % texture.height;
             if (texture instanceof GL.Texture) {
+                let c = texture.texData[ty * texture.width + tx];
                 if ((c & 255) != 255) {
-                    let c = texture.texData[ty * texture.width + tx];
-                    graphics.plotPixel(x + xx, y + yy, c);
+                    paint(x + xx, y + yy, c);
                 }
             }
             else if (texture instanceof GL.MonoTex) {
                 let octet = texture.texData[ty * (texture.width >> 3) + (tx >> 3)];
                 for (let i = 0; i < 8; i++) {
                     let bit = ((octet >>> (7 - i)) & 1 != 0)
-                    if (bit) graphics.plotPixel(x + xx + i, y + yy, fgcol);
+                    if (bit) paint(x + xx + i, y + yy, fgcol);
                 }
             }
 
@@ -97,14 +99,14 @@ GL.drawTexPatternOver = function(texture, x, y, width, height, fgcol) {
 /*
  * Draws a texture verbatim - color of 255 will be written to the screen buffer
  */
-GL.drawTexImage = function(texture, x, y, fgcol, bgcol) {
-    GL.drawTexPattern(texture, x, y, texture.width, texture.height, fgcol, bgcol);
+GL.drawTexImage = function(texture, x, y, framebuffer, fgcol, bgcol) {
+    GL.drawTexPattern(texture, x, y, texture.width, texture.height, framebuffer, fgcol, bgcol);
 };
 /*
  * Draws texture with blitting - color of 255 will pass-thru what's already on the screen buffer
  */
-GL.drawTexImageOver = function(texture, x, y, fgcol) {
-    GL.drawTexPatternOver(texture, x, y, texture.width, texture.height, fgcol);
+GL.drawTexImageOver = function(texture, x, y, framebuffer, fgcol) {
+    GL.drawTexPatternOver(texture, x, y, texture.width, texture.height, framebuffer, fgcol);
 };
 /*
  * @param xi x-index in the spritesheet, ZERO-BASED INDEX
@@ -114,16 +116,17 @@ GL.drawTexImageOver = function(texture, x, y, fgcol) {
  * @param overrideFG if the value is set and the current pixel of the sheet is not 255, plots this colour instead
  * @param overrideBG if the value is set and the current pixel of the sheet is 255, plots this colour instead
  */
-GL.drawSprite = function(sheet, xi, yi, x, y, overrideFG, overrideBG) {
-    var offx = sheet.getOffX(xi);
-    var offy = sheet.getOffY(yi);
-    for (var ty = 0; ty < sheet.tileHeight; ty++) {
-        for (var tx = 0; tx < sheet.tileWidth; tx++) {
-            var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
+GL.drawSprite = function(sheet, xi, yi, x, y, framebuffer, overrideFG, overrideBG) {
+    let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
+    let offx = sheet.getOffX(xi);
+    let offy = sheet.getOffY(yi);
+    for (let ty = 0; ty < sheet.tileHeight; ty++) {
+        for (let tx = 0; tx < sheet.tileWidth; tx++) {
+            let c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
             if ((c & 255) == 255)
-                graphics.plotPixel(x + tx, (y + ty)|0, (overrideBG !== undefined) ? overrideBG : c);
+                paint(x + tx, (y + ty)|0, (overrideBG !== undefined) ? overrideBG : c);
             else
-                graphics.plotPixel(x + tx, (y + ty)|0, (overrideFG !== undefined) ? overrideFG : c);
+                paint(x + tx, (y + ty)|0, (overrideFG !== undefined) ? overrideFG : c);
         }
     }
 };
@@ -134,14 +137,15 @@ GL.drawSprite = function(sheet, xi, yi, x, y, overrideFG, overrideBG) {
  * @param y y-position on the framebuffer where the sprite will be drawn
  * @param overrideFG if the value is set and the current pixel of the sheet is not 255, plots this colour instead
  */
-GL.drawSpriteOver = function(sheet, xi, yi, x, y, overrideFG) {
-    var offx = sheet.getOffX(xi);
-    var offy = sheet.getOffY(yi);
-    for (var ty = 0; ty < sheet.tileHeight; ty++) {
-        for (var tx = 0; tx < sheet.tileWidth; tx++) {
-            var c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
+GL.drawSpriteOver = function(sheet, xi, yi, x, y, framebuffer, overrideFG) {
+    let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
+    let offx = sheet.getOffX(xi);
+    let offy = sheet.getOffY(yi);
+    for (let ty = 0; ty < sheet.tileHeight; ty++) {
+        for (let tx = 0; tx < sheet.tileWidth; tx++) {
+            let c = sheet.texture.texData[(ty + offy) * sheet.texture.width + (tx + offx)];
             if ((c & 255) != 255) {
-                graphics.plotPixel(x + tx, (y + ty)|0, overrideFG || c);
+                paint(x + tx, (y + ty)|0, overrideFG || c);
             }
         }
     }

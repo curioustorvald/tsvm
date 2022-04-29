@@ -1,4 +1,4 @@
-graphics.setBackground(3,3,3);
+graphics.setBackground(2,1,3);
 graphics.resetPalette();
 
 function captureUserInput() {
@@ -18,7 +18,15 @@ _fsh.brandName = "f\xb3Sh";
 _fsh.brandLogoTexSmall = new GL.Texture(24, 14, gzip.decomp(base64.atob(
 "H4sIAAAAAAAAAPv/Hy/4Qbz458+fIeILQQBIwoSh6qECuMVBukCmIJkDVQ+RQNgLE0MX/w+1lyhxqIUwTLJ/sQMAcIXsbVABAAA="
 )));
-_fsh.scrlayout = ["com.fsh.clock","com.fsh.calendar","com.fsh.apps_n_files"];
+_fsh.scrlayout = ["com.fsh.clock","com.fsh.calendar","com.fsh.todo_list", "com.fsh.quick_access"];
+
+_fsh.drawWallpaper = function() {
+    filesystem.open("A", "/tvdos/wall.bytes", "R")
+    let b = sys.malloc(250880)
+    dma.comToRam(0, 0, b, 250880)
+    dma.ramToFrame(b, 0, 250880)
+    sys.free(b)
+};
 
 _fsh.drawTitlebar = function(titletext) {
     GL.drawTexPattern(_fsh.titlebarTex, 0, 0, 560, 14);
@@ -58,7 +66,7 @@ _fsh.registerNewWidget = function(widget) {
     _fsh.widgets[widget.identifier] = widget;
 }
 
-var clockWidget = new _fsh.Widget("com.fsh.clock", _fsh.scrwidth - 8, 7);
+var clockWidget = new _fsh.Widget("com.fsh.clock", _fsh.scrwidth - 8, 7*2);
 clockWidget.numberSheet = new GL.SpriteSheet(19, 22, new GL.Texture(190, 22, gzip.decomp(base64.atob(
 "H4sIAAAAAAAAAMWVW3LEMAgE739aHcFJJV5ZMD2I9ToVfcl4GBr80HF8r/FaR1ozMuIyoUu87lEXI0al5qVR5AebSwchSaNE6Nyo1Nw5HXF3SfPT4Bshl"+
 "EycA8RD96mLlHbuhTgOrfLnUDZspafbSQWk56WEGvQEtWaWwgb8iz7a8AOXhsraO/q9Qw2/GnXovfVN+q2wM/p/oddn2cjF239GX3y11+SWCtc6FTHC1v"+
@@ -84,12 +92,12 @@ clockWidget.draw = function(charXoff, charYoff) {
     if (ordinalDay == 119) dayName = 7; // Verddag
     var years = ((timeInMinutes / (60*24*30*120))|0) + 125;
     // draw timepiece
-    GL.drawSprite(clockWidget.numberSheet, (hours / 10)|0, 0, xoff, yoff);
-    GL.drawSprite(clockWidget.numberSheet, hours % 10, 0, xoff + 24, yoff);
-    GL.drawTexImage(clockWidget.clockColon, xoff + 48, yoff + 5);
-    GL.drawTexImage(clockWidget.clockColon, xoff + 48, yoff + 14);
-    GL.drawSprite(clockWidget.numberSheet, (mins / 10)|0, 0, xoff + 57, yoff);
-    GL.drawSprite(clockWidget.numberSheet, mins % 10, 0, xoff + 81, yoff);
+    GL.drawSprite(clockWidget.numberSheet, (hours / 10)|0, 0, xoff, yoff, 1);
+    GL.drawSprite(clockWidget.numberSheet, hours % 10, 0, xoff + 24, yoff, 1);
+    GL.drawTexImage(clockWidget.clockColon, xoff + 48, yoff + 5, 1);
+    GL.drawTexImage(clockWidget.clockColon, xoff + 48, yoff + 14, 1);
+    GL.drawSprite(clockWidget.numberSheet, (mins / 10)|0, 0, xoff + 57, yoff, 1);
+    GL.drawSprite(clockWidget.numberSheet, mins % 10, 0, xoff + 81, yoff, 1);
     // print month and date
     con.move(1 + charYoff, 17 + charXoff);
     print(clockWidget.monthNames[months]+" "+visualDay);
@@ -100,24 +108,100 @@ clockWidget.draw = function(charXoff, charYoff) {
 };
 
 
+var calendarWidget = new _fsh.Widget("com.fsh.calendar", (_fsh.scrwidth - 8) / 2, 7*6)
+calendarWidget.dayLabels = [
+    " 1  2  3  4  5  6  7 \xFA\xFA",
+    " 8  9 10 11 12 13 14 \xFA\xFA",
+    "15 16 17 18 19 20 21 \xFA\xFA",
+    "22 23 24 25 26 27 28 \xFA\xFA",
+    "29 30  1  2  3  4  5 \xFA\xFA",
+    " 6  7  8  9 10 11 12 \xFA\xFA",
+    "13 14 15 16 17 18 19 \xFA\xFA",
+    "20 21 22 23 24 25 26 \xFA\xFA",
+    "27 28 29 30  1  2  3 \xFA\xFA",
+    " 4  5  6  7  8  9 10 \xFA\xFA",
+    "11 12 13 14 15 16 17 \xFA\xFA",
+    "18 19 20 21 22 23 24 \xFA\xFA",
+    "25 26 27 28 29 30  1 \xFA\xFA",
+    " 2  3  4  5  6  7  8 \xFA\xFA",
+    " 9 10 11 12 13 14 15 \xFA\xFA",
+    "16 17 18 19 20 21 22 \xFA\xFA",
+    "23 24 25 26 27 28 29 30"
+]
+calendarWidget.seasonCols = [229,39,215,73,253]
+calendarWidget.draw = function(charXoff, charYoff) {
+    con.color_pair(254, 255)
+    let xoff = charXoff * 7
+    let yoff = charYoff * 14 + 3
+
+    let timeInMinutes = ((sys.currentTimeInMills() / 60000)|0)
+    let ordinalDay = ((timeInMinutes / (60*24))|0) % 120
+    let offset = (ordinalDay / 7)|0
+
+    con.move(charXoff, charYoff)
+    print("Mo Ty Mi To Fr La Su Ve")
+
+    for (let i = -3; i <= 3; i++) {
+        let lineOff = (offset + i) % 17
+        let line = calendarWidget.dayLabels[lineOff]
+        let textCol = 0
+
+        con.move(charXoff + 4 + i, charYoff)
+
+        for (let x = 0; x <= 23; x++) {
+            let paintingDayOrd = lineOff*7 + ((x/3)|0)
+            if (x >= 21 && lineOff != 16) textCol = calendarWidget.seasonCols[4]
+            else textCol = calendarWidget.seasonCols[(paintingDayOrd / 30)|0]
+
+            // special colour for spaces between numbers
+            if (x % 3 == 2) con.color_pair(255,255)
+            // mark today
+            else if (paintingDayOrd == ordinalDay) con.color_pair(0,textCol)
+            // paint normal day number with seasonal colour
+            else con.color_pair(textCol,255)
+
+            con.addch(line.charCodeAt(x))
+            con.curs_right()
+        }
+    }
+}
+
+
+// change graphics mode and check if it's supported
+graphics.setGraphicsMode(3)
+if (graphics.getGraphicsMode() == 0) {
+    printerrln("Insufficient VRAM")
+    return 1
+}
+
 // register widgets
-_fsh.registerNewWidget(clockWidget);
+_fsh.registerNewWidget(clockWidget)
+_fsh.registerNewWidget(calendarWidget)
 
 // screen init
-con.color_pair(254, 255);
-con.clear();
-con.curs_set(0);
-_fsh.drawTitlebar();
+con.color_pair(254, 255)
+con.clear()
+con.curs_set(0)
+graphics.clearPixels(255)
+graphics.clearPixels2(255)
+graphics.setFramebufferScroll(0,0)
+_fsh.drawWallpaper()
+_fsh.drawTitlebar()
 
 
 // TEST
 con.move(2,1);
-print("Hit backspace to exit");
+print("Hit backspace to exit")
+
+// TODO update for events: key down (updates some widgets), timer (updates clock and calendar widgets)
 while (true) {
     captureUserInput();
     if (getKeyPushed(0) == 67) break;
 
-    _fsh.widgets["com.fsh.clock"].draw(25, 2);
+    _fsh.widgets["com.fsh.clock"].draw(25, 3);
+    _fsh.widgets["com.fsh.calendar"].draw(8, 12);
+
+    sys.spin();sys.spin()
 }
 
 con.move(3,1);

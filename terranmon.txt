@@ -155,8 +155,9 @@ From the start of the memory space:
 1 byte
     command (writing to this memory address changes the status)
         1: reset palette to default
-        2: fill framebuffer with given colour (arg1). If framebuffer 2 is there, it will be filled with arg2
-        3: do '1' then do '2'
+        2: fill framebuffer with given colour (arg1)
+        3: do '1' then do '2' (with arg1) then do '4' (with arg2)
+        4: fill framebuffer2 with given colour (arg1)
 
         16: copy Low Font ROM (char 0–127) to mapping area
         17: copy High Font ROM (char 128–255) to mapping area
