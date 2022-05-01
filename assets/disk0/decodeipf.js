@@ -139,42 +139,50 @@ if (!magicMatching) {
 let imgw = readShort()
 let imgh = readShort()
 let hasAlpha = (readShort() != 0)
-sys.free(readBytes(12)) // skip 10 bytes
+sys.free(readBytes(10)) // skip 10 bytes
 
 // TODO: gzip
 
+function clampRGB(f) {
+    return (f > 1.0) ? 1.0 : (f < 0.0) ? 0.0 : f
+}
+
 function ycocgToRGB(cocg, ys, as) { // ys: 4 Y-values
     // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
-    let co = 0.0//((cocg & 15) - 7.5) / 7.5
-    let cg = 0.0//((cocg >> 4) & 15 - 7.5) / 7.5
+
+//    cocg = 0x7777
+//    ys = 0x0000
+
+    let co = ((cocg & 15) - 7) / 8
+    let cg = (((cocg >>> 4) & 15) - 7) / 8
 
     let y1 = (ys & 15) / 15.0
     let a1 = as & 15
-    let tmp = y1 - cg / 2
-    let g1 = cg + tmp
-    let b1 = tmp - co / 2
-    let r1 = b1 + co
+    let tmp = y1 - cg / 2.0
+    let g1 = clampRGB(cg + tmp)
+    let b1 = clampRGB(tmp - co / 2.0)
+    let r1 = clampRGB(b1 + co)
 
-    let y2 = ((ys >> 4) & 15) / 15.0
-    let a2 = (as >> 4) & 15
-    tmp = y2 - cg / 2
-    let g2 = cg + tmp
-    let b2 = tmp - co / 2
-    let r2 = b2 + co
+    let y2 = ((ys >>> 4) & 15) / 15.0
+    let a2 = (as >>> 4) & 15
+    tmp = y2 - cg / 2.0
+    let g2 = clampRGB(cg + tmp)
+    let b2 = clampRGB(tmp - co / 2.0)
+    let r2 = clampRGB(b2 + co)
 
-    let y3 = ((ys >> 8) & 15) / 15.0
-    let a3 = (as >> 8) & 15
-    tmp = y3 - cg / 2
-    let g3 = cg + tmp
-    let b3 = tmp - co / 2
-    let r3 = b3 + co
+    let y3 = ((ys >>> 8) & 15) / 15.0
+    let a3 = (as >>> 8) & 15
+    tmp = y3 - cg / 2.0
+    let g3 = clampRGB(cg + tmp)
+    let b3 = clampRGB(tmp - co / 2.0)
+    let r3 = clampRGB(b3 + co)
 
-    let y4 = ((ys >> 12) & 15) / 15.0
-    let a4 = (as >> 12) & 15
-    tmp = y4 - cg / 2
-    let g4 = cg + tmp
-    let b4 = tmp - co / 2
-    let r4 = b4 + co
+    let y4 = ((ys >>> 12) & 15) / 15.0
+    let a4 = (as >>> 12) & 15
+    tmp = y4 - cg / 2.0
+    let g4 = clampRGB(cg + tmp)
+    let b4 = clampRGB(tmp - co / 2.0)
+    let r4 = clampRGB(b4 + co)
 
     return [
         (Math.round(r1 * 15) << 4) | Math.round(g1 * 15),
@@ -203,6 +211,17 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     let y3 = readShort()
     let cocg4 = readByte()
     let y4 = readShort()
+
+    if (blockX == 0 && blockY == 0) {
+        serial.println(`cocg: ${(cocg1 & 15).toString(16)} ${((cocg1 >>> 4) & 15).toString(16)}`)
+        serial.println(`y: ${y1.toString(16)}`)
+        serial.println(`cocg: ${cocg2.toString(16)}`)
+        serial.println(`y: ${y2.toString(16)}`)
+        serial.println(`cocg: ${cocg3.toString(16)}`)
+        serial.println(`y: ${y3.toString(16)}`)
+        serial.println(`cocg: ${cocg4.toString(16)}`)
+        serial.println(`y: ${y4.toString(16)}`)
+    }
 
     let a1 = 65535; let a2 = 65535; let a3 = 65535; let a4 = 65535
 

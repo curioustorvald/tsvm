@@ -105,7 +105,8 @@ let writeCount = 0
 let writeBuf = sys.malloc(blockSize * ((hasAlpha) ? 20 : 12))
 
 function chromaToFourBits(f) {
-    return Math.round((f * 7.5) + 7.5)
+    let r = Math.round(f * 8) + 7
+    return (r < 0) ? 0 : (r > 15) ? 15 : r
 }
 
 for (let blockY = 0; blockY < Math.ceil(imgh / 4.0); blockY++) {
@@ -124,6 +125,7 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
         let ox = blockX * 4 + px
         let oy = blockY * 4 + py
         let offset = channels * (oy * imgw + ox)
+
         let r = sys.peek(imageData + offset) / 255.0
         let g = sys.peek(imageData + offset+1) / 255.0
         let b = sys.peek(imageData + offset+2) / 255.0
@@ -142,14 +144,14 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     }}
 
     // subsample by averaging
-    let cos1 = chromaToFourBits((cos[0]+cos[1]+cos[4]+cos[5]) / 8.0)
-    let cos2 = chromaToFourBits((cos[2]+cos[3]+cos[6]+cos[7]) / 8.0)
-    let cos3 = chromaToFourBits((cos[8]+cos[9]+cos[12]+cos[13]) / 8.0)
-    let cos4 = chromaToFourBits((cos[10]+cos[11]+cos[14]+cos[15]) / 8.0)
-    let cgs1 = chromaToFourBits((cgs[0]+cgs[1]+cgs[4]+cgs[5]) / 8.0)
-    let cgs2 = chromaToFourBits((cgs[2]+cgs[3]+cgs[6]+cgs[7]) / 8.0)
-    let cgs3 = chromaToFourBits((cgs[8]+cgs[9]+cgs[12]+cgs[13]) / 8.0)
-    let cgs4 = chromaToFourBits((cgs[10]+cgs[11]+cgs[14]+cgs[15]) / 8.0)
+    let cos1 = chromaToFourBits((cos[0]+cos[1]+cos[4]+cos[5]) / 4.0)
+    let cos2 = chromaToFourBits((cos[2]+cos[3]+cos[6]+cos[7]) / 4.0)
+    let cos3 = chromaToFourBits((cos[8]+cos[9]+cos[12]+cos[13]) / 4.0)
+    let cos4 = chromaToFourBits((cos[10]+cos[11]+cos[14]+cos[15]) / 4.0)
+    let cgs1 = chromaToFourBits((cgs[0]+cgs[1]+cgs[4]+cgs[5]) / 4.0)
+    let cgs2 = chromaToFourBits((cgs[2]+cgs[3]+cgs[6]+cgs[7]) / 4.0)
+    let cgs3 = chromaToFourBits((cgs[8]+cgs[9]+cgs[12]+cgs[13]) / 4.0)
+    let cgs4 = chromaToFourBits((cgs[10]+cgs[11]+cgs[14]+cgs[15]) / 4.0)
 
     // append encoded blocks to the file
     let outBlock = writeBuf + writeCount
@@ -185,8 +187,8 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
 // write header to the output file
 let headerBytes = [
     0x1F, 0x54, 0x53, 0x56, 0x4D, 0x69, 0x50, 0x46, // magic
-    imgw & 255, (imgw >> 8) & 255, // width
-    imgh & 255, (imgh >> 8) & 255, // height
+    imgw & 255, (imgw >>> 8) & 255, // width
+    imgh & 255, (imgh >>> 8) & 255, // height
     ((hasAlpha) ? 1 : 0), 0x00, // has alpha
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // reserved
 ]
