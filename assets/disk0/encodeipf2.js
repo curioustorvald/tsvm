@@ -34,22 +34,26 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire f
     Bits are packed like so:
 
     uint32 SUBSAMPLING MASK (unimplemented; dont write this)
-    uint8 [Cg-Top Left | Co-Top Left]
+    uint8 [Co-2 | Co-1]
+    uint8 [Co-4 | Co-3]
+    uint8 [Co-6 | Co-5]
+    uint8 [Co-8 | Co-7]
+    uint8 [Cg-2 | Cg-1]
+    uint8 [Cg-4 | Cg-3]
+    uint8 [Cg-6 | Cg-5]
+    uint8 [Cg-8 | Cg-7]
     uint16 [Y1 | Y0 | Y5 | Y4]
-    uint8 [Cg-Top Right | Co-Top Right]
     uint16 [Y3 | Y2 | Y7 | Y6]
-    uint8 [Cg-Bottom Left | Co-Bottom Left]
     uint16 [Y9 | Y8 | YD | YC]
-    uint8 [Cg-Bottom Right | Co-Bottom Right]
     uint16 [YB | YA | YF | YE]
-    (total: 12 bytes)
+    (total: 16 bytes)
 
     If has alpha, append following bytes for alpha values
     uint16 [a1 | a0 | a5 | a4]
     uint16 [a3 | a2 | a7 | a6]
     uint16 [a9 | a8 | aD | aC]
     uint16 [aB | aA | aF | aE]
-    (total: 20 bytes)
+    (total: 24 bytes)
 
     Subsampling mask:
 
@@ -104,7 +108,7 @@ println(`Dim: ${imgw}x${imgh}, channels: ${channels}, Has alpha: ${hasAlpha}`)
 
 // TODO write output to dedicated ptr and gzip it
 let writeCount = 0
-let writeBuf = sys.malloc(blockSize * ((hasAlpha) ? 20 : 12))
+let writeBuf = sys.malloc(blockSize * ((hasAlpha) ? 24 : 16))
 
 let bayerKernels = [
     [
@@ -177,43 +181,57 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     }}
 
     // subsample by averaging
-    let cos1 = chromaToFourBits((cos[0]+cos[1]+cos[4]+cos[5]) / 4.0)
-    let cos2 = chromaToFourBits((cos[2]+cos[3]+cos[6]+cos[7]) / 4.0)
-    let cos3 = chromaToFourBits((cos[8]+cos[9]+cos[12]+cos[13]) / 4.0)
-    let cos4 = chromaToFourBits((cos[10]+cos[11]+cos[14]+cos[15]) / 4.0)
-    let cgs1 = chromaToFourBits((cgs[0]+cgs[1]+cgs[4]+cgs[5]) / 4.0)
-    let cgs2 = chromaToFourBits((cgs[2]+cgs[3]+cgs[6]+cgs[7]) / 4.0)
-    let cgs3 = chromaToFourBits((cgs[8]+cgs[9]+cgs[12]+cgs[13]) / 4.0)
-    let cgs4 = chromaToFourBits((cgs[10]+cgs[11]+cgs[14]+cgs[15]) / 4.0)
+    let cos1 = chromaToFourBits((cos[0]+cos[1]) / 2.0)
+    let cos2 = chromaToFourBits((cos[2]+cos[3]) / 2.0)
+    let cos3 = chromaToFourBits((cos[4]+cos[5]) / 2.0)
+    let cos4 = chromaToFourBits((cos[6]+cos[7]) / 2.0)
+    let cos5 = chromaToFourBits((cos[8]+cos[9]) / 2.0)
+    let cos6 = chromaToFourBits((cos[10]+cos[11]) / 2.0)
+    let cos7 = chromaToFourBits((cos[12]+cos[13]) / 2.0)
+    let cos8 = chromaToFourBits((cos[14]+cos[15]) / 2.0)
+
+    let cgs1 = chromaToFourBits((cgs[0]+cgs[1]) / 2.0)
+    let cgs2 = chromaToFourBits((cgs[2]+cgs[3]) / 2.0)
+    let cgs3 = chromaToFourBits((cgs[4]+cgs[5]) / 2.0)
+    let cgs4 = chromaToFourBits((cgs[6]+cgs[7]) / 2.0)
+    let cgs5 = chromaToFourBits((cgs[8]+cgs[9]) / 2.0)
+    let cgs6 = chromaToFourBits((cgs[10]+cgs[11]) / 2.0)
+    let cgs7 = chromaToFourBits((cgs[12]+cgs[13]) / 2.0)
+    let cgs8 = chromaToFourBits((cgs[14]+cgs[15]) / 2.0)
+
 
     // append encoded blocks to the file
     let outBlock = writeBuf + writeCount
 
-    sys.poke(outBlock+ 0, (cgs1 << 4) | cos1)
-    sys.poke(outBlock+ 1, (ys[1] << 4) | ys[0])
-    sys.poke(outBlock+ 2, (ys[5] << 4) | ys[4])
-    sys.poke(outBlock+ 3, (cgs2 << 4) | cos2)
-    sys.poke(outBlock+ 4, (ys[3] << 4) | ys[2])
-    sys.poke(outBlock+ 5, (ys[7] << 4) | ys[6])
-    sys.poke(outBlock+ 6, (cgs3 << 4) | cos3)
-    sys.poke(outBlock+ 7, (ys[9] << 4) | ys[8])
-    sys.poke(outBlock+ 8, (ys[13] << 4) | ys[12])
-    sys.poke(outBlock+ 9, (cgs4 << 4) | cos4)
-    sys.poke(outBlock+10, (ys[11] << 4) | ys[10])
-    sys.poke(outBlock+11, (ys[15] << 4) | ys[14])
+    sys.poke(outBlock+ 0, (cos2 << 4) | cos1)
+    sys.poke(outBlock+ 1, (cos4 << 4) | cos3)
+    sys.poke(outBlock+ 2, (cos6 << 4) | cos5)
+    sys.poke(outBlock+ 3, (cos8 << 4) | cos7)
+    sys.poke(outBlock+ 4, (cgs2 << 4) | cgs1)
+    sys.poke(outBlock+ 5, (cgs4 << 4) | cgs3)
+    sys.poke(outBlock+ 6, (cgs6 << 4) | cgs5)
+    sys.poke(outBlock+ 7, (cgs8 << 4) | cgs7)
+    sys.poke(outBlock+ 8, (ys[1] << 4) | ys[0])
+    sys.poke(outBlock+ 9, (ys[5] << 4) | ys[4])
+    sys.poke(outBlock+10, (ys[3] << 4) | ys[2])
+    sys.poke(outBlock+11, (ys[7] << 4) | ys[6])
+    sys.poke(outBlock+12, (ys[9] << 4) | ys[8])
+    sys.poke(outBlock+13, (ys[13] << 4) | ys[12])
+    sys.poke(outBlock+14, (ys[11] << 4) | ys[10])
+    sys.poke(outBlock+15, (ys[15] << 4) | ys[14])
 
     if (hasAlpha) {
-        sys.poke(outBlock+12, (as[1] << 4) | as[0])
-        sys.poke(outBlock+13, (as[5] << 4) | as[4])
-        sys.poke(outBlock+14, (as[3] << 4) | as[2])
-        sys.poke(outBlock+15, (as[7] << 4) | as[6])
-        sys.poke(outBlock+16, (as[9] << 4) | as[8])
-        sys.poke(outBlock+17, (as[13] << 4) | as[12])
-        sys.poke(outBlock+18, (as[11] << 4) | as[10])
-        sys.poke(outBlock+19, (as[15] << 4) | as[14])
+        sys.poke(outBlock+16, (as[1] << 4) | as[0])
+        sys.poke(outBlock+17, (as[5] << 4) | as[4])
+        sys.poke(outBlock+18, (as[3] << 4) | as[2])
+        sys.poke(outBlock+19, (as[7] << 4) | as[6])
+        sys.poke(outBlock+20, (as[9] << 4) | as[8])
+        sys.poke(outBlock+21, (as[13] << 4) | as[12])
+        sys.poke(outBlock+22, (as[11] << 4) | as[10])
+        sys.poke(outBlock+23, (as[15] << 4) | as[14])
         writeCount += 8
     }
-    writeCount += 12
+    writeCount += 16
 
 }}
 
@@ -223,7 +241,7 @@ let headerBytes = [
     imgw & 255, (imgw >>> 8) & 255, // width
     imgh & 255, (imgh >>> 8) & 255, // height
     ((hasAlpha) ? 1 : 0), 0x00, // has alpha
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // reserved
+    0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // reserved
 ]
 
 filesystem.open("A", exec_args[2], "W")
