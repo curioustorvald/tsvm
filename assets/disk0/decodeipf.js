@@ -212,17 +212,6 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     let cocg4 = readByte()
     let y4 = readShort()
 
-    if (blockX == 0 && blockY == 0) {
-        serial.println(`cocg: ${(cocg1 & 15).toString(16)} ${((cocg1 >>> 4) & 15).toString(16)}`)
-        serial.println(`y: ${y1.toString(16)}`)
-        serial.println(`cocg: ${cocg2.toString(16)}`)
-        serial.println(`y: ${y2.toString(16)}`)
-        serial.println(`cocg: ${cocg3.toString(16)}`)
-        serial.println(`y: ${y3.toString(16)}`)
-        serial.println(`cocg: ${cocg4.toString(16)}`)
-        serial.println(`y: ${y4.toString(16)}`)
-    }
-
     let a1 = 65535; let a2 = 65535; let a3 = 65535; let a4 = 65535
 
     if (hasAlpha) {

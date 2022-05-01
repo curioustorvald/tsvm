@@ -73,11 +73,11 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire f
  */
 
 if (!exec_args[2]) {
-    printerrln("Usage: encodeipf input.jpg output.ipf")
+    printerrln("Usage: encodeipf input.jpg output.ipf [/noalpha]")
     return 1
 }
 
-let configUseAlpha = true
+let configUseAlpha = !(exec_args[3].toLowerCase() == "/noalpha")
 
 filesystem.open("A", exec_args[1], "R")
 
@@ -103,6 +103,33 @@ println(`Dim: ${imgw}x${imgh}, channels: ${channels}, Has alpha: ${hasAlpha}`)
 // TODO write output to dedicated ptr and gzip it
 let writeCount = 0
 let writeBuf = sys.malloc(blockSize * ((hasAlpha) ? 20 : 12))
+
+let bayerKernels = [
+    [
+        0,8,2,10,
+        12,4,14,6,
+        3,11,1,9,
+        15,7,13,5,
+    ],
+    [
+        8,2,10,0,
+        4,14,6,12,
+        11,1,9,3,
+        7,13,5,15,
+    ],
+    [
+        7,13,5,15,
+        8,2,10,0,
+        4,14,6,12,
+        11,1,9,3,
+    ],
+    [
+        15,7,13,5,
+        0,8,2,10,
+        12,4,14,6,
+        3,11,1,9,
+    ]
+].map(it => { it.map(it => { (it + 0.5) / 16 }) })
 
 function chromaToFourBits(f) {
     let r = Math.round(f * 8) + 7
