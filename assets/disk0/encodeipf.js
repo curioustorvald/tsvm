@@ -77,7 +77,9 @@ if (!exec_args[2]) {
     return 1
 }
 
-let configUseAlpha = !(exec_args[3].toLowerCase() == "/noalpha")
+let configUseAlpha = !(exec_args[3] != undefined && exec_args[3].toLowerCase() == "/noalpha")
+
+let pattern = 0
 
 filesystem.open("A", exec_args[1], "R")
 
@@ -129,7 +131,7 @@ let bayerKernels = [
         12,4,14,6,
         3,11,1,9,
     ]
-].map(it => { it.map(it => { (it + 0.5) / 16 }) })
+].map(it => it.map(it => (it + 0.5) / 16))
 
 function chromaToFourBits(f) {
     let r = Math.round(f * 8) + 7
@@ -145,18 +147,22 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     let cos = new Float32Array(16)
     let cgs = new Float32Array(16)
 
-    // TODO 4x4 bayer dither
-
     for (let py = 0; py < 4; py++) { for (let px = 0; px < 4; px++) {
         // TODO oob-check
         let ox = blockX * 4 + px
         let oy = blockY * 4 + py
+        let t = bayerKernels[pattern % bayerKernels.length][4 * (py % 4) + (px % 4)]
         let offset = channels * (oy * imgw + ox)
 
-        let r = sys.peek(imageData + offset) / 255.0
-        let g = sys.peek(imageData + offset+1) / 255.0
-        let b = sys.peek(imageData + offset+2) / 255.0
-        let a = (hasAlpha) ? sys.peek(imageData + offset+3) / 255.0 : 1.0
+        let r0 = sys.peek(imageData + offset) / 255.0
+        let g0 = sys.peek(imageData + offset+1) / 255.0
+        let b0 = sys.peek(imageData + offset+2) / 255.0
+        let a0 = (hasAlpha) ? sys.peek(imageData + offset+3) / 255.0 : 1.0
+
+        let r = Math.floor((t / 15 + r0) * 15) / 15
+        let g = Math.floor((t / 15 + g0) * 15) / 15
+        let b = Math.floor((t / 15 + b0) * 15) / 15
+        let a = Math.floor((t / 15 + a0) * 15) / 15
 
         let co = r - b // [-1..1]
         let tmp = b + co / 2.0
