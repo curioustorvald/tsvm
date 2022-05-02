@@ -367,11 +367,24 @@ Type:
     0: 256-Colour frame
     1: 256-Colour frame with palette data
     2: 4096-Colour frame (stored as two byte-planes)
+    3: iPF indicator (see iPF Type Numbers for details)
     16: Series of JPEGs
     18: Series of PNGs
     20: Series of TGAs
     21: Series of TGA/GZs
     255: Every frame specifies the type
+
+    iPF Type Numbers
+
+    3: iPF Type 1
+    259: iPF Type 2
+    515: iPF Type 3
+    771: iPF Type 4
+    1027: iPF Type 5
+    1283: iPF Type 6
+    1539: iPF Type 7
+    1795: iPF Type 8
+
 
 TYPE 0 FRAME -
     uint32 SIZE OF FRAMEDATA
@@ -396,3 +409,76 @@ TYPE 255 FRAME -
     uint16 TYPE OF FRAMEDATA
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA
+
+--------------------------------------------------------------------------------
+
+TSVM Interchangeable Picture Format (aka iPF Type 1)
+
+Image is divided into 4x4 blocks and each block is serialised, then the entire file is gzipped
+
+
+# File Structure
+\x1F T S V M i P F
+[HEADER]
+[Blocks.gz]
+
+- Header
+    uint16 WIDTH
+    uint16 HEIGHT
+    uint16 HAS ALPHA
+    byte[10] RESERVED
+
+- *.gz
+    uint32 UNCOMPRESSED SIZE
+    *      PAYLOAD
+
+- Blocks
+    4x4 pixels are sampled, then divided into YCoCg planes.
+    CoCg planes are "chroma subsampled" by 4:2:0, then quantised to 4 bits (8 bits for CoCg combined)
+    Y plane is quantised to 4 bits
+
+    By doing so, CoCg planes will reduce to 4 pixels
+    For the description of packing, pixels in Y plane will be numbered as:
+        0 1 2 3
+        4 5 6 7
+        8 9 A B
+        C D E F
+
+    Bits are packed like so:
+
+    uint32 SUBSAMPLING MASK (unimplemented; dont write this)
+    uint8 [Cg-Top Left | Co-Top Left]
+    uint16 [Y1 | Y0 | Y5 | Y4]
+    uint8 [Cg-Top Right | Co-Top Right]
+    uint16 [Y3 | Y2 | Y7 | Y6]
+    uint8 [Cg-Bottom Left | Co-Bottom Left]
+    uint16 [Y9 | Y8 | YD | YC]
+    uint8 [Cg-Bottom Right | Co-Bottom Right]
+    uint16 [YB | YA | YF | YE]
+    (total: 16 bytes)
+
+    If has alpha, append following bytes for alpha values
+    uint16 [a1 | a0 | a5 | a4]
+    uint16 [a3 | a2 | a7 | a6]
+    uint16 [a9 | a8 | aD | aC]
+    uint16 [aB | aA | aF | aE]
+    (total: 24 bytes)
+
+    Subsampling mask:
+
+    Least significant byte for top-left, most significant for bottom-right
+    For example, this default pattern
+
+    00 00 01 01
+    00 00 01 01
+    10 10 11 11
+    10 10 11 11
+
+    turns into:
+
+    01010000 -> 0x30
+    01010000 -> 0x30
+    11111010 -> 0xFA
+    11111010 -> 0xFA
+
+    which packs into: [ 30 | 30 | FA | FA ] (because little endian)

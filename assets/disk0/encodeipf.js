@@ -13,7 +13,8 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire f
     uint16 WIDTH
     uint16 HEIGHT
     uint16 HAS ALPHA
-    byte[10] RESERVED
+    uint8  0 (IPF CONFIG INDICATOR)
+    byte[9] RESERVED
 
 - *.gz
     uint32 UNCOMPRESSED SIZE
@@ -69,6 +70,13 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire f
     11111010 -> 0xFA
 
     which packs into: [ 30 | 30 | FA | FA ] (because little endian)
+
+- IPF CONFIG INDICATOR:
+
+    0 for 4:2:0 Chroma subsampling for both Co and Cg (iPF Type 1)
+    1 for 4:2:2 Chroma subsampling for Co, but 4:2:0 for Cg (NOT recommended; unused)
+    2 for 4:2:2 Chroma subsampling for Cg, but 4:2:0 for Co (Recommended over type 1; unused)
+    3 for 4:2:2 Chroma subsampling for both Co and Cg (iPF Type 2)
 
  */
 
