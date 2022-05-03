@@ -35,13 +35,13 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire f
     Bits are packed like so:
 
     uint32 SUBSAMPLING MASK (unimplemented; dont write this)
-    uint8 [Cg-Top Left | Co-Top Left]
+    uint8 [Co-Top Right | Co-Top Left]
+    uint8 [Co-Bottom Right | Co-Bottom Left]
+    uint8 [Cg-Top Right | Cg-Top Left]
+    uint8 [Cg-Bottom Right | Cg-Bottom Left]
     uint16 [Y1 | Y0 | Y5 | Y4]
-    uint8 [Cg-Top Right | Co-Top Right]
     uint16 [Y3 | Y2 | Y7 | Y6]
-    uint8 [Cg-Bottom Left | Co-Bottom Left]
     uint16 [Y9 | Y8 | YD | YC]
-    uint8 [Cg-Bottom Right | Co-Bottom Right]
     uint16 [YB | YA | YF | YE]
     (total: 12 bytes)
 
@@ -197,16 +197,16 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     // append encoded blocks to the file
     let outBlock = writeBuf + writeCount
 
-    sys.poke(outBlock+ 0, (cgs1 << 4) | cos1)
-    sys.poke(outBlock+ 1, (ys[1] << 4) | ys[0])
-    sys.poke(outBlock+ 2, (ys[5] << 4) | ys[4])
-    sys.poke(outBlock+ 3, (cgs2 << 4) | cos2)
-    sys.poke(outBlock+ 4, (ys[3] << 4) | ys[2])
-    sys.poke(outBlock+ 5, (ys[7] << 4) | ys[6])
-    sys.poke(outBlock+ 6, (cgs3 << 4) | cos3)
-    sys.poke(outBlock+ 7, (ys[9] << 4) | ys[8])
-    sys.poke(outBlock+ 8, (ys[13] << 4) | ys[12])
-    sys.poke(outBlock+ 9, (cgs4 << 4) | cos4)
+    sys.poke(outBlock+ 0, (cos2 << 4) | cos1)
+    sys.poke(outBlock+ 1, (cos4 << 4) | cos3)
+    sys.poke(outBlock+ 2, (cgs2 << 4) | cgs1)
+    sys.poke(outBlock+ 3, (cgs4 << 4) | cgs3)
+    sys.poke(outBlock+ 4, (ys[1] << 4) | ys[0])
+    sys.poke(outBlock+ 5, (ys[5] << 4) | ys[4])
+    sys.poke(outBlock+ 6, (ys[3] << 4) | ys[2])
+    sys.poke(outBlock+ 7, (ys[7] << 4) | ys[6])
+    sys.poke(outBlock+ 8, (ys[9] << 4) | ys[8])
+    sys.poke(outBlock+ 9, (ys[13] << 4) | ys[12])
     sys.poke(outBlock+10, (ys[11] << 4) | ys[10])
     sys.poke(outBlock+11, (ys[15] << 4) | ys[14])
 

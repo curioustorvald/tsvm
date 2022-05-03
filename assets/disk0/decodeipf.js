@@ -147,14 +147,14 @@ function clampRGB(f) {
     return (f > 1.0) ? 1.0 : (f < 0.0) ? 0.0 : f
 }
 
-function ycocgToRGB(cocg, ys, as) { // ys: 4 Y-values
+function ycocgToRGB(co, cg, ys, as) { // ys: 4 Y-values
     // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
 
 //    cocg = 0x7777
 //    ys = 0x7777
 
-    let co = ((cocg & 15) - 7) / 8
-    let cg = (((cocg >>> 4) & 15) - 7) / 8
+    co = (co - 7) / 8
+    cg = (cg - 7) / 8
 
     let y1 = (ys & 15) / 15.0
     let a1 = as & 15
@@ -203,13 +203,11 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
     let rg = new Uint8Array(16) // [R1G1, R2G2, R3G3, R4G4, ...]
     let ba = new Uint8Array(16)
 
-    let cocg1 = readByte()
+    let co = readShort()
+    let cg = readShort()
     let y1 = readShort()
-    let cocg2 = readByte()
     let y2 = readShort()
-    let cocg3 = readByte()
     let y3 = readShort()
-    let cocg4 = readByte()
     let y4 = readShort()
 
     let a1 = 65535; let a2 = 65535; let a3 = 65535; let a4 = 65535
@@ -221,25 +219,25 @@ for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
         a4 = readShort()
     }
 
-    let corner = ycocgToRGB(cocg1, y1, a1)
+    let corner = ycocgToRGB(co & 15, cg & 15, y1, a1)
     rg[0] = corner[0];ba[0] = corner[1]
     rg[1] = corner[2];ba[1] = corner[3]
     rg[4] = corner[4];ba[4] = corner[5]
     rg[5] = corner[6];ba[5] = corner[7]
 
-    corner = ycocgToRGB(cocg2, y2, a2)
+    corner = ycocgToRGB((co >> 4) & 15, (cg >> 4) & 15, y2, a2)
     rg[2] = corner[0];ba[2] = corner[1]
     rg[3] = corner[2];ba[3] = corner[3]
     rg[6] = corner[4];ba[6] = corner[5]
     rg[7] = corner[6];ba[7] = corner[7]
 
-    corner = ycocgToRGB(cocg3, y3, a3)
+    corner = ycocgToRGB((co >> 8) & 15, (cg >> 8) & 15, y3, a3)
     rg[8] = corner[0];ba[8] = corner[1]
     rg[9] = corner[2];ba[9] = corner[3]
     rg[12] = corner[4];ba[12] = corner[5]
     rg[13] = corner[6];ba[13] = corner[7]
 
-    corner = ycocgToRGB(cocg4, y4, a4)
+    corner = ycocgToRGB((co >> 12) & 15, (cg >> 12) & 15, y4, a4)
     rg[10] = corner[0];ba[10] = corner[1]
     rg[11] = corner[2];ba[11] = corner[3]
     rg[14] = corner[4];ba[14] = corner[5]
