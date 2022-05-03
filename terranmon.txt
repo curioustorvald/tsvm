@@ -367,23 +367,17 @@ Type:
     0: 256-Colour frame
     1: 256-Colour frame with palette data
     2: 4096-Colour frame (stored as two byte-planes)
-    3: iPF indicator (see iPF Type Numbers for details)
+    4: iPF no-alpha indicator (see iPF Type Numbers for details)
+    5: iPF with alpha indicator (see iPF Type Numbers for details)
     16: Series of JPEGs
     18: Series of PNGs
     20: Series of TGAs
     21: Series of TGA/GZs
     255: Every frame specifies the type
 
-    iPF Type Numbers
+    iPF Type Numbers (high bytes)
 
-    3: iPF Type 1
-    259: iPF Type 2
-    515: iPF Type 3
-    771: iPF Type 4
-    1027: iPF Type 5
-    1283: iPF Type 6
-    1539: iPF Type 7
-    1795: iPF Type 8
+    0..7: iPF Type 1..8
 
 
 TYPE 0 FRAME -

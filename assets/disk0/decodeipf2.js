@@ -153,10 +153,10 @@ function ycocgToRGB(co1, co2, cg1, cg2, ys, as) { // ys: 4 Y-values
 //    cocg = 0x7777
 //    ys = 0x7777
 
-    co1 = (co1 - 7) / 8
-    co2 = (co2 - 7) / 8
-    cg1 = (cg1 - 7) / 8
-    cg2 = (cg2 - 7) / 8
+    co1 = (co1 - 7) / 8.0
+    co2 = (co2 - 7) / 8.0
+    cg1 = (cg1 - 7) / 8.0
+    cg2 = (cg2 - 7) / 8.0
 
     let y1 = (ys & 15) / 15.0
     let a1 = as & 15
