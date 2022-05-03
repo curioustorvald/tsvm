@@ -58,6 +58,11 @@ class VM(
     var romMapping = 255
         internal set
 
+    private val mallocMap = BitSet(mallocBlockSize)
+    private val mallocSizes = HashMap<Int, Int>() // HashMap<Block Index, Block Count>
+    var allocatedBlockCount = 0; private set
+
+
     init {
         init()
     }
@@ -81,6 +86,10 @@ class VM(
         println("[VM] Creating new VM with ID of $id, memsize $memsize")
 
         startTime = System.nanoTime()
+
+        mallocMap.clear()
+        mallocSizes.clear()
+        allocatedBlockCount = 0
     }
 
 
@@ -162,10 +171,6 @@ class VM(
         else
             (memspace as PeriBase).peek(offset)
     }
-
-    private val mallocMap = BitSet(mallocBlockSize)
-    private val mallocSizes = HashMap<Int, Int>() // HashMap<Block Index, Block Count>
-    var allocatedBlockCount = 0; private set
 
     private fun findEmptySpace(blockSize: Int): Int? {
         var cursorHead = 0
