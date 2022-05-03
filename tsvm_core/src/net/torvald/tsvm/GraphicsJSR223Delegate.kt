@@ -1,8 +1,7 @@
 package net.torvald.tsvm
 
 import com.badlogic.gdx.graphics.Pixmap
-import com.badlogic.gdx.math.MathUtils.floor
-import com.badlogic.gdx.math.MathUtils.round
+import com.badlogic.gdx.math.MathUtils.*
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
@@ -269,7 +268,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
         val inPixmap = Pixmap(data, 0, data.size)
         val gpu = getFirstGPU()
 
-        if (width <= -1.0 && height <= -1.0 && gpu != null) {
+        if (width <= -1f && height <= -1f && gpu != null) {
             if (inPixmap.width > inPixmap.height) {
                 val scale = inPixmap.height.toFloat() / inPixmap.width.toFloat()
                 width = gpu.config.width
@@ -322,7 +321,7 @@ class GraphicsJSR223Delegate(val vm: VM) {
         val inPixmap = Pixmap(data, 0, data.size)
         val gpu = getFirstGPU()
 
-        if (width <= -1.0 && height <= -1.0 && gpu != null) {
+        if (width <= -1f && height <= -1f && gpu != null) {
             if (inPixmap.width > inPixmap.height) {
                 val scale = inPixmap.height.toFloat() / inPixmap.width.toFloat()
                 width = gpu.config.width
@@ -537,6 +536,398 @@ class GraphicsJSR223Delegate(val vm: VM) {
             vm.poke(destRG + k*sign, (ra.shl(4) or ga).toByte())
             vm.poke(destBA + k*sign, (ba.shl(4) or aa).toByte())
         }
+    }
+
+    private fun chromaToFourBits(f: Float): Int {
+        return (round(f * 8) + 7).coerceIn(0..15)
+    }
+    
+    fun blockEncodeToYCoCg(blockX: Int, blockY: Int, srcPtr: Int, width: Int, channels: Int, hasAlpha: Boolean, pattern: Int): List<Any> {
+        val Ys = IntArray(16)
+        val As = IntArray(16)
+        val COs = FloatArray(16)
+        val CGs = FloatArray(16)
+
+        for (py in 0..3) { for (px in 0..3) {
+            // TODO oob-check
+            val ox = blockX * 4 + px
+            val oy = blockY * 4 + py
+            val t = bayerKernels[pattern % bayerKernels.size][4 * (py % 4) + (px % 4)]
+            val offset = channels * (oy * width + ox)
+
+            val r0 = vm.peek(srcPtr + offset+0L)!!.toUint() / 255f
+            val g0 = vm.peek(srcPtr + offset+1L)!!.toUint() / 255f
+            val b0 = vm.peek(srcPtr + offset+2L)!!.toUint() / 255f
+            val a0 = if (hasAlpha) vm.peek(srcPtr + offset+3L)!! / 255f else 1f
+
+            val r = floor((t / 15f + r0) * 15f) / 15f
+            val g = floor((t / 15f + g0) * 15f) / 15f
+            val b = floor((t / 15f + b0) * 15f) / 15f
+            val a = floor((t / 15f + a0) * 15f) / 15f
+
+            val co = r - b // [-1..1]
+            val tmp = b + co / 2f
+            val cg = g - tmp // [-1..1]
+            val y = tmp + cg / 2f // [0..1]
+
+            val index = py * 4 + px
+            Ys[index] = round(y * 15)
+            As[index] = round(a * 15)
+            COs[index] = co
+            CGs[index] = cg
+        }}
+        
+        return listOf(Ys, As, COs, CGs)
+    }
+    fun encodeIpf1(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
+        var writeCount = 0L
+        
+        for (blockY in 0 until ceil(height / 4f)) {
+        for (blockX in 0 until ceil(width / 4f)) {
+            val (_1, _2, _3, _4) = blockEncodeToYCoCg(blockX, blockY, srcPtr, width, channels, hasAlpha, pattern)
+            val Ys = _1 as IntArray; val As = _2 as IntArray; val COs = _3 as FloatArray; val CGs = _4 as FloatArray
+            
+            // subsample by averaging
+            val cos1 = chromaToFourBits((COs[0]+ COs[1]+ COs[4]+ COs[5]) / 4f)
+            val cos2 = chromaToFourBits((COs[2]+ COs[3]+ COs[6]+ COs[7]) / 4f)
+            val cos3 = chromaToFourBits((COs[8]+ COs[9]+ COs[12]+COs[13]) / 4f)
+            val cos4 = chromaToFourBits((COs[10]+COs[11]+COs[14]+COs[15]) / 4f)
+
+            val cgs1 = chromaToFourBits((CGs[0]+ CGs[1]+ CGs[4]+ CGs[5]) / 4f)
+            val cgs2 = chromaToFourBits((CGs[2]+ CGs[3]+ CGs[6]+ CGs[7]) / 4f)
+            val cgs3 = chromaToFourBits((CGs[8]+ CGs[9]+ CGs[12]+CGs[13]) / 4f)
+            val cgs4 = chromaToFourBits((CGs[10]+CGs[11]+CGs[14]+CGs[15]) / 4f)
+
+            // append encoded blocks to the file
+            val outBlock = destPtr + writeCount
+
+            vm.poke(outBlock+ 0, ((cos2 shl 4) or cos1).toByte())
+            vm.poke(outBlock+ 1, ((cos4 shl 4) or cos3).toByte())
+            vm.poke(outBlock+ 2, ((cgs2 shl 4) or cgs1).toByte())
+            vm.poke(outBlock+ 3, ((cgs4 shl 4) or cgs3).toByte())
+            vm.poke(outBlock+ 4, ((Ys[1] shl 4) or Ys[0]).toByte())
+            vm.poke(outBlock+ 5, ((Ys[5] shl 4) or Ys[4]).toByte())
+            vm.poke(outBlock+ 6, ((Ys[3] shl 4) or Ys[2]).toByte())
+            vm.poke(outBlock+ 7, ((Ys[7] shl 4) or Ys[6]).toByte())
+            vm.poke(outBlock+ 8, ((Ys[9] shl 4) or Ys[8]).toByte())
+            vm.poke(outBlock+ 9, ((Ys[13] shl 4) or Ys[12]).toByte())
+            vm.poke(outBlock+10, ((Ys[11] shl 4) or Ys[10]).toByte())
+            vm.poke(outBlock+11, ((Ys[15] shl 4) or Ys[14]).toByte())
+
+            if (hasAlpha) {
+                vm.poke(outBlock+12, ((As[1] shl 4) or As[0]).toByte())
+                vm.poke(outBlock+13, ((As[5] shl 4) or As[4]).toByte())
+                vm.poke(outBlock+14, ((As[3] shl 4) or As[2]).toByte())
+                vm.poke(outBlock+15, ((As[7] shl 4) or As[6]).toByte())
+                vm.poke(outBlock+16, ((As[9] shl 4) or As[8]).toByte())
+                vm.poke(outBlock+17, ((As[13] shl 4) or As[12]).toByte())
+                vm.poke(outBlock+18, ((As[11] shl 4) or As[10]).toByte())
+                vm.poke(outBlock+19, ((As[15] shl 4) or As[14]).toByte())
+                writeCount += 8
+            }
+            writeCount += 12
+        }} 
+    }
+
+    fun encodeIpf2(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
+        var writeCount = 0L
+
+        for (blockY in 0 until ceil(height / 4f)) {
+        for (blockX in 0 until ceil(width / 4f)) {
+            val (_1, _2, _3, _4) = blockEncodeToYCoCg(blockX, blockY, srcPtr, width, channels, hasAlpha, pattern)
+            val Ys = _1 as IntArray; val As = _2 as IntArray; val COs = _3 as FloatArray; val CGs = _4 as FloatArray
+
+            // subsample by averaging
+            val cos1 = chromaToFourBits((COs[0]+COs[1]) / 2f)
+            val cos2 = chromaToFourBits((COs[2]+COs[3]) / 2f)
+            val cos3 = chromaToFourBits((COs[4]+COs[5]) / 2f)
+            val cos4 = chromaToFourBits((COs[6]+COs[7]) / 2f)
+            val cos5 = chromaToFourBits((COs[8]+COs[9]) / 2f)
+            val cos6 = chromaToFourBits((COs[10]+COs[11]) / 2f)
+            val cos7 = chromaToFourBits((COs[12]+COs[13]) / 2f)
+            val cos8 = chromaToFourBits((COs[14]+COs[15]) / 2f)
+
+            val cgs1 = chromaToFourBits((CGs[0]+CGs[1]) / 2f)
+            val cgs2 = chromaToFourBits((CGs[2]+CGs[3]) / 2f)
+            val cgs3 = chromaToFourBits((CGs[4]+CGs[5]) / 2f)
+            val cgs4 = chromaToFourBits((CGs[6]+CGs[7]) / 2f)
+            val cgs5 = chromaToFourBits((CGs[8]+CGs[9]) / 2f)
+            val cgs6 = chromaToFourBits((CGs[10]+CGs[11]) / 2f)
+            val cgs7 = chromaToFourBits((CGs[12]+CGs[13]) / 2f)
+            val cgs8 = chromaToFourBits((CGs[14]+CGs[15]) / 2f)
+
+            // append encoded blocks to the file
+            val outBlock = destPtr + writeCount
+
+            vm.poke(outBlock+ 0, ((cos2 shl 4) or cos1).toByte())
+            vm.poke(outBlock+ 1, ((cos4 shl 4) or cos3).toByte())
+            vm.poke(outBlock+ 2, ((cos6 shl 4) or cos5).toByte())
+            vm.poke(outBlock+ 3, ((cos8 shl 4) or cos7).toByte())
+            vm.poke(outBlock+ 4, ((cgs2 shl 4) or cgs1).toByte())
+            vm.poke(outBlock+ 5, ((cgs4 shl 4) or cgs3).toByte())
+            vm.poke(outBlock+ 6, ((cgs6 shl 4) or cgs5).toByte())
+            vm.poke(outBlock+ 7, ((cgs8 shl 4) or cgs7).toByte())
+            vm.poke(outBlock+ 8, ((Ys[1] shl 4) or Ys[0]).toByte())
+            vm.poke(outBlock+ 9, ((Ys[5] shl 4) or Ys[4]).toByte())
+            vm.poke(outBlock+10, ((Ys[3] shl 4) or Ys[2]).toByte())
+            vm.poke(outBlock+11, ((Ys[7] shl 4) or Ys[6]).toByte())
+            vm.poke(outBlock+12, ((Ys[9] shl 4) or Ys[8]).toByte())
+            vm.poke(outBlock+13, ((Ys[13] shl 4) or Ys[12]).toByte())
+            vm.poke(outBlock+14, ((Ys[11] shl 4) or Ys[10]).toByte())
+            vm.poke(outBlock+15, ((Ys[15] shl 4) or Ys[14]).toByte())
+
+            if (hasAlpha) {
+                vm.poke(outBlock+16, ((As[1] shl 4) or As[0]).toByte())
+                vm.poke(outBlock+17, ((As[5] shl 4) or As[4]).toByte())
+                vm.poke(outBlock+18, ((As[3] shl 4) or As[2]).toByte())
+                vm.poke(outBlock+19, ((As[7] shl 4) or As[6]).toByte())
+                vm.poke(outBlock+20, ((As[9] shl 4) or As[8]).toByte())
+                vm.poke(outBlock+21, ((As[13] shl 4) or As[12]).toByte())
+                vm.poke(outBlock+22, ((As[11] shl 4) or As[10]).toByte())
+                vm.poke(outBlock+23, ((As[15] shl 4) or As[14]).toByte())
+                writeCount += 8
+            }
+            writeCount += 16
+        }}
+    }
+
+    private fun clampRGB(f: Float) = f.coerceIn(0f, 1f)
+    private fun ycocgToRGB(co: Int, cg: Int, ys: Int, As: Int): Array<Int> { // ys: 4 Y-values
+        // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
+
+//    cocg = 0x7777
+//    ys = 0x7777
+
+        val co = (co - 7) / 8f
+        val cg = (cg - 7) / 8f
+
+        val y1 = (ys and 15) / 15f
+        val a1 = As and 15
+        var tmp = y1 - cg / 2f
+        val g1 = clampRGB(cg + tmp)
+        val b1 = clampRGB(tmp - co / 2f)
+        val r1 = clampRGB(b1 + co)
+
+        val y2 = ((ys shr 4) and 15) / 15f
+        val a2 = (As shr 4) and 15
+        tmp = y2 - cg / 2f
+        val g2 = clampRGB(cg + tmp)
+        val b2 = clampRGB(tmp - co / 2f)
+        val r2 = clampRGB(b2 + co)
+
+        val y3 = ((ys shr 8) and 15) / 15f
+        val a3 = (As shr 8) and 15
+        tmp = y3 - cg / 2f
+        val g3 = clampRGB(cg + tmp)
+        val b3 = clampRGB(tmp - co / 2f)
+        val r3 = clampRGB(b3 + co)
+
+        val y4 = ((ys shr 12) and 15) / 15f
+        val a4 = (As shr 12) and 15
+        tmp = y4 - cg / 2f
+        val g4 = clampRGB(cg + tmp)
+        val b4 = clampRGB(tmp - co / 2f)
+        val r4 = clampRGB(b4 + co)
+
+        return arrayOf(
+            (round(r1 * 15) shl 4) or round(g1 * 15),
+            (round(b1 * 15) shl 4) or a1,
+            (round(r2 * 15) shl 4) or round(g2 * 15),
+            (round(b2 * 15) shl 4) or a2,
+            (round(r3 * 15) shl 4) or round(g3 * 15),
+            (round(b3 * 15) shl 4) or a3,
+            (round(r4 * 15) shl 4) or round(g4 * 15),
+            (round(b4 * 15) shl 4) or a4,
+        )
+    }
+
+    private fun ycocgToRGB(co1: Int, co2: Int, cg1: Int, cg2: Int, ys: Int, As: Int): Array<Int> { // ys: 4 Y-values
+        // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
+
+//    cocg = 0x7777
+//    ys = 0x7777
+
+        val co1 = (co1 - 7) / 8f
+        val co2 = (co2 - 7) / 8f
+        val cg1 = (cg1 - 7) / 8f
+        val cg2 = (cg2 - 7) / 8f
+
+        val y1 = (ys and 15) / 15f
+        val a1 = As and 15
+        var tmp = y1 - cg1 / 2f
+        val g1 = clampRGB(cg1 + tmp)
+        val b1 = clampRGB(tmp - co1 / 2f)
+        val r1 = clampRGB(b1 + co1)
+
+        val y2 = ((ys shr 4) and 15) / 15f
+        val a2 = (As shr 4) and 15
+        tmp = y2 - cg1 / 2f
+        val g2 = clampRGB(cg1 + tmp)
+        val b2 = clampRGB(tmp - co1 / 2f)
+        val r2 = clampRGB(b2 + co1)
+
+        val y3 = ((ys shr 8) and 15) / 15f
+        val a3 = (As shr 8) and 15
+        tmp = y3 - cg2 / 2f
+        val g3 = clampRGB(cg2 + tmp)
+        val b3 = clampRGB(tmp - co2 / 2f)
+        val r3 = clampRGB(b3 + co2)
+
+        val y4 = ((ys shr 12) and 15) / 15f
+        val a4 = (As shr 12) and 15
+        tmp = y4 - cg2 / 2f
+        val g4 = clampRGB(cg2 + tmp)
+        val b4 = clampRGB(tmp - co2 / 2f)
+        val r4 = clampRGB(b4 + co2)
+
+        return arrayOf(
+            (round(r1 * 15) shl 4) or round(g1 * 15),
+            (round(b1 * 15) shl 4) or a1,
+            (round(r2 * 15) shl 4) or round(g2 * 15),
+            (round(b2 * 15) shl 4) or a2,
+            (round(r3 * 15) shl 4) or round(g3 * 15),
+            (round(b3 * 15) shl 4) or a3,
+            (round(r4 * 15) shl 4) or round(g4 * 15),
+            (round(b4 * 15) shl 4) or a4,
+        )
+    }
+
+    fun decodeIpf1(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
+        val sign = if (destRG >= 0) 1 else -1
+        if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
+        val sptr = srcPtr.toLong()
+        val dptr1 = destRG.toLong()
+        val dptr2 = destBA.toLong()
+        var readCount = 0
+        fun readShort() = 
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
+
+
+        for (blockY in 0 until ceil(height / 4f)) {
+        for (blockX in 0 until ceil(width / 4f)) {
+            val rg = IntArray(16) // [R1G1, R2G2, R3G3, R4G4, ...]
+            val ba = IntArray(16)
+
+            val co = readShort()
+            val cg = readShort()
+            val y1 = readShort()
+            val y2 = readShort()
+            val y3 = readShort()
+            val y4 = readShort()
+
+            var a1 = 65535; var a2 = 65535; var a3 = 65535; var a4 = 65535
+
+            if (hasAlpha) {
+                a1 = readShort()
+                a2 = readShort()
+                a3 = readShort()
+                a4 = readShort()
+            }
+
+            var corner = ycocgToRGB(co and 15, cg and 15, y1, a1)
+            rg[0] = corner[0];ba[0] = corner[1]
+            rg[1] = corner[2];ba[1] = corner[3]
+            rg[4] = corner[4];ba[4] = corner[5]
+            rg[5] = corner[6];ba[5] = corner[7]
+
+            corner = ycocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, a2)
+            rg[2] = corner[0];ba[2] = corner[1]
+            rg[3] = corner[2];ba[3] = corner[3]
+            rg[6] = corner[4];ba[6] = corner[5]
+            rg[7] = corner[6];ba[7] = corner[7]
+
+            corner = ycocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, a3)
+            rg[8] = corner[0];ba[8] = corner[1]
+            rg[9] = corner[2];ba[9] = corner[3]
+            rg[12] = corner[4];ba[12] = corner[5]
+            rg[13] = corner[6];ba[13] = corner[7]
+
+            corner = ycocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, a4)
+            rg[10] = corner[0];ba[10] = corner[1]
+            rg[11] = corner[2];ba[11] = corner[3]
+            rg[14] = corner[4];ba[14] = corner[5]
+            rg[15] = corner[6];ba[15] = corner[7]
+
+
+            // move decoded pixels into memory
+            for (py in 0..3) { for (px in 0..3) {
+                val ox = blockX * 4 + px
+                val oy = blockY * 4 + py
+                val offset = oy * 560 + ox
+                vm.poke(dptr1 + offset*sign, rg[py * 4 + px].toByte())
+                vm.poke(dptr2 + offset*sign, ba[py * 4 + px].toByte())
+            }}
+        }}
+    }
+
+    fun decodeIpf2(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
+        val sign = if (destRG >= 0) 1 else -1
+        if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
+        val sptr = srcPtr.toLong()
+        val dptr1 = destRG.toLong()
+        val dptr2 = destBA.toLong()
+        var readCount = 0
+        fun readShort() =
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
+        fun readInt() =
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8) or vm.peek(sptr + readCount++)!!.toUint().shl(16) or vm.peek(sptr + readCount++)!!.toUint().shl(24)
+
+
+        for (blockY in 0 until ceil(height / 4f)) {
+        for (blockX in 0 until ceil(width / 4f)) {
+            val rg = IntArray(16) // [R1G1, R2G2, R3G3, R4G4, ...]
+            val ba = IntArray(16)
+
+            val co = readInt()
+            val cg = readInt()
+            val y1 = readShort()
+            val y2 = readShort()
+            val y3 = readShort()
+            val y4 = readShort()
+
+            var a1 = 65535; var a2 = 65535; var a3 = 65535; var a4 = 65535
+
+            if (hasAlpha) {
+                a1 = readShort()
+                a2 = readShort()
+                a3 = readShort()
+                a4 = readShort()
+            }
+
+            var corner = ycocgToRGB(co and 15, (co shr 8) and 15, cg and 15, (cg shr 8) and 15, y1, a1)
+            rg[0] = corner[0];ba[0] = corner[1]
+            rg[1] = corner[2];ba[1] = corner[3]
+            rg[4] = corner[4];ba[4] = corner[5]
+            rg[5] = corner[6];ba[5] = corner[7]
+
+            corner = ycocgToRGB((co shr 4) and 15, (co shr 12) and 15, (cg shr 4) and 15, (cg shr 12) and 15, y2, a2)
+            rg[2] = corner[0];ba[2] = corner[1]
+            rg[3] = corner[2];ba[3] = corner[3]
+            rg[6] = corner[4];ba[6] = corner[5]
+            rg[7] = corner[6];ba[7] = corner[7]
+
+            corner = ycocgToRGB((co shr 16) and 15, (co shr 24) and 15, (cg shr 16) and 15, (cg shr 24) and 15, y3, a3)
+            rg[8] = corner[0];ba[8] = corner[1]
+            rg[9] = corner[2];ba[9] = corner[3]
+            rg[12] = corner[4];ba[12] = corner[5]
+            rg[13] = corner[6];ba[13] = corner[7]
+
+            corner = ycocgToRGB((co shr 20) and 15, (co shr 28) and 15, (cg shr 20) and 15, (cg shr 28) and 15, y4, a4)
+            rg[10] = corner[0];ba[10] = corner[1]
+            rg[11] = corner[2];ba[11] = corner[3]
+            rg[14] = corner[4];ba[14] = corner[5]
+            rg[15] = corner[6];ba[15] = corner[7]
+
+
+            // move decoded pixels into memory
+            for (py in 0..3) { for (px in 0..3) {
+                val ox = blockX * 4 + px
+                val oy = blockY * 4 + py
+                val offset = oy * 560 + ox
+                vm.poke(dptr1 + offset*sign, rg[py * 4 + px].toByte())
+                vm.poke(dptr2 + offset*sign, ba[py * 4 + px].toByte())
+            }}
+        }}
     }
 
 }

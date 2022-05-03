@@ -139,117 +139,24 @@ if (!magicMatching) {
 let imgw = readShort()
 let imgh = readShort()
 let hasAlpha = (readShort() != 0)
-sys.free(readBytes(10)) // skip 10 bytes
-
-// TODO: gzip
-
-function clampRGB(f) {
-    return (f > 1.0) ? 1.0 : (f < 0.0) ? 0.0 : f
-}
-
-function ycocgToRGB(co, cg, ys, as) { // ys: 4 Y-values
-    // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
-
-//    cocg = 0x7777
-//    ys = 0x7777
-
-    co = (co - 7) / 8.0
-    cg = (cg - 7) / 8.0
-
-    let y1 = (ys & 15) / 15.0
-    let a1 = as & 15
-    let tmp = y1 - cg / 2.0
-    let g1 = clampRGB(cg + tmp)
-    let b1 = clampRGB(tmp - co / 2.0)
-    let r1 = clampRGB(b1 + co)
-
-    let y2 = ((ys >>> 4) & 15) / 15.0
-    let a2 = (as >>> 4) & 15
-    tmp = y2 - cg / 2.0
-    let g2 = clampRGB(cg + tmp)
-    let b2 = clampRGB(tmp - co / 2.0)
-    let r2 = clampRGB(b2 + co)
-
-    let y3 = ((ys >>> 8) & 15) / 15.0
-    let a3 = (as >>> 8) & 15
-    tmp = y3 - cg / 2.0
-    let g3 = clampRGB(cg + tmp)
-    let b3 = clampRGB(tmp - co / 2.0)
-    let r3 = clampRGB(b3 + co)
-
-    let y4 = ((ys >>> 12) & 15) / 15.0
-    let a4 = (as >>> 12) & 15
-    tmp = y4 - cg / 2.0
-    let g4 = clampRGB(cg + tmp)
-    let b4 = clampRGB(tmp - co / 2.0)
-    let r4 = clampRGB(b4 + co)
-
-    return [
-        (Math.round(r1 * 15) << 4) | Math.round(g1 * 15),
-        (Math.round(b1 * 15) << 4) | a1,
-        (Math.round(r2 * 15) << 4) | Math.round(g2 * 15),
-        (Math.round(b2 * 15) << 4) | a2,
-        (Math.round(r3 * 15) << 4) | Math.round(g3 * 15),
-        (Math.round(b3 * 15) << 4) | a3,
-        (Math.round(r4 * 15) << 4) | Math.round(g4 * 15),
-        (Math.round(b4 * 15) << 4) | a4,
-    ]
-}
+let ipfType = readByte()
+sys.free(readBytes(9)) // skip 10 bytes
 
 graphics.setGraphicsMode(4)
 
-for (let blockY = 0; blockY < Math.ceil(imgh / 4.0); blockY++) {
-for (let blockX = 0; blockX < Math.ceil(imgw / 4.0); blockX++) {
-    let rg = new Uint8Array(16) // [R1G1, R2G2, R3G3, R4G4, ...]
-    let ba = new Uint8Array(16)
+let infile =
+    (0 == ipfType) ? readBytes((imgw * imgh / 16) * ((hasAlpha) ? 20 : 12)) :
+    (3 == ipfType) ? readBytes((imgw * imgh / 16) * ((hasAlpha) ? 24 : 16)) : null
 
-    let co = readShort()
-    let cg = readShort()
-    let y1 = readShort()
-    let y2 = readShort()
-    let y3 = readShort()
-    let y4 = readShort()
+if (null == infile) {
+    printerrln("Unsupported IPF configuration: "+ipfType)
+    sys.free(infile)
+    return 1
+}
 
-    let a1 = 65535; let a2 = 65535; let a3 = 65535; let a4 = 65535
+if (0 == ipfType)
+    graphics.decodeIpf1(infile, -1048577, -1310721, imgw, imgh, hasAlpha)
+else if (3 == ipfType)
+    graphics.decodeIpf2(infile, -1048577, -1310721, imgw, imgh, hasAlpha)
 
-    if (hasAlpha) {
-        a1 = readShort()
-        a2 = readShort()
-        a3 = readShort()
-        a4 = readShort()
-    }
-
-    let corner = ycocgToRGB(co & 15, cg & 15, y1, a1)
-    rg[0] = corner[0];ba[0] = corner[1]
-    rg[1] = corner[2];ba[1] = corner[3]
-    rg[4] = corner[4];ba[4] = corner[5]
-    rg[5] = corner[6];ba[5] = corner[7]
-
-    corner = ycocgToRGB((co >> 4) & 15, (cg >> 4) & 15, y2, a2)
-    rg[2] = corner[0];ba[2] = corner[1]
-    rg[3] = corner[2];ba[3] = corner[3]
-    rg[6] = corner[4];ba[6] = corner[5]
-    rg[7] = corner[6];ba[7] = corner[7]
-
-    corner = ycocgToRGB((co >> 8) & 15, (cg >> 8) & 15, y3, a3)
-    rg[8] = corner[0];ba[8] = corner[1]
-    rg[9] = corner[2];ba[9] = corner[3]
-    rg[12] = corner[4];ba[12] = corner[5]
-    rg[13] = corner[6];ba[13] = corner[7]
-
-    corner = ycocgToRGB((co >> 12) & 15, (cg >> 12) & 15, y4, a4)
-    rg[10] = corner[0];ba[10] = corner[1]
-    rg[11] = corner[2];ba[11] = corner[3]
-    rg[14] = corner[4];ba[14] = corner[5]
-    rg[15] = corner[6];ba[15] = corner[7]
-
-
-    // move decoded pixels into memory
-    for (let py = 0; py < 4; py++) { for (let px = 0; px < 4; px++) {
-        let ox = blockX * 4 + px
-        let oy = blockY * 4 + py
-        let offset = oy * 560 + ox
-        sys.poke(-1048577 - offset, rg[py * 4 + px])
-        sys.poke(-1310721 - offset, ba[py * 4 + px])
-    }}
-}}
+sys.free(infile)
