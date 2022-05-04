@@ -153,7 +153,7 @@ let startTime = sys.nanoTime()
 let decodefun = (type > 255) ? graphics.decodeIpf2 : graphics.decodeIpf1
 
 while (framesRendered < frameCount) {
-    //serial.println(`Frame #${f+1}`)
+//    serial.println(`Frame #${framesRendered+1}`)
 
     let t1 = sys.nanoTime()
 
@@ -170,6 +170,7 @@ while (framesRendered < frameCount) {
             while (frameUnit >= 1) {
                 let payloadLen = readInt()
                 let gzippedPtr = readBytes(payloadLen)
+                framesRendered += 1
 
                 if (frameUnit == 1) {
                     gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
@@ -179,8 +180,6 @@ while (framesRendered < frameCount) {
                 sys.free(gzippedPtr)
                 frameUnit -= 1
             }
-
-            framesRendered += frameUnit
         }
         else {
             framesRendered += 1
@@ -198,4 +197,4 @@ sys.free(ipfbuf)
 
 let timeTook = (endTime - startTime) / 1000000000.0
 
-//println(`Actual FPS: ${frameCount / timeTook}`)
+println(`Actual FPS: ${framesRendered / timeTook}`)
