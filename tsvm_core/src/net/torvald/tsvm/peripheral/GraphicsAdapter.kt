@@ -1083,6 +1083,10 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             textCursorIsOn = !textCursorIsOn
         }
 
+        // force light cursor up while typing
+        textCursorIsOn = textCursorIsOn || ((1..254).any { Gdx.input.isKeyPressed(it) })
+
+
     }
 
     private fun blendNormal(batch: SpriteBatch) {
