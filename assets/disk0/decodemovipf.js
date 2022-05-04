@@ -158,16 +158,34 @@ while (framesRendered < frameCount) {
     let t1 = sys.nanoTime()
 
     if (akku >= frameTime) {
-        akku -= frameTime
 
-        let payloadLen = readInt()
-        let gzippedPtr = readBytes(payloadLen)
+        let frameUnit = 0 // 0: no decode, 1: normal playback, 2+: skip (n-1) frames
+        while (akku >= frameTime) {
+            akku -= frameTime
+            frameUnit += 1
+        }
 
-        gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
-        decodefun(ipfbuf, -1048577, -1310721, width, height, (type & 255) == 5)
-        sys.free(gzippedPtr)
+        if (frameUnit != 0) {
+            // skip frames if necessary
+            while (frameUnit >= 1) {
+                let payloadLen = readInt()
+                let gzippedPtr = readBytes(payloadLen)
 
-        framesRendered += 1
+                if (frameUnit == 1) {
+                    gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
+                    decodefun(ipfbuf, -1048577, -1310721, width, height, (type & 255) == 5)
+                }
+
+                sys.free(gzippedPtr)
+                frameUnit -= 1
+            }
+
+            framesRendered += frameUnit
+        }
+        else {
+            framesRendered += 1
+        }
+
     }
     sys.sleep(1)
 

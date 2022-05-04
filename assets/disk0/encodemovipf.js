@@ -1,10 +1,17 @@
+// some manual config shits
+let TOTAL_FRAMES = 3813
+let FPS = 30
+let WIDTH = 560
+let HEIGHT = 448
+let PATHFUN = (i) => `/ddol/${(''+i).padStart(5,'0')}.png`
 
-const FBUF_SIZE = 560*448
-let infile = sys.malloc(120000) // somewhat arbitrary
+
+const FBUF_SIZE = WIDTH * HEIGHT
+let infile = sys.malloc(512000) // somewhat arbitrary
 let imagearea = sys.malloc(FBUF_SIZE*3)
 let decodearea = sys.malloc(FBUF_SIZE)
 let ipfarea = sys.malloc(FBUF_SIZE)
-let gzippedImage = sys.malloc(180000) // somewhat arbitrary
+let gzippedImage = sys.malloc(512000) // somewhat arbitrary
 
 let outfilename = exec_args[1]
 
@@ -23,10 +30,10 @@ function appendToOutfilePtr(ptr, len) {
 // write header to the file
 let headerBytes = [
     0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56, // magic
-    0x30, 0x02, // width (560)
-    0xC0, 0x01, // height (448)
-    0x1E, 0x00, // FPS (30)
-    0x34, 0x00, 0x00, 0x00, // frame count (52)
+    WIDTH & 255, (WIDTH >> 8) & 255, // width
+    HEIGHT & 255, (HEIGHT >> 8) & 255, // height
+    FPS & 255, (FPS >> 8) & 255, // FPS
+    TOTAL_FRAMES & 255, (TOTAL_FRAMES >> 8) & 255, (TOTAL_FRAMES >> 16) & 255, (TOTAL_FRAMES >> 24) & 255, // frame count
     0x04, 0x00, // type 4 frames (force no-alpha)
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // reserved
 ]
@@ -34,8 +41,8 @@ let headerBytes = [
 filesystem.open("A", outfilename, "W")
 filesystem.writeBytes("A", headerBytes)
 
-for (let f = 1; f <=52; f++) {
-    let fname = `/movtestimg/${(''+f).padStart(3,'0')}.jpg`
+for (let f = 1; f <= TOTAL_FRAMES; f++) {
+    let fname = PATHFUN(f)
     filesystem.open("A", fname, "R")
     let fileLen = filesystem.getFileLen("A")
     dma.comToRam(0, 0, infile, fileLen)
@@ -45,7 +52,7 @@ for (let f = 1; f <=52; f++) {
     print(`Encoding frame ${f}...`)
 
 //    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
-    graphics.encodeIpf1(imagearea, ipfarea, 560, 448, 3, false, f)
+    graphics.encodeIpf1(imagearea, ipfarea, WIDTH, HEIGHT, 3, false, f)
 
     let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
 
