@@ -47,12 +47,12 @@ for (let f = 1; f <= TOTAL_FRAMES; f++) {
     let fileLen = filesystem.getFileLen("A")
     dma.comToRam(0, 0, infile, fileLen)
 
-    graphics.decodeImageTo(infile, fileLen, imagearea)
+    let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)
 
-    print(`Encoding frame ${f}...`)
+    print(`Frame ${f}/${TOTAL_FRAMES} (Ch: ${channels}) ->`)
 
 //    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
-    graphics.encodeIpf2(imagearea, ipfarea, WIDTH, HEIGHT, 3, false, f)
+    graphics.encodeIpf2(imagearea, ipfarea, WIDTH, HEIGHT, channels, false, f)
 
     let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
 

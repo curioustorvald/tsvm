@@ -105,7 +105,7 @@ infile = sys.malloc(fileLen)
 dma.comToRam(0, 0, infile, fileLen)
 
 // decode
-const [imgw, imgh, imageData, channels] = graphics.decodeImage(infile, fileLen) // stored as [R | G | B | (A)]
+const [imgw, imgh, channels, imageData] = graphics.decodeImage(infile, fileLen) // stored as [R | G | B | (A)]
 sys.free(infile)
 let hasAlpha = (4 == channels) && configUseAlpha
 let outBlock = sys.malloc(64)
