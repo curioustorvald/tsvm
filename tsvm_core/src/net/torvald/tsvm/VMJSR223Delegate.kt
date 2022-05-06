@@ -169,6 +169,10 @@ class VMJSR223Delegate(val vm: VM) {
     fun unsetSysrq() {
         vm.sysrqDown = false
     }
+
+    fun getMallocStatus(): IntArray {
+        return intArrayOf(vm.MALLOC_UNIT, vm.allocatedBlockCount)
+    }
 }
 
 class VMSerialDebugger(val vm: VM) {
