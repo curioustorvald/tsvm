@@ -62,7 +62,9 @@ function sendMessage(line) {
         }
     }
     else {
-        com.sendMessage(port - 1, line + "\x17")
+        if (line.charAt(line.length - 1) == '\\')
+            line = line.substring(0, line.length - 1) + '\x17'
+        com.sendMessage(port - 1, line)
         println(com.fetchResponse(port - 1))
     }
 }

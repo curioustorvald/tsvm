@@ -275,6 +275,7 @@ shell.coreutils = {
     cls: function(args) {
         con.clear();
         graphics.clearPixels(255);
+        graphics.clearPixels2(240);
     },
     exit: function(args) {
         cmdExit = true;
