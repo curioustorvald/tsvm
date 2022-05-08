@@ -35,6 +35,14 @@ class GraphicsJSR223Delegate(val vm: VM) {
         }
     }
 
+    fun setTextFore(b: Int) {
+        getFirstGPU()?.let { it.ttyFore = b }
+    }
+
+    fun setTextBack(b: Int) {
+        getFirstGPU()?.let { it.ttyBack = b }
+    }
+
     /*fun loadBulk(fromAddr: Int, toAddr: Int, length: Int) {
         getFirstGPU()?._loadbulk(fromAddr, toAddr, length)
     }

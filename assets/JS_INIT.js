@@ -493,11 +493,14 @@ con.color_back = function(n) { // 0..7; -1 for transparent
         print("\x1B["+(((n|0) % 8)+40)+"m");
 };
 con.color_pair = function(fore, back) { // 0..255
-    print("\x1B[38;5;"+fore+"m");
-    print("\x1B[48;5;"+back+"m");
+//    print("\x1B[38;5;"+fore+"m");
+//    print("\x1B[48;5;"+back+"m");
+    graphics.setTextFore(fore)
+    graphics.setTextBack(back)
 };
 con.clear = function() {
-    print("\x1B[2J");
+//    print("\x1B[2J");
+    graphics.clearText()
 };
 // @params arg 0 to hide, nonzero to show
 con.curs_set = function(arg) {
