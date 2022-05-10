@@ -128,6 +128,12 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
             }
 
             oldCmdbuf = cmdbuf
+
+            statusCode = TestDiskDrive.STATE_CODE_STANDBY
+        }
+        else {
+            resetBuf()
+            statusCode = TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND
         }
     }
 }

@@ -33,6 +33,6 @@ object TsvmBios : VMProgramRom("./assets/bios/tsvmbios.js")
 object BasicRom : VMProgramRom("./assets/bios/basic.bin")
 object TBASRelBios : VMProgramRom("./assets/bios/tbasdist.js")
 object WPBios : VMProgramRom("./assets/bios/wp.js")
-
+object OpenBios : VMProgramRom("./assets/bios/openbios.js")
 object PipBios : VMProgramRom("./assets/bios/pipboot.rom")
 object PipROM : VMProgramRom("./assets/bios/pipcode.bas")
