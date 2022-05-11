@@ -455,6 +455,7 @@ shell.execute = function(line) {
         }
     }
 };
+shell.pipes = {}; // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows
 Object.freeze(shell);
 _G.shell = shell;
 

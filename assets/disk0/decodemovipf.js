@@ -151,10 +151,10 @@ let fb2 = sys.malloc(FBUF_SIZE)
 let startTime = sys.nanoTime()
 
 let decodefun = (type > 255) ? graphics.decodeIpf2 : graphics.decodeIpf1
+let framesRead = 0
+let breakReadLoop = false
 
-while (framesRendered < frameCount) {
-//    serial.println(`Frame #${framesRendered+1}`)
-
+while (framesRendered < frameCount && !breakReadLoop) {
     let t1 = sys.nanoTime()
 
     if (akku >= frameTime) {
@@ -169,6 +169,13 @@ while (framesRendered < frameCount) {
             // skip frames if necessary
             while (frameUnit >= 1) {
                 let payloadLen = readInt()
+
+                if (framesRead >= frameCount) {
+                    breakReadLoop = true
+                    break
+                }
+
+                framesRead += 1
                 let gzippedPtr = readBytes(payloadLen)
                 framesRendered += 1
 
