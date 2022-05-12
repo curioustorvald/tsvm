@@ -138,14 +138,15 @@ shell.getPwdString = function() { return "\\" + (shell_pwd.concat([""])).join("\
 shell.getCurrentDrive = function() { return CURRENT_DRIVE; }
 // example input: echo "the string" > subdir\test.txt
 shell.parse = function(input) {
-    var tokens = [];
-    var stringBuffer = "";
-    var mode = "LITERAL"; // LITERAL, QUOTE, ESCAPE, LIMBO
-    var i = 0
+    let tokens = [];
+    let stringBuffer = "";
+    let mode = "LITERAL"; // LITERAL, QUOTE, ESCAPE, LIMBO, OP
+    let i = 0
     while (i < input.length) {
         const c = input[i];
 /*digraph g {
 	LITERAL -> QUOTE [label="\""]
+	LITERAL -> OP [label="pipe"]
 	LITERAL -> LIMBO [label="space"]
 	LITERAL -> LITERAL [label=else]
 
@@ -158,6 +159,11 @@ shell.parse = function(input) {
 	LIMBO -> LITERAL [label="not space"]
 	LIMBO -> QUOTE [label="\""]
 	LIMBO -> LIMBO [label="space"]
+	LIMBO -> OP [label="pipe"]
+
+	OP -> QUOTE [label="\""]
+	OP -> LIMBO [label="space"]
+    OP -> LITERAL [label=else]
 }*/
         if ("LITERAL" == mode) {
             if (' ' == c) {
@@ -168,6 +174,10 @@ shell.parse = function(input) {
                 tokens.push(stringBuffer); stringBuffer = "";
                 mode = "QUOTE";
             }
+            else if ('|' == c || '>' == c || '&' == c || '<' == c) {
+                tokens.push(stringBuffer); stringBuffer = "";
+                mode = "OP"
+            }
             else {
                 stringBuffer += c;
             }
@@ -175,6 +185,10 @@ shell.parse = function(input) {
         else if ("LIMBO" == mode) {
             if ('"' == c) {
                 mode = "QUOTE";
+            }
+            else if ('|' == c || '>' == c || '&' == c || '<' == c) {
+                mode = "OP"
+                stringBuffer += c
             }
             else if (c != ' ') {
                 mode = "LITERAL";
@@ -193,6 +207,23 @@ shell.parse = function(input) {
                 stringBuffer += c;
             }
         }
+        else if ("OP" == mode) {
+            if (' ' == c) {
+                tokens.push(stringBuffer); stringBuffer = "";
+                mode = "LIMBO";
+            }
+            else if ('|' == c || '>' == c || '&' == c || '<' == c) {
+                stringBuffer += c
+            }
+            else if ('"' == c) {
+                tokens.push(stringBuffer); stringBuffer = "";
+                mode = "QUOTE";
+            }
+            else {
+                tokens.push(stringBuffer); stringBuffer = "";
+                mode = "LITERAL";
+            }
+        }
         else if ("ESCAPE" == mode) {
             TODO();
         }
@@ -203,6 +234,8 @@ shell.parse = function(input) {
     if (stringBuffer.length > 0) {
         tokens.push(stringBuffer);
     }
+
+    println(tokens)
 
     return tokens;
 }
