@@ -76,8 +76,7 @@ filesystem._close = (portNo) => {
 filesystem._flush = (portNo) => {
     com.sendMessage(portNo, "FLUSH");
 };
-// @return true if operation committed successfully, false if:
-//             - opening file with R-mode and target file does not exists
+// @return disk status code (0 for successful operation)
 //         throws if:
 //             - java.lang.NullPointerException if path is null
 //             - Error if operation mode is not "R", "W" nor "A"

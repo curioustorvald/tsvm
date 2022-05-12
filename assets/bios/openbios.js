@@ -28,7 +28,12 @@ function bootFromPort(port) {
         else throw "No Bootsector"
     }
     catch (e) {
-        printerrln(`No bootable medium on COM ${port+1}`)
+        if ("No Bootsector" == e)
+            printerrln(`No bootable medium on COM ${port+1}`)
+        else
+            printerrln(`Boot failed with errors:\n\n${e}`)
+
+        serial.printerr(e)
     }
 }
 
@@ -152,7 +157,7 @@ showHowtoEnterMenu()
 let bootable = probeBootable()
 let sysRq = false
 let tmr = sys.nanoTime()
-while (sys.nanoTime() - tmr < 5 * 1000000000.0) {
+while (sys.nanoTime() - tmr < 3 * 1000000000.0) {
     sysRq = sys.getSysrq()
     if (sysRq) break
     sys.spin()

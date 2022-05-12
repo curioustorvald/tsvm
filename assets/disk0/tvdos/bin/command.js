@@ -456,6 +456,34 @@ shell.execute = function(line) {
     }
 };
 shell.pipes = {}; // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows
+shell.currentlyActivePipes = []; // pipe queue. Use shell.getPipe() to dequeue and shell.pushPipe() to enqueue.
+shell._rndstr = '0123456789+qwfpgjluyarstdhneiozxcvbkm/QWFPGJLUYARSTDHNEIOZXCVBKM'
+shell.generateRandomName = function() {
+    let name = ''
+    while (true) {
+        name = "anonpipe_"
+        for (let k = 0; k < 32; k++) {
+            name += shell._rndstr[(Math.random() * 64)|0]
+        }
+        if (shell.pipes[name] == undefined) break
+    }
+    return name
+}
+shell.getPipe = function() {
+    let n = shell.currentlyActivePipes.shift()
+    return (n != undefined) ? shell.pipes[n] : undefined
+}
+shell.pushAnonPipe = function(contents) {
+    let name = shell.generateRandomName()
+    shell.pushPipe(name, contents)
+}
+shell.pushPipe = function(name, contents) {
+    shell.pipes[name] = contents
+    shell.currentlyActivePipes.unshift(name)
+}
+shell.hasPipe = function() {
+    return shell.currentlyActivePipes[0] != undefined
+}
 Object.freeze(shell);
 _G.shell = shell;
 

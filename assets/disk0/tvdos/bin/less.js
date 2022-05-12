@@ -1,7 +1,4 @@
-if (exec_args[1] === undefined) {
-    println('Missing filename ("less -?" for help)');
-    return 0;
-}
+let filename = exec_args[1]
 
 /*let help = "\n
 SUMMARY OF COMMANDS\n
@@ -10,26 +7,45 @@ SUMMARY OF COMMANDS\n
   q   Q            Exit
 \n"*/
 
-if (exec_args[1].startsWith("-?")) {
-    println("less <filename>");
-    return 0;
-}
-
-let fileOpened = filesystem.open(_G.shell.getCurrentDrive(), _G.shell.resolvePathInput(exec_args[1]).string, "R");
-if (!fileOpened) {
-    printerrln(_G.shell.resolvePathInput(exec_args[1]).string+": cannot open");
-    return 1;
-}
-
 let scroll = 0;
 let pan = -1;
 let termW = con.getmaxyx()[1];
 let termH = con.getmaxyx()[0] - 1;
 let buf = "";
-let fileContent = filesystem.readAll(_G.shell.getCurrentDrive());
+let fileContent = undefined
 let key = -1;
 let panSize = termW >> 1;
 let scrollSize = termH >> 3;
+
+let startAddr = -1;
+let paintCur = 0;
+let cy = 1;
+let cx = 1;
+let char = -1;
+
+let numbuf = 0;
+
+if (filename === undefined && _G.shell.hasPipe()) {
+    fileContent = _G.shell.getPipe()
+}
+else if (filename === undefined) {
+    println('Missing filename ("less -?" for help)');
+    return 0;
+}
+else {
+    if (filename.startsWith("-?")) {
+        println("less <filename>");
+        return 0;
+    }
+
+    let fileOpened = filesystem.open(_G.shell.getCurrentDrive(), _G.shell.resolvePathInput(filename).string, "R");
+    if (fileOpened != 0) {
+        printerrln(_G.shell.resolvePathInput(filename).string+": cannot open");
+        return 1;
+    }
+
+    fileContent = filesystem.readAll(_G.shell.getCurrentDrive());
+}
 
 // initialise some helper variables
 let lineToBytes = [0];
@@ -45,13 +61,8 @@ for (let i = 0; i < fileContent.length; i++) {
     }
 }
 
-let startAddr = -1;
-let paintCur = 0;
-let cy = 1;
-let cx = 1;
-let char = -1;
 
-let numbuf = 0;
+
 
 let resetKeyReadStatus = function() {
     numbuf = 0;
