@@ -235,8 +235,6 @@ shell.parse = function(input) {
         tokens.push(stringBuffer);
     }
 
-    println(tokens)
-
     return tokens;
 }
 shell.resolvePathInput = function(input) {
@@ -385,107 +383,147 @@ shell.coreutils.chdir = shell.coreutils.cd;
 Object.freeze(shell.coreutils);
 shell.execute = function(line) {
     if (0 == line.size) return;
-    var tokens = shell.parse(line);
-    var cmd = tokens[0];
-    if (cmd === undefined || cmd === '') return 0;
+    let parsedTokens = shell.parse(line); // echo, "hai", |, less
+    let statements = [] // [[echo, "hai"], [less]]
+    let operators = [] // [|]
 
-    // handle Ctrl-C
-    if (con.hitterminate()) return 1;
-
-    if (shell.coreutils[cmd.toLowerCase()] !== undefined) {
-        var retval = shell.coreutils[cmd.toLowerCase()](tokens);
-        return retval|0; // return value of undefined will cast into 0
-    }
-    else {
-        // search through PATH for execution
-
-        var fileExists = false;
-        var searchDir = (cmd.startsWith("/")) ? [""] : ["/"+shell_pwd.join("/")].concat(_TVDOS.getPath());
-
-        var pathExt = []; // it seems Nashorn does not like 'let' too much? this line gets ignored sometimes
-        // fill pathExt using %PATHEXT% but also capitalise them
-        if (cmd.split(".")[1] === undefined)
-            _TVDOS.variables.PATHEXT.split(';').forEach(function(it) { pathExt.push(it); pathExt.push(it.toUpperCase()); });
-        else
-            pathExt.push(""); // final empty extension
-
-        searchLoop:
-        for (var i = 0; i < searchDir.length; i++) {
-            for (var j = 0; j < pathExt.length; j++) {
-                var search = searchDir[i]; if (!search.endsWith('\\')) search += '\\';
-                var path = trimStartRevSlash(search + cmd + pathExt[j]);
-
-                if (DEBUG_PRINT) {
-                    serial.println("[command.js > shell.execute] file search path: "+path);
-                }
-
-                if (0 == filesystem.open(CURRENT_DRIVE, path, "R")) {
-                    fileExists = true;
-                    break searchLoop;
-                }
-            }
-        }
-
-        if (!fileExists) {
-            printerrln('Bad command or filename: "'+cmd+'"');
-            return 127;
+    let opRegex = /[|>&<]/
+    let stmtBuf = []
+    parsedTokens.forEach((tok, i) => {
+        if (tok.match(opRegex)) {
+            operators.push(tok)
+            statements.push(stmtBuf.slice())
+            stmtBuf = []
         }
         else {
-            var programCode = filesystem.readAll(CURRENT_DRIVE);
-            var extension = undefined;
-            // get proper extension
-            var dotSepTokens = cmd.split('.');
-            if (dotSepTokens.length > 1) extension = dotSepTokens[dotSepTokens.length - 1].toUpperCase();
+            stmtBuf.push(tok)
+        }
+    })
+    if (stmtBuf[0] !== undefined) {
+        statements.push(stmtBuf.slice())
+    }
 
-            if ("BAT" == extension) {
-                // parse and run as batch file
-                var lines = programCode.split('\n').filter(function(it) { return it.length > 0; });
-                lines.forEach(function(line) {
-                    shell.execute(line);
-                });
+    let retValue = undefined // return value of the previous statement
+    for (let c = 0; c < statements.length; c++) {
+        let op = operators[c]
+
+        // TODO : if operator is not undefined, swap built-in print functions with ones that 'prints' on pipes instead of stdout
+
+
+        let tokens = statements[c]
+
+        let cmd = tokens[0];
+        if (cmd === undefined || cmd === '') {
+            retValue = 0;
+            continue
+        }
+
+        // handle Ctrl-C
+        if (con.hitterminate()) {
+            retValue = 1;
+            continue
+        }
+
+        if (shell.coreutils[cmd.toLowerCase()] !== undefined) {
+            var retval = shell.coreutils[cmd.toLowerCase()](tokens);
+            retValue = retval|0; // return value of undefined will cast into 0
+            continue
+        }
+        else {
+            // search through PATH for execution
+
+            var fileExists = false;
+            var searchDir = (cmd.startsWith("/")) ? [""] : ["/"+shell_pwd.join("/")].concat(_TVDOS.getPath());
+
+            var pathExt = []; // it seems Nashorn does not like 'let' too much? this line gets ignored sometimes
+            // fill pathExt using %PATHEXT% but also capitalise them
+            if (cmd.split(".")[1] === undefined)
+                _TVDOS.variables.PATHEXT.split(';').forEach(function(it) { pathExt.push(it); pathExt.push(it.toUpperCase()); });
+            else
+                pathExt.push(""); // final empty extension
+
+            searchLoop:
+            for (var i = 0; i < searchDir.length; i++) {
+                for (var j = 0; j < pathExt.length; j++) {
+                    var search = searchDir[i]; if (!search.endsWith('\\')) search += '\\';
+                    var path = trimStartRevSlash(search + cmd + pathExt[j]);
+
+                    if (DEBUG_PRINT) {
+                        serial.println("[command.js > shell.execute] file search path: "+path);
+                    }
+
+                    if (0 == filesystem.open(CURRENT_DRIVE, path, "R")) {
+                        fileExists = true;
+                        break searchLoop;
+                    }
+                }
+            }
+
+            if (!fileExists) {
+                printerrln('Bad command or filename: "'+cmd+'"');
+                retValue = 127;
+                continue
             }
             else {
-                let gotError = false;
+                var programCode = filesystem.readAll(CURRENT_DRIVE);
+                var extension = undefined;
+                // get proper extension
+                var dotSepTokens = cmd.split('.');
+                if (dotSepTokens.length > 1) extension = dotSepTokens[dotSepTokens.length - 1].toUpperCase();
 
-                try {
-                    errorlevel = 0; // reset the number
-
-                    if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = [];
-                    _G.shellProgramTitles.push(cmd.toUpperCase())
-                    sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
-                    //serial.println(_G.shellProgramTitles);
-
-                    errorlevel = execApp(programCode, tokens); // return value of undefined will cast into 0
+                if ("BAT" == extension) {
+                    // parse and run as batch file
+                    var lines = programCode.split('\n').filter(function(it) { return it.length > 0 }); // this return is not shell's return!
+                    lines.forEach(function(line) {
+                        shell.execute(line);
+                    });
                 }
-                catch (e) {
-                    gotError = true;
+                else {
+                    let gotError = false;
 
-                    serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`);
+                    try {
+                        errorlevel = 0; // reset the number
 
-                    if (`${e}`.startsWith("InterruptedException"))
-                        errorlevel = SIGTERM.name;
-                    else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
-                        errorlevel = SIGSEGV.name;
+                        if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = [];
+                        _G.shellProgramTitles.push(cmd.toUpperCase())
+                        sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
+                        //serial.println(_G.shellProgramTitles);
 
-                    // exception catched means something went wrong, so if errorlevel is found to be zero, force set to 1.
-                    if (errorlevel === 0 || errorlevel == undefined)
-                        errorlevel = 1;
-                }
-                finally {
-                    // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
-                    if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
-                        errorlevel = 0;
+                        errorlevel = execApp(programCode, tokens); // return value of undefined will cast into 0
+                    }
+                    catch (e) {
+                        gotError = true;
 
-                    serial.printerr(`errorlevel: ${errorlevel}`);
+                        serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`);
 
-                    _G.shellProgramTitles.pop();
-                    sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
-                    //serial.println(_G.shellProgramTitles);
+                        if (`${e}`.startsWith("InterruptedException"))
+                            errorlevel = SIGTERM.name;
+                        else if (e instanceof IllegalAccessException || `${e}`.startsWith("net.torvald.tsvm.ErrorIllegalAccess"))
+                            errorlevel = SIGSEGV.name;
 
-                    return errorlevel;
+                        // exception catched means something went wrong, so if errorlevel is found to be zero, force set to 1.
+                        if (errorlevel === 0 || errorlevel == undefined)
+                            errorlevel = 1;
+                    }
+                    finally {
+                        // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
+                        if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
+                            errorlevel = 0;
+
+                        serial.printerr(`errorlevel: ${errorlevel}`);
+
+                        _G.shellProgramTitles.pop();
+                        sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
+                        //serial.println(_G.shellProgramTitles);
+
+                        retValue = errorlevel;
+                        continue
+                    }
                 }
             }
         }
+
+        return retValue
     }
 };
 shell.pipes = {}; // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows
