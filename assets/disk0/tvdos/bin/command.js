@@ -381,6 +381,21 @@ shell.coreutils = {
 };
 shell.coreutils.chdir = shell.coreutils.cd;
 Object.freeze(shell.coreutils);
+shell.stdio = {
+    out: {
+        print:      function(s) { sys.print(s) },
+        println:    function(s) { if (s === undefined) sys.print("\n"); else sys.print(s+"\n") },
+        printerr:   function(s) { sys.print("\x1B[31m"+s+"\x1B[m") },
+        printerrln: function(s) { if (s === undefined) sys.print("\n"); else sys.print("\x1B[31m"+s+"\x1B[m\n") },
+    },
+    pipe: {
+        print:      function(s) { if (shell.getPipe() === undefined) throw Error("No pipe opened"); shell.appendToCurrentPipe(s);  },
+        println:    function(s) { if (shell.getPipe() === undefined) throw Error("No pipe opened"); if (s === undefined) shell.appendToCurrentPipe("\n"); else shell.appendToCurrentPipe(s+"\n") },
+        printerr:   function(s) { if (shell.getPipe() === undefined) throw Error("No pipe opened"); shell.appendToCurrentPipe("\x1B[31m"+s+"\x1B[m") },
+        printerrln: function(s) { if (shell.getPipe() === undefined) throw Error("No pipe opened"); if (s === undefined) shell.appendToCurrentPipe("\n"); else shell.appendToCurrentPipe("\x1B[31m"+s+"\x1B[m\n") },
+    }
+}
+Object.freeze(shell.stdio)
 shell.execute = function(line) {
     if (0 == line.size) return;
     let parsedTokens = shell.parse(line); // echo, "hai", |, less
@@ -408,6 +423,23 @@ shell.execute = function(line) {
         let op = operators[c]
 
         // TODO : if operator is not undefined, swap built-in print functions with ones that 'prints' on pipes instead of stdout
+        if (op == '|') {
+            serial.println(`Statement #${c+1}: pushing anon pipe`)
+            shell.pushAnonPipe('')
+
+            print = shell.stdio.pipe.print
+            println = shell.stdio.pipe.println
+            printerr = shell.stdio.pipe.printerr
+            printerrln = shell.stdio.pipe.printerrln
+        }
+        else {
+            // pipe destruction is at the very bottom
+            print = shell.stdio.out.print
+            println = shell.stdio.out.println
+            printerr = shell.stdio.out.printerr
+            printerrln = shell.stdio.out.printerrln
+        }
+
 
 
         let tokens = statements[c]
@@ -523,11 +555,19 @@ shell.execute = function(line) {
             }
         }
 
+
+        // destroy pipe if operator is not pipe
+        if (op != "|" && op != ">>" && op != ">") {
+            serial.println(`Statement #${c+1}: destroying pipe`)
+            serial.println(`its content was: ${shell.removePipe()}`)
+        }
+
+
         return retValue
     }
 };
 shell.pipes = {}; // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows
-shell.currentlyActivePipes = []; // pipe queue. Use shell.getPipe() to dequeue and shell.pushPipe() to enqueue.
+shell.currentlyActivePipes = []; // Queue of pipe's names. Use shell.removePipe() to dequeue and shell.pushPipe() to enqueue.
 shell._rndstr = '0123456789+qwfpgjluyarstdhneiozxcvbkm/QWFPGJLUYARSTDHNEIOZXCVBKM'
 shell.generateRandomName = function() {
     let name = ''
@@ -541,8 +581,13 @@ shell.generateRandomName = function() {
     return name
 }
 shell.getPipe = function() {
-    let n = shell.currentlyActivePipes.shift()
+    let n = shell.currentlyActivePipes[0]
     return (n != undefined) ? shell.pipes[n] : undefined
+}
+shell.appendToCurrentPipe = function(s) {
+    let n = shell.currentlyActivePipes[0]
+    let content = (n != undefined) ? shell.pipes[n] : undefined
+    shell.pipes[n] = content += s
 }
 shell.pushAnonPipe = function(contents) {
     let name = shell.generateRandomName()
@@ -554,6 +599,10 @@ shell.pushPipe = function(name, contents) {
 }
 shell.hasPipe = function() {
     return shell.currentlyActivePipes[0] != undefined
+}
+shell.removePipe = function() {
+    let n = shell.currentlyActivePipes.shift()
+    return (n != undefined) ? shell.pipes[n] : undefined
 }
 Object.freeze(shell);
 _G.shell = shell;
