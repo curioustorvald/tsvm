@@ -377,7 +377,10 @@ shell.coreutils = {
         let contents = filesystem.readAll(CURRENT_DRIVE);
         // TODO just print out what's there
         print(contents);
-    }
+    },
+    /*panic: function(args) {
+        throw Error("Artificial Kernel Panic Triggered")
+    }*/
 };
 shell.coreutils.chdir = shell.coreutils.cd;
 Object.freeze(shell.coreutils);

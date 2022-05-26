@@ -397,7 +397,20 @@ var execApp = (cmdsrc, args) => {
 `var _appStub=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
 `_appStub`); // making 'exec_args' a app-level global
 
-    return execAppPrg(args);
+    try {
+        execAppPrg(args);
+    }
+    catch (e) {
+printerrln(
+`
+    \\|/ ____ \\|/
+    "@'/ ,. \\'@"
+    /_| \\__/ |_\\
+       \\__U_/
+Kernel panic - ${e.stack}`
+)
+serial.printerr(e.stack)
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
