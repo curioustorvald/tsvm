@@ -378,9 +378,9 @@ shell.coreutils = {
         // TODO just print out what's there
         print(contents);
     },
-    /*panic: function(args) {
-        throw Error("Artificial Kernel Panic Triggered")
-    }*/
+    panic: function(args) {
+        throw Error("Panicking command.js")
+    }
 };
 shell.coreutils.chdir = shell.coreutils.cd;
 Object.freeze(shell.coreutils);
@@ -530,6 +530,7 @@ shell.execute = function(line) {
                         gotError = true;
 
                         serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`);
+                        printerrln(`Program quit with error:\n${e.stack || '(stack trace unavailable)'}`);
 
                         if (`${e}`.startsWith("InterruptedException"))
                             errorlevel = SIGTERM.name;

@@ -397,20 +397,7 @@ var execApp = (cmdsrc, args) => {
 `var _appStub=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
 `_appStub`); // making 'exec_args' a app-level global
 
-    try {
         execAppPrg(args);
-    }
-    catch (e) {
-printerrln(
-`
-    \\|/ ____ \\|/
-    "@'/ ,. \\'@"
-    /_| \\__/ |_\\
-       \\__U_/
-Kernel panic - ${e.stack}`
-)
-serial.printerr(e.stack)
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -419,4 +406,5 @@ serial.printerr(e.stack)
 serial.println("TVDOS.SYS initialised, running boot script...");
 var _G = {};
 filesystem.open("A", "tvdos/bin/command.js", "R");
-execApp(filesystem.readAll("A"), ["", "/c", "\\AUTOEXEC.BAT"]);
+eval(`var _appStub=function(exec_args){${filesystem.readAll("A")}\n};` +
+      `_appStub`)(["", "/c", "\\AUTOEXEC.BAT"])
