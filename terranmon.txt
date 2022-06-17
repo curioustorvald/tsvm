@@ -170,7 +170,7 @@ From the start of the memory space:
     write to this address FIRST and then write to "command" to execute the command
 1134 bytes
     unused
-1920
+(1920) !!PENDING FOR REMOVAL!!
     mapped to font ROM
     Font Mapping area holds 128 characters in consecutive order, each character is always 15 bytes.
     (designer's note: it's still useful to divide the char rom to two halves, lower half being characters ROM and upper half being symbols ROM)
@@ -320,6 +320,11 @@ MMIO
     framebuffer scroll Y
 1024..2047 RW
     horizontal scroll offset for scanlines
+2048..4095 RW
+    !!NEW!! Font ROM Mapping Area
+    Format is always 8x16 pixels, 1bpp ROM format (so that it would be YY_CHR-Compatible)
+    (designer's note: it's still useful to divide the char rom to two halves, lower half being characters ROM and upper half being symbols ROM)
+
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it
