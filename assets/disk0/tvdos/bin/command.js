@@ -275,6 +275,16 @@ shell.coreutils = {
  *   but do instead:
  *     if (args[1] === undefined)
  */
+
+    cat: function(args) {
+        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
+
+        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
+        let contents = filesystem.readAll(CURRENT_DRIVE);
+        // TODO just print out what's there
+        print(contents);
+    },
     cd: function(args) {
         if (args[1] === undefined) {
             println(CURRENT_DRIVE+":"+shell_pwd.join("/"));
@@ -286,9 +296,93 @@ shell.coreutils = {
         // check if path is valid
         var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'R');
         var isDir = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
-        if (!isDir) { printerrln("CHDIR failed for '"+path.string+"'"); return dirOpenedStatus; } // if file is not opened, IO error code will be returned
+        if (!isDir) { printerrln(`${args[0].toUpperCase()} failed for '${path.string}'`); return dirOpenedStatus; } // if file is not opened, IO error code will be returned
 
         shell_pwd = path.pwd;
+    },
+    cls: function(args) {
+        con.clear();
+        graphics.clearPixels(255);
+        graphics.clearPixels2(240);
+    },
+    cp: function(args) {
+        if (args[2] === undefined) {
+            printerrln("Syntax error")
+            return
+        }
+        else if (args[1] === undefined) {
+            printerrln(`Usage: ${args[0].toUpperCase()} SOURCE DEST`)
+            return
+        }
+        let path = shell.resolvePathInput(args[1])
+        let pathd = shell.resolvePathInput(args[2])
+
+        let dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'R')
+        let isDir = filesystem.isDirectory(CURRENT_DRIVE)
+        if (isDir || dirOpenedStatus != 0) { printerrln(`${args[0].toUpperCase()} failed for '${path.string}'`); return dirOpenedStatus; } // if file is directory or failed to open, IO error code will be returned
+
+
+        let bytes = filesystem.readAllBytes(CURRENT_DRIVE)
+
+
+        dirOpenedStatus = filesystem.open(CURRENT_DRIVE, pathd.string, 'W')
+        isDir = filesystem.isDirectory(CURRENT_DRIVE)
+        if (isDir || dirOpenedStatus != 0) { printerrln(`${args[0].toUpperCase()} failed for '${pathd.string}'`); return dirOpenedStatus; } // if file is directory or failed to open, IO error code will be returned
+
+
+        filesystem.writeBytes(CURRENT_DRIVE, bytes)
+    },
+    date: function(args) {
+        let monthNames = ["Spring", "Summer", "Autumn", "Winter"]
+        let dayNames = ["Mondag", "Tysdag", "Midtveke", "Torsdag", "Fredag", "Laurdag", "Sundag", "Verddag"]
+
+        let msec = sys.currentTimeInMills()
+        while (msec == 0) {
+            msec = sys.currentTimeInMills()
+        }
+
+        let secs = ((msec / 1000)|0) % 60
+        let timeInMinutes = ((msec / 60000)|0)
+        let mins = timeInMinutes % 60
+        let hours = ((timeInMinutes / 60)|0) % 24
+        let ordinalDay = ((timeInMinutes / (60*24))|0) % 120
+        let visualDay = (ordinalDay % 30) + 1
+        let months = ((timeInMinutes / (60*24*30))|0) % 4
+        let dayName = ordinalDay % 7 // 0 for Mondag
+        if (ordinalDay == 119) dayName = 7 // Verddag
+        let years = ((timeInMinutes / (60*24*30*120))|0) + 125
+
+        println(`\xE7${years} ${monthNames[months]} ${visualDay} ${dayNames[dayName]}, ${(''+hours).padStart(2,'0')}:${(''+mins).padStart(2,'0')}:${(''+secs).padStart(2,'0')}`)
+    },
+    dir: function(args) {
+        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
+
+        // check if path is valid
+        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
+        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
+
+        var port = filesystem._toPorts(CURRENT_DRIVE)[0]
+        com.sendMessage(port, "LIST");
+        println(com.pullMessage(port));
+    },
+    del: function(args) {
+        if (args[1] === undefined) {
+            printerrln("Syntax error");
+            return
+        }
+
+        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, args[1], 'R');
+        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
+        return filesystem.delete(CURRENT_DRIVE)
+    },
+    echo: function(args) {
+        if (args[1] !== undefined) {
+            args.forEach(function(it,i) { if (i > 0) print(shell.replaceVarCall(it)+" ") });
+        }
+        println();
+    },
+    exit: function(args) {
+        cmdExit = true;
     },
     mkdir: function(args) {
         if (args[1] === undefined) {
@@ -301,24 +395,7 @@ shell.coreutils = {
         // check if path is valid
         var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'W');
         var mkdird = filesystem.mkDir(CURRENT_DRIVE);
-        if (!mkdird) { printerrln("MKDIR failed for '"+path.string+"'"); return dirOpenedStatus; }
-    },
-    cls: function(args) {
-        con.clear();
-        graphics.clearPixels(255);
-        graphics.clearPixels2(240);
-    },
-    exit: function(args) {
-        cmdExit = true;
-    },
-    ver: function(args) {
-        println(welcome_text);
-    },
-    echo: function(args) {
-        if (args[1] !== undefined) {
-            args.forEach(function(it,i) { if (i > 0) print(shell.replaceVarCall(it)+" ") });
-        }
-        println();
+        if (!mkdird) { printerrln(`${args[0].toUpperCase()} failed for '${path.string}'`); return dirOpenedStatus; }
     },
     rem: function(args) {
         return 0;
@@ -358,31 +435,21 @@ shell.coreutils = {
             }
         }
     },
-    dir: function(args) {
-        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
-
-        // check if path is valid
-        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
-
-        var port = filesystem._toPorts(CURRENT_DRIVE)[0]
-        com.sendMessage(port, "LIST");
-        println(com.pullMessage(port));
-    },
-    cat: function(args) {
-        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
-
-        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
-        let contents = filesystem.readAll(CURRENT_DRIVE);
-        // TODO just print out what's there
-        print(contents);
+    ver: function(args) {
+        println(welcome_text);
     },
     panic: function(args) {
         throw Error("Panicking command.js")
     }
 };
-shell.coreutils.chdir = shell.coreutils.cd;
+// define command aliases here
+shell.coreutils.chdir = shell.coreutils.cd
+shell.coreutils.copy = shell.coreutils.cp
+shell.coreutils.erase = shell.coreutils.del
+shell.coreutils.rm = shell.coreutils.del
+shell.coreutils.ls = shell.coreutils.dir
+shell.coreutils.time = shell.coreutils.date
+// end of command aliases
 Object.freeze(shell.coreutils);
 shell.stdio = {
     out: {

@@ -215,6 +215,23 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 }
                 blockSendCount = 0
             }
+            else if (inputString.startsWith("DELETE")) {
+                if (!fileOpen) {
+                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    return
+                }
+                try {
+                    file.delete()
+                }
+                catch (e: SecurityException) {
+                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    return
+                }
+                catch (e1: IOException) {
+                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    return
+                }
+            }
             else if (inputString.startsWith("LISTFILES")) {
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()

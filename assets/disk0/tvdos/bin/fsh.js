@@ -102,9 +102,8 @@ clockWidget.draw = function(charXoff, charYoff) {
     con.move(1 + charYoff, 17 + charXoff);
     print(clockWidget.monthNames[months]+" "+visualDay);
     // print year and dayname
-    con.mvaddch(2 + charYoff, 17 + charXoff, 5);
-    con.move(2 + charYoff, 18 + charXoff);
-    print(years+" "+clockWidget.dayNames[dayName]);
+    con.move(2 + charYoff, 17 + charXoff);
+    print("\xE7"+years+" "+clockWidget.dayNames[dayName]);
 };
 
 

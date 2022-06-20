@@ -172,6 +172,12 @@ filesystem.mkFile = (driveLetter) => {
     var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
+filesystem.delete = (driveLetter) => {
+    var port = filesystem._toPorts(driveLetter);
+    com.sendMessage(port[0], "DELETE");
+    var response = com.getStatusCode(port[0]);
+    return (response === 0);
+};
 Object.freeze(filesystem);
 
 ///////////////////////////////////////////////////////////////////////////////
