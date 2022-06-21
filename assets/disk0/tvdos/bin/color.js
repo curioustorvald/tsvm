@@ -39,5 +39,6 @@ if (exec_args[1]) {
     serial.println(fo)
 
     graphics.setBackground(ba[0], ba[1], ba[2])
+    _G.shell.usrcfg.textCol = fo
     con.color_pair(fo, 255)
 }

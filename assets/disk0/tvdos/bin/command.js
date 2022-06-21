@@ -108,6 +108,7 @@ function trimStartRevSlash(s) {
 }
 
 let shell = {};
+shell.usrcfg = {textCol: 254}
 shell.replaceVarCall = function(value) {
 // syntax:
 // line = literal [varcall] [literal] ;
@@ -306,12 +307,8 @@ shell.coreutils = {
         graphics.clearPixels2(240);
     },
     cp: function(args) {
-        if (args[2] === undefined) {
-            printerrln("Syntax error")
-            return
-        }
-        else if (args[1] === undefined) {
-            printerrln(`Usage: ${args[0].toUpperCase()} SOURCE DEST`)
+        if (args[2] === undefined || args[1] === undefined) {
+            printerrln(`Usage: ${args[0].toUpperCase()} source_file destination_file`)
             return
         }
         let path = shell.resolvePathInput(args[1])
@@ -367,7 +364,7 @@ shell.coreutils = {
     },
     del: function(args) {
         if (args[1] === undefined) {
-            printerrln("Syntax error");
+            printerrln(`Usage: ${args[0].toUpperCase()} file_to_delete`);
             return
         }
 
@@ -386,7 +383,7 @@ shell.coreutils = {
     },
     mkdir: function(args) {
         if (args[1] === undefined) {
-            printerrln("Syntax error");
+            printerrln(`Usage: ${args[0].toUpperCase()} directory_name_to_create`);
             return
         }
         var path = shell.resolvePathInput(args[1])
@@ -718,6 +715,7 @@ if (goInteractive) {
     let cmdHistoryScroll = 0; // 0 for outside-of-buffer, 1 for most recent
     while (!cmdExit) {
         con.curs_set(1);
+        con.color_pair(shell.usrcfg.textCol,255)
         print_prompt_text();
 
         var cmdbuf = "";

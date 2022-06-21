@@ -15,7 +15,7 @@ let buf = "";
 let fileContent = undefined
 let key = -1;
 let panSize = termW >> 1;
-let scrollSize = termH >> 3;
+let scrollSize = (termH / 6)|0;
 
 let startAddr = -1;
 let paintCur = 0;
@@ -106,14 +106,18 @@ while (true) {
     /*Q*/if (key == 113 || key == 81) break;
     /*R*/else if (key == 114 || key == 82) repaint();
     /*up*/else if (key == con.KEY_UP) {
-        scroll -= scrollSize;
-        if (scroll < 0) scroll = 0;
-        repaint();
+        if (lineToBytes.length >= termH) { // only allow scrolling if the text is taller than the screen
+            scroll -= scrollSize;
+            if (scroll < 0) scroll = 0;
+            repaint();
+        }
     }
     /*down*/else if (key == con.KEY_DOWN) {
-        scroll += scrollSize;
-        if (scroll > lineToBytes.length - termH) scroll = lineToBytes.length - termH;
-        repaint();
+        if (lineToBytes.length >= termH) { // only allow scrolling if the text is taller than the screen
+            scroll += scrollSize;
+            if (scroll > lineToBytes.length - termH) scroll = lineToBytes.length - termH;
+            repaint();
+        }
     }
     /*left*/else if (key == con.KEY_LEFT && pan > 0) {
         pan -= panSize;
