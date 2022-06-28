@@ -1667,6 +1667,11 @@ void main() {
             560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
         )
 
+        val DEFAULT_CONFIG_FOR_TESTING = AdapterConfig(
+            "crt_color",
+            560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0f, TEXT_TILING_SHADER_COLOUR
+        )
+
 
         val DEFAULT_PALETTE = intArrayOf( // 0b rrrrrrrr gggggggg bbbbbbbb aaaaaaaa
             255,

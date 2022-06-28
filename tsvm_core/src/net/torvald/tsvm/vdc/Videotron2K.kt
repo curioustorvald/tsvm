@@ -1,8 +1,8 @@
 package net.torvald.tsvm.vdc
 
 import net.torvald.UnsafeHelper
-import torvald.random.HQRNG
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.vdc.Command.instSet
 import java.lang.NumberFormatException
 import java.util.*
 import kotlin.collections.ArrayList
@@ -72,21 +72,27 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
          */
 
         val screenfiller = """
-        DEFINE RATEF 60
+        DEFINE RATEF 6000000
         DEFINE height 448
         DEFINE width 560
 
-        mov r6 12345
+        mov r6 0
 
         SCENE rng ; r6 is RNG value
             mul r6 r6 48271
             mod r6 r6 2147483647
             exit
         END SCENE
+        
+        SCENE next_colour
+            add r6 r6 20
+            mod r6 r6 255
+            exit
+        END SCENE
 
         SCENE fill_line
           @ mov px 0
-            perform rng
+            ; perform rng
             plot r6
             ; plot c1 ; will auto-increment px by one
             ; inc c1
@@ -101,12 +107,19 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
             inc py
             cmp r1 py 448
             movzr r1 py 0
+            performzr r1 next_colour
             next
             ; exeunt
             ; there's no EXIT command so this scene will make the program to go loop indefinitely
         END SCENE
         
-        perform loop_frame
+        SCENE fill_loop_frame
+            fillscr r6
+            perform next_colour
+            next
+        END SCENE
+        
+        perform fill_loop_frame
         
         """.trimIndent()
     }
@@ -149,7 +162,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
 
     private val infoPrint = true
     private val debugPrint = false
-    private val rng = torvald.random.HQRNG()
+    private val rng = Random()//HQRNG()
 
     fun eval(command: String) {
         val rootStatements = parseCommands(command)
@@ -180,8 +193,8 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
 
             if (it.prefix != StatementPrefix.INIT || it.prefix == StatementPrefix.INIT && !pcLoopedBack) {
                 if (debugPrint) println("Run-Scene: ${currentScene and 0xFFFFFFFFL}, Lindex: $currentLineIndex, Inst: $it")
-                Command.checkConditionAndRun(it.command, this, it.args)
-                if (debugPrint) println("Reg-r1: ${regs.getInt((REG_R1 and 0xF) * 4)}, c1: ${regs.getInt((REG_C1 and 0xF) * 4)}, px: ${regs.getInt((REG_PX and 0xF) * 4)}")
+                Command.checkConditionAndRun(it.command, it.function, this, it.args)
+                if (debugPrint) println("Reg-r1: ${regs.getInt((REG_R1 and 0xF))}, c1: ${regs.getInt((REG_C1 and 0xF))}, px: ${regs.getInt((REG_PX and 0xF))}")
             }
 
 
@@ -283,6 +296,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
             lnum,
             if (isInit) StatementPrefix.INIT else StatementPrefix.NONE,
             cmd,
+            instSet[cmd shr 3],
             args.toLongArray()
         )
     }
@@ -321,7 +335,7 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
     private fun hasVar(name: String) = (varIdTable.containsKey(name.toUpperCase()))
 
 
-    private class VT2Statement(val lnum: Int, val prefix: Int = StatementPrefix.NONE, val command: Int, val args: LongArray) {
+    private class VT2Statement(val lnum: Int, val prefix: Int = StatementPrefix.NONE, val command: Int, val function: (Videotron2K, LongArray) -> Unit, val args: LongArray) {
         override fun toString(): String {
             return "L ${lnum.toString().padEnd(5, ' ')}" + StatementPrefix.toString(prefix) + " " + Command.reverseDict[command] + " " + (args.map { argsToString(it) })
         }
@@ -508,7 +522,7 @@ object Command {
         instSet[MOV shr 3] = { instance, args -> // MOV register value
             if (args.size != 2) throw ArgsCountMismatch(2, args)
             checkRegisterLH(args[0])
-            instance.regs.setInt((args[0] and 0xF) * 4, resolveVar(instance, args[1]))
+            instance.regs.setInt((args[0] and 0xF), resolveVar(instance, args[1]))
         }
         instSet[MUL shr 3] = { instance, args -> // MUL ACC LH RH
             twoArgArithmetic(instance, args) { a,b -> a*b }
@@ -522,15 +536,15 @@ object Command {
         instSet[INC shr 3] = { instance, args -> // INC register
             if (args.size != 1) throw ArgsCountMismatch(1, args)
             checkRegisterLH(args[0])
-            instance.regs.setInt((args[0] and 0xF) * 4, 1 + instance.regs.getInt((args[0] and 0xF) * 4))
+            instance.regs.setInt((args[0] and 0xF), 1 + instance.regs.getInt((args[0] and 0xF)))
         }
         instSet[DEC shr 3] = { instance, args -> // DEC register
             if (args.size != 1) throw ArgsCountMismatch(1, args)
             checkRegisterLH(args[0])
-            instance.regs.setInt((args[0] and 0xF) * 4, 1 - instance.regs.getInt((args[0] and 0xF) * 4))
+            instance.regs.setInt((args[0] and 0xF), 1 - instance.regs.getInt((args[0] and 0xF)))
         }
         instSet[NEXT shr 3] = { instance, _ ->
-            instance.regs.setInt((Videotron2K.REG_FRM and 0xF) * 4, 1 + instance.regs.getInt((Videotron2K.REG_FRM and 0xF) * 4))
+            instance.regs.setInt((Videotron2K.REG_FRM and 0xF), 1 + instance.regs.getInt((Videotron2K.REG_FRM and 0xF)))
             instance.sleepLatch = true
 
             val timeTook = (System.nanoTime() - instance.performanceCounterTmr).toDouble()
@@ -542,8 +556,8 @@ object Command {
         }
         instSet[PLOT shr 3] = { instance, args -> // PLOT vararg-bytes
             if (args.isNotEmpty()) {
-                val px = instance.regs.getInt((Videotron2K.REG_PX and 0xF) * 4)
-                val py = instance.regs.getInt((Videotron2K.REG_PY and 0xF) * 4)
+                val px = instance.regs.getInt((Videotron2K.REG_PX and 0xF))
+                val py = instance.regs.getInt((Videotron2K.REG_PY and 0xF))
                 val width = instance.variableMap[Videotron2K.VARIABLE_WIDTH]!!
                 val memAddr = py * width + px
 
@@ -553,7 +567,7 @@ object Command {
                 }
 
                 // write back auto-incremented value
-                instance.regs.setInt((Videotron2K.REG_PX and 0xF) * 4, (px + args.size) fmod width)
+                instance.regs.setInt((Videotron2K.REG_PX and 0xF), (px + args.size) fmod width)
             }
         }
         instSet[PERFORM shr 3] = { instance, args -> // PERFORM scene
@@ -571,6 +585,10 @@ object Command {
         instSet[EXEUNT shr 3] = { instance, _ ->
             instance.exeunt = true
         }
+        instSet[FILLSCR shr 3] = { instance, args ->
+            instance.gpu?.poke(250884L, instance.regs.getInt(args[0] and 0xF).toByte())
+            instance.gpu?.poke(250883L, 2)
+        }
     }
 
     private inline fun twoArgArithmetic(instance: Videotron2K, args: LongArray, operation: (Int, Int) -> Int) {
@@ -578,16 +596,17 @@ object Command {
         checkRegisterLH(args[0])
         val lh = resolveVar(instance, args[1])
         val rh = resolveVar(instance, args[2])
-        instance.regs.setInt((args[0] and 0xF) * 4, operation(lh, rh))
+        instance.regs.setInt((args[0] and 0xF), operation(lh, rh))
     }
 
-    fun checkConditionAndRun(inst: Int, instance: Videotron2K, args: LongArray) {
-        val opcode = inst shr 3
+    fun checkConditionAndRun(inst: Int, operation: (Videotron2K, LongArray) -> Unit, instance: Videotron2K, args: LongArray) {
+//        val opcode = inst shr 3
         val condCode = inst and 7
 
         if (condCode == 0) {
             //if (inst !in transferInst) instance.currentLineIndex += 1
-            instSet[opcode].invoke(instance, args)
+//            instSet[opcode].invoke(instance, args)
+            operation.invoke(instance, args)
             return
         }
 
@@ -603,13 +622,14 @@ object Command {
 
         if (condition) {
             //if (inst !in transferInst) instance.currentLineIndex += 1
-            instSet[opcode].invoke(instance, args.sliceArray(1 until args.size))
+//            instSet[opcode].invoke(instance, args.sliceArray(1 until args.size))
+            operation.invoke(instance, args.sliceArray(1 until args.size))
         }
     }
 
     private fun resolveVar(instance: Videotron2K, arg: Long): Int {
         return if (arg and Videotron2K.REGISTER_PREFIX == Videotron2K.REGISTER_PREFIX) {
-            instance.regs.getInt((arg and 0xF) * 4)
+            instance.regs.getInt((arg and 0xF))
         }
         else if (arg and Videotron2K.VARIABLE_PREFIX == Videotron2K.VARIABLE_PREFIX) {
             instance.variableMap[arg] ?: throw NullVar()

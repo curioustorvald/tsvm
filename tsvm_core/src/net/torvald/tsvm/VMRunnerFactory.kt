@@ -1,5 +1,7 @@
 package net.torvald.tsvm
 
+import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.vdc.Videotron2K
 import org.graalvm.polyglot.Context
 import org.graalvm.polyglot.HostAccess
 import java.io.FileReader
@@ -26,7 +28,7 @@ object VMRunnerFactory {
         }
 
         return when (extension) {
-            /*"vt2" -> {
+            "vt2" -> {
                 object : VMRunner(extension) {
 
                     val engine =
@@ -34,6 +36,10 @@ object VMRunnerFactory {
 
                     override suspend fun executeCommand(command: String) {
                         engine.eval(command)
+                    }
+
+                    override fun eval(command: String) {
+                        TODO("Not yet implemented")
                     }
 
                     override suspend fun evalGlobal(command: String) {
@@ -44,7 +50,7 @@ object VMRunnerFactory {
                         TODO("Not yet implemented")
                     }
                 }
-            }*/
+            }
             "js" -> {
                 object : VMRunner(extension) {
                     private val ringOneParallel = Parallel(vm)

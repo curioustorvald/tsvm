@@ -15,7 +15,7 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter
 
 class V2kRunTest : ApplicationAdapter() {
 
-    val vm = VM(64.kB(), TheRealWorld(), arrayOf())
+    val vm = VM("./assets", 64.kB(), TheRealWorld(), arrayOf())
     lateinit var gpu: GraphicsAdapter
 
     lateinit var batch: SpriteBatch
@@ -29,7 +29,7 @@ class V2kRunTest : ApplicationAdapter() {
     override fun create() {
         super.create()
 
-        gpu = GraphicsAdapter(vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+        gpu = GraphicsAdapter("./assets", vm, GraphicsAdapter.DEFAULT_CONFIG_FOR_TESTING)
 
         vm.peripheralTable[1] = PeripheralEntry(
             gpu,
@@ -39,11 +39,11 @@ class V2kRunTest : ApplicationAdapter() {
         )
 
         batch = SpriteBatch()
-        camera = OrthographicCamera(net.torvald.tsvm.AppLoader.WIDTH.toFloat(), net.torvald.tsvm.AppLoader.WIDTH.toFloat())
+        camera = OrthographicCamera(560f, 448f)
         camera.setToOrtho(false)
         camera.update()
         batch.projectionMatrix = camera.combined
-        Gdx.gl20.glViewport(0, 0, net.torvald.tsvm.AppLoader.WIDTH, net.torvald.tsvm.AppLoader.HEIGHT)
+        Gdx.gl20.glViewport(0, 0, 560, 448)
 
         vm.getPrintStream = { gpu.getPrintStream() }
         vm.getErrorStream = { gpu.getErrorStream() }
@@ -51,7 +51,7 @@ class V2kRunTest : ApplicationAdapter() {
 
         vdc = Videotron2K(gpu)
 
-        vmRunner = VMRunnerFactory(vm, "js")
+        vmRunner = VMRunnerFactory("./assets", vm, "js")
         coroutineJob = GlobalScope.launch {
             vdc.eval(Videotron2K.screenfiller)
         }
@@ -64,7 +64,7 @@ class V2kRunTest : ApplicationAdapter() {
     private var updateRate = 1f / 60f
 
     override fun render() {
-        Gdx.graphics.setTitle("${net.torvald.tsvm.AppLoader.appTitle} $EMDASH F: ${Gdx.graphics.framesPerSecond} $EMDASH VF: ${(1.0 / vdc.statsFrameTime).toInt()}")
+        Gdx.graphics.setTitle("V2K — F: ${Gdx.graphics.framesPerSecond} — VF: ${(1.0 / vdc.statsFrameTime).toInt()}")
 
         super.render()
 
