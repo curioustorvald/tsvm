@@ -23,8 +23,11 @@ class VM(
     val assetsDir: String,
     _memsize: Long,
     val worldInterface: WorldInterface,
-    val roms: Array<VMProgramRom?> // first ROM must contain the BIOS
+    val roms: Array<VMProgramRom?>, // first ROM must contain the BIOS
+    _peripheralSlots: Int = 8,
 ) {
+
+    val peripheralSlots = _peripheralSlots.coerceIn(1,8)
 
     val id = java.util.Random().nextInt()
 
@@ -36,7 +39,7 @@ class VM(
 
     internal val usermem = UnsafeHelper.allocate(memsize)
 
-    val peripheralTable = Array(8) { PeripheralEntry() }
+    val peripheralTable = Array(peripheralSlots) { PeripheralEntry() }
 
     fun getIO(): IOSpace = peripheralTable[0].peripheral as IOSpace
 
@@ -85,7 +88,7 @@ class VM(
 
         println("[VM] Creating new VM with ID of $id, memsize $memsize")
 
-        startTime = System.nanoTime()
+        startTime = System.currentTimeMillis()
 
         mallocMap.clear()
         mallocSizes.clear()
@@ -94,7 +97,7 @@ class VM(
 
 
     fun findPeribyType(searchTerm: String): PeripheralEntry? {
-        for (i in 0..7) {
+        for (i in 0..peripheralSlots) {
             if (peripheralTable[i].type == searchTerm) return peripheralTable[i]
         }
         return null
@@ -110,7 +113,10 @@ class VM(
         peripheralTable.forEach { it.peripheral?.dispose() }
     }
 
-    open fun getUptime() = System.nanoTime() - startTime
+    /**
+     * @return system uptime in milliseconds
+     */
+    open fun getUptime() = System.currentTimeMillis() - startTime
 
     /*
     NOTE: re-fill peripheralTable whenever the VM cold-boots!
@@ -132,14 +138,14 @@ class VM(
         return when (addr) {
             // DO note that numbers in Lua are double precision floats (ignore Lua 5.3 for now)
             in 0..8192.kB() - 1 -> usermem to addr
-            in -1024.kB()..-1 -> peripheralTable[0].peripheral to (-addr - 1)
-            in -2048.kB()..-1024.kB() - 1 -> peripheralTable[1].peripheral to (-addr - 1 - 1024.kB())
-            in -3072.kB()..-2048.kB() - 1 -> peripheralTable[2].peripheral to (-addr - 1 - 2048.kB())
-            in -4096.kB()..-3072.kB() - 1 -> peripheralTable[3].peripheral to (-addr - 1 - 3072.kB())
-            in -5120.kB()..-4096.kB() - 1 -> peripheralTable[4].peripheral to (-addr - 1 - 4096.kB())
-            in -6144.kB()..-5120.kB() - 1 -> peripheralTable[5].peripheral to (-addr - 1 - 5120.kB())
-            in -7168.kB()..-6144.kB() - 1 -> peripheralTable[6].peripheral to (-addr - 1 - 6144.kB())
-            in -8192.kB()..-7168.kB() - 1 -> peripheralTable[7].peripheral to (-addr - 1 - 7168.kB())
+            in -1024.kB()..-1 -> peripheralTable.getOrNull(0)?.peripheral to (-addr - 1)
+            in -2048.kB()..-1024.kB() - 1 -> peripheralTable.getOrNull(1)?.peripheral to (-addr - 1 - 1024.kB())
+            in -3072.kB()..-2048.kB() - 1 -> peripheralTable.getOrNull(2)?.peripheral to (-addr - 1 - 2048.kB())
+            in -4096.kB()..-3072.kB() - 1 -> peripheralTable.getOrNull(3)?.peripheral to (-addr - 1 - 3072.kB())
+            in -5120.kB()..-4096.kB() - 1 -> peripheralTable.getOrNull(4)?.peripheral to (-addr - 1 - 4096.kB())
+            in -6144.kB()..-5120.kB() - 1 -> peripheralTable.getOrNull(5)?.peripheral to (-addr - 1 - 5120.kB())
+            in -7168.kB()..-6144.kB() - 1 -> peripheralTable.getOrNull(6)?.peripheral to (-addr - 1 - 6144.kB())
+            in -8192.kB()..-7168.kB() - 1 -> peripheralTable.getOrNull(7)?.peripheral to (-addr - 1 - 7168.kB())
             else -> null to addr
         }
     }

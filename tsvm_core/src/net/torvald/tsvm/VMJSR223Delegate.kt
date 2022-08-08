@@ -44,6 +44,7 @@ class VMJSR223Delegate(val vm: VM) {
         return vm.roms[vm.romMapping]!!.readAll()
     }
 
+    // @return in milliseconds
     fun uptime(): Long {
         vm.poke(-69, -1)
         var r = 0L
@@ -53,11 +54,18 @@ class VMJSR223Delegate(val vm: VM) {
         return r
     }
     fun currentTimeInMills(): Long {
-        vm.poke(-69, -1)
         var r = 0L
-        for (i in 0L..7L) {
-            r = r or vm.peek(-81 - i)!!.toUlong().shl(8 * i.toInt())
-        }
+        // there's a "hardware bug" where trying to get current time for the first time since boot would just return 0
+        // this dirty fix will continuously query the value until nonzero value is returned
+//        var q = 1
+        do { // quick and dirty hack
+//            println("currentTimeInMills spin ${q++}")
+            vm.poke(-69, -1)
+            Thread.sleep(1L)
+            for (i in 0L..7L) {
+                r = r or vm.peek(-81 - i)!!.toUlong().shl(8 * i.toInt())
+            }
+        } while (r == 0L)
         return r
     }
 
