@@ -55,101 +55,98 @@ function bootFromFirst() {
     else bootFromPort(port)
 }
 
+
+
+
+
+function drawHeader() {
+    let th = con.getmaxyx()[1]
+    let fillerspc = ' '.repeat((th - 28) / 2)
+
+    con.move(1,1)
+    con.reset_graphics()
+    print('  ')
+    con.addch(17);con.curs_right()
+    con.video_reverse()
+    print(fillerspc)
+    print('OpenBIOS Setup Utility')
+    print(fillerspc)
+    con.video_reverse()
+    con.addch(16);con.curs_right()
+    print('  ')
+}
+
+function drawMenubar() {
+    for (let i = 0; i < configMenus.length; i++) {
+        con.reset_graphics()
+        con.move(3 + 2*i, configMenuX)
+        if (i == configuratorMenu)
+            con.video_reverse()
+        print(configMenus[i])
+    }
+}
+
+function clearInfoArea() {
+
+}
+
+function printSysInfo() {
+    con.move(3,configContentsX)
+    let rtmin=(sys.currentTimeInMills()/60000)|0
+    let min=rtmin%60
+    let h=((rtmin/60)|0)%24
+    let od=((rtmin/1440)|0)%120
+    let d=(od%30)+1
+    let m=((rtmin/43200)|0)%4
+    let dw=od%7 // 0 for Mondag
+    if (119==od) dw=7 // Verddag
+    let y=((rtmin/5184000)|0)+125
+
+    print(`Current Time  \xE7${y} ${["Spring","Summer","Autumn","Winter"][m]} ${d} ${["Mondag","Tysdag","Midtveke","Torsdag","Fredag","Laurdag","Sundag","Verddag"][dw]} ${(''+h).padStart(2,'0')}:${(''+min).padStart(2,'0')}`)
+
+    let ut = (sys.uptime()/1000)|0
+    let uh = (ut/3600)|0
+    let um = ((ut/60)|0)%60
+    let us = ut%60
+
+    con.move(4,configContentsX-1)
+    print(`System uptime  ${uh}h${um}m${us}s`)
+
+    con.move(6,configContentsX)
+    print(` User RAM  ${system.maxmem()>>>10} Kbytes`)
+    con.move(7,configContentsX)
+    print(`Video RAM  ${256*sys.peek(-131084)} Kbytes`)
+}
+
+function printSerialDevs() {
+
+}
+
+function printExpCards() {
+
+}
+
+function printBMS() {
+
+}
+
+const configMenuX = 4
+const configContentsX = 28
+let configuratorMenu = 0
+const configMenus = [" System Info ", " Serial Devices ", " Expansion Cards ", " Power Status "]
+const menuFunctions = [printSysInfo, printSerialDevs, printExpCards, printBMS]
+
 function runConfigurator() {
     sys.unsetSysrq()
     con.clear()
-    con.move(2,2);print("Devices:")
-    for (let i = 0; i < 4; i++) {
-        con.move(i*2+4, 2)
-        let bootableMark = (bootable[i]) ? "* " : "  "
+    drawHeader()
+    drawMenubar()
 
-        let deviceName = undefined
-        try {
-            com.sendMessage(i, "DEVNAM\x17")
-            deviceName = com.fetchResponse(i).substring(0,40)
-        }
-        catch (e) {
-            deviceName = `(device not connected)`
-        }
-
-        println(bootableMark + `Serial port #${i+1}: ` + deviceName)
-    }
-
-    let bootnum = undefined
-    while (true) {
-        con.move(12,1)
-        con.curs_set(1)
-        print("\n Hit 1, 2, 3 or 4 to boot from the specified device: ")
-        let dev = Number(read())
-        serial.println(dev)
-        if (Number.isInteger(dev) && dev >= 1 && dev <= 4) {
-            bootnum = dev - 1
-            break
-        }
-    }
-    bootFromPort(bootnum)
-}
-
-
-
-///////////////////////////////////////////////////////////////////////////////
-
-// Perform memtest
-
-if (!SKIP_MEMTEST) {
-let memptr = 0
-let reportedMemsize = system.maxmem()
-const memtestptn = (reportedMemsize >= 4194304) ?
-[
-    [0x00,0xFF,0xAA,0x55]
-] : (reportedMemsize >= 1048576) ?
-[
-    [0x00,0xFF,0xAA,0x55 , 0x69,0x0F,0xA5,0x1E]
-] : (reportedMemsize >= 262144) ?
-[
-    [0x00,0xFF,0xAA,0x55 , 0x69,0x0F,0xA5,0x1E , 0xC7,0x71,0x8E,0xE3 , 0xCA,0xFE,0xBA,0xBE]
-] :
-[
-    [0x00,0xFF,0xAA,0x55 , 0x69,0x0F,0xA5,0x1E , 0xC7,0x71,0x8E,0xE3 , 0xCA,0xFE,0xBA,0xBE],
-    [0xFF,0xFF,0xFF,0xFF , 0xFF,0xFF,0xFF,0xFF , 0xFF,0xFF,0xFF,0xFF , 0xFF,0xFF,0xFF,0xFF]
-]
-
-con.move(2,1)
-print(" 000 KB OK")
-
-try {
-    while (memptr < (8 << 20)) {
-        // just print a number
-        con.move(2,1)
-        var memptrtext = ""+(1 + ((memptr) >> 10))
-        print((memptrtext < 10) ? " 00"+memptrtext : (memptrtext < 100) ? " 0"+memptrtext : (memptrtext < 1000) ? " "+memptrtext : memptrtext)
-
-        // perform memory test
-        for (var ptn = 0; ptn < memtestptn.length; ptn++) {
-            for (var bi = 0; bi < memtestptn[ptn].length; bi++) {
-                sys.poke(memptr + bi, memtestptn[ptn][bi])
-                if (memtestptn[ptn][bi] != sys.peek(memptr + bi)) throw "Memory Error"
-            }
-            /*for (var bi = 0; bi < memtestptn[ptn].length; bi++) {
-                sys.poke(memptr + bi, 255 - memtestptn[ptn][bi])
-                if (255 - memtestptn[ptn][bi] != sys.peek(memptr + bi)) throw "Memory Error"
-            }*/
-        }
-
-        memptr += memtestptn[0].length
-    }
-    throw undefined
-}
-catch (e) {
-    if (e == "Memory Error")
-        println(" "+e)
-    else
-        println(" KB OK!")
-}
+    clearInfoArea()
+    menuFunctions[configuratorMenu]()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
 
 showSplash()
 showHowtoEnterMenu()

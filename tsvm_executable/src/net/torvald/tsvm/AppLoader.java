@@ -33,8 +33,8 @@ public class AppLoader {
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE});
 //        VM vm = new VM(128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
 //        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE});
-        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE});
-        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE});
+        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE}, 8);
+        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE}, 8);
 
         String diskPath = "assets/disk0";
 

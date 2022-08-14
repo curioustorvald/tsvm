@@ -97,7 +97,7 @@ class VM(
 
 
     fun findPeribyType(searchTerm: String): PeripheralEntry? {
-        for (i in 0..peripheralSlots) {
+        for (i in 0 until peripheralSlots) {
             if (peripheralTable[i].type == searchTerm) return peripheralTable[i]
         }
         return null

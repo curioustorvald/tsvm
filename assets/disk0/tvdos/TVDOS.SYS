@@ -35,10 +35,13 @@ function generateRandomHashStr(len) {
 const _TVDOS = {};
 _TVDOS.VERSION = "1.0";
 _TVDOS.DRIVES = {}; // Object where key-value pair is <drive-letter> : [serial-port, drive-number]
+_TVDOS.DRIVEFS = {}; // filesystem driver for the drive letter
 // actually figure out the drive letter association
 // Drive A is always the device we're currently on
-_TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT;
+_TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT
+_TVDOS.DRIVEFS["A"] = "SERIAL"
 //TODO
+_TVDOS.DRV = {}
 
 
 _TVDOS.getPath = function() {
@@ -59,7 +62,221 @@ Object.freeze(_TVDOS);
 
 ///////////////////////////////////////////////////////////////////////////////
 
+_TVDOS.DRV.FS = {}
+
+class TVDOSFileDescriptor {
+    constructor(path, driverString) {
+        path = path.replaceAll("\\", "/")
+        // oh well...
+        while (path.endsWith("/")) {
+            path = path.substring(0, path.length - 1)
+        }
+        this.path = path
+        this.driverString = driverString
+        this.driver = _TVDOS.DRV.FS[driverString]
+        this.driveLetter = path[0]
+    }
+
+    get size() {
+        return this.driver.getFileLen()
+    }
+
+    /** reads the file bytewise and puts it to the specified memory address
+     * @param count optional -- how many bytes to read
+     * @param offset optional -- how many bytes to skip initially
+     */
+    pread(ptr, count, offset) {
+        this.driver.pread(this, ptr, count, offset)
+    }
+    /** @return bytewise contents of the file in JS array */
+    bread() {
+        return this.driver.bread(this)
+    }
+    /** @return textwise contents of the file in JS string */
+    sread() {
+        return this.driver.sread(this)
+    }
+
+    /** writes the bytes stored in the memory[ptr .. ptr+count-1] to file[offset .. offset+count-1]
+     * - @param offset is optional
+     */
+    pwrite(ptr, count, offset) {
+        this.driver.pwrite(this, ptr, count, offset)
+    }
+    /** @param bytes bytewise contents to write, in JS array */
+    bwrite(bytes) {
+        this.driver.bwrite(this, bytes)
+    }
+    /** @param string stringwise contents to write, in JS array */
+    swrite(string) {
+        this.driver.swrite(this, string)
+    }
+    
+    flush() {
+        this.driver.flush(this)
+    }
+    
+    close() {
+        this.driver.close(this)
+    }
+
+    get isDirectory() {
+        return this.driver.isDirectory(this)
+    }
+
+    get name() {
+        return this.split("/").last()
+    }
+
+    list() {
+        if (!this.isDirectory()) throw Error(`File is not a directory: ${this.path}`)
+        return this.driver.listFiles(this)
+    }
+    /** When the file does not exist, mkfile() will be called; if you want to make a directory, use mkdir() */
+    touch() {
+        return this.driver.touch(this)
+    }
+    /** Creates the directory named by this abstract pathname, including any necessary but nonexistent parent directories */
+    mkDir() {
+        return this.driver.mkDir(this)
+    }
+
+    mkFile() {
+        return this.driver.mkFile(this)
+    }
+
+    delete() {
+        return this.driver.delete(this)
+    }
+
+}
+
+
+_TVDOS.DRV.FS.SERIAL = {}
+
+
+
+_TVDOS.DRV.FS.SERIAL._toPorts = (driveLetter) => {
+    if (driveLetter.toUpperCase === undefined) {
+        throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter")
+    }
+    var port = _TVDOS.DRIVES[driveLetter.toUpperCase()]
+    if (port === undefined) {
+        throw Error("Drive letter '" + driveLetter.toUpperCase() + "' does not exist")
+    }
+    return port
+}
+_TVDOS.DRV.FS.SERIAL._close = (portNo) => {
+    com.sendMessage(portNo, "CLOSE")
+}
+_TVDOS.DRV.FS.SERIAL._flush = (portNo) => {
+    com.sendMessage(portNo, "FLUSH")
+}
+_TVDOS.DRV.FS.SERIAL.close = (fd) => {
+    let portNo = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(portNo, "CLOSE")
+}
+_TVDOS.DRV.FS.SERIAL.flush = (fd) => {
+    let portNo = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(portNo, "FLUSH")
+}
+
+_TVDOS.DRV.FS.SERIAL.getFileLen = (driveLetter) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(driveLetter)
+    com.sendMessage(port[0], "GETLEN")
+    var response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Reading a file failed with "+response)
+    }
+    return Number(com.pullMessage(port[0]))
+}
+// TODO pread replaces DMA.comToRam
+// TODO pwrite replaces DMA.ramToCom
+_TVDOS.DRV.FS.SERIAL.sread = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "READ")
+    let response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Reading a file failed with "+response)
+    }
+    return com.pullMessage(port[0])
+}
+_TVDOS.DRV.FS.SERIAL.swrite = (fd, str) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "WRITE"+string.length)
+    let response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Writing a file failed with "+response)
+    }
+    com.sendMessage(port[0], string)
+    _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+}
+_TVDOS.DRV.FS.SERIAL.bread = (fd) => {
+    let str = _TVDOS.DRV.FS.SERIAL.readAll(fd.driveLetter)
+    let bytes = new Uint8Array(str.length)
+    for (let i = 0; i < str.length; i++) {
+        bytes[i] = str.charCodeAt(i)
+    }
+    return bytes
+}
+_TVDOS.DRV.FS.SERIAL.bwrite = (fd, bytes) => { // pwrite replaces DMA.ramToCom
+    let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
+    _TVDOS.DRV.FS.SERIAL.swrite(fd, string)
+}
+_TVDOS.DRV.FS.SERIAL.isDirectory = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "LISTFILES")
+    let response = com.getStatusCode(port[0])
+    return (response === 0)
+}
+_TVDOS.DRV.FS.SERIAL.listFiles = (fd) => {
+    TODO()
+}
+_TVDOS.DRV.FS.SERIAL.touch = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "TOUCH")
+    let response = com.getStatusCode(port[0])
+    return (response === 0)
+}
+_TVDOS.DRV.FS.SERIAL.mkDir = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "MKDIR")
+    let response = com.getStatusCode(port[0])
+
+    if (response < 0 || response >= 128) {
+        var status = com.getDeviceStatus(port[0])
+        throw Error(`Creating a directory failed with (${response}): ${status.message}\n`)
+    }
+    return (response === 0) // possible status codes: 0 (success), 1 (fail)
+}
+_TVDOS.DRV.FS.SERIAL.mkFile = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "MKFILE")
+    let response = com.getStatusCode(port[0])
+    return (response === 0)
+}
+_TVDOS.DRV.FS.SERIAL.delete = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "DELETE")
+    let response = com.getStatusCode(port[0])
+    return (response === 0)
+}
+
+Object.freeze(_TVDOS.DRV.FS.SERIAL)
+
+///////////////////////////////////////////////////////////////////////////////
+
 const filesystem = {};
+
 filesystem._toPorts = (driveLetter) => {
     if (driveLetter.toUpperCase === undefined) {
         throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
@@ -71,11 +288,12 @@ filesystem._toPorts = (driveLetter) => {
     return port
 };
 filesystem._close = (portNo) => {
-    com.sendMessage(portNo, "CLOSE");
-};
+    com.sendMessage(portNo, "CLOSE")
+}
 filesystem._flush = (portNo) => {
-    com.sendMessage(portNo, "FLUSH");
-};
+    com.sendMessage(portNo, "FLUSH")
+}
+
 // @return disk status code (0 for successful operation)
 //         throws if:
 //             - java.lang.NullPointerException if path is null
@@ -179,6 +397,21 @@ filesystem.delete = (driveLetter) => {
     return (response === 0);
 };
 Object.freeze(filesystem);
+
+///////////////////////////////////////////////////////////////////////////////
+
+const files = {}
+
+/** This function only creates a file descriptor; will not actually interact with the drives yet. */
+files.open = (fullpath) => {
+    if (fullpath[1] != '/' && fullpath[1] != '\\') throw Error("Expected full path with drive letter")
+    let driveLetter = fullpath[0].toUpperCase()
+    let driver = _TVDOS.DRIVEFS[driveLetter]
+    return new TVDOSFileDescriptor(fullpath, driver)
+}
+
+
+Object.freeze(files)
 
 ///////////////////////////////////////////////////////////////////////////////
 
