@@ -67,16 +67,28 @@ _TVDOS.DRV.FS = {}
 class TVDOSFileDescriptor {
 
     constructor(path0, driverID) {
-        let p = path0.replaceAll("/", "\\")
-        // oh well...
-        while (p.endsWith("\\")) {
-            p = p.substring(0, p.length - 1)
+        if (driverID === undefined) {
+            if (!files.reservedNames.includes(path0)) {
+                throw Error(`${path0} is not a valid device file`)
+            }
+
+            this._driveLetter = undefined
+            this._path = path0
+            this._driverID = `DEV${path0}`
+            this._driver = _TVDOS.DRV.FS[`DEV${path0}`] // can't just put `driverID` here
         }
-        serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}`)
-        this._driveLetter = p[0]
-        this._path = p.substring(2) // detaches A:
-        this._driverID = driverID
-        this._driver = _TVDOS.DRV.FS[driverID]
+        else {
+            let p = path0.replaceAll("/", "\\")
+            // oh well...
+            while (p.endsWith("\\")) {
+                p = p.substring(0, p.length - 1)
+            }
+            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}`)
+            this._driveLetter = p[0]
+            this._path = p.substring(2) // detaches A:
+            this._driverID = driverID
+            this._driver = _TVDOS.DRV.FS[driverID]
+        }
     }
 
     get size() {
@@ -172,16 +184,17 @@ class TVDOSFileDescriptor {
         return this.driver.mkFile(this)
     }
 
-    delete() {
-        return this.driver.delete(this)
+    remove() {
+        return this.driver.remove(this)
     }
 
 }
 
 
+///////////////////////////////////////////////////////////////////////////////
+
 _TVDOS.DRV.FS.SERIAL = {}
-_TVDOS.DRV.FS.ROMFS = {}
-_TVDOS.DRV.FS.DEVFS = {} // \dev\null zero full random lp fb0..fb3 mem pmem0..pmem7 com1..com4
+// TODO \dev\null zero full random lp fb0..fb3 mem pmem0..pmem7 com1..com4
 
 
 
@@ -342,7 +355,7 @@ _TVDOS.DRV.FS.SERIAL.mkFile = (fd) => {
     let response = com.getStatusCode(port[0])
     return (response === 0)
 }
-_TVDOS.DRV.FS.SERIAL.delete = (fd) => {
+_TVDOS.DRV.FS.SERIAL.remove = (fd) => {
     let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
@@ -352,10 +365,83 @@ _TVDOS.DRV.FS.SERIAL.delete = (fd) => {
 }
 
 Object.freeze(_TVDOS.DRV.FS.SERIAL)
-Object.freeze(_TVDOS.DRV.FS.ROMFS)
-Object.freeze(_TVDOS.DRV.FS.DEVFS)
 
 ///////////////////////////////////////////////////////////////////////////////
+
+_TVDOS.DRV.FS.DEVRND = {}
+
+_TVDOS.DRV.FS.DEVRND._mkrndbytes = (length) => {
+    let bytes = new Uint8Array(length)
+    let timeNow = sys.currentTimeInMills()
+    let state = 12345678910 + timeNow
+
+    for (let i = 0; i < length; i++) {
+        let x = state
+        x ^= x << 13
+        x ^= x >> 7
+        x ^= x << 17
+        state = x
+
+        bytes[i] = state & 255
+    }
+
+    return bytes
+}
+
+_TVDOS.DRV.FS.DEVRND.pread = (fd, ptr, count, offset) => {
+    let bytes = _TVDOS.DRV.FS.DEVRND._mkrndbytes(count + offset)
+    for (let i = 0; i < count; i++) {
+        sys.poke(ptr + i, bytes[offset + i])
+    }
+}
+
+_TVDOS.DRV.FS.DEVRND.pwrite = (fd, ptr, count, offset) => {}
+_TVDOS.DRV.FS.DEVRND.bwrite = (bytes) => {}
+_TVDOS.DRV.FS.DEVRND.swrite = (string) => {}
+
+_TVDOS.DRV.FS.DEVRND.flush = () => {}
+_TVDOS.DRV.FS.DEVRND.close = () => {}
+_TVDOS.DRV.FS.DEVRND.isDirectory = () => false
+_TVDOS.DRV.FS.DEVRND.listFiles = () => undefined
+_TVDOS.DRV.FS.DEVRND.touch = () => {}
+_TVDOS.DRV.FS.DEVRND.mkDir = () => {}
+_TVDOS.DRV.FS.DEVRND.mkFile = () => {}
+_TVDOS.DRV.FS.DEVRND.remove = () => {}
+
+
+Object.freeze(_TVDOS.DRV.FS.DEVRND)
+
+///////////////////////////////////////////////////////////////////////////////
+
+_TVDOS.DRV.FS.DEVNUL = {}
+
+_TVDOS.DRV.FS.DEVNUL.pread = (fd, ptr, count, offset) => {
+    for (let i = 0; i < count; i++) {
+        sys.poke(ptr + i, -1)
+    }
+}
+_TVDOS.DRV.FS.DEVNUL.bread = (fd) => { return [] }
+_TVDOS.DRV.FS.DEVNUL.sread = (fd) => { return "" }
+
+_TVDOS.DRV.FS.DEVNUL.pwrite = (fd, ptr, count, offset) => {}
+_TVDOS.DRV.FS.DEVNUL.bwrite = (bytes) => {}
+_TVDOS.DRV.FS.DEVNUL.swrite = (string) => {}
+
+_TVDOS.DRV.FS.DEVNUL.flush = () => {}
+_TVDOS.DRV.FS.DEVNUL.close = () => {}
+_TVDOS.DRV.FS.DEVNUL.isDirectory = () => false
+_TVDOS.DRV.FS.DEVNUL.listFiles = () => undefined
+_TVDOS.DRV.FS.DEVNUL.touch = () => {}
+_TVDOS.DRV.FS.DEVNUL.mkDir = () => {}
+_TVDOS.DRV.FS.DEVNUL.mkFile = () => {}
+_TVDOS.DRV.FS.DEVNUL.remove = () => {}
+
+
+Object.freeze(_TVDOS.DRV.FS.DEVNUL)
+
+///////////////////////////////////////////////////////////////////////////////
+
+// Legacy Serial filesystem, !!pending for removal!!
 
 const filesystem = {};
 
@@ -472,7 +558,7 @@ filesystem.mkFile = (driveLetter) => {
     var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
-filesystem.delete = (driveLetter) => {
+filesystem.remove = (driveLetter) => {
     var port = filesystem._toPorts(driveLetter);
     com.sendMessage(port[0], "DELETE");
     var response = com.getStatusCode(port[0]);
@@ -484,8 +570,14 @@ Object.freeze(filesystem);
 
 const files = {}
 
+files.reservedNames = ["AUX","COM1","COM2","COM3","COM4","CON","FB1","FB2","FB3","FB4","LPT1","LPT2","LPT3","LPT4","MEM","NUL","PMEM0","PMEM1","PMEM2","PMEM3","PMEM4","PMEM5","PMEM6","PMEM7","PRN","RND","ZERO"]
+
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
 files.open = (fullpath) => {
+    if (files.reservedNames.includes(fullpath.toUpperCase())) {
+        return new TVDOSFileDescriptor(fullpath.toUpperCase())
+    }
+
     if (fullpath[2] != '/' && fullpath[2] != '\\') throw Error("Expected full path with drive letter")
     let driveLetter = fullpath[0].toUpperCase()
     let driver = _TVDOS.DRIVEFS[driveLetter]

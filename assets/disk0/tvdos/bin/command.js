@@ -370,7 +370,7 @@ shell.coreutils = {
 
         var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, args[1], 'R');
         if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
-        return filesystem.delete(CURRENT_DRIVE)
+        return filesystem.remove(CURRENT_DRIVE)
     },
     echo: function(args) {
         if (args[1] !== undefined) {
