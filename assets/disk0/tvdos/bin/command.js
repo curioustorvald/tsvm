@@ -31,7 +31,7 @@ function print_prompt_text() {
         con.color_pair(161,253);
         con.addch(16);con.curs_right();
         con.color_pair(0,253);
-        print(" /"+shell_pwd.join("/").substring(1)+" ");
+        print(" \\"+shell_pwd.join("\\").substring(1)+" ");
         if (errorlevel != 0) {
             con.color_pair(166,253);
             print("["+errorlevel+"] ");
@@ -44,9 +44,9 @@ function print_prompt_text() {
     else {
 //        con.color_pair(253,255);
         if (errorlevel != 0)
-            print(CURRENT_DRIVE + ":/" + shell_pwd.join("/") + " [" + errorlevel + "]" + PROMPT_TEXT);
+            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT);
         else
-            print(CURRENT_DRIVE + ":/" + shell_pwd.join("/") + PROMPT_TEXT);
+            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT);
     }
 }
 
@@ -541,17 +541,19 @@ shell.execute = function(line) {
             else
                 pathExt.push(""); // final empty extension
 
+            var searchPath = ""
+
             searchLoop:
             for (var i = 0; i < searchDir.length; i++) {
                 for (var j = 0; j < pathExt.length; j++) {
                     var search = searchDir[i]; if (!search.endsWith('\\')) search += '\\';
-                    var path = trimStartRevSlash(search + cmd + pathExt[j]);
+                    searchPath = trimStartRevSlash(search + cmd + pathExt[j]);
 
                     if (DEBUG_PRINT) {
-                        serial.println("[command.js > shell.execute] file search path: "+path);
+                        serial.println("[command.js > shell.execute] file search path: "+searchPath);
                     }
 
-                    if (0 == filesystem.open(CURRENT_DRIVE, path, "R")) {
+                    if (0 == filesystem.open(CURRENT_DRIVE, searchPath, "R")) {
                         fileExists = true;
                         break searchLoop;
                     }
@@ -588,7 +590,7 @@ shell.execute = function(line) {
                         sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
                         //serial.println(_G.shellProgramTitles);
 
-                        errorlevel = execApp(programCode, tokens); // return value of undefined will cast into 0
+                        errorlevel = execApp(programCode, tokens, `tvdosExec$${cmd}$` + searchPath.replaceAll(/[^A-Za-z0-9_]/g, "$")); // return value of undefined will cast into 0
                     }
                     catch (e) {
                         gotError = true;

@@ -65,20 +65,42 @@ Object.freeze(_TVDOS);
 _TVDOS.DRV.FS = {}
 
 class TVDOSFileDescriptor {
-    constructor(path, driverString) {
-        path = path.replaceAll("\\", "/")
+
+    constructor(path0, driverID) {
+        let p = path0.replaceAll("/", "\\")
         // oh well...
-        while (path.endsWith("/")) {
-            path = path.substring(0, path.length - 1)
+        while (p.endsWith("\\")) {
+            p = p.substring(0, p.length - 1)
         }
-        this.path = path
-        this.driverString = driverString
-        this.driver = _TVDOS.DRV.FS[driverString]
-        this.driveLetter = path[0]
+        serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}`)
+        this._driveLetter = p[0]
+        this._path = p.substring(2) // detaches A:
+        this._driverID = driverID
+        this._driver = _TVDOS.DRV.FS[driverID]
     }
 
     get size() {
-        return this.driver.getFileLen()
+        return this.driver.getFileLen(this)
+    }
+
+    get path() {
+        return this._path
+    }
+
+    get driverID() {
+        return this._driverID
+    }
+
+    get driver() {
+        return this._driver
+    }
+
+    get driveLetter() {
+        return this._driveLetter
+    }
+
+    get fullPath() {
+        return `${this._driveLetter}:${this._path}`
     }
 
     /** reads the file bytewise and puts it to the specified memory address
@@ -125,11 +147,16 @@ class TVDOSFileDescriptor {
     }
 
     get name() {
-        return this.split("/").last()
+        return this.path.split("\\").last()
+    }
+    get parentPath() {
+//        return this.path.split("\\").init().join("\\")
+        let li = this.path.lastIndexOf("\\")
+        return this.path.substring(0, li)
     }
 
     list() {
-        if (!this.isDirectory()) throw Error(`File is not a directory: ${this.path}`)
+        if (!this.isDirectory) throw Error(`File is not a directory: ${this.path}`)
         return this.driver.listFiles(this)
     }
     /** When the file does not exist, mkfile() will be called; if you want to make a directory, use mkdir() */
@@ -153,6 +180,8 @@ class TVDOSFileDescriptor {
 
 
 _TVDOS.DRV.FS.SERIAL = {}
+_TVDOS.DRV.FS.ROMFS = {}
+_TVDOS.DRV.FS.DEVFS = {} // \dev\null zero full random lp fb0..fb3 mem pmem0..pmem7 com1..com4
 
 
 
@@ -166,6 +195,27 @@ _TVDOS.DRV.FS.SERIAL._toPorts = (driveLetter) => {
     }
     return port
 }
+
+_TVDOS.DRV.FS.SERIAL._openr = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+    com.sendMessage(port[0], "OPENR"+'"'+fd.path+'",'+port[1])
+    return com.getStatusCode(port[0])
+}
+_TVDOS.DRV.FS.SERIAL._openw = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+    com.sendMessage(port[0], "OPENW"+'"'+fd.path+'",'+port[1])
+    return com.getStatusCode(port[0])
+}
+_TVDOS.DRV.FS.SERIAL._opena = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+    com.sendMessage(port[0], "OPENA"+'"'+fd.path+'",'+port[1])
+    return com.getStatusCode(port[0])
+}
+
+
 _TVDOS.DRV.FS.SERIAL._close = (portNo) => {
     com.sendMessage(portNo, "CLOSE")
 }
@@ -181,8 +231,10 @@ _TVDOS.DRV.FS.SERIAL.flush = (fd) => {
     com.sendMessage(portNo, "FLUSH")
 }
 
-_TVDOS.DRV.FS.SERIAL.getFileLen = (driveLetter) => {
-    let port = _TVDOS.DRV.FS.SERIAL._toPorts(driveLetter)
+_TVDOS.DRV.FS.SERIAL.getFileLen = (fd) => {
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "GETLEN")
     var response = com.getStatusCode(port[0])
     if (135 == response) {
@@ -196,6 +248,8 @@ _TVDOS.DRV.FS.SERIAL.getFileLen = (driveLetter) => {
 // TODO pread replaces DMA.comToRam
 // TODO pwrite replaces DMA.ramToCom
 _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "READ")
     let response = com.getStatusCode(port[0])
@@ -208,6 +262,8 @@ _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
     return com.pullMessage(port[0])
 }
 _TVDOS.DRV.FS.SERIAL.swrite = (fd, str) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "WRITE"+string.length)
     let response = com.getStatusCode(port[0])
@@ -221,7 +277,7 @@ _TVDOS.DRV.FS.SERIAL.swrite = (fd, str) => {
     _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
 }
 _TVDOS.DRV.FS.SERIAL.bread = (fd) => {
-    let str = _TVDOS.DRV.FS.SERIAL.readAll(fd.driveLetter)
+    let str = _TVDOS.DRV.FS.SERIAL.sread(fd.driveLetter)
     let bytes = new Uint8Array(str.length)
     for (let i = 0; i < str.length; i++) {
         bytes[i] = str.charCodeAt(i)
@@ -233,21 +289,41 @@ _TVDOS.DRV.FS.SERIAL.bwrite = (fd, bytes) => { // pwrite replaces DMA.ramToCom
     _TVDOS.DRV.FS.SERIAL.swrite(fd, string)
 }
 _TVDOS.DRV.FS.SERIAL.isDirectory = (fd) => {
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "LISTFILES")
     let response = com.getStatusCode(port[0])
     return (response === 0)
 }
 _TVDOS.DRV.FS.SERIAL.listFiles = (fd) => {
-    TODO()
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "LISTFILES")
+    let response = com.getStatusCode(port[0])
+    if (response !== 0) return undefined
+    let rawStr = com.pullMessage(port[0]) // {\x11 | \x12} <name> [ \x1E {\x11 | \x12} <name> ] \x17
+    let fdsInDir = []
+    let parentPath = fd.fullPath
+    rawStr.substring(0, rawStr.length).split('\x1E').forEach(it => {
+        let filename = it.substring(1)
+        let newfd = new TVDOSFileDescriptor(`${parentPath}/${filename}`, "SERIAL")
+        fdsInDir.push(newfd)
+    })
+    return fdsInDir
 }
 _TVDOS.DRV.FS.SERIAL.touch = (fd) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Touching a file failed with "+rrrr)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "TOUCH")
     let response = com.getStatusCode(port[0])
     return (response === 0)
 }
 _TVDOS.DRV.FS.SERIAL.mkDir = (fd) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Mkdir a file failed with "+rrrr)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "MKDIR")
     let response = com.getStatusCode(port[0])
@@ -259,12 +335,16 @@ _TVDOS.DRV.FS.SERIAL.mkDir = (fd) => {
     return (response === 0) // possible status codes: 0 (success), 1 (fail)
 }
 _TVDOS.DRV.FS.SERIAL.mkFile = (fd) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Mkfile failed with "+rrrr)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "MKFILE")
     let response = com.getStatusCode(port[0])
     return (response === 0)
 }
 _TVDOS.DRV.FS.SERIAL.delete = (fd) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
+
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "DELETE")
     let response = com.getStatusCode(port[0])
@@ -272,6 +352,8 @@ _TVDOS.DRV.FS.SERIAL.delete = (fd) => {
 }
 
 Object.freeze(_TVDOS.DRV.FS.SERIAL)
+Object.freeze(_TVDOS.DRV.FS.ROMFS)
+Object.freeze(_TVDOS.DRV.FS.DEVFS)
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -404,7 +486,7 @@ const files = {}
 
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
 files.open = (fullpath) => {
-    if (fullpath[1] != '/' && fullpath[1] != '\\') throw Error("Expected full path with drive letter")
+    if (fullpath[2] != '/' && fullpath[2] != '\\') throw Error("Expected full path with drive letter")
     let driveLetter = fullpath[0].toUpperCase()
     let driver = _TVDOS.DRIVEFS[driveLetter]
     return new TVDOSFileDescriptor(fullpath, driver)
@@ -629,12 +711,13 @@ let injectIntChk = (s, n) => {
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
 // @return status returned by the program
-var execApp = (cmdsrc, args) => {
+var execApp = (cmdsrc, args, appname) => {
+    appname = (appname) ? `_${appname}` : "_appStub"
     var intchkFunName = `tvdosSIGTERM_${generateRandomHashStr(16)}`;
     var execAppPrg = eval(
 `var ${intchkFunName} = function(){ ${checkTerm} };` +
-`var _appStub=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
-`_appStub`); // making 'exec_args' a app-level global
+`var ${appname}=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
+`${appname}`); // making 'exec_args' a app-level global
 
         execAppPrg(args);
 }
@@ -645,5 +728,5 @@ var execApp = (cmdsrc, args) => {
 serial.println("TVDOS.SYS initialised, running boot script...");
 var _G = {};
 filesystem.open("A", "tvdos/bin/command.js", "R");
-eval(`var _appStub=function(exec_args){${filesystem.readAll("A")}\n};` +
-      `_appStub`)(["", "/c", "\\AUTOEXEC.BAT"])
+eval(`var _AUTOEXEC=function(exec_args){${filesystem.readAll("A")}\n};` +
+      `_AUTOEXEC`)(["", "/c", "\\AUTOEXEC.BAT"])
