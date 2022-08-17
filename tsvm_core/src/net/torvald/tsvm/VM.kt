@@ -103,6 +103,13 @@ class VM(
         return null
     }
 
+    fun findPeriIndexByType(searchTerm: String): Int? {
+        for (i in 0 until peripheralSlots) {
+            if (peripheralTable[i].type == searchTerm) return i
+        }
+        return null
+    }
+
     fun update(delta: Float) {
         getIO().update(delta)
     }

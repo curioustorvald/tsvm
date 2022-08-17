@@ -14,6 +14,10 @@ class GraphicsJSR223Delegate(val vm: VM) {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
     }
 
+    fun getGpuMemBase(): Int {
+        return -1 - (1048576 * (vm.findPeriIndexByType(VM.PERITYPE_GPU_AND_TERM) ?: 0))
+    }
+
     fun getVramSize() {
         getFirstGPU()?.mmio_read(11)
     }

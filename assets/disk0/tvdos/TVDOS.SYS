@@ -396,8 +396,8 @@ _TVDOS.DRV.FS.DEVRND.pread = (fd, ptr, count, offset) => {
 }
 
 _TVDOS.DRV.FS.DEVRND.pwrite = (fd, ptr, count, offset) => {}
-_TVDOS.DRV.FS.DEVRND.bwrite = (bytes) => {}
-_TVDOS.DRV.FS.DEVRND.swrite = (string) => {}
+_TVDOS.DRV.FS.DEVRND.bwrite = (fd, bytes) => {}
+_TVDOS.DRV.FS.DEVRND.swrite = (fd, string) => {}
 
 _TVDOS.DRV.FS.DEVRND.flush = () => {}
 _TVDOS.DRV.FS.DEVRND.close = () => {}
@@ -407,7 +407,6 @@ _TVDOS.DRV.FS.DEVRND.touch = () => {}
 _TVDOS.DRV.FS.DEVRND.mkDir = () => {}
 _TVDOS.DRV.FS.DEVRND.mkFile = () => {}
 _TVDOS.DRV.FS.DEVRND.remove = () => {}
-
 
 Object.freeze(_TVDOS.DRV.FS.DEVRND)
 
@@ -424,8 +423,8 @@ _TVDOS.DRV.FS.DEVNUL.bread = (fd) => { return [] }
 _TVDOS.DRV.FS.DEVNUL.sread = (fd) => { return "" }
 
 _TVDOS.DRV.FS.DEVNUL.pwrite = (fd, ptr, count, offset) => {}
-_TVDOS.DRV.FS.DEVNUL.bwrite = (bytes) => {}
-_TVDOS.DRV.FS.DEVNUL.swrite = (string) => {}
+_TVDOS.DRV.FS.DEVNUL.bwrite = (fd, bytes) => {}
+_TVDOS.DRV.FS.DEVNUL.swrite = (fd, string) => {}
 
 _TVDOS.DRV.FS.DEVNUL.flush = () => {}
 _TVDOS.DRV.FS.DEVNUL.close = () => {}
@@ -436,8 +435,82 @@ _TVDOS.DRV.FS.DEVNUL.mkDir = () => {}
 _TVDOS.DRV.FS.DEVNUL.mkFile = () => {}
 _TVDOS.DRV.FS.DEVNUL.remove = () => {}
 
-
 Object.freeze(_TVDOS.DRV.FS.DEVNUL)
+
+///////////////////////////////////////////////////////////////////////////////
+
+_TVDOS.DRV.FS.DEVZERO = {}
+
+_TVDOS.DRV.FS.DEVZERO.pread = (fd, ptr, count, offset) => {
+    for (let i = 0; i < count; i++) {
+        sys.poke(ptr + i, 0)
+    }
+}
+
+_TVDOS.DRV.FS.DEVZERO.pwrite = (fd, ptr, count, offset) => {}
+_TVDOS.DRV.FS.DEVZERO.bwrite = (fd, bytes) => {}
+_TVDOS.DRV.FS.DEVZERO.swrite = (fd, string) => {}
+
+_TVDOS.DRV.FS.DEVZERO.flush = () => {}
+_TVDOS.DRV.FS.DEVZERO.close = () => {}
+_TVDOS.DRV.FS.DEVZERO.isDirectory = () => false
+_TVDOS.DRV.FS.DEVZERO.listFiles = () => undefined
+_TVDOS.DRV.FS.DEVZERO.touch = () => {}
+_TVDOS.DRV.FS.DEVZERO.mkDir = () => {}
+_TVDOS.DRV.FS.DEVZERO.mkFile = () => {}
+_TVDOS.DRV.FS.DEVZERO.remove = () => {}
+
+Object.freeze(_TVDOS.DRV.FS.DEVZERO)
+
+///////////////////////////////////////////////////////////////////////////////
+
+_TVDOS.DRV.FS.DEVCON = {}
+
+_TVDOS.DRV.FS.DEVCON.pread = (fd, ptr, count, offset) => {
+    let mem = graphics.getGpuMemBase()
+    let consize = Math.min(count, grapihcs.getTermDimension().sum())
+    for (let i = 0; i < consize; i++) {
+        sys.poke(ptr + i, sys.peek(mem - 5122 - i))
+    }
+}
+_TVDOS.DRV.FS.DEVCON.bread = (fd) => {
+    let mem = graphics.getGpuMemBase()
+    let consize = Math.min(count, grapihcs.getTermDimension().sum())
+    let r = new Uint8Array(consize)
+    for (let i = 0; i < consize; i++) {
+        r[i] = sys.peek(mem - 5122 - i)
+    }
+    return r
+}
+_TVDOS.DRV.FS.DEVCON.sread = (fd) => {
+    let mem = graphics.getGpuMemBase()
+    let consize = Math.min(count, grapihcs.getTermDimension().sum())
+    let r = ''
+    for (let i = 0; i < consize; i++) {
+        r += String.fromCharCode(sys.peek(mem - 5122 - i))
+    }
+    return r
+}
+
+_TVDOS.DRV.FS.DEVCON.pwrite = (fd, ptr, count, offset) => {}
+_TVDOS.DRV.FS.DEVCON.bwrite = (fd, bytes) => {
+    let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
+    _TVDOS.DRV.FS.DEVZERO.swrite(fd, string)
+}
+_TVDOS.DRV.FS.DEVCON.swrite = (fd, string) => {
+    print(string)
+}
+
+_TVDOS.DRV.FS.DEVCON.flush = () => {}
+_TVDOS.DRV.FS.DEVCON.close = () => {}
+_TVDOS.DRV.FS.DEVCON.isDirectory = () => false
+_TVDOS.DRV.FS.DEVCON.listFiles = () => undefined
+_TVDOS.DRV.FS.DEVCON.touch = () => {}
+_TVDOS.DRV.FS.DEVCON.mkDir = () => {}
+_TVDOS.DRV.FS.DEVCON.mkFile = () => {}
+_TVDOS.DRV.FS.DEVCON.remove = () => {}
+
+Object.freeze(_TVDOS.DRV.FS.DEVCON)
 
 ///////////////////////////////////////////////////////////////////////////////
 

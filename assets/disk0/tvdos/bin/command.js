@@ -590,7 +590,7 @@ shell.execute = function(line) {
                         sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1]);
                         //serial.println(_G.shellProgramTitles);
 
-                        errorlevel = execApp(programCode, tokens, `tvdosExec$${cmd}$` + searchPath.replaceAll(/[^A-Za-z0-9_]/g, "$")); // return value of undefined will cast into 0
+                        errorlevel = execApp(programCode, tokens, `tvdosExec$${cmd}$${searchPath}`.replaceAll(/[^A-Za-z0-9_]/g, "$")); // return value of undefined will cast into 0
                     }
                     catch (e) {
                         gotError = true;
