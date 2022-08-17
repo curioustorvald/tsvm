@@ -238,34 +238,52 @@ shell.parse = function(input) {
 
     return tokens;
 }
+/** @return fully resolved path, starting with '\' but not a drive letter */
 shell.resolvePathInput = function(input) {
-    // replace revslashes into rslashes
-    var pathstr = input.replaceAll('\\','/');
-    var startsWithSlash = input.startsWith('/');
-    var newPwd = [];
+    // replace slashes
+    let pathstr0 = input.replaceAll('\\','/') // JS thinks '/' as a regex, so we're doing this to circumvent the issue
+    let pathstr = ''
+    let driveLetter = CURRENT_DRIVE
+
+    // if input has no drive letter?
+    if (pathstr0[2] != '/' && pathstr0[2] != '\\') {
+        pathstr = pathstr0
+    }
+    else {
+        pathstr = pathstr0.substring(2)
+        driveLetter = pathstr0[0].toUpperCase()
+    }
+
+
+    serial.println("command.js > resolvePathInput > sanitised input: "+pathstr)
+
+    let startsWithSlash = pathstr.startsWith('/')
+    let newPwd = []
+
+    serial.println("command.js > resolvePathInput > path starts with slash: "+startsWithSlash)
 
     // split them into an array while filtering empty elements except for the root 'head'
-    var ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("/").filter(function(it) { return (it.length > 0); }));
+    let ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("/").filter(function(it) { return (it.length > 0); }))
 
-    serial.println("command.js > resolvePathInput > ipwd = "+ipwd);
-    serial.println("command.js > resolvePathInput > newPwd = "+newPwd);
+    serial.println("command.js > resolvePathInput > ipwd = "+ipwd)
+    serial.println("command.js > resolvePathInput > newPwd = "+newPwd)
 
     // process dots
     ipwd.forEach(function(it) {
-        serial.println("command.js > resolvePathInput > ipwd.forEach > it = "+it);
+        serial.println("command.js > resolvePathInput > ipwd.forEach > it = "+it)
         if (it === ".." && newPwd[1] !== undefined) {
-            newPwd.pop();
+            newPwd.pop()
         }
         else if (it !== ".." && it !== ".") {
-            newPwd.push(it);
+            newPwd.push(it)
         }
-        serial.println("command.js > resolvePathInput > newPwd = "+newPwd);
-    });
+        serial.println("command.js > resolvePathInput > newPwd = "+newPwd)
+    })
 
     // construct new pathstr from pwd arr so it will be sanitised
-    pathstr = newPwd.join('/').substring(1);
+    pathstr = '\\' + newPwd.join('\\').substring(1) // dirty hack to make sure slash is prepended even if newPwd is one elem long
 
-    return { string: pathstr, pwd: newPwd };
+    return { string: pathstr, pwd: newPwd, drive: driveLetter, full: `${driveLetter}:${pathstr}` }
 }
 shell.coreutils = {
 /* Args follow this format:
@@ -278,33 +296,34 @@ shell.coreutils = {
  */
 
     cat: function(args) {
-        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
+        let pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString()
+        let resolvedPath = shell.resolvePathInput(pathstr)
 
-        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
-        let contents = filesystem.readAll(CURRENT_DRIVE);
-        // TODO just print out what's there
-        print(contents);
+        let file = files.open(resolvedPath.full)
+
+        if (!file.exists) { printerrln("File not found"); return 1 }
+        let contents = file.sread()
+        // TODO deal with pipes
+        print(contents)
+        file.close()
     },
     cd: function(args) {
         if (args[1] === undefined) {
-            println(CURRENT_DRIVE+":"+shell_pwd.join("/"));
+            println(CURRENT_DRIVE+":"+shell_pwd.join("/"))
             return
         }
-        var path = shell.resolvePathInput(args[1])
-        if (DEBUG_PRINT) serial.println("command.js > cd > pathstr = "+path.string);
+        let path = shell.resolvePathInput(args[1])
+        if (DEBUG_PRINT) serial.println("command.js > cd > pathstr = "+path.string)
 
         // check if path is valid
-        var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'R');
-        var isDir = filesystem.isDirectory(CURRENT_DRIVE); // open a dir; if path is nonexistent, file won't actually be opened
-        if (!isDir) { printerrln(`${args[0].toUpperCase()} failed for '${path.string}'`); return dirOpenedStatus; } // if file is not opened, IO error code will be returned
-
-        shell_pwd = path.pwd;
+        let file = files.open(path.full)
+        if (!file.isDirectory) { printerrln(`${args[0].toUpperCase()} failed for '${path.full}'`); return 1; } // if file is not opened, IO error code will be returned
+        shell_pwd = path.pwd
     },
     cls: function(args) {
-        con.clear();
-        graphics.clearPixels(255);
-        graphics.clearPixels2(240);
+        con.clear()
+        graphics.clearPixels(255)
+        graphics.clearPixels2(240)
     },
     cp: function(args) {
         if (args[2] === undefined || args[1] === undefined) {
@@ -313,21 +332,18 @@ shell.coreutils = {
         }
         let path = shell.resolvePathInput(args[1])
         let pathd = shell.resolvePathInput(args[2])
+        let sourceFile = files.open(path.full)
+        let destFile = files.open(pathd.full)
 
-        let dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'R')
-        let isDir = filesystem.isDirectory(CURRENT_DRIVE)
-        if (isDir || dirOpenedStatus != 0) { printerrln(`${args[0].toUpperCase()} failed for '${path.string}'`); return dirOpenedStatus; } // if file is directory or failed to open, IO error code will be returned
+        serial.println(`[cp] source path: ${path.full}`)
+        serial.println(`[cp] dest path: ${pathd.full}`)
 
+        if (sourceFile.isDirectory || !sourceFile.exists) { printerrln(`${args[0].toUpperCase()} failed for '${sourceFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
+        if (destFile.isDirectory) { printerrln(`${args[0].toUpperCase()} failed for '${destFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
 
-        let bytes = filesystem.readAllBytes(CURRENT_DRIVE)
+        destFile.bwrite(sourceFile.bread())
 
-
-        dirOpenedStatus = filesystem.open(CURRENT_DRIVE, pathd.string, 'W')
-        isDir = filesystem.isDirectory(CURRENT_DRIVE)
-        if (isDir || dirOpenedStatus != 0) { printerrln(`${args[0].toUpperCase()} failed for '${pathd.string}'`); return dirOpenedStatus; } // if file is directory or failed to open, IO error code will be returned
-
-
-        filesystem.writeBytes(CURRENT_DRIVE, bytes)
+        destFile.flush(); destFile.close(); sourceFile.close()
     },
     date: function(args) {
         let monthNames = ["Spring", "Summer", "Autumn", "Winter"]
@@ -352,15 +368,14 @@ shell.coreutils = {
         println(`\xE7${years} ${monthNames[months]} ${visualDay} ${dayNames[dayName]}, ${(''+hours).padStart(2,'0')}:${(''+mins).padStart(2,'0')}:${(''+secs).padStart(2,'0')}`)
     },
     dir: function(args) {
-        var pathstr = (args[1] !== undefined) ? args[1] : shell.getPwdString();
+        let currentPath = (args[1] !== undefined) ? args[1] : shell.getPwdString()
+        let currentDir = files.open(`${CURRENT_DRIVE}:\\${currentPath}`)
+        let fileList = currentDir.list()
 
-        // check if path is valid
-        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, pathstr, 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
-
-        var port = filesystem._toPorts(CURRENT_DRIVE)[0]
-        com.sendMessage(port, "LIST");
-        println(com.pullMessage(port));
+        println(`Current directory: ${currentDir.fullPath}`)
+        fileList.forEach(it => {
+            println(`${it.name.padEnd(termWidth / 2, ' ')}${it.size}`)
+        })
     },
     del: function(args) {
         if (args[1] === undefined) {

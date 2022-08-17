@@ -83,11 +83,11 @@ class TVDOSFileDescriptor {
             while (p.endsWith("\\")) {
                 p = p.substring(0, p.length - 1)
             }
-            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}`)
             this._driveLetter = p[0]
             this._path = p.substring(2) // detaches A:
             this._driverID = driverID
             this._driver = _TVDOS.DRV.FS[driverID]
+            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}`)
         }
     }
 
@@ -241,11 +241,11 @@ _TVDOS.DRV.FS.SERIAL._flush = (portNo) => {
 }
 _TVDOS.DRV.FS.SERIAL.close = (fd) => {
     let portNo = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
-    com.sendMessage(portNo, "CLOSE")
+    com.sendMessage(portNo[0], "CLOSE")
 }
 _TVDOS.DRV.FS.SERIAL.flush = (fd) => {
     let portNo = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
-    com.sendMessage(portNo, "FLUSH")
+    com.sendMessage(portNo[0], "FLUSH")
 }
 
 _TVDOS.DRV.FS.SERIAL.getFileLen = (fd) => {
@@ -278,7 +278,7 @@ _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
     }
     return com.pullMessage(port[0])
 }
-_TVDOS.DRV.FS.SERIAL.swrite = (fd, str) => {
+_TVDOS.DRV.FS.SERIAL.swrite = (fd, string) => {
     let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
@@ -294,7 +294,7 @@ _TVDOS.DRV.FS.SERIAL.swrite = (fd, str) => {
     _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
 }
 _TVDOS.DRV.FS.SERIAL.bread = (fd) => {
-    let str = _TVDOS.DRV.FS.SERIAL.sread(fd.driveLetter)
+    let str = _TVDOS.DRV.FS.SERIAL.sread(fd)
     let bytes = new Uint8Array(str.length)
     for (let i = 0; i < str.length; i++) {
         bytes[i] = str.charCodeAt(i)
@@ -306,7 +306,7 @@ _TVDOS.DRV.FS.SERIAL.bwrite = (fd, bytes) => { // pwrite replaces DMA.ramToCom
     _TVDOS.DRV.FS.SERIAL.swrite(fd, string)
 }
 _TVDOS.DRV.FS.SERIAL.isDirectory = (fd) => {
-    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) return false // file not exists
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "LISTFILES")
@@ -662,7 +662,7 @@ files.open = (fullpath) => {
         return new TVDOSFileDescriptor(fullpath.toUpperCase())
     }
 
-    if (fullpath[2] != '/' && fullpath[2] != '\\') throw Error("Expected full path with drive letter")
+    if (fullpath[2] != '/' && fullpath[2] != '\\') throw Error("Expected full path with drive letter, got " + fullpath)
     let driveLetter = fullpath[0].toUpperCase()
     let driver = _TVDOS.DRIVEFS[driveLetter]
     return new TVDOSFileDescriptor(fullpath, driver)
