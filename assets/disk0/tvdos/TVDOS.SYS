@@ -188,6 +188,10 @@ class TVDOSFileDescriptor {
         return this.driver.remove(this)
     }
 
+    get exists() {
+        return this.driver.exists(this)
+    }
+
 }
 
 
@@ -363,6 +367,9 @@ _TVDOS.DRV.FS.SERIAL.remove = (fd) => {
     let response = com.getStatusCode(port[0])
     return (response === 0)
 }
+_TVDOS.DRV.FS.SERIAL.exists = (fd) => {
+    return (0 == _TVDOS.DRV.FS.SERIAL._openr(fd))
+}
 
 Object.freeze(_TVDOS.DRV.FS.SERIAL)
 
@@ -407,6 +414,7 @@ _TVDOS.DRV.FS.DEVRND.touch = () => {}
 _TVDOS.DRV.FS.DEVRND.mkDir = () => {}
 _TVDOS.DRV.FS.DEVRND.mkFile = () => {}
 _TVDOS.DRV.FS.DEVRND.remove = () => {}
+_TVDOS.DRV.FS.DEVRND.exists = () => true
 
 Object.freeze(_TVDOS.DRV.FS.DEVRND)
 
@@ -434,6 +442,7 @@ _TVDOS.DRV.FS.DEVNUL.touch = () => {}
 _TVDOS.DRV.FS.DEVNUL.mkDir = () => {}
 _TVDOS.DRV.FS.DEVNUL.mkFile = () => {}
 _TVDOS.DRV.FS.DEVNUL.remove = () => {}
+_TVDOS.DRV.FS.DEVNUL.exists = () => true
 
 Object.freeze(_TVDOS.DRV.FS.DEVNUL)
 
@@ -459,6 +468,7 @@ _TVDOS.DRV.FS.DEVZERO.touch = () => {}
 _TVDOS.DRV.FS.DEVZERO.mkDir = () => {}
 _TVDOS.DRV.FS.DEVZERO.mkFile = () => {}
 _TVDOS.DRV.FS.DEVZERO.remove = () => {}
+_TVDOS.DRV.FS.DEVZERO.exists = () => true
 
 Object.freeze(_TVDOS.DRV.FS.DEVZERO)
 
@@ -509,6 +519,7 @@ _TVDOS.DRV.FS.DEVCON.touch = () => {}
 _TVDOS.DRV.FS.DEVCON.mkDir = () => {}
 _TVDOS.DRV.FS.DEVCON.mkFile = () => {}
 _TVDOS.DRV.FS.DEVCON.remove = () => {}
+_TVDOS.DRV.FS.DEVCON.exists = () => true
 
 Object.freeze(_TVDOS.DRV.FS.DEVCON)
 
