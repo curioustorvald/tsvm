@@ -379,76 +379,80 @@ shell.coreutils = {
     },
     del: function(args) {
         if (args[1] === undefined) {
-            printerrln(`Usage: ${args[0].toUpperCase()} file_to_delete`);
+            printerrln(`Usage: ${args[0].toUpperCase()} file_to_delete`)
             return
         }
 
-        var pathOpenedStatus = filesystem.open(CURRENT_DRIVE, args[1], 'R');
-        if (pathOpenedStatus != 0) { printerrln("File not found"); return pathOpenedStatus; }
-        return filesystem.remove(CURRENT_DRIVE)
+        let file = files.open(shell.resolvePathInput(args[1]).full)
+        if (!file.exists) { printerrln("File not found"); return 1 }
+        let removalStatus = file.remove()
+        if (removalStatus != 0) { printerrln("File removal failed"); return removalStatus }
     },
     echo: function(args) {
         if (args[1] !== undefined) {
-            args.forEach(function(it,i) { if (i > 0) print(shell.replaceVarCall(it)+" ") });
+            args.forEach(function(it,i) { if (i > 0) print(shell.replaceVarCall(it)+" ") })
         }
-        println();
+        println()
     },
     exit: function(args) {
-        cmdExit = true;
+        cmdExit = true
     },
     mkdir: function(args) {
         if (args[1] === undefined) {
-            printerrln(`Usage: ${args[0].toUpperCase()} directory_name_to_create`);
+            printerrln(`Usage: ${args[0].toUpperCase()} directory_name_to_create`)
             return
         }
-        var path = shell.resolvePathInput(args[1])
-        if (DEBUG_PRINT) serial.println("command.js > mkdir > pathstr = "+path.string);
+        let path = shell.resolvePathInput(args[1])
+        let file = files.open(path.full)
+        if (DEBUG_PRINT) serial.println("command.js > mkdir > pathstr = "+path.full)
 
         // check if path is valid
-        var dirOpenedStatus = filesystem.open(CURRENT_DRIVE, path.string, 'W');
-        var mkdird = filesystem.mkDir(CURRENT_DRIVE);
-        if (!mkdird) { printerrln(`${args[0].toUpperCase()} failed for '${path.string}'`); return dirOpenedStatus; }
+        if (!file.exists) {
+            let mkdird = file.mkDir()
+            if (!mkdird) { printerrln(`${args[0].toUpperCase()} failed for '${path.full}'`); return 1 }
+        }
+        else return 1
     },
     rem: function(args) {
-        return 0;
+        return 0
     },
     set: function(args) {
         // print all the env vars
         if (args[1] === undefined) {
-            Object.entries(_TVDOS.variables).forEach(function(a) { println(a[0]+"="+a[1]); })
+            Object.entries(_TVDOS.variables).forEach(function(a) { println(a[0]+"="+a[1]) })
         }
         else {
             // parse key-value pair with splitter '='
-            var key = undefined; var value = undefined;
+            var key = undefined; var value = undefined
             // if syntax "<key> = <value>" is used?
             if ('=' == args[2]) {
-                key = args[1].toUpperCase(); value = args[3];
+                key = args[1].toUpperCase(); value = args[3]
             }
             else if (args[2] === undefined) {
-                var pair = args[1].split('=');
-                key = pair[0].toUpperCase(); value = pair[1];
+                var pair = args[1].split('=')
+                key = pair[0].toUpperCase(); value = pair[1]
             }
 
-            if (key == undefined) throw SyntaxError("Input format must be 'key=value'");
+            if (key == undefined) throw SyntaxError("Input format must be 'key=value'")
 
             // if value is undefined, show what envvar[key] has
             if (value === undefined) {
                 if (_TVDOS.variables[key] === undefined)
-                    println("Environment variable '"+key+"' not found");
+                    println("Environment variable '"+key+"' not found")
                 else
                     println(_TVDOS.variables[key])
             }
             else {
-                _TVDOS.variables[key] = shell.replaceVarCall(value);
+                _TVDOS.variables[key] = shell.replaceVarCall(value)
 
                 // if key is KEYBOARD, reload the keyboard layout
                 if ("KEYBOARD" == key)
-                    input.changeKeyLayout(_TVDOS.variables.KEYBOARD || "us_qwerty");
+                    input.changeKeyLayout(_TVDOS.variables.KEYBOARD || "us_qwerty")
             }
         }
     },
     ver: function(args) {
-        println(welcome_text);
+        println(welcome_text)
     },
     panic: function(args) {
         throw Error("Panicking command.js")
