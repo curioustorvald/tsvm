@@ -525,6 +525,48 @@ Object.freeze(_TVDOS.DRV.FS.DEVCON)
 
 ///////////////////////////////////////////////////////////////////////////////
 
+_TVDOS.DRV.FS.DEVFBIPF = {}
+
+_TVDOS.DRV.FS.DEVFBIPF.pwrite = (fd, ptr, _1, _2) => {
+    let decodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[sys.peek(ptr + 13)]
+    // offset 24..27: gzipped size
+    let width = sys.peek(ptr+8) | (sys.peek(ptr+9) << 8)
+    let height = sys.peek(ptr+10) | (sys.peek(ptr+11) << 8)
+    let hasAlpha = (sys.peek(12) != 0)
+
+    println("Calling GPU")
+    decodefun(ptr + 24, -1048577, -1310721, width, height, hasAlpha)
+
+    println("Changing graphics mode")
+    graphics.setGraphicsMode(4)
+
+    println("cya!")
+}
+_TVDOS.DRV.FS.DEVFBIPF.bwrite = (fd, bytes) => {
+    // TODO pread the file
+    let fp = sys.malloc(bytes.length)
+    bytes.forEach((it,i) => {
+        sys.poke(fp + i, it)
+    })
+    _TVDOS.DRV.FS.DEVFBIPF.pwrite(fd, fp)
+    sys.free(fp)
+}
+
+_TVDOS.DRV.FS.DEVFBIPF.flush = () => {}
+_TVDOS.DRV.FS.DEVFBIPF.close = () => {}
+_TVDOS.DRV.FS.DEVFBIPF.isDirectory = () => false
+_TVDOS.DRV.FS.DEVFBIPF.listFiles = () => undefined
+_TVDOS.DRV.FS.DEVFBIPF.touch = () => {}
+_TVDOS.DRV.FS.DEVFBIPF.mkDir = () => {}
+_TVDOS.DRV.FS.DEVFBIPF.mkFile = () => {}
+_TVDOS.DRV.FS.DEVFBIPF.remove = () => {}
+_TVDOS.DRV.FS.DEVFBIPF.exists = () => true
+
+Object.freeze(_TVDOS.DRV.FS.DEVFBIPF)
+
+///////////////////////////////////////////////////////////////////////////////
+
+
 // Legacy Serial filesystem, !!pending for removal!!
 
 const filesystem = {};
@@ -654,7 +696,20 @@ Object.freeze(filesystem);
 
 const files = {}
 
-files.reservedNames = ["AUX","COM1","COM2","COM3","COM4","CON","FB1","FB2","FB3","FB4","LPT1","LPT2","LPT3","LPT4","MEM","NUL","PMEM0","PMEM1","PMEM2","PMEM3","PMEM4","PMEM5","PMEM6","PMEM7","PRN","RND","ZERO"]
+files.reservedNames = ["AUX", // unused
+"COM1","COM2","COM3","COM4", // serial ports
+"CON", // the tty
+"FB1","FB2", // raw framebuffer, 256 colours, typ. 560x448
+"FBIPF", // framebuffer that accepts IPF-formatted bytes, reduced colours, typ. 560x448
+"HFB1","HFB2","HFB3","HFB4", // half-dimension framebuffers, 256 colours, typ. 280x224
+"LPT1","LPT2","LPT3","LPT4", // reserved for "parallel ports"; unused
+"MEM", // /dev/mem
+"NUL", // /dev/null
+"PMEM0","PMEM1","PMEM2","PMEM3","PMEM4","PMEM5","PMEM6","PMEM7", // /dev/mem for peripherals
+"PRN", // a printer
+"RND", // /dev/urandom
+"XFB", // raw framebuffer, 4096 colours, typ. 560x448. Memory layout follows the gpu's (0..250779: RG-plane, 250880..262143: gap, 262144..513023: BA-plane)
+"ZERO"] // /dev/zero
 
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
 files.open = (fullpath) => {

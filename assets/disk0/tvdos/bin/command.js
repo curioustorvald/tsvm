@@ -617,7 +617,7 @@ shell.execute = function(line) {
                         gotError = true
 
                         serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`)
-                        printerrln(`Program quit with error:\n${e.stack || '(stack trace unavailable)'}`)
+                        printerrln(`Program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`)
 
                         if (`${e}`.startsWith("InterruptedException"))
                             errorlevel = SIGTERM.name
