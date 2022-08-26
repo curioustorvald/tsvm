@@ -387,7 +387,7 @@ Type:
 
 TYPE 0 FRAME -
     uint32 SIZE OF FRAMEDATA
-    *      FRAMEDATA COMPRESSED IN GZIP
+    *      FRAMEDATA COMPRESSED IN GZIP // for iPF, only the "Blocks.gz" part is stored
 
 TYPE 1 FRAME -
     byte[512] Palette Data

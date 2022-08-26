@@ -168,8 +168,7 @@ class TVDOSFileDescriptor {
     }
 
     list() {
-        if (!this.isDirectory) throw Error(`File is not a directory: ${this.path}`)
-        return this.driver.listFiles(this)
+        return if (!this.isDirectory) undefined else this.driver.listFiles(this)
     }
     /** When the file does not exist, mkfile() will be called; if you want to make a directory, use mkdir() */
     touch() {
@@ -534,13 +533,13 @@ _TVDOS.DRV.FS.DEVFBIPF.pwrite = (fd, ptr, _1, _2) => {
     let height = sys.peek(ptr+10) | (sys.peek(ptr+11) << 8)
     let hasAlpha = (sys.peek(12) != 0)
 
-    println("Calling GPU")
+//    println("Calling GPU")
     decodefun(ptr + 24, -1048577, -1310721, width, height, hasAlpha)
 
-    println("Changing graphics mode")
+//    println("Changing graphics mode")
     graphics.setGraphicsMode(4)
 
-    println("cya!")
+//    println("cya!")
 }
 _TVDOS.DRV.FS.DEVFBIPF.bwrite = (fd, bytes) => {
     // TODO pread the file
@@ -551,6 +550,8 @@ _TVDOS.DRV.FS.DEVFBIPF.bwrite = (fd, bytes) => {
     _TVDOS.DRV.FS.DEVFBIPF.pwrite(fd, fp)
     sys.free(fp)
 }
+
+// _TVDOS.DRV.FS.DEVFBIPF will be write-only: no way to select IPF1/2 and/or transparency
 
 _TVDOS.DRV.FS.DEVFBIPF.flush = () => {}
 _TVDOS.DRV.FS.DEVFBIPF.close = () => {}

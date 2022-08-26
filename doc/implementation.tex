@@ -12,27 +12,40 @@
 
 There are three memories on the system: Hardware Memory (8 MB), Scratchpad Memory (up to 8 MB) and Program Memory (infinite!)
 
-Your Javascript program is stored into the Program Memory, and since its capacity is limitless, you can put large graphics directly into your Javascript source code, but Program Memory is the slowest of all three memories. For faster graphics, you need to store them on the Scratchpad Memory and DMA-Copy them to the graphics adapter.
+Your Javascript program is stored into the Program Memory, and since its capacity is limitless, you can put a large graphics directly into your Javascript source code, but the Program Memory is the slowest of all three memories. For faster graphics, you need to store them onto the Scratchpad Memory then DMA-Copy them to the graphics adapter.
 
 \section{Built-in Commands}
+
+\subsection{Javascript Extensions}
+
+\index{js extensions}\thismachine\ provides the extra functions for your convenience.
+
+\begin{outline}
+\1Array.\textbf{head}() --- returns the first element of the array.
+\1Array.\textbf{last}() --- returns the last element of the array.
+\1Array.\textbf{tail}() --- returns the subarray that omits the \emph{head} element.
+\1Array.\textbf{init}() --- returns the subarray that omits the \emph{last} element.
+\1Array.\textbf{sum}(selector) --- returns the sum of the elements of the array. Selector can be optionally defined to indicate how the value must be transformed to obtain the sum.
+\1Array.\textbf{max}(selector) --- returns the maximum among the elements of the array. Selector can be optionally defined to indicate how the value must be transformed to obtain the max.
+\end{outline}
 
 \subsection{Standard Input and Output}
 
 \index{stdio (library)}These are standard input/output functions:
 
 \begin{outline}
-\1\textbf{print}(string) --- prints a string without new line.
+\1\textbf{print}(string) --- prints a string without a new line.
 \1\textbf{println}(string) --- prints a string with a new line.
-\1\textbf{printerr}(string) --- prints a string to error output without new line.
+\1\textbf{printerr}(string) --- prints a string to error output without a new line.
 \1\textbf{printerrln}(string) --- prints a string to error output with a new line.
-\1\textbf{read}() --- reads a string from keyboard. Hit Return to finish reading.
+\1\textbf{read}() --- reads a string from the keyboard. Hit the Return to finish reading.
 \end{outline}
 
 
 
 \subsection{Console}
 
-\index{console (library)}Console library contains functions for screen text manipulation.
+\index{console (library)}Console library contains the functions for screen text manipulation.
 
 \namespaceis{Console}{con}
 
@@ -43,12 +56,12 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 
 \subsection{System}
 
-\index{system (library)}System library has functions to get the status of the system.
+\index{system (library)}System library has the functions to get the status of the system.
 
 \namespaceis{System}{system}
 
 \begin{outline}
-\1\textbf{maxmem}() --- returns size of the Scratchpad Memory in bytes.
+\1\textbf{maxmem}() --- returns the size of the Scratchpad Memory in bytes.
 \end{outline}
 
 
@@ -66,7 +79,7 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 
 \subsection{Base64}
 
-\index{base64 (library)}Base64 allows encoding of binary data into ASCII-strings and vice-versa.
+\index{base64 (library)}Base64 allows encoding of the binary data into the ASCII-strings and vice-versa.
 
 \namespaceis{Base64}{base64}
 
@@ -94,34 +107,36 @@ Some pheripherals such as disk drives are connected through the ``Serial Communi
 
 Unlike the name suggests, Serial Communication is not at all \emph{serial}; it's more like a \emph{block communication}.
 
-\section{Concept of Block Communication}
+\section{Concept of the Block Communication}
 
-\index{block communication}Sender and Receiver are somehow connected and the communication channel between two devices are open as long as both sides are connected and being recognised. There are two blocks per port: send-block and receive-block, and the contents of the blocks are memory-mapped\footnote{Both blocks are mapped to the same port; writing to the address writes to the send-block while reading reads from the receive-block. Reading from write-block or writing to the read-block is not possible}. \emph{Write} writes sender's send-block onto the receiver's receive-block while \emph{Read} pulls the message from the receiver's send-block and writes to sender's receive-block.
+\index{block communication}As long as the Sender and the Receiver are somehow connected and being recognised, the communication channel between two devices are open and available. There are two blocks per port: the send-block and the receive-block, and the contents of the blocks are memory-mapped\footnote{Both blocks are mapped to the same port; writing to the address writes to the send-block while reading reads from the receive-block. Reading from write-block or writing to the read-block is not possible}. \emph{Write} writes the sender's send-block onto the receiver's receive-block while \emph{Read} pulls the message from the receiver's send-block and writes to the sender's receive-block.
 
-While read/write is being processed, each side emits ``busy'' flag indicating they are \emph{busy}. Sending/receiving data while one side is busy is considered as an undefined behaviour.
+When the read/write operation is being processed, each side emits ``busy'' flag indicating they are \emph{busy}. Sending/receiving data while one side is busy is considered as an undefined behaviour.
 
 
 \section{The Com Library}
 
 \index{com (library)}portNo is a number of the port in 0--3, 0 being the first port.
 
+\namespaceis{Com}{com}
+
 \begin{outline}
 \1\textbf{sendMessage}(portNo: Int, message: String)
 \\Sends message to the port and returns status code the other machine emits.
-\1\textbf{fetchResponse}(portNo: Int)
+\1\textbf{fetchResponse}(portNo: Int): String
 \\Fetches the message composed by other device to this machine.
-\1\textbf{sendMessageGetBytes}(portNo: Int, message: String)
+\1\textbf{sendMessageGetBytes}(portNo: Int, message: String): String
 \\Sends message, waits for responce, then returns the received message.
 \1\textbf{waitUntilReady}(portNo: Int)
 \\Blocks the program until the other device is ready.
-\1\textbf{pullMessage}(portNo: Int)
+\1\textbf{pullMessage}(portNo: Int): String
 \\Make other device to initiate sending and returns the message receive from the other device.
 \\NOTE: this is not a function you're looking for it you're just getting the response after the sendMessage; use fetchResponse for that.
-\1\textbf{getStatusCode}(portNo: Int)
+\1\textbf{getStatusCode}(portNo: Int): Int
 \\Returns the status code of the other device.
-\1\textbf{getDeviceStatus}(portNo: Int)
+\1\textbf{getDeviceStatus}(portNo: Int): \{code: Int, message: String\}
 \\Returns the status message of the other device. Different types of devices may have different messages.
-\1\textbf{areYouThere}(portNo: Int)
+\1\textbf{areYouThere}(portNo: Int): Boolean
 \\Returns true if there is other device connected and is working.
 \end{outline}
 
@@ -130,7 +145,7 @@ While read/write is being processed, each side emits ``busy'' flag indicating th
 
 \begin{lstlisting}
 com.sendMessage(0, "DEVRST\x17")  // resets the disk drive
-com.sendMessage(0, 'OPENR"my-awesome.txt",1')  // tells the disk drive to open a file named 'my-awesome.txt' from drive number 1 for reading
+com.sendMessage(0, 'OPENR"my-awesome.txt",1')  // tells the disk drive to open a file named 'my-awesome.txt' from the drive number 1 for reading
 let status = com.getStatusCode(0)
 if (0 == status){
 	com.sendMessage(0, "READ")  // tells the disk drive that I'm about to read the file just opened
@@ -149,7 +164,7 @@ if (0 == status){
 
 \begin{lstlisting}
 com.sendMessage(0, "DEVRST\x17")  // resets the disk drive
-com.sendMessage(0, 'OPENW"my-awesomer.txt",1')  // tells the disk drive to open a file named 'my-awesomer.txt' from drive number 1 for writing
+com.sendMessage(0, 'OPENW"my-awesomer.txt",1')  // tells the disk drive to open a file named 'my-awesomer.txt' from the drive number 1 for writing
 let status = com.getStatusCode(0)
 if (0 == status){
 	com.sendMessage(0, "WRITE1234")  // tells the disk drive that I'm about to write to the file just opened. 1234 is a size of the text to write
@@ -186,7 +201,7 @@ Address & RW & Description \\
 
 \subsection{Transfer Status Bits and Transfer Control}
 
-The com-port will behave differently if you're writing or reading on the address. In other words, you cannot read what you have just wrote because reading will put the port in different state.
+The com-port will behave differently if you're writing to or reading from the address. In other words, you cannot read what you have just wrote because the reading will put the port in a different state.
 
 \begin{figure}[h]
 \begin{center}

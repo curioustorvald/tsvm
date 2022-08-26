@@ -1,22 +1,25 @@
-\indexentry{stdio (library)|hyperpage}{7}
+\indexentry{js extensions|hyperpage}{7}
+\indexentry{stdio (library)|hyperpage}{8}
 \indexentry{console (library)|hyperpage}{8}
 \indexentry{con (library)|hyperpage}{8}
 \indexentry{system (library)|hyperpage}{8}
 \indexentry{system (library)|hyperpage}{8}
 \indexentry{gzip (library)|hyperpage}{8}
 \indexentry{gzip (library)|hyperpage}{8}
-\indexentry{base64 (library)|hyperpage}{8}
-\indexentry{base64 (library)|hyperpage}{8}
-\indexentry{sys (library)|hyperpage}{8}
-\indexentry{block communication|hyperpage}{9}
-\indexentry{com (library)|hyperpage}{9}
-\indexentry{MMIO-com|hyperpage}{11}
-\indexentry{keycodes|hyperpage}{13}
-\indexentry{code page|hyperpage}{15}
-\indexentry{colour palette|hyperpage}{17}
-\indexentry{MMIO-graphics|hyperpage}{19}
-\indexentry{boot process|hyperpage}{22}
-\indexentry{filesystem (DOS)|hyperpage}{24}
-\indexentry{filesystem (DOS)|hyperpage}{24}
-\indexentry{input (DOS)|hyperpage}{25}
-\indexentry{gl (DOS)|hyperpage}{25}
+\indexentry{base64 (library)|hyperpage}{9}
+\indexentry{base64 (library)|hyperpage}{9}
+\indexentry{sys (library)|hyperpage}{9}
+\indexentry{block communication|hyperpage}{10}
+\indexentry{com (library)|hyperpage}{10}
+\indexentry{com (library)|hyperpage}{10}
+\indexentry{MMIO-com|hyperpage}{12}
+\indexentry{keycodes|hyperpage}{14}
+\indexentry{code page|hyperpage}{16}
+\indexentry{colour palette|hyperpage}{18}
+\indexentry{MMIO-graphics|hyperpage}{20}
+\indexentry{boot process|hyperpage}{23}
+\indexentry{filesystem (DOS)|hyperpage}{25}
+\indexentry{file descriptor (DOS)|hyperpage}{25}
+\indexentry{device file|hyperpage}{27}
+\indexentry{input (DOS)|hyperpage}{29}
+\indexentry{gl (DOS)|hyperpage}{29}
