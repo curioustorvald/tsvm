@@ -48,59 +48,38 @@ A file has folliwing properties and can be manipulated using following functions
 Properties:
 
 \begin{outline}
-\1\textbf{size}: Int
-\\Returns a size of the file in bytes.
-\1\textbf{path}: String
-\\Returns a path (NOT including the drive letter) of the file. Paths are separated using reverse solidus.
-\1\textbf{fullpath}: String
-\\Returns a fully qualified path (including the drive letter) of the file. Paths are separated using reverse solidus.
-\1\textbf{driverID}: String
-\\Returns a filesystem driver ID associated with the file.
-\1\textbf{driver}: [Object object]
-\\Returns a filesystem driver (a Javascript object) for the file.
-\1\textbf{isDirectory}: Boolean
-\\Returns true if the path is a directory.
-\1\textbf{name}: String
-\\Returns the name part of the file's path.
-\1\textbf{parentPath}: String
-\\Returns a parent path of the file.
-\1\textbf{exists}: Boolean
-\\Returns true if the file exists on the device.
+\1\propertysynopsis{size}{Int}{Returns a size of the file in bytes.}
+\1\propertysynopsis{path}{String}{Returns a path (NOT including the drive letter) of the file. Paths are separated using reverse solidus.}
+\1\propertysynopsis{fullpath}{String}{Returns a fully qualified path (including the drive letter) of the file. Paths are separated using reverse solidus.}
+\1\propertysynopsis{driverID}{String}{Returns a filesystem driver ID associated with the file.}
+\1\propertysynopsis{driver}{[Object object]}{Returns a filesystem driver (a Javascript object) for the file.}
+\1\propertysynopsis{isDirectory}{Boolean}{Returns true if the path is a directory.}
+\1\propertysynopsis{name}{String}{Returns the name part of the file's path.}
+\1\propertysynopsis{parentPath}{String}{Returns a parent path of the file.}
+\1\propertysynopsis{exists}{Boolean}{Returns true if the file exists on the device.}
 \end{outline}
 
 Functions:
 
 \begin{outline}
-\1\textbf{pread}(pointer: Int, count: Int, offset: Int)
-\\Reads the file bytewise and puts it to the memory starting from the \code{pointer}.
- \2\code{count}: how many bytes to read
- \2\code{offset}: when reading a file, how many bytes to skip initially
-\1\textbf{bread}(): Array
-\\Reads the file bytewise and returns the content in Javascript array.
-\1\textbf{sread}(): String
-\\Reads the file textwise and returns the content in Javascript string.
-\1\textbf{pwrite}(pointer: Int, count: Int, offset: Int)
-\\Writes the bytes stored in the memory starting from the \code{pointer} to file.
- \2\code{count}: how many bytes to write
- \2\code{offset}: when writing to the file, how many bytes on the file to skip before writing a first byte.
-\1\textbf{bwrite}(bytes: UintArray)
-\\Writes the bytes to the file.
-\1\textbf{swrite}(string: String)
-\\Writes the string to the file.
-\1\textbf{flush}()
-\\Flush the contents on the write buffer to the file immediately. Will do nothing if there is no write buffer implemented --- a write operation will always be performed imemdiately in such cases.
-\1\textbf{close}()
-\\Tells the underlying device (usually a disk drive) to close a file. When dealing with multiple files on a single disk drive (of which can only have a single active---or opened---file), the underlying filesystem driver will automatically swap the files around, so this function is normally unused.
-\1\textbf{list}(): Array or undefined
-\\Lists files inside of the directory. If the path is indeed a directory, an array of file descriptors will be returned; \code{undefined} otherwise.
-\1\textbf{touch}(): Boolean
-\\Updates the file's access time if the file exists; a new file will be created otherwise. Returns true if successful.
-\1\textbf{mkDir}(): Boolean
-\\Creates a directory to the path. Returns true if successful.
-\1\textbf{mkFile}(): Boolean
-\\Creates a new file to the path. Returns true if successful.
-\1\textbf{remove}(): Boolean
-\\Removes a file. Returns true if successful.
+\1\formalsynopsis{pread}{pointer: Int, count: Int, offset: Int}{Reads the file bytewise and puts it to the memory starting from the pointer.}
+ \2\argsynopsis{count}{how many bytes to read}
+ \2\argsynopsis{offset}{when reading a file, how many bytes to skip initially}
+\1\formalsynopsis{bread}{}[Array]{Reads the file bytewise and returns the content in Javascript array.}
+\1\formalsynopsis{sread}{}[String]{Reads the file textwise and returns the content in Javascript string.}
+\1\formalsynopsis{pwrite}{pointer: Int, count: Int, offset: Int}
+{Writes the bytes stored in the memory starting from the pointer to file.}
+ \2\argsynopsis{count}{how many bytes to write}
+ \2\argsynopsis{offset}{when writing to the file, how many bytes on the file to skip before writing a first byte.}
+\1\formalsynopsis{bwrite}{bytes: UintArray}{Writes the bytes to the file.}
+\1\formalsynopsis{swrite}{string: String}{Writes the string to the file.}
+\1\formalsynopsis{flush}{}{Flush the contents on the write buffer to the file immediately. Will do nothing if there is no write buffer implemented --- a write operation will always be performed imemdiately in such cases.}
+\1\formalsynopsis{close}{}{Tells the underlying device (usually a disk drive) to close a file. When dealing with multiple files on a single disk drive (of which can only have a single active---or opened---file), the underlying filesystem driver will automatically swap the files around, so this function is normally unused.}
+\1\formalsynopsis{list}{}[Array or undefined]{Lists files inside of the directory. If the path is indeed a directory, an array of file descriptors will be returned; \code{undefined} otherwise.}
+\1\formalsynopsis{touch}{}[Boolean]{Updates the file's access time if the file exists; a new file will be created otherwise. Returns true if successful.}
+\1\formalsynopsis{mkDir}{}[Boolean]{Creates a directory to the path. Returns true if successful.}
+\1\formalsynopsis{mkFile}{}[Boolean]{Creates a new file to the path. Returns true if successful.}
+\1\formalsynopsis{remove}{}[Boolean]{Removes a file. Returns true if successful.}
 \end{outline}
 
 
@@ -109,23 +88,23 @@ Functions:
 \index{device file}Some devices are also virtualised through the file descriptor, and they are given a special path. (their fullpath does not contain a drive letter)
 
 \begin{outline}
-\1\textbf{RND} --- returns random bytes upon reading
- \2\textbf{pread}: returns the specified number of random bytes
-\1\textbf{NUL} --- returns EOF upon reading
- \2\textbf{pread}: returns the specified number of EOFs
- \2\textbf{bread}: returns an empty array
- \2\textbf{sread}: returns an empty string
-\1\textbf{ZERO} --- returns zero upon reading
- \2\textbf{pread}: returns the specified number of zeros
-\1\textbf{CON} --- manipulates the screen text buffer, disregarding the colours
- \2\textbf{pread}: reads the texts as bytes.
- \2\textbf{bread}: reads the texts as bytes.
- \2\textbf{sread}: reads the texts as a string.
- \2\textbf{pwrite}: writes the bytes from the given pointer.
- \2\textbf{bwrite}: identical to \code{print()} except the given byte array will be casted to string.
- \2\textbf{swrite}: identical to \code{print()}.
-\1\textbf{FBIPF} --- decodes IPF-formatted image to the framebuffer. Use the \emph{Graphics} library for the encoding.
- \2\textbf{pwrite, bwrite} --- decodes the given IPF binary data. \code{pwrite} offsets and counts are ignored.
+\1\inlinesynopsis{RND}{returns random bytes upon reading}
+ \2\argsynopsis{pread}{returns the specified number of random bytes}
+\1\inlinesynopsis{NUL}{returns EOF upon reading}
+ \2\argsynopsis{pread}{returns the specified number of EOFs}
+ \2\argsynopsis{bread}{returns an empty array}
+ \2\argsynopsis{sread}{returns an empty string}
+\1\inlinesynopsis{ZERO}{returns zero upon reading}
+ \2\argsynopsis{pread}{returns the specified number of zeros}
+\1\inlinesynopsis{CON}{manipulates the screen text buffer, disregarding the colours}
+ \2\argsynopsis{pread}{reads the texts as bytes.}
+ \2\argsynopsis{bread}{reads the texts as bytes.}
+ \2\argsynopsis{sread}{reads the texts as a string.}
+ \2\argsynopsis{pwrite}{writes the bytes from the given pointer.}
+ \2\argsynopsis{bwrite}{identical to \code{print()} except the given byte array will be casted to string.}
+ \2\argsynopsis{swrite}{identical to \code{print()}.}
+\1\inlinesynopsis{FBIPF}{decodes IPF-formatted image to the framebuffer. Use the \emph{Graphics} library for the encoding.}
+ \2\argsynopsis{pwrite, bwrite}{decodes the given IPF binary data. Offsets and counts for \code{pwrite} are ignored.}
 
 \end{outline}
 

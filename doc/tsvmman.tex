@@ -42,6 +42,7 @@
 \usepackage{anyfontsize}
 \usepackage{cancel}
 \usepackage{outlines}
+\usepackage{xparse}
 \usepackage{lineno} % debug
 
 
@@ -72,12 +73,31 @@
 \newcommand{\namespaceis}[2]{\index{#2 (library)}The functions in the #1 library can be found under the \textbf{#2} namespace.}
 \newcommand{\dosnamespaceis}[2]{\index{#2 (DOS)}The functions in the \thedos\ #1 library can be found under the \textbf{#2} namespace.}
 
+% usage: \inlinesynopsis{any name}{description}
+% usage: \inlinesynopsis{function name}{arguments info}{description}
+% usage: \inlinesynopsis[namespace]{any name}{description}
+% usage: \inlinesynopsis[namespace]{function name}{arguments info}{description}
+\NewDocumentCommand\inlinesynopsis{ommg}{%
+  \IfNoValueF{#1}{#1.}\textbf{#2}\IfNoValueTF{#4}{ --- #3}{(#3) --- #4}%
+}
+
+% usage: \formalsynopsis{function name}{arguments info}[return type]{description}
+% usage: \formalsynopsis{function name}{arguments info}{description}
+\NewDocumentCommand\formalsynopsis{mmom}{%
+  \textbf{#1}(#2)\IfNoValueF{#3}{: #3}\\#4%
+}
+
+\newcommand\propertysynopsis[3]{\textbf{#1}: #2\\#3}
+\newcommand\argsynopsis[2]{\textbf{#1}: #2}
+
 \newcommand\forceindent{\hskip1.5em}
 
 %% BASIC operators %%
 \newcommand\tildechar{{\large\raisebox{-0.22ex}{\char`\~}}}
 \newcommand{\instbit}[1]{\mbox{\scriptsize #1}}
 \newcommand{\instbitrange}[2]{~\instbit{#1} \hfill \instbit{#2}~}
+
+
 
 
 % Title styling

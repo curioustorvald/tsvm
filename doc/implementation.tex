@@ -21,12 +21,12 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 \index{js extensions}\thismachine\ provides the extra functions for your convenience.
 
 \begin{outline}
-\1Array.\textbf{head}() --- returns the first element of the array.
-\1Array.\textbf{last}() --- returns the last element of the array.
-\1Array.\textbf{tail}() --- returns the subarray that omits the \emph{head} element.
-\1Array.\textbf{init}() --- returns the subarray that omits the \emph{last} element.
-\1Array.\textbf{sum}(selector) --- returns the sum of the elements of the array. Selector can be optionally defined to indicate how the value must be transformed to obtain the sum.
-\1Array.\textbf{max}(selector) --- returns the maximum among the elements of the array. Selector can be optionally defined to indicate how the value must be transformed to obtain the max.
+\1\inlinesynopsis[Array]{head}{}{returns the first element of the array.}
+\1\inlinesynopsis[Array]{last}{}{returns the last element of the array.}
+\1\inlinesynopsis[Array]{tail}{}{returns the subarray that omits the \emph{head} element.}
+\1\inlinesynopsis[Array]{init}{}{returns the subarray that omits the \emph{last} element.}
+\1\inlinesynopsis[Array]{sum}{selector}{returns the sum of the elements of the array. Selector is optionally defined to indicate how the value must be transformed to obtain the sum.}
+\1\inlinesynopsis[Array]{max}{selector}{returns the maximum among the elements of the array. Selector is optionally defined to indicate how the value must be transformed to obtain the max.}
 \end{outline}
 
 \subsection{Standard Input and Output}
@@ -34,11 +34,11 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 \index{stdio (library)}These are standard input/output functions:
 
 \begin{outline}
-\1\textbf{print}(string) --- prints a string without a new line.
-\1\textbf{println}(string) --- prints a string with a new line.
-\1\textbf{printerr}(string) --- prints a string to error output without a new line.
-\1\textbf{printerrln}(string) --- prints a string to error output with a new line.
-\1\textbf{read}() --- reads a string from the keyboard. Hit the Return to finish reading.
+\1\inlinesynopsis{print}{string}{prints a string without a new line.}
+\1\inlinesynopsis{println}{string}{prints a string with a new line.}
+\1\inlinesynopsis{printerr}{string}{prints a string to error output without a new line.}
+\1\inlinesynopsis{printerrln}{string}{prints a string to error output with a new line.}
+\1\inlinesynopsis{read}{}{reads a string from the keyboard. Hit the Return to finish reading.}
 \end{outline}
 
 
@@ -61,7 +61,7 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 \namespaceis{System}{system}
 
 \begin{outline}
-\1\textbf{maxmem}() --- returns the size of the Scratchpad Memory in bytes.
+\1\inlinesynopsis{maxmem}{}{returns the size of the Scratchpad Memory in bytes.}
 \end{outline}
 
 
@@ -121,23 +121,14 @@ When the read/write operation is being processed, each side emits ``busy'' flag 
 \namespaceis{Com}{com}
 
 \begin{outline}
-\1\textbf{sendMessage}(portNo: Int, message: String)
-\\Sends message to the port and returns status code the other machine emits.
-\1\textbf{fetchResponse}(portNo: Int): String
-\\Fetches the message composed by other device to this machine.
-\1\textbf{sendMessageGetBytes}(portNo: Int, message: String): String
-\\Sends message, waits for responce, then returns the received message.
-\1\textbf{waitUntilReady}(portNo: Int)
-\\Blocks the program until the other device is ready.
-\1\textbf{pullMessage}(portNo: Int): String
-\\Make other device to initiate sending and returns the message receive from the other device.
-\\NOTE: this is not a function you're looking for it you're just getting the response after the sendMessage; use fetchResponse for that.
-\1\textbf{getStatusCode}(portNo: Int): Int
-\\Returns the status code of the other device.
-\1\textbf{getDeviceStatus}(portNo: Int): \{code: Int, message: String\}
-\\Returns the status message of the other device. Different types of devices may have different messages.
-\1\textbf{areYouThere}(portNo: Int): Boolean
-\\Returns true if there is other device connected and is working.
+\1\formalsynopsis{sendMessage}{portNo: Int, message: String}{Sends message to the port and returns status code the other machine emits.}
+\1\formalsynopsis{fetchResponse}{portNo: Int}[String]{Fetches the message composed by other device to this machine.}
+\1\formalsynopsis{sendMessageGetBytes}{portNo: Int, message: String}[String]{Sends message, waits for responce, then returns the received message.}
+\1\formalsynopsis{waitUntilReady}{portNo: Int}{Blocks the program until the other device is ready.}
+\1\formalsynopsis{pullMessage}{portNo: Int}[String]{Make other device to initiate sending and returns the message receive from the other device.\\NOTE: this is not a function you're looking for it you're just getting the response after the sendMessage; use fetchResponse for that.}
+\1\formalsynopsis{getStatusCode}{portNo: Int}[Int]{Returns the status code of the other device.}
+\1\formalsynopsis{getDeviceStatus}{portNo: Int}[\{code: Int, message: String\}]{Returns the status message of the other device. Different types of devices may have different messages.}
+\1\formalsynopsis{areYouThere}{portNo: Int}[Boolean]{Returns true if there is other device connected and is working.}
 \end{outline}
 
 
@@ -246,18 +237,17 @@ The com-port will behave differently if you're writing to or reading from the ad
 \end{figure}
 
 \begin{outline}
-\1\textbf{size-LSB/MSB} --- size of the data within the block
- \2\textbf{read}: from the other device
- \\\textbf{write}: what the device is about to send
- \\size of zero must be interpreted as 4096
-\1\textbf{read} --- bit is set if the other device \emph{hasNext}, unset otherwise or the device is not present
-\1\textbf{M/S} --- Master/Slave setup of the other device. Typically a disk drive is slave-only (01), a computer is both (11)
-\1\textbf{T/R} --- Send-Receive mode for the port. Set the bit to send from the port, unset to read
-\1\textbf{busy} --- device busy/transfer trigger
- \2\textbf{read}: the port is receiving something if the bit is set
- \\\textbf{write}: setting this bit initiates transfer. If T/R bit is set, the device will send out, otherwise the other device will start the transfer
-\1\textbf{ready} --- write to indicate this device is ready to receive; read to know if the other device is ready
-\1\textbf{hello} --- bit is set if other device is connected
+\1\inlinesynopsis{size-LSB/MSB}{size of the data within the block}
+ \2\argsynopsis{read}{from the other device}
+ \2\argsynopsis{write}{what the device is about to send. size of zero must be interpreted as 4096}
+\1\inlinesynopsis{read}{bit is set if the other device \emph{hasNext}, unset otherwise or the device is not present}
+\1\inlinesynopsis{M/S}{Master/Slave setup of the other device. Typically a disk drive is slave-only (01), a computer is both (11)}
+\1\inlinesynopsis{T/R}{Send-Receive mode for the port. Set the bit to send from the port, unset to read}
+\1\inlinesynopsis{busy}{device busy/transfer trigger}
+ \2\argsynopsis{read}{the port is receiving something if the bit is set}
+ \2\argsynopsis{write}{setting this bit initiates transfer. If T/R bit is set, the device will send out, otherwise the other device will start the transfer}
+\1\inlinesynopsis{ready}{write to indicate this device is ready to receive; read to know if the other device is ready}
+\1\inlinesynopsis{hello}{bit is set if other device is connected}
 \end{outline}
 
 
