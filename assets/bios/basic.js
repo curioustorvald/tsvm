@@ -2,7 +2,6 @@
 // Version 1.0 Release Date 2020-12-28
 // Version 1.1 Release Date 2021-01-28
 // Version 1.2 Release Date 2021-05-05
-// Version 1.2.1 Release Date 2021-12-01
 
 /*
 Copyright (c) 2020-2021 CuriousTorvald
@@ -26,7 +25,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
  */
 
-const THEVERSION = "1.2.1"
+if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].startsWith("-?")) {
+    println("Usage: basic <optional path to basic program>")
+    println("When the optional basic program is set, the interpreter will run the program and then quit if successful, remain open if the program had an error.")
+    return 0
+}
+
+const THEVERSION = "1.2"
 
 const PROD = true
 let INDEX_BASE = 0
@@ -34,6 +39,12 @@ let TRACEON = (!PROD) && true
 let DBGON = (!PROD) && true
 let DATA_CURSOR = 0
 let DATA_CONSTS = []
+const BASIC_HOME_PATH = "/home/basic/"
+
+if (sys.maxmem() < 8192) {
+    println("Out of memory. BASIC requires 8K or more User RAM")
+    throw Error("Out of memory")
+}
 
 let vmemsize = sys.maxmem()
 
@@ -134,6 +145,60 @@ lang.ord = function(n) {
 }
 Object.freeze(lang)
 
+let fs = {}
+fs._close = function(portNo) {
+    com.sendMessage(portNo, "CLOSE")
+}
+fs._flush = function(portNo) {
+    com.sendMessage(portNo, "FLUSH")
+}
+// @return true if operation committed successfully, false if:
+//             - opening file with R-mode and target file does not exists
+//         throws if:
+//             - java.lang.NullPointerException if path is null
+//             - Error if operation mode is not "R", "W" nor "A"
+fs.open = function(path, operationMode) {
+    var port = _BIOS.FIRST_BOOTABLE_PORT
+
+    fs._flush(port[0]); fs._close(port[0])
+
+    var mode = operationMode.toUpperCase()
+    if (mode != "R" && mode != "W" && mode != "A") {
+        throw Error("Unknown file opening mode: " + mode)
+    }
+
+    com.sendMessage(port[0], "OPEN"+mode+'"'+BASIC_HOME_PATH+path+'",'+port[1])
+    let response = com.getStatusCode(port[0])
+    return (response == 0)
+}
+// @return the entire contents of the file in String
+fs.readAll = function() {
+    var port = _BIOS.FIRST_BOOTABLE_PORT
+    com.sendMessage(port[0], "READ")
+    var response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Reading a file failed with "+response)
+    }
+    return com.pullMessage(port[0])
+}
+fs.write = function(string) {
+    var port = _BIOS.FIRST_BOOTABLE_PORT
+    com.sendMessage(port[0], "WRITE"+string.length)
+    var response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Writing a file failed with "+response)
+    }
+    com.sendMessage(port[0], string)
+    fs._flush(port[0]); fs._close(port[0])
+}
+Object.freeze(fs)
+
 // implement your own con object here
 // requirements: reset_graphics(), getch(), curs_set(int), hitterminate(), resetkeybuf(), addch(int)
 
@@ -164,6 +229,24 @@ let reLineNum = /^[0-9]+ /
 let reNumber = /([0-9]*[.][0-9]+[eE]*[\-+0-9]*[fF]*|[0-9]+[.eEfF][0-9+\-]*[fF]?)|([0-9]+(\_[0-9])*)|(0[Xx][0-9A-Fa-f_]+)|(0[Bb][01_]+)/
 let reNum = /[0-9]+/
 let tbasexit = false
+const termWidth = con.getmaxyx()[1]
+const termHeight = con.getmaxyx()[0]
+const greetText = (termWidth >= 70) ? `Terran BASIC ${THEVERSION}  `+String.fromCharCode(179)+"  Scratchpad Memory: "+vmemsize+" bytes" : `Terran BASIC ${THEVERSION}`
+const greetLeftPad = (termWidth - greetText.length - 6) >> 1
+const greetRightPad = termWidth - greetLeftPad - greetText.length - 6
+
+con.clear()
+con.color_pair(253,255)
+print('  ');con.addch(17)
+con.color_pair(0,253)
+con.move(1,4)
+print(" ".repeat(greetLeftPad)+greetText+" ".repeat(greetRightPad))
+con.color_pair(253,255)
+con.addch(16);con.curs_right();print('  ')
+con.move(3,1)
+
+con.color_pair(253,255)
+println(prompt)
 
 // variable object constructor
 /** variable object constructor
@@ -784,7 +867,6 @@ bS.addAsBasicVar = function(lnum, troValue, rh) {
         let varname = troValue.toUpperCase()
         //println("input varname: "+varname)
         if (_basicConsts[varname]) throw lang.asgnOnConst(lnum, varname)
-        if (bS.builtin[varname]) throw lang.asgnOnConst(lnum, varname)
         let type = JStoBASICtype(rh)
         bS.vars[varname] = new BasicVar(rh, type)
         return {asgnVarName: varname, asgnValue: rh}
@@ -1733,40 +1815,6 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
         return ret
     })
 }},
-/** Writes to the serial device and blocks until a status code is returned
- * @param device number (int), message (str)
- * @return status code from the device.
- */
-"CPUT" : {argc:2, f:function(lnum, stmtnum, args) {
-    return twoArg(lnum, stmtnum, args, (devnum, msg) => {
-        if (!isNumable(devnum)) throw lang.illegalType(lnum, "LH:"+Object.entries(devnum))
-        com.sendMessage(devnum, msg)
-        return com.getStatusCode(devnum)
-    })
-}},
-/** Reads the entire message (may be larger than 4096 bytes) from the serial device to the scratchpad memory
- * @param device number (int), destination pointer (int)
- * @return length of the message being read; specified memory will be filled with the actual message
- */
-"CGET" : {argc:2, f:function(lnum, stmtnum, args) {
-    return twoArgNum(lnum, stmtnum, args, (devnum, ptr) => {
-        let msg = com.pullMessage(devnum)
-        let len = msg.length|0
-        for (let i = 0; i < len; i++) {
-            sys.poke(ptr + i, msg.charCodeAt(i))
-        }
-        return len
-    })
-}},
-/** Gets the status code of the serial device
- * @param device number (int)
- * @return status code 0..255
- */
-"CSTA" : {argc:2, f:function(lnum, stmtnum, args) {
-    return oneArgNum(lnum, stmtnum, args, (devnum) => {
-        return com.getStatusCode(devnum)
-    })
-}},
 "OPTIONDEBUG" : {f:function(lnum, stmtnum, args) {
     oneArgNum(lnum, stmtnum, args, (lh) => {
         if (lh != 0 && lh != 1) throw lang.syntaxfehler(line)
@@ -1869,7 +1917,7 @@ bF._opPrc = {
     // function call in itself has highest precedence
     "`":10, // MJOIN
     "^":20,
-    "*":30,"/":30,"\\":30,
+    "*":30,"/":30,"\\":20,
     "MOD":40,
     "+":50,"-":50,
     "NOT":60,"BNOT":60,
@@ -4100,32 +4148,115 @@ bF.run = function(args) { // RUN function
     } while (lnum < cmdbuf.length)
     con.resetkeybuf()
 }
-bF.load = function(filecontents) { // LOAD function
-    filecontents.split('\n').forEach((line) => {
-        var i = line.indexOf(" ")
-        var lnum = line.slice(0, i)
-        if (isNaN(lnum)) throw lang.illegalType()
-        cmdbuf[lnum] = line.slice(i + 1, line.length)
-    })
+bF.save = function(args) { // SAVE function
+    if (args[1] === undefined) throw lang.missingOperand
+    if (!args[1].toUpperCase().endsWith(".BAS"))
+        args[1] += ".bas"
+    fs.open(args[1], "W")
+    var sb = ""
+    cmdbuf.forEach((v, i) => sb += i+" "+v+"\n")
+    fs.write(sb)
+}
+bF.load = function(args) { // LOAD function
+    if (args[1] === undefined) throw lang.missingOperand
+    var fileOpened = fs.open(args[1], "R")
+    
+        
+    if (replUsrConfirmed || cmdbuf.length == 0) {
+        if (!fileOpened) {
+            fileOpened = fs.open(args[1]+".BAS", "R")
+        }
+        if (!fileOpened) {
+            fileOpened = fs.open(args[1]+".bas", "R")
+        }
+        if (!fileOpened) {
+            throw lang.noSuchFile
+            return
+        }
+        var prg = fs.readAll()
+
+        // reset the environment
+        bF.new(true)
+
+        // read the source
+        prg.split('\n').forEach((line) => {
+            var i = line.indexOf(" ")
+            var lnum = line.slice(0, i)
+            if (isNaN(lnum)) throw lang.illegalType()
+            cmdbuf[lnum] = line.slice(i + 1, line.length)
+        })
+    }
+    else {
+        replCmdBuf = ["load"].concat(args)
+        println("Unsaved program will be lost, are you sure? (type 'yes' to confirm)")
+    }
+}
+bF.yes = function() {
+    if (replCmdBuf.length > 0) {
+        replUsrConfirmed = true
+        
+        bF[replCmdBuf[0].toLowerCase()](replCmdBuf.slice(1, replCmdBuf.length))
+        
+        replCmdBuf = []
+        replUsrConfirmed = false
+    }
+    else {
+        throw lang.syntaxfehler("interactive", "nothing to confirm!")
+    }
+}
+bF.catalog = function(args) { // CATALOG function
+    if (args[1] === undefined) args[1] = "\\"
+    var pathOpened = fs.open(args[1], 'R')
+    if (!pathOpened) {
+        throw lang.noSuchFile
+        return
+    }
+    var port = _BIOS.FIRST_BOOTABLE_PORT[0]
+    com.sendMessage(port, "LIST")
+    println(com.pullMessage(port))
 }
 Object.freeze(bF)
 
-
-println("Loading program from ROM...")
-sys.mapRom(1);
-let ffffff = sys.romReadAll()
-bF.load(ffffff)
-println(ffffff)
-
-try {
-    bF.run()
-    // TODO turn EXE lamp on
-    // TODO turn ERR lamp off
+if (exec_args !== undefined && exec_args[1] !== undefined) {
+    bF.load(["load", exec_args[1]])
+    try {
+        bF.run()
+        return 0
+    }
+    catch (e) {
+        serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`)
+        println(`${e}`)
+    }
 }
-catch (e) {
-    serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`)
-    println(`BASIC exit with error:`)
-    println(`${e}`)
-    // TODO turn EXE lamp off
-    // TODO turn ERR lamp on
+
+while (!tbasexit) {
+    var line = sys.read().trim()
+
+    cmdbufMemFootPrint += line.length
+
+    if (reLineNum.test(line)) {
+        var i = line.indexOf(" ")
+        cmdbuf[line.slice(0, i)] = line.slice(i + 1, line.length)
+    }
+    else if (line.length > 0) {
+        cmdbufMemFootPrint -= line.length
+        var cmd = line.split(" ")
+        if (bF[cmd[0].toLowerCase()] === undefined) {
+            serial.printerr("Unknown command: "+cmd[0].toLowerCase())
+            println(lang.syntaxfehler())
+        }
+        else {
+            try {
+                bF[cmd[0].toLowerCase()](cmd)
+            }
+            catch (e) {
+                serial.printerr(`${e}\n${e.stack || "Stack trace undefined"}`)
+                println(`${e}`)
+            }
+        }
+
+        println(prompt)
+    }
 }
+
+0

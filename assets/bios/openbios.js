@@ -113,7 +113,7 @@ function printSysInfo() {
     print(`System uptime  ${uh}h${um}m${us}s`)
 
     con.move(6,configContentsX)
-    print(` User RAM  ${system.maxmem()>>>10} Kbytes`)
+    print(` User RAM  ${sys.maxmem()>>>10} Kbytes`)
     con.move(7,configContentsX)
     print(`Video RAM  ${256*sys.peek(-131084)} Kbytes`)
 }

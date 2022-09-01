@@ -1,5 +1,5 @@
 let len = 560*448
-let pcnt = (system.maxmem() / len)|0
+let pcnt = (sys.maxmem() / len)|0
 if (pcnt < 2) {
   printerrln("Not enought RAM on the system to test!")
   return

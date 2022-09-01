@@ -1,6 +1,6 @@
 // exec_args: bf.js input_file optional_memsize
 let memsize = exec_args[2]|0;
-if (memsize <= 0) memsize = (system.maxmem() < 30000) ? system.maxmem()-256 : 30000;
+if (memsize <= 0) memsize = (sys.maxmem() < 30000) ? sys.maxmem()-256 : 30000;
 let nativePtr = undefined;
 try {
     nativePtr = sys.malloc(memsize);

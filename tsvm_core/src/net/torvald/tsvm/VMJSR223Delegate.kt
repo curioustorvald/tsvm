@@ -178,6 +178,9 @@ class VMJSR223Delegate(val vm: VM) {
         vm.sysrqDown = false
     }
 
+    fun maxmem(): Int {
+        return vm.memsize.toInt()
+    }
     fun getMallocStatus(): IntArray {
         return intArrayOf(vm.MALLOC_UNIT, vm.allocatedBlockCount)
     }

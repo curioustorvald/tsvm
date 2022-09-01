@@ -168,7 +168,7 @@ class TVDOSFileDescriptor {
     }
 
     list() {
-        return if (!this.isDirectory) undefined else this.driver.listFiles(this)
+        return (!this.isDirectory) ? undefined : this.driver.listFiles(this)
     }
     /** When the file does not exist, mkfile() will be called; if you want to make a directory, use mkdir() */
     touch() {

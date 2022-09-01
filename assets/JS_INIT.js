@@ -515,12 +515,6 @@ con.poll_keys = function() {
     return [-41,-42,-43,-44,-45,-46,-47,-48].map(it => sys.peek(it));
 };
 Object.freeze(con);
-// system management function
-var system = {};
-system.maxmem = function() {
-    return sys.peek(-65) | (sys.peek(-66) << 8) | (sys.peek(-67) << 16) | (sys.peek(-68) << 24);
-};
-Object.freeze(system);
 // some utilities functions
 
 // TypedArray re-implementation

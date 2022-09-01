@@ -8,7 +8,7 @@ const COL_CARET_ROW = 81
 const BIG_STRIDE = 999
 const TAB_SIZE = 4
 const PAINT_START_Y = 3
-const MEM = system.maxmem()
+const MEM = sys.maxmem()
 
 const TYPESET_DEBUG_PRINT = true
 

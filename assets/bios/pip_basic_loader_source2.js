@@ -1869,7 +1869,7 @@ bF._opPrc = {
     // function call in itself has highest precedence
     "`":10, // MJOIN
     "^":20,
-    "*":30,"/":30,"\\":30,
+    "*":30,"/":30,"\\":20,
     "MOD":40,
     "+":50,"-":50,
     "NOT":60,"BNOT":60,

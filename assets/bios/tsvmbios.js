@@ -50,7 +50,7 @@ graphics.setFramebufferScroll(0,-((1.0-tdiff/tlen)*164)|0);}
 // show how much ram is there
 con.color_pair(239,14);
 let vramstr=`VIDEO RAM : ${256 * sys.peek(-131084)} Kbytes`;
-let uramstr=` USER RAM : ${system.maxmem()>>>10} Kbytes`;
+let uramstr=` USER RAM : ${sys.maxmem()>>>10} Kbytes`;
 con.move(20,(80-vramstr.length)/2);println(vramstr);
 con.move(21,(80-uramstr.length)/2);println(uramstr);
 

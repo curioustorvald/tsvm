@@ -42,12 +42,12 @@ let DATA_CURSOR = 0
 let DATA_CONSTS = []
 const BASIC_HOME_PATH = "/home/basic/"
 
-if (system.maxmem() < 8192) {
+if (sys.maxmem() < 8192) {
     println("Out of memory. BASIC requires 8K or more User RAM")
     throw Error("Out of memory")
 }
 
-let vmemsize = system.maxmem()
+let vmemsize = sys.maxmem()
 
 let cmdbuf = [] // index: line number
 let gotoLabels = {}

@@ -1,4 +1,4 @@
-println("Main RAM:"+(system.maxmem() >> 10)+" KBytes");
+println("Main RAM:"+(sys.maxmem() >> 10)+" KBytes");
 
 ///////////////////////////////////////////////////////////////////////////////
 
