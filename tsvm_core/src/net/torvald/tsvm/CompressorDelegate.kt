@@ -24,6 +24,15 @@ class CompressorDelegate(val vm: VM) {
         }
     }
 
+    fun compTo(str: String, output: Int): Int {
+        comp(str).let {
+            it.forEachIndexed { index, byte ->
+                vm.poke(output.toLong() + index, byte)
+            }
+            return it.size
+        }
+    }
+
     fun compTo(ba: ByteArray, output: Int): Int {
         comp(ba).let {
             it.forEachIndexed { index, byte ->
@@ -37,18 +46,20 @@ class CompressorDelegate(val vm: VM) {
     fun decomp(str: String) = Companion.decomp(str)
     fun decomp(ba: ByteArray) = Companion.decomp(ba)
 
-    fun decompTo(str: String, pointer: Int) {
+    fun decompTo(str: String, pointer: Int): Int {
         val bytes = decomp(str)
         bytes.forEachIndexed { index, byte ->
             vm.poke(pointer.toLong() + index, byte)
         }
+        return bytes.size
     }
 
-    fun decompTo(ba: ByteArray, pointer: Int) {
+    fun decompTo(ba: ByteArray, pointer: Int): Int {
         val bytes = decomp(ba)
         bytes.forEachIndexed { index, byte ->
             vm.poke(pointer.toLong() + index, byte)
         }
+        return bytes.size
     }
 
     /**

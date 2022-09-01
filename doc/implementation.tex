@@ -34,10 +34,10 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 \index{stdio (library)}These are standard input/output functions:
 
 \begin{outline}
-\1\inlinesynopsis{print}{string}{prints a string without a new line.}
-\1\inlinesynopsis{println}{string}{prints a string with a new line.}
-\1\inlinesynopsis{printerr}{string}{prints a string to error output without a new line.}
-\1\inlinesynopsis{printerrln}{string}{prints a string to error output with a new line.}
+\1\inlinesynopsis{print}{String}{prints a string without a new line.}
+\1\inlinesynopsis{println}{String}{prints a string with a new line.}
+\1\inlinesynopsis{printerr}{String}{prints a string to error output without a new line.}
+\1\inlinesynopsis{printerrln}{String}{prints a string to error output with a new line.}
 \1\inlinesynopsis{read}{}{reads a string from the keyboard. Hit the Return to finish reading.}
 \end{outline}
 
@@ -49,30 +49,67 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 
 \namespaceis{Console}{con}
 
+Properties:
 \begin{outline}
+\1\inlinesynopsis{KEY\_HOME}{A keycode for the Home key. 199}
+\1\inlinesynopsis{KEY\_UP}{A keycode for the Up arrow key. 200}
+\1\inlinesynopsis{KEY\_PAGE\_UP}{A keycode for the Page Up key. 201}
+\1\inlinesynopsis{KEY\_LEFT}{A keycode for the Left arrow key. 203}
+\1\inlinesynopsis{KEY\_RIGHT}{A keycode for the Right arrow key. 205}
+\1\inlinesynopsis{KEY\_END}{A keycode for the End key. 207}
+\1\inlinesynopsis{KEY\_DOWN}{A keycode for the Down arrow key. 208}
+\1\inlinesynopsis{KEY\_PAGE\_DOWN}{A keycode for the Page Down key. 209}
+\1\inlinesynopsis{KEY\_INSERT}{A keycode for the Insert key. 210}
+\1\inlinesynopsis{KEY\_DELETE}{A keycode for the Delete key. 211}
+\1\inlinesynopsis{KEY\_BACKSPACE}{A keycode for the Backspace key. 8}
+\1\inlinesynopsis{KEY\_TAB}{A keycode for the Tab key. 9}
+\1\inlinesynopsis{KEY\_RETURN}{A keycode for the Return key. 10}
 \end{outline}
 
-
-
-\subsection{System}
-
-\index{system (library)}System library has the functions to get the status of the system.
-
-\namespaceis{System}{system}
-
+Functions:
 \begin{outline}
-\1\inlinesynopsis{maxmem}{}{returns the size of the Scratchpad Memory in bytes.}
+\1\formalsynopsis{getch}{}{Returns a key code read from the keyboard.}
+\1\formalsynopsis{poll\_keys}{}[Array(8) of Keycodes]{Poll the keyboard, then returns the captured keycodes. If less than 8 keys were held down at the moment of the polling, 0 will be substituted.}
+\1\formalsynopsis{move}{y: Int, x: Int}{Moves the text cursor to the given position. Note that the cursor position starts at 1.}
+\1\formalsynopsis{addch}{char: Int}{Puts a character denoted by its code point to where the text cursor is. The cursor will not advance.}
+\1\formalsynopsis{mvaddch}{y: Int, x: Int, char: Int}{Combination of \code{move} and \code{addch}.}
+\1\formalsynopsis{getmaxyx}{}[Array(2) of Ints]{Returns the size of the terminal in row-column order.}
+\1\formalsynopsis{getyx}{}[Array(2) of Ints]{Returns the current position of the text cursor in row-column order.}
+\1\formalsynopsis{curs\_up}{}{Moves the text cursor up once.}
+\1\formalsynopsis{curs\_down}{}{Moves the text cursor down once. Screen will scroll if the cursor moves out of the screen.}
+\1\formalsynopsis{curs\_left}{}{Moves the text cursor left once.}
+\1\formalsynopsis{curs\_right}{}{Moves the text cursor right once. Will wrap to the next line if the cursor moves out of the screen.}
+\1\formalsynopsis{curs\_set}{mode: Int}{Hides or shows the text cursor. 0 to hide, nonzero to show.}
+\1\formalsynopsis{hitterminate}{}[Boolean]{Polls the keyboard and returns true if the Ctrl-C combination were held down.}
+\1\formalsynopsis{hiteof}{}[Boolean]{Polls the keyboard and returns true if the Ctrl-D combination were held down.}
+\1\formalsynopsis{resetkeybuf}{}{Zero-fills the keyboard input buffer.}
+\1\formalsynopsis{video\_reverse}{}{Swaps the foreground and background colour of the text.}
+\1\formalsynopsis{color\_fore}{code: Int}{Defines the foreground colour of the text. 0 -- black, 1 -- red, 2 -- green, 3 -- yellow, 4 -- blue, 5 -- magenta, 6 -- cyan, 7 -- white, -1 -- transparent}
+\1\formalsynopsis{color\_back}{code: Int}{Defines the background colour of the text.}
+\1\formalsynopsis{color\_pair}{fore: Int, back: Int}{Defines the foreground and background colour of the text. Colour code for this function differs from the \textbf{color\_back} and \textbf{color\_fore}; please refer to the \ref{colourpalette}.}
+\1\formalsynopsis{clear}{}{Clears the text buffer. The framebuffer (if any) will not be affected.}
+\1\formalsynopsis{reset\_graphics}{}{Resets foreground and background colour to defaults and makes the cursor visible if it was hidden.}
 \end{outline}
 
 
 
 \subsection{Gzip}
 
-\index{gzip (library)}TODO
+\index{gzip (library)}Gzip allows texts and bytes and compressed and decompressed using the gzip format.
 
 \namespaceis{Gzip}{gzip}
 
 \begin{outline}
+\1\formalsynopsis{comp}{String}[UintArray]{Compresses the given string.}
+\1\formalsynopsis{comp}{UintArray}[UintArray]{Compresses the given bytes.}
+\1\formalsynopsis{compTo}{str: String, outputptr: Int}[Int]{Compresses the given string onto the memory, then returns the size of the compressed bytes.}
+\1\formalsynopsis{compTo}{bytes: UintArray, outputptr: Int}[Int]{Compresses the given bytes onto the memory, then returns the size of the compressed bytes.}
+\1\formalsynopsis{compFromTo}{inputptr: Int, length: Int, outputptr: Int}[Int]{Compresses the bytes onto the memory, then returns the size of the compressed bytes.}
+\1\formalsynopsis{decomp}{String}[UintArray]{Decompresses the given string (compressed bytes represented as series of characters)}
+\1\formalsynopsis{decomp}{UintArray}[UintArray]{Decompresses the given bytes.}
+\1\formalsynopsis{decompTo}{str: String, outputptr: Int}[Int]{Decompresses the given string onto the memory, then returns the size of the decompressed bytes.}
+\1\formalsynopsis{decompTo}{bytes: UintArray, outputptr: Int}[Int]{Decompresses the given bytes onto the memory, then returns the size of the decompressed bytes.}
+\1\formalsynopsis{decompFromTo}{inputptr: Int, length: Int, outputptr: Int}[Int]{Decompresses the bytes onto the memory, then returns the size of the decompressed bytes.}
 \end{outline}
 
 
@@ -95,6 +132,7 @@ Sys library allows programmers to manipulate the system in low-level.
 \namespaceis{Sys}{sys}
 
 \begin{outline}
+\1\formalsynopsis{maxmem}{}[Int]{returns the size of the Scratchpad Memory in bytes.}
 \end{outline}
 
 

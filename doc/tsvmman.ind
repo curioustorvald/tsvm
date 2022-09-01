@@ -1,34 +1,34 @@
 \begin{theindex}
 
-  \item base64 (library), \hyperpage{9}
-  \item block communication, \hyperpage{10}
-  \item boot process, \hyperpage{23}
+  \item base64 (library), \hyperpage{11}
+  \item block communication, \hyperpage{13}
+  \item boot process, \hyperpage{26}
 
   \indexspace
 
-  \item code page, \hyperpage{16}
-  \item colour palette, \hyperpage{18}
-  \item com (library), \hyperpage{10}
+  \item code page, \hyperpage{19}
+  \item colour palette, \hyperpage{21}
+  \item com (library), \hyperpage{13}
   \item con (library), \hyperpage{8}
   \item console (library), \hyperpage{8}
 
   \indexspace
 
-  \item device file, \hyperpage{27}
+  \item device file, \hyperpage{30}
 
   \indexspace
 
-  \item file descriptor (DOS), \hyperpage{25}
-  \item filesystem (DOS), \hyperpage{25}
+  \item file descriptor (DOS), \hyperpage{28}
+  \item filesystem (DOS), \hyperpage{28}
 
   \indexspace
 
-  \item gl (DOS), \hyperpage{29}
-  \item gzip (library), \hyperpage{8}
+  \item gl (DOS), \hyperpage{32}
+  \item gzip (library), \hyperpage{10}
 
   \indexspace
 
-  \item input (DOS), \hyperpage{29}
+  \item input (DOS), \hyperpage{32}
 
   \indexspace
 
@@ -36,17 +36,16 @@
 
   \indexspace
 
-  \item keycodes, \hyperpage{14}
+  \item keycodes, \hyperpage{17}
 
   \indexspace
 
-  \item MMIO-com, \hyperpage{12}
-  \item MMIO-graphics, \hyperpage{20}
+  \item MMIO-com, \hyperpage{15}
+  \item MMIO-graphics, \hyperpage{23}
 
   \indexspace
 
   \item stdio (library), \hyperpage{8}
-  \item sys (library), \hyperpage{9}
-  \item system (library), \hyperpage{8}
+  \item sys (library), \hyperpage{12}
 
 \end{theindex}
