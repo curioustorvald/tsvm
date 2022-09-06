@@ -1,4 +1,4 @@
-\chapter{Virtual Machine}
+\chapter{\thismachine}
 
 \section{Specs}
 
@@ -14,9 +14,7 @@ There are three memories on the system: Hardware Memory (8 MB), Scratchpad Memor
 
 Your Javascript program is stored into the Program Memory, and since its capacity is limitless, you can put a large graphics directly into your Javascript source code, but the Program Memory is the slowest of all three memories. For faster graphics, you need to store them onto the Scratchpad Memory then DMA-Copy them to the graphics adapter.
 
-\section{Built-in Commands}
-
-\subsection{Javascript Extensions}
+\section{Javascript Extensions}
 
 \index{js extensions}\thismachine\ provides the extra functions for your convenience.
 
@@ -29,7 +27,13 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 \1\inlinesynopsis[Array]{max}{selector}{returns the maximum among the elements of the array. Selector is optionally defined to indicate how the value must be transformed to obtain the max.}
 \end{outline}
 
-\subsection{Standard Input and Output}
+
+
+\chapter{Libraries}
+
+
+
+\section{Standard Input and Output}
 
 \index{stdio (library)}These are standard input/output functions:
 
@@ -41,9 +45,7 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 \1\inlinesynopsis{read}{}{reads a string from the keyboard. Hit the Return to finish reading.}
 \end{outline}
 
-
-
-\subsection{Console}
+\section{Console}
 
 \index{console (library)}Console library contains the functions for screen text manipulation.
 
@@ -93,7 +95,7 @@ Functions:
 
 
 
-\subsection{Gzip}
+\section{Gzip}
 
 \index{gzip (library)}Gzip allows texts and bytes and compressed and decompressed using the gzip format.
 
@@ -114,7 +116,7 @@ Functions:
 
 
 
-\subsection{Base64}
+\section{Base64}
 
 \index{base64 (library)}Base64 allows encoding of the binary data into the ASCII-strings and vice-versa.
 
@@ -128,7 +130,7 @@ Functions:
 
 
 
-\subsection{Sys}
+\section{Sys}
 
 Sys library allows programmers to manipulate the system in low-level.
 
@@ -775,7 +777,12 @@ TODO
 
 \section{The Graphics Library}
 
+\index{graphics (library)}Graphics library provides basic functions to communicate and manipulate the graphics adapter.
 
+\namespaceis{Graphics}{graphics}
+
+\begin{outline}
+\end{outline}
 
 
 \section{Graphics MMIO}

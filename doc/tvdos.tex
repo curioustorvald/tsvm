@@ -1,4 +1,4 @@
-\chapter{Introduction}
+\chapter{\thedos}
 
 \thedos\ is a Disk Operating System (usually) bundled with the distribution of the \thismachine.
 
@@ -34,8 +34,6 @@ Variables can be set or changed using \textbf{SET} commands.
 
 \index{commands (DOS)}\index{coreutils (DOS)}DOS commands are only valid under the DOS environment.
 
-To invoke the DOS commands from the Javascript-side, use:\\ \code{\_G.shell.coreutils.*}
-
 \begin{outline}
 \1\dossynopsis{cat}{file}{Reads a file and pipes its contents to the pipe, or to the console if no pipes are specified.}
 \1\dossynopsis{cd}{dir}{Change the current working directory. Alias: chdir}
@@ -52,6 +50,49 @@ To invoke the DOS commands from the Javascript-side, use:\\ \code{\_G.shell.core
 \1\dossynopsis{ver}{Prints the version of \thedos.}
 \end{outline}
 
+
+
+\chapter{Using DOS Utils on JS}
+
+DOS coreutils and some of the internal functions can be used on Javascript program.
+
+To invoke the coreutils, use \code{\_G.shell.coreutils.*}
+
+\begin{outline}
+\1\inlinesynopsis[\_G.shell]{resolvePathInput}{path}{Returns fully-qualified path of the input path, relative to the current working directory.}
+\1\inlinesynopsis[\_G.shell]{getPwdString}{}{Returns the current working directory as a string.}
+\1\inlinesynopsis[\_G.shell]{getCurrentDrive}{}{Returns the drive letter of the current working drive.}
+\1\inlinesynopsis[\_G.shell]{execute}{command}{Executes the DOS command.}
+\end{outline}
+
+
+
+\chapter{Pipes}
+
+\index{pipe (DOS)}Pipe is a way to chain the IO of the one program/command into the different programs/commands in series.
+
+A pipe can be either named or anonymous: named pipes are ones that are created by the user while the anonymous pipes are created by the DOS process as a result of the command pipelining.
+
+\section{Command Pipelining}
+
+In \thedos, a pipe can be used to route the output of a command into the other command. For example, \code{dir | less} will route the output of the \code{dir} into the text viewer called \code{less} so that the user can take their time examining the list of files in the directory, even if the list is taller that the terminal's height.
+
+\section{User-defined Pipe}
+
+A user program can create and interact with the pipe so long as it's \emph{named}. The contents of the pipe can be read and modified just like a Javascript variable.
+
+Named pipes can be retrieved on \code{\_G.shell.pipes.*}
+
+\section{Pipe-related Functions}
+
+\begin{outline}
+\1\inlinesynopsis[\_G.shell]{getPipe}{}{Returns the currently opened pipe. \code{undefined} is returned if no pipes are opened.}
+\1\inlinesynopsis[\_G.shell]{appendToCurrentPipe}{text}{Appends the given text to the current pipe.}
+\1\inlinesynopsis[\_G.shell]{pushAnonPipe}{contents}{Pushes an anonymous pipe to the current pipe stack.}
+\1\inlinesynopsis[\_G.shell]{pushPipe}{pipeName, contents}{Pushes the pipe of given name to the current pipe stack.}
+\1\inlinesynopsis[\_G.shell]{hasPipe}{}{Returns true if there is a pipe currently opened.}
+\1\inlinesynopsis[\_G.shell]{removePipe}{}{Destroys the currently opened pipe and returns it. Any pipes on the pipe stack will be shifted down to become the next current pipe.}
+\end{outline}
 
 
 \chapter{File I/O}
@@ -133,7 +174,7 @@ Functions:
 \chapter{DOS Libraries}
 
 
-\section{The Input Library}
+\section{Input}
 
 \dosnamespaceis{Input}{input}
 
@@ -142,7 +183,7 @@ Functions:
 
 
 
-\section{The GL}
+\section{GL}
 
 \dosnamespaceis{Graphics}{gl}
 

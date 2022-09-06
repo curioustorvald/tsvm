@@ -1,25 +1,28 @@
 \indexentry{js extensions|hyperpage}{7}
-\indexentry{stdio (library)|hyperpage}{8}
-\indexentry{console (library)|hyperpage}{8}
-\indexentry{con (library)|hyperpage}{8}
-\indexentry{gzip (library)|hyperpage}{10}
-\indexentry{gzip (library)|hyperpage}{10}
-\indexentry{base64 (library)|hyperpage}{11}
-\indexentry{base64 (library)|hyperpage}{11}
-\indexentry{sys (library)|hyperpage}{12}
-\indexentry{block communication|hyperpage}{15}
-\indexentry{com (library)|hyperpage}{15}
-\indexentry{com (library)|hyperpage}{15}
-\indexentry{MMIO-com|hyperpage}{17}
-\indexentry{keycodes|hyperpage}{19}
-\indexentry{code page|hyperpage}{21}
-\indexentry{colour palette|hyperpage}{23}
-\indexentry{MMIO-graphics|hyperpage}{25}
-\indexentry{boot process|hyperpage}{28}
-\indexentry{commands (DOS)|hyperpage}{29}
-\indexentry{coreutils (DOS)|hyperpage}{29}
-\indexentry{filesystem (DOS)|hyperpage}{30}
-\indexentry{file descriptor (DOS)|hyperpage}{30}
-\indexentry{device file|hyperpage}{32}
-\indexentry{input (DOS)|hyperpage}{34}
-\indexentry{gl (DOS)|hyperpage}{34}
+\indexentry{stdio (library)|hyperpage}{9}
+\indexentry{console (library)|hyperpage}{9}
+\indexentry{con (library)|hyperpage}{9}
+\indexentry{gzip (library)|hyperpage}{11}
+\indexentry{gzip (library)|hyperpage}{11}
+\indexentry{base64 (library)|hyperpage}{12}
+\indexentry{base64 (library)|hyperpage}{12}
+\indexentry{sys (library)|hyperpage}{13}
+\indexentry{block communication|hyperpage}{16}
+\indexentry{com (library)|hyperpage}{16}
+\indexentry{com (library)|hyperpage}{16}
+\indexentry{MMIO-com|hyperpage}{18}
+\indexentry{keycodes|hyperpage}{20}
+\indexentry{code page|hyperpage}{22}
+\indexentry{colour palette|hyperpage}{24}
+\indexentry{graphics (library)|hyperpage}{26}
+\indexentry{graphics (library)|hyperpage}{26}
+\indexentry{MMIO-graphics|hyperpage}{26}
+\indexentry{boot process|hyperpage}{29}
+\indexentry{commands (DOS)|hyperpage}{30}
+\indexentry{coreutils (DOS)|hyperpage}{30}
+\indexentry{pipe (DOS)|hyperpage}{32}
+\indexentry{filesystem (DOS)|hyperpage}{34}
+\indexentry{file descriptor (DOS)|hyperpage}{34}
+\indexentry{device file|hyperpage}{36}
+\indexentry{input (DOS)|hyperpage}{38}
+\indexentry{gl (DOS)|hyperpage}{38}
