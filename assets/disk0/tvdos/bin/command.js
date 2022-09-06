@@ -465,6 +465,7 @@ shell.coreutils.erase = shell.coreutils.del
 shell.coreutils.rm = shell.coreutils.del
 shell.coreutils.ls = shell.coreutils.dir
 shell.coreutils.time = shell.coreutils.date
+shell.coreutils.md = shell.coreutils.mkdir
 // end of command aliases
 Object.freeze(shell.coreutils)
 shell.stdio = {

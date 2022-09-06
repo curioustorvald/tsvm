@@ -87,6 +87,12 @@
   \textbf{#1}(#2)\IfNoValueF{#3}{: #3}\\#4%
 }
 
+% usage: \inlinesynopsis{any name}{description}
+% usage: \inlinesynopsis{function name}{arguments info}{description}
+\NewDocumentCommand\dossynopsis{ommg}{%
+  \IfNoValueF{#1}{#1.}\textbf{#2}\IfNoValueTF{#4}{ --- #3}{ \textit{#3} --- #4}%
+}
+
 \newcommand\propertysynopsis[3]{\textbf{#1}: #2\\#3}
 \newcommand\argsynopsis[2]{\textbf{#1}: #2}
 

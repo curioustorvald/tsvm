@@ -32,6 +32,27 @@ Variables can be set or changed using \textbf{SET} commands.
 
 \chapter{DOS Commands}
 
+\index{commands (DOS)}\index{coreutils (DOS)}DOS commands are only valid under the DOS environment.
+
+To invoke the DOS commands from the Javascript-side, use:\\ \code{\_G.shell.coreutils.*}
+
+\begin{outline}
+\1\dossynopsis{cat}{file}{Reads a file and pipes its contents to the pipe, or to the console if no pipes are specified.}
+\1\dossynopsis{cd}{dir}{Change the current working directory. Alias: chdir}
+\1\dossynopsis{cls}{Clears the text buffer and the framebuffer if available.}
+\1\dossynopsis{cp}{from to}{Make copies of the specified file. The source file must not be a directory. Alias: copy}
+\1\dossynopsis{date}{Prints the system date. Alias: time}
+\1\dossynopsis{dir}{path}{Lists the contents of the specifed path, or the current working directory if no arguments were given. Alias: ls}
+\1\dossynopsis{del}{file}{Deletes the file. Aliases: erase, rm}
+\1\dossynopsis{echo}{text}{Print the given text or a variable.}
+\1\dossynopsis{exit}{Exits the current command processor.}
+\1\dossynopsis{mkdir}{path}{Creates a directory. Aliase: md}
+\1\dossynopsis{rem}{Comment-out the line.}
+\1\dossynopsis{set}{key=value}{Sets the global variable \code{key} to \code{value}, or displays the list of global variables if no arguments were given.}
+\1\dossynopsis{ver}{Prints the version of \thedos.}
+\end{outline}
+
+
 
 \chapter{File I/O}
 \index{filesystem (DOS)}In \thedos, drives are assigned with a drive letter, and the drive currently booted on is always drive \textbf{A}.

@@ -151,12 +151,12 @@ Sys library allows programmers to manipulate the system in low-level.
 \1\formalsynopsis{read}{}[String]{Reads a text the user has typed and returns is as a string. The reading will be terminated when the user hits the Return key.}
 \1\formalsynopsis{readNoEcho}{}[String]{Identical to \code{read} but the text the user is typing will not be printed to the screen.}
 \1\formalsynopsis{spin}{}[]{Do nothing for 4 miliseconds. Always use this function for busy-waiting as the virtual machine will hang without one.}
-\1\formalsynopsis{waitForMemChg}{address: Int, andMask: Int, xorMask: Int}[]{Do nothing until a memory value is changed. More specifically, this function will \code{spin} while:\\$ (\textrm{peek}(addr)\ \textrm{xor}\ xorMask)\ \textrm{and}\ andMask = 0 $}
+\1\formalsynopsis{waitForMemChg}{address: Int, andMask: Int, xorMask: Int}[]{Do nothing until a memory value is changed. More specifically, this function will \code{spin} while:$$ (\textrm{peek}(addr)\ \textrm{xor}\ xorMask)\ \textrm{and}\ andMask = 0 $$}
 \1\formalsynopsis{getSysRq}{}[Boolean]{Returns true if System Request key is down.}
 \1\formalsynopsis{unsetSysRq}{}{After using the System Request key, call this function to `release' the key so that other programs can use it.}
 \1\formalsynopsis{maxmem}{}[Int]{returns the size of the Scratchpad Memory in bytes.}
 \1\formalsynopsis{getUsedMem}{}[Int]{Returns how many memories can be \code{malloc}'d.}
-\1\formalsynopsis{getMallocStatus}{}[IntArray(2)]{Returns the \code{malloc} status in following order:\\$ [Malloc\ unit\ size\ ,\ allocated\ block\ counts] $}
+\1\formalsynopsis{getMallocStatus}{}[IntArray(2)]{Returns the \code{malloc} status in following order:$$ [Malloc\ unit\ size\ ,\ allocated\ block\ counts] $$}
 \end{outline}
 
 
