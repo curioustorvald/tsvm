@@ -69,12 +69,12 @@ Properties:
 Functions:
 \begin{outline}
 \1\formalsynopsis{getch}{}{Returns a key code read from the keyboard.}
-\1\formalsynopsis{poll\_keys}{}[Array(8) of Keycodes]{Poll the keyboard, then returns the captured keycodes. If less than 8 keys were held down at the moment of the polling, 0 will be substituted.}
+\1\formalsynopsis{poll\_keys}{}[IntArray(8) of Keycodes]{Poll the keyboard, then returns the captured keycodes. If less than 8 keys were held down at the moment of the polling, 0 will be substituted for the spot on the array.}
 \1\formalsynopsis{move}{y: Int, x: Int}{Moves the text cursor to the given position. Note that the cursor position starts at 1.}
 \1\formalsynopsis{addch}{char: Int}{Puts a character denoted by its code point to where the text cursor is. The cursor will not advance.}
 \1\formalsynopsis{mvaddch}{y: Int, x: Int, char: Int}{Combination of \code{move} and \code{addch}.}
-\1\formalsynopsis{getmaxyx}{}[Array(2) of Ints]{Returns the size of the terminal in row-column order.}
-\1\formalsynopsis{getyx}{}[Array(2) of Ints]{Returns the current position of the text cursor in row-column order.}
+\1\formalsynopsis{getmaxyx}{}[IntArray(2)]{Returns the size of the terminal in row-column order.}
+\1\formalsynopsis{getyx}{}[IntArray(2)]{Returns the current position of the text cursor in row-column order.}
 \1\formalsynopsis{curs\_up}{}{Moves the text cursor up once.}
 \1\formalsynopsis{curs\_down}{}{Moves the text cursor down once. Screen will scroll if the cursor moves out of the screen.}
 \1\formalsynopsis{curs\_left}{}{Moves the text cursor left once.}
@@ -86,7 +86,7 @@ Functions:
 \1\formalsynopsis{video\_reverse}{}{Swaps the foreground and background colour of the text.}
 \1\formalsynopsis{color\_fore}{code: Int}{Defines the foreground colour of the text. 0 -- black, 1 -- red, 2 -- green, 3 -- yellow, 4 -- blue, 5 -- magenta, 6 -- cyan, 7 -- white, -1 -- transparent}
 \1\formalsynopsis{color\_back}{code: Int}{Defines the background colour of the text.}
-\1\formalsynopsis{color\_pair}{fore: Int, back: Int}{Defines the foreground and background colour of the text. Colour code for this function differs from the \textbf{color\_back} and \textbf{color\_fore}; please refer to the \ref{colourpalette}.}
+\1\formalsynopsis{color\_pair}{fore: Int, back: Int}{Defines the foreground and background colour of the text. Colour code for this function differs from the \code{color\_back} and \code{color\_fore}; please refer to the \ref{colourpalette}.}
 \1\formalsynopsis{clear}{}{Clears the text buffer. The framebuffer (if any) will not be affected.}
 \1\formalsynopsis{reset\_graphics}{}{Resets foreground and background colour to defaults and makes the cursor visible if it was hidden.}
 \end{outline}
@@ -121,6 +121,9 @@ Functions:
 \namespaceis{Base64}{base64}
 
 \begin{outline}
+\1\formalsynopsis{atob}{String}[UintArray]{Decodes the Base64 string to bytes.}
+\1\formalsynopsis{atostr}{String}[String]{Decodes the Base64 string to string.}
+\1\formalsynopsis{btoa}{UintArray}[String]{Encodes bytes to Base64 string.}
 \end{outline}
 
 
@@ -132,7 +135,28 @@ Sys library allows programmers to manipulate the system in low-level.
 \namespaceis{Sys}{sys}
 
 \begin{outline}
+\1\formalsynopsis{poke}{address: Int, value: Int}{Puts a value into the memory of the specified address.}
+\1\formalsynopsis{peek}{address: Int}[Int]{Reads a value from the memory of the specified address.}
+\1\formalsynopsis{malloc}{size: Int}[Int]{Allocates a space of the given size on the Scratchpad memory and returns its pointer (starting address)}
+\1\formalsynopsis{free}{pointer: Int}{Frees the memory space previously \code{malloc}'d}
+\1\formalsynopsis{memcpy}{from: Int, to: Int, length: Int}{Copies the memory block of the given length. From and To are pointers.}
+\1\formalsynopsis{mapRom}{romSlotNum: Int}{Maps the contents on the given ROM to the memory address {-\nobreak65537.\nobreak.-\nobreak131072}}
+\1\formalsynopsis{romReadAll}{}[String]{Reads the mapped ROM and returns its contents as a string.}
+\1\formalsynopsis{uptime}{}[Long]{Returns the uptime of the system in miliseconds.}
+\1\formalsynopsis{currentTimeInMills}{}[Long]{Returns the current time in miliseconds since the epoch (exact time varies by the system)}
+\1\formalsynopsis{nanoTime}{}[Long]{Returns the current time in nanoseconds since the epoch (exact time varies by the system)}
+\1\formalsynopsis{print}{Anything}{Prints the given value onto the printstream.}
+\1\formalsynopsis{println}{Anything}{Prints the given value plus a newline onto the printstream.}
+\1\formalsynopsis{readKey}{}[Int]{Reads a key press and returns its keycode. The program execution will be paused until a key is pressed.}
+\1\formalsynopsis{read}{}[String]{Reads a text the user has typed and returns is as a string. The reading will be terminated when the user hits the Return key.}
+\1\formalsynopsis{readNoEcho}{}[String]{Identical to \code{read} but the text the user is typing will not be printed to the screen.}
+\1\formalsynopsis{spin}{}[]{Do nothing for 4 miliseconds. Always use this function for busy-waiting as the virtual machine will hang without one.}
+\1\formalsynopsis{waitForMemChg}{address: Int, andMask: Int, xorMask: Int}[]{Do nothing until a memory value is changed. More specifically, this function will \code{spin} while:\\$ (\textrm{peek}(addr)\ \textrm{xor}\ xorMask)\ \textrm{and}\ andMask = 0 $}
+\1\formalsynopsis{getSysRq}{}[Boolean]{Returns true if System Request key is down.}
+\1\formalsynopsis{unsetSysRq}{}{After using the System Request key, call this function to `release' the key so that other programs can use it.}
 \1\formalsynopsis{maxmem}{}[Int]{returns the size of the Scratchpad Memory in bytes.}
+\1\formalsynopsis{getUsedMem}{}[Int]{Returns how many memories can be \code{malloc}'d.}
+\1\formalsynopsis{getMallocStatus}{}[IntArray(2)]{Returns the \code{malloc} status in following order:\\$ [Malloc\ unit\ size\ ,\ allocated\ block\ counts] $}
 \end{outline}
 
 
@@ -170,7 +194,7 @@ When the read/write operation is being processed, each side emits ``busy'' flag 
 \end{outline}
 
 
-\subsection{Code Example: Get File from a Disk Drive}
+\subsection{Code Example: Get a File from the Disk Drive}
 
 \begin{lstlisting}
 com.sendMessage(0, "DEVRST\x17")  // resets the disk drive
@@ -189,7 +213,7 @@ if (0 == status){
 \end{lstlisting}
 
 
-\subsection{Code Example: Write Text to a Disk Drive}
+\subsection{Code Example: Write a Text to the Disk Drive}
 
 \begin{lstlisting}
 com.sendMessage(0, "DEVRST\x17")  // resets the disk drive
@@ -283,9 +307,9 @@ The com-port will behave differently if you're writing to or reading from the ad
 \1\inlinesynopsis{T/R}{Send-Receive mode for the port. Set the bit to send from the port, unset to read}
 \1\inlinesynopsis{busy}{device busy/transfer trigger}
  \2\argsynopsis{read}{the port is receiving something if the bit is set}
- \2\argsynopsis{write}{setting this bit initiates transfer. If T/R bit is set, the device will send out, otherwise the other device will start the transfer}
+ \2\argsynopsis{write}{setting this bit initiates transfer. If the T/R bit is set, the device will send the message out, otherwise the other device will start the transfer}
 \1\inlinesynopsis{ready}{write to indicate this device is ready to receive; read to know if the other device is ready}
-\1\inlinesynopsis{hello}{bit is set if other device is connected}
+\1\inlinesynopsis{hello}{bit is set if the other device is connected}
 \end{outline}
 
 

@@ -7,17 +7,17 @@
 \indexentry{base64 (library)|hyperpage}{11}
 \indexentry{base64 (library)|hyperpage}{11}
 \indexentry{sys (library)|hyperpage}{12}
-\indexentry{block communication|hyperpage}{13}
-\indexentry{com (library)|hyperpage}{13}
-\indexentry{com (library)|hyperpage}{13}
-\indexentry{MMIO-com|hyperpage}{15}
-\indexentry{keycodes|hyperpage}{17}
-\indexentry{code page|hyperpage}{19}
-\indexentry{colour palette|hyperpage}{21}
-\indexentry{MMIO-graphics|hyperpage}{23}
-\indexentry{boot process|hyperpage}{26}
-\indexentry{filesystem (DOS)|hyperpage}{28}
-\indexentry{file descriptor (DOS)|hyperpage}{28}
-\indexentry{device file|hyperpage}{30}
-\indexentry{input (DOS)|hyperpage}{32}
-\indexentry{gl (DOS)|hyperpage}{32}
+\indexentry{block communication|hyperpage}{14}
+\indexentry{com (library)|hyperpage}{14}
+\indexentry{com (library)|hyperpage}{14}
+\indexentry{MMIO-com|hyperpage}{16}
+\indexentry{keycodes|hyperpage}{18}
+\indexentry{code page|hyperpage}{20}
+\indexentry{colour palette|hyperpage}{22}
+\indexentry{MMIO-graphics|hyperpage}{24}
+\indexentry{boot process|hyperpage}{27}
+\indexentry{filesystem (DOS)|hyperpage}{29}
+\indexentry{file descriptor (DOS)|hyperpage}{29}
+\indexentry{device file|hyperpage}{31}
+\indexentry{input (DOS)|hyperpage}{33}
+\indexentry{gl (DOS)|hyperpage}{33}
