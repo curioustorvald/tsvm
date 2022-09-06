@@ -102,7 +102,7 @@ Named pipes can be retrieved on \code{\_G.shell.pipes.*}
 \section{The File Descriptor}
 \index{file descriptor (DOS)}A file is virtualised through the \emph{file descriptor} which provides the functions to manipulate the file. Do note that when a file descriptor is created, the file is not yet opened by the drive.
 
-To create a file descriptor, use the provided function \code{files.open(fullpath)}. \code{fullpath} is a fully qualified path of the file that includes the drive letter.
+To create a file descriptor, use the provided function \code{files.open(fullPath)}. \code{fullPath} is a fully qualified path of the file that includes the drive letter.
 
 \section{Manipulating a File}
 A file has folliwing properties and can be manipulated using following functions:
@@ -112,7 +112,7 @@ Properties:
 \begin{outline}
 \1\propertysynopsis{size}{Int}{Returns a size of the file in bytes.}
 \1\propertysynopsis{path}{String}{Returns a path (NOT including the drive letter) of the file. Paths are separated using reverse solidus.}
-\1\propertysynopsis{fullpath}{String}{Returns a fully qualified path (including the drive letter) of the file. Paths are separated using reverse solidus.}
+\1\propertysynopsis{fullPath}{String}{Returns a fully qualified path (including the drive letter) of the file. Paths are separated using reverse solidus.}
 \1\propertysynopsis{driverID}{String}{Returns a filesystem driver ID associated with the file.}
 \1\propertysynopsis{driver}{[Object object]}{Returns a filesystem driver (a Javascript object) for the file.}
 \1\propertysynopsis{isDirectory}{Boolean}{Returns true if the path is a directory.}
@@ -147,7 +147,7 @@ Functions:
 
 \section{The Device Files}
 
-\index{device file}Some devices are also virtualised through the file descriptor, and they are given a special path. (their fullpath does not contain a drive letter)
+\index{device file}Some devices are also virtualised through the file descriptor, and they are given a special path. (their fullPath does not contain a drive letter)
 
 \begin{outline}
 \1\inlinesynopsis{RND}{returns random bytes upon reading}
@@ -167,7 +167,6 @@ Functions:
  \2\argsynopsis{swrite}{identical to \code{print()}.}
 \1\inlinesynopsis{FBIPF}{decodes IPF-formatted image to the framebuffer. Use the \emph{Graphics} library for the encoding.}
  \2\argsynopsis{pwrite, bwrite}{decodes the given IPF binary data. Offsets and counts for \code{pwrite} are ignored.}
-
 \end{outline}
 
 
@@ -179,9 +178,31 @@ Functions:
 \dosnamespaceis{Input}{input}
 
 \begin{outline}
+\1\inlinesynopsis{changeKeyLayout}{layoutName}{Changes the key layout. The key layout file must be stored as \code{A:/tvdos/layoutName.key}}
+\1\inlinesynopsis{withEvent}{callback}{Invokes the callback function when an input event is available.}
 \end{outline}
 
+\subsection{Input Events}
 
+Input events are Javascript array of: $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \cdots arg_n}] $$, where:
+
+\begin{outline}
+\1event name --- one of following: \textbf{key\_down}, \textbf{mouse\_down}, \textbf{mouse\_move}
+\1arguments for \textbf{key\_down}:
+ \2\argsynopsis{\argN{1}}{Key Symbol (string) of the head key}
+ \2\argsynopsis{\argN{2}}{Repeat count of the key event}
+ \2\argsynopsis{\argN{3}..\argN{10}}{The keycodes of the pressed keys}
+\1arguments for \textbf{mouse\_down}:
+ \2\argsynopsis{\argN{1}}{X-position of the mouse cursor}
+ \2\argsynopsis{\argN{2}}{Y-position of the mouse cursor}
+ \2\argsynopsis{\argN{3}}{Always the integer 1.}
+\1arguments for \textbf{mouse\_move}:
+ \2\argsynopsis{\argN{1}}{X-position of the mouse cursor}
+ \2\argsynopsis{\argN{2}}{Y-position of the mouse cursor}
+ \2\argsynopsis{\argN{3}}{1 if the mouse button is held down (i.e. dragging), 0 otherwise}
+ \2\argsynopsis{\argN{4}}{X-position of the mouse cursor on the previous frame (previous V-blank of the screen)}
+ \2\argsynopsis{\argN{5}}{Y-position of the mouse cursor on the previous frame}
+\end{outline}
 
 \section{GL}
 

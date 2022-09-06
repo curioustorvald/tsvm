@@ -248,7 +248,7 @@ _TVDOS.DRV.FS.SERIAL.flush = (fd) => {
 }
 
 _TVDOS.DRV.FS.SERIAL.getFileLen = (fd) => {
-    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.fullPath}`)
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "GETLEN")
@@ -264,7 +264,7 @@ _TVDOS.DRV.FS.SERIAL.getFileLen = (fd) => {
 // TODO pread replaces DMA.comToRam
 // TODO pwrite replaces DMA.ramToCom
 _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
-    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.fullPath}`)
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "READ")
@@ -313,7 +313,7 @@ _TVDOS.DRV.FS.SERIAL.isDirectory = (fd) => {
     return (response === 0)
 }
 _TVDOS.DRV.FS.SERIAL.listFiles = (fd) => {
-    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.path}`)
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.fullPath}`)
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     com.sendMessage(port[0], "LISTFILES")
@@ -713,15 +713,15 @@ files.reservedNames = ["AUX", // unused
 "ZERO"] // /dev/zero
 
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
-files.open = (fullpath) => {
-    if (files.reservedNames.includes(fullpath.toUpperCase())) {
-        return new TVDOSFileDescriptor(fullpath.toUpperCase())
+files.open = (fullPath) => {
+    if (files.reservedNames.includes(fullPath.toUpperCase())) {
+        return new TVDOSFileDescriptor(fullPath.toUpperCase())
     }
 
-    if (fullpath[2] != '/' && fullpath[2] != '\\') throw Error("Expected full path with drive letter, got " + fullpath)
-    let driveLetter = fullpath[0].toUpperCase()
+    if (fullPath[2] != '/' && fullPath[2] != '\\') throw Error("Expected full path with drive letter, got " + fullPath)
+    let driveLetter = fullPath[0].toUpperCase()
     let driver = _TVDOS.DRIVEFS[driveLetter]
-    return new TVDOSFileDescriptor(fullpath, driver)
+    return new TVDOSFileDescriptor(fullPath, driver)
 }
 
 
@@ -735,14 +735,15 @@ const inputwork = {};
 inputwork.keymap = [];
 
 input.changeKeyLayout = function(name) {
-    let res0 = filesystem.open("A",`tvdos/${name.toLowerCase()}.key`,"R");
-    if (res0 != 0 && inputwork.keymap.length == 0) throw new Error(`I/O Error ${res0} - A:\\tvdos\\${name.toLowerCase()}.key`);
+    let f = files.open(`A:/tvdos/${name.toLowerCase()}.key`)
+    let res0 = f.sread().trim()
+    if (res0.length == 0 && inputwork.keymap.length == 0) throw new Error(`I/O Error on ${f.fullPath}`)
     try {
-        inputwork.keymap = eval(filesystem.readAll("A"));
+        inputwork.keymap = eval(res0)
     }
     catch (e) {
-        printerrln(e);
-        return -1;
+        printerrln(e)
+        return -1
     }
 }
 
@@ -925,10 +926,10 @@ Object.freeze(unicode);
 ///////////////////////////////////////////////////////////////////////////////
 
 // install other stuffs
-filesystem.open("A", "tvdos/gl.js", "R");
-const GL = eval(filesystem.readAll("A"));
+let glfile = files.open("A:/tvdos/gl.js")
+const GL = eval(glfile.sread())
 
-let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`;
+let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`
 let injectIntChk = (s, n) => {
     // primitive way of injecting a code; will replace a JS string that matches the regex...
     let k = s
@@ -959,6 +960,6 @@ var execApp = (cmdsrc, args, appname) => {
 // Boot script
 serial.println("TVDOS.SYS initialised, running boot script...");
 var _G = {};
-filesystem.open("A", "tvdos/bin/command.js", "R");
-eval(`var _AUTOEXEC=function(exec_args){${filesystem.readAll("A")}\n};` +
+let cmdfile = files.open("A:/tvdos/bin/command.js")
+eval(`var _AUTOEXEC=function(exec_args){${cmdfile.sread()}\n};` +
       `_AUTOEXEC`)(["", "/c", "\\AUTOEXEC.BAT"])
