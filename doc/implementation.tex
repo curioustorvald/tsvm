@@ -73,8 +73,10 @@ Functions:
 \1\formalsynopsis{getch}{}{Returns a key code read from the keyboard.}
 \1\formalsynopsis{poll\_keys}{}[IntArray(8) of Keycodes]{Poll the keyboard, then returns the captured keycodes. If less than 8 keys were held down at the moment of the polling, 0 will be substituted for the spot on the array.}
 \1\formalsynopsis{move}{y: Int, x: Int}{Moves the text cursor to the given position. Note that the cursor position starts at 1.}
-\1\formalsynopsis{addch}{char: Int}{Puts a character denoted by its code point to where the text cursor is. The cursor will not advance.}
+\1\formalsynopsis{addch}{char: Int}{Puts a character denoted by its code point to where the text cursor is. The cursor will not advance. NOTE: this function accesses the graphics device directly, which may not be desirable; use \code{prnch} when you really need to \code{print} the character.}
 \1\formalsynopsis{mvaddch}{y: Int, x: Int, char: Int}{Combination of \code{move} and \code{addch}.}
+\1\formalsynopsis{prnch}{char: Int}{Prints out a character denoted by its code point using the escape sequences. Unlike \code{addch} this function actually print out a character, which makes difference in certain situation.}
+
 \1\formalsynopsis{getmaxyx}{}[IntArray(2)]{Returns the size of the terminal in row-column order.}
 \1\formalsynopsis{getyx}{}[IntArray(2)]{Returns the current position of the text cursor in row-column order.}
 \1\formalsynopsis{curs\_up}{}{Moves the text cursor up once.}

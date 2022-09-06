@@ -440,6 +440,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         textArea[memTextOffset + textOff] = text
     }
 
+    override fun emitChar(code: Int) {
+        val (x, y) = getCursorPos()
+        putChar(x, y, code.toByte())
+        setCursorPos(x + 1, y)
+    }
     override fun cursorUp(arg: Int) {
         val (x, y) = getCursorPos()
         setCursorPos(x, y - arg)
@@ -639,6 +644,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         setCursorPos(x - 1, y)
         putChar(x - 1, y, 0x20.toByte())
     }
+
 
     private lateinit var PRINTSTREAM_INSTANCE: OutputStream
     private lateinit var ERRORSTREAM_INSTANCE: OutputStream

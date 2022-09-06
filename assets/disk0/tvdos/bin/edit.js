@@ -39,9 +39,10 @@ let bulletinShown = false;
 let cursoringCol = 0;
 
 // load existing file if it's there
-let editingExistingFile = (0 == filesystem.open(driveLetter, filePath, "R"));
+let file = files.open(`${driveLetter}:/${filePath}`)
+let editingExistingFile = file.exists
 if (editingExistingFile) {
-    textbuffer = filesystem.readAll(driveLetter).split("\n");
+    textbuffer = file.sread().split("\n")
 }
 
 let windowWidth = 0;
@@ -197,8 +198,7 @@ function gotoText() {
 // FUNCTIONING FUNCTIONS (LOL) //
 
 function writeout() {
-    filesystem.open(driveLetter, filePath, "W");
-    filesystem.write(driveLetter, textbuffer.join('\n'));
+    file.swrite(textbuffer.join("\n"))
 }
 
 // KEYBOARDING FUNCTIONS //

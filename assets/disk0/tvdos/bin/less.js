@@ -38,13 +38,13 @@ else {
         return 0;
     }
 
-    let fileOpened = filesystem.open(_G.shell.getCurrentDrive(), _G.shell.resolvePathInput(filename).string, "R");
-    if (fileOpened != 0) {
+    let file = files.open(`${_G.shell.getCurrentDrive()}:/${_G.shell.resolvePathInput(filename).string}`)
+    if (!file.exists) {
         printerrln(_G.shell.resolvePathInput(filename).string+": cannot open");
         return 1;
     }
 
-    fileContent = filesystem.readAll(_G.shell.getCurrentDrive());
+    fileContent = file.sread()
 }
 
 // initialise some helper variables

@@ -570,6 +570,7 @@ Object.freeze(_TVDOS.DRV.FS.DEVFBIPF)
 
 // Legacy Serial filesystem, !!pending for removal!!
 
+/*
 const filesystem = {};
 
 filesystem._toPorts = (driveLetter) => {
@@ -692,6 +693,7 @@ filesystem.remove = (driveLetter) => {
     return (response === 0);
 };
 Object.freeze(filesystem);
+*/
 
 ///////////////////////////////////////////////////////////////////////////////
 

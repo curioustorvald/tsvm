@@ -197,6 +197,10 @@ class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), Peri
         vm.poke(-39, key.toByte())
     }
 
+    override fun emitChar(code: Int) {
+        TODO("Not yet implemented")
+    }
+
     /**
      * @return key code in 0..255 (TODO: JInput Keycode or ASCII-Code?)
      */

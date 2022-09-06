@@ -11,20 +11,20 @@ if (exec_args[1] === undefined) {
 let path = _G.shell.resolvePathInput(exec_args[2] || exec_args[1]).string;
 let driveLetter = _G.shell.getCurrentDrive();
 let noNewFile = (exec_args[1] == "/c" || exec_args[1] == "/C");
-let fileOpenedStatus = filesystem.open(driveLetter, path, "W");
-if (fileOpenedStatus != 0) {
-    printerrln("TOUCH: Can't open "+driveLetter+":\\"+path+" due to IO error");
-    return fileOpenedStatus;
+let file = files.open(`${driveLetter}:/${path}`)
+if (!file.exists) {
+    printerrln("TOUCH: Can't open "+file.fullPath+" due to IO error");
+    return 1;
 }
 
 if (!noNewFile) {
-    filesystem.mkFile(driveLetter);
+    file.mkFile()
 }
 
-let touched = filesystem.touch(driveLetter);
+let touched = file.touch()
 if (!touched) {
-    printerrln("TOUCH: Can't touch "+driveLetter+":\\"+path+" due to IO error");
-    return 1;
+    printerrln("TOUCH: Can't touch "+file.fullPath+" due to IO error");
+    return 2;
 }
 
 return 0;

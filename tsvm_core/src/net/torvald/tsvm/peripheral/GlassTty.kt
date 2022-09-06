@@ -77,12 +77,13 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
             ttyEscArguments.push(ttyEscArguments.pop() * 10 + (newnum.toInt() - 0x30))
         }
 
-        //println("[tty] accepting char $char, state: $ttyEscState")
+//        println("[tty] accepting char $char (${char.toChar()}), state: $ttyEscState")
 
         when (ttyEscState) {
             TTY_ESC_STATE.INITIAL -> {
                 when (char) {
                     ESC -> ttyEscState = TTY_ESC_STATE.ESC
+                    X84 -> ttyEscState = TTY_ESC_STATE.XCSI
                     LF -> crlf()
                     BS -> backspace()
                     TAB -> insertTab()
@@ -95,6 +96,20 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
                 when (char.toChar()) {
                     'c' -> return accept { resetTtyStatus() }
                     '[' -> ttyEscState = TTY_ESC_STATE.CSI
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.XCSI -> {
+                when (char.toChar()) {
+                    'u' -> emitChar(0)
+                    in '0'..'9' -> registerNewNumberArg(char, TTY_ESC_STATE.XNUM1)
+                    else -> return reject()
+                }
+            }
+            TTY_ESC_STATE.XNUM1 -> {
+                when (char.toChar()) {
+                    'u' -> return accept { emitChar(ttyEscArguments.pop()) }
+                    in '0'..'9' -> appendToExistingNumber(char)
                     else -> return reject()
                 }
             }
@@ -244,6 +259,11 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     abstract fun backspace()
     abstract fun privateSeqH(arg: Int)
     abstract fun privateSeqL(arg: Int)
+    /** Emits arbitrary character by its char code.
+     * Syntax \x84 <number> u
+     * Number: Any integer 0..1114111
+     **/
+    abstract fun emitChar(code: Int)
 
     abstract fun getPrintStream(): OutputStream
     abstract fun getErrorStream(): OutputStream
@@ -255,9 +275,11 @@ abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
     private val BS = 0x08.toByte()
     private val BEL = 0x07.toByte()
     private val ESC = 0x1B.toByte()
+    private val X84 = 0x84.toByte()
 
     private enum class TTY_ESC_STATE {
-        INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3, PRIVATESEQ, PRIVATENUM
+        INITIAL, ESC, CSI, NUM1, SEP1, NUM2, SEP2, NUM3, PRIVATESEQ, PRIVATENUM,
+        XCSI, XNUM1
     }
 
 

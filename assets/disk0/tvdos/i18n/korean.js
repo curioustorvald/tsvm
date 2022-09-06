@@ -2,26 +2,28 @@ let status = 0
 let workarea = sys.malloc(1920)
 
 // install LOCHRROM
-status = filesystem.open("A", "/tvdos/i18n/hang_lo.chr", "R")
-if (status != 0) {
+let hangulRomL = files.open("A:/tvdos/i18n/hang_lo.chr")
+if (!hangulRomL.exists) {
     printerrln("hang_lo.chr not found")
     sys.free(workarea)
     return status
 }
-dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
+//dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
+hangulRomL.pread(workarea, 1920, 0)
 for (let i = 0; i < 1920; i++) sys.poke(-1300607 - i, sys.peek(workarea + i))
 sys.poke(-1299460, 18)
 
 
 // install HICHRROM
-status = filesystem.open("A", "/tvdos/i18n/hang_hi.chr", "R")
-if (status != 0) {
+let hangulRomH = files.open("A:/tvdos/i18n/hang_hi.chr")
+if (!hangulRomH.exists) {
     printerrln("hang_hi.chr not found")
     sys.free(workarea)
     sys.poke(-1299460, 20) // clean up the crap
     return status
 }
-dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
+//dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
+hangulRomH.pread(workarea, 1920, 0)
 for (let i = 0; i < 1920; i++) sys.poke(-1300607 - i, sys.peek(workarea + i))
 sys.poke(-1299460, 19)
 

@@ -439,6 +439,9 @@ con.move = function(y, x) {
 con.addch = function(c) {
     graphics.putSymbol(c|0);
 };
+con.prnch = function(c) {
+    print("\x84"+c+"u");
+};
 con.mvaddch = function(y, x, c) {
     con.move(y, x); con.addch(c);
 };
