@@ -18,11 +18,11 @@
 \indexentry{graphics (library)|hyperpage}{26}
 \indexentry{MMIO-graphics|hyperpage}{26}
 \indexentry{boot process|hyperpage}{29}
-\indexentry{commands (DOS)|hyperpage}{30}
 \indexentry{coreutils (DOS)|hyperpage}{30}
-\indexentry{pipe (DOS)|hyperpage}{32}
-\indexentry{filesystem (DOS)|hyperpage}{34}
-\indexentry{file descriptor (DOS)|hyperpage}{34}
-\indexentry{device file|hyperpage}{36}
-\indexentry{input (DOS)|hyperpage}{38}
-\indexentry{gl (DOS)|hyperpage}{39}
+\indexentry{applications (DOS)|hyperpage}{31}
+\indexentry{pipe (DOS)|hyperpage}{33}
+\indexentry{filesystem (DOS)|hyperpage}{35}
+\indexentry{file descriptor (DOS)|hyperpage}{35}
+\indexentry{device file|hyperpage}{37}
+\indexentry{input (DOS)|hyperpage}{39}
+\indexentry{gl (DOS)|hyperpage}{40}

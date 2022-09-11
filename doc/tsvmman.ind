@@ -1,5 +1,9 @@
 \begin{theindex}
 
+  \item applications (DOS), \hyperpage{31}
+
+  \indexspace
+
   \item base64 (library), \hyperpage{13}
   \item block communication, \hyperpage{16}
   \item boot process, \hyperpage{29}
@@ -9,29 +13,28 @@
   \item code page, \hyperpage{22}
   \item colour palette, \hyperpage{24}
   \item com (library), \hyperpage{16}
-  \item commands (DOS), \hyperpage{30}
   \item con (library), \hyperpage{9}
   \item console (library), \hyperpage{9}
   \item coreutils (DOS), \hyperpage{30}
 
   \indexspace
 
-  \item device file, \hyperpage{36}
+  \item device file, \hyperpage{37}
 
   \indexspace
 
-  \item file descriptor (DOS), \hyperpage{34}
-  \item filesystem (DOS), \hyperpage{34}
+  \item file descriptor (DOS), \hyperpage{35}
+  \item filesystem (DOS), \hyperpage{35}
 
   \indexspace
 
-  \item gl (DOS), \hyperpage{39}
+  \item gl (DOS), \hyperpage{40}
   \item graphics (library), \hyperpage{26}
   \item gzip (library), \hyperpage{12}
 
   \indexspace
 
-  \item input (DOS), \hyperpage{38}
+  \item input (DOS), \hyperpage{39}
 
   \indexspace
 
@@ -48,7 +51,7 @@
 
   \indexspace
 
-  \item pipe (DOS), \hyperpage{32}
+  \item pipe (DOS), \hyperpage{33}
 
   \indexspace
 

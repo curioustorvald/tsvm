@@ -1,14 +1,27 @@
-if (exec_args[1] === undefined) {
-    printerrln("Usage: hexdump <file>")
-    return 1;
+let filename = exec_args[1]
+let fileContent = undefined
+if (filename === undefined && _G.shell.hasPipe()) {
+    fileContent = _G.shell.getPipe()
+}
+else if (filename === undefined) {
+    println('Missing filename ("hexdump -?" for help)');
+    return 0;
+}
+else {
+    if (filename.startsWith("-?")) {
+        println("hexdump <filename>");
+        return 0;
+    }
+
+    let file = files.open(`${_G.shell.getCurrentDrive()}:/${_G.shell.resolvePathInput(filename).string}`)
+    if (!file.exists) {
+        printerrln(_G.shell.resolvePathInput(filename).string+": cannot open");
+        return 1;
+    }
+
+    fileContent = file.sread()
 }
 
-let file = files.open(`${_G.shell.getCurrentDrive()}:/${_G.shell.resolvePathInput(exec_args[1]).string}`)
-if (!file.exists) {
-    printerrln(_G.shell.resolvePathInput(exec_args[1]).string+": cannot open");
-    return 1;
-}
-let fileContent = file.sread()
 
 for (let k = 0; k < fileContent.length; k += 16) {
     for (let i = 0; i < 16; i++) {

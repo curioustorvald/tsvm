@@ -30,9 +30,9 @@ Variables can be set or changed using \textbf{SET} commands.
 
 
 
-\chapter{DOS Commands}
+\chapter{Coreutils}
 
-\index{commands (DOS)}\index{coreutils (DOS)}DOS commands are only valid under the DOS environment.
+\index{coreutils (DOS)}Coreutils are the core ``commands'' of \thedos.
 
 \begin{outline}
 \1\dossynopsis{cat}{file}{Reads a file and pipes its contents to the pipe, or to the console if no pipes are specified.}
@@ -52,7 +52,28 @@ Variables can be set or changed using \textbf{SET} commands.
 
 
 
-\chapter{Using DOS Utils on JS}
+\chapter{Applications}
+
+\index{applications (DOS)}Applications are the programs shiped with the standard distribution of \thedos\ that is written for users' convenience.
+
+This chapter will only briefly list and describe the applications.
+
+\begin{outline}
+\1\dossynopsis{basica}{Invokens a BASIC interpreter stored in the ROM. If no BASIC rom is present, nothing will be done.}
+\1\dossynopsis{color}{Changes the background and the foreground of the active session.}
+\1\dossynopsis{command}{The default text-based DOS shell. Call with \code{command /fancy} for more \ae sthetically pleasing looks.}
+\1\dossynopsis{edit}{path}{The interactive full-screen text editor.}
+\1\dossynopsis{false}{Returns errorlevel 1 upon execution.}
+\1\dossynopsis{hexdump}{path}{Prints out the contents of a file in hexadecimal view. Supports pipe.}
+\1\dossynopsis{less}{path}{Allows user to read the long text, even if they are wider and/or taller than the screen. Supports pipe.}
+\1\dossynopsis{printfile}{path}{Prints out the contents of a textfile with line numbers. Useful for making descriptive screenshots.}
+\1\dossynopsis{touch}{path}{Updates a file's modification date. New file will be created if the specified file does not exist.}
+\1\dossynopsis{true}{Returns errorlevel 0 upon execution.}
+\end{outline}
+
+
+
+\chapter{Invoking Coreutils on JS}
 
 DOS coreutils and some of the internal functions can be used on Javascript program.
 
