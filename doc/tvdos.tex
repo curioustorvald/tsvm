@@ -154,7 +154,7 @@ Functions:
 {Writes the bytes stored in the memory starting from the pointer to file.}
  \2\argsynopsis{count}{how many bytes to write}
  \2\argsynopsis{offset}{when writing to the file, how many bytes on the file to skip before writing a first byte.}
-\1\formalsynopsis{bwrite}{bytes: UintArray}{Writes the bytes to the file.}
+\1\formalsynopsis{bwrite}{bytes: Uint8Array}{Writes the bytes to the file.}
 \1\formalsynopsis{swrite}{string: String}{Writes the string to the file.}
 \1\formalsynopsis{flush}{}{Flush the contents on the write buffer to the file immediately. Will do nothing if there is no write buffer implemented --- a write operation will always be performed imemdiately in such cases.}
 \1\formalsynopsis{close}{}{Tells the underlying device (usually a disk drive) to close a file. When dealing with multiple files on a single disk drive (of which can only have a single active---or opened---file), the underlying filesystem driver will automatically swap the files around, so this function is normally unused.}
@@ -229,5 +229,34 @@ Input events are Javascript array of: $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \c
 
 \dosnamespaceis{Graphics}{gl}
 
+Classes:
+
 \begin{outline}
+\1\inlinesynopsis[new GL]{Texture}{width: Int, height: Int, bytes: Uint8Array}{Creates an GL Texture.}
+\1\inlinesynopsis[new GL]{MonoTex}{width: Int, height: Int, bytes: Uint8Array}{Creates an 1bpp Texture.}
+\1\inlinesynopsis[new GL]{SpriteSheet}{tileWidth: Int, tileHeight: Int, texture: Texture or MonoTex}{Creates an Spritesheet backed by the given texture.}
+\end{outline}
+
+Functions:
+
+\begin{outline}
+\1\formalsynopsis{drawTexImage}{texture, x, y, framebuffer, fgcol, bgcol}{Draws the texture to the framebuffer. Transparency will be ignored.}
+ \2\argsynopsis{texture}{A pattern to draw. Must be an instance of the GL.Texture or GL.MonoTex.}
+ \2\argsynopsis{x, y}{Top-left position of the painting area}
+ \2\argsynopsis{framebuffer}{The target framebuffer on which the patterns are to be painted}
+ \2\argsynopsis{fgcol, bgcol}{Fore- and background colour for the GL.MonoTex.}
+\1\formalsynopsis{drawTexImageOver}{texture, x, y, framebuffer, fgcol}{Same as the \code{drawTexImage} except the transparency will be taken into account.}
+\1\formalsynopsis{drawTexPattern}{texture, x, y, width, height, framebuffer, fgcol, bgcol}{Fills the given area with the texture by tiling it. Transparency will be ignored.}
+ \2\argsynopsis{texture}{A pattern to draw. Must be an instance of the GL.Texture or GL.MonoTex.}
+ \2\argsynopsis{x, y}{Top-left position of the painting area}
+ \2\argsynopsis{width, height}{Width and the height of the painting area}
+ \2\argsynopsis{framebuffer}{The target framebuffer on which the patterns are to be painted}
+ \2\argsynopsis{fgcol, bgcol}{Fore- and background colour for the GL.MonoTex.}
+\1\formalsynopsis{drawTexPatternOver}{texture, x, y, width, height, framebuffer, fgcol}{Same as the \code{drawTexPattern} except the transparency will be taken into account.}
+\1\formalsynopsis{drawSprite}{sheet, xi, yi, x, y, framebuffer, overrideFG, overrideBG}{Paints the sprite to the framebuffer. Transparency will be ignored.}
+ \2\argsynopsis{xi, yi}{XY-index in the Spritesheet, zero-based.}
+ \2\argsynopsis{x, y}{Top-left position on the framebuffer where the sprite will be drawn into.}
+ \2\argsynopsis{overrideFG, overrideBG}{Optional; if specified, non-transparent pixel in the sprite will take the foreground, and the transparent ones will take the background colour instead of their original colours.}
+\1\formalsynopsis{drawSpriteOver}{sheet, xi, yi, x, y, framebuffer, overrideFG}{Same as the \code{drawSprite} except the transparency will be taken into account.}
+
 \end{outline}
