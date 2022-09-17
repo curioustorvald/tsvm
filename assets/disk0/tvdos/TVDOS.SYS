@@ -548,20 +548,21 @@ Object.freeze(_TVDOS.DRV.FS.DEVCON)
 
 _TVDOS.DRV.FS.DEVFBIPF = {}
 
-_TVDOS.DRV.FS.DEVFBIPF.pwrite = (fd, ptr, _1, _2) => {
-    let decodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[sys.peek(ptr + 13)]
-    // offset 24..27: gzipped size
-    let width = sys.peek(ptr+8) | (sys.peek(ptr+9) << 8)
-    let height = sys.peek(ptr+10) | (sys.peek(ptr+11) << 8)
-    let hasAlpha = (sys.peek(12) != 0)
+_TVDOS.DRV.FS.DEVFBIPF.pwrite = (fd, infilePtr, count, _2) => {
+    let decodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[sys.peek(infilePtr + 13)]
+    let width = sys.peek(infilePtr+8) | (sys.peek(infilePtr+9) << 8)
+    let height = sys.peek(infilePtr+10) | (sys.peek(infilePtr+11) << 8)
+    let hasAlpha = (sys.peek(infilePtr+12) != 0)
+    let ipfType = sys.peek(infilePtr+13)
+    let imgLen = sys.peek(infilePtr+24) | (sys.peek(infilePtr+25) << 8) | (sys.peek(infilePtr+26) << 16) | (sys.peek(infilePtr+27) << 24)
 
-//    println("Calling GPU")
-    decodefun(ptr + 24, -1048577, -1310721, width, height, hasAlpha)
+    let ipfbuf = sys.malloc(imgLen)
+    gzip.decompFromTo(infilePtr + 28, count - 28, ipfbuf) // should return FBUF_SIZE
 
-//    println("Changing graphics mode")
     graphics.setGraphicsMode(4)
+    decodefun(ipfbuf, -1048577, -1310721, width, height, hasAlpha)
 
-//    println("cya!")
+    sys.free(ipfbuf)
 }
 _TVDOS.DRV.FS.DEVFBIPF.bwrite = (fd, bytes) => {
     // TODO pread the file

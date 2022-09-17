@@ -26,7 +26,12 @@ if (!magicMatching) {
 }
 
 // decode input image
-let width = sys.peek(infilePtr+8) | (sys.peek(infilePtr+9) << 8)
+let ipfFile = files.open("FBIPF")
+graphics.clearText(); graphics.clearPixels(0); graphics.clearPixels2(0)
+ipfFile.pwrite(infilePtr, infile.size, 0)
+sys.free(infilePtr)
+
+/*let width = sys.peek(infilePtr+8) | (sys.peek(infilePtr+9) << 8)
 let height = sys.peek(infilePtr+10) | (sys.peek(infilePtr+11) << 8)
 let hasAlpha = (sys.peek(infilePtr+12) != 0)
 let ipfType = sys.peek(infilePtr+13)
@@ -44,4 +49,4 @@ graphics.setGraphicsMode(4)
 graphics.clearText(); graphics.clearPixels(0); graphics.clearPixels2(0)
 decodefun(ipfbuf, -1048577, -1310721, width, height, hasAlpha)
 
-sys.free(ipfbuf)
+sys.free(ipfbuf)*/

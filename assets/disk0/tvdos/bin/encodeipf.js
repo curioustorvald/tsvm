@@ -8,10 +8,8 @@ let noalpha = exec_args[4] != undefined && exec_args[4].toLowerCase() == "/noalp
 let infile = files.open(_G.shell.resolvePathInput(exec_args[2]).full)
 let outfile = files.open(_G.shell.resolvePathInput(exec_args[3]).full)
 
-let ipfType = exec_args[1]|0
-let encodefun = undefined
-if (1 == exec_args[1]) encodefun = graphics.encodeIpf1
-if (2 == exec_args[1]) encodefun = graphics.encodeIpf2
+let ipfType = (exec_args[1]|0) - 1
+let encodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[ipfType]
 if (encodefun === undefined) throw Error(`Unknown IPF format: ${exec_args[1]}`)
 
 // read input file
@@ -25,7 +23,7 @@ let hasAlpha = (4 == channels) && !noalpha
 
 // encode image
 let ipfBlockCount = Math.ceil(imgw / 4.0) * Math.ceil(imgh / 4.0)
-let ipfSizePerBlock = 12 + 4*(ipfType - 1) + 8*hasAlpha
+let ipfSizePerBlock = 12 + 4*(ipfType) + 8*hasAlpha
 let ipfRawSize = ipfSizePerBlock * ipfBlockCount
 let ipfarea = sys.malloc(ipfRawSize)
 let gzippedImage = sys.malloc(28 + ipfRawSize+8) // ipf file header + somewhat arbitrary number. Get the actual count using 28+gzlen
