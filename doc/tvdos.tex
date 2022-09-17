@@ -151,7 +151,7 @@ Functions:
 \1\formalsynopsis{bread}{}[Array]{Reads the file bytewise and returns the content in Javascript array.}
 \1\formalsynopsis{sread}{}[String]{Reads the file textwise and returns the content in Javascript string.}
 \1\formalsynopsis{pwrite}{pointer: Int, count: Int, offset: Int}
-{Writes the bytes stored in the memory starting from the pointer to file.}
+{Writes the bytes stored in the memory starting from the pointer to file.\\Note: due to the limitation of the protocol, the non-zero offset is not supported on the serial-connected disk drives.}
  \2\argsynopsis{count}{how many bytes to write}
  \2\argsynopsis{offset}{when writing to the file, how many bytes on the file to skip before writing a first byte.}
 \1\formalsynopsis{bwrite}{bytes: Uint8Array}{Writes the bytes to the file.}
