@@ -6,7 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
-class CompressorDelegate(val vm: VM) {
+class CompressorDelegate(private val vm: VM) {
 
     fun comp(str: String) = Companion.comp(str)
     fun comp(ba: ByteArray) = Companion.comp(ba)

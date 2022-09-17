@@ -11,7 +11,7 @@ import java.nio.charset.Charset
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
  */
-class VMJSR223Delegate(val vm: VM) {
+class VMJSR223Delegate(private val vm: VM) {
 
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
     fun peek(addr: Int) = vm.peek(addr.toLong())!!.toInt().and(255)
@@ -186,13 +186,13 @@ class VMJSR223Delegate(val vm: VM) {
     }
 }
 
-class VMSerialDebugger(val vm: VM) {
+class VMSerialDebugger(private val vm: VM) {
     fun print(s: Any?) = System.out.print("$s")
     fun println(s: Any?) = System.out.println("$s")
     fun printerr(s: Any?) = System.err.println("$s")
 }
 
-class Parallel(val vm: VM) {
+class Parallel(private val vm: VM) {
     fun spawnNewContext(): VMRunner {
         return VMRunnerFactory(vm.assetsDir, vm, "js")
     }

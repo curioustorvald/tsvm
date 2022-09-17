@@ -137,7 +137,7 @@ object SerialHelper {
     data class DeviceStatus(val code: Int, val message: String)
 }
 
-class SerialHelperDelegate(val vm: VM) {
+class SerialHelperDelegate(private val vm: VM) {
     fun sendMessage(portNo: Int, message: String) = SerialHelper.sendMessage(vm, portNo, message.toByteArray(VM.CHARSET))
     fun pullMessage(portNo: Int) = SerialHelper.pullMessage(vm, portNo).toString(VM.CHARSET)
     fun sendMessageGetBytes(portNo: Int, message: String) = SerialHelper.sendMessageGetBytes(vm, portNo, message.toByteArray(VM.CHARSET)).toString(VM.CHARSET)

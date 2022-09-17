@@ -261,8 +261,20 @@ _TVDOS.DRV.FS.SERIAL.getFileLen = (fd) => {
     }
     return Number(com.pullMessage(port[0]))
 }
-// TODO pread replaces DMA.comToRam
-// TODO pwrite replaces DMA.ramToCom
+_TVDOS.DRV.FS.SERIAL.pread = (fd, ptr, count, offset) => {
+    if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.fullPath}`)
+
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "READ")
+    let response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Reading a file failed with "+response)
+    }
+    dma.comToRam(port[0], offset, ptr, count)
+}
 _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
     if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.fullPath}`)
 
@@ -276,6 +288,15 @@ _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
         throw Error("Reading a file failed with "+response)
     }
     return com.pullMessage(port[0])
+}
+_TVDOS.DRV.FS.SERIAL.pwrite = (fd, ptr, count, offset) => {
+    if (offset) throw Error(`Write offset not supported on Serial device such as disk drives`)
+
+    let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
+
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    dma.ramToCom(ptr, port[0], count)
+
 }
 _TVDOS.DRV.FS.SERIAL.swrite = (fd, string) => {
     let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
@@ -399,6 +420,7 @@ _TVDOS.DRV.FS.DEVRND.pread = (fd, ptr, count, offset) => {
     for (let i = 0; i < count; i++) {
         sys.poke(ptr + i, bytes[offset + i])
     }
+
 }
 
 _TVDOS.DRV.FS.DEVRND.pwrite = (fd, ptr, count, offset) => {}
@@ -570,8 +592,8 @@ Object.freeze(_TVDOS.DRV.FS.DEVFBIPF)
 
 // Legacy Serial filesystem, !!pending for removal!!
 
-/*
-const filesystem = {};
+
+/*const filesystem = {};
 
 filesystem._toPorts = (driveLetter) => {
     if (driveLetter.toUpperCase === undefined) {
@@ -692,8 +714,8 @@ filesystem.remove = (driveLetter) => {
     var response = com.getStatusCode(port[0]);
     return (response === 0);
 };
-Object.freeze(filesystem);
-*/
+Object.freeze(filesystem);*/
+
 
 ///////////////////////////////////////////////////////////////////////////////
 

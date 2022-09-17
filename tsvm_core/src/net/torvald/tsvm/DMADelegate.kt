@@ -6,7 +6,7 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter
 /**
  * Created by minjaesong on 2021-10-15.
  */
-class DMADelegate(val vm: VM) {
+class DMADelegate(private val vm: VM) {
 
     private val READ = "READ".toByteArray(VM.CHARSET)
     private val FLUSH = "FLUSH".toByteArray(VM.CHARSET)

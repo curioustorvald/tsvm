@@ -413,13 +413,13 @@ TYPE 255 FRAME -
 
 TSVM Interchangeable Picture Format (aka iPF Type 1/2)
 
-Image is divided into 4x4 blocks and each block is serialised, then the entire file is gzipped
+Image is divided into 4x4 blocks and each block is serialised, then the entire iPF blocks are gzipped
 
 
 # File Structure
 \x1F T S V M i P F
 [HEADER]
-[Blocks.gz] or [Blocks] // gzipping is optional and only done for videos
+[Blocks.gz]
 
 - Header
     uint16 WIDTH

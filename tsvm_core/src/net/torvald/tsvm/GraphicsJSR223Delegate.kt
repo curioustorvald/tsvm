@@ -8,7 +8,7 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
 import kotlin.math.roundToInt
 
-class GraphicsJSR223Delegate(val vm: VM) {
+class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
