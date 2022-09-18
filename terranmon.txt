@@ -426,8 +426,8 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
     uint16 HEIGHT
     uint8 HAS ALPHA
     uint8  IPF Type
-        0: Type 1
-        1: Type 2
+        0: Type 1 (4:2:0 chroma subsampling)
+        1: Type 2 (4:2:2 chroma subsampling)
     byte[10] RESERVED
 
 - *.gz
@@ -448,7 +448,6 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
 
     Bits are packed like so:
 
-    uint32 SUBSAMPLING MASK (unimplemented; dont write this)
     uint8 [Cg-Top Left | Co-Top Left]
     uint16 [Y1 | Y0 | Y5 | Y4]
     uint8 [Cg-Top Right | Co-Top Right]
