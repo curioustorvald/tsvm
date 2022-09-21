@@ -9,7 +9,7 @@ let infile = files.open(_G.shell.resolvePathInput(exec_args[2]).full)
 let outfile = files.open(_G.shell.resolvePathInput(exec_args[3]).full)
 
 let ipfType = (exec_args[1]|0) - 1
-let encodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[ipfType]
+let encodefun = ([graphics.encodeIpf1, graphics.encodeIpf2])[ipfType]
 if (encodefun === undefined) throw Error(`Unknown IPF format: ${exec_args[1]}`)
 
 // read input file
