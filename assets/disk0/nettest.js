@@ -1,4 +1,4 @@
-let url="http://localhost/testnet/test.txt"
+let url="http:localhost/testnet/test.txt"
 
 let file = files.open("B:\\"+url)
 

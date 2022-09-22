@@ -11,6 +11,10 @@ import java.net.URL
 
 
 /**
+ * To get a text from the web address, send message: `GET https:en.wikipedia.org/wiki/Http`
+ *
+ * Note that there is no double-slash after the protocol (or scheme)
+ *
  * Created by minjaesong on 2022-09-22.
  */
 class HttpModem(private val vm: VM) : BlockTransferInterface(false, true) {
@@ -115,6 +119,8 @@ class HttpModem(private val vm: VM) : BlockTransferInterface(false, true) {
                 printdbg("msg: $inputString, lastIndex: ${inputString.lastIndex}")
 
                 cnxUrl = inputString.substring(4).filter { it in '!'..'~' }
+                val protocolSep = cnxUrl!!.indexOf(':')
+                cnxUrl = cnxUrl!!.substring(0, protocolSep) + "://" + cnxUrl!!.substring(protocolSep + 1)
 
                 printdbg("URL: $cnxUrl")
 
