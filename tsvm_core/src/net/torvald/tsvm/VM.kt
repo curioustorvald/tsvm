@@ -67,6 +67,15 @@ class VM(
 
 
     init {
+        println("[VM] Creating new VM with ID of $id, memsize $memsize")
+
+        peripheralTable[0] = PeripheralEntry(
+            IOSpace(this),
+            HW_RESERVE_SIZE,
+            MMIO_SIZE.toInt() - 256,
+            64
+        )
+
         init()
     }
 
@@ -77,16 +86,6 @@ class VM(
 
     fun init() {
         killAllContexts()
-
-
-        peripheralTable[0] = PeripheralEntry(
-            IOSpace(this),
-            HW_RESERVE_SIZE,
-            MMIO_SIZE.toInt() - 256,
-            64
-        )
-
-        println("[VM] Creating new VM with ID of $id, memsize $memsize")
 
         startTime = System.currentTimeMillis()
 

@@ -628,7 +628,10 @@ _TVDOS.DRV.FS.NET.sread = (fd) => {
     com.sendMessage(port[0], "GET " + url)
     com.waitUntilReady(port[0])
 
-    return com.pullMessage(port[0])
+    if (com.getStatusCode(port[0]) == 0)
+        return com.pullMessage(port[0])
+    else
+        return null
 }
 
 _TVDOS.DRV.FS.NET.flush = () => {}

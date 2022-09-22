@@ -30,15 +30,15 @@ if (filename === undefined && _G.shell.hasPipe()) {
 }
 else if (filename === undefined) {
     println('Missing filename ("less -?" for help)');
-    return 0;
+    return 1;
 }
 else {
     if (filename.startsWith("-?")) {
         println("less <filename>");
-        return 0;
+        return 1;
     }
 
-    let file = files.open(`${_G.shell.getCurrentDrive()}:/${_G.shell.resolvePathInput(filename).string}`)
+    let file = files.open(`${_G.shell.resolvePathInput(filename).full}`)
     if (!file.exists) {
         printerrln(_G.shell.resolvePathInput(filename).string+": cannot open");
         return 1;
