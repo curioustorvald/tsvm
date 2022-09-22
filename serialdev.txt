@@ -36,6 +36,7 @@ Returns: type of the device, of which but not exhaustive:
 - STOR: Storage device (floppy drive, etc.)
 - COMM: Modem (slave-mode device)
 - COMP: Modem (master-mode device, typically an other computer connected though a null-modem)
+- HTTP: Internet Modem
 
     DEVNAM
 

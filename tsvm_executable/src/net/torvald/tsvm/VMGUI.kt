@@ -76,8 +76,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             val loadedClassInstance = loadedClassConstructor.newInstance("./assets", vm, )
             gpu = (loadedClassInstance as GraphicsAdapter)
 
-            vm.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File(loaderInfo.diskPath)))
-
             vm.peripheralTable[1] = PeripheralEntry(
                 gpu,
                 GraphicsAdapter.VRAM_SIZE,
@@ -94,14 +92,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             vm.getErrorStream = { System.err }
             vm.getInputStream = { System.`in` }
         }
-
-        vm.getIO().blockTransferPorts[1].attachDevice(
-            WorldRadar(
-                Gdx.files.internal(
-                    "test_assets/test_terrain.png"
-                )
-            )
-        )
 
         loaderInfo.extraPeripherals.forEach { (port, peri) ->
             val typeargs = peri.args.map { it.javaClass }.toTypedArray()

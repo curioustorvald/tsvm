@@ -8,19 +8,18 @@ for (let y = 0; y < 40; y++) {
     for (let x = 0; x < 30; x++) {
         let octet = imageBits[y * 30 + x]
         for (let i = 0; i < 8; i++) {
-            graphics.plotPixel(8*x + i, y+8, ((octet >>> (7 - i)) & 1 != 0) ? 255 : 239)
+            graphics.plotPixel(120 + 8*x + i, 36 + y, ((octet >>> (7 - i)) & 1 != 0) ? 255 : 239)
         }
     }
 }
-con.move(8,1+(40-t.length>>1))
+con.move(13,1+(80-t.length>>1))
 print(t)
 // wait arbitrary time
-for (let b=0;b<sys.maxmem()*10;b++) {
-    sys.poke(0,(Math.random()*255)|0)
-    sys.poke(0,0)
-}
-con.clear()
-graphics.clearPixels(255)
+let tmr = sys.nanoTime();
+while (sys.nanoTime() - tmr < 2147483648) sys.spin();
+// clear screen
+graphics.clearPixels(255);con.color_pair(239,255);
+con.clear();con.move(1,1);
 
 ///////////////////////////////////////////////////////////////////////////////
 

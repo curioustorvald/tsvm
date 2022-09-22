@@ -7,6 +7,9 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.util.*
 
+/**
+ * @param driveNum 0 for COM drive number 1, but the file path will still be zero-based
+ */
 class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: File? = null) : BlockTransferInterface(false, true) {
 
     companion object {
@@ -41,23 +44,23 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             errorMsgs[STATE_CODE_NOT_A_DIRECTORY] = "NOT A DIRECTORY"
             errorMsgs[STATE_CODE_NO_FILE_OPENED] = "NO FILE OPENED"
         }
+
+        fun composePositiveAns(vararg msg: String): ByteArray {
+            val sb = ArrayList<Byte>()
+            sb.addAll(msg[0].toByteArray().toTypedArray())
+            for (k in 1 until msg.size) {
+                sb.add(UNIT_SEP)
+                sb.addAll(msg[k].toByteArray().toTypedArray())
+            }
+            sb.add(END_OF_SEND_BLOCK)
+            return sb.toByteArray()
+        }
     }
 
     private val DBGPRN = true
 
     private fun printdbg(msg: Any) {
         if (DBGPRN) println("[TestDiskDrive] $msg")
-    }
-
-    fun composePositiveAns(vararg msg: String): ByteArray {
-        val sb = ArrayList<Byte>()
-        sb.addAll(msg[0].toByteArray().toTypedArray())
-        for (k in 1 until msg.size) {
-            sb.add(UNIT_SEP)
-            sb.addAll(msg[k].toByteArray().toTypedArray())
-        }
-        sb.add(END_OF_SEND_BLOCK)
-        return sb.toByteArray()
     }
 
     private val rootPath = theRootPath ?: File("test_assets/test_drive_$driveNum")

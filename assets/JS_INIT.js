@@ -334,6 +334,18 @@ Array.prototype.tail = function() {
 Array.prototype.init = function() {
     return this.slice(0, this.length - 1)
 }
+String.prototype.head = function() {
+    return this[0]
+}
+String.prototype.last = function() {
+    return this[this.length - 1]
+}
+String.prototype.tail = function() {
+    return this.substring(1)
+}
+String.prototype.init = function() {
+    return this.substring(0, this.length - 1)
+}
 Array.prototype.shuffle = function() {
     let counter = this.length;
 

@@ -36,11 +36,38 @@ const _TVDOS = {};
 _TVDOS.VERSION = "1.0";
 _TVDOS.DRIVES = {}; // Object where key-value pair is <drive-letter> : [serial-port, drive-number]
 _TVDOS.DRIVEFS = {}; // filesystem driver for the drive letter
+_TVDOS.DRIVEINFO = {};
 // actually figure out the drive letter association
 // Drive A is always the device we're currently on
 _TVDOS.DRIVES["A"] = _BIOS.FIRST_BOOTABLE_PORT
 _TVDOS.DRIVEFS["A"] = "SERIAL"
-//TODO
+_TVDOS.DRIVEINFO["A"] = {
+    name: com.sendMessageGetBytes(_BIOS.FIRST_BOOTABLE_PORT[0], "DEVNAM\x17").init(),
+    type: com.sendMessageGetBytes(_BIOS.FIRST_BOOTABLE_PORT[0], "DEVTYP\x17").substring(0,4)
+}
+
+// probe filesystem devices
+let devnameToDriver = {"PRNT":"LP","STOR":"SERIAL","COMM":"COM","HTTP":"NET"}
+let currentDriveLetter = ["A","B","C","D"]
+for (let portNo = 1; portNo < 4; portNo++) {
+    if (com.areYouThere(portNo)) {
+        com.sendMessage(portNo, "DEVRST\x17")
+        sys.spin()
+        let devname = com.sendMessageGetBytes(portNo, "DEVTYP\x17").substring(0,4)
+        let driver = devnameToDriver[devname]
+        serial.println(`port: ${portNo}, devname: ${devname} ${com.sendMessageGetBytes(portNo, "DEVNAM\x17")}`)
+        if (driver) {
+            let dlet = currentDriveLetter[portNo]
+            _TVDOS.DRIVEFS[dlet] = driver
+            _TVDOS.DRIVES[dlet] = [portNo, 1]
+            _TVDOS.DRIVEINFO[dlet] = {
+                name: com.sendMessageGetBytes(portNo, "DEVNAM\x17").init(),
+                type: devname
+            }
+        }
+    }
+}
+
 _TVDOS.DRV = {}
 
 
@@ -587,6 +614,40 @@ _TVDOS.DRV.FS.DEVFBIPF.remove = () => {}
 _TVDOS.DRV.FS.DEVFBIPF.exists = () => true
 
 Object.freeze(_TVDOS.DRV.FS.DEVFBIPF)
+
+///////////////////////////////////////////////////////////////////////////////
+
+_TVDOS.DRV.FS.NET = {}
+
+
+_TVDOS.DRV.FS.NET.sread = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    let url = fd.path.substring(fd.path.indexOf("\\")+1).replaceAll("\\","/")
+
+    serial.println("NETFILE GET " + url)
+    com.sendMessage(port[0], "GET " + url)
+    com.waitUntilReady(port[0])
+
+    return com.pullMessage(port[0])
+}
+
+_TVDOS.DRV.FS.NET.flush = () => {}
+_TVDOS.DRV.FS.NET.close = () => {}
+_TVDOS.DRV.FS.NET.isDirectory = () => false
+_TVDOS.DRV.FS.NET.listFiles = () => undefined
+_TVDOS.DRV.FS.NET.touch = () => {}
+_TVDOS.DRV.FS.NET.mkDir = () => {}
+_TVDOS.DRV.FS.NET.mkFile = () => {}
+_TVDOS.DRV.FS.NET.remove = () => {}
+_TVDOS.DRV.FS.NET.exists = (fd) => {
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    let url = fd.path.substring(fd.path.indexOf("\\")+1).replaceAll("\\","/")
+
+    com.sendMessage(port[0], "GET " + url)
+    com.waitUntilReady(port[0])
+
+    return (0 == com.getStatusCode(port[0]))
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 
