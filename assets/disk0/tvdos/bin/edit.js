@@ -28,6 +28,8 @@ else {
 let driveLetter = _G.shell.getCurrentDrive();
 let filePath = _G.shell.getPwdString() + filename;
 
+let contentChanged = false;
+
 let scroll = 0;
 let scrollHor = 0;
 let textbuffer = [""];
@@ -135,8 +137,9 @@ function drawMenubarBase() {
     con.addch(222);con.curs_right();
     con.addch(221);con.curs_right();
     let cursPos = con.getyx();
+    let filenameStr = (contentChanged) ? `${filename}*` : filename;
     for (let i = cursPos[1]; i < windowWidth; i++) {
-        con.mvaddch(1, i, filename.codePointAt(i-cursPos[1]));
+        con.mvaddch(1, i, filenameStr.codePointAt(i-cursPos[1]));
     }
 }
 
@@ -197,8 +200,13 @@ function gotoText() {
 
 // FUNCTIONING FUNCTIONS (LOL) //
 
+function setContentChanged(b) {
+    contentChanged = b
+}
+
 function writeout() {
     file.swrite(textbuffer.join("\n"))
+    setContentChanged(false)
 }
 
 // KEYBOARDING FUNCTIONS //
@@ -417,23 +425,22 @@ while (!exit) {
     let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
     let keycode = keycodes[0]
 
-    // TODO: either implement the new strobing-getch() by yourself or modify the sys.getch() so that CTRL-alph would return correct numbers
-
-//    serial.println(`getch = ${key}`)
-
     if (bulletinShown) dismissBulletin();
 
     if (keysym == "q" && keycodes[1] == 129) // Ctrl-Q
         exit = true;
     else if (keysym == "s" && keycodes[1] == 129 && !bulletinShown) {
         writeout();
+        drawLnCol();
         displayBulletin(`Wrote ${textbuffer.length} lines`);
     }
     else if (keycode == 67) { // Bksp
+        setContentChanged(true)
         backspaceOnce();
         drawLnCol(); gotoText();
     }
     else if (keycode == 66) { // Return
+        setContentChanged(true)
         appendLine(); drawLnCol(); gotoText();
     }
     else if (keysym == "<LEFT>") {
@@ -467,6 +474,7 @@ while (!exit) {
         cursorMoveRelative(BIG_STRIDE, 0);
     }
     else if (keysym == "<TAB>") { // insert spaces appropriately
+        setContentChanged(true)
         let tabsize = TAB_SIZE - (cursorCol % TAB_SIZE);
 
         for (let k = 0; k < tabsize; k++) {
@@ -480,6 +488,7 @@ while (!exit) {
         drawTextLineAbsolute(cursorRow, scrollHor); drawLnCol(); gotoText();
     }
     else if (keysym.length == 1 || !keysym.startsWith("<")) { // printables (excludes \n)
+        setContentChanged(true)
         insertChar(keysym, cursorRow, cursorCol);
         // identical to con.KEY_RIGHT
         cursoringCol = cursorCol + 1;
