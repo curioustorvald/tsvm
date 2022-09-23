@@ -13,9 +13,9 @@ else {
         return 0;
     }
 
-    let file = files.open(`${_G.shell.getCurrentDrive()}:/${_G.shell.resolvePathInput(filename).string}`)
+    let file = files.open(`${_G.shell.resolvePathInput(filename).full}`)
     if (!file.exists) {
-        printerrln(_G.shell.resolvePathInput(filename).string+": cannot open");
+        printerrln(file.fullPath+": cannot open");
         return 1;
     }
 

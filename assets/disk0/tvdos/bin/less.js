@@ -40,7 +40,7 @@ else {
 
     let file = files.open(`${_G.shell.resolvePathInput(filename).full}`)
     if (!file.exists) {
-        printerrln(_G.shell.resolvePathInput(filename).string+": cannot open");
+        printerrln(file.fullPath+": cannot open");
         return 1;
     }
 

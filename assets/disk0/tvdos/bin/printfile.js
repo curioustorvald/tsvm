@@ -10,10 +10,8 @@ else {
     println("File to print out?")
     filename = read()
 }
-let driveLetter = _G.shell.getCurrentDrive()
-let filePath = _G.shell.getPwdString() + filename
 
-let file = files.open(`${driveLetter}:${filePath}`)
+let file = files.open(`${_G.shell.resolvePathInput(filename).full}`)
 
 if (!file.exists) {
     printerrln("File not found")

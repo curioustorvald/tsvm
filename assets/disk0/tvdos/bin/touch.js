@@ -8,10 +8,8 @@ if (exec_args[1] === undefined) {
     return 1;
 }
 
-let path = _G.shell.resolvePathInput(exec_args[2] || exec_args[1]).string;
-let driveLetter = _G.shell.getCurrentDrive();
 let noNewFile = (exec_args[1] == "/c" || exec_args[1] == "/C");
-let file = files.open(`${driveLetter}:/${path}`)
+let file = files.open(`${_G.shell.resolvePathInput(exec_args[2] || exec_args[1]).full}`)
 if (!file.exists) {
     printerrln("TOUCH: Can't open "+file.fullPath+" due to IO error");
     return 1;

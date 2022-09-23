@@ -25,8 +25,6 @@ else {
     println("File to edit?");
     filename = read();
 }
-let driveLetter = _G.shell.getCurrentDrive();
-let filePath = _G.shell.getPwdString() + filename;
 
 let contentChanged = false;
 
@@ -41,7 +39,7 @@ let bulletinShown = false;
 let cursoringCol = 0;
 
 // load existing file if it's there
-let file = files.open(`${driveLetter}:/${filePath}`)
+let file = files.open(`${_G.shell.resolvePathInput(filename).full}`)
 let editingExistingFile = file.exists
 if (editingExistingFile) {
     textbuffer = file.sread().split("\n")
