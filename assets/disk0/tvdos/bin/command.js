@@ -11,8 +11,9 @@ let errorlevel = 0
 
 const termWidth = con.getmaxyx()[1]
 const termHeight = con.getmaxyx()[0]
-const welcome_text = (termWidth > 40) ? "TSVM Disk Operating System, version " + _TVDOS.VERSION
-    : "TSVM Disk Operating System " + _TVDOS.VERSION
+const osName = _TVDOS.variables.OS_NAME || "TVDOS"
+const welcome_text = (termWidth > 40) ? `${osName}, version ${_TVDOS.VERSION}`
+    : `${osName} ${_TVDOS.VERSION}`
 const greetLeftPad = (termWidth - welcome_text.length - 6) >> 1
 const greetRightPad = termWidth - greetLeftPad - welcome_text.length - 6
 

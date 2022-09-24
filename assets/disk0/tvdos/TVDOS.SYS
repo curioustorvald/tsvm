@@ -82,7 +82,7 @@ _TVDOS.variables = {
     PATH: "\\tvdos\\bin;\\tbas;\\home",
     PATHEXT: ".com;.bat;.js",
     HELPPATH: "\\tvdos\\help",
-    OS_NAME: "Terrarum Virtual DOS",
+    OS_NAME: "TSVM Disk Operating System",
     OS_VERSION: _TVDOS.VERSION
 };
 Object.freeze(_TVDOS);
