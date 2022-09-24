@@ -4,7 +4,7 @@
 
 All \thedos-related features requires the DOS to be fully loaded.
 
-
+On this documentation, what would be a reverse solidus (e.g. directory separators) are typesetted using a slash; while they \emph{are} interchangeable, using the reverse solidus are recommended for path input.
 
 
 \chapter{Bootstrapping}
@@ -59,10 +59,14 @@ Variables can be set or changed using \textbf{SET} commands.
 This chapter will only briefly list and describe the applications.
 
 \begin{outline}
-\1\dossynopsis{basica}{Invokens a BASIC interpreter stored in the ROM. If no BASIC rom is present, nothing will be done.}
+\1\dossynopsis{basica}{Invokes a BASIC interpreter stored in the ROM. If no BASIC rom is present, nothing will be done.}
+\1\dossynopsis{basic}{If your system is bundled with a software-based BASIC, this command will invoke the BASIC interpreter stored in the disk.}
 \1\dossynopsis{color}{Changes the background and the foreground of the active session.}
 \1\dossynopsis{command}{The default text-based DOS shell. Call with \code{command /fancy} for more \ae sthetically pleasing looks.}
+\1\dossynopsis{decodeipf}{file}{Decodes the IPF-formatted image to the framebuffer using the graphics processor.}
+\1\dossynopsis{drives}{Shows the list of the connected and mounted disk drives.}
 \1\dossynopsis{edit}{path}{The interactive full-screen text editor.}
+\1\dossynopsis{encodeipf}{1/2 imagefile ipffile}{Encodes the given image file (.jpg, .png, .bmp, .tga) to the IPF format using the graphics hardware.}
 \1\dossynopsis{false}{Returns errorlevel 1 upon execution.}
 \1\dossynopsis{hexdump}{path}{Prints out the contents of a file in hexadecimal view. Supports pipe.}
 \1\dossynopsis{less}{path}{Allows user to read the long text, even if they are wider and/or taller than the screen. Supports pipe.}
@@ -168,7 +172,7 @@ Functions:
 
 \section{The Device Files}
 
-\index{device file}Some devices are also virtualised through the file descriptor, and they are given a special path. (their fullPath does not contain a drive letter)
+\index{device file}Some devices are also virtualised through the file descriptor, and they are given a special drive letter of \code{\$}. (e.g. \code{\$:/RND})
 
 \begin{outline}
 \1\inlinesynopsis{RND}{returns random bytes upon reading}
@@ -186,7 +190,7 @@ Functions:
  \2\argsynopsis{pwrite}{writes the bytes from the given pointer.}
  \2\argsynopsis{bwrite}{identical to \code{print()} except the given byte array will be casted to string.}
  \2\argsynopsis{swrite}{identical to \code{print()}.}
-\1\inlinesynopsis{FBIPF}{decodes IPF-formatted image to the framebuffer. Use the \emph{Graphics} library for the encoding.}
+\1\inlinesynopsis{FBIPF}{decodes IPF-formatted image to the framebuffer. Use the bundled \code{encodeipf.js} for the encoding.}
  \2\argsynopsis{pwrite, bwrite}{decodes the given IPF binary data. Offsets and counts for \code{pwrite} are ignored.}
 \end{outline}
 

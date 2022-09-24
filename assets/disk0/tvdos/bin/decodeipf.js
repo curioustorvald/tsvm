@@ -26,7 +26,7 @@ if (!magicMatching) {
 }
 
 // decode input image
-let ipfFile = files.open("FBIPF")
+let ipfFile = files.open("$:/FBIPF")
 graphics.clearText(); graphics.clearPixels(0); graphics.clearPixels2(0)
 ipfFile.pwrite(infilePtr, infile.size, 0)
 sys.free(infilePtr)

@@ -1,4 +1,4 @@
-let f = files.open("RND")
+let f = files.open("$:/RND")
 let mlen = 512
 let m = sys.malloc(mlen)
 

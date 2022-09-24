@@ -94,15 +94,17 @@ _TVDOS.DRV.FS = {}
 class TVDOSFileDescriptor {
 
     constructor(path0, driverID) {
-        if (driverID === undefined) {
-            if (!files.reservedNames.includes(path0)) {
-                throw Error(`${path0} is not a valid device file`)
+        if (path0.startsWith("$")) {
+            let devName = path0.substring(3)
+
+            if (!files.reservedNames.includes(devName)) {
+                throw Error(`${devName} is not a valid device file`)
             }
 
             this._driveLetter = undefined
             this._path = path0
-            this._driverID = `DEV${path0}`
-            this._driver = _TVDOS.DRV.FS[`DEV${path0}`] // can't just put `driverID` here
+            this._driverID = `DEV${devName}`
+            this._driver = _TVDOS.DRV.FS[`DEV${devName}`] // can't just put `driverID` here
         }
         else {
             let p = path0.replaceAll("/", "\\")
@@ -111,7 +113,7 @@ class TVDOSFileDescriptor {
                 p = p.substring(0, p.length - 1)
             }
             this._driveLetter = p[0]
-            this._path = p.substring(2) // detaches A:
+            this._path = p.substring(2) // detaches $:
             this._driverID = driverID
             this._driver = _TVDOS.DRV.FS[driverID]
             serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}`)
@@ -810,6 +812,12 @@ files.open = (fullPath) => {
     if (fullPath[2] != '/' && fullPath[2] != '\\') throw Error("Expected full path with drive letter, got " + fullPath)
     let driveLetter = fullPath[0].toUpperCase()
     let driver = _TVDOS.DRIVEFS[driveLetter]
+
+    // special device files ($:\NUL, $:\CON, etc)
+    if ("$" == driveLetter) {
+        return new TVDOSFileDescriptor(fullPath.toUpperCase())
+    }
+
     return new TVDOSFileDescriptor(fullPath, driver)
 }
 
