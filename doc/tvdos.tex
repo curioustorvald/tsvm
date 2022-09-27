@@ -52,9 +52,9 @@ Variables can be set or changed using \textbf{SET} commands.
 
 
 
-\chapter{Applications}
+\chapter{Built-in Apps}
 
-\index{applications (DOS)}Applications are the programs shiped with the standard distribution of \thedos\ that is written for users' convenience.
+\index{built-in apps (DOS)}Built-in Applications are the programs shipped with the standard distribution of \thedos\ that is written for users' convenience.
 
 This chapter will only briefly list and describe the applications.
 
@@ -77,7 +77,20 @@ This chapter will only briefly list and describe the applications.
 
 
 
-\chapter{Invoking Coreutils on JS}
+\chapter{Writing Your Own Apps}
+
+\index{user apps (DOS)}User-made Applications are basically a standard Javascript program, but \thedos\ provides DOS extensions for convenience.
+
+User apps are invoked through \thedos\ to inject the command-line arguments and some necessary functionalities.
+
+\section{Command-line Arguments}
+
+The command line arguments are given via the array of strings named `exec\_args`.
+
+Index zero holds the name used to invoke the app, and the rest hold the actual arguments.
+
+
+\section{Invoking Coreutils on the user Apps}
 
 DOS coreutils and some of the internal functions can be used on Javascript program.
 
@@ -90,6 +103,12 @@ To invoke the coreutils, use \code{\_G.shell.coreutils.*}
 \1\inlinesynopsis[\_G.shell]{execute}{command}{Executes the DOS command.}
 \end{outline}
 
+
+\section{Termination Check Injection}
+
+Due to the non-preemptive nature of the virtual machine, the termination\footnote{Default key combination: Shift+Ctrl+T+R} signal must be explicitly captured by the app, and taking care of it by yourself can be extremely tedious. Fortunately \thedos\ parses the user-written program and injects those checks accordingly.
+
+While- and For-loops are always have such checks injected, but the `read()` is not checked for the termination.
 
 
 \chapter{Pipes}
@@ -195,10 +214,10 @@ Functions:
 \end{outline}
 
 
-\chapter{DOS Libraries}
 
+\chapter{Input Event Handling}
 
-\section{Input}
+\thedos\ provides the library for handling the keyboard and mouse events.
 
 \dosnamespaceis{Input}{input}
 
@@ -229,7 +248,9 @@ Input events are Javascript array of: $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \c
  \2\argsynopsis{\argN{5}}{Y-position of the mouse cursor on the previous frame}
 \end{outline}
 
-\section{GL}
+\chapter{The Graphics Library}
+
+\thedos\ provides the library for drawing pixels to the screen.
 
 \dosnamespaceis{Graphics}{gl}
 

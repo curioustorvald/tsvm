@@ -51,6 +51,9 @@ tmp_*
 *.out
 tsvmman.pdf
 *.toc
+*.idx
+*.ilg
+*.ind
 
 assets/disk0/home/basic/*
 assets/disk0/movtestimg/*.jpg

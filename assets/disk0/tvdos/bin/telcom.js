@@ -17,6 +17,10 @@ else {
 function greet() {
     if (!port) {
         println("COM port not specified; please run 'listen [1|2|3|4]' to open a port first.")
+        println("In listening mode, any text entered will be sent right to the COM")
+        println("Hit Ctrl+A while listening to return to the prompt.")
+        println("On the prompt, enter 'pull' to pull the message.")
+        println("Enter 'exit' to exit.")
     }
 }
 
@@ -65,12 +69,13 @@ function sendMessage(line) {
         if (line.charAt(line.length - 1) == '\\')
             line = line.substring(0, line.length - 1) + '\x17'
         com.sendMessage(port - 1, line)
-        println(com.fetchResponse(port - 1))
+        com.waitUntilReady(port - 1)
+        println(com.pullMessage(port - 1))
     }
 }
 
 function print_prompt_text() {
-    print(`${getFocusStr[focus]()}> `)
+    print(`${getFocusStr[focus]()}>`)
 }
 
 con.curs_set(1)
