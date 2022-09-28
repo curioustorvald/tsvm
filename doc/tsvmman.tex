@@ -73,24 +73,26 @@
 \newcommand{\namespaceis}[2]{\index{#2 (library)}The functions in the #1 library can be found under the \textbf{#2} namespace.}
 \newcommand{\dosnamespaceis}[2]{\index{#2 (DOS)}The functions in the \thedos\ #1 library can be found under the \textbf{#2} namespace.}
 
-% usage: \inlinesynopsis{any name}{description}
-% usage: \inlinesynopsis{function name}{arguments info}{description}
-% usage: \inlinesynopsis[namespace]{any name}{description}
-% usage: \inlinesynopsis[namespace]{function name}{arguments info}{description}
-\NewDocumentCommand\inlinesynopsis{ommg}{%
-  \IfNoValueF{#1}{#1.}\textbf{#2}\IfNoValueTF{#4}{ --- #3}{(#3) --- #4}%
+% usage: \inlinesynopsis           {name}           {description}
+% usage: \inlinesynopsis           {name}[arguments]{description}
+% usage: \inlinesynopsis[namespace]{name}           {description}
+% usage: \inlinesynopsis[namespace]{name}[arguments]{description}
+\NewDocumentCommand\inlinesynopsis{omom}{%
+  \IfNoValueF{#1}{#1.}\textbf{#2}\IfNoValueTF{#3}{ --- #4}{(#3) --- #4}%
 }
 
 % usage: \formalsynopsis{function name}{arguments info}[return type]{description}
-% usage: \formalsynopsis{function name}{arguments info}{description}
+% usage: \formalsynopsis{function name}{arguments info}             {description}
 \NewDocumentCommand\formalsynopsis{mmom}{%
   \textbf{#1}(#2)\IfNoValueF{#3}{: #3}\\#4%
 }
 
-% usage: \inlinesynopsis{any name}{description}
-% usage: \inlinesynopsis{function name}{arguments info}{description}
-\NewDocumentCommand\dossynopsis{ommg}{%
-  \IfNoValueF{#1}{#1.}\textbf{#2}\IfNoValueTF{#4}{ --- #3}{ \textit{#3} --- #4}%
+% usage: \dossynopsis           {name}           {description}
+% usage: \dossynopsis           {name}[arguments]{description}
+% usage: \dossynopsis[namespace]{name}           {description}
+% usage: \dossynopsis[namespace]{name}[arguments]{description}
+\NewDocumentCommand\dossynopsis{omom}{%
+  \IfNoValueF{#1}{#1.}\textbf{#2}\IfNoValueTF{#3}{ --- #4}{ \textit{#3} --- #4}%
 }
 
 \newcommand\propertysynopsis[3]{\textbf{#1}: #2\\#3}

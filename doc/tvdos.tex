@@ -35,18 +35,18 @@ Variables can be set or changed using \textbf{SET} commands.
 \index{coreutils (DOS)}Coreutils are the core ``commands'' of \thedos.
 
 \begin{outline}
-\1\dossynopsis{cat}{file}{Reads a file and pipes its contents to the pipe, or to the console if no pipes are specified.}
-\1\dossynopsis{cd}{dir}{Change the current working directory. Alias: chdir}
+\1\dossynopsis{cat}[file]{Reads a file and pipes its contents to the pipe, or to the console if no pipes are specified.}
+\1\dossynopsis{cd}[dir]{Change the current working directory. Alias: chdir}
 \1\dossynopsis{cls}{Clears the text buffer and the framebuffer if available.}
-\1\dossynopsis{cp}{from to}{Make copies of the specified file. The source file must not be a directory. Alias: copy}
+\1\dossynopsis{cp}[from to]{Make copies of the specified file. The source file must not be a directory. Alias: copy}
 \1\dossynopsis{date}{Prints the system date. Alias: time}
-\1\dossynopsis{dir}{path}{Lists the contents of the specifed path, or the current working directory if no arguments were given. Alias: ls}
-\1\dossynopsis{del}{file}{Deletes the file. Aliases: erase, rm}
-\1\dossynopsis{echo}{text}{Print the given text or a variable.}
+\1\dossynopsis{dir}[path]{Lists the contents of the specifed path, or the current working directory if no arguments were given. Alias: ls}
+\1\dossynopsis{del}[file]{Deletes the file. Aliases: erase, rm}
+\1\dossynopsis{echo}[text]{Print the given text or a variable.}
 \1\dossynopsis{exit}{Exits the current command processor.}
-\1\dossynopsis{mkdir}{path}{Creates a directory. Aliase: md}
+\1\dossynopsis{mkdir}[path]{Creates a directory. Aliase: md}
 \1\dossynopsis{rem}{Comment-out the line.}
-\1\dossynopsis{set}{key=value}{Sets the global variable \code{key} to \code{value}, or displays the list of global variables if no arguments were given.}
+\1\dossynopsis{set}[key=value]{Sets the global variable \code{key} to \code{value}, or displays the list of global variables if no arguments were given.}
 \1\dossynopsis{ver}{Prints the version of \thedos.}
 \end{outline}
 
@@ -63,15 +63,15 @@ This chapter will only briefly list and describe the applications.
 \1\dossynopsis{basic}{If your system is bundled with a software-based BASIC, this command will invoke the BASIC interpreter stored in the disk.}
 \1\dossynopsis{color}{Changes the background and the foreground of the active session.}
 \1\dossynopsis{command}{The default text-based DOS shell. Call with \code{command /fancy} for more \ae sthetically pleasing looks.}
-\1\dossynopsis{decodeipf}{file}{Decodes the IPF-formatted image to the framebuffer using the graphics processor.}
+\1\dossynopsis{decodeipf}[file]{Decodes the IPF-formatted image to the framebuffer using the graphics processor.}
 \1\dossynopsis{drives}{Shows the list of the connected and mounted disk drives.}
-\1\dossynopsis{edit}{path}{The interactive full-screen text editor.}
-\1\dossynopsis{encodeipf}{1/2 imagefile ipffile}{Encodes the given image file (.jpg, .png, .bmp, .tga) to the IPF format using the graphics hardware.}
+\1\dossynopsis{edit}[file]{The interactive full-screen text editor.}
+\1\dossynopsis{encodeipf}[1/2 imagefile ipffile]{Encodes the given image file (.jpg, .png, .bmp, .tga) to the IPF format using the graphics hardware.}
 \1\dossynopsis{false}{Returns errorlevel 1 upon execution.}
-\1\dossynopsis{hexdump}{path}{Prints out the contents of a file in hexadecimal view. Supports pipe.}
-\1\dossynopsis{less}{path}{Allows user to read the long text, even if they are wider and/or taller than the screen. Supports pipe.}
-\1\dossynopsis{printfile}{path}{Prints out the contents of a textfile with line numbers. Useful for making descriptive screenshots.}
-\1\dossynopsis{touch}{path}{Updates a file's modification date. New file will be created if the specified file does not exist.}
+\1\dossynopsis{hexdump}[file]{Prints out the contents of a file in hexadecimal view. Supports pipe.}
+\1\dossynopsis{less}[file]{Allows user to read the long text, even if they are wider and/or taller than the screen. Supports pipe.}
+\1\dossynopsis{printfile}[file]{Prints out the contents of a textfile with line numbers. Useful for making descriptive screenshots.}
+\1\dossynopsis{touch}[file]{Updates a file's modification date. New file will be created if the specified file does not exist.}
 \1\dossynopsis{true}{Returns errorlevel 0 upon execution.}
 \end{outline}
 
@@ -97,10 +97,10 @@ DOS coreutils and some of the internal functions can be used on Javascript progr
 To invoke the coreutils, use \code{\_G.shell.coreutils.*}
 
 \begin{outline}
-\1\inlinesynopsis[\_G.shell]{resolvePathInput}{path}{Returns fully-qualified path of the input path, relative to the current working directory.}
-\1\inlinesynopsis[\_G.shell]{getPwdString}{}{Returns the current working directory as a string.}
-\1\inlinesynopsis[\_G.shell]{getCurrentDrive}{}{Returns the drive letter of the current working drive.}
-\1\inlinesynopsis[\_G.shell]{execute}{command}{Executes the DOS command.}
+\1\inlinesynopsis[\_G.shell]{resolvePathInput}[path]{Returns fully-qualified path of the input path, relative to the current working directory.}
+\1\inlinesynopsis[\_G.shell]{getPwdString}[]{Returns the current working directory as a string.}
+\1\inlinesynopsis[\_G.shell]{getCurrentDrive}[]{Returns the drive letter of the current working drive.}
+\1\inlinesynopsis[\_G.shell]{execute}[command]{Executes the DOS command.}
 \end{outline}
 
 
@@ -130,12 +130,12 @@ Named pipes can be retrieved on \code{\_G.shell.pipes.*}
 \section{Pipe-related Functions}
 
 \begin{outline}
-\1\inlinesynopsis[\_G.shell]{getPipe}{}{Returns the currently opened pipe. \code{undefined} is returned if no pipes are opened.}
-\1\inlinesynopsis[\_G.shell]{appendToCurrentPipe}{text}{Appends the given text to the current pipe.}
-\1\inlinesynopsis[\_G.shell]{pushAnonPipe}{contents}{Pushes an anonymous pipe to the current pipe stack.}
-\1\inlinesynopsis[\_G.shell]{pushPipe}{pipeName, contents}{Pushes the pipe of given name to the current pipe stack.}
-\1\inlinesynopsis[\_G.shell]{hasPipe}{}{Returns true if there is a pipe currently opened.}
-\1\inlinesynopsis[\_G.shell]{removePipe}{}{Destroys the currently opened pipe and returns it. Any pipes on the pipe stack will be shifted down to become the next current pipe.}
+\1\inlinesynopsis[\_G.shell]{getPipe}[]{Returns the currently opened pipe. \code{undefined} is returned if no pipes are opened.}
+\1\inlinesynopsis[\_G.shell]{appendToCurrentPipe}[text]{Appends the given text to the current pipe.}
+\1\inlinesynopsis[\_G.shell]{pushAnonPipe}[contents]{Pushes an anonymous pipe to the current pipe stack.}
+\1\inlinesynopsis[\_G.shell]{pushPipe}[pipeName, contents]{Pushes the pipe of given name to the current pipe stack.}
+\1\inlinesynopsis[\_G.shell]{hasPipe}[]{Returns true if there is a pipe currently opened.}
+\1\inlinesynopsis[\_G.shell]{removePipe}[]{Destroys the currently opened pipe and returns it. Any pipes on the pipe stack will be shifted down to become the next current pipe.}
 \end{outline}
 
 
@@ -222,8 +222,8 @@ Functions:
 \dosnamespaceis{Input}{input}
 
 \begin{outline}
-\1\inlinesynopsis{changeKeyLayout}{layoutName}{Changes the key layout. The key layout file must be stored as \code{A:/tvdos/layoutName.key}}
-\1\inlinesynopsis{withEvent}{callback}{Invokes the callback function when an input event is available.}
+\1\inlinesynopsis{changeKeyLayout}[layoutName]{Changes the key layout. The key layout file must be stored as \code{A:/tvdos/layoutName.key}}
+\1\inlinesynopsis{withEvent}[callback]{Invokes the callback function when an input event is available.}
 \end{outline}
 
 \subsection{Input Events}
@@ -257,9 +257,9 @@ Input events are Javascript array of: $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \c
 Classes:
 
 \begin{outline}
-\1\inlinesynopsis[new GL]{Texture}{width: Int, height: Int, bytes: Uint8Array}{Creates an GL Texture.}
-\1\inlinesynopsis[new GL]{MonoTex}{width: Int, height: Int, bytes: Uint8Array}{Creates an 1bpp Texture.}
-\1\inlinesynopsis[new GL]{SpriteSheet}{tileWidth: Int, tileHeight: Int, texture: Texture or MonoTex}{Creates an Spritesheet backed by the given texture.}
+\1\inlinesynopsis[new GL]{Texture}[width: Int, height: Int, bytes: Uint8Array]{Creates an GL Texture.}
+\1\inlinesynopsis[new GL]{MonoTex}[width: Int, height: Int, bytes: Uint8Array]{Creates an 1bpp Texture.}
+\1\inlinesynopsis[new GL]{SpriteSheet}[tileWidth: Int, tileHeight: Int, texture: Texture or MonoTex]{Creates an Spritesheet backed by the given texture.}
 \end{outline}
 
 Functions:
