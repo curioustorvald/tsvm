@@ -174,7 +174,7 @@ Sys library allows programmers to manipulate the system in low-level.
 
 \chapter{Serial Communication}
 
-Some pheripherals such as disk drives are connected through the ``Serial Communication''.
+Some peripherals such as disk drives are connected through the ``Serial Communication''.
 
 Unlike the name suggests, Serial Communication is not at all \emph{serial}; it's more like a \emph{block communication}.
 
@@ -454,6 +454,89 @@ F12 & 142 \\
 TODO
 
 
+\chapter{Peripherals and Memory Mapping}
+
+\index{memory map}The hardware registers and memories of a peripheral is memory-mapped to the specific addresses that can be \code{peek}ed and \code{poke}d.
+
+The memory map of \thismachine\ is illustrated as following:
+
+\newcommand{\memend}[1]{\raisebox{1.3em}{#1}}
+\newcommand{\memlabel}[1]{\raisebox{-0.1ex}{#1}}
+
+\begin{tikzpicture}
+\centering
+\draw[thick] (0,0) rectangle (6, 12);
+% Memory starting addr
+\draw (6,12) node[anchor=north west] {8388607};
+\draw[thick] (0,8) node[anchor=north east] {-1} -- (6,8);
+\draw (0,7) node[anchor=north east] {-1048577} -- (6,7);
+\draw (0,6) node[anchor=north east] {-2097153} -- (6,6);
+\draw (0,5) node[anchor=north east] {-3145729} -- (6,5);
+\draw (0,4) node[anchor=north east] {-4194305} -- (6,4);
+\draw (0,3) node[anchor=north east] {-5242881} -- (6,3);
+\draw (0,2) node[anchor=north east] {-6291457} -- (6,2);
+\draw (0,1) node[anchor=north east] {-7340033} -- (6,1);
+% Memory ending addr
+\draw (0,8) node[anchor=east] {\memend{0}};
+\draw (6,7) node[anchor=west] {\memend{-1048576}};
+\draw (6,6) node[anchor=west] {\memend{-2097152}};
+\draw (6,5) node[anchor=west] {\memend{-3145728}};
+\draw (6,4) node[anchor=west] {\memend{-4194304}};
+\draw (6,3) node[anchor=west] {\memend{-5242880}};
+\draw (6,2) node[anchor=west] {\memend{-6291456}};
+\draw (6,1) node[anchor=west] {\memend{-7340032}};
+\draw (6,0) node[anchor=west] {\memend{-8388608}};
+% Labels
+\draw(0,12.5) node[anchor=north east] {Start};
+\draw(6,12.5) node[anchor=north west] {End};
+
+\draw(3,10)  node[anchor=mid] {\memlabel{Scratchpad Memory}};
+\draw(3,7.5) node[anchor=mid] {\memlabel{MMIO Area}};
+\draw(3,6.5) node[anchor=mid] {\memlabel{Peripheral Memory \#1}};
+\draw(3,5.5) node[anchor=mid] {\memlabel{Peripheral Memory \#2}};
+\draw(3,4.5) node[anchor=mid] {\memlabel{Peripheral Memory \#3}};
+\draw(3,3.5) node[anchor=mid] {\memlabel{Peripheral Memory \#4}};
+\draw(3,2.5) node[anchor=mid] {\memlabel{Peripheral Memory \#5}};
+\draw(3,1.5) node[anchor=mid] {\memlabel{Peripheral Memory \#6}};
+\draw(3,0.5) node[anchor=mid] {\memlabel{Peripheral Memory \#7}};
+\end{tikzpicture}
+
+The MMIO Area is further divided as shown:
+
+\begin{tikzpicture}
+\centering
+\draw[thick] (0,0) rectangle (6, 8);
+% Memory starting addr
+\draw (0,8) node[anchor=north east] {-1} -- (6,8);
+\draw (0,7) node[anchor=north east] {-131073} -- (6,7);
+\draw (0,6) node[anchor=north east] {-262145} -- (6,6);
+\draw (0,5) node[anchor=north east] {-393217} -- (6,5);
+\draw (0,4) node[anchor=north east] {-524289} -- (6,4);
+\draw (0,3) node[anchor=north east] {-655361} -- (6,3);
+\draw (0,2) node[anchor=north east] {-786433} -- (6,2);
+\draw (0,1) node[anchor=north east] {-917505} -- (6,1);
+% Memory ending addr
+\draw (6,7) node[anchor=west] {\memend{-131072}};
+\draw (6,6) node[anchor=west] {\memend{-262144}};
+\draw (6,5) node[anchor=west] {\memend{-393216}};
+\draw (6,4) node[anchor=west] {\memend{-524288}};
+\draw (6,3) node[anchor=west] {\memend{-655360}};
+\draw (6,2) node[anchor=west] {\memend{-786432}};
+\draw (6,1) node[anchor=west] {\memend{-917504}};
+\draw (6,0) node[anchor=west] {\memend{-1048576}};
+% Labels
+\draw(0,8.5) node[anchor=north east] {Start};
+\draw(6,8.5) node[anchor=north west] {End};
+
+\draw(3,7.5) node[anchor=mid] {\memlabel{MMIO for Main Hardwares}};
+\draw(3,6.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#1}};
+\draw(3,5.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#2}};
+\draw(3,4.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#3}};
+\draw(3,3.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#4}};
+\draw(3,2.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#5}};
+\draw(3,1.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#6}};
+\draw(3,0.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#7}};
+\end{tikzpicture}
 
 \chapter{Text and Graphics Display}
 
@@ -461,7 +544,11 @@ TODO: Textbuf, pixelbuf, graphics mode, chart of the draw order
 
 \section{Text Buffer}
 
-TODO
+\index{text buffer}The reference text buffer stores 80 columns, 32 rows of characters with separate foreground and each character has separate 256 foreground and background colours.
+
+While the graphics adapters can be plugged into any peripheral slot, it is highly recommended they occupy the 1st slot.
+
+Text buffer is memory-mapped to the following address offset:
 
 \subsection{Code Page}
 \label{codepage}
@@ -793,9 +880,9 @@ TODO
 \end{outline}
 
 
-\section{Graphics MMIO}
+\section{Graphics Memory Mapping}
 
-\index{MMIO-graphics}
+\index{graphics memory mapping}
 
 \begin{tabulary}{\textwidth}{rL}
 Address & Description \\
