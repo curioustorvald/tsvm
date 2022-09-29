@@ -4,12 +4,10 @@
 
 All \thedos-related features requires the DOS to be fully loaded.
 
-On this documentation, what would be a reverse solidus (e.g. directory separators) are typesetted using a slash; while they \emph{are} interchangeable, using the reverse solidus are recommended for path input.
-
 
 \chapter{Bootstrapping}
 
-\index{boot process}\thedos\ goes through follwing progress to deliver the \code{A:/} prompt:
+\index{boot process}\thedos\ goes through follwing progress to deliver the \code{A:\rs} prompt:
 
 \section{Probing Bootable Devices}
 BIOS
@@ -17,10 +15,10 @@ BIOS
 \section{The Bootloader}
 LOADBOOT
 
-Then the Bootsector will try to read and execute \code{A:/tvdos/TVDOS.SYS}
+Then the Bootsector will try to read and execute \code{A:\rs{}tvdos\rs{}TVDOS.SYS}
 
 \section{TVDOS.SYS}
-\thedos.SYS will load system libraries and variables and then will try to run the boot script by executing \code{A:/AUTOEXEC.BAT}
+\thedos.SYS will load system libraries and variables and then will try to run the boot script by executing \code{A:\rs{}AUTOEXEC.BAT}
 
 \section{AUTOEXEC.BAT}
 
@@ -191,7 +189,7 @@ Functions:
 
 \section{The Device Files}
 
-\index{device file}Some devices are also virtualised through the file descriptor, and they are given a special drive letter of \code{\$}. (e.g. \code{\$:/RND})
+\index{device file}Some devices are also virtualised through the file descriptor, and they are given a special drive letter of \code{\$}. (e.g. \code{\$:\rs{}RND})
 
 \begin{outline}
 \1\inlinesynopsis{RND}{returns random bytes upon reading}
@@ -222,7 +220,7 @@ Functions:
 \dosnamespaceis{Input}{input}
 
 \begin{outline}
-\1\inlinesynopsis{changeKeyLayout}[layoutName]{Changes the key layout. The key layout file must be stored as \code{A:/tvdos/layoutName.key}}
+\1\inlinesynopsis{changeKeyLayout}[layoutName]{Changes the key layout. The key layout file must be stored as \code{A:\rs{}tvdos\rs{}layoutName.key}}
 \1\inlinesynopsis{withEvent}[callback]{Invokes the callback function when an input event is available.}
 \end{outline}
 

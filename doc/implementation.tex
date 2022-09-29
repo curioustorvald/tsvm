@@ -244,7 +244,7 @@ if (0 == status){
 
 \section{Communication MMIO and How It Actually Works}
 
-\index{MMIO-com}The status flags and transfer/receive blocks are memory-mapped to these address:
+\index{MMIO-com}\label{comm-mmio}The status flags and transfer/receive blocks are memory-mapped to these address:
 \footnote{RW stands for read-write status. RW means both reading and writing is posseble, RO means it's read-only}
 
 
@@ -538,6 +538,41 @@ The MMIO Area is further divided as shown:
 \draw(3,0.5) node[anchor=mid] {\memlabel{MMIO for Peripheral \#7}};
 \end{tikzpicture}
 
+
+\section{MMIO for Main Hardwares}
+
+Some internal hardwares are memory-mapped and can be controled by poking and peeking.
+
+Multibyte values are stored in Little Endian.
+
+\index{main hardware memory mapping}
+\begin{tabulary}{\textwidth}{rcL}
+Address & RW & Description \\
+\hline
+-1..-32 & RO & Raw Keyboard Input Buffer (raw means the values are not shifted around) \\
+-33..-34 & RO & Mouse X Pos (latched by -40) \\
+-35..-36 & RO & Mouse Y Pos (latched by -40) \\
+-37 & RO & Mouse Button Down (1 if True) \\
+-38 & RW & The head key on the Keyboard Input Buffer \\
+-39 & RW & Text Input Stream control. Write nonzero value to open it. The Keyboard Input Buffer will be cleared whenever the Input Stream is opened. \\
+-40 & WO & Latch Keyboard and Mouse input \\
+-41..-48 & RO & List of pressed keys (latched by -40) \\
+-49 & RO & System Flags A (code{0b r000 000t}, where r: RESET button held, t: STOP button held) \\
+-50..-52 & RO & Unused System Flags \\
+-65..-68 & RO & Size of the Scratchpad Memory \\
+-69 & WO & Counter Latch (\code{0b01}--Uptime, \code{0b10}--RTC) \\
+-73..-80 & RO & System Uptime in nanoseconds (latched by -69) \\
+-81..-88 & RO & RTC in nanoseconds (latched by -69) \\
+-89 & RW & ROM Mapping \\
+-1025..-2048 & RW & Reserved for the integrated peripherals \\
+-4077..-20480 & $ \ast $ & See \ref{comm-mmio} \\
+-65537..-131072 & RO & Contents in the mapped ROM
+\end{tabulary}
+
+
+
+
+
 \chapter{Text and Graphics Display}
 
 TODO: Textbuf, pixelbuf, graphics mode, chart of the draw order
@@ -548,8 +583,38 @@ While the graphics adapters can be plugged into any peripheral slot, it is highl
 
 \index{text buffer}The reference text buffer stores 80 columns, 32 rows of characters and 256 foreground and background colours are assigned separately for each character cell.
 
-Text buffer is memory-mapped to the following address offset:
+\subsection{Escape Sequences}
 
+\newcommand{\csi}{{\condensedfont{CSI}}}
+
+Printing out certain sequences of string can invoke special functions on the graphics, and such sequneces are called Escape Sequences.
+
+For the following chart, please interpret \csi\ as \code{\rs{}x1B [}.
+
+\begin{tabulary}{\textwidth}{lL}
+Sequence & Description \\
+\hline
+\csi\ \emph{n} A & Moves the cursor up by \emph{n} (default \code{1}) \\
+\csi\ \emph{n} B & Moves the cursor down by \emph{n} (default \code{1}) \\
+\csi\ \emph{n} C & Moves the cursor right by \emph{n} (default \code{1}) \\
+\csi\ \emph{n} D & Moves the cursor left by \emph{n (default \code{1})} \\
+\csi\ \emph{n} E & Moves the cursor to the beginning of the line \emph{n} (default \code{1}) lines down \\
+\csi\ \emph{n} F & Moves the cursor to the beginning of the line \emph{n} (default \code{1}) lines up \\
+\csi\ \emph{n} G & Moves the cursor to the \emph{n}th (default \code{1}) column \\
+\csi\ \emph{n} ; \emph{m} H & Moves the cursor to \emph{n}th row, \emph{m}th column \\
+\csi\ 2 J & Clears the entire text buffer \\
+\csi\ \emph{n} S & Scoll the entire page up by \emph{n} (default \code{1}) lines \\
+\csi\ \emph{n} T & Scoll the entire page down by \emph{n} (default \code{1}) lines \\
+\csi\ m & Resets the text attributes to the default status \\
+\csi\ 7 m & Inverts the text by swapping the foreground and background colour \\
+\csi\ 30-37 m & Changes the foreground colour. 30--Black, 31--Red, 32--Green, 33--Yellow, 34--Blue, 35--Magenta, 36--Cyan, 37--White \\
+\csi\ 40-47 m & Changes the background colour. 40--Black, 41--Red, 42--Green, 43--Yellow, 44--Blue, 45--Magenta, 46--Cyan, 47--White \\
+\csi\ 38 ; 5 ; \emph{col} m & Changes the foreground colour using the Colour Palette \\
+\csi\ 48 ; 5 ; \emph{col} m & Changes the foreground colour using the Colour Palette \\
+\csi\ ? 25 h & Shows the text cursor \\
+\csi\ ? 25 l & Hides the text cursor \\
+{\condensedfont{\rs{}x84} \emph{charcode}} u & Prints out the symbol corresponds to the given charcode
+\end{tabulary}
 
 \subsection{Code Page}
 \label{codepage}
@@ -886,35 +951,35 @@ TODO
 Multibyte values are stored in Little Endian.
 
 \index{graphics adapter memory mapping}
-\begin{tabulary}{\textwidth}{rL}
-Address & Description \\
+\begin{tabulary}{\textwidth}{rcL}
+Address & RW & Description \\
 \hline
--131073..-131074 & Framebuffer Width \\
--131075..-131076 & Framebuffer Height \\
--131077 & Text Columns \\
--131078 & Text Rows \\
--131079 & Text Mode Attributes \\
--131080 & Graphics Mode Attributes \\
--131081 & Last Used Colour for the Framebuffer \\
--131082 & Text Foreground Colour \\
--131083 & Text Background Colour \\
--131084 & Number of Graphics Memory Banks (1--4) \\
--131085 & Current Graphics Mode \\
--131086 & Current Layer Arrangement Index \\
--131087..-131088 & Framebuffer Horizontal Scroll \\
--131089..-131090 & Framebuffer Vertical Scroll \\
--132097..-131120 & Scanline Offsets \\
--1048577..-1299456 & First Framebuffer \\
--1299457 & Screen Background RED \\
--1299458 & Screen Background GREEN \\
--1299459 & Screen Background BLUE \\
--1299460 & Command \\
--1299461..-1299472 & Command Arguments \\
--1300607..-1302526 & Font ROM Mapping Area \\
--1302527..-1302528 & Text Cursor Position in $row \times 80 + col$ \\
--1302529..-1305088 & Text Foreground Colours \\
--1305089..-1307648 & Text Background Colours \\
--1307649..-1310208 & Text Buffer \\
--1310209..-1310720 & Palettes in This Pattern: {\ttfamily 0b RRRR GGGG; 0b BBBB AAAA} \\
--1310721..-1561600 & Second Framebuffer \\
+-131073..-131074 & RO & Framebuffer Width \\
+-131075..-131076 & RO & Framebuffer Height \\
+-131077 & RO & Text Columns \\
+-131078 & RO & Text Rows \\
+-131079 & RW & Text Mode Attributes \\
+-131080 & RW & Graphics Mode Attributes \\
+-131081 & RO & Last Used Colour for the Framebuffer \\
+-131082 & RW & Text Foreground Colour \\
+-131083 & RW & Text Background Colour \\
+-131084 & RO & Number of Graphics Memory Banks (1--4) \\
+-131085 & RW & Current Graphics Mode \\
+-131086 & RW & Current Layer Arrangement Index \\
+-131087..-131088 & RW & Framebuffer Horizontal Scroll \\
+-131089..-131090 & RW & Framebuffer Vertical Scroll \\
+-132097..-131120 & RW & Scanline Offsets \\
+-1048577..-1299456 & RW & First Framebuffer \\
+-1299457 & RW & Screen Background RED \\
+-1299458 & RW & Screen Background GREEN \\
+-1299459 & RW & Screen Background BLUE \\
+-1299460 & RW & Command \\
+-1299461..-1299472 & RW & Command Arguments \\
+-1300607..-1302526 & RW & Font ROM Mapping Area \\
+-1302527..-1302528 & RW & Text Cursor Position in $row \times 80 + col$ \\
+-1302529..-1305088 & RW & Text Foreground Colours \\
+-1305089..-1307648 & RW & Text Background Colours \\
+-1307649..-1310208 & RW & Text Buffer \\
+-1310209..-1310720 & RW & Palettes in This Pattern: {\ttfamily 0b RRRR GGGG; 0b BBBB AAAA} \\
+-1310721..-1561600 & RW & Second Framebuffer \\
 \end{tabulary}
