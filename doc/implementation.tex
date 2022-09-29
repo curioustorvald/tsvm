@@ -542,13 +542,14 @@ The MMIO Area is further divided as shown:
 
 TODO: Textbuf, pixelbuf, graphics mode, chart of the draw order
 
+While the graphics adapters can be plugged into any peripheral slot, it is highly recommended they occupy the 1st slot. The Memory address charts for the graphics adapter on this documentation will assume as such.
+
 \section{Text Buffer}
 
-\index{text buffer}The reference text buffer stores 80 columns, 32 rows of characters with separate foreground and each character has separate 256 foreground and background colours.
-
-While the graphics adapters can be plugged into any peripheral slot, it is highly recommended they occupy the 1st slot.
+\index{text buffer}The reference text buffer stores 80 columns, 32 rows of characters and 256 foreground and background colours are assigned separately for each character cell.
 
 Text buffer is memory-mapped to the following address offset:
+
 
 \subsection{Code Page}
 \label{codepage}
@@ -880,24 +881,40 @@ TODO
 \end{outline}
 
 
-\section{Graphics Memory Mapping}
+\section{MMIO and Memory Mapping}
 
-\index{graphics memory mapping}
+Multibyte values are stored in Little Endian.
 
+\index{graphics adapter memory mapping}
 \begin{tabulary}{\textwidth}{rL}
 Address & Description \\
 \hline
--1048577..-1299456 & Screen Buffer \\
+-131073..-131074 & Framebuffer Width \\
+-131075..-131076 & Framebuffer Height \\
+-131077 & Text Columns \\
+-131078 & Text Rows \\
+-131079 & Text Mode Attributes \\
+-131080 & Graphics Mode Attributes \\
+-131081 & Last Used Colour for the Framebuffer \\
+-131082 & Text Foreground Colour \\
+-131083 & Text Background Colour \\
+-131084 & Number of Graphics Memory Banks (1--4) \\
+-131085 & Current Graphics Mode \\
+-131086 & Current Layer Arrangement Index \\
+-131087..-131088 & Framebuffer Horizontal Scroll \\
+-131089..-131090 & Framebuffer Vertical Scroll \\
+-132097..-131120 & Scanline Offsets \\
+-1048577..-1299456 & First Framebuffer \\
 -1299457 & Screen Background RED \\
 -1299458 & Screen Background GREEN \\
 -1299459 & Screen Background BLUE \\
 -1299460 & Command \\
 -1299461..-1299472 & Command Arguments \\
--1299473..-1299474 & Screen Buffer Scroll Offset X \\
--1299475..-1299476 & Screen Buffer Scroll Offset Y \\
--1302527..-1302528 & Text Cursor Position in $row \times 80 + col$, stored in Little Endian \\
+-1300607..-1302526 & Font ROM Mapping Area \\
+-1302527..-1302528 & Text Cursor Position in $row \times 80 + col$ \\
 -1302529..-1305088 & Text Foreground Colours \\
 -1305089..-1307648 & Text Background Colours \\
 -1307649..-1310208 & Text Buffer \\
 -1310209..-1310720 & Palettes in This Pattern: {\ttfamily 0b RRRR GGGG; 0b BBBB AAAA} \\
+-1310721..-1561600 & Second Framebuffer \\
 \end{tabulary}
