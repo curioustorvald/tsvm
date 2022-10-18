@@ -178,7 +178,7 @@ Functions:
 \1\formalsynopsis{bwrite}{bytes: Uint8Array}{Writes the bytes to the file.}
 \1\formalsynopsis{swrite}{string: String}{Writes the string to the file.}
 \1\formalsynopsis{flush}{}{Flush the contents on the write buffer to the file immediately. Will do nothing if there is no write buffer implemented --- a write operation will always be performed imemdiately in such cases.}
-\1\formalsynopsis{close}{}{Tells the underlying device (usually a disk drive) to close a file. When dealing with multiple files on a single disk drive (of which can only have a single active---or opened---file), the underlying filesystem driver will automatically swap the files around, so this function is normally unused.}
+\1\formalsynopsis{close}{}{Tells the underlying device (usually a disk drive) to close a file. When dealing with multiple files on a single disk drive (in which can only have a single active---or opened---file), the underlying filesystem driver will automatically swap the files around, so this function is normally unused.}
 \1\formalsynopsis{list}{}[Array or undefined]{Lists files inside of the directory. If the path is indeed a directory, an array of file descriptors will be returned; \code{undefined} otherwise.}
 \1\formalsynopsis{touch}{}[Boolean]{Updates the file's access time if the file exists; a new file will be created otherwise. Returns true if successful.}
 \1\formalsynopsis{mkDir}{}[Boolean]{Creates a directory to the path. Returns true if successful.}
