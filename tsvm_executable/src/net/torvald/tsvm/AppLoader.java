@@ -14,8 +14,8 @@ public class AppLoader {
     public static String appTitle = "tsvm";
     public static Lwjgl3ApplicationConfiguration appConfig;
 
-    public static int WIDTH = 1080;//640;
-    public static int HEIGHT = 436;//480;
+    public static int WIDTH = 1280;//1080;//640;
+    public static int HEIGHT = 960;//436;//480;
 
     public static void main(String[] args) {
         ShaderProgram.pedantic = false;
@@ -62,6 +62,6 @@ public class AppLoader {
                 pipvm, 160, 140
         ))));*/
 
-        new Lwjgl3Application(new VMGUI(portable, WIDTH, HEIGHT), appConfig);
+        new Lwjgl3Application(new VMGUI(reference, 640, 480), appConfig);
     }
 }
