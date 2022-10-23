@@ -184,23 +184,28 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     private fun renderGame(delta: Float) {
         vms.forEachIndexed { index, vmInfo ->
-            drawVMtoCanvas(delta, batch, vmInfo?.vm, index % panelsX, index / panelsX)
+            drawVMtoCanvas(delta, vmInfo?.vm, index % panelsX, index / panelsX)
 
             // draw Window frames and whatnot
             val xoff = (index % panelsX) * windowWidth
             val yoff = (index / panelsX) * windowHeight
-            batch.color =
-                if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_HIGHLIGHT else EmulatorGuiToolkit.Theme.COL_INACTIVE
-            batch.inUse {
-                batch.fillRect(xoff, yoff, windowWidth, 2)
-                batch.fillRect(xoff, yoff + windowHeight - 2, windowWidth, 2)
-                batch.fillRect(xoff, yoff, 2, windowHeight)
-                batch.fillRect(xoff + windowWidth - 2, yoff, 2, windowHeight)
+            fbatch.inUse {
+                it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_HIGHLIGHT else EmulatorGuiToolkit.Theme.COL_INACTIVE
+                it.fillRect(xoff, yoff, windowWidth, 2)
+                it.fillRect(xoff, yoff + windowHeight - 2, windowWidth, 2)
+                it.fillRect(xoff, yoff, 2, windowHeight)
+                it.fillRect(xoff + windowWidth - 2, yoff, 2, windowHeight)
+
+                vmInfo?.name?.let { name ->
+                    it.fillRect(xoff, yoff, (name.length + 2) * font.W, font.H)
+                    it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else Color.YELLOW
+                    font.draw(it, name, xoff + font.W.toFloat(), yoff.toFloat())
+                }
             }
         }
     }
 
-    private fun drawVMtoCanvas(delta: Float, batch: SpriteBatch, vm: VM?, pposX: Int, pposY: Int) {
+    private fun drawVMtoCanvas(delta: Float, vm: VM?, pposX: Int, pposY: Int) {
         vm.let { vm ->
             // assuming the reference adapter of 560x448
             val xoff = pposX * windowWidth.toFloat()
@@ -211,9 +216,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                     if (gpu != null) {
                         val clearCol = gpu.getBackgroundColour()
                         // clear the viewport by drawing coloured rectangle becausewhynot
-                        batch.color = clearCol
-                        batch.inUse {
-                            batch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
+                        fbatch.color = clearCol
+                        fbatch.inUse {
+                            fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
                         }
 
                         gpu.render(delta, fbatch, xoff + 40f, yoff + 16f, false, null)
@@ -286,9 +291,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 object EmulatorGuiToolkit {
 
     object Theme {
-        val COL_INACTIVE = Color.LIGHT_GRAY
-        val COL_ACTIVE = Color(0xfff066_ff.toInt()) // yellow
-        val COL_HIGHLIGHT = Color(0x00f8ff_ff) // cyan
+        val COL_INACTIVE = Color(0xccccccff.toInt())
+        val COL_ACTIVE = Color(0x23ff00ff.toInt()) // neon green
+        val COL_HIGHLIGHT = Color(0xe4337eff.toInt()) // magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
     }
 
