@@ -27,7 +27,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     private val vms = arrayOfNulls<VMRunnerInfo>(this.panelsX * this.panelsY - 1) // index: # of the window where the reboot was requested
 
-    private var currentVMselection = 0
+    private var currentVMselection: Int? = 0 // null: emulator menu is selected
 
     lateinit var batch: SpriteBatch
     lateinit var fbatch: FlippingSpriteBatch
@@ -84,10 +84,12 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         changeActiveSession(0)
     }
 
-    private fun changeActiveSession(index: Int) {
+    private val vmEmuInputProcessor = VMEmuInputProcessor(this)
+
+    private fun changeActiveSession(index: Int?) {
         currentVMselection = index
         // TODO somehow implement the inputstream that cares about the currentVMselection
-        Gdx.input.inputProcessor = vms[currentVMselection]?.vm?.getIO()
+        Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() else vmEmuInputProcessor
     }
 
     private fun initVMenv(vm: VM) {
@@ -169,9 +171,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             val py = mouseY / windowHeight
             val panel = py * panelsX + px
 
-            if (panel < panelsX * panelsY - 1) {
-                changeActiveSession(panel)
-            }
+            changeActiveSession(if (panel < panelsX * panelsY - 1) panel else null)
         }
 
         vms.forEachIndexed { index, it ->
@@ -180,7 +180,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
     }
 
-    private val defaultGuiBackgroundColour = Color(0x444444ff)
+    private val defaultGuiBackgroundColour = Color(0x303039ff)
 
     private fun renderGame(delta: Float) {
         vms.forEachIndexed { index, vmInfo ->
@@ -198,11 +198,13 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
                 vmInfo?.name?.let { name ->
                     it.fillRect(xoff, yoff, (name.length + 2) * font.W, font.H)
-                    it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else Color.YELLOW
+                    it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else EmulatorGuiToolkit.Theme.COL_ACTIVE2
                     font.draw(it, name, xoff + font.W.toFloat(), yoff.toFloat())
                 }
             }
         }
+
+        drawMenu(fbatch, (panelsX - 1f) * windowWidth, (panelsY - 1f) * windowHeight)
     }
 
     private fun drawVMtoCanvas(delta: Float, vm: VM?, pposX: Int, pposY: Int) {
@@ -277,23 +279,69 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         vms.forEach { it?.vm?.dispose() }
     }
 
-    fun SpriteBatch.fillRect(x: Int, y: Int, w: Int, h: Int) {
-        this.draw(sqtex, x.toFloat(), y.toFloat(), w.toFloat(), h.toFloat())
-    }
+    fun SpriteBatch.fillRect(x: Int, y: Int, w: Int, h: Int) = this.draw(sqtex, x.toFloat(), y.toFloat(), w.toFloat(), h.toFloat())
+    fun SpriteBatch.fillRect(x: Float, y: Float, w: Float, h: Float) = this.draw(sqtex, x, y, w, h)
+    fun SpriteBatch.fillRect(x: Int, y: Int, w: Float, h: Float) = this.draw(sqtex, x.toFloat(), y.toFloat(), w, h)
+    fun SpriteBatch.fillRect(x: Float, y: Float, w: Int, h: Int) = this.draw(sqtex, x, y, w.toFloat(), h.toFloat())
 
     fun SpriteBatch.inUse(f: (SpriteBatch) -> Unit) {
         this.begin()
         f(this)
         this.end()
     }
+
+    private val menuTabs = listOf("Machine", "Peripherals", "Cards")
+    private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
+    private var menuTabSel = 0
+
+    private fun drawMenu(batch: SpriteBatch, x: Float, y: Float) {
+        batch.inUse {
+            // draw the tab
+            for (k in menuTabs.indices) {
+
+                val textX = x + font.W * tabPos[k]
+
+                if (k == menuTabSel) {
+                    batch.color = EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
+                    batch.fillRect(textX - font.W, y, font.W * (menuTabs[k].length + 2f), font.H.toFloat())
+
+                    batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE
+                    font.draw(batch, menuTabs[k], textX, y)
+                }
+                else {
+                    batch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
+                    batch.fillRect(textX - font.W, y, font.W * (menuTabs[k].length + 2f), font.H.toFloat())
+
+                    batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE2
+                    font.draw(batch, menuTabs[k], textX, y)
+                }
+            }
+            // tab edge
+            batch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE2
+            val edgeX = x + (tabPos.last() - 1) * font.W
+            val edgeW = windowWidth - (tabPos.last() - 1) * font.W
+            batch.fillRect(edgeX, y, edgeW, font.H)
+
+            // draw the window frame inside the tab
+            batch.color = defaultGuiBackgroundColour
+            batch.fillRect(x, y + font.H, windowWidth, windowHeight - font.H)
+            batch.color = EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
+            batch.fillRect(x, y + font.H, windowWidth.toFloat(), 2f)
+            batch.fillRect(x, y + windowHeight - 2f, windowWidth.toFloat(), 2f)
+            batch.fillRect(x, y + font.H, 2f, windowHeight - font.H - 2f)
+            batch.fillRect(x + windowWidth - 2f, y + font.H, 2f, windowHeight - font.H - 2f)
+        }
+    }
 }
 
 object EmulatorGuiToolkit {
 
     object Theme {
-        val COL_INACTIVE = Color(0xccccccff.toInt())
+        val COL_INACTIVE = Color(0x858585ff.toInt())
+        val COL_INACTIVE2 = Color(0x5a5a5fff.toInt())
         val COL_ACTIVE = Color(0x23ff00ff.toInt()) // neon green
-        val COL_HIGHLIGHT = Color(0xe4337eff.toInt()) // magenta
+        val COL_ACTIVE2 = Color(0xfff600ff.toInt()) // yellow
+        val COL_HIGHLIGHT = Color(0xe43380ff.toInt()) // magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
     }
 
