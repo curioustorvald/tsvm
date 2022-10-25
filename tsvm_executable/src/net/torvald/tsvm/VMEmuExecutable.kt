@@ -10,18 +10,59 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
+import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
+import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.SQTEX
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter2
 import net.torvald.tsvm.peripheral.TestDiskDrive
 import net.torvald.tsvm.peripheral.TsvmBios
 import java.io.File
 import java.util.*
-import kotlin.collections.HashMap
+
+class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
+
+    private lateinit var executable: VMEmuExecutable
+
+    companion object {
+        lateinit var SQTEX: Texture; private set
+        lateinit var FONT: TinyAlphNum; private set
+    }
+
+    override fun create() {
+        FONT = TinyAlphNum
+        SQTEX = Texture(Gdx.files.internal("net/torvald/tsvm/sq.tga"))
+        executable = VMEmuExecutable(windowWidth, windowHeight, panelsX, panelsY, diskPathRoot)
+        executable.create()
+    }
+
+    override fun resize(width: Int, height: Int) {
+        executable.resize(width, height)
+    }
+
+    override fun render() {
+        executable.render()
+    }
+
+    override fun pause() {
+        executable.pause()
+    }
+
+    override fun resume() {
+        executable.resume()
+    }
+
+    override fun dispose() {
+        executable.dispose()
+        SQTEX.dispose()
+    }
+}
+
 
 /**
  * Created by minjaesong on 2022-10-22.
  */
 class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
+
 
     private data class VMRunnerInfo(val vm: VM, val name: String)
 
@@ -36,25 +77,16 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     var vmRunners = HashMap<Int, VMRunner>() // <VM's identifier, VMRunner>
     var coroutineJobs = HashMap<Int, Job>() // <VM's identifier, Job>
 
-    lateinit var fullscreenQuad: Mesh
-
-    private lateinit var sqtex: Texture
-
-    private lateinit var font: TinyAlphNum
+    val fullscreenQuad = Mesh(
+        true, 4, 6,
+        VertexAttribute.Position(),
+        VertexAttribute.ColorUnpacked(),
+        VertexAttribute.TexCoords(0)
+    )
 
     override fun create() {
         super.create()
 
-        sqtex = Texture(Gdx.files.internal("net/torvald/tsvm/sq.tga"))
-
-        font = TinyAlphNum
-
-        fullscreenQuad = Mesh(
-            true, 4, 6,
-            VertexAttribute.Position(),
-            VertexAttribute.ColorUnpacked(),
-            VertexAttribute.TexCoords(0)
-        )
         updateFullscreenQuad(AppLoader.WIDTH, AppLoader.HEIGHT)
 
         batch = SpriteBatch()
@@ -109,7 +141,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private fun setCameraPosition(newX: Float, newY: Float) {
         camera.position.set((-newX + AppLoader.WIDTH / 2), (-newY + AppLoader.HEIGHT / 2), 0f) // deliberate integer division
         camera.update()
-        batch.setProjectionMatrix(camera.combined)
+        batch.projectionMatrix = camera.combined
+        fbatch.projectionMatrix = camera.combined
     }
 
     private fun gdxClearAndSetBlend(r: Float, g: Float, b: Float, a: Float) {
@@ -178,6 +211,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             if (it?.vm?.resetDown == true && index == currentVMselection) { reboot(it.vm) }
             it?.vm?.update(delta)
         }
+
+        updateMenu()
     }
 
     private val defaultGuiBackgroundColour = Color(0x303039ff)
@@ -197,9 +232,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                 it.fillRect(xoff + windowWidth - 2, yoff, 2, windowHeight)
 
                 vmInfo?.name?.let { name ->
-                    it.fillRect(xoff, yoff, (name.length + 2) * font.W, font.H)
+                    it.fillRect(xoff, yoff, (name.length + 2) * FONT.W, FONT.H)
                     it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else EmulatorGuiToolkit.Theme.COL_ACTIVE2
-                    font.draw(it, name, xoff + font.W.toFloat(), yoff.toFloat())
+                    FONT.draw(it, name, xoff + FONT.W.toFloat(), yoff.toFloat())
                 }
             }
         }
@@ -232,7 +267,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                             fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
                             // draw text
                             fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
-                            font.draw(fbatch, "no graphics device available", xoff + (windowWidth - 196) / 2, yoff + (windowHeight - 12) / 2)
+                            FONT.draw(fbatch, "no graphics device available", xoff + (windowWidth - 196) / 2, yoff + (windowHeight - 12) / 2)
                         }
                     }
                 }
@@ -244,7 +279,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                     fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
                     // draw text
                     fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
-                    font.draw(fbatch, "no vm on this viewport", xoff + (windowWidth - 154) / 2, yoff + (windowHeight - 12) / 2)
+                    FONT.draw(fbatch, "no vm on this viewport", xoff + (windowWidth - 154) / 2, yoff + (windowHeight - 12) / 2)
                 }
             }
         }
@@ -271,7 +306,6 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     override fun dispose() {
         super.dispose()
-        sqtex.dispose()
         batch.dispose()
         fbatch.dispose()
         fullscreenQuad.dispose()
@@ -279,58 +313,63 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         vms.forEach { it?.vm?.dispose() }
     }
 
-    fun SpriteBatch.fillRect(x: Int, y: Int, w: Int, h: Int) = this.draw(sqtex, x.toFloat(), y.toFloat(), w.toFloat(), h.toFloat())
-    fun SpriteBatch.fillRect(x: Float, y: Float, w: Float, h: Float) = this.draw(sqtex, x, y, w, h)
-    fun SpriteBatch.fillRect(x: Int, y: Int, w: Float, h: Float) = this.draw(sqtex, x.toFloat(), y.toFloat(), w, h)
-    fun SpriteBatch.fillRect(x: Float, y: Float, w: Int, h: Int) = this.draw(sqtex, x, y, w.toFloat(), h.toFloat())
+    private val menuTabW = windowWidth - 4
+    private val menuTabH = windowHeight - 4 - FONT.H
 
-    fun SpriteBatch.inUse(f: (SpriteBatch) -> Unit) {
-        this.begin()
-        f(this)
-        this.end()
-    }
-
-    private val menuTabs = listOf("Machine", "Peripherals", "Cards")
+    private val menuTabs = listOf("Profiles", "Machine", "Peripherals", "Cards")
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
+    private val tabs = listOf(ProfilesMenu(menuTabW, menuTabH))
     private var menuTabSel = 0
+    private val profilesPath = "profiles.json"
+    private val configPath = "config.json"
 
     private fun drawMenu(batch: SpriteBatch, x: Float, y: Float) {
         batch.inUse {
+            // background for the entire area
+            batch.color = defaultGuiBackgroundColour
+            batch.fillRect(x, y, windowWidth, windowHeight)
+
             // draw the tab
             for (k in menuTabs.indices) {
 
-                val textX = x + font.W * tabPos[k]
+                val textX = x + FONT.W * tabPos[k]
 
                 if (k == menuTabSel) {
                     batch.color = EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
-                    batch.fillRect(textX - font.W, y, font.W * (menuTabs[k].length + 2f), font.H.toFloat())
+                    batch.fillRect(textX - FONT.W, y, FONT.W * (menuTabs[k].length + 2f), FONT.H.toFloat())
 
                     batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE
-                    font.draw(batch, menuTabs[k], textX, y)
+                    FONT.draw(batch, menuTabs[k], textX, y)
                 }
                 else {
-                    batch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
-                    batch.fillRect(textX - font.W, y, font.W * (menuTabs[k].length + 2f), font.H.toFloat())
+                    batch.color = EmulatorGuiToolkit.Theme.COL_TAB_NOT_SELECTED
+                    batch.fillRect(textX - FONT.W, y, FONT.W * (menuTabs[k].length + 2f), FONT.H.toFloat())
 
                     batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE2
-                    font.draw(batch, menuTabs[k], textX, y)
+                    FONT.draw(batch, menuTabs[k], textX, y)
                 }
             }
-            // tab edge
-            batch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE2
-            val edgeX = x + (tabPos.last() - 1) * font.W
-            val edgeW = windowWidth - (tabPos.last() - 1) * font.W
-            batch.fillRect(edgeX, y, edgeW, font.H)
 
             // draw the window frame inside the tab
-            batch.color = defaultGuiBackgroundColour
-            batch.fillRect(x, y + font.H, windowWidth, windowHeight - font.H)
+            batch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
+            batch.fillRect(x, y + FONT.H, windowWidth, windowHeight - FONT.H)
             batch.color = EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
-            batch.fillRect(x, y + font.H, windowWidth.toFloat(), 2f)
+            batch.fillRect(x, y + FONT.H, windowWidth.toFloat(), 2f)
             batch.fillRect(x, y + windowHeight - 2f, windowWidth.toFloat(), 2f)
-            batch.fillRect(x, y + font.H, 2f, windowHeight - font.H - 2f)
-            batch.fillRect(x + windowWidth - 2f, y + font.H, 2f, windowHeight - font.H - 2f)
+            batch.fillRect(x, y + FONT.H, 2f, windowHeight - FONT.H - 2f)
+            batch.fillRect(x + windowWidth - 2f, y + FONT.H, 2f, windowHeight - FONT.H - 2f)
         }
+
+        setCameraPosition(windowWidth * (panelsX-1) + 2f, windowHeight * (panelsY-1) + FONT.H + 2f)
+        tabs[menuTabSel].render(batch)
+    }
+
+    private fun updateMenu() {
+        // update the tab
+
+
+        // actually update the view within the tabs
+        tabs[menuTabSel].update()
     }
 }
 
@@ -343,6 +382,20 @@ object EmulatorGuiToolkit {
         val COL_ACTIVE2 = Color(0xfff600ff.toInt()) // yellow
         val COL_HIGHLIGHT = Color(0xe43380ff.toInt()) // magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
+
+        val COL_TAB_NOT_SELECTED = Color(0x503cd4ff) // dark blue
     }
 
+}
+
+
+fun SpriteBatch.fillRect(x: Int, y: Int, w: Int, h: Int) = this.draw(SQTEX, x.toFloat(), y.toFloat(), w.toFloat(), h.toFloat())
+fun SpriteBatch.fillRect(x: Float, y: Float, w: Float, h: Float) = this.draw(SQTEX, x, y, w, h)
+fun SpriteBatch.fillRect(x: Int, y: Int, w: Float, h: Float) = this.draw(SQTEX, x.toFloat(), y.toFloat(), w, h)
+fun SpriteBatch.fillRect(x: Float, y: Float, w: Int, h: Int) = this.draw(SQTEX, x, y, w.toFloat(), h.toFloat())
+
+fun SpriteBatch.inUse(f: (SpriteBatch) -> Unit) {
+    this.begin()
+    f(this)
+    this.end()
 }
