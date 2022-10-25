@@ -78,9 +78,9 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
             vm.peripheralTable[1] = PeripheralEntry(
                 gpu,
-                GraphicsAdapter.VRAM_SIZE,
-                16,
-                0
+//                GraphicsAdapter.VRAM_SIZE,
+//                16,
+//                0
             )
 
             vm.getPrintStream = { gpu!!.getPrintStream() }
@@ -102,9 +102,9 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
             vm.peripheralTable[port] = PeripheralEntry(
                 loadedClassInstance as PeriBase,
-                peri.memsize,
-                peri.mmioSize,
-                peri.interruptCount
+//                peri.memsize,
+//                peri.mmioSize,
+//                peri.interruptCount
             )
         }
 

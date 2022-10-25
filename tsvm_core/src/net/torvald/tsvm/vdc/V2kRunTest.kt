@@ -33,9 +33,9 @@ class V2kRunTest : ApplicationAdapter() {
 
         vm.peripheralTable[1] = PeripheralEntry(
             gpu,
-            GraphicsAdapter.VRAM_SIZE,
-            16,
-            0
+//            GraphicsAdapter.VRAM_SIZE,
+//            16,
+//            0
         )
 
         batch = SpriteBatch()

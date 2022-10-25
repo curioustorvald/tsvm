@@ -23,7 +23,7 @@ class VM(
     val assetsDir: String,
     _memsize: Long,
     val worldInterface: WorldInterface,
-    val roms: Array<VMProgramRom?>, // first ROM must contain the BIOS
+    val roms: Array<VMProgramRom>, // first ROM must contain the BIOS
     _peripheralSlots: Int = 8,
 ) {
 
@@ -71,9 +71,9 @@ class VM(
 
         peripheralTable[0] = PeripheralEntry(
             IOSpace(this),
-            HW_RESERVE_SIZE,
-            MMIO_SIZE.toInt() - 256,
-            64
+//            HW_RESERVE_SIZE,
+//            MMIO_SIZE.toInt() - 256,
+//            64
         )
 
         init()
@@ -231,9 +231,9 @@ class VM(
 
 class PeripheralEntry(
     val peripheral: PeriBase? = null,
-    val memsize: Long = 0,
-    val mmioSize: Int = 0,
-    val interruptCount: Int = 0, // max: 4
+//    val memsize: Long = 0,
+//    val mmioSize: Int = 0,
+//    val interruptCount: Int = 0, // max: 4
 ) {
     val type = peripheral?.typestring
 }

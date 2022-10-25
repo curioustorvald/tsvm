@@ -4,6 +4,7 @@ import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.utils.JsonValue
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -12,10 +13,7 @@ import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.SQTEX
-import net.torvald.tsvm.peripheral.GraphicsAdapter
-import net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter2
-import net.torvald.tsvm.peripheral.TestDiskDrive
-import net.torvald.tsvm.peripheral.TsvmBios
+import net.torvald.tsvm.peripheral.*
 import java.io.File
 import java.util.*
 
@@ -87,11 +85,11 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     override fun create() {
         super.create()
 
-        updateFullscreenQuad(AppLoader.WIDTH, AppLoader.HEIGHT)
+        updateFullscreenQuad(TsvmEmulator.WIDTH, TsvmEmulator.HEIGHT)
 
         batch = SpriteBatch()
         fbatch = FlippingSpriteBatch()
-        camera = OrthographicCamera(AppLoader.WIDTH.toFloat(), AppLoader.HEIGHT.toFloat())
+        camera = OrthographicCamera(TsvmEmulator.WIDTH.toFloat(), TsvmEmulator.HEIGHT.toFloat())
         camera.setToOrtho(true)
         camera.update()
         batch.projectionMatrix = camera.combined
@@ -128,7 +126,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         vm.peripheralTable.getOrNull(1)?.peripheral?.dispose()
 
         val gpu = ReferenceGraphicsAdapter2("./assets", vm)
-        vm.peripheralTable[1] = PeripheralEntry(gpu, GraphicsAdapter.VRAM_SIZE, 16, 0)
+        vm.peripheralTable[1] = PeripheralEntry(gpu)//, GraphicsAdapter.VRAM_SIZE, 16, 0)
 
         vm.getPrintStream = { gpu.getPrintStream() }
         vm.getErrorStream = { gpu.getErrorStream() }
@@ -139,7 +137,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {
-        camera.position.set((-newX + AppLoader.WIDTH / 2), (-newY + AppLoader.HEIGHT / 2), 0f) // deliberate integer division
+        camera.position.set((-newX + TsvmEmulator.WIDTH / 2), (-newY + TsvmEmulator.HEIGHT / 2), 0f) // deliberate integer division
         camera.update()
         batch.projectionMatrix = camera.combined
         fbatch.projectionMatrix = camera.combined
@@ -371,7 +369,80 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         // actually update the view within the tabs
         tabs[menuTabSel].update()
     }
+
+    /**
+     * - changing card1 does nothing! -- right now the emulator does not support using a Display Adapter other than the stock one.
+     * - I still get a display when I missed the card1? -- card1 is substituted with the stock Display Adapter if the entry is missing.
+     */
+    private val defaultProfile = """
+        "Initial VM": {
+            "assetsdir":"./assets",
+            "ramsize":8388608,
+            "cardslots":8,
+            "roms":["bios/tsvmbios.js"],
+            "com1":{"class":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "disk0/"]},
+            "com2":{"class":"net.torvald.tsvm.peripheral.HttpModem", "args":[]},
+            "card4":{"class":"net.torvald.tsvm.peripheral.RamBank", "args":[256]}
+        }
+    """.trimIndent()
+
+    /**
+     * You'll want to further init the things using the VM this function returns, such as:
+     *
+     * ```
+     * makeVMfromJson(json.get(NAME)).let{
+     *      initVMemv(it)
+     *      vms[VIEWPORT_INDEX] = VMRunnerInfo(it, NAME)
+     * }
+     * ```
+     */
+    private fun makeVMfromJson(json: JsonValue): VM {
+        val assetsDir = json.getString("assetsdir")
+        val ramsize = json.getLong("ramsize")
+        val cardslots = json.getInt("cardslots")
+        val roms = json.get("roms").iterator().map { VMProgramRom("$assetsDir/${it.asString()}") }.toTypedArray()
+
+        val vm = VM(assetsDir, ramsize, TheRealWorld(), roms, cardslots)
+
+        // install peripherals
+        listOf("com1", "com2", "com3", "com4").map { json.get(it) }.forEachIndexed { index, jsonValue ->
+            jsonValue?.let { deviceInfo ->
+                val className = deviceInfo.getString("class")
+
+                val loadedClass = Class.forName(className)
+                val argTypes = loadedClass.declaredConstructors[0].parameterTypes
+                val args = deviceInfo.get("args").allIntoJavaType(argTypes)
+                val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
+                val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
+
+                vm.getIO().blockTransferPorts[index].attachDevice(loadedClassInstance as BlockTransferInterface)
+            }
+        }
+        (2..cardslots).map { it to json.get("card$it") }.forEach { (index, jsonValue) ->
+            jsonValue?.let { deviceInfo ->
+                val className = deviceInfo.getString("class")
+
+                val loadedClass = Class.forName(className)
+                val argTypes = loadedClass.declaredConstructors[0].parameterTypes
+                val args = deviceInfo.get("args").allIntoJavaType(argTypes)
+                val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
+                val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
+
+                val peri = loadedClassInstance as PeriBase
+                vm.peripheralTable[index] = PeripheralEntry(
+                    peri
+                )
+            }
+        }
+
+        return vm
+    }
+
+    private fun JsonValue.allIntoJavaType(argTypes: Array<Class<*>>?): Array<Any> {
+        TODO("Not yet implemented")
+    }
 }
+
 
 object EmulatorGuiToolkit {
 
