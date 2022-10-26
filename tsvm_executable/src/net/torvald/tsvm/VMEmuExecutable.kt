@@ -4,6 +4,8 @@ import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.utils.Json
+import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
@@ -97,13 +99,19 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
 
         // install the default VM on slot 0
-        val vm = VM("./assets", 8192 shl 10, TheRealWorld(), arrayOf(TsvmBios), 8)
+        /*val vm = VM("./assets", 8192 shl 10, TheRealWorld(), arrayOf(TsvmBios), 8)
         vm.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets/disk0")))
         initVMenv(vm)
-        vms[0] = VMRunnerInfo(vm, "Initial VM")
+        vms[0] = VMRunnerInfo(vm, "Initial VM")*/
+
+        val testJson = JsonReader().parse("{$defaultProfile}")
+        val vm1 = makeVMfromJson(testJson.get("Initial VM"))
+        initVMenv(vm1)
+        vms[0] = VMRunnerInfo(vm1, "Initial VM")
+
 
         val vm2 = VM("./assets", 64 shl 10, TheRealWorld(), arrayOf(TsvmBios), 8)
-        vm2.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm2, 0, File("assets/disk0")))
+        vm2.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm2, 0, "assets/disk0"))
         initVMenv(vm2)
         vms[1] = VMRunnerInfo(vm2, "Initial VM2")
 
@@ -379,8 +387,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             "assetsdir":"./assets",
             "ramsize":8388608,
             "cardslots":8,
-            "roms":["bios/tsvmbios.js"],
-            "com1":{"class":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "disk0/"]},
+            "roms":["./assets/bios/tsvmbios.js"],
+            "com1":{"class":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/disk0/"]},
             "com2":{"class":"net.torvald.tsvm.peripheral.HttpModem", "args":[]},
             "card4":{"class":"net.torvald.tsvm.peripheral.RamBank", "args":[256]}
         }
@@ -400,7 +408,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val assetsDir = json.getString("assetsdir")
         val ramsize = json.getLong("ramsize")
         val cardslots = json.getInt("cardslots")
-        val roms = json.get("roms").iterator().map { VMProgramRom("$assetsDir/${it.asString()}") }.toTypedArray()
+        val roms = json.get("roms").iterator().map { VMProgramRom(it.asString()) }.toTypedArray()
 
         val vm = VM(assetsDir, ramsize, TheRealWorld(), roms, cardslots)
 
@@ -410,12 +418,38 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                 val className = deviceInfo.getString("class")
 
                 val loadedClass = Class.forName(className)
-                val argTypes = loadedClass.declaredConstructors[0].parameterTypes
-                val args = deviceInfo.get("args").allIntoJavaType(argTypes)
-                val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
-                val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
 
-                vm.getIO().blockTransferPorts[index].attachDevice(loadedClassInstance as BlockTransferInterface)
+                val argTypess = loadedClass.declaredConstructors
+                var successful = false
+                var k = 0
+                // just try out all the possible argTypes
+                while (!successful && k < argTypess.size) {
+                    try {
+                        val argTypes = argTypess[k].parameterTypes
+
+                        println("loadedClass = $className")
+                        println("trying constructor args[${k}/${argTypess.lastIndex}]: ${argTypes.joinToString { it.canonicalName }}")
+
+                        val args = deviceInfo.get("args").allIntoJavaType(argTypes.tail())
+                        val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
+                        val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
+
+                        vm.getIO().blockTransferPorts[index].attachDevice(loadedClassInstance as BlockTransferInterface)
+                        println("COM${index+1} = ${loadedClassInstance.javaClass.canonicalName}: ${args.joinToString()}")
+
+                        successful = true
+                    }
+                    catch (e: IllegalArgumentException) {
+//                        e.printStackTrace()
+                    }
+                    finally {
+                        k += 1
+                    }
+                }
+                if (!successful) {
+                    throw RuntimeException("Invalid or insufficient arguments for ${className}")
+                }
+
             }
         }
         (2..cardslots).map { it to json.get("card$it") }.forEach { (index, jsonValue) ->
@@ -424,7 +458,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
                 val loadedClass = Class.forName(className)
                 val argTypes = loadedClass.declaredConstructors[0].parameterTypes
-                val args = deviceInfo.get("args").allIntoJavaType(argTypes)
+                val args = deviceInfo.get("args").allIntoJavaType(argTypes.tail())
                 val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
                 val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
 
@@ -438,9 +472,25 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         return vm
     }
 
-    private fun JsonValue.allIntoJavaType(argTypes: Array<Class<*>>?): Array<Any> {
-        TODO("Not yet implemented")
+    private fun JsonValue.allIntoJavaType(argTypes: Array<Class<*>>): Array<Any?> {
+        val values = this.iterator().toList()
+        if (values.size != argTypes.size) throw IllegalArgumentException("# of args: ${values.size}, # of arg types: ${argTypes.size}")
+
+        return argTypes.mapIndexed { index, it -> when (it.canonicalName) {
+            "float", "java.lang.Float" -> values[index].asFloat()
+            "double", "java.lang.Double" -> values[index].asDouble()
+            "byte", "java.lang.Byte" -> values[index].asByte()
+            "char", "java.lang.Character" -> values[index].asChar()
+            "short", "java.lang.Short" -> values[index].asShort()
+            "int", "java.lang.Integer" -> values[index].asInt()
+            "long", "java.lang.Long" -> values[index].asLong()
+            "boolean", "java.lang.Boolean" -> values[index].asBoolean()
+            "java.lang.String" -> values[index].asString()
+            else -> throw NotImplementedError("No conversion for ${it.canonicalName} exists")
+        } }.toTypedArray()
     }
+
+    private fun <T> Array<T>.tail(): Array<T> = this.sliceArray(1..this.lastIndex)
 }
 
 

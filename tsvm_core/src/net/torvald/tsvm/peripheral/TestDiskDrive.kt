@@ -10,7 +10,7 @@ import java.util.*
 /**
  * @param driveNum 0 for COM drive number 1, but the file path will still be zero-based
  */
-class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: File? = null) : BlockTransferInterface(false, true) {
+class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: String? = null) : BlockTransferInterface(false, true) {
 
     companion object {
         const val STATE_CODE_STANDBY = 0
@@ -63,7 +63,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         if (DBGPRN) println("[TestDiskDrive] $msg")
     }
 
-    private val rootPath = theRootPath ?: File("test_assets/test_drive_$driveNum")
+    private val rootPath = File(theRootPath) ?: File("test_assets/test_drive_$driveNum")
 
     private var fileOpen = false
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
