@@ -2,22 +2,22 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
-import com.badlogic.gdx.utils.Json
 import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
+import com.badlogic.gdx.utils.JsonWriter
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
+import net.torvald.terrarum.utils.JsonFetcher
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.SQTEX
 import net.torvald.tsvm.peripheral.*
-import java.io.File
-import java.util.*
 
 class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
 
@@ -77,12 +77,43 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     var vmRunners = HashMap<Int, VMRunner>() // <VM's identifier, VMRunner>
     var coroutineJobs = HashMap<Int, Job>() // <VM's identifier, Job>
 
+    companion object {
+        val APPDATADIR = System.getProperty("os.name").toUpperCase().let {
+            if (it.contains("WIN")) System.getenv("APPDATA") + "/tsvmdevenv"
+            else if (it.contains("OS X") || it.contains("MACOS")) System.getProperty("user.home") + "/Library/Application Support/tsvmdevenv"
+            else System.getProperty("user.home") + "/.tsvmdevenv"
+        }
+
+        val FILE_CONFIG = Gdx.files.absolute("$APPDATADIR/config.json")
+        val FILE_PROFILES = Gdx.files.absolute("$APPDATADIR/profiles.json")
+    }
+
     val fullscreenQuad = Mesh(
         true, 4, 6,
         VertexAttribute.Position(),
         VertexAttribute.ColorUnpacked(),
         VertexAttribute.TexCoords(0)
     )
+
+    val profiles = HashMap<String, JsonValue>()
+
+    fun writeProfilesToFile(outFile: FileHandle) {
+        val out = StringBuilder()
+        out.append('{')
+
+        profiles.forEach { name, jsonValue ->
+            out.append("\"$name\":{")
+            out.append(jsonValue.toJson(JsonWriter.OutputType.json))
+            out.append("},")
+        }
+
+        out.deleteCharAt(out.lastIndex).append('}')
+
+        val outstr = out.toString()
+        println(outstr)
+
+        outFile.writeString(outstr, false)
+    }
 
     override fun create() {
         super.create()
@@ -96,6 +127,18 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         camera.update()
         batch.projectionMatrix = camera.combined
         fbatch.projectionMatrix = camera.combined
+
+
+        // create profiles.json if the file is not there
+        if (!FILE_PROFILES.exists()) {
+            FILE_PROFILES.writeString("{${defaultProfile}}", false)
+        }
+        // read profiles
+        JsonFetcher(FILE_PROFILES.file()).let {
+            JsonFetcher.forEachSiblings(it) { profileName, profileJson ->
+                profiles[profileName] = profileJson
+            }
+        }
 
 
         // install the default VM on slot 0
@@ -326,8 +369,6 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
     private val tabs = listOf(ProfilesMenu(menuTabW, menuTabH))
     private var menuTabSel = 0
-    private val profilesPath = "profiles.json"
-    private val configPath = "config.json"
 
     private fun drawMenu(batch: SpriteBatch, x: Float, y: Float) {
         batch.inUse {
@@ -388,9 +429,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             "ramsize":8388608,
             "cardslots":8,
             "roms":["./assets/bios/tsvmbios.js"],
-            "com1":{"class":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/disk0/"]},
-            "com2":{"class":"net.torvald.tsvm.peripheral.HttpModem", "args":[]},
-            "card4":{"class":"net.torvald.tsvm.peripheral.RamBank", "args":[256]}
+            "com1":{"cls":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/disk0/"]},
+            "com2":{"cls":"net.torvald.tsvm.peripheral.HttpModem", "args":[]},
+            "card4":{"cls":"net.torvald.tsvm.peripheral.RamBank", "args":[256]}
         }
     """.trimIndent()
 
@@ -415,7 +456,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         // install peripherals
         listOf("com1", "com2", "com3", "com4").map { json.get(it) }.forEachIndexed { index, jsonValue ->
             jsonValue?.let { deviceInfo ->
-                val className = deviceInfo.getString("class")
+                val className = deviceInfo.getString("cls")
 
                 val loadedClass = Class.forName(className)
 
@@ -454,7 +495,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
         (2..cardslots).map { it to json.get("card$it") }.forEach { (index, jsonValue) ->
             jsonValue?.let { deviceInfo ->
-                val className = deviceInfo.getString("class")
+                val className = deviceInfo.getString("cls")
 
                 val loadedClass = Class.forName(className)
                 val argTypes = loadedClass.declaredConstructors[0].parameterTypes
