@@ -5,6 +5,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.utils.Json
 import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
@@ -102,15 +103,15 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         out.append('{')
 
         profiles.forEach { name, jsonValue ->
-            out.append("\"$name\":{")
+            out.append("\"$name\":")
             out.append(jsonValue.toJson(JsonWriter.OutputType.json))
-            out.append("},")
+            out.append(",")
+            println("[VMEmuExecutable] wrote VM profile $name")
         }
 
         out.deleteCharAt(out.lastIndex).append('}')
 
         val outstr = out.toString()
-        println(outstr)
 
         outFile.writeString(outstr, false)
     }
@@ -132,11 +133,13 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         // create profiles.json if the file is not there
         if (!FILE_PROFILES.exists()) {
             FILE_PROFILES.writeString("{${defaultProfile}}", false)
+            println("[VMEmuExecutable] creating new profile.json")
         }
         // read profiles
         JsonFetcher(FILE_PROFILES.file()).let {
             JsonFetcher.forEachSiblings(it) { profileName, profileJson ->
                 profiles[profileName] = profileJson
+                println("[VMEmuExecutable] read VM profile $profileName")
             }
         }
 
@@ -360,6 +363,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         fullscreenQuad.dispose()
         coroutineJobs.values.forEach { it.cancel() }
         vms.forEach { it?.vm?.dispose() }
+
+        writeProfilesToFile(Gdx.files.absolute("$APPDATADIR/profiles_new.json"))
     }
 
     private val menuTabW = windowWidth - 4

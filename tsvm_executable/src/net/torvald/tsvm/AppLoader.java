@@ -14,8 +14,8 @@ public class AppLoader {
     public static String appTitle = "tsvm";
     public static Lwjgl3ApplicationConfiguration appConfig;
 
-    public static int WIDTH = 1080;//640;
-    public static int HEIGHT = 436;//480;
+    public static int WIDTH = 640;//1080;//640;
+    public static int HEIGHT = 480;//436;//480;
 
     public static void main(String[] args) {
         ShaderProgram.pedantic = false;
@@ -36,9 +36,9 @@ public class AppLoader {
 
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
-        VM vm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE}, 2);
+//        VM vm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE}, 2);
 //        VM vm = new VM(128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
-//        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE}, 8);
+        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE}, 8);
 //        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE}, 8);
 //        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE}, 8);
 
@@ -62,6 +62,6 @@ public class AppLoader {
                 pipvm, 160, 140
         ))));*/
 
-        new Lwjgl3Application(new VMGUI(portable, WIDTH, HEIGHT), appConfig);
+        new Lwjgl3Application(new VMGUI(reference, WIDTH, HEIGHT), appConfig);
     }
 }
