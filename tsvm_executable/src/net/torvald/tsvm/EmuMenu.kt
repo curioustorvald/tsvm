@@ -5,10 +5,11 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 /**
  * Created by minjaesong on 2022-10-25.
  */
-interface EmuMenu {
+abstract class EmuMenu(val parent: VMEmuExecutable, val x: Int, val y: Int, val w: Int, val h: Int) {
 
-    fun update()
-
-    fun render(batch: SpriteBatch)
+    abstract fun show()
+    abstract fun hide()
+    abstract fun update()
+    abstract fun render(batch: SpriteBatch)
 
 }

@@ -98,7 +98,18 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     val profiles = HashMap<String, JsonValue>()
 
-    fun writeProfilesToFile(outFile: FileHandle) {
+    private val currentlyLoadedProfiles = HashMap<String, VM>()
+    fun getVMbyProfileName(name: String): VM? {
+        if (profiles.containsKey(name)) {
+            return currentlyLoadedProfiles.getOrPut(name) { _makeVMfromJson(profiles[name]!!) }
+        }
+        else
+            return null
+    }
+
+    fun getViewportForTheVM(vm: VM?): Int? = if (vm == null) null else vms.indexOfFirst { vm.id == it?.vm?.id }.let { if (it < 0) null else it }
+
+    private fun writeProfilesToFile(outFile: FileHandle) {
         val out = StringBuilder()
         out.append('{')
 
@@ -115,6 +126,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
         outFile.writeString(outstr, false)
     }
+
 
     override fun create() {
         super.create()
@@ -151,7 +163,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         vms[0] = VMRunnerInfo(vm, "Initial VM")*/
 
         val testJson = JsonReader().parse("{$defaultProfile}")
-        val vm1 = makeVMfromJson(testJson.get("Initial VM"))
+        val vm1 = getVMbyProfileName("Initial VM")!!
         initVMenv(vm1)
         vms[0] = VMRunnerInfo(vm1, "Initial VM")
 
@@ -267,7 +279,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         updateMenu()
     }
 
-    private val defaultGuiBackgroundColour = Color(0x303039ff)
+    val defaultGuiBackgroundColour = Color(0x303039ff)
 
     private fun renderGame(delta: Float) {
         vms.forEachIndexed { index, vmInfo ->
@@ -369,13 +381,24 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     private val menuTabW = windowWidth - 4
     private val menuTabH = windowHeight - 4 - FONT.H
+    private val menuTabX = windowWidth * (panelsX-1) + 2
+    private val menuTabY =windowHeight * (panelsY-1) + FONT.H + 2
 
-    private val menuTabs = listOf("Profiles", "Machine", "Peripherals", "Cards")
+    private val menuTabs = listOf("Profiles", "Machine", "COMs", "Cards", "Setup")
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
-    private val tabs = listOf(ProfilesMenu(menuTabW, menuTabH))
+    private val tabs = listOf(ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH))
     private var menuTabSel = 0
 
+    private var tabChangeRequested: Int? = 0 // null: not requested
+
     private fun drawMenu(batch: SpriteBatch, x: Float, y: Float) {
+        if (tabChangeRequested != null) {
+            tabs[menuTabSel].hide()
+            tabs[tabChangeRequested!!].show()
+            menuTabSel = tabChangeRequested!!
+            tabChangeRequested = null
+        }
+
         batch.inUse {
             // background for the entire area
             batch.color = defaultGuiBackgroundColour
@@ -403,7 +426,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             }
 
             // draw the window frame inside the tab
-            batch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
+            batch.color = EmulatorGuiToolkit.Theme.COL_LAND
             batch.fillRect(x, y + FONT.H, windowWidth, windowHeight - FONT.H)
             batch.color = EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
             batch.fillRect(x, y + FONT.H, windowWidth.toFloat(), 2f)
@@ -412,7 +435,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             batch.fillRect(x + windowWidth - 2f, y + FONT.H, 2f, windowHeight - FONT.H - 2f)
         }
 
-        setCameraPosition(windowWidth * (panelsX-1) + 2f, windowHeight * (panelsY-1) + FONT.H + 2f)
+        setCameraPosition(menuTabX.toFloat(), menuTabY.toFloat())
         tabs[menuTabSel].render(batch)
     }
 
@@ -440,6 +463,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
     """.trimIndent()
 
+
     /**
      * You'll want to further init the things using the VM this function returns, such as:
      *
@@ -450,7 +474,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
      * }
      * ```
      */
-    private fun makeVMfromJson(json: JsonValue): VM {
+    private fun _makeVMfromJson(json: JsonValue): VM {
         val assetsDir = json.getString("assetsdir")
         val ramsize = json.getLong("ramsize")
         val cardslots = json.getInt("cardslots")
@@ -547,10 +571,15 @@ object EmulatorGuiToolkit {
         val COL_INACTIVE2 = Color(0x5a5a5fff.toInt())
         val COL_ACTIVE = Color(0x23ff00ff.toInt()) // neon green
         val COL_ACTIVE2 = Color(0xfff600ff.toInt()) // yellow
+        val COL_ACTIVE3 = Color.WHITE
         val COL_HIGHLIGHT = Color(0xe43380ff.toInt()) // magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
 
         val COL_TAB_NOT_SELECTED = Color(0x503cd4ff) // dark blue
+
+        val COL_LAND = Color(0x6b8ba2ff.toInt())
+        val COL_WELL = Color(0x374854ff.toInt())
+        val COL_WELL2 = Color(0x3e5261ff.toInt())
     }
 
 }

@@ -52,7 +52,7 @@ class VM(
     var getErrorStream: () -> OutputStream = { TODO() }
     var getInputStream: () -> InputStream = { TODO() }
 
-    var startTime: Long = -1
+    var startTime: Long = -1; private set
 
     var resetDown = false
     var stopDown = false
@@ -117,7 +117,13 @@ class VM(
         killAllContexts()
         usermem.destroy()
         peripheralTable.forEach { it.peripheral?.dispose() }
+        disposed = true
     }
+
+    /**
+     * To check if the VM has started, check if startTime >= 0
+     */
+    var disposed = false; private set
 
     /**
      * @return system uptime in milliseconds
