@@ -189,6 +189,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     private fun initVMenv(vm: VM) {
+        vm.init()
+
         vm.peripheralTable.getOrNull(1)?.peripheral?.dispose()
 
         val gpu = ReferenceGraphicsAdapter2("./assets", vm)

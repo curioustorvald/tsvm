@@ -75,8 +75,6 @@ class VM(
 //            MMIO_SIZE.toInt() - 256,
 //            64
         )
-
-        init()
     }
 
     fun killAllContexts() {

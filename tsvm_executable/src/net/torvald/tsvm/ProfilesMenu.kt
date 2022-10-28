@@ -52,8 +52,8 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 val isVMrunning = if (theVM != null) !theVM.disposed && theVM.startTime >= 0 else false
                 val vmViewport = parent.getViewportForTheVM(theVM)
 
-                val vmRunStatusText = if (isVMrunning) "Running" else "Idle"
-                val vmViewportText = if (vmViewport != null) "on viewport #${vmViewport+1}" else "hidden"
+                val vmRunStatusText = if (isVMrunning) "\u00D2\u00D3" else "\u00D0\u00D1"
+                val vmViewportText = if (vmViewport != null) "on viewport #${vmViewport+1}" else "and hidden"
 
                 batch.color = colBack
                 it.fillRect(10, 11 + i*2*FONT.H, 228, 26)
@@ -61,7 +61,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 batch.color = colFore
                 FONT.draw(batch, profileNames[index], 12f, 11f + i*2*FONT.H)
                 batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE3
-                FONT.draw(batch, "$vmRunStatusText, $vmViewportText", 12f, 11f+FONT.H + i*2*FONT.H)
+                FONT.draw(batch, "$vmRunStatusText $vmViewportText", 12f, 11f+FONT.H + i*2*FONT.H)
 
 
             }
