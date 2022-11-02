@@ -5,7 +5,6 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
-import com.badlogic.gdx.utils.Json
 import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
@@ -79,14 +78,10 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     var coroutineJobs = HashMap<Int, Job>() // <VM's identifier, Job>
 
     companion object {
-        val APPDATADIR = System.getProperty("os.name").toUpperCase().let {
-            if (it.contains("WIN")) System.getenv("APPDATA") + "/tsvmdevenv"
-            else if (it.contains("OS X") || it.contains("MACOS")) System.getProperty("user.home") + "/Library/Application Support/tsvmdevenv"
-            else System.getProperty("user.home") + "/.tsvmdevenv"
-        }
+        val APPDATADIR = TsvmEmulator.defaultDir
 
-        val FILE_CONFIG = Gdx.files.absolute("$APPDATADIR/config.json")
-        val FILE_PROFILES = Gdx.files.absolute("$APPDATADIR/profiles.json")
+        val FILE_CONFIG = Gdx.files.absolute(TsvmEmulator.configDir)
+        val FILE_PROFILES = Gdx.files.absolute(TsvmEmulator.profilesDir)
     }
 
     val fullscreenQuad = Mesh(
@@ -571,9 +566,10 @@ object EmulatorGuiToolkit {
     object Theme {
         val COL_INACTIVE = Color(0x858585ff.toInt())
         val COL_INACTIVE2 = Color(0x5a5a5fff.toInt())
+        val COL_INACTIVE3 = Color.WHITE
         val COL_ACTIVE = Color(0x23ff00ff.toInt()) // neon green
         val COL_ACTIVE2 = Color(0xfff600ff.toInt()) // yellow
-        val COL_ACTIVE3 = Color.WHITE
+        val COL_ACTIVE3 = Color(0x5ff8ffff.toInt()) // cyan
         val COL_HIGHLIGHT = Color(0xe43380ff.toInt()) // magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
 
