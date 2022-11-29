@@ -123,6 +123,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
 //    override var halfrowMode = false
 
+    private val instArea = UnsafeHelper.allocate(65536L)
+
     override var rawCursorPos: Int
         get() = textArea.getShortFree(memTextCursorPosOffset).toInt()
         set(value) { textArea.setShortFree(memTextCursorPosOffset, value.toShort()) }
@@ -287,6 +289,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
             in 1024L..2047L -> scanlineOffsets[addr - 1024]
 
+            in 65536L..131071L -> instArea[addr - 65536]
+
             in 0 until VM.MMIO_SIZE -> -1
             else -> null
         }
@@ -307,6 +311,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             17L -> { framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8) }
 
             in 1024L..2047L -> { scanlineOffsets[addr - 1024] = byte }
+
+            in 65536L..131071L -> instArea[addr - 65536] = byte
 
             else -> null
         }
@@ -344,6 +350,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             20, 21 -> resetFontRom(opcode - 20)
         }
     }
+
+    private var drawCallSize = 0
+    private val drawCallBuffer = Array<DrawCall>(3640) { DrawCallEnd }
+    internal var drawCallProgramCounter = 0
+    internal var drawCallRscanline = 0
 
     /**
      * @param mode 0-Low, 1-High
@@ -744,6 +755,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom.dispose()
         unusedArea.destroy()
         scanlineOffsets.destroy()
+        instArea.destroy()
     }
 
     private var textCursorBlinkTimer = 0f
