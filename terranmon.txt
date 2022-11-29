@@ -318,13 +318,22 @@ MMIO
     framebuffer scroll X
 16..17 RW
     framebuffer scroll Y
+18 RO
+    Busy flags
+    1: Codec in-use
+    2: Draw Instructions being decoded
+19 RO
+    Write non-zero value to initiate the Draw Instruction decoding
+20..21 RO
+    Program Counter for the Draw Instruction decoding
 1024..2047 RW
     horizontal scroll offset for scanlines
 2048..4095 RW
     !!NEW!! Font ROM Mapping Area
     Format is always 8x16 pixels, 1bpp ROM format (so that it would be YY_CHR-Compatible)
     (designer's note: it's still useful to divide the char rom to two halves, lower half being characters ROM and upper half being symbols ROM)
-
+65536..131071 RW
+    Draw Instructions
 
 Text-mode-font-ROM is immutable and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it

@@ -15,9 +15,12 @@ import java.net.URL
  *
  * Note that there is no double-slash after the protocol (or scheme)
  *
+ * @param artificialDelayBlockSize How many bytes should be retrieved in a single block-read
+ * @param artificialDelayWaitTime Delay in milliseconds between the block-reads. Put non-negative value to NOT introduce a delay.
+ *
  * Created by minjaesong on 2022-09-22.
  */
-class HttpModem(private val vm: VM) : BlockTransferInterface(false, true) {
+class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 1024, private val artificialDelayWaitTime: Int = -1) : BlockTransferInterface(false, true) {
 
     private val DBGPRN = true
 
@@ -134,16 +137,23 @@ class HttpModem(private val vm: VM) : BlockTransferInterface(false, true) {
                     // check the http connection before we do anything to the fs
                     httpIn = BufferedInputStream(URL(cnxUrl).openStream())
                     messageComposeBuffer.reset()
-                    bufferedOut = BufferedOutputStream(messageComposeBuffer, 1024)
-                    val data = ByteArray(1024)
+                    bufferedOut = BufferedOutputStream(messageComposeBuffer, artificialDelayBlockSize)
+                    val data = ByteArray(artificialDelayBlockSize)
                     var fileComplete = false
                     var count = 0
                     while (!fileComplete) {
-                        count = httpIn.read(data, 0, 1024)
+                        count = httpIn.read(data, 0, artificialDelayBlockSize)
                         if (count <= 0) {
                             fileComplete = true
                         } else {
                             bufferedOut.write(data, 0, count)
+                        }
+
+                        if (artificialDelayWaitTime >= 0) {
+                            try {
+                                Thread.sleep(artificialDelayWaitTime.toLong())
+                            }
+                            catch (e: InterruptedException) {}
                         }
                     }
                     statusCode = TestDiskDrive.STATE_CODE_STANDBY
