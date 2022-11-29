@@ -27,7 +27,7 @@ internal object DrawCallEnd : DrawCall {
 
 internal class GotoScanline(val line: Int) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
-        gpu.drawCallRscanline = line
+        gpu.rScanline = line
     }
 }
 
@@ -38,59 +38,46 @@ internal class JumpIfScanline(
     val whenGreaterThan: Int
 ) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
-        if (gpu.drawCallRscanline < compare) {
-            if (whenLessThan != 65535) gpu.drawCallRscanline = whenLessThan - 1
+        if (gpu.rScanline < compare) {
+            if (whenLessThan != 65535) gpu.rScanline = whenLessThan - 1
         }
-        else if (gpu.drawCallRscanline == compare) {
-            if (whenEqualTo != 65535) gpu.drawCallRscanline = whenEqualTo - 1
+        else if (gpu.rScanline == compare) {
+            if (whenEqualTo != 65535) gpu.rScanline = whenEqualTo - 1
         }
         else {
-            if (whenGreaterThan != 65535) gpu.drawCallRscanline = whenGreaterThan - 1
+            if (whenGreaterThan != 65535) gpu.rScanline = whenGreaterThan - 1
         }
     }
 }
 
+/**
+ * DrawDoubleLines: simply double the `len` parameter
+ */
 internal class DrawCallDrawLines(
-    val opCount: Int, val colour: Int,
-    val xposLen1: Int,
-    val xposLen2: Int = 0,
-    val xposLen3: Int = 0,
-    val xposLen4: Int = 0,
-    val xposLen5: Int = 0,
-    val xposLen6: Int = 0,
-    val xposLen7: Int = 0,
-    val xposLen8: Int = 0
+    val opCount: Int, val colour: Int, val lenMult: Int,
+    val xposs: IntArray, val lens: IntArray
 ) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
-        TODO("Not yet implemented")
+        val cc = colour.toByte()
+
+        for (k in 0 until opCount) {
+            for (i in xposs[k] until xposs[k] + lens[k]) gpu.framebuffer.set(gpu.rScanline * gpu.WIDTH * 1L + i, cc)
+            gpu.rScanline += Math.ceil(lens[k].toDouble() / gpu.WIDTH).toInt()
+        }
     }
 }
 
-internal class DrawCallDrawDoubleLines(
-    val opCount: Int, val colour: Int,
-    val xposLen1: Int,
-    val xposLen2: Int = 0,
-    val xposLen3: Int = 0,
-    val xposLen4: Int = 0,
-    val xposLen5: Int = 0,
-    val xposLen6: Int = 0,
-    val xposLen7: Int = 0,
-    val xposLen8: Int = 0
-) : DrawCall {
-    override fun execute(gpu: GraphicsAdapter) {
-        TODO("Not yet implemented")
-    }
-}
 
 internal class DrawCallCopyPixels(
     val opCount: Int,
+    val addrFrom: Int,
     val xPos: Int,
     val lineLength: Int,
     val stride1: Int,
-    val stride2: Int = 0,
-    val stride3: Int = 0,
-    val stride4: Int = 0,
-    val stride5: Int = 0,
+    val stride2: Int,
+    val stride3: Int,
+    val stride4: Int,
+    val stride5: Int
 ) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
         TODO("Not yet implemented")

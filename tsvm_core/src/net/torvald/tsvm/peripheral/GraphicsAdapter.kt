@@ -354,7 +354,114 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private var drawCallSize = 0
     private val drawCallBuffer = Array<DrawCall>(3640) { DrawCallEnd }
     internal var drawCallProgramCounter = 0
-    internal var drawCallRscanline = 0
+    internal var rScanline = 0
+
+    private fun compileWords() {
+        drawCallSize = 0
+        while (true) {
+            val bytes = (0..17).map { instArea.get(18L*drawCallSize + it) }.toByteArray()
+            val instruction = compileWord(bytes)
+            drawCallBuffer[drawCallSize] = instruction
+            drawCallSize += 1
+
+            // check if the instruction contains END
+            if (instruction is DrawCallCompound && (instruction.call1 is DrawCallEnd || instruction.call2 is DrawCallEnd || instruction.call3 is DrawCallEnd)) {
+                break
+            }
+        }
+    }
+
+    private fun compileWord(bytes: ByteArray): DrawCall {
+        val head = bytes[0]
+
+        when (head) {
+            in 0..127 -> {
+                // D-type
+                when (head) {
+                    in 0x10..0x17 -> {
+                        return DrawCallDrawLines(
+                            (head and 0xF).toInt() + 1,
+                            bytes[1].toUint(), 1,
+                            intArrayOf(
+                                bytes[3].toUint().and(63).unzero(64),
+                                bytes[5].toUint().and(63).unzero(64),
+                                bytes[7].toUint().and(63).unzero(64),
+                                bytes[9].toUint().and(63).unzero(64),
+                                bytes[11].toUint().and(63).unzero(64),
+                                bytes[13].toUint().and(63).unzero(64),
+                                bytes[15].toUint().and(63).unzero(64),
+                                bytes[17].toUint().and(63).unzero(64)
+                            ),
+                            intArrayOf(
+                                bytes[2].toUint().shl(2) or bytes[3].toUint().and(192).ushr(6),
+                                bytes[4].toUint().shl(2) or bytes[5].toUint().and(192).ushr(6),
+                                bytes[6].toUint().shl(2) or bytes[7].toUint().and(192).ushr(6),
+                                bytes[8].toUint().shl(2) or bytes[9].toUint().and(192).ushr(6),
+                                bytes[10].toUint().shl(2) or bytes[11].toUint().and(192).ushr(6),
+                                bytes[12].toUint().shl(2) or bytes[13].toUint().and(192).ushr(6),
+                                bytes[14].toUint().shl(2) or bytes[15].toUint().and(192).ushr(6),
+                                bytes[16].toUint().shl(2) or bytes[17].toUint().and(192).ushr(6)
+                            )
+                        )
+                    }
+                    in 0x18..0x1F -> {
+                        return DrawCallDrawLines(
+                            (head and 0xF).toInt() - 7,
+                            bytes[1].toUint(), 2,
+                            intArrayOf(
+                                bytes[3].toUint().and(63).unzero(64),
+                                bytes[5].toUint().and(63).unzero(64),
+                                bytes[7].toUint().and(63).unzero(64),
+                                bytes[9].toUint().and(63).unzero(64),
+                                bytes[11].toUint().and(63).unzero(64),
+                                bytes[13].toUint().and(63).unzero(64),
+                                bytes[15].toUint().and(63).unzero(64),
+                                bytes[17].toUint().and(63).unzero(64)
+                            ),
+                            intArrayOf(
+                                bytes[2].toUint().shl(2) or bytes[3].toUint().and(192).ushr(6),
+                                bytes[4].toUint().shl(2) or bytes[5].toUint().and(192).ushr(6),
+                                bytes[6].toUint().shl(2) or bytes[7].toUint().and(192).ushr(6),
+                                bytes[8].toUint().shl(2) or bytes[9].toUint().and(192).ushr(6),
+                                bytes[10].toUint().shl(2) or bytes[11].toUint().and(192).ushr(6),
+                                bytes[12].toUint().shl(2) or bytes[13].toUint().and(192).ushr(6),
+                                bytes[14].toUint().shl(2) or bytes[15].toUint().and(192).ushr(6),
+                                bytes[16].toUint().shl(2) or bytes[17].toUint().and(192).ushr(6)
+                            )
+                        )
+                    }
+                    in 0x20..0x25 -> {
+                        return DrawCallCopyPixels(
+                            (head and 0xF).toInt() + 1,
+                            bytes[1].toUint().shl(16) or bytes[2].toUint().shl(8) or bytes[3].toUint(),
+                            bytes[4].toUint().shl(8) or bytes[5].toUint(),
+                            bytes[6].toUint().shl(8) or bytes[7].toUint(),
+                            bytes[8].toUint().shl(8) or bytes[9].toUint(),
+                            bytes[10].toUint().shl(8) or bytes[11].toUint(),
+                            bytes[12].toUint().shl(8) or bytes[13].toUint(),
+                            bytes[14].toUint().shl(8) or bytes[15].toUint(),
+                            bytes[16].toUint().shl(8) or bytes[17].toUint()
+                        )
+                    }
+                    else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
+                }
+            }
+            in -16..-1 -> {
+                // C-type
+                when (head) {
+                    else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
+                }
+            }
+            else -> {
+                // T-type
+                when (head) {
+                    else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
+                }
+            }
+        }
+    }
+
+    private fun Int.unzero(n: Int) = if (this == 0) n else this
 
     /**
      * @param mode 0-Low, 1-High
