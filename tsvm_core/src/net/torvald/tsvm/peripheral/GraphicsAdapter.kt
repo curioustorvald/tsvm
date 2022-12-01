@@ -430,17 +430,13 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                             )
                         )
                     }
-                    in 0x20..0x25 -> {
-                        return DrawCallCopyPixels(
-                            (head and 0xF).toInt() + 1,
-                            bytes[1].toUint().shl(16) or bytes[2].toUint().shl(8) or bytes[3].toUint(),
-                            bytes[4].toUint().shl(8) or bytes[5].toUint(),
-                            bytes[6].toUint().shl(8) or bytes[7].toUint(),
-                            bytes[8].toUint().shl(8) or bytes[9].toUint(),
-                            bytes[10].toUint().shl(8) or bytes[11].toUint(),
-                            bytes[12].toUint().shl(8) or bytes[13].toUint(),
-                            bytes[14].toUint().shl(8) or bytes[15].toUint(),
-                            bytes[16].toUint().shl(8) or bytes[17].toUint()
+                    0x60.toByte() -> {
+                        return JumpIfScanline(
+                            bytes[1].toUint(),
+                            toBigInt(bytes[2], bytes[3]),
+                            toBigInt(bytes[4], bytes[5]),
+                            toBigInt(bytes[6], bytes[7]),
+                            toBigInt(bytes[8], bytes[9])
                         )
                     }
                     else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
@@ -448,20 +444,81 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             }
             in -16..-1 -> {
                 // C-type
-                when (head) {
-                    else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
-                }
+                val call1 = bytesToControlCalls(bytes.sliceArray(0..5))
+                val call2 = bytesToControlCalls(bytes.sliceArray(6..11))
+                val call3 = bytesToControlCalls(bytes.sliceArray(12..17))
+                return DrawCallCompound(call1, call2, call3)
             }
             else -> {
                 // T-type
                 when (head) {
+                    in 0xA0..0xA1 -> {
+                        return DrawCallCopyPixels(
+                            (head and 2) == 1.toByte(),
+                            bytes[1].toUint().unzero(256), bytes[2].toUint().unzero(256),
+                            bytes[3].toUint(),
+                            toBigInt(bytes[4], bytes[5]),
+                            toBigInt(bytes[6], bytes[7], bytes[8]),
+                            toBigInt(bytes[9], bytes[10], bytes[11]),
+                            toBigInt(bytes[12], bytes[13], bytes[14]),
+                            toBigInt(bytes[15], bytes[16], bytes[17])
+                        )
+                    }
                     else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
                 }
             }
         }
     }
 
+    private fun bytesToControlCalls(bytes: ByteArray): DrawCall {
+        return when (toBigInt(bytes[0], bytes[1])) {
+            0xF00F -> DrawCallEnd
+            0xF100 -> GotoScanline(toBigInt(bytes[2], bytes[3]))
+            0xF101 -> ChangeGraphicsMode(toBigInt(bytes[2], bytes[3]))
+            0xFFFF -> DrawCallNop
+            else -> throw UnsupportedOperationException("Unknown Opcode 0x${toBigInt(bytes[0], bytes[1]).toString(16).padStart(4, '0').toUpperCase()}")
+        }
+    }
+
     private fun Int.unzero(n: Int) = if (this == 0) n else this
+    private fun toBigInt(byte1: Byte, byte2: Byte, byte3: Byte? = null): Int {
+        if (byte3 != null)
+            return byte1.toUint().shl(16) or byte2.toUint().shl(8) or byte3.toUint()
+        else
+            return byte1.toUint().shl(8) or byte2.toUint()
+    }
+
+    open fun blockCopy(width: Int, height: Int, x: Int, y: Int, baseAddr: Int, stride: Int) {
+        var line = y
+        var srcPtr = vm.usermem.ptr + baseAddr
+        while (line < y + height) {
+            val destPtr = framebuffer.ptr + line * WIDTH + x
+
+            UnsafeHelper.memcpy(srcPtr, destPtr, width.toLong())
+
+            srcPtr += stride
+            line += 1
+        }
+    }
+
+    open fun blockCopyTransparency(width: Int, height: Int, x: Int, y: Int, transparencyKey: Byte, baseAddr: Int, stride: Int) {
+        var line = y
+        var srcPtr = baseAddr * 1L
+        while (line < y + height) {
+            val destPtr = line * WIDTH + x * 1L
+
+//            UnsafeHelper.memcpy(srcPtr, destPtr, width.toLong())
+            for (col in x until x + width) {
+                val pixel = vm.usermem[srcPtr + col]
+                if (pixel != transparencyKey) {
+                    framebuffer[destPtr + col] = pixel
+                }
+            }
+
+            srcPtr += stride
+            line += 1
+        }
+    }
 
     /**
      * @param mode 0-Low, 1-High

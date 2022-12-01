@@ -31,21 +31,31 @@ internal class GotoScanline(val line: Int) : DrawCall {
     }
 }
 
+internal class ChangeGraphicsMode(val mode: Int) : DrawCall {
+    override fun execute(gpu: GraphicsAdapter) {
+        gpu.mmio_write(12L, mode.toByte())
+    }
+}
+
 internal class JumpIfScanline(
+    val reg: Int,
     val compare: Int,
     val whenLessThan: Int,
     val whenEqualTo: Int,
     val whenGreaterThan: Int
 ) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
-        if (gpu.rScanline < compare) {
-            if (whenLessThan != 65535) gpu.rScanline = whenLessThan - 1
+        // TODO regValue = when ...
+        val regValue = gpu.rScanline
+
+        if (regValue < compare) {
+            if (whenLessThan != 65535) gpu.drawCallProgramCounter = whenLessThan - 1
         }
-        else if (gpu.rScanline == compare) {
-            if (whenEqualTo != 65535) gpu.rScanline = whenEqualTo - 1
+        else if (regValue == compare) {
+            if (whenEqualTo != 65535) gpu.drawCallProgramCounter = whenEqualTo - 1
         }
         else {
-            if (whenGreaterThan != 65535) gpu.rScanline = whenGreaterThan - 1
+            if (whenGreaterThan != 65535) gpu.drawCallProgramCounter = whenGreaterThan - 1
         }
     }
 }
@@ -69,17 +79,20 @@ internal class DrawCallDrawLines(
 
 
 internal class DrawCallCopyPixels(
-    val opCount: Int,
-    val addrFrom: Int,
-    val xPos: Int,
-    val lineLength: Int,
-    val stride1: Int,
-    val stride2: Int,
-    val stride3: Int,
-    val stride4: Int,
-    val stride5: Int
+    val useTransparency: Boolean,
+    val width: Int,
+    val height: Int,
+    val transparencyKey: Int,
+    val xpos: Int,
+    val baseAddr: Int,
+    val stride: Int,
+    val colourMath1: Int,
+    val colourMath2: Int
 ) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
-        TODO("Not yet implemented")
+        if (useTransparency)
+            gpu.blockCopyTransparency(width, height, xpos, gpu.rScanline, transparencyKey.toByte(), baseAddr, stride)
+        else
+            gpu.blockCopy(width, height, xpos, gpu.rScanline, baseAddr, stride)
     }
 }
