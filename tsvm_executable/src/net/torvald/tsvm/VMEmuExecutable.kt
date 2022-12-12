@@ -96,7 +96,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val currentlyLoadedProfiles = HashMap<String, VM>()
     fun getVMbyProfileName(name: String): VM? {
         if (profiles.containsKey(name)) {
-            return currentlyLoadedProfiles.getOrPut(name) { _makeVMfromJson(profiles[name]!!) }
+            return currentlyLoadedProfiles.getOrPut(name) { _makeVMfromJson(profiles[name]!!, name) }
         }
         else
             return null
@@ -464,7 +464,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
      * }
      * ```
      */
-    private fun _makeVMfromJson(json: JsonValue): VM {
+    private fun _makeVMfromJson(json: JsonValue, profileName: String): VM {
+        println("Processing profile '$profileName'")
+        
         val assetsDir = json.getString("assetsdir")
         val ramsize = json.getLong("ramsize")
         val cardslots = json.getInt("cardslots")
@@ -507,7 +509,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                     }
                 }
                 if (!successful) {
-                    throw RuntimeException("Invalid or insufficient arguments for ${className}")
+                    throw RuntimeException("Invalid or insufficient arguments for $className in the profile $profileName")
                 }
 
             }
