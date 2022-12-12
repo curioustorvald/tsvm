@@ -287,6 +287,12 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             16L -> framebufferScrollY.toByte()
             17L -> framebufferScrollY.ushr(8).toByte()
 
+            18L -> (drawCallBusy.toInt() or codecBusy.toInt().shl(1)).toByte()
+            19L -> -1
+            20L -> drawCallProgramCounter.and(255).toByte()
+            21L -> drawCallProgramCounter.ushr(8).and(255).toByte()
+
+            
             in 1024L..2047L -> scanlineOffsets[addr - 1024]
 
             in 65536L..131071L -> instArea[addr - 65536]
@@ -309,6 +315,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             15L -> { framebufferScrollX = framebufferScrollX.and(0xFFFF00FF.toInt()).or(bi shl 8) }
             16L -> { framebufferScrollY = framebufferScrollY.and(0xFFFFFF00.toInt()).or(bi) }
             17L -> { framebufferScrollY = framebufferScrollY.and(0xFFFF00FF.toInt()).or(bi shl 8) }
+
+            19L -> { if (bi != 0) compileAndRunDrawCalls() }
 
             in 1024L..2047L -> { scanlineOffsets[addr - 1024] = byte }
 
@@ -351,11 +359,26 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
     }
 
+    private var codecBusy = false
+
     private var drawCallSize = 0
     private val drawCallBuffer = Array<DrawCall>(3640) { DrawCallEnd }
+    private var drawCallBusy = false
     internal var drawCallProgramCounter = 0
     internal var rScanline = 0
 
+    private fun compileAndRunDrawCalls() {
+        if (!drawCallBusy) {
+            drawCallBusy = true
+            compileWords()
+            // TODO on separate thread?
+            for (i in 0 until drawCallSize)
+                drawCallBuffer[i].execute(this)
+            drawCallBusy = false
+        }
+    }
+
+        
     private fun compileWords() {
         drawCallSize = 0
         while (true) {
