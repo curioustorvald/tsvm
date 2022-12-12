@@ -20,6 +20,9 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
 
     private var selectedProfileIndex: Int? = null
 
+    private val viewportRows = parent.panelsY
+    private val viewportColumns = parent.panelsX
+
     private fun resetState() {
         profilesScroll = 0
     }
@@ -90,12 +93,15 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
             }
 
             // draw profile detals view
-            batch.color = EmulatorGuiToolkit.Theme.COL_WELL2
-            batch.fillRect(251, 11, 375, 403)
-            batch.fillRect(251, 427, 375, 26)
-
             if (selectedProfileIndex != null) profileNames[selectedProfileIndex!!].let {  profileName ->
+                batch.color = EmulatorGuiToolkit.Theme.COL_WELL2
+                batch.fillRect(251, 11, 375, 390)
+                batch.fillRect(251, 427, 375, 26)
+
                 val profile = parent.profiles[profileName]!!
+                val theVM = parent.getVMbyProfileName(profileName)
+                val vmViewport = parent.getViewportForTheVM(theVM)
+
 
                 val ramsize = profile.getLong("ramsize")
                 val cardslots = profile.getInt("cardslots")
@@ -117,6 +123,16 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 FONT.draw(batch, "1) [Emulated Reference Graphics Adapter]", 253f, 11f + 11*FONT.H)
                 for (i in 2 until cardslots) {
                     FONT.draw(batch, "$i) ${cards[i-1]?.let { it.substring(it.lastIndexOf('.')+1) } ?: ""}", 253f, 11f + (10+i)*FONT.H)
+                }
+
+                // draw panel chooser
+                FONT.draw(batch, "Show on viewport:", 253f, 414f)
+                for (i in 1 until viewportRows * viewportColumns) {
+                    batch.color = if (vmViewport != null && i == vmViewport + 1)
+                        EmulatorGuiToolkit.Theme.COL_ACTIVE2
+                    else
+                        Color.WHITE
+                    FONT.draw(batch, "$i", 239f + (i * 14f) + (if (i < 10) 7f else 0f), 434f)
                 }
             }
         }

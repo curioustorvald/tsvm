@@ -43,7 +43,7 @@ public class AppLoader {
 //        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE}, 8);
 
         vm.getIO().getBlockTransferPorts()[0].attachDevice(new TestDiskDrive(vm, 0, diskPath));
-        vm.getIO().getBlockTransferPorts()[1].attachDevice(new HttpModem(vm));
+        vm.getIO().getBlockTransferPorts()[1].attachDevice(new HttpModem(vm, 1024, -1));
 
 
 

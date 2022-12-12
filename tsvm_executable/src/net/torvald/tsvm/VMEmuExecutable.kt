@@ -157,16 +157,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         initVMenv(vm)
         vms[0] = VMRunnerInfo(vm, "Initial VM")*/
 
-        val testJson = JsonReader().parse("{$defaultProfile}")
         val vm1 = getVMbyProfileName("Initial VM")!!
         initVMenv(vm1)
         vms[0] = VMRunnerInfo(vm1, "Initial VM")
-
-
-        val vm2 = VM("./assets", 64 shl 10, TheRealWorld(), arrayOf(TsvmBios), 8)
-        vm2.getIO().blockTransferPorts[0].attachDevice(TestDiskDrive(vm2, 0, "assets/disk0"))
-        initVMenv(vm2)
-        vms[1] = VMRunnerInfo(vm2, "Initial VM2")
 
         init()
     }
@@ -373,7 +366,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         coroutineJobs.values.forEach { it.cancel() }
         vms.forEach { it?.vm?.dispose() }
 
-        writeProfilesToFile(Gdx.files.absolute("$APPDATADIR/profiles_new.json"))
+        writeProfilesToFile(Gdx.files.absolute("$APPDATADIR/profiles.json"))
     }
 
     private val menuTabW = windowWidth - 4
@@ -455,7 +448,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             "cardslots":8,
             "roms":["./assets/bios/tsvmbios.js"],
             "com1":{"cls":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/disk0/"]},
-            "com2":{"cls":"net.torvald.tsvm.peripheral.HttpModem", "args":[]},
+            "com2":{"cls":"net.torvald.tsvm.peripheral.HttpModem", "args":[1024, -1]},
             "card4":{"cls":"net.torvald.tsvm.peripheral.RamBank", "args":[256]}
         }
     """.trimIndent()
