@@ -322,7 +322,7 @@ MMIO
     Busy flags
     1: Codec in-use
     2: Draw Instructions being decoded
-19 RO
+19 WO
     Write non-zero value to initiate the Draw Instruction decoding
 20..21 RO
     Program Counter for the Draw Instruction decoding
