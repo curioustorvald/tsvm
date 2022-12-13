@@ -56,12 +56,14 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
 
     }
 
+    private val STR_PLAY = "\u00D2\u00D3"
+    private val STR_STOP = "\u00D0\u00D1"
+
     override fun render(batch: SpriteBatch) {
         batch.inUse {
             // draw list of installed profiles
             for (i in 0 until PROFILES_ROWS) {
-                batch.color = if (i % 2 == 0) EmulatorGuiToolkit.Theme.COL_WELL
-                        else EmulatorGuiToolkit.Theme.COL_WELL2
+                batch.setColourBy(EmulatorGuiToolkit.Theme.COL_WELL, EmulatorGuiToolkit.Theme.COL_WELL2) { (i % 2 == 0) }
                 batch.fillRect(10, 11 + i*2*FONT.H, 228, 2*FONT.H)
             }
 
@@ -80,7 +82,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 val isVMrunning = if (theVM != null) !theVM.disposed && theVM.startTime >= 0 else false
                 val vmViewport = parent.getViewportForTheVM(theVM)
 
-                val vmRunStatusText = if (isVMrunning) "\u00D2\u00D3" else "\u00D0\u00D1"
+                val vmRunStatusText = if (isVMrunning) STR_PLAY else STR_STOP
                 val vmViewportText = if (vmViewport != null) "on viewport #${vmViewport+1}" else "and hidden"
 
                 batch.color = colBack
@@ -95,11 +97,13 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
             // draw profile detals view
             if (selectedProfileIndex != null) profileNames[selectedProfileIndex!!].let {  profileName ->
                 batch.color = EmulatorGuiToolkit.Theme.COL_WELL2
-                batch.fillRect(251, 11, 375, 390)
+                batch.fillRect(251, 11, 375, 260)
                 batch.fillRect(251, 427, 375, 26)
+                batch.fillRect(370, 375, 256, 26)
 
                 val profile = parent.profiles[profileName]!!
                 val theVM = parent.getVMbyProfileName(profileName)
+                val isVMrunning = if (theVM != null) !theVM.disposed && theVM.startTime >= 0 else false
                 val vmViewport = parent.getViewportForTheVM(theVM)
 
 
@@ -125,16 +129,37 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                     FONT.draw(batch, "$i) ${cards[i-1]?.let { it.substring(it.lastIndexOf('.')+1) } ?: ""}", 253f, 11f + (10+i)*FONT.H)
                 }
 
+                FONT.draw(batch, "Boot Drive: ${profile.get("com1").get("args")[1].asString()}", 253f, 11f + 19*FONT.H)
+
+
+
                 // draw panel chooser
-                FONT.draw(batch, "Show on viewport:", 253f, 414f)
+                FONT.draw(batch, "Show on Viewport:", 253f, 414f)
+
+                batch.setColourBy { vmViewport == null }
+                FONT.draw(batch, "Hi", 254f, 429f)
+                FONT.draw(batch, "de", 254f, 439f)
+
                 for (i in 1 until viewportRows * viewportColumns) {
-                    batch.color = if (vmViewport != null && i == vmViewport + 1)
-                        EmulatorGuiToolkit.Theme.COL_ACTIVE2
-                    else
-                        Color.WHITE
-                    FONT.draw(batch, "$i", 239f + (i * 14f) + (if (i < 10) 7f else 0f), 434f)
+                    batch.setColourBy { (vmViewport != null && i == vmViewport + 1) }
+                    FONT.draw(batch, "$i", 254f + (i * 14f) + (if (i < 10) 7f else 0f), 434f)
                 }
+
+
+
+                // draw machine control
+                FONT.draw(batch, "Machine Control:", 253f, 381f)
+
+                batch.setColourBy { !isVMrunning }
+                FONT.draw(batch, STR_STOP, 377f, 382f)
+                batch.setColourBy { isVMrunning }
+                FONT.draw(batch, STR_PLAY, 398f, 382f)
+
             }
         }
+    }
+
+    private fun SpriteBatch.setColourBy(colourIfTrue: Color = EmulatorGuiToolkit.Theme.COL_ACTIVE3, colourIfFalse: Color = Color.WHITE, predicate: () -> Boolean) {
+        this.color = if (predicate()) colourIfTrue else colourIfFalse
     }
 }
