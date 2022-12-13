@@ -42,6 +42,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
             val mx = Gdx.input.x - x
             val my = Gdx.input.y - y
 
+            // make profile list work
             if (mx in 10 until 10+228) {
                 if (my in 11 until 11+446) {
                     val li = (my - 11) / (2*FONT.H)
@@ -51,6 +52,42 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                     else
                         selectedProfileIndex = null
                 }
+            }
+
+            // make controls for the selected profile work
+            if (selectedProfileIndex != null) profileNames[selectedProfileIndex!!].let { profileName ->
+                val theVM = parent.getVMbyProfileName(profileName)
+                if (theVM != null) {
+                    // viewport selector
+                    if (my in 427..453) {
+                        if (mx in 253..640) {
+                            val oldIndex = parent.getViewportForTheVM(theVM)
+                            val newIndex = ((mx - 253) / 14).let { if (it == 0) null else it - 1 }
+
+                            if (newIndex == null || newIndex in 0 until viewportColumns * viewportRows - 1) {
+                                if (oldIndex == null && newIndex != null) {
+                                    parent.addVMtoView(theVM, profileName, newIndex)
+                                }
+                                else if (oldIndex != null) {
+                                    parent.moveView(oldIndex, newIndex)
+                                }
+                            }
+                        }
+                    }
+                    // stop and play buttons
+                    else if (my in 375..401) {
+
+                        println("vm: $profileName; isRunning = ${theVM.isRunning}; mx = $mx")
+
+                        if (mx in 377..390 && theVM.isRunning) {
+                            parent.killVMenv(theVM)
+                        }
+                        else if (mx in 398..412 && !theVM.isRunning) {
+                            parent.initVMenv(theVM)
+                        }
+                    }
+                }
+
             }
         }
 
@@ -79,10 +116,9 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 else EmulatorGuiToolkit.Theme.COL_INACTIVE3
 
                 val theVM = parent.getVMbyProfileName(profileNames[index])
-                val isVMrunning = if (theVM != null) !theVM.disposed && theVM.startTime >= 0 else false
                 val vmViewport = parent.getViewportForTheVM(theVM)
 
-                val vmRunStatusText = if (isVMrunning) STR_PLAY else STR_STOP
+                val vmRunStatusText = if (theVM?.isRunning == true) STR_PLAY else STR_STOP
                 val vmViewportText = if (vmViewport != null) "on viewport #${vmViewport+1}" else "and hidden"
 
                 batch.color = colBack
@@ -103,7 +139,6 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
 
                 val profile = parent.profiles[profileName]!!
                 val theVM = parent.getVMbyProfileName(profileName)
-                val isVMrunning = if (theVM != null) !theVM.disposed && theVM.startTime >= 0 else false
                 val vmViewport = parent.getViewportForTheVM(theVM)
 
 
@@ -137,22 +172,23 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 FONT.draw(batch, "Show on Viewport:", 253f, 414f)
 
                 batch.setColourBy { vmViewport == null }
-                FONT.draw(batch, "Hi", 254f, 429f)
-                FONT.draw(batch, "de", 254f, 439f)
+                FONT.draw(batch, "Hi", 253f, 429f)
+                FONT.draw(batch, "de", 253f, 439f)
 
                 for (i in 1 until viewportRows * viewportColumns) {
                     batch.setColourBy { (vmViewport != null && i == vmViewport + 1) }
-                    FONT.draw(batch, "$i", 254f + (i * 14f) + (if (i < 10) 7f else 0f), 434f)
+                    FONT.draw(batch, "$i", 253f + (i * 14f) + (if (i < 10) 7f else 0f), 434f)
                 }
 
 
 
                 // draw machine control
+                batch.color = Color.WHITE
                 FONT.draw(batch, "Machine Control:", 253f, 381f)
 
-                batch.setColourBy { !isVMrunning }
+                batch.setColourBy { theVM?.isRunning != true }
                 FONT.draw(batch, STR_STOP, 377f, 382f)
-                batch.setColourBy { isVMrunning }
+                batch.setColourBy { theVM?.isRunning == true }
                 FONT.draw(batch, STR_PLAY, 398f, 382f)
 
             }

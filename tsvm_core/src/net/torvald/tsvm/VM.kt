@@ -65,6 +65,8 @@ class VM(
     private val mallocSizes = HashMap<Int, Int>() // HashMap<Block Index, Block Count>
     var allocatedBlockCount = 0; private set
 
+    val isRunning: Boolean
+        get() = !disposed &&startTime >= 0
 
     init {
         println("[VM] Creating new VM with ID of $id, memsize $memsize")

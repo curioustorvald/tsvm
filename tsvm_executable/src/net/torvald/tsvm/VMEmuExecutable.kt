@@ -94,7 +94,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     val profiles = HashMap<String, JsonValue>()
 
     private val currentlyLoadedProfiles = HashMap<String, VM>()
-    fun getVMbyProfileName(name: String): VM? {
+    internal fun getVMbyProfileName(name: String): VM? {
         if (profiles.containsKey(name)) {
             return currentlyLoadedProfiles.getOrPut(name) { _makeVMfromJson(profiles[name]!!, name) }
         }
@@ -102,7 +102,20 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             return null
     }
 
-    fun getViewportForTheVM(vm: VM?): Int? = if (vm == null) null else vms.indexOfFirst { vm.id == it?.vm?.id }.let { if (it < 0) null else it }
+    internal fun getViewportForTheVM(vm: VM?): Int? = if (vm == null) null else vms.indexOfFirst { vm.id == it?.vm?.id }.let { if (it < 0) null else it }
+
+    internal fun moveView(oldIndex: Int, newIndex: Int?) {
+        if (oldIndex != newIndex) {
+            if (newIndex != null) {
+                vms[newIndex] = vms[oldIndex]
+            }
+            vms[oldIndex] = null
+        }
+    }
+
+    internal fun addVMtoView(vm: VM, profileName: String, index: Int) {
+        vms[index] = VMRunnerInfo(vm, profileName)
+    }
 
     private fun writeProfilesToFile(outFile: FileHandle) {
         val out = StringBuilder()
@@ -176,7 +189,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() else vmEmuInputProcessor
     }
 
-    private fun initVMenv(vm: VM) {
+    internal fun initVMenv(vm: VM) {
         vm.init()
 
         vm.peripheralTable.getOrNull(1)?.peripheral?.dispose()
@@ -190,6 +203,17 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
         vmRunners[vm.id] = VMRunnerFactory(vm.assetsDir, vm, "js")
         coroutineJobs[vm.id] = GlobalScope.launch { vmRunners[vm.id]?.executeCommand(vm.roms[0]!!.readAll()) }
+    }
+
+    internal fun killVMenv(vm: VM) {
+        vm.dispose()
+        vm.peripheralTable.fill(PeripheralEntry())
+        vm.getPrintStream = { TODO() }
+        vm.getErrorStream = { TODO() }
+        vm.getInputStream = { TODO() }
+
+        vmRunners[vm.id]?.close()
+        coroutineJobs[vm.id]?.cancel()
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {
@@ -263,7 +287,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
         vms.forEachIndexed { index, it ->
             if (it?.vm?.resetDown == true && index == currentVMselection) { reboot(it.vm) }
-            it?.vm?.update(delta)
+            if (it?.vm?.isRunning == true) it?.vm?.update(delta)
         }
 
         updateMenu()
@@ -297,44 +321,52 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     private fun drawVMtoCanvas(delta: Float, vm: VM?, pposX: Int, pposY: Int) {
-        vm.let { vm ->
-            // assuming the reference adapter of 560x448
-            val xoff = pposX * windowWidth.toFloat()
-            val yoff = pposY * windowHeight.toFloat()
+        // assuming the reference adapter of 560x448
+        val xoff = pposX * windowWidth.toFloat()
+        val yoff = pposY * windowHeight.toFloat()
 
-            if (vm != null) {
-                (vm.peripheralTable.getOrNull(1)?.peripheral as? GraphicsAdapter).let { gpu ->
-                    if (gpu != null) {
-                        val clearCol = gpu.getBackgroundColour()
-                        // clear the viewport by drawing coloured rectangle becausewhynot
-                        fbatch.color = clearCol
-                        fbatch.inUse {
-                            fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
-                        }
-
-                        gpu.render(delta, fbatch, xoff + 40f, yoff + 16f, false, null)
+        if (vm != null) {
+            (vm.peripheralTable.getOrNull(1)?.peripheral as? GraphicsAdapter).let { gpu ->
+                if (gpu != null && !vm.isRunning) {
+                    // vm has stopped
+                    fbatch.inUse {
+                        fbatch.color = defaultGuiBackgroundColour
+                        fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
+                        // draw text
+                        fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
+                        FONT.draw(fbatch, "vm is not running", xoff + (windowWidth - 119) / 2, yoff + (windowHeight - 12) / 2)
                     }
-                    else {
-                        // no graphics device available
-                        fbatch.inUse {
-                            fbatch.color = defaultGuiBackgroundColour
-                            fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
-                            // draw text
-                            fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
-                            FONT.draw(fbatch, "no graphics device available", xoff + (windowWidth - 196) / 2, yoff + (windowHeight - 12) / 2)
-                        }
+                }
+                else if (gpu != null) {
+                    val clearCol = gpu.getBackgroundColour()
+                    // clear the viewport by drawing coloured rectangle becausewhynot
+                    fbatch.color = clearCol
+                    fbatch.inUse {
+                        fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
+                    }
+
+                    gpu.render(delta, fbatch, xoff + 40f, yoff + 16f, false, null)
+                }
+                else {
+                    // no graphics device available
+                    fbatch.inUse {
+                        fbatch.color = defaultGuiBackgroundColour
+                        fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
+                        // draw text
+                        fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
+                        FONT.draw(fbatch, "no graphics device available", xoff + (windowWidth - 196) / 2, yoff + (windowHeight - 12) / 2)
                     }
                 }
             }
-            else {
-                // no vm on the viewport
-                fbatch.inUse {
-                    fbatch.color = defaultGuiBackgroundColour
-                    fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
-                    // draw text
-                    fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
-                    FONT.draw(fbatch, "no vm on this viewport", xoff + (windowWidth - 154) / 2, yoff + (windowHeight - 12) / 2)
-                }
+        }
+        else {
+            // no vm on the viewport
+            fbatch.inUse {
+                fbatch.color = defaultGuiBackgroundColour
+                fbatch.fillRect(pposX * windowWidth, pposY * windowHeight, windowWidth, windowHeight)
+                // draw text
+                fbatch.color = EmulatorGuiToolkit.Theme.COL_INACTIVE
+                FONT.draw(fbatch, "no vm on this viewport", xoff + (windowWidth - 154) / 2, yoff + (windowHeight - 12) / 2)
             }
         }
     }
