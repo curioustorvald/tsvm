@@ -186,7 +186,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private fun changeActiveSession(index: Int?) {
         currentVMselection = index
         // TODO somehow implement the inputstream that cares about the currentVMselection
-        Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() else vmEmuInputProcessor
+        Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() ?: null else vmEmuInputProcessor
     }
 
     internal fun initVMenv(vm: VM) {
@@ -214,6 +214,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
         vmRunners[vm.id]?.close()
         coroutineJobs[vm.id]?.cancel()
+
+        // re-create the IOSpace (peripheral index 0)
+        vm.peripheralTable[0] = PeripheralEntry(IOSpace(vm))
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {
