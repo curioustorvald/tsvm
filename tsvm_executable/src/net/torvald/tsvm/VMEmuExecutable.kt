@@ -191,37 +191,12 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     internal fun initVMenv(vm: VM) {
-        vm.init()
-
-        try {
-            vm.peripheralTable.getOrNull(1)?.peripheral?.dispose()
-        }
-        catch (_: GdxRuntimeException) {}
-
         val gpu = ReferenceGraphicsAdapter2("./assets", vm)
-        vm.peripheralTable[1] = PeripheralEntry(gpu)//, GraphicsAdapter.VRAM_SIZE, 16, 0)
-
-        vm.getPrintStream = { gpu.getPrintStream() }
-        vm.getErrorStream = { gpu.getErrorStream() }
-        vm.getInputStream = { gpu.getInputStream() }
-
-        vmRunners[vm.id] = VMRunnerFactory(vm.assetsDir, vm, "js")
-        coroutineJobs[vm.id] = GlobalScope.launch { vmRunners[vm.id]?.executeCommand(vm.roms[0]!!.readAll()) }
+        VMSetupBroker.initVMenv(vm, gpu, vmRunners, coroutineJobs)
     }
 
     internal fun killVMenv(vm: VM) {
-        vm.park()
-
-        for (i in 1 until vm.peripheralTable.size) {
-            vm.peripheralTable[i].peripheral?.dispose()
-        }
-
-        vm.getPrintStream = { TODO() }
-        vm.getErrorStream = { TODO() }
-        vm.getInputStream = { TODO() }
-
-        vmRunners[vm.id]?.close()
-        coroutineJobs[vm.id]?.cancel("VM kill command received")
+        VMSetupBroker.killVMenv(vm, vmRunners, coroutineJobs)
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {
