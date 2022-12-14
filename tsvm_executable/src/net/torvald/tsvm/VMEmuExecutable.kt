@@ -5,6 +5,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.utils.GdxRuntimeException
 import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
@@ -192,7 +193,10 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     internal fun initVMenv(vm: VM) {
         vm.init()
 
-        vm.peripheralTable.getOrNull(1)?.peripheral?.dispose()
+        try {
+            vm.peripheralTable.getOrNull(1)?.peripheral?.dispose()
+        }
+        catch (_: GdxRuntimeException) {}
 
         val gpu = ReferenceGraphicsAdapter2("./assets", vm)
         vm.peripheralTable[1] = PeripheralEntry(gpu)//, GraphicsAdapter.VRAM_SIZE, 16, 0)
@@ -206,17 +210,18 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     internal fun killVMenv(vm: VM) {
-        vm.dispose()
-        vm.peripheralTable.fill(PeripheralEntry())
+        vm.park()
+
+        for (i in 1 until vm.peripheralTable.size) {
+            vm.peripheralTable[i].peripheral?.dispose()
+        }
+
         vm.getPrintStream = { TODO() }
         vm.getErrorStream = { TODO() }
         vm.getInputStream = { TODO() }
 
         vmRunners[vm.id]?.close()
-        coroutineJobs[vm.id]?.cancel()
-
-        // re-create the IOSpace (peripheral index 0)
-        vm.peripheralTable[0] = PeripheralEntry(IOSpace(vm))
+        coroutineJobs[vm.id]?.cancel("VM kill command received")
     }
 
     private fun setCameraPosition(newX: Float, newY: Float) {

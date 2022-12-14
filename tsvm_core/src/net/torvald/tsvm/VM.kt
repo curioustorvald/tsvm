@@ -79,14 +79,22 @@ class VM(
         contexts.clear()
     }
 
+    /**
+     * Makes the VM stop suddenly without disposing of.
+     */
+    fun park() {
+        killAllContexts()
+        startTime = -1
+    }
+
     fun init() {
         killAllContexts()
-
-        startTime = System.currentTimeMillis()
-
+        usermem.fillWith(0)
         mallocMap.clear()
         mallocSizes.clear()
         allocatedBlockCount = 0
+
+        startTime = System.currentTimeMillis()
     }
 
 
@@ -114,6 +122,7 @@ class VM(
         peripheralTable.forEach { it.peripheral?.dispose() }
         disposed = true
     }
+
 
     /**
      * To check if the VM has started, check if startTime >= 0
