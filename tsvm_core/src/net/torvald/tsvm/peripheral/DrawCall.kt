@@ -1,5 +1,7 @@
 package net.torvald.tsvm.peripheral
 
+import kotlin.math.ceil
+
 /**
  * VLIW-style of Draw Call bytecodes
  *
@@ -71,12 +73,29 @@ internal class DrawCallDrawLines(
         val cc = colour.toByte()
 
         for (k in 0 until opCount) {
-            for (i in xposs[k] until xposs[k] + lens[k]) gpu.framebuffer.set(gpu.rScanline * gpu.WIDTH * 1L + i, cc)
-            gpu.rScanline += Math.ceil(lens[k].toDouble() / gpu.WIDTH).toInt()
+            for (i in xposs[k] until xposs[k] + (lenMult * lens[k])) gpu.framebuffer.set(gpu.rScanline * gpu.WIDTH * 1L + i, cc)
+            gpu.rScanline += ceil((lenMult + lens[k]).toDouble() / gpu.WIDTH).toInt()
         }
     }
 }
 
+
+internal class DrawCallDrawMultiLines(
+    val opCount: Int, val xPosInit: Int, val lenMult: Int,
+    val colours: IntArray, val lens: IntArray
+) : DrawCall {
+    override fun execute(gpu: GraphicsAdapter) {
+        var xPos = xPosInit
+
+        for (k in 0 until opCount) {
+            val cc = colours[k].toByte()
+            for (x in xPos until xPos + (lenMult * lens[k])) gpu.framebuffer.set(gpu.rScanline * gpu.WIDTH * 1L + x, cc)
+            xPos += lenMult * lens[k]
+        }
+
+        gpu.rScanline += 1
+    }
+}
 
 internal class DrawCallCopyPixels(
     val useTransparency: Boolean,

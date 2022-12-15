@@ -401,6 +401,15 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             in 0..127 -> {
                 // D-type
                 when (head) {
+                    0x01.toByte() -> {
+                        return JumpIfScanline(
+                            bytes[1].toUint(),
+                            toBigInt(bytes[2], bytes[3]),
+                            toBigInt(bytes[4], bytes[5]),
+                            toBigInt(bytes[6], bytes[7]),
+                            toBigInt(bytes[8], bytes[9])
+                        )
+                    }
                     in 0x10..0x17 -> {
                         return DrawCallDrawLines(
                             (head and 0xF).toInt() + 1,
@@ -453,13 +462,20 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                             )
                         )
                     }
-                    0x60.toByte() -> {
-                        return JumpIfScanline(
-                            bytes[1].toUint(),
-                            toBigInt(bytes[2], bytes[3]),
-                            toBigInt(bytes[4], bytes[5]),
-                            toBigInt(bytes[6], bytes[7]),
-                            toBigInt(bytes[8], bytes[9])
+                    in 0x20..0x5F -> {
+                        return DrawCallDrawMultiLines(
+                            (head.toUint() ushr 2) and 7,
+                            head.toUint().and(3).shl(8) or bytes[1].toUint(), if (head >= 0x40) 2 else 1,
+                            intArrayOf(
+                                bytes[2].toUint(), bytes[4].toUint(), bytes[6].toUint(), bytes[8].toUint(),
+                                bytes[10].toUint(), bytes[12].toUint(), bytes[14].toUint(), bytes[16].toUint()
+                            ),
+                            intArrayOf(
+                                bytes[3].toUint().unzero(256), bytes[5].toUint().unzero(256),
+                                bytes[7].toUint().unzero(256), bytes[9].toUint().unzero(256),
+                                bytes[11].toUint().unzero(256), bytes[13].toUint().unzero(256),
+                                bytes[15].toUint().unzero(256), bytes[17].toUint().unzero(256)
+                            )
                         )
                     }
                     else -> throw UnsupportedOperationException("Unknown Head byte 0x${head.toString(16).padStart(2,'0').toUpperCase()}")
