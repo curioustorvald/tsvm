@@ -63,7 +63,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         if (DBGPRN) println("[TestDiskDrive] $msg")
     }
 
-    private val rootPath = File(theRootPath) ?: File("test_assets/test_drive_$driveNum")
+    private val rootPath = File(theRootPath)
 
     private var fileOpen = false
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
