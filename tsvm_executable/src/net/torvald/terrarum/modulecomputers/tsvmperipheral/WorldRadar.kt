@@ -29,7 +29,7 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
     private val STONE_OUT = 7.toByte()
 
     init {
-        statusCode = TestDiskDrive.STATE_CODE_STANDBY
+        statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
 
         val worldTex = Pixmap(pngfile)
         for (y in 0 until worldTex.height) { for (x in 0 until worldTex.width) {
@@ -129,11 +129,11 @@ class WorldRadar(pngfile: FileHandle) : BlockTransferInterface(false, true) {
 
             oldCmdbuf = cmdbuf
 
-            statusCode = TestDiskDrive.STATE_CODE_STANDBY
+            statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
         }
         else {
             resetBuf()
-            statusCode = TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND
+            statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
         }
     }
 }

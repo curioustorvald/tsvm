@@ -40,7 +40,7 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
 
 
     init {
-        statusCode = TestDiskDrive.STATE_CODE_STANDBY
+        statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
     }
 
     override fun hasNext(): Boolean {
@@ -105,17 +105,17 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")
                 selfReset()
-                statusCode = TestDiskDrive.STATE_CODE_STANDBY
+                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("DEVSTU\u0017"))
-                recipient?.writeout(composePositiveAns("${statusCode.toChar()}", TestDiskDrive.errorMsgs[statusCode]))
+                recipient?.writeout(composePositiveAns("${statusCode.get().toChar()}", TestDiskDrive.errorMsgs[statusCode.get()]))
             else if (inputString.startsWith("DEVTYP\u0017"))
                 recipient?.writeout(composePositiveAns("HTTP"))
             else if (inputString.startsWith("DEVNAM\u0017"))
                 recipient?.writeout(composePositiveAns("Wget Company HTTP Modem"))
             else if (inputString.startsWith("GET ")) {
                 if (cnxUrl != null) {
-                    statusCode = TestDiskDrive.STATE_CODE_FILE_ALREADY_OPENED
+                    statusCode.set(TestDiskDrive.STATE_CODE_FILE_ALREADY_OPENED)
                     return
                 }
 
@@ -127,8 +127,8 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
 
                 printdbg("URL: $cnxUrl")
 
-                this.ready = false
-                this.busy = true
+                this.ready.setRelease(false)
+                this.busy.setRelease(true)
 
                 var httpIn: InputStream? = null
                 var bufferedOut: OutputStream? = null
@@ -156,14 +156,14 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
                             catch (e: InterruptedException) {}
                         }
                     }
-                    statusCode = TestDiskDrive.STATE_CODE_STANDBY
+                    statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
                 }
                 catch (e: MalformedURLException) {
-                    statusCode = STATE_CODE_NO_SUCH_FILE_EXISTS // MalformedUrl
+                    statusCode.set(STATE_CODE_NO_SUCH_FILE_EXISTS) // MalformedUrl
                     printdbg("Malformed URL: $cnxUrl")
                 }
                 catch (e: IOException) {
-                    statusCode = STATE_CODE_SYSTEM_IO_ERROR // IoException
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR) // IoException
                     printdbg("IOException: $cnxUrl")
                 }
                 finally {
@@ -173,7 +173,7 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
                         httpIn?.close()
                     }
                     catch (e: IOException) {
-                        statusCode = STATE_CODE_OPERATION_FAILED // UnableToCloseOutputStream
+                        statusCode.set(STATE_CODE_OPERATION_FAILED)  // UnableToCloseOutputStream
                         printdbg("Unable to close: $cnxUrl")
                     }
                     finally {
@@ -183,7 +183,7 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
                 }
             }
             else
-                statusCode = TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND
+                statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
 
         }
 

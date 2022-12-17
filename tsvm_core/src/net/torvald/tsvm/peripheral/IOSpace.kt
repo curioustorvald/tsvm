@@ -56,14 +56,14 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         return blockTransferPorts[portno].isMaster.toInt().shl(5) or
                 blockTransferPorts[portno].isSlave.toInt().shl(4) or
                 blockTransferPorts[portno].getMode().toInt().shl(3) or
-                blockTransferPorts[portno].busy.toInt().shl(2) or
+                blockTransferPorts[portno].busy.get().toInt().shl(2) or
                 blockTransferPorts[portno].areYouReady().toInt().shl(1) or
                 blockTransferPorts[portno].cableConnected().toInt()
     }
 
     private fun setBlockTransferPortStatus(portno: Int, bits: Byte) {
         blockTransferPorts[portno].setMode(bits.and(0b0000_1000) != 0.toByte())
-        blockTransferPorts[portno].ready = bits.and(0b0000_0010) != 0.toByte()
+        blockTransferPorts[portno].ready.set(bits.and(0b0000_0010) != 0.toByte())
         if (bits.and(0b0000_0100) != 0.toByte()) {
             if (blockTransferPorts[portno].getMode()) {
                 //println("[IOSpace] startSend()")
@@ -167,30 +167,42 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
 
             in 1024..2047 -> peripheralFast[addr - 1024] = byte
 
-            4076L -> blockTransferPorts[0].statusCode = bi
-            4077L -> blockTransferPorts[1].statusCode = bi
-            4078L -> blockTransferPorts[2].statusCode = bi
-            4079L -> blockTransferPorts[3].statusCode = bi
+            4076L -> blockTransferPorts[0].statusCode.set(bi)
+            4077L -> blockTransferPorts[1].statusCode.set(bi)
+            4078L -> blockTransferPorts[2].statusCode.set(bi)
+            4079L -> blockTransferPorts[3].statusCode.set(bi)
 
-            4084L -> blockTransferPorts[0].blockSize = blockTransferPorts[0].blockSize.and(0xFF00) or byte.toInt().and(255)
+            4084L ->
+                blockTransferPorts[0].blockSize.getAcquire().let {
+                    blockTransferPorts[0].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
             4085L -> {
-                blockTransferPorts[0].hasNext = (byte < 0)
-                blockTransferPorts[0].blockSize = blockTransferPorts[0].blockSize.and(0x00FF) or byte.toInt().and(15)
+                blockTransferPorts[0].hasNext.set(byte < 0)
+                blockTransferPorts[0].blockSize.getAcquire().let {
+                    blockTransferPorts[0].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
             }
-            4086L -> blockTransferPorts[1].blockSize = blockTransferPorts[1].blockSize.and(0xFF00) or byte.toInt().and(255)
+
+            4086L -> blockTransferPorts[1].blockSize.getAcquire().let {
+                blockTransferPorts[1].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
             4087L -> {
-                blockTransferPorts[1].hasNext = (byte < 0)
-                blockTransferPorts[1].blockSize = blockTransferPorts[1].blockSize.and(0x00FF) or byte.toInt().and(15)
+                blockTransferPorts[1].hasNext.set(byte < 0)
+                blockTransferPorts[1].blockSize.getAcquire().let {
+                    blockTransferPorts[1].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
             }
-            4088L -> blockTransferPorts[2].blockSize = blockTransferPorts[2].blockSize.and(0xFF00) or byte.toInt().and(255)
+
+            4088L -> blockTransferPorts[2].blockSize.getAcquire().let {
+                blockTransferPorts[2].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
             4089L -> {
-                blockTransferPorts[2].hasNext = (byte < 0)
-                blockTransferPorts[2].blockSize = blockTransferPorts[2].blockSize.and(0x00FF) or byte.toInt().and(15)
+                blockTransferPorts[2].hasNext.set(byte < 0)
+                blockTransferPorts[2].blockSize.getAcquire().let {
+                    blockTransferPorts[2].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
             }
-            4090L -> blockTransferPorts[3].blockSize = blockTransferPorts[3].blockSize.and(0xFF00) or byte.toInt().and(255)
+
+            4090L -> blockTransferPorts[3].blockSize.getAcquire().let {
+                blockTransferPorts[3].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
             4091L -> {
-                blockTransferPorts[3].hasNext = (byte < 0)
-                blockTransferPorts[3].blockSize = blockTransferPorts[3].blockSize.and(0x00FF) or byte.toInt().and(15)
+                blockTransferPorts[3].hasNext.set(byte < 0)
+                blockTransferPorts[3].blockSize.getAcquire().let {
+                    blockTransferPorts[3].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
             }
 
             in 4092..4095 -> setBlockTransferPortStatus(adi - 4092, byte)

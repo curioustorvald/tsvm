@@ -79,7 +79,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
 
 
     init {
-        statusCode = STATE_CODE_STANDBY
+        statusCode.set(STATE_CODE_STANDBY)
 
         if (!rootPath.exists()) {
             rootPath.mkdirs()
@@ -160,12 +160,12 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 fileOpenMode = -1
                 file = File(rootPath.toURI())
                 blockSendCount = 0
-                statusCode = STATE_CODE_STANDBY
+                statusCode.set(STATE_CODE_STANDBY)
                 writeMode = false
                 writeModeLength = -1
             }
             else if (inputString.startsWith("DEVSTU\u0017"))
-                recipient?.writeout(composePositiveAns("${statusCode.toChar()}", errorMsgs[statusCode]))
+                recipient?.writeout(composePositiveAns("${statusCode.get().toChar()}", errorMsgs[statusCode.get()]))
             else if (inputString.startsWith("DEVTYP\u0017"))
                 recipient?.writeout(composePositiveAns("STOR"))
             else if (inputString.startsWith("DEVNAM\u0017"))
@@ -173,7 +173,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
                 if (fileOpen) {
 
-                    statusCode = STATE_CODE_FILE_ALREADY_OPENED
+                    statusCode.set(STATE_CODE_FILE_ALREADY_OPENED)
                     return
                 }
 
@@ -190,7 +190,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 }
                 // sanity check if path is actually enclosed with double-quote
                 if (commaIndex != 6 && inputString[commaIndex - 1] != '"') {
-                    statusCode = STATE_CODE_ILLEGAL_COMMAND
+                    statusCode.set(STATE_CODE_ILLEGAL_COMMAND)
                     return
                 }
                 val pathStr = inputString.substring(6, if (commaIndex == 6) inputString.lastIndex else commaIndex - 1)
@@ -205,11 +205,11 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
 
                 if (openMode == 'R' && !file.exists()) {
                     printdbg("! file not found")
-                    statusCode = STATE_CODE_NO_SUCH_FILE_EXISTS
+                    statusCode.set(STATE_CODE_NO_SUCH_FILE_EXISTS)
                     return
                 }
 
-                statusCode = STATE_CODE_STANDBY
+                statusCode.set(STATE_CODE_STANDBY)
                 fileOpen = true
                 fileOpenMode = when (openMode) {
                     'W' -> 1
@@ -220,18 +220,18 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             }
             else if (inputString.startsWith("DELETE")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 try {
                     file.delete()
                 }
                 catch (e: SecurityException) {
-                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                     return
                 }
                 catch (e1: IOException) {
-                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
             }
@@ -239,7 +239,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 try {
@@ -250,19 +250,19 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                             messageComposeBuffer.write(lsfile.name.toByteArray(VM.CHARSET))
                         }
 
-                        statusCode = STATE_CODE_STANDBY
+                        statusCode.set(STATE_CODE_STANDBY)
                     }
                     else {
-                        statusCode = STATE_CODE_NOT_A_DIRECTORY
+                        statusCode.set(STATE_CODE_NOT_A_DIRECTORY)
                         return
                     }
                 }
                 catch (e: SecurityException) {
-                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                     return
                 }
                 catch (e1: IOException) {
-                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
             }
@@ -270,28 +270,28 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
 
                 messageComposeBuffer.write(getSizeStr().toByteArray(VM.CHARSET))
-                statusCode = STATE_CODE_STANDBY
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("LIST")) {
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
 
                 messageComposeBuffer.write(getReadableLs().toByteArray(VM.CHARSET))
-                statusCode = STATE_CODE_STANDBY
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("CLOSE")) {
                 fileOpen = false
                 fileOpenMode = -1
-                statusCode = STATE_CODE_STANDBY
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("READ")) {
                 //readModeLength = inputString.substring(4 until inputString.length).toInt()
@@ -300,14 +300,14 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 if (file.isFile) {
                     try {
                         messageComposeBuffer.write(file.readBytes())
-                        statusCode = STATE_CODE_STANDBY
+                        statusCode.set(STATE_CODE_STANDBY)
                     }
                     catch (e: IOException) {
-                        statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                        statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     }
                 }
                 else {
-                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
             }
@@ -324,7 +324,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 val bootFile = File(rootPath, "!BOOTSEC")
 
                 if (!bootFile.exists()) {
-                    statusCode = STATE_CODE_NO_SUCH_FILE_EXISTS
+                    statusCode.set(STATE_CODE_NO_SUCH_FILE_EXISTS)
                     return
                 }
                 val fis = FileInputStream(bootFile)
@@ -332,10 +332,10 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                     val retMsg = ByteArray(BLOCK_SIZE)
                     fis.read(retMsg)
                     recipient?.writeout(retMsg)
-                    statusCode = STATE_CODE_STANDBY
+                    statusCode.set(STATE_CODE_STANDBY)
                 }
                 catch (e: IOException) {
-                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
                 finally {
@@ -344,70 +344,70 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             }
             else if (inputString.startsWith("MKDIR")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 1) {
-                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 try {
                     val status = file.mkdir()
-                    statusCode = if (status) 0 else 1
+                    statusCode.set(if (status) 0 else 1)
                 }
                 catch (e: SecurityException) {
-                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                 }
             }
             else if (inputString.startsWith("MKFILE")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 1) {
-                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 try {
                     val f1 = file.createNewFile()
-                    statusCode = if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED
+                    statusCode.set(if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED)
                     return
                 }
                 catch (e: IOException) {
-                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                 }
                 catch (e1: SecurityException) {
-                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                 }
             }
             else if (inputString.startsWith("TOUCH")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 1) {
-                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 try {
                     val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
-                    statusCode = if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED
+                    statusCode.set(if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED)
                     return
                 }
                 catch (e: IOException) {
-                    statusCode = STATE_CODE_SYSTEM_IO_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                 }
                 catch (e1: SecurityException) {
-                    statusCode = STATE_CODE_SYSTEM_SECURITY_ERROR
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                 }
             }
             else if (inputString.startsWith("WRITE")) {
                 if (!fileOpen) {
-                    statusCode = STATE_CODE_NO_FILE_OPENED
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 0) {
-                    statusCode = STATE_CODE_OPERATION_NOT_PERMITTED
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 if (fileOpenMode == 1) { writeMode = true; appendMode = false }
@@ -415,10 +415,10 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
                 writeBuffer = ByteArray(writeModeLength)
                 writeBufferUsage = 0
-                statusCode = STATE_CODE_STANDBY
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else
-                statusCode = STATE_CODE_ILLEGAL_COMMAND
+                statusCode.set(STATE_CODE_ILLEGAL_COMMAND)
         }
     }
 

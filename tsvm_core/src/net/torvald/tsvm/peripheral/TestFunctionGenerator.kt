@@ -169,10 +169,10 @@ Nunc mollis nibh vitae sapien consequat, ut vestibulum sem pharetra. Aliquam iac
             else if (inputString.startsWith("WRITE")) {
                 writeMode = true
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
-                statusCode = 0
+                statusCode.set(0)
             }
             else
-                statusCode = 128
+                statusCode.set(128)
 
             blockSendCount = 0
         }

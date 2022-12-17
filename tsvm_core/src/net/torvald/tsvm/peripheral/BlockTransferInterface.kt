@@ -1,18 +1,19 @@
 package net.torvald.tsvm.peripheral
 
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean) {
 
     protected var recipient: BlockTransferInterface? = null
 
-    @Volatile val ready = AtomicBoolean(true)
-    @Volatile val busy = AtomicBoolean(false)
+    val ready = AtomicBoolean(true)
+    val busy = AtomicBoolean(false)
 
-    @Volatile var statusCode = 0
+    val statusCode = AtomicInteger(0)
 
     protected var sendmode = false; private set
-    @Volatile var blockSize = 0
+    val blockSize = AtomicInteger(0)
 
     open fun attachDevice(device: BlockTransferInterface?) {
         recipient = device
@@ -33,7 +34,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
             ready.setRelease(false)
 
             recipient?.let {
-                this.blockSize = startSendImpl(it)
+                this.blockSize.set(startSendImpl(it))
                 //println("[BlockTransferInterface.startSend()] recipients blocksize = ${this.blockSize}")
             }
 
@@ -59,14 +60,14 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     fun writeout(inputData: ByteArray) {
         busy.setRelease(true)
         ready.setRelease(false)
-        blockSize = minOf(inputData.size, BLOCK_SIZE)
+        blockSize.setRelease(minOf(inputData.size, BLOCK_SIZE))
         writeoutImpl(inputData)
         busy.setRelease(false)
         ready.setRelease(true)
     }
     abstract fun hasNext(): Boolean
     open fun doYouHaveNext(): Boolean = recipient?.hasNext() ?: false
-    open fun yourBlockSize(): Int = recipient?.blockSize ?: 0
+    open fun yourBlockSize(): Int = recipient?.blockSize?.get() ?: 0
 
     fun getYourStatusCode() = recipient?.statusCode ?: 0
 

@@ -2,20 +2,21 @@ package net.torvald.tsvm.peripheral
 
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.VM
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Implementation of single COM port
  */
 class BlockTransferPort(val vm: VM, val portno: Int) : BlockTransferInterface(true, false) {
 
-    internal var hasNext = false
+    val hasNext = AtomicBoolean(false)
 
     override fun startSendImpl(recipient: BlockTransferInterface): Int {
         recipient.writeout(ByteArray(BLOCK_SIZE) { vm.getIO().blockTransferTx[portno][it.toLong()] })
-        return blockSize // use MMIO to modify this variable
+        return blockSize.get() // use MMIO to modify this variable
     }
 
-    override fun hasNext(): Boolean = hasNext
+    override fun hasNext(): Boolean = hasNext.get()
 
     override fun writeoutImpl(inputData: ByteArray) {
         //val copySize = minOf(BLOCK_SIZE, inputData.size).toLong()
