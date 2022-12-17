@@ -1,6 +1,8 @@
 package net.torvald.tsvm.peripheral
 
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.EntryDirectory
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toCanonicalString
 import net.torvald.tsvm.VM
 import java.io.*
 import java.util.*
@@ -140,6 +142,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
         }
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
+
+            println("[TevDiskDrive] inputString=$inputString")
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")
@@ -322,16 +326,25 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 val bootFile = TevdFileDescriptor(DOM, "!BOOTSEC")
 
+                println("bootFile = $bootFile, ID: ${bootFile.entryID}, exists = ${bootFile.exists()}")
+
                 if (!bootFile.exists()) {
+                    println("bootfile not exists!")
                     statusCode.set(TestDiskDrive.STATE_CODE_NO_SUCH_FILE_EXISTS)
                     return
                 }
                 try {
                     val retMsg = bootFile.getHeadBytes(BLOCK_SIZE)
+
+                    println("retMsg = ${retMsg.toString(VM.CHARSET)}")
+
                     recipient?.writeout(retMsg)
                     statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
                 }
                 catch (e: IOException) {
+                    println("exception:")
+                    e.printStackTrace()
+
                     statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
