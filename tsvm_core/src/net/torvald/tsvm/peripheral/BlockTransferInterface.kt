@@ -1,11 +1,13 @@
 package net.torvald.tsvm.peripheral
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean) {
 
     protected var recipient: BlockTransferInterface? = null
 
-    @Volatile var ready = true
-    @Volatile var busy = false
+    @Volatile val ready = AtomicBoolean(true)
+    @Volatile val busy = AtomicBoolean(false)
 
     @Volatile var statusCode = 0
 
@@ -17,8 +19,8 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         device?.recipient = this
     }
 
-    open fun areYouReady(): Boolean = recipient?.ready ?: false
-    open fun areYouBusy(): Boolean = recipient?.busy ?: false
+    open fun areYouReady(): Boolean = recipient?.ready?.get() ?: false
+    open fun areYouBusy(): Boolean = recipient?.busy?.get() ?: false
 
     /** Writes a thing to the recipient.
      * A method exposed to outside of the box
@@ -27,16 +29,16 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     /** The actual implementation */
     fun startSend() {
         //if (areYouReady()) {
-            busy = true
-            ready = false
+            busy.setRelease(true)
+            ready.setRelease(false)
 
             recipient?.let {
                 this.blockSize = startSendImpl(it)
                 //println("[BlockTransferInterface.startSend()] recipients blocksize = ${this.blockSize}")
             }
 
-            busy = false
-            ready = true
+            busy.setRelease(false)
+            ready.setRelease(true)
         //}
         //else {
         //    throw IOException("${this.javaClass.canonicalName}: Device '${recipient?.javaClass?.canonicalName}' is not ready to receive")
@@ -55,12 +57,12 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     abstract fun writeoutImpl(inputData: ByteArray)
     /** The actual implementation; must be called by a sender class */
     fun writeout(inputData: ByteArray) {
-        busy = true
-        ready = false
+        busy.setRelease(true)
+        ready.setRelease(false)
         blockSize = minOf(inputData.size, BLOCK_SIZE)
         writeoutImpl(inputData)
-        busy = false
-        ready = true
+        busy.setRelease(false)
+        ready.setRelease(true)
     }
     abstract fun hasNext(): Boolean
     open fun doYouHaveNext(): Boolean = recipient?.hasNext() ?: false

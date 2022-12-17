@@ -24,10 +24,10 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
 
 
     val isFile: Boolean
-        get() = TODO()
+        get() = entryID.let { if (it == null) false else VDUtil.isFileFollowSymlink(DOM, it) }
 
     val isDirectory: Boolean
-        get() = TODO()
+        get() = entryID.let { if (it == null) false else VDUtil.isDirectoryFollowSymlink(DOM, it) }
 
 
     private var fileContent: EntryFile? = null
@@ -63,6 +63,7 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
 
     fun delete() {
         fileContent = null
+        VDUtil.deleteFile(DOM, vdPath)
     }
 
     fun length(): Long {

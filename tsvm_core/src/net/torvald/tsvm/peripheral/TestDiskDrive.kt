@@ -57,7 +57,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         }
     }
 
-    private val DBGPRN = true
+    private val DBGPRN = false
 
     private fun printdbg(msg: Any) {
         if (DBGPRN) println("[TestDiskDrive] $msg")

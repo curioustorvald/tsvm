@@ -4,11 +4,12 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil
 import net.torvald.tsvm.VM
 import java.io.*
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Created by minjaesong on 2022-12-15.
  */
-class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val diskUUIDstr: String) : BlockTransferInterface(false, true) {
+class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val theTevdPath: String, val diskUUIDstr: String) : BlockTransferInterface(false, true) {
 
 
     private val DBGPRN = true
@@ -35,6 +36,7 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
 
+    private val hasChanges = AtomicBoolean(false)
 
     init {
         statusCode = TestDiskDrive.STATE_CODE_STANDBY
@@ -42,12 +44,28 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
         if (!tevdPath.exists()) {
             throw FileNotFoundException("Disk file '${theTevdPath}' not found")
         }
+
+        Thread {
+            while (vm.isRunning) {
+                if (hasChanges.compareAndExchangeAcquire(true, false)) {
+                    printdbg("Disk has changes, committing... $theTevdPath")
+                    commit()
+                }
+                else {
+                    printdbg("Disk has no changes, skipping... $theTevdPath")
+                }
+                Thread.sleep(1000L * COMMIT_INTERVAL)
+            }
+        }.let {
+            it.start()
+            vm.contexts.add(it)
+        }
     }
 
 
     companion object {
         /** How often the changes in DOM (disk object model) should be saved to the physical drive when there are changes. Seconds. */
-        const val COMMIT_INTERVAL = 30
+        const val COMMIT_INTERVAL = 5
     }
 
     fun commit() {
@@ -116,6 +134,8 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
 
                 writeMode = false
                 appendMode = false
+
+                hasChanges.getAndSet(true)
             }
         }
         else {
@@ -142,7 +162,7 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
             else if (inputString.startsWith("DEVTYP\u0017"))
                 recipient?.writeout(TestDiskDrive.composePositiveAns("STOR"))
             else if (inputString.startsWith("DEVNAM\u0017"))
-                recipient?.writeout(TestDiskDrive.composePositiveAns("Testtec Virtual Disk Drive"))
+                recipient?.writeout(TestDiskDrive.composePositiveAns("Generic Disk Drive"))
             else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
                 if (fileOpen) {
 
@@ -181,6 +201,11 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
                     statusCode = TestDiskDrive.STATE_CODE_NO_SUCH_FILE_EXISTS
                     return
                 }
+                else if (DOM.isReadOnly && (openMode == 'W' || openMode == 'A')) {
+                    printdbg("! disk is read-only")
+                    statusCode = TestDiskDrive.STATE_CODE_READ_ONLY
+                    return
+                }
 
                 statusCode = TestDiskDrive.STATE_CODE_STANDBY
                 fileOpen = true
@@ -198,6 +223,7 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
                 }
                 try {
                     file.delete()
+                    hasChanges.getAndSet(true)
                 }
                 catch (e: SecurityException) {
                     statusCode = TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR
@@ -322,6 +348,7 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
                 try {
                     val status = file.mkdir()
                     statusCode = if (status) 0 else 1
+                    if (status) hasChanges.getAndSet(true)
                 }
                 catch (e: SecurityException) {
                     statusCode = TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR
@@ -339,6 +366,7 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
                 try {
                     val f1 = file.createNewFile()
                     statusCode = if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED
+                    if (f1) hasChanges.getAndSet(true)
                     return
                 }
                 catch (e: IOException) {
@@ -360,6 +388,7 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
                 try {
                     val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
                     statusCode = if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED
+                    if (f1) hasChanges.getAndSet(true)
                     return
                 }
                 catch (e: IOException) {
@@ -427,6 +456,9 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
 
         if (file.isFile) sb.append(file.name)
         else {
+            var filesCount = 0
+            var dirsCount = 0
+
             sb.append("Current directory: ")
             sb.append(if (isRoot) "(root)" else file.path)
             sb.append('\n')
@@ -442,16 +474,27 @@ class TevdDiskDrive(private val vm: VM, private val theTevdPath: String, val dis
                 if (it.isDirectory) {
                     sb.append("/")
                     filenameLen += 1
+
+                    dirsCount += 1
                 }
 
                 sb.append(" ".repeat(40 - filenameLen))
 
                 if (it.isFile) {
                     sb.append("${it.length()} B")
+
+                    filesCount += 1
                 }
 
                 sb.append('\n')
             }
+
+            sb.append("\n")
+            sb.append("\n$filesCount Files, $dirsCount, Directories")
+            sb.append("\nDisk used ${DOM.usedBytes} bytes")
+            sb.append("\n${DOM.capacity - DOM.usedBytes} bytes free")
+            if (DOM.isReadOnly)
+                sb.append("\nThe disk is read-only!")
         }
 
         return if (sb.last() == '\n') sb.substring(0, sb.lastIndex) else sb.toString()
