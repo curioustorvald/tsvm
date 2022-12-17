@@ -4,6 +4,8 @@
       <root url="jar://$PROJECT_DIR$/lib/TerranVirtualDisk.jar!/" />
     </CLASSES>
     <JAVADOC />
-    <SOURCES />
+    <SOURCES>
+      <root url="jar://$PROJECT_DIR$/lib/TerranVirtualDisk-src.jar!/" />
+    </SOURCES>
   </library>
 </component>

@@ -462,10 +462,10 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
 
     private fun getSizeStr(): String {
         val sb = StringBuilder()
-        val isRoot = (file.absolutePath == rootPath.absolutePath)
+//        val isRoot = (file.absolutePath == rootPath.absolutePath)
 
         if (file.isFile) sb.append(file.length())
-        else sb.append(file.listFiles().size)
+        else sb.append(file.listFiles()!!.size)
 
         return sb.toString()
     }
