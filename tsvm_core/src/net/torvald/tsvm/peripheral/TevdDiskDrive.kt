@@ -49,6 +49,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
         Thread {
             while (vm.isRunning) {
+                println("TevdCommitWatchdog ping")
                 if (hasChanges.compareAndExchangeAcquire(true, false)) {
                     printdbg("Disk has changes, committing... $theTevdPath")
                     commit()
@@ -118,6 +119,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
      * Disk drive must create desired side effects in accordance with the input message.
      */
     override fun writeoutImpl(inputData: ByteArray) {
+        println("[TevDiskDrive] inputString=${inputData.trimNull().toString(VM.CHARSET)}")
+
         if (writeMode || appendMode) {
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
@@ -137,13 +140,12 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 writeMode = false
                 appendMode = false
 
-                hasChanges.getAndSet(true)
+                printdbg("Raising HasChanges flag (end of write)")
+                hasChanges.set(true)
             }
         }
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
-
-            println("[TevDiskDrive] inputString=$inputString")
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")
@@ -227,7 +229,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 }
                 try {
                     file.delete()
-                    hasChanges.getAndSet(true)
+                    printdbg("Raising HasChanges flag (file deleted)")
+                    hasChanges.set(true)
                 }
                 catch (e: SecurityException) {
                     statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
@@ -361,7 +364,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 try {
                     val status = file.mkdir()
                     statusCode.set(if (status) 0 else 1)
-                    if (status) hasChanges.getAndSet(true)
+                    if (status) {
+                        printdbg("Raising HasChanges flag (mkdir)")
+                        hasChanges.set(true)
+                    }
                 }
                 catch (e: SecurityException) {
                     statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
@@ -379,7 +385,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 try {
                     val f1 = file.createNewFile()
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
-                    if (f1) hasChanges.getAndSet(true)
+                    if (f1) {
+                        printdbg("Raising HasChanges flag (mkfile)")
+                        hasChanges.set(true)
+                    }
                     return
                 }
                 catch (e: IOException) {
@@ -401,7 +410,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 try {
                     val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
-                    if (f1) hasChanges.getAndSet(true)
+                    if (f1) {
+                        printdbg("Raising HasChanges flag (touch)")
+                        hasChanges.set(true)
+                    }
                     return
                 }
                 catch (e: IOException) {
@@ -422,6 +434,11 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 }
                 if (fileOpenMode == 1) { writeMode = true; appendMode = false }
                 else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
+                if (!file.exists()) {
+                    val f1 = file.createNewFile()
+                    statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
+                    if (!f1) { return }
+                }
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
                 writeBuffer = ByteArray(writeModeLength)
                 writeBufferUsage = 0
@@ -431,7 +448,6 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
         }
     }
-
 
     private fun sanitisePath(s: String) = s.replace('\\','/').replace(Regex("""\?<>:\*\|"""),"-")
 
