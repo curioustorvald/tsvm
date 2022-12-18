@@ -25,6 +25,7 @@ class VM(
     val worldInterface: WorldInterface,
     val roms: Array<VMProgramRom>, // first ROM must contain the BIOS
     _peripheralSlots: Int = 8,
+    val watchdogs: HashMap<String, VMWatchdog>
 ) {
 
     val peripheralSlots = _peripheralSlots.coerceIn(1,8)

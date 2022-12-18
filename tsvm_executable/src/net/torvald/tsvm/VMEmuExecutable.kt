@@ -5,14 +5,10 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
-import com.badlogic.gdx.utils.GdxRuntimeException
-import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
 import net.torvald.terrarum.utils.JsonFetcher
@@ -64,6 +60,9 @@ class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var pa
  */
 class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
 
+    val TEVD_SYNC = TevdSyncWatchdog
+
+    val watchdogs = hashMapOf<String, VMWatchdog>("TEVD_SYNC" to TEVD_SYNC)
 
     private data class VMRunnerInfo(val vm: VM, val name: String)
 
@@ -235,7 +234,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
         super.render()
 
-        val dt = Gdx.graphics.rawDeltaTime
+        val dt = Gdx.graphics.deltaTime
         updateAkku += dt
 
         var i = 0L
@@ -246,6 +245,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
 
         renderGame(dt)
+
+        watchdogs.forEach { (_, watchdog) -> watchdog.update(dt) }
     }
 
     private fun reboot(vm: VM) {
@@ -487,7 +488,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val cardslots = json.getInt("cardslots")
         val roms = json.get("roms").iterator().map { VMProgramRom(it.asString()) }.toTypedArray()
 
-        val vm = VM(assetsDir, ramsize, TheRealWorld(), roms, cardslots)
+        val vm = VM(assetsDir, ramsize, TheRealWorld(), roms, cardslots, watchdogs)
 
         // install peripherals
         listOf("com1", "com2", "com3", "com4").map { json.get(it) }.forEachIndexed { index, jsonValue ->

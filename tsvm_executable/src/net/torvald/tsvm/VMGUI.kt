@@ -144,7 +144,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
         super.render()
 
-        val dt = Gdx.graphics.rawDeltaTime
+        val dt = Gdx.graphics.deltaTime
         updateAkku += dt
 
         var i = 0L
@@ -155,6 +155,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         }
 
         renderGame(dt)
+
+        vm.watchdogs.forEach { (_, watchdog) -> watchdog.update(dt) }
     }
 
     private fun updateGame(delta: Float) {

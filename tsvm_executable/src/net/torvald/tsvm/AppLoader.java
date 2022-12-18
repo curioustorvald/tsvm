@@ -8,6 +8,7 @@ import kotlin.collections.CollectionsKt;
 import net.torvald.tsvm.peripheral.*;
 
 import java.io.File;
+import java.util.HashMap;
 
 public class AppLoader {
 
@@ -29,6 +30,8 @@ public class AppLoader {
 
         appConfig.setWindowedMode(WIDTH, HEIGHT);
 
+        HashMap<String, VMWatchdog> watchdogs = new HashMap<>();
+        watchdogs.put("TEVD_SYNC", TevdSyncWatchdog.INSTANCE);
 
 
         String diskPath = "assets/disk0";
@@ -36,11 +39,11 @@ public class AppLoader {
 
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, BasicRom.INSTANCE});
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
-//        VM vm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE}, 2);
+//        VM vm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE}, 2, watchdogs);
 //        VM vm = new VM(128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE});
-        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE}, 8);
-//        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE}, 8);
-//        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE}, 8);
+        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE}, 8, watchdogs);
+//        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE}, 8, watchdogs);
+//        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE}, 8, watchdogs);
 
         vm.getIO().getBlockTransferPorts()[0].attachDevice(new TestDiskDrive(vm, 0, diskPath));
         vm.getIO().getBlockTransferPorts()[1].attachDevice(new HttpModem(vm, 1024, -1));

@@ -37,42 +37,18 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
-
-    private val hasChanges = AtomicBoolean(false)
-
+    
     init {
         statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
 
         if (!tevdPath.exists()) {
             throw FileNotFoundException("Disk file '${theTevdPath}' not found")
         }
-
-        Thread {
-            while (vm.isRunning) {
-                println("TevdCommitWatchdog ping")
-                if (hasChanges.compareAndExchangeAcquire(true, false)) {
-                    printdbg("Disk has changes, committing... $theTevdPath")
-                    commit()
-                }
-                else {
-                    printdbg("Disk has no changes, skipping... $theTevdPath")
-                }
-                Thread.sleep(1000L * COMMIT_INTERVAL)
-            }
-        }.let {
-            it.start()
-            vm.contexts.add(it)
-        }
     }
 
 
-    companion object {
-        /** How often the changes in DOM (disk object model) should be saved to the physical drive when there are changes. Seconds. */
-        const val COMMIT_INTERVAL = 5
-    }
-
-    fun commit() {
-        VDUtil.dumpToRealMachine(DOM, tevdPath)
+    fun notifyDiskCommit() {
+        vm.watchdogs["TEVD_SYNC"]?.addMessage(arrayOf(tevdPath, DOM))
     }
 
 
@@ -140,8 +116,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 writeMode = false
                 appendMode = false
 
-                printdbg("Raising HasChanges flag (end of write)")
-                hasChanges.set(true)
+                printdbg("Notifying disk commit (end of write)")
+                notifyDiskCommit()
             }
         }
         else {
@@ -229,8 +205,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 }
                 try {
                     file.delete()
-                    printdbg("Raising HasChanges flag (file deleted)")
-                    hasChanges.set(true)
+                    printdbg("Notifying disk commit (file deleted)")
+                    notifyDiskCommit()
                 }
                 catch (e: SecurityException) {
                     statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
@@ -365,8 +341,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     val status = file.mkdir()
                     statusCode.set(if (status) 0 else 1)
                     if (status) {
-                        printdbg("Raising HasChanges flag (mkdir)")
-                        hasChanges.set(true)
+                        printdbg("Notifying disk commit (mkdir)")
+                        notifyDiskCommit()
                     }
                 }
                 catch (e: SecurityException) {
@@ -386,8 +362,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     val f1 = file.createNewFile()
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
                     if (f1) {
-                        printdbg("Raising HasChanges flag (mkfile)")
-                        hasChanges.set(true)
+                        printdbg("Notifying disk commit (mkfile)")
+                        notifyDiskCommit()
                     }
                     return
                 }
@@ -411,8 +387,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
                     if (f1) {
-                        printdbg("Raising HasChanges flag (touch)")
-                        hasChanges.set(true)
+                        printdbg("Notifying disk commit (touch)")
+                        notifyDiskCommit()
                     }
                     return
                 }
