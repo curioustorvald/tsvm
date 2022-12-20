@@ -18,7 +18,7 @@ abstract class VMWatchdog {
         akku += delta
         while (akku > interval) {
             consumeMessages()
-            println("[${this.javaClass.simpleName}] boop!")
+//            println("[${this.javaClass.simpleName}] boop!")
             akku -= interval
         }
     }
@@ -38,7 +38,7 @@ object TevdSyncWatchdog : VMWatchdog() {
         synchronized(this) {
             messageQueue.forEach { (outfile, dom) ->
                 VDUtil.dumpToRealMachine(dom, outfile)
-                println("[${this.javaClass.simpleName}] dump ${outfile.path}")
+//                println("[${this.javaClass.simpleName}] dump ${outfile.path}")
             }
             messageQueue.clear()
         }

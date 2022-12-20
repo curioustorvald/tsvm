@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val theTevdPath: String, val diskUUIDstr: String) : BlockTransferInterface(false, true) {
 
 
-    private val DBGPRN = true
+    private val DBGPRN = false
 
     val diskID: UUID = UUID.fromString(diskUUIDstr)
 
@@ -95,7 +95,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
      * Disk drive must create desired side effects in accordance with the input message.
      */
     override fun writeoutImpl(inputData: ByteArray) {
-        println("[TevDiskDrive] inputString=${inputData.trimNull().toString(VM.CHARSET)}")
+        printdbg("inputString=${inputData.trimNull().toString(VM.CHARSET)}")
 
         if (writeMode || appendMode) {
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
@@ -305,23 +305,23 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 val bootFile = TevdFileDescriptor(DOM, "!BOOTSEC")
 
-                println("bootFile = $bootFile, ID: ${bootFile.entryID}, exists = ${bootFile.exists()}")
+                printdbg("bootFile = $bootFile, ID: ${bootFile.entryID}, exists = ${bootFile.exists()}")
 
                 if (!bootFile.exists()) {
-                    println("bootfile not exists!")
+                    printdbg("bootfile not exists!")
                     statusCode.set(TestDiskDrive.STATE_CODE_NO_SUCH_FILE_EXISTS)
                     return
                 }
                 try {
                     val retMsg = bootFile.getHeadBytes(BLOCK_SIZE)
 
-                    println("retMsg = ${retMsg.toString(VM.CHARSET)}")
+                    printdbg("retMsg = ${retMsg.toString(VM.CHARSET)}")
 
                     recipient?.writeout(retMsg)
                     statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
                 }
                 catch (e: IOException) {
-                    println("exception:")
+                    printdbg("exception:")
                     e.printStackTrace()
 
                     statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)

@@ -35,14 +35,17 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
         get() = entryID.let { if (it == null) false else VDUtil.isDirectoryFollowSymlink(DOM, it) }
 
 
-    private var fileContent: EntryFile? = null
-
     fun appendBytes(bytes: ByteArray) {
-        fileContent?.getContent()?.appendBytes(bytes)
+        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath) // this is not an object properties: the reference to the file may have been changed
+        fileContent.getContent().appendBytes(bytes)
     }
 
     fun writeBytes(bytes: ByteArray) {
-        fileContent?.replaceContent(ByteArray64.fromByteArray(bytes))
+        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
+//        println("[TevdFileDesc] ${path} writing ${bytes.size} bytes...")
+//        println("Old: ${fileContent.getContent().toByteArray().toString(VM.CHARSET)}")
+        fileContent.replaceContent(ByteArray64.fromByteArray(bytes))
+//        println("New: ${fileContent.getContent().toByteArray().toString(VM.CHARSET)}")
     }
 
     /**
@@ -53,9 +56,9 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
         if (isDirectory) throw RuntimeException("Not a file")
         if (!exists()) throw IOException("File not found")
 
-        if (fileContent == null) fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
+        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
 
-        return fileContent!!.getContent().let {
+        return fileContent.getContent().let {
             it.sliceArray64(0L until minOf(length, it.size))
         }
     }
@@ -67,9 +70,9 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
         if (isDirectory) throw RuntimeException("Not a file")
         if (!exists()) throw IOException("File not found")
 
-        if (fileContent == null) fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
+        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
 
-        return fileContent!!.getContent().let {
+        return fileContent.getContent().let {
             it.sliceArray(0 until minOf(length.toLong(), it.size).toInt())
         }
     }
@@ -79,12 +82,11 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
     }
 
     fun delete() {
-        fileContent = null
         VDUtil.deleteFile(DOM, vdPath)
     }
 
     fun length(): Long {
-        return if (isFile) fileContent?.getSizePure() ?: 0L
+        return if (isFile) VDUtil.getAsNormalFileOrNull(DOM, vdPath)?.getSizePure() ?: 0L
         else -1L
     }
 
@@ -117,9 +119,9 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
     }
 
     fun createNewFile(): Boolean {
-        fileContent = EntryFile(ByteArray64())
+        val fileContent = EntryFile(ByteArray64())
         val time_t = System.currentTimeMillis() / 1000
-        val newFile = DiskEntry(-1, -1, nameBytes, time_t, time_t, fileContent!!)
+        val newFile = DiskEntry(-1, -1, nameBytes, time_t, time_t, fileContent)
         return try {
             VDUtil.addFile(DOM, vdPath.getParent(), newFile)
             true
