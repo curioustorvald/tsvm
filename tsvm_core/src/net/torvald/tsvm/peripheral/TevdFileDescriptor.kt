@@ -38,6 +38,7 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
     fun appendBytes(bytes: ByteArray) {
         val fileContent = VDUtil.getAsNormalFile(DOM, vdPath) // this is not an object properties: the reference to the file may have been changed
         fileContent.getContent().appendBytes(bytes)
+        VDUtil.getFile(DOM, vdPath)!!.modificationDate = VDUtil.currentUnixtime
     }
 
     fun writeBytes(bytes: ByteArray) {
@@ -46,6 +47,7 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
 //        println("Old: ${fileContent.getContent().toByteArray().toString(VM.CHARSET)}")
         fileContent.replaceContent(ByteArray64.fromByteArray(bytes))
 //        println("New: ${fileContent.getContent().toByteArray().toString(VM.CHARSET)}")
+        VDUtil.getFile(DOM, vdPath)!!.modificationDate = VDUtil.currentUnixtime
     }
 
     /**
@@ -81,8 +83,16 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
         return VDUtil.getFile(DOM, vdPath) != null
     }
 
-    fun delete() {
-        VDUtil.deleteFile(DOM, vdPath)
+    fun delete(): Boolean {
+        return try {
+            val parentDir = vdPath.getParent()
+            VDUtil.deleteFile(DOM, vdPath)
+            VDUtil.getFile(DOM, parentDir)!!.modificationDate = VDUtil.currentUnixtime
+            true
+        }
+        catch (e: KotlinNullPointerException) {
+            false
+        }
     }
 
     fun length(): Long {
@@ -110,7 +120,9 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
 
     fun mkdir(): Boolean {
         return try {
-            VDUtil.addDir(DOM, vdPath.getParent(), nameBytes)
+            val parentDir = vdPath.getParent()
+            VDUtil.addDir(DOM, parentDir, nameBytes)
+            VDUtil.getFile(DOM, parentDir)!!.modificationDate = VDUtil.currentUnixtime
             true
         }
         catch (e: KotlinNullPointerException) {
@@ -123,7 +135,9 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
         val time_t = System.currentTimeMillis() / 1000
         val newFile = DiskEntry(-1, -1, nameBytes, time_t, time_t, fileContent)
         return try {
-            VDUtil.addFile(DOM, vdPath.getParent(), newFile)
+            val parentDir = vdPath.getParent()
+            VDUtil.addFile(DOM, parentDir, newFile)
+            VDUtil.getFile(DOM, parentDir)!!.modificationDate = VDUtil.currentUnixtime
             true
         }
         catch (e: KotlinNullPointerException) {

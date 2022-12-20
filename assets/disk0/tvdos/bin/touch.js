@@ -10,7 +10,7 @@ if (exec_args[1] === undefined) {
 
 let noNewFile = (exec_args[1] == "/c" || exec_args[1] == "/C");
 let file = files.open(`${_G.shell.resolvePathInput(exec_args[2] || exec_args[1]).full}`)
-if (!file.exists) {
+if (!file.exists && noNewFile) {
     printerrln("TOUCH: Can't open "+file.fullPath+" due to IO error");
     return 1;
 }
