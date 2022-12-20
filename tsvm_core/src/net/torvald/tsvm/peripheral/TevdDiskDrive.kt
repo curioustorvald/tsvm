@@ -204,7 +204,11 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 try {
-                    file.delete()
+                    val successful = file.delete()
+                    if (!successful) {
+                        statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_FAILED)
+                        return
+                    }
                     printdbg("Notifying disk commit (file deleted)")
                     notifyDiskCommit()
                 }
