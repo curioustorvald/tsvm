@@ -420,6 +420,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 writeBufferUsage = 0
                 statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
             }
+            else if (inputString.startsWith("USAGE")) {
+                recipient?.writeout(TestDiskDrive.composePositiveAns("USED${DOM.usedBytes}/TOTAL${DOM.capacity}"))
+                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+            }
             else
                 statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
         }

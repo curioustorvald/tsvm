@@ -373,10 +373,36 @@ shell.coreutils = {
         let currentDir = files.open(`${CURRENT_DRIVE}:\\${currentPath}`)
         let fileList = currentDir.list()
 
+        let fileCnt = 0
+        let dirCnt = 0
+
         println(`Current directory: ${currentDir.fullPath}`)
         fileList.forEach(it => {
             println(`${it.name.padEnd(termWidth / 2, ' ')}${it.size}`)
+            if (it.isDirectory)
+                dirCnt += 1
+            else
+                fileCnt += 1
         })
+
+
+        // print file/dir count
+        println(`\n${fileCnt} Files, ${dirCnt} Directories`)
+
+        // print disk usage, if available
+        if (currentDir.driverID == "SERIAL") {
+            let port = _TVDOS.DRV.FS.SERIAL._toPorts(currentDir.driveLetter)
+            _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+            com.sendMessage(port[0], "USAGE")
+            let response = com.getStatusCode(port[0])
+            if (0 == response) {
+                let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
+                let usedBytes = (rawStr[0].substring(4))|0
+                let totalBytes = (rawStr[1].substring(5))|0
+                let freeBytes = totalBytes - usedBytes
+                println(`Disk used ${usedBytes} bytes, ${freeBytes} bytes free of ${totalBytes} bytes`)
+            }
+        }
     },
     del: function(args) {
         if (args[1] === undefined) {

@@ -417,6 +417,10 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 writeBufferUsage = 0
                 statusCode.set(STATE_CODE_STANDBY)
             }
+            else if (inputString.startsWith("USAGE")) {
+                recipient?.writeout(composePositiveAns("USED123456/TOTAL654321"))
+                statusCode.set(STATE_CODE_STANDBY)
+            }
             else
                 statusCode.set(STATE_CODE_ILLEGAL_COMMAND)
         }
