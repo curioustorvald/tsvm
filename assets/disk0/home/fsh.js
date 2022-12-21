@@ -262,7 +262,7 @@ _fsh.drawTitlebar()
 
 // TEST
 con.move(2,1);
-print("Hit backspace to exit")
+print("fSh is very much in-dev! Hit backspace to exit")
 
 // TODO update for events: key down (updates some widgets), timer (updates clock and calendar widgets)
 while (true) {
