@@ -23,7 +23,17 @@ function copyFiles(destDrive) {
     })
 
     // bare files in the root dir
-    ;["!BOOTSEC", "AUTOEXEC.BAT"].forEach((name)=>{
+    ;["AUTOEXEC.BAT"].forEach((name)=>{
         dos.cp(`A:\\tvdos\\installer\\${name}`, `${destDrive}:\\${name}`)
     })
+
+    // install bootloader
+    val bootloader = files.open("A:\\tvdos\\installer\\!BOOTSEC").sread()
+    let [port, poru] = _TVDOS.DRV.FS.SERIAL._toPorts(destDrive)[0]
+    com.sendMessage(port, "FLUSH");com.sendMessage(port, "CLOSE")
+    com.sendMessage(port, `NEWTEVDBOOT,${poru}`) // read-only check will be performed by the other writes
+    com.sendMessage(port, bootloader)
+    com.sendMessage(port, "FLUSH");com.sendMessage(port, "CLOSE")
+
+
 }

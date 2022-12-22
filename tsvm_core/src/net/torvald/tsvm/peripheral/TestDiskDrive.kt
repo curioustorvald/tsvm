@@ -150,6 +150,16 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 appendMode = false
             }
         }
+        else if (fileOpenMode == 17) {
+            if (!fileOpen) throw InternalError("Bootloader file is not open but the drive is in boot write mode")
+
+            val inputData = if (inputData.size != BLOCK_SIZE) ByteArray(BLOCK_SIZE) { if (it < inputData.size) inputData[it] else 0 }
+            else inputData
+
+            file.writeBytes(inputData)
+
+            fileOpenMode = -1
+        }
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
 
@@ -310,6 +320,21 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                     statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
+            }
+            else if (inputString.startsWith("NEWTEVDBOOT")) {
+                var commaIndex = 0
+                while (commaIndex < inputString.length) {
+                    if (inputString[commaIndex] == ',') break
+                    commaIndex += 1
+                }
+                val driveNum = if (commaIndex >= inputString.length) null else commaIndex
+
+                // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
+
+                statusCode.set(STATE_CODE_STANDBY)
+                fileOpen = true
+                fileOpenMode = 17
+                blockSendCount = 0
             }
             else if (inputString.startsWith("LOADBOOT")) {
                 var commaIndex = 0

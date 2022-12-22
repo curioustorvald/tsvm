@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val theTevdPath: String, val diskUUIDstr: String) : BlockTransferInterface(false, true) {
 
 
-    private val DBGPRN = false
+    private val DBGPRN = true
 
     val diskID: UUID = UUID.fromString(diskUUIDstr)
 
@@ -30,8 +30,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
     private var file: TevdFileDescriptor = TevdFileDescriptor(DOM, "")
     //private var readModeLength = -1 // always 4096
-    private var writeMode = false
-    private var appendMode = false
+    private val writeMode
+        get() = fileOpenMode == 1
+    private val appendMode
+        get() = fileOpenMode == 2
     private var writeModeLength = -1
 
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
@@ -113,12 +115,24 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 else if (writeMode)
                     file.writeBytes(writeBuffer)
 
-                writeMode = false
-                appendMode = false
+                fileOpenMode = -1
 
                 printdbg("Notifying disk commit (end of write)")
                 notifyDiskCommit()
             }
+        }
+        else if (fileOpenMode == 17) {
+            if (!fileOpen) throw InternalError("Bootloader file is not open but the drive is in boot write mode")
+
+            val inputData = if (inputData.size != BLOCK_SIZE) ByteArray(BLOCK_SIZE) { if (it < inputData.size) inputData[it] else 0 }
+            else inputData
+
+            file.writeBytes(inputData)
+
+            fileOpenMode = -1
+
+            printdbg("Notifying disk commit (end of bootloader write)")
+            notifyDiskCommit()
         }
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
@@ -131,7 +145,6 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 file = TevdFileDescriptor(DOM, "")
                 blockSendCount = 0
                 statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
-                writeMode = false
                 writeModeLength = -1
             }
             else if (inputString.startsWith("DEVSTU\u0017"))
@@ -297,6 +310,27 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
             }
+            else if (inputString.startsWith("NEWTEVDBOOT")) {
+                var commaIndex = 0
+                while (commaIndex < inputString.length) {
+                    if (inputString[commaIndex] == ',') break
+                    commaIndex += 1
+                }
+                val driveNum = if (commaIndex >= inputString.length) null else commaIndex
+
+                // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
+
+                if (DOM.isReadOnly) {
+                    printdbg("! disk is read-only")
+                    statusCode.set(TestDiskDrive.STATE_CODE_READ_ONLY)
+                    return
+                }
+
+                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                fileOpen = true
+                fileOpenMode = 17
+                blockSendCount = 0
+            }
             else if (inputString.startsWith("LOADBOOT")) {
                 var commaIndex = 0
                 while (commaIndex < inputString.length) {
@@ -307,17 +341,17 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
-                val bootFile = TevdFileDescriptor(DOM, "!BOOTSEC")
+                val bootFile = DOM.entries[1]
 
-                printdbg("bootFile = $bootFile, ID: ${bootFile.entryID}, exists = ${bootFile.exists()}")
+                printdbg("bootFile = $bootFile, ID: 1, exists = ${bootFile != null}")
 
-                if (!bootFile.exists()) {
+                if (bootFile == null) {
                     printdbg("bootfile not exists!")
                     statusCode.set(TestDiskDrive.STATE_CODE_NO_SUCH_FILE_EXISTS)
                     return
                 }
                 try {
-                    val retMsg = bootFile.getHeadBytes(BLOCK_SIZE)
+                    val retMsg = VDUtil.getAsNormalFile(DOM, 1).getContent().sliceArray(0 until BLOCK_SIZE)
 
                     printdbg("retMsg = ${retMsg.toString(VM.CHARSET)}")
 
@@ -412,8 +446,6 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
-                if (fileOpenMode == 1) { writeMode = true; appendMode = false }
-                else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
                 if (!file.exists()) {
                     val f1 = file.createNewFile()
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)

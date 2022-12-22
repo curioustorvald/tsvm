@@ -1,7 +1,8 @@
 package net.torvald.tsvm
 
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.EntryFile
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil
-import net.torvald.tsvm.VM
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil.checkReadOnly
 import java.io.File
 
 /**
@@ -33,12 +34,22 @@ fun main(args: Array<String>) {
 
     // bare file in root dir
     listOf(
-        VDUtil.importFile(File("assets/disk0/root.bootable/!BOOTSEC"), disk.generateUniqueID(), VM.CHARSET),
         VDUtil.importFile(File("assets/disk0/root.bootable/AUTOEXEC.BAT"), disk.generateUniqueID(), VM.CHARSET),
     ).forEach {
         VDUtil.addFile(disk, 0, it)
     }
 
+    VDUtil.importFile(File("assets/disk0/root.bootable/!BOOTSEC"), 1, VM.CHARSET).let {
+        disk.checkReadOnly()
+//        disk.checkCapacity(4096)
+
+        (it.contents as EntryFile).let { file ->
+            val bytes = file.getContent()
+            bytes.appendBytes(ByteArray(4096 - bytes.size.toInt()))
+        }
+
+        disk.entries[1] = it
+    }
 
     VDUtil.dumpToRealMachine(disk, File(args[0]))
 }
