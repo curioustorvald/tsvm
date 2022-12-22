@@ -84,13 +84,17 @@ function printmotd() {
 
         con.mvaddch(cy, 4, 16);con.curs_right();print(' ')
 
+        const PCX_INIT = margin - 2
         let tcnt = 0
-        let pcx = margin - 1
+        let pcx = PCX_INIT
         while (tcnt <= motd.length) {
             let char = motd.charAt(tcnt)
 
             if (char != '\n') {
-                print(motd.charAt(tcnt))
+                // prevent the line starting from ' '
+                if (pcx != PCX_INIT || char != ' ') {
+                    print(motd.charAt(tcnt))
+                }
                 pcx += 1
             }
 
@@ -105,7 +109,7 @@ function printmotd() {
                 // next line header
                 let [ncy, __] = con.getyx()
                 con.mvaddch(ncy, 4, 16);con.curs_right();print(' ')
-                pcx = margin - 1
+                pcx = PCX_INIT
             }
 
             tcnt += 1
