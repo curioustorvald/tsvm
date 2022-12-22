@@ -1,8 +1,8 @@
-echo "Starting TVDOS..."
+echo "Starting TVDOS Installation Medium..."
 
 rem put set-xxx commands here:
-set PATH=\tvdos\tuidev;$PATH
-set KEYBOARD=us_colemak
+rem e.g. set PATH=\home\my-cool-project;$PATH
+set KEYBOARD=us_qwerty
 
 rem this line specifies which shell to be presented after the boot precess:
 command /fancy

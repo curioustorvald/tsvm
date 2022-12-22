@@ -67,6 +67,60 @@ function greet() {
         println(welcome_text)
 }
 
+function printmotd() {
+    let motdFile = files.open("A:/etc/motd")
+    if (!motdFile.exists) return
+    let motd = motdFile.sread().trim()
+    let width = con.getmaxyx()[1]
+
+
+    if (goFancy) {
+        let margin = 4
+        let internalWidth = width - 2*margin
+
+        con.video_reverse()
+
+        let [cy, cx] = con.getyx()
+
+        con.mvaddch(cy, 4, 16);con.curs_right();print(' ')
+
+        let tcnt = 0
+        let pcx = margin - 1
+        while (tcnt <= motd.length) {
+            let char = motd.charAt(tcnt)
+
+            if (char != '\n') {
+                print(motd.charAt(tcnt))
+                pcx += 1
+            }
+
+            if ('\n' == char || pcx % internalWidth == 0 && pcx != 0 || tcnt == motd.length) {
+                // current line ending
+                let [_, ncx] = con.getyx()
+                for (let k = 0; k < width - margin - ncx + 1; k++) print(' ')
+                con.addch(17);println()
+
+                if (tcnt == motd.length) break
+
+                // next line header
+                let [ncy, __] = con.getyx()
+                con.mvaddch(ncy, 4, 16);con.curs_right();print(' ')
+                pcx = margin - 1
+            }
+
+            tcnt += 1
+        }
+
+        con.video_reverse()
+    }
+    else {
+        println()
+        println(motd)
+    }
+
+    println()
+}
+
 /*uninterruptible*/ function sendLcdMsg(s) {
     // making it uninterruptible
     sys.poke(-1025, (s === undefined) ? 0 : s.charCodeAt(0)|0)
@@ -761,6 +815,7 @@ let cmdExit = false
 if (goInteractive) {
     con.curs_set(1)
     greet()
+    printmotd()
 
     let cmdHistory = [] // zeroth element is the oldest
     let cmdHistoryScroll = 0 // 0 for outside-of-buffer, 1 for most recent
