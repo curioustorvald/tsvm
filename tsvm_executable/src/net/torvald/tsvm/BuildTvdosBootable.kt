@@ -43,6 +43,8 @@ fun main(args: Array<String>) {
         disk.checkReadOnly()
 //        disk.checkCapacity(4096)
 
+        it.parentEntryID = 1
+
         (it.contents as EntryFile).let { file ->
             val bytes = file.getContent()
             bytes.appendBytes(ByteArray(4096 - bytes.size.toInt()))

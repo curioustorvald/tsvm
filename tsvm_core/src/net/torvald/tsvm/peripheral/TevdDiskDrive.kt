@@ -1,8 +1,7 @@
 package net.torvald.tsvm.peripheral
 
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.EntryDirectory
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toCanonicalString
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.*
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil.checkReadOnly
 import net.torvald.tsvm.VM
 import java.io.*
 import java.util.*
@@ -127,7 +126,12 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
             val inputData = if (inputData.size != BLOCK_SIZE) ByteArray(BLOCK_SIZE) { if (it < inputData.size) inputData[it] else 0 }
             else inputData
 
-            file.writeBytes(inputData)
+            val creationTime = VDUtil.currentUnixtime
+            DOM.checkReadOnly()
+            val file = EntryFile(BLOCK_SIZE.toLong())
+            file.getContent().appendBytes(inputData)
+
+            DOM.entries[1] = DiskEntry(1, 1, "TEVDBOOT".toByteArray(VM.CHARSET), creationTime, creationTime, file)
 
             fileOpenMode = -1
 
