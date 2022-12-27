@@ -42,6 +42,11 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
 
     private val keyEventBuffers = ByteArray(8)
 
+    private var acpiShutoff = true
+    private var bmsIsCharging = false
+    private var bmsHasBattery = false
+    private var bmsIsBatteryOperated = false
+
     init {
         //blockTransferPorts[1].attachDevice(TestFunctionGenerator())
         //blockTransferPorts[0].attachDevice(TestDiskDrive(vm, 0, File("assets")))
@@ -76,6 +81,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         }
     }
 
+
     override fun peek(addr: Long): Byte? {
         return mmio_read(addr)
     }
@@ -104,6 +110,9 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             in 80..87 -> rtc.ushr((adi - 80) * 8).and(255).toByte()
 
             88L -> vm.romMapping.toByte()
+
+            89L -> ((acpiShutoff.toInt() shl 7) or (bmsIsBatteryOperated.toInt() shl 3) or (bmsHasBattery.toInt() shl 1)
+                    or bmsIsCharging.toInt()).toByte()
 
             in 1024..2047 -> peripheralFast[addr - 1024]
 
@@ -164,6 +173,7 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             }
 
             88L -> vm.romMapping = bi
+            89L -> { acpiShutoff = byte.and(-128).isNonZero() }
 
             in 1024..2047 -> peripheralFast[addr - 1024] = byte
 

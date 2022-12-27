@@ -7,6 +7,7 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import com.badlogic.gdx.math.Matrix4
+import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.FBM
@@ -937,9 +938,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun dispose() {
         //testTex.dispose()
-        framebuffer.destroy()
-        framebuffer2?.destroy()
-        framebufferOut.dispose()
+        try { framebuffer.destroy() } catch (_: GdxRuntimeException) {}
+        try { framebuffer2?.destroy() } catch (_: GdxRuntimeException) {}
+        try { framebufferOut.dispose() } catch (_: GdxRuntimeException) {}
         rendertex.dispose()
         textArea.destroy()
         textForePixmap.dispose()
@@ -951,8 +952,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         outFBOs.forEach { it.dispose() }
         outFBObatch.dispose()
 
-        try { textForeTex.dispose() } catch (_: Throwable) {}
-        try { textBackTex.dispose() } catch (_: Throwable) {}
+        try { textForeTex.dispose() } catch (_: GdxRuntimeException) {}
+        try { textBackTex.dispose() } catch (_: GdxRuntimeException) {}
 
         chrrom0.dispose()
         chrrom.dispose()

@@ -5,6 +5,7 @@ import com.badlogic.gdx.Input.Buttons
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
+import kotlin.experimental.and
 
 /**
  * Created by minjaesong on 2022-10-25.
@@ -103,6 +104,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
 
     private val STR_PLAY = "\u00D2\u00D3"
     private val STR_STOP = "\u00D0\u00D1"
+    private val STR_POWER = "\u00D4\u00D5"
 
     override fun render(batch: SpriteBatch) {
         batch.inUse {
@@ -198,7 +200,8 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 FONT.draw(batch, STR_STOP, 377f, 382f)
                 batch.setColourBy { theVM?.isRunning == true }
                 FONT.draw(batch, STR_PLAY, 398f, 382f)
-
+                batch.setColourBy(Color.RED, Color.LIME) { (theVM?.peek(-90)?.and(-128) ?: 0.toByte()).toInt() != 0 }
+                FONT.draw(batch, STR_POWER, 419f, 382f)
             }
         }
     }

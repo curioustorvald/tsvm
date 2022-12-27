@@ -34,6 +34,7 @@ object VMSetupBroker {
         vm.getPrintStream = { gpu.getPrintStream() }
         vm.getErrorStream = { gpu.getErrorStream() }
         vm.getInputStream = { gpu.getInputStream() }
+        vm.poke(-90L, 0)
 
         vmRunners[vm.id] = VMRunnerFactory(vm.assetsDir, vm, "js")
         coroutineJobs[vm.id] = GlobalScope.launch { vmRunners[vm.id]?.executeCommand(vm.roms[0]!!.readAll()) }
@@ -56,6 +57,7 @@ object VMSetupBroker {
         vm.getPrintStream = { TODO() }
         vm.getErrorStream = { TODO() }
         vm.getInputStream = { TODO() }
+        vm.poke(-90L, -128)
 
         vmRunners[vm.id]?.close()
         coroutineJobs[vm.id]?.cancel("VM kill command received")

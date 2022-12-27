@@ -464,6 +464,33 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 recipient?.writeout(TestDiskDrive.composePositiveAns("USED${DOM.usedBytes}/TOTAL${DOM.capacity}"))
                 statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
             }
+            else if (inputString.startsWith("TEVDDISCARDDRIVE\"")) {
+                // the actual capacity of the floppy must be determined when the floppy gameitem was created
+
+                if (DOM.isReadOnly) {
+                    printdbg("! disk is read-only")
+                    statusCode.set(TestDiskDrive.STATE_CODE_READ_ONLY)
+                    return
+                }
+
+                var commaIndex = inputString.lastIndex
+                while (commaIndex > 6) {
+                    if (inputString[commaIndex] == ',') break; commaIndex -= 1
+                }
+                // sanity check if path is actually enclosed with double-quote
+                if (commaIndex != 6 && inputString[commaIndex - 1] != '"') {
+                    statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
+                    return
+                }
+                val newName = inputString.substring(6, if (commaIndex == 6) inputString.lastIndex else commaIndex - 1)
+                val driveNum =
+                    if (commaIndex == 6) null else inputString.substring(commaIndex + 1, inputString.length).toInt()
+
+                // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
+
+                DOM.entries.clear()
+                DOM.diskName = newName.toByteArray(VM.CHARSET)
+            }
             else
                 statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
         }
