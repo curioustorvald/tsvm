@@ -6,12 +6,12 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VirtualDisk
 import java.io.File
 
 /**
+ * @param interval Seconds between sleep
+ *
  * Created by minjaesong on 2022-12-18.
  */
-abstract class VMWatchdog {
+abstract class VMWatchdog(val interval: Float) {
 
-    /** Seconds between sleep */
-    abstract val interval: Float
     protected var akku = 0f
 
     open fun update(delta: Float) {
@@ -29,8 +29,7 @@ abstract class VMWatchdog {
 }
 
 
-object TevdSyncWatchdog : VMWatchdog() {
-    override val interval = 5f
+object TevdSyncWatchdog : VMWatchdog(5f) {
 
     private val messageQueue = ArrayList<Pair<File, VirtualDisk>>()
 
