@@ -26,77 +26,12 @@ if (!outfilename) {
 let outfile = files.open(_G.shell.resolvePathInput(outfilename).full)
 
 
-const filesystem = {};
-
-filesystem._toPorts = (driveLetter) => {
-    if (driveLetter.toUpperCase === undefined) {
-        throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
-    }
-    var port = _TVDOS.DRIVES[driveLetter.toUpperCase()];
-    if (port === undefined) {
-        throw Error("Drive letter '" + driveLetter.toUpperCase() + "' does not exist");
-    }
-    return port
-}
-filesystem._close = (portNo) => {
-    com.sendMessage(portNo, "CLOSE")
-}
-filesystem._flush = (portNo) => {
-    com.sendMessage(portNo, "FLUSH")
-}
-filesystem.open = (driveLetter, path, operationMode) => {
-    var port = filesystem._toPorts(driveLetter);
-
-    filesystem._flush(port[0]); filesystem._close(port[0]);
-
-    var mode = operationMode.toUpperCase();
-    if (mode != "R" && mode != "W" && mode != "A") {
-        throw Error("Unknown file opening mode: " + mode);
-    }
-
-    com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
-    return com.getStatusCode(port[0]);
-}
-filesystem.getFileLen = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "GETLEN");
-    var response = com.getStatusCode(port[0]);
-    if (135 == response) {
-        throw Error("File not opened");
-    }
-    if (response < 0 || response >= 128) {
-        throw Error("Reading a file failed with "+response);
-    }
-    return Number(com.pullMessage(port[0]));
-}
-filesystem.write = (driveLetter, string) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "WRITE"+string.length);
-    var response = com.getStatusCode(port[0]);
-    if (135 == response) {
-        throw Error("File not opened");
-    }
-    if (response < 0 || response >= 128) {
-        throw Error("Writing a file failed with "+response);
-    }
-    com.sendMessage(port[0], string);
-    filesystem._flush(port[0]); filesystem._close(port[0]);
-}
-filesystem.writeBytes = (driveLetter, bytes) => {
-    var string = String.fromCharCode.apply(null, bytes); // no spreading: has length limit
-    filesystem.write(driveLetter, string);
-}
-
-
-
 function appendToOutfile(bytes) {
-    filesystem.open("A", outfilename, "A")
-    filesystem.writeBytes("A", bytes)
+    outfile.bappend(bytes)
 }
 
 function appendToOutfilePtr(ptr, len) {
-    filesystem.open("A", outfilename, "A")
-    dma.ramToCom(ptr, 0, len)
+    outfile.pappend(ptr, len)
 }
 
 // write header to the file
@@ -113,14 +48,13 @@ let headerBytes = [
 let ipfFun = (IPFMODE == 1) ? graphics.encodeIpf1 : (IPFMODE == 2) ? graphics.encodeIpf2 : 0
 if (!ipfFun) throw Error("Unknown IPF mode "+IPFMODE)
 
-filesystem.open("A", outfilename, "W")
-filesystem.writeBytes("A", headerBytes)
+outfile.bwrite(headerBytes)
 
 for (let f = 1; f <= TOTAL_FRAMES; f++) {
     let fname = PATHFUN(f)
-    filesystem.open("A", fname, "R")
-    let fileLen = filesystem.getFileLen("A")
-    dma.comToRam(0, 0, infile, fileLen)
+    let framefile = files.open(_G.shell.resolvePathInput(fname).full)
+    let fileLen = framefile.size
+    framefile.pread(infile, fileLen)
 
 
     let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)

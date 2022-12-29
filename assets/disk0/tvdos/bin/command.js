@@ -17,6 +17,10 @@ const welcome_text = (termWidth > 40) ? `${osName}, version ${_TVDOS.VERSION}`
 const greetLeftPad = (termWidth - welcome_text.length - 6) >> 1
 const greetRightPad = termWidth - greetLeftPad - welcome_text.length - 6
 
+function debugprintln(t) {
+    if (DEBUG_PRINT) serial.println(t)
+}
+
 function makeHash() {
 	let e = "YBNDRFG8EJKMCPQXOTLVWIS2A345H769"
 	let m = e.length
@@ -314,29 +318,29 @@ shell.resolvePathInput = function(input) {
     }
 
 
-    serial.println("command.js > resolvePathInput > sanitised input: "+pathstr)
+    debugprintln("command.js > resolvePathInput > sanitised input: "+pathstr)
 
     let startsWithSlash = pathstr.startsWith('/')
     let newPwd = []
 
-    serial.println("command.js > resolvePathInput > path starts with slash: "+startsWithSlash)
+    debugprintln("command.js > resolvePathInput > path starts with slash: "+startsWithSlash)
 
     // split them into an array while filtering empty elements except for the root 'head'
     let ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("/").filter(function(it) { return (it.length > 0); }))
 
-    serial.println("command.js > resolvePathInput > ipwd = "+ipwd)
-    serial.println("command.js > resolvePathInput > newPwd = "+newPwd)
+    debugprintln("command.js > resolvePathInput > ipwd = "+ipwd)
+    debugprintln("command.js > resolvePathInput > newPwd = "+newPwd)
 
     // process dots
     ipwd.forEach(function(it) {
-        serial.println("command.js > resolvePathInput > ipwd.forEach > it = "+it)
+        debugprintln("command.js > resolvePathInput > ipwd.forEach > it = "+it)
         if (it === ".." && newPwd[1] !== undefined) {
             newPwd.pop()
         }
         else if (it !== ".." && it !== ".") {
             newPwd.push(it)
         }
-        serial.println("command.js > resolvePathInput > newPwd = "+newPwd)
+        debugprintln("command.js > resolvePathInput > newPwd = "+newPwd)
     })
 
     // construct new pathstr from pwd arr so it will be sanitised
@@ -372,7 +376,7 @@ shell.coreutils = {
             return
         }
         let path = shell.resolvePathInput(args[1])
-        if (DEBUG_PRINT) serial.println("command.js > cd > pathstr = "+path.string)
+        debugprintln("command.js > cd > pathstr = "+path.string)
 
         // check if path is valid
         let file = files.open(path.full)
@@ -394,8 +398,8 @@ shell.coreutils = {
         let sourceFile = files.open(path.full)
         let destFile = files.open(pathd.full)
 
-        serial.println(`[cp] source path: ${path.full}`)
-        serial.println(`[cp] dest path: ${pathd.full}`)
+        debugprintln(`[cp] source path: ${path.full}`)
+        debugprintln(`[cp] dest path: ${pathd.full}`)
 
         if (sourceFile.isDirectory || !sourceFile.exists) { printerrln(`${args[0].toUpperCase()} failed for '${sourceFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
         if (destFile.isDirectory) { printerrln(`${args[0].toUpperCase()} failed for '${destFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
@@ -489,7 +493,7 @@ shell.coreutils = {
         }
         let path = shell.resolvePathInput(args[1])
         let file = files.open(path.full)
-        if (DEBUG_PRINT) serial.println("command.js > mkdir > pathstr = "+path.full)
+        debugprintln("command.js > mkdir > pathstr = "+path.full)
 
         // check if path is valid
         if (!file.exists) {
@@ -596,7 +600,7 @@ shell.execute = function(line) {
 
         // TODO : if operator is not undefined, swap built-in print functions with ones that 'prints' on pipes instead of stdout
         if (op == '|') {
-            serial.println(`Statement #${c+1}: pushing anon pipe`)
+            debugprintln(`Statement #${c+1}: pushing anon pipe`)
             shell.pushAnonPipe('')
 
             print = shell.stdio.pipe.print
@@ -656,7 +660,7 @@ shell.execute = function(line) {
                     searchPath = trimStartRevSlash(search + cmd + pathExt[j])
 
                     if (DEBUG_PRINT) {
-                        serial.println("[command.js > shell.execute] file search path: "+searchPath)
+                        debugprintln("[command.js > shell.execute] file search path: "+searchPath)
                     }
 
                     searchFile = files.open(`${CURRENT_DRIVE}:\\${searchPath}`)
@@ -735,8 +739,8 @@ shell.execute = function(line) {
 
         // destroy pipe if operator is not pipe
         if (op != "|" && op != ">>" && op != ">") {
-            serial.println(`Statement #${c+1}: destroying pipe`)
-            serial.println(`its content was: ${shell.removePipe()}`)
+            debugprintln(`Statement #${c+1}: destroying pipe`)
+            debugprintln(`its content was: ${shell.removePipe()}`)
         }
 
 

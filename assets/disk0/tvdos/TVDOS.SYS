@@ -55,7 +55,7 @@ for (let portNo = 1; portNo < 4; portNo++) {
         sys.spin()
         let devname = com.sendMessageGetBytes(portNo, "DEVTYP\x17").substring(0,4)
         let driver = devnameToDriver[devname]
-        serial.println(`port: ${portNo}, devname: ${devname} ${com.sendMessageGetBytes(portNo, "DEVNAM\x17")}`)
+//        serial.println(`port: ${portNo}, devname: ${devname} ${com.sendMessageGetBytes(portNo, "DEVNAM\x17")}`)
         if (driver) {
             let dlet = currentDriveLetter[portNo]
             _TVDOS.DRIVEFS[dlet] = driver
@@ -116,7 +116,7 @@ class TVDOSFileDescriptor {
             this._path = p.substring(2) // detaches $:
             this._driverID = driverID
             this._driver = _TVDOS.DRV.FS[driverID]
-            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}`)
+//            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}`)
         }
     }
 
@@ -173,6 +173,20 @@ class TVDOSFileDescriptor {
     /** @param string stringwise contents to write, in JS array */
     swrite(string) {
         this.driver.swrite(this, string)
+    }
+
+    /**
+     * @param ptr where the byes are (offsets from the base ptr can be coded as `baseptr + offset`)
+     * @param count how many bytes to append
+     */
+    pappend(ptr, count) {
+        this.driver.pappend(this, ptr, count)
+    }
+    bappend(bytes) {
+        this.driver.bappend(this, bytes)
+    }
+    sappend(string) {
+        this.driver.sappend(this, string)
     }
     
     flush() {
@@ -302,7 +316,7 @@ _TVDOS.DRV.FS.SERIAL.pread = (fd, ptr, count, offset) => {
     if (response < 0 || response >= 128) {
         throw Error("Reading a file failed with "+response)
     }
-    dma.comToRam(port[0], offset, ptr, count)
+    dma.comToRam(port[0], offset || 0, ptr, count || 0)
 }
 _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
     if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) throw Error(`No such file: ${fd.fullPath}`)
@@ -318,6 +332,14 @@ _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
     }
     return com.pullMessage(port[0])
 }
+_TVDOS.DRV.FS.SERIAL.bread = (fd) => {
+    let str = _TVDOS.DRV.FS.SERIAL.sread(fd)
+    let bytes = new Uint8Array(str.length)
+    for (let i = 0; i < str.length; i++) {
+        bytes[i] = str.charCodeAt(i)
+    }
+    return bytes
+}
 _TVDOS.DRV.FS.SERIAL.pwrite = (fd, ptr, count, offset) => {
     if (offset) throw Error(`Write offset not supported on Serial device such as disk drives`)
 
@@ -325,7 +347,6 @@ _TVDOS.DRV.FS.SERIAL.pwrite = (fd, ptr, count, offset) => {
 
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     dma.ramToCom(ptr, port[0], count)
-
 }
 _TVDOS.DRV.FS.SERIAL.swrite = (fd, string) => {
     let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Writing a file failed with "+rrrr)
@@ -342,18 +363,36 @@ _TVDOS.DRV.FS.SERIAL.swrite = (fd, string) => {
     com.sendMessage(port[0], string)
     _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
 }
-_TVDOS.DRV.FS.SERIAL.bread = (fd) => {
-    let str = _TVDOS.DRV.FS.SERIAL.sread(fd)
-    let bytes = new Uint8Array(str.length)
-    for (let i = 0; i < str.length; i++) {
-        bytes[i] = str.charCodeAt(i)
-    }
-    return bytes
-}
 _TVDOS.DRV.FS.SERIAL.bwrite = (fd, bytes) => { // pwrite replaces DMA.ramToCom
     let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
     _TVDOS.DRV.FS.SERIAL.swrite(fd, string)
 }
+_TVDOS.DRV.FS.SERIAL.pappend = (fd, ptr, count) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._opena(fd); if (rrrr != 0) throw Error("Appending to a file failed with "+rrrr)
+
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    dma.ramToCom(ptr, port[0], count)
+}
+_TVDOS.DRV.FS.SERIAL.bappend = (fd, bytes) => { // pwrite replaces DMA.ramToCom
+    let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
+    _TVDOS.DRV.FS.SERIAL.sappend(fd, string)
+}
+_TVDOS.DRV.FS.SERIAL.sappend = (fd, string) => {
+    let rrrr = _TVDOS.DRV.FS.SERIAL._opena(fd); if (rrrr != 0) throw Error("Appending to a file failed with "+rrrr)
+
+    let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
+    com.sendMessage(port[0], "WRITE"+string.length)
+    let response = com.getStatusCode(port[0])
+    if (135 == response) {
+        throw Error("File not opened")
+    }
+    if (response < 0 || response >= 128) {
+        throw Error("Appending to a file failed with "+response)
+    }
+    com.sendMessage(port[0], string)
+    _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+}
+
 _TVDOS.DRV.FS.SERIAL.isDirectory = (fd) => {
     if (129 == _TVDOS.DRV.FS.SERIAL._openr(fd)) return false // file not exists
 
@@ -626,7 +665,7 @@ _TVDOS.DRV.FS.NET.sread = (fd) => {
     let port = _TVDOS.DRV.FS.SERIAL._toPorts(fd.driveLetter)
     let url = fd.path.substring(fd.path.indexOf("\\")+1).replaceAll("\\","/")
 
-    serial.println("NETFILE GET " + url)
+//    serial.println("NETFILE GET " + url)
     com.sendMessage(port[0], "GET " + url)
     com.waitUntilReady(port[0])
 
