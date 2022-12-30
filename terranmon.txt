@@ -496,3 +496,86 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
     11111010 -> 0xFA
 
     which packs into: [ 30 | 30 | FA | FA ] (because little endian)
+
+--------------------------------------------------------------------------------
+
+Sound Adapter
+
+Endianness: little
+
+0..114687 RW: Sample bin
+114688..131071 RW: Instrument bin (256 instruments, 64 bytes each)
+131072..196607 RW: Play data 1
+196608..262143 RW: Play data 2
+
+Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample
+
+Instrument bin: Registry for 256 instruments, formatted as:
+    Uint16 Sample Pointer
+    Uint16 Sample length
+    Uint16 Sampling rate at C3
+    Uint16 Loop start
+    Uint16 Loop end
+     Bit16 Flags
+        0b h000 00pp
+            h: sample pointer high bit
+           pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
+     Bit32 Unused
+  Bit16x24 Volume envelopes
+       Byte 1: Volume
+       Byte 2: Second offset from the prev point, in 3.5 Unsigned Minifloat
+
+Play Data: play data are series of tracker-like instructions, visualised as:
+
+rr||NOTE|Ins|E.Vol|E.Pan|EE.ff|
+63||FFFF|255|3+ 64|3+ 64|16 FF| (8 bytes per line, 512 bytes per pattern, 256 patterns on 128 kB block)
+
+notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using their Sampling rate value.
+
+
+Sound Adapter MMIO
+
+0..1 RW:  Play head #1 position
+2 RW:     Play head #1 master volume
+3 RW:     Play head #1 master pan
+4..7 RW:  Play head #1 flags
+
+8..9 RW:  Play head #2 position
+10 RW:    Play head #2 master volume
+11 RW:    Play head #2 master pan
+12..15 RW:Play head #2 flags
+
+... auto-fill to Play head #4
+
+32 ??: ???
+
+
+Play Head Flags
+    Byte 1
+        - 0b m000 0000
+          m: mode (0 for Tracker, 1 for PCM)
+    Byte 2
+        - PCM Mode: Sampling rate multiplier in 3.5 Unsigned Minifloat (0.03125x to 126x)
+    Byte 3
+        - BPM (24 to 280. Play Data will change this register; unused in PCM Mode)
+    Byte 4
+        - Tick Rate (Play Data will change this register; unused in PCM Mode)
+
+Play Head Position interpretion
+    - Cuesheet Counter for Tracker mode
+    - Sample Counter for PCM mode
+
+32768..65535 RW: Cue Sheet (2048 cues)
+    Byte 1..15: pattern number for voice 1..15
+    Byte 16: instruction
+        1 xxxxxxx - Go back (128, 1-127) patterns to form a loop
+        01 xxxxxx -
+        001 xxxxx -
+        0001 xxxx - Skip (16, 1-15) patterns
+        00001 xxx -
+        000001 xx -
+        0000001 x -
+        0000000 1 -
+        0000000 0 - No operation
+
+65536..131071 RW: PCM Sample buffer
