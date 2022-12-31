@@ -552,9 +552,8 @@ Sound Adapter MMIO
 32 ??: ???
 
 Play Head Position
-    - Cuesheet Counter for Tracker mode
-    - Numbers of processed internal buffers (0-3)
-        when the number is 3, get ready to upload more samples
+    - Tracker mode: Cuesheet Counter
+    - PCM mode: Number of buffers uploaded and received by the adapter
 
 Length Param
     PCM Mode: length of the samples to upload to the speaker
@@ -562,9 +561,17 @@ Length Param
 
 Play Head Flags
     Byte 1
-        - 0b m00p 0000
+        - 0b mrqp 0000
           m: mode (0 for Tracker, 1 for PCM)
+          r: reset parameters; always 0 when read
+            resetting will:
+                set position to 0,
+                set length param to 0,
+                unset play bit
+          q: purge queues (likely do nothing if not PCM); always 0 when read
           p: play (0 if not -- mute all output)
+
+          NOTE: changing from PCM mode to Tracker mode or vice versa will also reset the parameters as described above
     Byte 2
         - PCM Mode: Sampling rate multiplier in 3.5 Unsigned Minifloat (0.03125x to 126x)
 

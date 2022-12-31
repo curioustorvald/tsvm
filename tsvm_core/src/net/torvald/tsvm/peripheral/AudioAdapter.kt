@@ -2,14 +2,12 @@ package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.audio.AudioDevice
-import com.badlogic.gdx.backends.lwjgl3.audio.OpenALAudioDevice
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
+import com.badlogic.gdx.utils.Queue
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
-import org.lwjgl.openal.AL11
-import java.nio.ByteBuffer
 
 private fun Boolean.toInt() = if (this) 1 else 0
 
@@ -18,6 +16,11 @@ private fun Boolean.toInt() = if (this) 1 else 0
  */
 class AudioAdapter(val vm: VM) : PeriBase {
 
+    private val DBGPRN = true
+    private fun printdbg(msg: Any) {
+        if (DBGPRN) println("[AudioAdapter] $msg")
+    }
+    
     companion object {
         const val SAMPLING_RATE = 30000
     }
@@ -31,6 +34,8 @@ class AudioAdapter(val vm: VM) : PeriBase {
 
     private lateinit var audioDevices: Array<AudioDevice>
     private val renderThreads = Array(4) { Thread(getRenderFun(it)) }
+    private val writeQueueingThreads = Array(4) { Thread(getQueueingFun(it)) }
+//    private val writeQueues = Array(4) { Queue<FloatArray>() }
 
     /*private val alSources = Array(4) {
         val audioField = OpenALAudioDevice::class.java.getDeclaredField("audio")
@@ -79,6 +84,24 @@ class AudioAdapter(val vm: VM) : PeriBase {
         Thread.sleep(1)
     } }
 
+    private fun getQueueingFun(pheadNum: Int): () -> Unit = { while (true) {
+
+        playheads[pheadNum].let {
+            if (it.pcmUploadLength > 0) {
+                printdbg("Downloading samples ${it.pcmUploadLength}")
+                
+                val samples = FloatArray(it.pcmUploadLength) { pcmBin[it.toLong()].toUint().div(255f) * 2f - 1f }
+                it.pcmQueue.addLast(samples)
+
+                it.pcmUploadLength = 0
+                it.position += 1
+            }
+        }
+
+
+        Thread.sleep(4)
+    } }
+
     init {
 
         val deviceBufferSize = Gdx.audio.javaClass.getDeclaredField("deviceBufferSize").let {
@@ -90,12 +113,54 @@ class AudioAdapter(val vm: VM) : PeriBase {
             it.get(Gdx.audio) as Int
         }
 
-        audioDevices = Array(4) { OpenALBufferedAudioDevice(Gdx.audio as OpenALLwjgl3Audio, SAMPLING_RATE, false, deviceBufferSize, deviceBufferCount) }
+        printdbg("buffer size: $deviceBufferSize x $deviceBufferCount")
+
+        audioDevices = Array(4) { OpenALBufferedAudioDevice(
+            Gdx.audio as OpenALLwjgl3Audio,
+            SAMPLING_RATE,
+            false,
+            deviceBufferSize,
+            deviceBufferCount) {
+
+        } }
 
 
-//        println("AudioAdapter latency: ${audioDevice.latency}")
+//        printdbg("AudioAdapter latency: ${audioDevice.latency}")
         renderThreads.forEach { it.start() }
+        writeQueueingThreads.forEach { it.start() }
 
+    }
+
+    /**
+     * Put this function into a separate thread and keep track of the delta time by yourself
+     */
+    private fun render(playhead: Playhead, pheadNum: Int) {
+        if (playhead.isPcmMode) {
+
+            val writeQueue = playhead.pcmQueue
+
+            if (playhead.isPlaying && writeQueue.notEmpty()) {
+
+                printdbg("Taking samples from queue (queue size: ${writeQueue.size})")
+
+                val samples = writeQueue.removeFirst()
+                playhead.position = writeQueue.size
+
+                printdbg("P${pheadNum+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
+//                    printdbg(""+(0..42).joinToString { String.format("%.2f", samples[it]) })
+                if (playhead.masterVolume == 0) printdbg("P${pheadNum+1} volume is zero!")
+
+                audioDevices[pheadNum].setVolume(playhead.masterVolume / 255f)
+                audioDevices[pheadNum].writeSamples(samples, 0, samples.size)
+
+                printdbg("P${pheadNum+1} go back to spinning")
+
+            }
+            else if (playhead.isPlaying) {
+//                printdbg("Queue exhausted, stopping...")
+//                it.isPlaying = false
+            }
+        }
     }
 
     override fun peek(addr: Long): Byte {
@@ -149,6 +214,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
 
     override fun dispose() {
         renderThreads.forEach { it.interrupt() }
+        writeQueueingThreads.forEach { it.interrupt() }
         audioDevices.forEach { it.dispose() }
 //        freeAlSources()
         sampleBin.destroy()
@@ -157,34 +223,6 @@ class AudioAdapter(val vm: VM) : PeriBase {
 
     override fun getVM(): VM {
         return vm
-    }
-
-    /**
-     * Put this function into a separate thread and keep track of the delta time by yourself
-     */
-    private fun render(it: Playhead, pheadNum: Int) {
-        if (it.isPcmMode) {
-            if (it.isPlaying) {
-
-                audioDevices[pheadNum].setVolume(it.masterVolume / 255f)
-
-                if (it.pcmUploadLength > 0) {
-                    val samples = FloatArray(it.pcmUploadLength) { pcmBin[it.toLong()].toUint().div(255f) * 2f - 1f }
-
-                    println("[AudioAdapter] P${pheadNum+1} Vol ${it.masterVolume}; LpP ${it.pcmUploadLength}; start playback...")
-//                    println("[AudioAdapter] "+(0..42).joinToString { String.format("%.2f", samples[it]) })
-
-                    if (it.masterVolume == 0) System.err.println("[AudioAdapter] P${pheadNum+1} volume is zero!")
-
-                    audioDevices[pheadNum].writeSamples(samples, 0, it.pcmUploadLength)
-
-                    println("[AudioAdapter] P${pheadNum+1} go back to spinning")
-
-                }
-
-                it.isPlaying = false
-            }
-        }
     }
 
     override val typestring = VM.PERITYPE_SOUND
@@ -241,7 +279,9 @@ class AudioAdapter(val vm: VM) : PeriBase {
         var isPlaying: Boolean = false,
         var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
         var bpm: Int = 120, // "stored" as 96
-        var tickRate: Int = 6
+        var tickRate: Int = 6,
+
+        var pcmQueue: Queue<FloatArray> = Queue<FloatArray>()
     ) {
         fun read(index: Int): Byte = when (index) {
             0 -> position.toByte()
@@ -258,15 +298,19 @@ class AudioAdapter(val vm: VM) : PeriBase {
         }
 
         fun write(index: Int, byte: Int) = when (index) {
-            0 -> { position = position.and(0xff00) or position }
-            1 -> { position = position.and(0x00ff) or position.shl(8) }
+            0 -> if (!isPcmMode) { position = position.and(0xff00) or position } else {}
+            1 -> if (!isPcmMode) { position = position.and(0x00ff) or position.shl(8) } else {}
             2 -> { pcmUploadLength = pcmUploadLength.and(0xff00) or pcmUploadLength }
             3 -> { pcmUploadLength = pcmUploadLength.and(0x00ff) or pcmUploadLength.shl(8) }
             4 -> { masterVolume = byte }
             5 -> { masterPan = byte }
             6 -> { byte.let {
+                val oldPcmMode = isPcmMode
                 isPcmMode = (it and 0b10000000) != 0
                 isPlaying = (it and 0b00010000) != 0
+
+                if (it and 0b01000000 != 0 || oldPcmMode != isPcmMode) resetParams()
+                if (it and 0b00100000 != 0) purgeQueue()
             } }
             7 -> { samplingRateMult = ThreeFiveMiniUfloat(byte) }
             8 -> { bpm = byte + 24 }
@@ -279,6 +323,20 @@ class AudioAdapter(val vm: VM) : PeriBase {
             val rateDiff = (rate.coerceIn(0, 95535) - 30000).toShort().toInt()
             bpm = rateDiff.and(255) + 24
             tickRate = rateDiff.ushr(8).and(255)
+        }
+
+        fun resetParams() {
+            position = 0
+            pcmUploadLength = 0
+            isPlaying = false
+        }
+
+        fun purgeQueue() {
+            pcmQueue.clear()
+            if (isPcmMode) {
+                position = 0
+                pcmUploadLength = 0
+            }
         }
     }
 

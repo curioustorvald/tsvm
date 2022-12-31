@@ -26,11 +26,10 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun stop(playhead: Int) { getPlayhead(playhead)?.isPlaying = false }
     fun isPlaying(playhead: Int) = getPlayhead(playhead)?.isPlaying
 
-    fun setPosition(playhead: Int, pos: Int) { getPlayhead(playhead)?.position = pos and 65535 }
+//    fun setPosition(playhead: Int, pos: Int) { getPlayhead(playhead)?.position = pos and 65535 }
     fun getPosition(playhead: Int) = getPlayhead(playhead)?.position
 
-    fun setUploadLength(playhead: Int, pos: Int) { getPlayhead(playhead)?.pcmUploadLength = pos and 65535 }
-    fun setUploadLength(playhead: Int) = getPlayhead(playhead)?.pcmUploadLength
+    fun uploadSamples(playhead: Int, length: Int) { getPlayhead(playhead)?.pcmUploadLength = length and 65535 }
 
     fun setSamplingRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.setSamplingRate(rate) }
     fun getSamplingRate(playhead: Int) = getPlayhead(playhead)?.getSamplingRate()
@@ -55,4 +54,11 @@ class AudioJSR223Delegate(private val vm: VM) {
     }
     fun getPcmData(index: Int) = getFirstSnd()?.pcmBin?.get(index.toLong())
 
+    fun resetParams(playhead: Int) {
+        getPlayhead(playhead)?.resetParams()
+    }
+
+    fun purgeQueue(playhead: Int) {
+        getPlayhead(playhead)?.purgeQueue()
+    }
 }

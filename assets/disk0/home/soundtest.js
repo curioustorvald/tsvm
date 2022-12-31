@@ -96,7 +96,7 @@ function readBytes(length) {
     return ptr
 }
 
-let sampleSize = FILE_SIZE
+/*let sampleSize = FILE_SIZE
 const FETCH_INTERVAL = 631578947
 let updateAkku = FETCH_INTERVAL
 let oldNanoTime = sys.nanoTime()
@@ -127,4 +127,49 @@ while (sampleSize > 0) {
     }
 
     sys.spin()
+}*/
+
+
+let sampleSize = FILE_SIZE
+const BLOCK_SIZE = 4096
+const QUEUEING_SIZE = 4
+
+audio.resetParams(0)
+audio.purgeQueue(0)
+audio.setPcmMode(0)
+audio.setMasterVolume(0, 255)
+
+// FIXME: when a playback was interrupted using SHIFT-CTRL-T-R, then re-tried, the ghost from the previous run
+//        briefly manifests, even if you're queueing only once
+
+while (sampleSize > 0) {
+    let queueSize = audio.getPosition(0)
+
+    serial.println(`[js] Trying to upload samples, queueSize = ${queueSize}`)
+    print(".")
+
+    if (queueSize == 0) {
+        println()
+        println((FILE_SIZE - sampleSize) / FILE_SIZE * 100 + " %")
+
+        // upload four samples for lag-safely
+        for (let repeat = QUEUEING_SIZE; repeat > 0; repeat--) {
+            let readLength = (sampleSize < BLOCK_SIZE) ? sampleSize : BLOCK_SIZE
+            let samples = readBytes(readLength)
+
+            audio.putPcmDataByPtr(samples, readLength, 0)
+            audio.uploadSamples(0, readLength)
+
+            sampleSize -= readLength
+            sys.free(samples)
+
+            if (repeat > 1) sys.sleep(10)
+        }
+
+        audio.play(0)
+    }
+
+    sys.sleep(10)
 }
+
+audio.stop(0) // this shouldn't be necessary, it should stop automatically

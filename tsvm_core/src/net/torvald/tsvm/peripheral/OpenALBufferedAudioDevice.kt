@@ -37,7 +37,8 @@ class OpenALBufferedAudioDevice(
     val rate: Int,
     isMono: Boolean,
     private val bufferSize: Int,
-    private val bufferCount: Int
+    private val bufferCount: Int,
+    private val fillBufferCallback: () -> Unit
 ) : AudioDevice {
     private val channels: Int
     private var buffers: IntBuffer? = null
@@ -49,6 +50,12 @@ class OpenALBufferedAudioDevice(
     private val secondsPerBuffer: Float
     private var bytes: ByteArray? = null
     private val tempBuffer: ByteBuffer
+
+    /**
+     * Invoked whenever a buffer is emptied after writing samples
+     *
+     * Preferably you write 2-3 buffers worth of samples at the beginning of the playback
+     */
 
     init {
         channels = if (isMono) 1 else 2
@@ -160,6 +167,7 @@ class OpenALBufferedAudioDevice(
             // Wait for buffer to be free.
             try {
                 Thread.sleep((1000 * secondsPerBuffer).toLong())
+                fillBufferCallback()
             }
             catch (ignored: InterruptedException) {
             }
