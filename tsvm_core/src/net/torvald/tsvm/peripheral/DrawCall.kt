@@ -11,7 +11,7 @@ internal interface DrawCall {
     fun execute(gpu: GraphicsAdapter)
 }
 
-internal class DrawCallCompound(val call1: DrawCall, val call2: DrawCall, val call3: DrawCall) : DrawCall {
+internal data class DrawCallCompound(val call1: DrawCall, val call2: DrawCall, val call3: DrawCall) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
         call1.execute(gpu)
         call2.execute(gpu)
@@ -27,19 +27,19 @@ internal object DrawCallEnd : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {}
 }
 
-internal class GotoScanline(val line: Int) : DrawCall {
+internal data class GotoScanline(val line: Int) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
         gpu.rScanline = line
     }
 }
 
-internal class ChangeGraphicsMode(val mode: Int) : DrawCall {
+internal data class ChangeGraphicsMode(val mode: Int) : DrawCall {
     override fun execute(gpu: GraphicsAdapter) {
         gpu.mmio_write(12L, mode.toByte())
     }
 }
 
-internal class JumpIfScanline(
+internal data class JumpIfScanline(
     val reg: Int,
     val compare: Int,
     val whenLessThan: Int,
@@ -65,7 +65,7 @@ internal class JumpIfScanline(
 /**
  * DrawDoubleLines: simply double the `len` parameter
  */
-internal class DrawCallDrawLines(
+internal data class DrawCallDrawLines(
     val opCount: Int, val colour: Int, val lenMult: Int,
     val xposs: IntArray, val lens: IntArray
 ) : DrawCall {
@@ -80,7 +80,7 @@ internal class DrawCallDrawLines(
 }
 
 
-internal class DrawCallDrawMultiLines(
+internal data class DrawCallDrawMultiLines(
     val opCount: Int, val xPosInit: Int, val lenMult: Int,
     val colours: IntArray, val lens: IntArray
 ) : DrawCall {
@@ -97,7 +97,7 @@ internal class DrawCallDrawMultiLines(
     }
 }
 
-internal class DrawCallCopyPixels(
+internal data class DrawCallCopyPixels(
     val useTransparency: Boolean,
     val width: Int,
     val height: Int,

@@ -384,7 +384,13 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         drawCallSize = 0
         while (true) {
             val bytes = (0..17).map { instArea.get(18L*drawCallSize + it) }.toByteArray()
+
+            println("Word #${drawCallSize+1}: ${bytes.joinToString(", ") { it.toUint().toString(16).padStart(2, '0') }}")
+
             val instruction = compileWord(bytes)
+
+            println("Inst #${drawCallSize+1}: $instruction\n")
+
             drawCallBuffer[drawCallSize] = instruction
             drawCallSize += 1
 
@@ -396,6 +402,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     }
 
     private fun compileWord(bytes: ByteArray): DrawCall {
+
         val head = bytes[0]
 
         when (head) {
@@ -416,16 +423,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                             (head and 0xF).toInt() + 1,
                             bytes[1].toUint(), 1,
                             intArrayOf(
-                                bytes[3].toUint().and(63).unzero(64),
-                                bytes[5].toUint().and(63).unzero(64),
-                                bytes[7].toUint().and(63).unzero(64),
-                                bytes[9].toUint().and(63).unzero(64),
-                                bytes[11].toUint().and(63).unzero(64),
-                                bytes[13].toUint().and(63).unzero(64),
-                                bytes[15].toUint().and(63).unzero(64),
-                                bytes[17].toUint().and(63).unzero(64)
-                            ),
-                            intArrayOf(
                                 bytes[2].toUint().shl(2) or bytes[3].toUint().and(192).ushr(6),
                                 bytes[4].toUint().shl(2) or bytes[5].toUint().and(192).ushr(6),
                                 bytes[6].toUint().shl(2) or bytes[7].toUint().and(192).ushr(6),
@@ -434,6 +431,16 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                                 bytes[12].toUint().shl(2) or bytes[13].toUint().and(192).ushr(6),
                                 bytes[14].toUint().shl(2) or bytes[15].toUint().and(192).ushr(6),
                                 bytes[16].toUint().shl(2) or bytes[17].toUint().and(192).ushr(6)
+                            ),
+                            intArrayOf(
+                                bytes[3].toUint().and(63).unzero(64),
+                                bytes[5].toUint().and(63).unzero(64),
+                                bytes[7].toUint().and(63).unzero(64),
+                                bytes[9].toUint().and(63).unzero(64),
+                                bytes[11].toUint().and(63).unzero(64),
+                                bytes[13].toUint().and(63).unzero(64),
+                                bytes[15].toUint().and(63).unzero(64),
+                                bytes[17].toUint().and(63).unzero(64)
                             )
                         )
                     }
@@ -442,16 +449,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                             (head and 0xF).toInt() - 7,
                             bytes[1].toUint(), 2,
                             intArrayOf(
-                                bytes[3].toUint().and(63).unzero(64),
-                                bytes[5].toUint().and(63).unzero(64),
-                                bytes[7].toUint().and(63).unzero(64),
-                                bytes[9].toUint().and(63).unzero(64),
-                                bytes[11].toUint().and(63).unzero(64),
-                                bytes[13].toUint().and(63).unzero(64),
-                                bytes[15].toUint().and(63).unzero(64),
-                                bytes[17].toUint().and(63).unzero(64)
-                            ),
-                            intArrayOf(
                                 bytes[2].toUint().shl(2) or bytes[3].toUint().and(192).ushr(6),
                                 bytes[4].toUint().shl(2) or bytes[5].toUint().and(192).ushr(6),
                                 bytes[6].toUint().shl(2) or bytes[7].toUint().and(192).ushr(6),
@@ -460,6 +457,16 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                                 bytes[12].toUint().shl(2) or bytes[13].toUint().and(192).ushr(6),
                                 bytes[14].toUint().shl(2) or bytes[15].toUint().and(192).ushr(6),
                                 bytes[16].toUint().shl(2) or bytes[17].toUint().and(192).ushr(6)
+                            ),
+                            intArrayOf(
+                                bytes[3].toUint().and(63).unzero(64),
+                                bytes[5].toUint().and(63).unzero(64),
+                                bytes[7].toUint().and(63).unzero(64),
+                                bytes[9].toUint().and(63).unzero(64),
+                                bytes[11].toUint().and(63).unzero(64),
+                                bytes[13].toUint().and(63).unzero(64),
+                                bytes[15].toUint().and(63).unzero(64),
+                                bytes[17].toUint().and(63).unzero(64)
                             )
                         )
                     }

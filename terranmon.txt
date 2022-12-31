@@ -556,10 +556,12 @@ Play Head Flags
           m: mode (0 for Tracker, 1 for PCM)
     Byte 2
         - PCM Mode: Sampling rate multiplier in 3.5 Unsigned Minifloat (0.03125x to 126x)
-    Byte 3
-        - BPM (24 to 280. Play Data will change this register; unused in PCM Mode)
-    Byte 4
-        - Tick Rate (Play Data will change this register; unused in PCM Mode)
+    Byte 3 (Tracker Mode)
+        - BPM (24 to 280. Play Data will change this register)
+    Byte 4 (Tracker Mode)
+        - Tick Rate (Play Data will change this register)
+    Byte 3-4 (PCM Mode)
+        - Signed Int16 Sampling rate difference from 30000 Hz
 
 Play Head Position interpretion
     - Cuesheet Counter for Tracker mode
