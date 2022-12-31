@@ -1,23 +1,102 @@
 package net.torvald.tsvm.peripheral
 
+import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.audio.AudioDevice
+import com.badlogic.gdx.backends.lwjgl3.audio.OpenALAudioDevice
+import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
+import org.lwjgl.openal.AL11
+import java.nio.ByteBuffer
 
 private fun Boolean.toInt() = if (this) 1 else 0
 
 /**
  * Created by minjaesong on 2022-12-30.
  */
-class SoundAdapter(val vm: VM) : PeriBase {
+class AudioAdapter(val vm: VM) : PeriBase {
 
-    private val sampleBin = UnsafeHelper.allocate(114687L)
-    private val instruments = Array(256) { TaudInst() }
-    private val playdata = Array(256) { Array(64) { TaudPlayData(0,0,0,0,0,0,0,0) } }
-    private val playheads = Array(4) { Playhead() }
-    private val cueSheet = Array(2048) { PlayCue() }
-    private val pcmBin = UnsafeHelper.allocate(65536L)
+    companion object {
+        const val SAMPLING_RATE = 30000
+    }
+
+    internal val sampleBin = UnsafeHelper.allocate(114687L)
+    internal val instruments = Array(256) { TaudInst() }
+    internal val playdata = Array(256) { Array(64) { TaudPlayData(0,0,0,0,0,0,0,0) } }
+    internal val playheads = Array(4) { Playhead() }
+    internal val cueSheet = Array(2048) { PlayCue() }
+    internal val pcmBin = UnsafeHelper.allocate(65536L)
+
+    private lateinit var audioDevices: Array<AudioDevice>
+    private val renderThreads = Array(4) { Thread(getRenderFun(it)) }
+
+    /*private val alSources = Array(4) {
+        val audioField = OpenALAudioDevice::class.java.getDeclaredField("audio")
+        audioField.isAccessible = true
+        val audio = audioField.get(audioDevices[it]) as OpenALLwjgl3Audio
+
+        val obtainSourceMethod = OpenALLwjgl3Audio::class.java.getDeclaredMethod("obtainSource", java.lang.Boolean.TYPE)
+        obtainSourceMethod.isAccessible = true
+        val alSource = obtainSourceMethod.invoke(audio, true) as Int
+
+        alSource
+    }
+
+    private val alBuffers = Array(4) {
+        val buffers = IntArray(3)
+        AL11.alGenBuffers(buffers)
+        buffers
+    }
+
+    private fun freeAlSources() {
+        audioDevices.forEachIndexed { index, adev ->
+            val audioField = OpenALAudioDevice::class.java.getDeclaredField("audio")
+            audioField.isAccessible = true
+            val audio = audioField.get(adev) as OpenALLwjgl3Audio
+
+            val freeSourceMethod = OpenALLwjgl3Audio::class.java.getDeclaredMethod("freeSource", java.lang.Integer.TYPE)
+            freeSourceMethod.isAccessible = true
+            freeSourceMethod.invoke(audio, alSources[index])
+        }
+    }
+
+    private fun enqueuePacket(alSource: Int, alBuffer: Int, data: ByteBuffer) {
+        AL11.alBufferData(alBuffer, AL11.AL_FORMAT_STEREO8, data, SAMPLING_RATE)
+        AL11.alSourceQueueBuffers(alSource, alBuffer)
+
+    }*/
+
+    private val pcmCurrentPosInSamples = ShortArray(4)
+
+    private var pcmPlaybackWatchdogs = Array(4) { Thread {
+
+    } }
+
+    private fun getRenderFun(pheadNum: Int): () -> Unit = { while (true) {
+        render(playheads[pheadNum], pheadNum)
+        Thread.sleep(1)
+    } }
+
+    init {
+
+        val deviceBufferSize = Gdx.audio.javaClass.getDeclaredField("deviceBufferSize").let {
+            it.isAccessible = true
+            it.get(Gdx.audio) as Int
+        }
+        val deviceBufferCount = Gdx.audio.javaClass.getDeclaredField("deviceBufferCount").let {
+            it.isAccessible = true
+            it.get(Gdx.audio) as Int
+        }
+
+        audioDevices = Array(4) { OpenALBufferedAudioDevice(Gdx.audio as OpenALLwjgl3Audio, SAMPLING_RATE, false, deviceBufferSize, deviceBufferCount) }
+
+
+//        println("AudioAdapter latency: ${audioDevice.latency}")
+        renderThreads.forEach { it.start() }
+
+    }
 
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
@@ -41,10 +120,10 @@ class SoundAdapter(val vm: VM) : PeriBase {
     override fun mmio_read(addr: Long): Byte {
         val adi = addr.toInt()
         return when (adi) {
-            in 0..15 -> playheads[0].read(adi)
-            in 16..31 -> playheads[1].read(adi - 16)
-            in 32..47 -> playheads[2].read(adi - 32)
-            in 48..63 -> playheads[3].read(adi - 48)
+            in 0..9 -> playheads[0].read(adi)
+            in 10..19 -> playheads[1].read(adi - 10)
+            in 20..29 -> playheads[2].read(adi - 20)
+            in 30..39 -> playheads[3].read(adi - 30)
             in 32768..65535 -> (adi - 32768).let {
                 cueSheet[it / 16].read(it % 15)
             }
@@ -57,10 +136,10 @@ class SoundAdapter(val vm: VM) : PeriBase {
         val adi = addr.toInt()
         val bi = byte.toUint()
         when (adi) {
-            in 0..15 -> { playheads[0].write(adi, bi) }
-            in 16..31 -> { playheads[1].write(adi - 16, bi) }
-            in 32..47 -> { playheads[2].write(adi - 32, bi) }
-            in 48..63 -> { playheads[3].write(adi - 48, bi) }
+            in 0..9 -> { playheads[0].write(adi, bi) }
+            in 10..19 -> { playheads[1].write(adi - 10, bi) }
+            in 20..29 -> { playheads[2].write(adi - 20, bi) }
+            in 30..39 -> { playheads[3].write(adi - 30, bi) }
             in 32768..65535 -> { (adi - 32768).let {
                 cueSheet[it / 16].write(it % 15, bi)
             } }
@@ -69,6 +148,9 @@ class SoundAdapter(val vm: VM) : PeriBase {
     }
 
     override fun dispose() {
+        renderThreads.forEach { it.interrupt() }
+        audioDevices.forEach { it.dispose() }
+//        freeAlSources()
         sampleBin.destroy()
         pcmBin.destroy()
     }
@@ -80,17 +162,37 @@ class SoundAdapter(val vm: VM) : PeriBase {
     /**
      * Put this function into a separate thread and keep track of the delta time by yourself
      */
-    open fun render(delta: Float) {
+    private fun render(it: Playhead, pheadNum: Int) {
+        if (it.isPcmMode) {
+            if (it.isPlaying) {
 
+                audioDevices[pheadNum].setVolume(it.masterVolume / 255f)
+
+                if (it.pcmUploadLength > 0) {
+                    val samples = FloatArray(it.pcmUploadLength) { pcmBin[it.toLong()].toUint().div(255f) * 2f - 1f }
+
+                    println("[AudioAdapter] P${pheadNum+1} Vol ${it.masterVolume}; LpP ${it.pcmUploadLength}; start playback...")
+//                    println("[AudioAdapter] "+(0..42).joinToString { String.format("%.2f", samples[it]) })
+
+                    if (it.masterVolume == 0) System.err.println("[AudioAdapter] P${pheadNum+1} volume is zero!")
+
+                    audioDevices[pheadNum].writeSamples(samples, 0, it.pcmUploadLength)
+
+                    println("[AudioAdapter] P${pheadNum+1} go back to spinning")
+
+                }
+
+                it.isPlaying = false
+            }
+        }
     }
 
-    override val typestring = "AUDI"
+    override val typestring = VM.PERITYPE_SOUND
 
 
 
 
-
-    private data class PlayCue(
+    internal data class PlayCue(
         val patterns: IntArray = IntArray(15) { it },
         var instruction: PlayInstruction = PlayInstNop
     ) {
@@ -124,18 +226,19 @@ class SoundAdapter(val vm: VM) : PeriBase {
         }
     }
 
-    private open class PlayInstruction(val arg: Int)
-    private class PlayInstGoBack(arg: Int) : PlayInstruction(arg)
-    private class PlayInstSkip(arg: Int) : PlayInstruction(arg)
-    private object PlayInstNop : PlayInstruction(0)
+    internal open class PlayInstruction(val arg: Int)
+    internal class PlayInstGoBack(arg: Int) : PlayInstruction(arg)
+    internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
+    internal object PlayInstNop : PlayInstruction(0)
 
-    private data class Playhead(
+    internal data class Playhead(
         var position: Int = 0,
+        var pcmUploadLength: Int = 0,
         var masterVolume: Int = 0,
         var masterPan: Int = 0,
         // flags
         var isPcmMode: Boolean = false,
-        var loopMode: Int = 0,
+        var isPlaying: Boolean = false,
         var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
         var bpm: Int = 120, // "stored" as 96
         var tickRate: Int = 6
@@ -143,32 +246,43 @@ class SoundAdapter(val vm: VM) : PeriBase {
         fun read(index: Int): Byte = when (index) {
             0 -> position.toByte()
             1 -> position.ushr(8).toByte()
-            2 -> masterVolume.toByte()
-            3 -> masterPan.toByte()
-            4 -> (isPcmMode.toInt().shl(7) or loopMode.and(3)).toByte()
-            5 -> samplingRateMult.index.toByte()
-            6 -> (bpm - 24).toByte()
-            7 -> tickRate.toByte()
+            2 -> pcmUploadLength.toByte()
+            3 -> pcmUploadLength.ushr(8).toByte()
+            4 -> masterVolume.toByte()
+            5 -> masterPan.toByte()
+            6 -> (isPcmMode.toInt().shl(7) or isPlaying.toInt().shl(4)).toByte()
+            7 -> samplingRateMult.index.toByte()
+            8 -> (bpm - 24).toByte()
+            9 -> tickRate.toByte()
             else -> throw InternalError("Bad offset $index")
         }
 
         fun write(index: Int, byte: Int) = when (index) {
             0 -> { position = position.and(0xff00) or position }
             1 -> { position = position.and(0x00ff) or position.shl(8) }
-            2 -> { masterVolume = byte }
-            3 -> { masterPan = byte }
-            4 -> { byte.let {
+            2 -> { pcmUploadLength = pcmUploadLength.and(0xff00) or pcmUploadLength }
+            3 -> { pcmUploadLength = pcmUploadLength.and(0x00ff) or pcmUploadLength.shl(8) }
+            4 -> { masterVolume = byte }
+            5 -> { masterPan = byte }
+            6 -> { byte.let {
                 isPcmMode = (it and 0b10000000) != 0
-                loopMode = (it and 3)
+                isPlaying = (it and 0b00010000) != 0
             } }
-            5 -> { samplingRateMult = ThreeFiveMiniUfloat(byte) }
-            6 -> { bpm = byte + 24 }
-            7 -> { tickRate = byte }
+            7 -> { samplingRateMult = ThreeFiveMiniUfloat(byte) }
+            8 -> { bpm = byte + 24 }
+            9 -> { tickRate = byte }
             else -> throw InternalError("Bad offset $index")
+        }
+
+        fun getSamplingRate() = 30000 - ((bpm - 24).and(255) or tickRate.and(255).shl(8)).toShort().toInt()
+        fun setSamplingRate(rate: Int) {
+            val rateDiff = (rate.coerceIn(0, 95535) - 30000).toShort().toInt()
+            bpm = rateDiff.and(255) + 24
+            tickRate = rateDiff.ushr(8).and(255)
         }
     }
 
-    private data class TaudPlayData(
+    internal data class TaudPlayData(
         var note: Int, // 0..65535
         var instrment: Int, // 0..255
         var volume: Int, // 0..63
@@ -204,8 +318,8 @@ class SoundAdapter(val vm: VM) : PeriBase {
 
     }
 
-    private data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
-    private data class TaudInst(
+    internal data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
+    internal data class TaudInst(
         var samplePtr: Int, // 17-bit number
         var sampleLength: Int,
         var samplingRate: Int,

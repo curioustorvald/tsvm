@@ -76,6 +76,17 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
+        /*set(value) {
+            println("[TestDiskDrive] blockSendCount $field -> $value")
+            val indentation = " ".repeat(this.javaClass.simpleName.length + 4)
+            Thread.currentThread().stackTrace.forEachIndexed { index, it ->
+                if (index == 1)
+                    println("[${this.javaClass.simpleName}]> $it")
+                else if (index in 1..8)
+                    println("$indentation$it")
+            }
+            field = value
+        }*/
 
 
     init {
@@ -111,6 +122,8 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
             blockSendBuffer.size % BLOCK_SIZE
         else BLOCK_SIZE
+
+//        println("blockSendCount = ${blockSendCount}; sendSize = $sendSize; blockSendBuffer.size = ${blockSendBuffer.size}")
 
         recipient.writeout(ByteArray(sendSize) {
             blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
@@ -162,6 +175,8 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
         }
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
+
+//            println("[TestDiskDrive] $inputString")
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")

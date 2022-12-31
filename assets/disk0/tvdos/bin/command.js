@@ -5,7 +5,7 @@ let shell_pwd = [""]
 let goInteractive = false
 let goFancy = false
 
-let DEBUG_PRINT = true
+let DEBUG_PRINT = false
 
 let errorlevel = 0
 
@@ -723,7 +723,7 @@ shell.execute = function(line) {
                         if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
                             errorlevel = 0
 
-                        serial.printerr(`errorlevel: ${errorlevel}`)
+                        debugprintln(`errorlevel: ${errorlevel}`)
 
                         _G.shellProgramTitles.pop()
                         sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1])

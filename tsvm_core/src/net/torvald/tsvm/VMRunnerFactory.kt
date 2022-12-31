@@ -75,6 +75,7 @@ object VMRunnerFactory {
                         bind.putMember("base64", Base64Delegate)
                         bind.putMember("com", SerialHelperDelegate(vm))
                         bind.putMember("dma", DMADelegate(vm))
+                        bind.putMember("audio", AudioJSR223Delegate(vm))
                         bind.putMember("parallel", ringOneParallel)
 
                         val fr = FileReader("$assetsRoot/JS_INIT.js")

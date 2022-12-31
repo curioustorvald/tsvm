@@ -536,36 +536,46 @@ notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using t
 Sound Adapter MMIO
 
 0..1 RW:  Play head #1 position
-2 RW:     Play head #1 master volume
-3 RW:     Play head #1 master pan
-4..7 RW:  Play head #1 flags
+2..3 RW:  Play head #1 length param
+4 RW:     Play head #1 master volume
+5 RW:     Play head #1 master pan
+6..9 RW:  Play head #1 flags
 
-8..9 RW:  Play head #2 position
-10 RW:    Play head #2 master volume
-11 RW:    Play head #2 master pan
-12..15 RW:Play head #2 flags
+10..11 RW:Play head #2 position
+12..13 RW:Play head #2 length param
+14 RW:    Play head #2 master volume
+15 RW:    Play head #2 master pan
+16..19 RW:Play head #2 flags
 
 ... auto-fill to Play head #4
 
 32 ??: ???
 
+Play Head Position
+    - Cuesheet Counter for Tracker mode
+    - Numbers of processed internal buffers (0-3)
+        when the number is 3, get ready to upload more samples
+
+Length Param
+    PCM Mode: length of the samples to upload to the speaker
+    Tracker mode: unused
 
 Play Head Flags
     Byte 1
-        - 0b m000 0000
+        - 0b m00p 0000
           m: mode (0 for Tracker, 1 for PCM)
+          p: play (0 if not -- mute all output)
     Byte 2
         - PCM Mode: Sampling rate multiplier in 3.5 Unsigned Minifloat (0.03125x to 126x)
+
     Byte 3 (Tracker Mode)
         - BPM (24 to 280. Play Data will change this register)
     Byte 4 (Tracker Mode)
         - Tick Rate (Play Data will change this register)
+
     Byte 3-4 (PCM Mode)
         - Signed Int16 Sampling rate difference from 30000 Hz
 
-Play Head Position interpretion
-    - Cuesheet Counter for Tracker mode
-    - Sample Counter for PCM mode
 
 32768..65535 RW: Cue Sheet (2048 cues)
     Byte 1..15: pattern number for voice 1..15
