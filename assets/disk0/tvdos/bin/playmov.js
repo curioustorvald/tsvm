@@ -141,7 +141,7 @@ let framesRendered = 0
 //serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
 
 if (type != 4 && type != 5 && type != 260 && type != 261) {
-    printerrln("Not a type 4/5 mov")
+    printerrln("Not an iPF mov")
     return 1
 }
 

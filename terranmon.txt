@@ -365,9 +365,9 @@ Endianness: Little
 
 \x1F T S V M M O V
 [METADATA]
-[FRAME0]
-[FRAME1]
-[FRAME2]
+[PACKET 0]
+[PACKET 1]
+[PACKET 2]
 ...
 
 
@@ -378,49 +378,59 @@ METADATA -
     uint16 HEIGHT
     uint16 FPS (0: play as fast as can)
     uint32 NUMBER OF FRAMES
-    uint16 TYPE
+    uint16 PACKET TYPE
     byte[12] RESERVED
 
-Type:
-    0: 256-Colour frame
-    1: 256-Colour frame with palette data
-    2: 4096-Colour frame (stored as two byte-planes)
-    4: iPF no-alpha indicator (see iPF Type Numbers for details)
-    5: iPF with alpha indicator (see iPF Type Numbers for details)
-    16: Series of JPEGs
-    18: Series of PNGs
-    20: Series of TGAs
-    21: Series of TGA/GZs
-    255: Every frame specifies the type
+    Packet Type Low Byte:
+        0: 256-Colour frame
+        1: 256-Colour frame with palette data
+        2: 4096-Colour frame (stored as two byte-planes)
+        4: iPF no-alpha indicator (see iPF Type Numbers for details)
+        5: iPF with alpha indicator (see iPF Type Numbers for details)
+        16: Series of JPEGs
+        18: Series of PNGs
+        20: Series of TGAs
+        21: Series of TGA/GZs
+        255: Every frame specifies the type
 
-    iPF Type Numbers (high bytes)
+    Packet Type High Byte (iPF Type Numbers)
+        0..7: iPF Type 1..8
 
-    0..7: iPF Type 1..8
+    Packet Types for Audio (High Byte=16)
+        0: Raw PCM Mono
+        1: Raw PCM Stereo
+        2: ADPCM Mono
+        3: ADPCM Stereo
 
 
-TYPE 0 FRAME -
+TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA
-    *      FRAMEDATA COMPRESSED IN GZIP // for iPF, only the "Blocks.gz" part is stored
+    *      FRAMEDATA COMPRESSED IN GZIP
 
-TYPE 1 FRAME -
+TYPE 1 Packet -
     byte[512] Palette Data
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA COMPRESSED IN GZIP
 
-TYPE 2 FRAME -
+TYPE 2 Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA COMPRESSED IN GZIP
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
     *      FRAMEDATA COMPRESSED IN GZIP
 
-TYPE 16+ FRAME -
+iPF Packet -
+    uint32 SIZE OF FRAMEDATA
+    *      FRAMEDATA COMPRESSED IN GZIP // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
+
+TYPE 16+ Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA (COMPRESSED IN GZIP for TGA/GZ)
 
-TYPE 255 FRAME -
-    uint16 TYPE OF FRAMEDATA
-    uint32 SIZE OF FRAMEDATA
-    *      FRAMEDATA
+TYPE 255 Packet -
+    uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme
+    uint32 SIZE OF PACKET
+    *      FRAMEDATA or PACKET
+
 
 --------------------------------------------------------------------------------
 
@@ -442,10 +452,10 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
         0: Type 1 (4:2:0 chroma subsampling)
         1: Type 2 (4:2:2 chroma subsampling)
     byte[10] RESERVED
+    uint32 UNCOMPRESSED SIZE
 
 - *.gz
-    uint32 UNCOMPRESSED SIZE
-    *      PAYLOAD
+    literally a .gz of the iPF bytes
 
 - Blocks
     4x4 pixels are sampled, then divided into YCoCg planes.
