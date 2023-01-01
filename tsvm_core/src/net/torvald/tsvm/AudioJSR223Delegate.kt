@@ -16,7 +16,10 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun setTrackerMode(playhead: Int) { getPlayhead(playhead)?.isPcmMode = false }
     fun isTrackerMode(playhead: Int) = getPlayhead(playhead)?.isPcmMode == false
     
-    fun setMasterVolume(playhead: Int, volume: Int) { getPlayhead(playhead)?.masterVolume = volume and 255 }
+    fun setMasterVolume(playhead: Int, volume: Int) { getPlayhead(playhead)?.apply {
+        masterVolume = volume and 255
+        audioDevice.setVolume(masterVolume / 255f)
+    } }
     fun getMasterVolume(playhead: Int) = getPlayhead(playhead)?.masterVolume
 
     fun setMasterPan(playhead: Int, pan: Int) { getPlayhead(playhead)?.masterPan = pan and 255 }
@@ -29,13 +32,12 @@ class AudioJSR223Delegate(private val vm: VM) {
 //    fun setPosition(playhead: Int, pos: Int) { getPlayhead(playhead)?.position = pos and 65535 }
     fun getPosition(playhead: Int) = getPlayhead(playhead)?.position
 
-    fun uploadSamples(playhead: Int, length: Int) { getPlayhead(playhead)?.pcmUploadLength = length and 65535 }
+    fun setSampleUploadLength(playhead: Int, length: Int) { getPlayhead(playhead)?.pcmUploadLength = length and 65535 }
 
     fun setSamplingRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.setSamplingRate(rate) }
     fun getSamplingRate(playhead: Int) = getPlayhead(playhead)?.getSamplingRate()
 
-    fun setSamplingRateMult(playhead: Int, mult: Float) { getPlayhead(playhead)?.samplingRateMult = ThreeFiveMiniUfloat(mult) }
-    fun getSamplingRateMult(playhead: Int) = getPlayhead(playhead)?.samplingRateMult?.toFloat()
+    fun startSampleUpload(playhead: Int) { getPlayhead(playhead)?.pcmUpload = true }
 
     fun setBPM(playhead: Int, bpm: Int) { getPlayhead(playhead)?.bpm = (bpm - 24).and(255) + 24 }
     fun getBPM(playhead: Int) = getPlayhead(playhead)?.bpm

@@ -502,6 +502,27 @@ shell.coreutils = {
         }
         else return 1
     },
+    mv: function(args) {
+        if (args[2] === undefined || args[1] === undefined) {
+            printerrln(`Usage: ${args[0].toUpperCase()} source_file destination_file`)
+            return
+        }
+        let path = shell.resolvePathInput(args[1])
+        let pathd = shell.resolvePathInput(args[2])
+        let sourceFile = files.open(path.full)
+        let destFile = files.open(pathd.full)
+
+        debugprintln(`[cp] source path: ${path.full}`)
+        debugprintln(`[cp] dest path: ${pathd.full}`)
+
+        if (sourceFile.isDirectory || !sourceFile.exists) { printerrln(`${args[0].toUpperCase()} failed for '${sourceFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
+        if (destFile.isDirectory) { printerrln(`${args[0].toUpperCase()} failed for '${destFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
+
+        destFile.bwrite(sourceFile.bread())
+
+        destFile.flush(); destFile.close()
+        sourceFile.remove()
+    },
     rem: function(args) {
         return 0
     },
@@ -555,6 +576,7 @@ shell.coreutils.rm = shell.coreutils.del
 shell.coreutils.ls = shell.coreutils.dir
 shell.coreutils.time = shell.coreutils.date
 shell.coreutils.md = shell.coreutils.mkdir
+shell.coreutils.move = shell.coreutils.mv
 // end of command aliases
 Object.freeze(shell.coreutils)
 shell.stdio = {

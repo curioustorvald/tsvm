@@ -3,13 +3,15 @@ package net.torvald
 import sun.misc.Unsafe
 import java.io.PrintStream
 
+class DanglingPointerException(msg: String) : NullPointerException(msg)
+class AddressOverflowException(msg: String) : IndexOutOfBoundsException(msg)
+
 /**
  * Further read:
  * - http://www.docjar.com/docs/api/sun/misc/Unsafe.html
  *
  * Created by minjaesong on 2019-06-21.
  */
-
 internal object UnsafeHelper {
     val unsafe: Unsafe
 
@@ -87,8 +89,8 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
         //// You may break the glass and use this tool when some fucking incomprehensible bugs ("vittujen vitun bugit")
         //// appear (e.g. getting garbage values when it fucking shouldn't)
 
-        assert(!destroyed) { throw NullPointerException("The pointer is already destroyed ($this)") }
-        if (index !in 0 until size) throw IndexOutOfBoundsException("Index: $index; alloc size: $size; pointer: ${this}\n${Thread.currentThread().stackTrace.joinToString("\n", limit=10) { "    $it" }}")
+        if (destroyed) { throw DanglingPointerException("The pointer is already destroyed ($this)") }
+        if (index !in 0 until size) throw AddressOverflowException("Index: $index; alloc size: $size; pointer: ${this}\n${Thread.currentThread().stackTrace.joinToString("\n", limit=10) { "    $it" }}")
     }
 
     operator fun get(index: Long): Byte {

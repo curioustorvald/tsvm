@@ -96,43 +96,9 @@ function readBytes(length) {
     return ptr
 }
 
-/*let sampleSize = FILE_SIZE
-const FETCH_INTERVAL = 631578947
-let updateAkku = FETCH_INTERVAL
-let oldNanoTime = sys.nanoTime()
-
-const BLOCK_SIZE = 37894
-
-audio.setPcmMode(0)
-audio.setMasterVolume(0, 255)
-
-while (sampleSize > 0) {
-    let newNanoTime = sys.nanoTime()
-    updateAkku += newNanoTime - oldNanoTime
-    oldNanoTime = newNanoTime
-
-    if (updateAkku >= FETCH_INTERVAL) {
-        println((FILE_SIZE - sampleSize) / FILE_SIZE * 100 + "%")
-        updateAkku -= FETCH_INTERVAL
-
-        let readLength = (sampleSize < BLOCK_SIZE) ? sampleSize : BLOCK_SIZE
-        let samples = readBytes(readLength)
-
-        audio.setUploadLength(0, readLength)
-        audio.putPcmDataByPtr(samples, readLength, 0)
-        audio.play(0)
-
-        sampleSize -= readLength
-        sys.free(samples)
-    }
-
-    sys.spin()
-}*/
-
-
 let sampleSize = FILE_SIZE
 const BLOCK_SIZE = 4096
-const QUEUEING_SIZE = 4
+const QUEUE_MAX = 4 // according to the spec
 
 audio.resetParams(0)
 audio.purgeQueue(0)
@@ -145,20 +111,23 @@ audio.setMasterVolume(0, 255)
 while (sampleSize > 0) {
     let queueSize = audio.getPosition(0)
 
-    serial.println(`[js] Trying to upload samples, queueSize = ${queueSize}`)
+//    serial.println(`[js] Trying to upload samples, queueSize = ${queueSize}`)
     print(".")
 
-    if (queueSize == 0) {
+    if (queueSize <= 1) {
+        serial.println(`[js] Queue size: ${queueSize}; uploading ${QUEUE_MAX - queueSize} samples`)
+
         println()
         println((FILE_SIZE - sampleSize) / FILE_SIZE * 100 + " %")
 
         // upload four samples for lag-safely
-        for (let repeat = QUEUEING_SIZE; repeat > 0; repeat--) {
+        for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
             let readLength = (sampleSize < BLOCK_SIZE) ? sampleSize : BLOCK_SIZE
             let samples = readBytes(readLength)
 
             audio.putPcmDataByPtr(samples, readLength, 0)
-            audio.uploadSamples(0, readLength)
+            audio.setSampleUploadLength(0, readLength)
+            audio.startSampleUpload(0)
 
             sampleSize -= readLength
             sys.free(samples)
@@ -168,6 +137,9 @@ while (sampleSize > 0) {
 
         audio.play(0)
     }
+
+//    audio.setMasterVolume(0, (Math.random()*255)|0)
+
 
     sys.sleep(10)
 }

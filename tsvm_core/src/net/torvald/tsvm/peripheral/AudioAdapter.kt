@@ -28,69 +28,27 @@ class AudioAdapter(val vm: VM) : PeriBase {
     internal val sampleBin = UnsafeHelper.allocate(114687L)
     internal val instruments = Array(256) { TaudInst() }
     internal val playdata = Array(256) { Array(64) { TaudPlayData(0,0,0,0,0,0,0,0) } }
-    internal val playheads = Array(4) { Playhead() }
+    internal val playheads: Array<Playhead>
     internal val cueSheet = Array(2048) { PlayCue() }
     internal val pcmBin = UnsafeHelper.allocate(65536L)
 
-    private lateinit var audioDevices: Array<AudioDevice>
+//    private var audioDevices: Array<AudioDevice>
     private val renderThreads = Array(4) { Thread(getRenderFun(it)) }
     private val writeQueueingThreads = Array(4) { Thread(getQueueingFun(it)) }
-//    private val writeQueues = Array(4) { Queue<FloatArray>() }
-
-    /*private val alSources = Array(4) {
-        val audioField = OpenALAudioDevice::class.java.getDeclaredField("audio")
-        audioField.isAccessible = true
-        val audio = audioField.get(audioDevices[it]) as OpenALLwjgl3Audio
-
-        val obtainSourceMethod = OpenALLwjgl3Audio::class.java.getDeclaredMethod("obtainSource", java.lang.Boolean.TYPE)
-        obtainSourceMethod.isAccessible = true
-        val alSource = obtainSourceMethod.invoke(audio, true) as Int
-
-        alSource
-    }
-
-    private val alBuffers = Array(4) {
-        val buffers = IntArray(3)
-        AL11.alGenBuffers(buffers)
-        buffers
-    }
-
-    private fun freeAlSources() {
-        audioDevices.forEachIndexed { index, adev ->
-            val audioField = OpenALAudioDevice::class.java.getDeclaredField("audio")
-            audioField.isAccessible = true
-            val audio = audioField.get(adev) as OpenALLwjgl3Audio
-
-            val freeSourceMethod = OpenALLwjgl3Audio::class.java.getDeclaredMethod("freeSource", java.lang.Integer.TYPE)
-            freeSourceMethod.isAccessible = true
-            freeSourceMethod.invoke(audio, alSources[index])
-        }
-    }
-
-    private fun enqueuePacket(alSource: Int, alBuffer: Int, data: ByteBuffer) {
-        AL11.alBufferData(alBuffer, AL11.AL_FORMAT_STEREO8, data, SAMPLING_RATE)
-        AL11.alSourceQueueBuffers(alSource, alBuffer)
-
-    }*/
-
-    private val pcmCurrentPosInSamples = ShortArray(4)
-
-    private var pcmPlaybackWatchdogs = Array(4) { Thread {
-
-    } }
 
     private fun getRenderFun(pheadNum: Int): () -> Unit = { while (true) {
-        render(playheads[pheadNum], pheadNum)
+        render(playheads[pheadNum])
         Thread.sleep(1)
     } }
 
     private fun getQueueingFun(pheadNum: Int): () -> Unit = { while (true) {
 
         playheads[pheadNum].let {
-            if (it.pcmUploadLength > 0) {
+            if (it.pcmQueue.size < 4 && it.pcmUpload && it.pcmUploadLength > 0) {
                 printdbg("Downloading samples ${it.pcmUploadLength}")
                 
-                val samples = FloatArray(it.pcmUploadLength) { pcmBin[it.toLong()].toUint().div(255f) * 2f - 1f }
+                val samples = ByteArray(it.pcmUploadLength)
+                UnsafeHelper.memcpyRaw(null, pcmBin.ptr, samples, UnsafeHelper.getArrayOffset(samples), it.pcmUploadLength.toLong())
                 it.pcmQueue.addLast(samples)
 
                 it.pcmUploadLength = 0
@@ -115,14 +73,21 @@ class AudioAdapter(val vm: VM) : PeriBase {
 
         printdbg("buffer size: $deviceBufferSize x $deviceBufferCount")
 
-        audioDevices = Array(4) { OpenALBufferedAudioDevice(
-            Gdx.audio as OpenALLwjgl3Audio,
-            SAMPLING_RATE,
-            false,
-            deviceBufferSize,
-            deviceBufferCount) {
+        playheads = Array(4) {
+            val adev  = OpenALBufferedAudioDevice(
+                Gdx.audio as OpenALLwjgl3Audio,
+                SAMPLING_RATE,
+                false,
+                deviceBufferSize,
+                deviceBufferCount
+            ) {
 
-        } }
+            }
+
+
+            Playhead(index = it, audioDevice = adev)
+        }
+
 
 
 //        printdbg("AudioAdapter latency: ${audioDevice.latency}")
@@ -134,7 +99,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
     /**
      * Put this function into a separate thread and keep track of the delta time by yourself
      */
-    private fun render(playhead: Playhead, pheadNum: Int) {
+    private fun render(playhead: Playhead) {
         if (playhead.isPcmMode) {
 
             val writeQueue = playhead.pcmQueue
@@ -146,14 +111,12 @@ class AudioAdapter(val vm: VM) : PeriBase {
                 val samples = writeQueue.removeFirst()
                 playhead.position = writeQueue.size
 
-                printdbg("P${pheadNum+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
+//                printdbg("P${playhead.index+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
 //                    printdbg(""+(0..42).joinToString { String.format("%.2f", samples[it]) })
-                if (playhead.masterVolume == 0) printdbg("P${pheadNum+1} volume is zero!")
 
-                audioDevices[pheadNum].setVolume(playhead.masterVolume / 255f)
-                audioDevices[pheadNum].writeSamples(samples, 0, samples.size)
+                playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
 
-                printdbg("P${pheadNum+1} go back to spinning")
+//                printdbg("P${playhead.index+1} go back to spinning")
 
             }
             else if (playhead.isPlaying) {
@@ -215,8 +178,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
     override fun dispose() {
         renderThreads.forEach { it.interrupt() }
         writeQueueingThreads.forEach { it.interrupt() }
-        audioDevices.forEach { it.dispose() }
-//        freeAlSources()
+        playheads.forEach { it.dispose() }
         sampleBin.destroy()
         pcmBin.destroy()
     }
@@ -270,6 +232,8 @@ class AudioAdapter(val vm: VM) : PeriBase {
     internal object PlayInstNop : PlayInstruction(0)
 
     internal data class Playhead(
+        val index: Int,
+
         var position: Int = 0,
         var pcmUploadLength: Int = 0,
         var masterVolume: Int = 0,
@@ -277,11 +241,13 @@ class AudioAdapter(val vm: VM) : PeriBase {
         // flags
         var isPcmMode: Boolean = false,
         var isPlaying: Boolean = false,
-        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
+//        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
         var bpm: Int = 120, // "stored" as 96
         var tickRate: Int = 6,
+        var pcmUpload: Boolean = false,
 
-        var pcmQueue: Queue<FloatArray> = Queue<FloatArray>()
+        var pcmQueue: Queue<ByteArray> = Queue<ByteArray>(),
+        val audioDevice: OpenALBufferedAudioDevice
     ) {
         fun read(index: Int): Byte = when (index) {
             0 -> position.toByte()
@@ -291,31 +257,37 @@ class AudioAdapter(val vm: VM) : PeriBase {
             4 -> masterVolume.toByte()
             5 -> masterPan.toByte()
             6 -> (isPcmMode.toInt().shl(7) or isPlaying.toInt().shl(4)).toByte()
-            7 -> samplingRateMult.index.toByte()
+            7 -> 0
             8 -> (bpm - 24).toByte()
             9 -> tickRate.toByte()
             else -> throw InternalError("Bad offset $index")
         }
 
-        fun write(index: Int, byte: Int) = when (index) {
-            0 -> if (!isPcmMode) { position = position.and(0xff00) or position } else {}
-            1 -> if (!isPcmMode) { position = position.and(0x00ff) or position.shl(8) } else {}
-            2 -> { pcmUploadLength = pcmUploadLength.and(0xff00) or pcmUploadLength }
-            3 -> { pcmUploadLength = pcmUploadLength.and(0x00ff) or pcmUploadLength.shl(8) }
-            4 -> { masterVolume = byte }
-            5 -> { masterPan = byte }
-            6 -> { byte.let {
-                val oldPcmMode = isPcmMode
-                isPcmMode = (it and 0b10000000) != 0
-                isPlaying = (it and 0b00010000) != 0
+        fun write(index: Int, byte: Int) {
+            val byte = byte and 255
+            when (index) {
+                0 -> if (!isPcmMode) { position = position.and(0xff00) or position } else {}
+                1 -> if (!isPcmMode) { position = position.and(0x00ff) or position.shl(8) } else {}
+                2 -> { pcmUploadLength = pcmUploadLength.and(0xff00) or pcmUploadLength }
+                3 -> { pcmUploadLength = pcmUploadLength.and(0x00ff) or pcmUploadLength.shl(8) }
+                4 -> {
+                    masterVolume = byte
+                    audioDevice.setVolume(masterVolume / 255f)
+                }
+                5 -> { masterPan = byte }
+                6 -> { byte.let {
+                    val oldPcmMode = isPcmMode
+                    isPcmMode = (it and 0b10000000) != 0
+                    isPlaying = (it and 0b00010000) != 0
 
-                if (it and 0b01000000 != 0 || oldPcmMode != isPcmMode) resetParams()
-                if (it and 0b00100000 != 0) purgeQueue()
-            } }
-            7 -> { samplingRateMult = ThreeFiveMiniUfloat(byte) }
-            8 -> { bpm = byte + 24 }
-            9 -> { tickRate = byte }
-            else -> throw InternalError("Bad offset $index")
+                    if (it and 0b01000000 != 0 || oldPcmMode != isPcmMode) resetParams()
+                    if (it and 0b00100000 != 0) purgeQueue()
+                } }
+                7 -> if (isPcmMode) { pcmUpload = true } else {}
+                8 -> { bpm = byte + 24 }
+                9 -> { tickRate = byte }
+                else -> throw InternalError("Bad offset $index")
+            }
         }
 
         fun getSamplingRate() = 30000 - ((bpm - 24).and(255) or tickRate.and(255).shl(8)).toShort().toInt()
@@ -337,6 +309,10 @@ class AudioAdapter(val vm: VM) : PeriBase {
                 position = 0
                 pcmUploadLength = 0
             }
+        }
+
+        fun dispose() {
+            audioDevice.dispose()
         }
     }
 

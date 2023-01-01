@@ -5,6 +5,7 @@ import com.badlogic.gdx.backends.lwjgl3.audio.OpenALAudioDevice
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.math.MathUtils
 import com.badlogic.gdx.utils.GdxRuntimeException
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import org.lwjgl.BufferUtils
 import org.lwjgl.openal.AL10
 import org.lwjgl.openal.AL11
@@ -62,6 +63,20 @@ class OpenALBufferedAudioDevice(
         format = if (channels > 1) AL10.AL_FORMAT_STEREO16 else AL10.AL_FORMAT_MONO16
         secondsPerBuffer = bufferSize.toFloat() / bytesPerSample / channels / rate
         tempBuffer = BufferUtils.createByteBuffer(bufferSize)
+    }
+
+    fun writeSamplesUI8(samples: ByteArray, offset: Int, numSamples: Int) {
+        if (bytes == null || bytes!!.size < numSamples * 2) bytes = ByteArray(numSamples * 2)
+        val end = Math.min(offset + numSamples, samples.size)
+        var i = offset
+        var ii = 0
+        while (i < end) {
+            val sample = ui8toI16Hi[samples[i].toUint()]
+            bytes!![ii++] = sample
+            bytes!![ii++] = sample
+            i++
+        }
+        writeSamples(bytes!!, 0, numSamples * 2)
     }
 
     override fun writeSamples(samples: ShortArray, offset: Int, numSamples: Int) {
@@ -228,5 +243,7 @@ class OpenALBufferedAudioDevice(
 
     companion object {
         private const val bytesPerSample = 2
+        private val ui8toI16Hi = ByteArray(256) { (128 + it).toByte() }
+
     }
 }

@@ -573,7 +573,7 @@ Play Head Flags
 
           NOTE: changing from PCM mode to Tracker mode or vice versa will also reset the parameters as described above
     Byte 2
-        - PCM Mode: Sampling rate multiplier in 3.5 Unsigned Minifloat (0.03125x to 126x)
+        - PCM Mode: Write non-zero value to start uploading; always 0 when read
 
     Byte 3 (Tracker Mode)
         - BPM (24 to 280. Play Data will change this register)
@@ -582,6 +582,8 @@ Play Head Flags
 
     Byte 3-4 (PCM Mode)
         - Signed Int16 Sampling rate difference from 30000 Hz
+
+    Uploaded PCM data will be stored onto the queue and the queue is only 4-entries long; any more uploads will be silently discarded.
 
 
 32768..65535 RW: Cue Sheet (2048 cues)

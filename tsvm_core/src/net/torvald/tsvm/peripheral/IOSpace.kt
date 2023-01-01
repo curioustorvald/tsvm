@@ -3,6 +3,8 @@ package net.torvald.tsvm.peripheral
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.Input
 import com.badlogic.gdx.InputProcessor
+import net.torvald.AddressOverflowException
+import net.torvald.DanglingPointerException
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.CircularArray
 import net.torvald.tsvm.VM
@@ -159,77 +161,96 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     override fun mmio_write(addr: Long, byte: Byte) {
         val adi = addr.toInt()
         val bi = byte.toInt().and(255)
-        when (addr) {
-            37L -> keyboardBuffer.appendHead(byte)
-            38L -> {
-                keyboardInputRequested = (byte.isNonZero())
-                if (keyboardInputRequested) keyboardBuffer.clear()
+        try {
+            when (addr) {
+                37L -> keyboardBuffer.appendHead(byte)
+                38L -> {
+                    keyboardInputRequested = (byte.isNonZero())
+                    if (keyboardInputRequested) keyboardBuffer.clear()
+                }
+
+                39L -> rawInputFunctionLatched = (byte.isNonZero())
+                in 40..47 -> keyEventBuffers[adi - 40] = byte
+                68L -> {
+                    uptimeCounterLatched = byte.and(0b01).isNonZero()
+                    RTClatched = byte.and(0b10).isNonZero()
+                }
+
+                88L -> vm.romMapping = bi
+                89L -> {
+                    acpiShutoff = byte.and(-128).isNonZero()
+                }
+
+                in 1024..2047 -> peripheralFast[addr - 1024] = byte
+
+                4076L -> blockTransferPorts[0].statusCode.set(bi)
+                4077L -> blockTransferPorts[1].statusCode.set(bi)
+                4078L -> blockTransferPorts[2].statusCode.set(bi)
+                4079L -> blockTransferPorts[3].statusCode.set(bi)
+
+                4084L ->
+                    blockTransferPorts[0].blockSize.getAcquire().let {
+                        blockTransferPorts[0].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255))
+                    }
+
+                4085L -> {
+                    blockTransferPorts[0].hasNext.set(byte < 0)
+                    blockTransferPorts[0].blockSize.getAcquire().let {
+                        blockTransferPorts[0].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                    }
+                }
+
+                4086L -> blockTransferPorts[1].blockSize.getAcquire().let {
+                    blockTransferPorts[1].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255))
+                }
+
+                4087L -> {
+                    blockTransferPorts[1].hasNext.set(byte < 0)
+                    blockTransferPorts[1].blockSize.getAcquire().let {
+                        blockTransferPorts[1].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                    }
+                }
+
+                4088L -> blockTransferPorts[2].blockSize.getAcquire().let {
+                    blockTransferPorts[2].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255))
+                }
+
+                4089L -> {
+                    blockTransferPorts[2].hasNext.set(byte < 0)
+                    blockTransferPorts[2].blockSize.getAcquire().let {
+                        blockTransferPorts[2].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                    }
+                }
+
+                4090L -> blockTransferPorts[3].blockSize.getAcquire().let {
+                    blockTransferPorts[3].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255))
+                }
+
+                4091L -> {
+                    blockTransferPorts[3].hasNext.set(byte < 0)
+                    blockTransferPorts[3].blockSize.getAcquire().let {
+                        blockTransferPorts[3].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                    }
+                }
+
+                in 4092..4095 -> setBlockTransferPortStatus(adi - 4092, byte)
+
+                in 4096..8191 -> blockTransferTx[0][addr - 4096] = byte
+                in 8192..12287 -> blockTransferTx[1][addr - 8192] = byte
+                in 12288..16383 -> blockTransferTx[2][addr - 12288] = byte
+                in 16384..20479 -> blockTransferTx[3][addr - 16384] = byte
+
+                in 131072..262143 -> vm.peripheralTable[1].peripheral?.mmio_write(addr - 131072, byte)
+                in 262144..393215 -> vm.peripheralTable[2].peripheral?.mmio_write(addr - 262144, byte)
+                in 393216..524287 -> vm.peripheralTable[3].peripheral?.mmio_write(addr - 393216, byte)
+                in 524288..655359 -> vm.peripheralTable[4].peripheral?.mmio_write(addr - 524288, byte)
+                in 655360..786431 -> vm.peripheralTable[5].peripheral?.mmio_write(addr - 655360, byte)
+                in 786432..917503 -> vm.peripheralTable[6].peripheral?.mmio_write(addr - 786432, byte)
+                in 917504..1048575 -> vm.peripheralTable[7].peripheral?.mmio_write(addr - 917504, byte)
             }
-            39L -> rawInputFunctionLatched = (byte.isNonZero())
-            in 40..47 -> keyEventBuffers[adi - 40] = byte
-            68L -> {
-                uptimeCounterLatched = byte.and(0b01).isNonZero()
-                RTClatched = byte.and(0b10).isNonZero()
-            }
-
-            88L -> vm.romMapping = bi
-            89L -> { acpiShutoff = byte.and(-128).isNonZero() }
-
-            in 1024..2047 -> peripheralFast[addr - 1024] = byte
-
-            4076L -> blockTransferPorts[0].statusCode.set(bi)
-            4077L -> blockTransferPorts[1].statusCode.set(bi)
-            4078L -> blockTransferPorts[2].statusCode.set(bi)
-            4079L -> blockTransferPorts[3].statusCode.set(bi)
-
-            4084L ->
-                blockTransferPorts[0].blockSize.getAcquire().let {
-                    blockTransferPorts[0].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
-            4085L -> {
-                blockTransferPorts[0].hasNext.set(byte < 0)
-                blockTransferPorts[0].blockSize.getAcquire().let {
-                    blockTransferPorts[0].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
-            }
-
-            4086L -> blockTransferPorts[1].blockSize.getAcquire().let {
-                blockTransferPorts[1].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
-            4087L -> {
-                blockTransferPorts[1].hasNext.set(byte < 0)
-                blockTransferPorts[1].blockSize.getAcquire().let {
-                    blockTransferPorts[1].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
-            }
-
-            4088L -> blockTransferPorts[2].blockSize.getAcquire().let {
-                blockTransferPorts[2].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
-            4089L -> {
-                blockTransferPorts[2].hasNext.set(byte < 0)
-                blockTransferPorts[2].blockSize.getAcquire().let {
-                    blockTransferPorts[2].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
-            }
-
-            4090L -> blockTransferPorts[3].blockSize.getAcquire().let {
-                blockTransferPorts[3].blockSize.setRelease(it.and(0xFF00) or byte.toInt().and(255)) }
-            4091L -> {
-                blockTransferPorts[3].hasNext.set(byte < 0)
-                blockTransferPorts[3].blockSize.getAcquire().let {
-                    blockTransferPorts[3].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15)) }
-            }
-
-            in 4092..4095 -> setBlockTransferPortStatus(adi - 4092, byte)
-
-            in 4096..8191 -> blockTransferTx[0][addr - 4096] = byte
-            in 8192..12287 -> blockTransferTx[1][addr - 8192] = byte
-            in 12288..16383 -> blockTransferTx[2][addr - 12288] = byte
-            in 16384..20479 -> blockTransferTx[3][addr - 16384] = byte
-
-            in 131072..262143 -> vm.peripheralTable[1].peripheral?.mmio_write(addr - 131072, byte)
-            in 262144..393215 -> vm.peripheralTable[2].peripheral?.mmio_write(addr - 262144, byte)
-            in 393216..524287 -> vm.peripheralTable[3].peripheral?.mmio_write(addr - 393216, byte)
-            in 524288..655359 -> vm.peripheralTable[4].peripheral?.mmio_write(addr - 524288, byte)
-            in 655360..786431 -> vm.peripheralTable[5].peripheral?.mmio_write(addr - 655360, byte)
-            in 786432..917503 -> vm.peripheralTable[6].peripheral?.mmio_write(addr - 786432, byte)
-            in 917504..1048575 -> vm.peripheralTable[7].peripheral?.mmio_write(addr - 917504, byte)
         }
+        catch (_: DanglingPointerException) {}
+        catch (_: AddressOverflowException) {}
     }
 
     override fun dispose() {
