@@ -103,7 +103,7 @@ class MMUMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMenu
                     batch.color = plotColours[ptr % plotColset.size]
                     batch.fillRect(xoff, yoff + 1, 10, 10)
                     batch.color = Color.WHITE
-                    FONT.draw(batch, "  $size at $ptr", xoff, yoff)
+                    FONT.draw(batch, "  ${size * vm.MALLOC_UNIT} at ${ptr * vm.MALLOC_UNIT}", xoff, yoff)
                 }
             }
         }

@@ -1,4 +1,5 @@
 // some manual configurations
+//
 let IPFMODE = 2 // 1 or 2
 let TOTAL_FRAMES = 901
 let FPS = 30
@@ -9,6 +10,8 @@ let PATHFUN = (i) => `/welcome104crop/${(''+i).padStart(5,'0')}.bmp` // how can 
 //     ffmpeg -i file.mp4 file/%05d.bmp
 // the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:
 //     mogrify -path ./path/to/write/results/ -resize 560x448^ -gravity Center -extent 560x448 ./path/to/source/files/*
+//
+// end of manual configuration
 
 const FBUF_SIZE = WIDTH * HEIGHT
 let infile = sys.malloc(512000) // somewhat arbitrary
@@ -34,6 +37,11 @@ function appendToOutfilePtr(ptr, len) {
     outfile.pappend(ptr, len)
 }
 
+let packetType = [
+    4, (IPFMODE - 1)
+]
+let syncPacket = [255, 255]
+
 // write header to the file
 let headerBytes = [
     0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56, // magic
@@ -41,7 +49,7 @@ let headerBytes = [
     HEIGHT & 255, (HEIGHT >> 8) & 255, // height
     FPS & 255, (FPS >> 8) & 255, // FPS
     TOTAL_FRAMES & 255, (TOTAL_FRAMES >> 8) & 255, (TOTAL_FRAMES >> 16) & 255, (TOTAL_FRAMES >> 24) & 255, // frame count
-    0x04, IPFMODE - 1, // type 4 frames (force no-alpha)
+    0xFF, 0x00, // new standard deprecates global type
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // reserved
 ]
 
@@ -51,6 +59,11 @@ if (!ipfFun) throw Error("Unknown IPF mode "+IPFMODE)
 outfile.bwrite(headerBytes)
 
 for (let f = 1; f <= TOTAL_FRAMES; f++) {
+
+    // insert sync packet
+    if (f > 1) appendToOutfile(syncPacket)
+
+
     let fname = PATHFUN(f)
     let framefile = files.open(_G.shell.resolvePathInput(fname).full)
     let fileLen = framefile.size
@@ -73,6 +86,7 @@ for (let f = 1; f <= TOTAL_FRAMES; f++) {
         (gzlen >>> 24) & 255
     ]
 
+    appendToOutfile(packetType)
     appendToOutfile(frameSize)
     appendToOutfilePtr(gzippedImage, gzlen)
 

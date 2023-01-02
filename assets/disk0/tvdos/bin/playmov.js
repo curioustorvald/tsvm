@@ -1,14 +1,16 @@
 
-let filename = exec_args[1]
-
 const FBUF_SIZE = 560*448
 const MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56]
 const port = _TVDOS.DRV.FS.SERIAL._toPorts("A")[0]
 
-println("Reading...")
+
+const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
+const FILE_LENGTH = files.open(fullFilePath.full).size
+
+serial.println(`Reading ${FILE_LENGTH} bytes...`)
 
 com.sendMessage(port, "DEVRST\x17")
-com.sendMessage(port, `OPENR"${filename}",1`)
+com.sendMessage(port, `OPENR"${fullFilePath.string}",1`)
 let statusCode = com.getStatusCode(port)
 
 if (statusCode != 0) {
@@ -133,31 +135,32 @@ let fps = readShort(); if (fps == 0) fps = 9999
 
 let frameTime = 1.0 / fps
 let frameCount = readInt() % 16777216
-let type = readShort()
+let globalType = readShort()
 sys.free(readBytes(12)) // skip 12 bytes
 let akku = frameTime
 let framesRendered = 0
 //serial.println(readCount) // must say 18
 //serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
 
-if (type != 4 && type != 5 && type != 260 && type != 261) {
+/*if (type != 4 && type != 5 && type != 260 && type != 261) {
     printerrln("Not an iPF mov")
     return 1
+}*/
+if (globalType != 255) {
+    printerrln(`Unsupported MOV type (${globalType})`)
+    return 1
 }
+
 
 let ipfbuf = sys.malloc(FBUF_SIZE)
 graphics.setGraphicsMode(4)
 
-let fb1 = sys.malloc(FBUF_SIZE)
-let fb2 = sys.malloc(FBUF_SIZE)
-
 let startTime = sys.nanoTime()
 
-let decodefun = (type > 255) ? graphics.decodeIpf2 : graphics.decodeIpf1
 let framesRead = 0
-let breakReadLoop = false
 
-while (framesRendered < frameCount && !breakReadLoop) {
+renderLoop:
+while (framesRendered < frameCount && readCount < FILE_LENGTH) {
     let t1 = sys.nanoTime()
 
     if (akku >= frameTime) {
@@ -167,29 +170,50 @@ while (framesRendered < frameCount && !breakReadLoop) {
             akku -= frameTime
             frameUnit += 1
         }
-        //frameUnit += 1 // forse set FPS to 9999, comment above WHILE loop and uncomment this line to perform benchmark...?
 
         if (frameUnit != 0) {
             // skip frames if necessary
-            while (frameUnit >= 1) {
-                let payloadLen = readInt()
+            while (frameUnit >= 1 && readCount < FILE_LENGTH) {
 
-                if (framesRead >= frameCount) {
-                    breakReadLoop = true
-                    break
+                let packetType = readShort()
+
+                // sync packets
+                if (65535 == packetType) {
+                    frameUnit -= 1
                 }
+                // video packets
+                else if (packetType < 2047) {
+                    // iPF
+                    if (packetType == 4 || packetType == 5 || packetType == 260 || packetType == 261) {
+                        let decodefun = (packetType > 255) ? graphics.decodeIpf2 : graphics.decodeIpf1
+                        let payloadLen = readInt()
 
-                framesRead += 1
-                let gzippedPtr = readBytes(payloadLen)
-                framesRendered += 1
+                        if (framesRead >= frameCount) {
+                            break renderLoop
+                        }
 
-                if (frameUnit == 1) {
-                    gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
-                    decodefun(ipfbuf, -1048577, -1310721, width, height, (type & 255) == 5)
+                        framesRead += 1
+                        let gzippedPtr = readBytes(payloadLen)
+                        framesRendered += 1
+
+                        if (frameUnit == 1) {
+                            gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
+                            decodefun(ipfbuf, -1048577, -1310721, width, height, (packetType & 255) == 5)
+                        }
+
+                        sys.free(gzippedPtr)
+                    }
+                    else {
+                        throw Error(`Unknown Video Packet with type ${packetType} at offset ${readCount - 2}`)
+                    }
                 }
-
-                sys.free(gzippedPtr)
-                frameUnit -= 1
+                // audio packets
+                else if (4096 <= packetType && packetType <= 6133) {
+                    TODO(`Audio Packet with type ${packetType} at offset ${readCount - 2}`)
+                }
+                else {
+                    TODO(`Unknown Packet with type ${packetType} at offset ${readCount - 2}`)
+                }
             }
         }
         else {
