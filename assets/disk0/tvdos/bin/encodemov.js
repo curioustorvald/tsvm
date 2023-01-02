@@ -1,17 +1,23 @@
 // some manual configurations
 //
 let IPFMODE = 2 // 1 or 2
-let TOTAL_FRAMES = 901
-let FPS = 30
+let TOTAL_FRAMES = 800
+let FPS = 24
 let WIDTH = 560
 let HEIGHT = 448
-let PATHFUN = (i) => `/welcome104crop/${(''+i).padStart(5,'0')}.bmp` // how can be the image file found, if a frame number (starts from 1) were given
+let PATHFUN = (i) => `/welkom/${(''+i).padStart(4,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
 // to export video to its frames:
 //     ffmpeg -i file.mp4 file/%05d.bmp
 // the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:
 //     mogrify -path ./path/to/write/results/ -resize 560x448^ -gravity Center -extent 560x448 ./path/to/source/files/*
 //
 // end of manual configuration
+
+let outfilename = exec_args[1]
+if (!outfilename) {
+    println("Usage: encodemov <outfile>")
+    return 1
+}
 
 const FBUF_SIZE = WIDTH * HEIGHT
 let infile = sys.malloc(512000) // somewhat arbitrary
@@ -20,11 +26,6 @@ let decodearea = sys.malloc(FBUF_SIZE)
 let ipfarea = sys.malloc(FBUF_SIZE)
 let gzippedImage = sys.malloc(512000) // somewhat arbitrary
 
-let outfilename = exec_args[1]
-if (!outfilename) {
-    println("Usage: encodemov <outfile>")
-    return 1
-}
 
 let outfile = files.open(_G.shell.resolvePathInput(outfilename).full)
 
