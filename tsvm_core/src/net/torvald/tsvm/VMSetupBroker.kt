@@ -1,12 +1,12 @@
 package net.torvald.tsvm
 
+import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.utils.GdxRuntimeException
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.torvald.tsvm.peripheral.GraphicsAdapter
-import net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter2
 
 /**
  * Created by minjaesong on 2022-12-15.
@@ -21,7 +21,7 @@ object VMSetupBroker {
      * @param vmRunners Hashmap on the host of VMs that holds the instances of the VMRunners for the given VM. Key: Int(VM's identifier), value: [net.torvald.tsvm.VMRunner]
      * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlinx.coroutines.Job]
      */
-    fun initVMenv(vm: VM, gpu: GraphicsAdapter, vmRunners: HashMap<Int, VMRunner>, coroutineJobs: HashMap<Int, Job>) {
+    fun initVMenv(vm: VM, gpu: GraphicsAdapter, vmRunners: HashMap<Int, VMRunner>, coroutineJobs: HashMap<Int, Job>, whatToDoOnVmException: (Throwable) -> Unit) {
         vm.init()
 
         try {
@@ -37,7 +37,14 @@ object VMSetupBroker {
         vm.poke(-90L, 0)
 
         vmRunners[vm.id] = VMRunnerFactory(vm.assetsDir, vm, "js")
-        coroutineJobs[vm.id] = GlobalScope.launch { vmRunners[vm.id]?.executeCommand(vm.roms[0]!!.readAll()) }
+        coroutineJobs[vm.id] = GlobalScope.launch {
+            try {
+                vmRunners[vm.id]?.executeCommand(vm.roms[0]!!.readAll())
+            }
+            catch (e: Throwable) {
+                whatToDoOnVmException(e)
+            }
+        }
     }
 
     /**

@@ -194,7 +194,10 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     internal fun initVMenv(vm: VM) {
         val gpu = ReferenceGraphicsAdapter2("./assets", vm)
-        VMSetupBroker.initVMenv(vm, gpu, vmRunners, coroutineJobs)
+        VMSetupBroker.initVMenv(vm, gpu, vmRunners, coroutineJobs) {
+            it.printStackTrace()
+            VMSetupBroker.killVMenv(vm, vmRunners, coroutineJobs)
+        }
     }
 
     internal fun killVMenv(vm: VM) {

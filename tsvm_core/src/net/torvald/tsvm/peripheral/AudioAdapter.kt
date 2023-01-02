@@ -1,13 +1,13 @@
 package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
-import com.badlogic.gdx.audio.AudioDevice
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.utils.Queue
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
+import kotlin.system.exitProcess
 
 private fun Boolean.toInt() = if (this) 1 else 0
 
@@ -35,6 +35,11 @@ class AudioAdapter(val vm: VM) : PeriBase {
 //    private var audioDevices: Array<AudioDevice>
     private val renderThreads = Array(4) { Thread(getRenderFun(it)) }
     private val writeQueueingThreads = Array(4) { Thread(getQueueingFun(it)) }
+
+    private val threadExceptionHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
+        throwable.printStackTrace()
+        exitProcess(1)
+    }
 
     private fun getRenderFun(pheadNum: Int): () -> Unit = { while (true) {
         render(playheads[pheadNum])
@@ -91,8 +96,8 @@ class AudioAdapter(val vm: VM) : PeriBase {
 
 
 //        printdbg("AudioAdapter latency: ${audioDevice.latency}")
-        renderThreads.forEach { it.start() }
-        writeQueueingThreads.forEach { it.start() }
+        renderThreads.forEach { it.uncaughtExceptionHandler = threadExceptionHandler; it.start() }
+        writeQueueingThreads.forEach { it.uncaughtExceptionHandler = threadExceptionHandler; it.start() }
 
     }
 

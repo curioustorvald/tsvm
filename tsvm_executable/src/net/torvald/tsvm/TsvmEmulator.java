@@ -91,7 +91,13 @@ public class TsvmEmulator {
 
         appConfig.setWindowedMode(WIDTH, HEIGHT);
 
-        new Lwjgl3Application(new VMEmuExecutableWrapper(VIEWPORT_W, VIEWPORT_H, PANELS_X, PANELS_Y,"assets/"), appConfig);
+        try {
+            new Lwjgl3Application(new VMEmuExecutableWrapper(VIEWPORT_W, VIEWPORT_H, PANELS_X, PANELS_Y, "assets/"), appConfig);
+        }
+        catch (Throwable e) {
+            e.printStackTrace();
+            if (Gdx.app != null) Gdx.app.exit();
+        }
     }
 
     private static void getDefaultDirectory() {
