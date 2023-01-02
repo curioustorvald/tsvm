@@ -58,7 +58,10 @@ object VMSetupBroker {
         vm.park()
 
         for (i in 1 until vm.peripheralTable.size) {
-            vm.peripheralTable[i].peripheral?.dispose()
+            try {
+                vm.peripheralTable[i].peripheral?.dispose()
+            }
+            catch (_: Throwable) {}
         }
 
         vm.getPrintStream = { TODO() }

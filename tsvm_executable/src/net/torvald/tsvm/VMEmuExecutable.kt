@@ -16,6 +16,7 @@ import net.torvald.terrarum.utils.JsonFetcher
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.SQTEX
 import net.torvald.tsvm.peripheral.*
+import kotlin.system.exitProcess
 
 class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
 
@@ -50,8 +51,10 @@ class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var pa
     }
 
     override fun dispose() {
+//        println("App Dispose")
         executable.dispose()
         SQTEX.dispose()
+        exitProcess(1)
     }
 }
 

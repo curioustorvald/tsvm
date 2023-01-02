@@ -4,12 +4,79 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.utils.Queue
 import net.torvald.UnsafeHelper
+import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
-import kotlin.system.exitProcess
 
 private fun Boolean.toInt() = if (this) 1 else 0
+
+private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
+    @Volatile private var exit = false
+    override fun run() {
+        while (!Thread.interrupted()) {
+            if (playhead.isPcmMode) {
+
+                val writeQueue = playhead.pcmQueue
+
+                if (playhead.isPlaying && writeQueue.notEmpty()) {
+
+//                    printdbg("Taking samples from queue (queue size: ${writeQueue.size})")
+
+                    val samples = writeQueue.removeFirst()
+                    playhead.position = writeQueue.size
+
+//                printdbg("P${playhead.index+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
+//                    printdbg(""+(0..42).joinToString { String.format("%.2f", samples[it]) })
+
+                    playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
+
+//                printdbg("P${playhead.index+1} go back to spinning")
+
+                }
+                else if (playhead.isPlaying) {
+//                printdbg("Queue exhausted, stopping...")
+//                it.isPlaying = false
+                }
+            }
+
+
+            Thread.sleep(1)
+        }
+        Thread.currentThread().interrupt()
+    }
+    fun stop() {
+        exit = true
+    }
+}
+
+private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcmBin: UnsafePtr) : Runnable {
+    @Volatile private var exit = false
+    override fun run() {
+        while (!Thread.interrupted()) {
+
+            playhead.let {
+                if (it.pcmQueue.size < 4 && it.pcmUpload && it.pcmUploadLength > 0) {
+//                    printdbg("Downloading samples ${it.pcmUploadLength}")
+
+                    val samples = ByteArray(it.pcmUploadLength)
+                    UnsafeHelper.memcpyRaw(null, pcmBin.ptr, samples, UnsafeHelper.getArrayOffset(samples), it.pcmUploadLength.toLong())
+                    it.pcmQueue.addLast(samples)
+
+                    it.pcmUploadLength = 0
+                    it.position += 1
+                }
+            }
+
+
+            Thread.sleep(4)
+        }
+        Thread.currentThread().interrupt()
+    }
+    fun stop() {
+        exit = true
+    }
+}
 
 /**
  * Created by minjaesong on 2022-12-30.
@@ -32,38 +99,15 @@ class AudioAdapter(val vm: VM) : PeriBase {
     internal val cueSheet = Array(2048) { PlayCue() }
     internal val pcmBin = UnsafeHelper.allocate(65536L)
 
-//    private var audioDevices: Array<AudioDevice>
-    private val renderThreads = Array(4) { Thread(getRenderFun(it)) }
-    private val writeQueueingThreads = Array(4) { Thread(getQueueingFun(it)) }
+    private val renderRunnables: Array<RenderRunnable>
+    private val renderThreads: Array<Thread>
+    private val writeQueueingRunnables: Array<WriteQueueingRunnable>
+    private val writeQueueingThreads: Array<Thread>
 
     private val threadExceptionHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
         throwable.printStackTrace()
-        exitProcess(1)
     }
 
-    private fun getRenderFun(pheadNum: Int): () -> Unit = { while (true) {
-        render(playheads[pheadNum])
-        Thread.sleep(1)
-    } }
-
-    private fun getQueueingFun(pheadNum: Int): () -> Unit = { while (true) {
-
-        playheads[pheadNum].let {
-            if (it.pcmQueue.size < 4 && it.pcmUpload && it.pcmUploadLength > 0) {
-                printdbg("Downloading samples ${it.pcmUploadLength}")
-                
-                val samples = ByteArray(it.pcmUploadLength)
-                UnsafeHelper.memcpyRaw(null, pcmBin.ptr, samples, UnsafeHelper.getArrayOffset(samples), it.pcmUploadLength.toLong())
-                it.pcmQueue.addLast(samples)
-
-                it.pcmUploadLength = 0
-                it.position += 1
-            }
-        }
-
-
-        Thread.sleep(4)
-    } }
 
     init {
 
@@ -93,7 +137,10 @@ class AudioAdapter(val vm: VM) : PeriBase {
             Playhead(index = it, audioDevice = adev)
         }
 
-
+        renderRunnables = Array(4) { RenderRunnable(playheads[it]) }
+        renderThreads = Array(4) { Thread(renderRunnables[it], "AudioRenderHead${it+1}") }
+        writeQueueingRunnables = Array(4) { WriteQueueingRunnable(playheads[it], pcmBin) }
+        writeQueueingThreads = Array(4) { Thread(writeQueueingRunnables[it], "AudioQueueingHead${it+1}") }
 
 //        printdbg("AudioAdapter latency: ${audioDevice.latency}")
         renderThreads.forEach { it.uncaughtExceptionHandler = threadExceptionHandler; it.start() }
@@ -181,8 +228,8 @@ class AudioAdapter(val vm: VM) : PeriBase {
     }
 
     override fun dispose() {
-        renderThreads.forEach { it.interrupt() }
-        writeQueueingThreads.forEach { it.interrupt() }
+        renderRunnables.forEach { it.stop() }
+        writeQueueingRunnables.forEach { it.stop() }
         playheads.forEach { it.dispose() }
         sampleBin.destroy()
         pcmBin.destroy()
