@@ -2,6 +2,7 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.Input.Buttons
 import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
@@ -64,11 +65,11 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     val watchdogs = hashMapOf<String, VMWatchdog>("TEVD_SYNC" to TEVD_SYNC)
 
-    private data class VMRunnerInfo(val vm: VM, val name: String)
+    data class VMRunnerInfo(val vm: VM, val name: String)
 
     private val vms = arrayOfNulls<VMRunnerInfo>(this.panelsX * this.panelsY - 1) // index: # of the window where the reboot was requested
 
-    private var currentVMselection: Int? = 0 // null: emulator menu is selected
+    var currentVMselection: Int? = 0 // null: emulator menu is selected
 
     lateinit var batch: SpriteBatch
     lateinit var fbatch: FlippingSpriteBatch
@@ -116,6 +117,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     internal fun addVMtoView(vm: VM, profileName: String, index: Int) {
         vms[index] = VMRunnerInfo(vm, profileName)
     }
+
+    internal fun getCurrentlySelectedVM(): VMRunnerInfo? = if (currentVMselection == null) null else vms[currentVMselection!!]
 
     private fun writeProfilesToFile(outFile: FileHandle) {
         val out = StringBuilder()
@@ -376,6 +379,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     override fun dispose() {
         super.dispose()
+        tabs.forEach { it.dispose() }
         batch.dispose()
         fbatch.dispose()
         fullscreenQuad.dispose()
@@ -390,9 +394,16 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val menuTabX = windowWidth * (panelsX-1) + 2
     private val menuTabY =windowHeight * (panelsY-1) + FONT.H + 2
 
-    private val menuTabs = listOf("Profiles", "Machine", "COMs", "Cards", "Setup")
+    private val menuTabs = listOf("Profiles", "MMU", "Machine", "COMs", "Cards", "Setup")
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
-    private val tabs = listOf(ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH))
+    private val tabs = listOf(
+        ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        MMUMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+    )
     private var menuTabSel = 0
 
     private var tabChangeRequested: Int? = 0 // null: not requested
@@ -423,7 +434,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                     FONT.draw(batch, menuTabs[k], textX, y)
                 }
                 else {
-                    batch.color = EmulatorGuiToolkit.Theme.COL_TAB_NOT_SELECTED
+                    batch.color = if (k % 2 == 0) EmulatorGuiToolkit.Theme.COL_TAB_NOT_SELECTED else EmulatorGuiToolkit.Theme.COL_TAB_NOT_SELECTED2
                     batch.fillRect(textX - FONT.W, y, FONT.W * (menuTabs[k].length + 2f), FONT.H.toFloat())
 
                     batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE2
@@ -447,7 +458,22 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     private fun updateMenu() {
         // update the tab
-
+        var tabSelected = -1
+        val x = (panelsX - 1) * windowWidth
+        val y = (panelsY - 1) * windowHeight
+        val mx = Gdx.input.x
+        val my = Gdx.input.y
+        if (Gdx.input.isButtonPressed(Buttons.LEFT) && my in y until y + FONT.H) {
+            for (k in menuTabs.indices) {
+                val textX = x + FONT.W * tabPos[k]
+                if (mx in textX - FONT.W until textX - FONT.W + FONT.W * (menuTabs[k].length + 2)) {
+                    tabSelected = k
+                }
+            }
+        }
+        if (tabSelected >= 0 && tabSelected != menuTabSel) {
+            tabChangeRequested = tabSelected
+        }
 
         // actually update the view within the tabs
         tabs[menuTabSel].update()
@@ -584,11 +610,12 @@ object EmulatorGuiToolkit {
         val COL_HIGHLIGHT = Color(0xe43380ff.toInt()) // magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
 
-        val COL_TAB_NOT_SELECTED = Color(0x503cd4ff) // dark blue
+        val COL_TAB_NOT_SELECTED = Color(0x4d39cbff) // dark blue
+        val COL_TAB_NOT_SELECTED2 = Color(0x5949e0ff) // dark blue
 
         val COL_LAND = Color(0x6b8ba2ff.toInt())
         val COL_WELL = Color(0x374854ff.toInt())
-        val COL_WELL2 = Color(0x3e5261ff.toInt())
+        val COL_WELL2 = Color(0x3f5360ff.toInt())
     }
 
 }

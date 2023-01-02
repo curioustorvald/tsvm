@@ -206,7 +206,10 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
         }
     }
 
-    private fun SpriteBatch.setColourBy(colourIfTrue: Color = EmulatorGuiToolkit.Theme.COL_ACTIVE3, colourIfFalse: Color = Color.WHITE, predicate: () -> Boolean) {
-        this.color = if (predicate()) colourIfTrue else colourIfFalse
+    override fun dispose() {
     }
+}
+
+fun SpriteBatch.setColourBy(colourIfTrue: Color = EmulatorGuiToolkit.Theme.COL_ACTIVE3, colourIfFalse: Color = Color.WHITE, predicate: () -> Boolean) {
+    this.color = if (predicate()) colourIfTrue else colourIfFalse
 }

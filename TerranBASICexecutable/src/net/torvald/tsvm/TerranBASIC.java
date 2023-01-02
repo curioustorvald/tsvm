@@ -5,6 +5,8 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
 import net.torvald.tsvm.peripheral.*;
 
+import java.util.HashMap;
+
 public class TerranBASIC {
 
     public static String appTitle = "TerranBASIC";
@@ -25,7 +27,10 @@ public class TerranBASIC {
 
         appConfig.setWindowedMode(WIDTH, HEIGHT);
 
-        VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE}, 2);
+        HashMap<String, VMWatchdog> watchdogs = new HashMap<>();
+        watchdogs.put("TEVD_SYNC", TevdSyncWatchdog.INSTANCE);
+
+        VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE}, 2, watchdogs);
         EmulInstance tbasrunner = new EmulInstance(tbasvm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0", 560, 448);
         new Lwjgl3Application(new VMGUI(tbasrunner, WIDTH, HEIGHT), appConfig);
     }

@@ -11,5 +11,6 @@ abstract class EmuMenu(val parent: VMEmuExecutable, val x: Int, val y: Int, val 
     abstract fun hide()
     abstract fun update()
     abstract fun render(batch: SpriteBatch)
+    abstract fun dispose()
 
 }

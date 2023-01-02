@@ -378,59 +378,76 @@ METADATA -
     uint16 HEIGHT
     uint16 FPS (0: play as fast as can)
     uint32 NUMBER OF FRAMES
-    uint16 PACKET TYPE
+    uint16 GLOBAL PACKET TYPE (will be deprecated; please use 255,0)
     byte[12] RESERVED
 
-    Packet Type Low Byte:
-        0: 256-Colour frame
-        1: 256-Colour frame with palette data
-        2: 4096-Colour frame (stored as two byte-planes)
-        4: iPF no-alpha indicator (see iPF Type Numbers for details)
-        5: iPF with alpha indicator (see iPF Type Numbers for details)
-        16: Series of JPEGs
-        18: Series of PNGs
-        20: Series of TGAs
-        21: Series of TGA/GZs
-        255: Every frame specifies the type
+    Packet Types:
+    <video>
+       0,0: 256-Colour frame
+       1,0: 256-Colour frame with palette data
+       2,0: 4096-Colour frame (stored as two byte-planes)
+       4,t: iPF no-alpha indicator (see iPF Type Numbers for details)
+       5,t: iPF with alpha indicator (see iPF Type Numbers for details)
+      16,0: Series of JPEGs
+      18,0: Series of PNGs
+      20,0: Series of TGAs
+      21,0: Series of TGA/GZs
+     255,0: Every frame specifies the type
+    <audio>
+      0,16: Raw PCM Mono
+      1,16: Raw PCM Stereo
+      2,16: ADPCM Mono
+      3,16: ADPCM Stereo
+    <special>
+    255,255: sync packet (wait until the next frame)
 
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
 
-    Packet Types for Audio (High Byte=16)
-        0: Raw PCM Mono
-        1: Raw PCM Stereo
-        2: ADPCM Mono
-        3: ADPCM Stereo
 
 
-TYPE 0 Packet -
+
+GLOBAL TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA COMPRESSED IN GZIP
 
-TYPE 1 Packet -
+GLOBAL TYPE 1 Packet -
     byte[512] Palette Data
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA COMPRESSED IN GZIP
 
-TYPE 2 Packet -
+GLOBAL TYPE 2 Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA COMPRESSED IN GZIP
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
     *      FRAMEDATA COMPRESSED IN GZIP
 
-iPF Packet -
+GLOBAL iPF Packet -
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA COMPRESSED IN GZIP // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
 
-TYPE 16+ Packet -
+GLOBAL TYPE 16+ Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA (COMPRESSED IN GZIP for TGA/GZ)
 
-TYPE 255 Packet -
+GLOBAL TYPE 255 Packet -
     uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme
     uint32 SIZE OF PACKET
     *      FRAMEDATA or PACKET
 
+Sync Packet (subset of GLOBAL TYPE 255 Packet) -
+    uint16 0xFFFF (type of packet for Global Type 255)
+
+
+
+Frame Timing
+    If the global type is not 255, each packet is interpreted as a single full frame, and then will wait for the next
+    frame time; For type 255 however, the assumption no longer holds and each frame can have multiple packets, and thus
+    needs explicit "sync" packet for proper frame timing.
+
+
+NOTE FROM DEVELOPER
+    In the future, the global packet type will be deprecated.
 
 --------------------------------------------------------------------------------
 
