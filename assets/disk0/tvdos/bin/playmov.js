@@ -159,8 +159,13 @@ let startTime = sys.nanoTime()
 
 let framesRead = 0
 
+audio.resetParams(0)
+audio.purgeQueue(0)
+audio.setPcmMode(0)
+audio.setMasterVolume(0, 255)
+
 renderLoop:
-while (framesRendered < frameCount && readCount < FILE_LENGTH) {
+while (readCount < FILE_LENGTH) {
     let t1 = sys.nanoTime()
 
     if (akku >= frameTime) {
@@ -209,10 +214,23 @@ while (framesRendered < frameCount && readCount < FILE_LENGTH) {
                 }
                 // audio packets
                 else if (4096 <= packetType && packetType <= 6133) {
-                    TODO(`Audio Packet with type ${packetType} at offset ${readCount - 2}`)
+                    if (4097 == packetType) {
+                        let readLength = readInt()
+                        let samples = readBytes(readLength)
+
+                        audio.putPcmDataByPtr(samples, readLength, 0)
+                        audio.setSampleUploadLength(0, readLength)
+                        audio.startSampleUpload(0)
+                        audio.play(0)
+
+                        sys.free(samples)
+                    }
+                    else {
+                        throw Error(`Audio Packet with type ${packetType} at offset ${readCount - 2}`)
+                    }
                 }
                 else {
-                    TODO(`Unknown Packet with type ${packetType} at offset ${readCount - 2}`)
+                    println(`Unknown Packet with type ${packetType} at offset ${readCount - 2}`)
                 }
             }
         }
@@ -229,6 +247,7 @@ while (framesRendered < frameCount && readCount < FILE_LENGTH) {
 let endTime = sys.nanoTime()
 
 sys.free(ipfbuf)
+audio.stop(0)
 
 let timeTook = (endTime - startTime) / 1000000000.0
 

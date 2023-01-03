@@ -12,6 +12,9 @@ import net.torvald.tsvm.VM
 private fun Boolean.toInt() = if (this) 1 else 0
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
+    private fun printdbg(msg: Any) {
+        if (AudioAdapter.DBGPRN) println("[AudioAdapter] $msg")
+    }
     @Volatile private var exit = false
     override fun run() {
         while (!Thread.interrupted()) {
@@ -21,7 +24,7 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
                 if (playhead.isPlaying && writeQueue.notEmpty()) {
 
-//                    printdbg("Taking samples from queue (queue size: ${writeQueue.size})")
+                    printdbg("Taking samples from queue (queue size: ${writeQueue.size})")
 
                     val samples = writeQueue.removeFirst()
                     playhead.position = writeQueue.size
@@ -51,13 +54,16 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 }
 
 private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcmBin: UnsafePtr) : Runnable {
+    private fun printdbg(msg: Any) {
+        if (AudioAdapter.DBGPRN) println("[AudioAdapter] $msg")
+    }
     @Volatile private var exit = false
     override fun run() {
         while (!Thread.interrupted()) {
 
             playhead.let {
-                if (it.pcmQueue.size < 4 && it.pcmUpload && it.pcmUploadLength > 0) {
-//                    printdbg("Downloading samples ${it.pcmUploadLength}")
+                if (it.pcmQueue.size < it.getPcmQueueSize() && it.pcmUpload && it.pcmUploadLength > 0) {
+                    printdbg("Downloading samples ${it.pcmUploadLength}")
 
                     val samples = ByteArray(it.pcmUploadLength)
                     UnsafeHelper.memcpyRaw(null, pcmBin.ptr, samples, UnsafeHelper.getArrayOffset(samples), it.pcmUploadLength.toLong())
@@ -83,12 +89,12 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
  */
 class AudioAdapter(val vm: VM) : PeriBase {
 
-    private val DBGPRN = true
     private fun printdbg(msg: Any) {
         if (DBGPRN) println("[AudioAdapter] $msg")
     }
-    
+
     companion object {
+        internal val DBGPRN = true
         const val SAMPLING_RATE = 30000
     }
 
@@ -299,7 +305,8 @@ class AudioAdapter(val vm: VM) : PeriBase {
         var pcmUpload: Boolean = false,
 
         var pcmQueue: Queue<ByteArray> = Queue<ByteArray>(),
-        val audioDevice: OpenALBufferedAudioDevice
+        var pcmQueueSizeIndex: Int = 0,
+        val audioDevice: OpenALBufferedAudioDevice,
     ) {
         fun read(index: Int): Byte = when (index) {
             0 -> position.toByte()
@@ -308,7 +315,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
             3 -> pcmUploadLength.ushr(8).toByte()
             4 -> masterVolume.toByte()
             5 -> masterPan.toByte()
-            6 -> (isPcmMode.toInt().shl(7) or isPlaying.toInt().shl(4)).toByte()
+            6 -> (isPcmMode.toInt().shl(7) or isPlaying.toInt().shl(4) or pcmQueueSizeIndex.and(15)).toByte()
             7 -> 0
             8 -> (bpm - 24).toByte()
             9 -> tickRate.toByte()
@@ -331,7 +338,8 @@ class AudioAdapter(val vm: VM) : PeriBase {
                     val oldPcmMode = isPcmMode
                     isPcmMode = (it and 0b10000000) != 0
                     isPlaying = (it and 0b00010000) != 0
-
+                    pcmQueueSizeIndex = (it and 0b00001111)
+                    
                     if (it and 0b01000000 != 0 || oldPcmMode != isPcmMode) resetParams()
                     if (it and 0b00100000 != 0) purgeQueue()
                 } }
@@ -353,6 +361,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
             position = 0
             pcmUploadLength = 0
             isPlaying = false
+            pcmQueueSizeIndex = 0
         }
 
         fun purgeQueue() {
@@ -362,9 +371,15 @@ class AudioAdapter(val vm: VM) : PeriBase {
                 pcmUploadLength = 0
             }
         }
+        
+        fun getPcmQueueSize() = QUEUE_SIZE[pcmQueueSizeIndex]
 
         fun dispose() {
             audioDevice.dispose()
+        }
+        
+        companion object {
+            val QUEUE_SIZE = intArrayOf(4,6,8,12,16,24,32,48,64,96,128,256,384,512,768)
         }
     }
 

@@ -6,6 +6,7 @@ let FPS = 24
 let WIDTH = 560
 let HEIGHT = 448
 let PATHFUN = (i) => `/welkom/${(''+i).padStart(4,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
+let AUDIOTRACK = 'welkom/welkom.pcm'
 // to export video to its frames:
 //     ffmpeg -i file.mp4 file/%05d.bmp
 // the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:
@@ -38,10 +39,10 @@ function appendToOutfilePtr(ptr, len) {
     outfile.pappend(ptr, len)
 }
 
-let packetType = [
+const packetType = [
     4, (IPFMODE - 1)
 ]
-let syncPacket = [255, 255]
+const syncPacket = [255, 255]
 
 // write header to the file
 let headerBytes = [
@@ -57,41 +58,87 @@ let headerBytes = [
 let ipfFun = (IPFMODE == 1) ? graphics.encodeIpf1 : (IPFMODE == 2) ? graphics.encodeIpf2 : 0
 if (!ipfFun) throw Error("Unknown IPF mode "+IPFMODE)
 
+
+
+const AUDIO_SAMPLE_SIZE = 2 * ((30000 / FPS) + 1)|0 // times 2 because stereo
+let audioBytesRead = 0
+const audioFile = (AUDIOTRACK) ? files.open(_G.shell.resolvePathInput(AUDIOTRACK).full) : undefined
+let audioRemaining = (audioFile) ? audioFile.size : 0
+const audioPacket = [1, 16]
+
+
 outfile.bwrite(headerBytes)
 
-for (let f = 1; f <= TOTAL_FRAMES; f++) {
+for (let f = 1; ; f++) {
 
     // insert sync packet
     if (f > 1) appendToOutfile(syncPacket)
 
+    // insert video frame
+    if (f <= TOTAL_FRAMES) {
+        let fname = PATHFUN(f)
+        let framefile = files.open(_G.shell.resolvePathInput(fname).full)
+        let fileLen = framefile.size
+        framefile.pread(infile, fileLen)
 
-    let fname = PATHFUN(f)
-    let framefile = files.open(_G.shell.resolvePathInput(fname).full)
-    let fileLen = framefile.size
-    framefile.pread(infile, fileLen)
 
+        let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)
 
-    let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)
+        print(`Frame ${f}/${TOTAL_FRAMES} (Ch: ${channels}) ->`)
 
-    print(`Frame ${f}/${TOTAL_FRAMES} (Ch: ${channels}) ->`)
+    //    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
+        ipfFun(imagearea, ipfarea, WIDTH, HEIGHT, channels, false, f)
 
-//    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
-    ipfFun(imagearea, ipfarea, WIDTH, HEIGHT, channels, false, f)
+        let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
 
-    let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
+        let frameSize = [
+            (gzlen >>> 0) & 255,
+            (gzlen >>> 8) & 255,
+            (gzlen >>> 16) & 255,
+            (gzlen >>> 24) & 255
+        ]
 
-    let frameSize = [
-        (gzlen >>> 0) & 255,
-        (gzlen >>> 8) & 255,
-        (gzlen >>> 16) & 255,
-        (gzlen >>> 24) & 255
-    ]
+        appendToOutfile(packetType)
+        appendToOutfile(frameSize)
+        appendToOutfilePtr(gzippedImage, gzlen)
 
-    appendToOutfile(packetType)
-    appendToOutfile(frameSize)
-    appendToOutfilePtr(gzippedImage, gzlen)
+        print(` ${gzlen} bytes\n`)
+    }
+    // insert audio track, if any
+    if (audioRemaining > 0) {
 
-    print(` ${gzlen} bytes\n`)
+        // first frame gets two audio packets
+        for (let repeat = 0; repeat < ((f == 1) ? 2 : 1); repeat++) {
+
+    //        print(`Frame ${f}/${TOTAL_FRAMES} (ADPCM) ->`)
+            print(`Frame ${f}/${TOTAL_FRAMES} (PCMu8) ->`)
+
+            const actualBytesToRead = Math.min(
+                (f % 2 == 1) ? AUDIO_SAMPLE_SIZE : AUDIO_SAMPLE_SIZE + 2,
+                audioRemaining
+            )
+            audioFile.pread(infile, actualBytesToRead, audioBytesRead)
+
+            let pcmSize = [
+                (actualBytesToRead >>> 0) & 255,
+                (actualBytesToRead >>> 8) & 255,
+                (actualBytesToRead >>> 16) & 255,
+                (actualBytesToRead >>> 24) & 255
+            ]
+
+            appendToOutfile(audioPacket)
+            appendToOutfile(pcmSize)
+            appendToOutfilePtr(infile, actualBytesToRead)
+
+            print(` ${actualBytesToRead} bytes\n`)
+
+            audioBytesRead += actualBytesToRead
+            audioRemaining -= actualBytesToRead
+        }
+    }
+
+    // if there is no video and audio remaining, exit the loop
+    if (f > TOTAL_FRAMES && audioRemaining <= 0) break
 }
 
 sys.free(infile)

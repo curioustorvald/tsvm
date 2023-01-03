@@ -588,7 +588,7 @@ Length Param
 
 Play Head Flags
     Byte 1
-        - 0b mrqp 0000
+        - 0b mrqp ssss
           m: mode (0 for Tracker, 1 for PCM)
           r: reset parameters; always 0 when read
             resetting will:
@@ -597,6 +597,24 @@ Play Head Flags
                 unset play bit
           q: purge queues (likely do nothing if not PCM); always 0 when read
           p: play (0 if not -- mute all output)
+
+          ssss: PCM Mode set PCM Queue Size
+            0 - 4 samples
+            1 - 6 samples
+            2 - 8 samples
+            3 - 12 samples
+            4 - 16 samples
+            5 - 24 samples
+            6 - 32 samples
+            7 - 48 samples
+            8 - 64 samples
+            9 - 96 samples
+           10 - 128 samples
+           11 - 192 samples
+           12 - 256 samples
+           13 - 384 samples
+           14 - 512 samples
+           15 - 768 samples
 
           NOTE: changing from PCM mode to Tracker mode or vice versa will also reset the parameters as described above
     Byte 2
