@@ -29,8 +29,8 @@ con.clear(); con.curs_set(0)
 
 let readCount = 0
 
-function readBytes(length) {
-    let ptr = sys.malloc(length)
+function readBytes(length, ptrToDecode) {
+    let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
     let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
 
     let completedReads = 0
@@ -156,8 +156,8 @@ let ipfbuf = sys.malloc(FBUF_SIZE)
 graphics.setGraphicsMode(4)
 
 let startTime = sys.nanoTime()
-
 let framesRead = 0
+let audioFired = false
 
 audio.resetParams(0)
 audio.purgeQueue(0)
@@ -182,6 +182,8 @@ while (readCount < FILE_LENGTH) {
 
                 let packetType = readShort()
 
+                // ideally, first two packets will be audio packets
+
                 // sync packets
                 if (65535 == packetType) {
                     frameUnit -= 1
@@ -204,6 +206,12 @@ while (readCount < FILE_LENGTH) {
                         if (frameUnit == 1) {
                             gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
                             decodefun(ipfbuf, -1048577, -1310721, width, height, (packetType & 255) == 5)
+
+                            // defer audio playback until a first frame is sent
+                            if (!audioFired) {
+                                audio.play(0)
+                                audioFired = true
+                            }
                         }
 
                         sys.free(gzippedPtr)
@@ -221,7 +229,6 @@ while (readCount < FILE_LENGTH) {
                         audio.putPcmDataByPtr(samples, readLength, 0)
                         audio.setSampleUploadLength(0, readLength)
                         audio.startSampleUpload(0)
-                        audio.play(0)
 
                         sys.free(samples)
                     }

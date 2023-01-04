@@ -38,8 +38,8 @@ if (statusCode != 0) {
 
 
 let readCount = 0
-function readBytes(length) {
-    let ptr = sys.malloc(length)
+function readBytes(length, ptrToDecode) {
+    let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
     let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
 
     let completedReads = 0
@@ -108,6 +108,8 @@ audio.setMasterVolume(0, 255)
 // FIXME: when a playback was interrupted using SHIFT-CTRL-T-R, then re-tried, the ghost from the previous run
 //        briefly manifests, even if you're queueing only once
 
+const decodePtr = sys.malloc(BLOCK_SIZE)
+
 while (sampleSize > 0) {
     let queueSize = audio.getPosition(0)
 
@@ -123,14 +125,13 @@ while (sampleSize > 0) {
         // upload four samples for lag-safely
         for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
             let readLength = (sampleSize < BLOCK_SIZE) ? sampleSize : BLOCK_SIZE
-            let samples = readBytes(readLength)
+            let samples = readBytes(readLength, decodePtr)
 
             audio.putPcmDataByPtr(samples, readLength, 0)
             audio.setSampleUploadLength(0, readLength)
             audio.startSampleUpload(0)
 
             sampleSize -= readLength
-            sys.free(samples)
 
             if (repeat > 1) sys.sleep(10)
         }
@@ -145,3 +146,4 @@ while (sampleSize > 0) {
 }
 
 audio.stop(0) // this shouldn't be necessary, it should stop automatically
+sys.free(samples)

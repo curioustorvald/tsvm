@@ -124,8 +124,8 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
         """.trimIndent()
     }
 
-    internal var regs = UnsafeHelper.allocate(16 * 4)
-    internal var internalMem = UnsafeHelper.allocate(16384)
+    internal var regs = UnsafeHelper.allocate(16 * 4, this)
+//    internal var internalMem = UnsafeHelper.allocate(16384, this)
     internal var callStack = Stack<Pair<Long, Int>>() // Pair of Scene-ID (has SCENE_PREFIX; 0 with no prefix for root scene) and ProgramCounter
 
     /* Compile-time variables */

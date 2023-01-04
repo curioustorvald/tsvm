@@ -74,36 +74,6 @@ for (let f = 1; ; f++) {
     // insert sync packet
     if (f > 1) appendToOutfile(syncPacket)
 
-    // insert video frame
-    if (f <= TOTAL_FRAMES) {
-        let fname = PATHFUN(f)
-        let framefile = files.open(_G.shell.resolvePathInput(fname).full)
-        let fileLen = framefile.size
-        framefile.pread(infile, fileLen)
-
-
-        let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)
-
-        print(`Frame ${f}/${TOTAL_FRAMES} (Ch: ${channels}) ->`)
-
-    //    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
-        ipfFun(imagearea, ipfarea, WIDTH, HEIGHT, channels, false, f)
-
-        let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
-
-        let frameSize = [
-            (gzlen >>> 0) & 255,
-            (gzlen >>> 8) & 255,
-            (gzlen >>> 16) & 255,
-            (gzlen >>> 24) & 255
-        ]
-
-        appendToOutfile(packetType)
-        appendToOutfile(frameSize)
-        appendToOutfilePtr(gzippedImage, gzlen)
-
-        print(` ${gzlen} bytes\n`)
-    }
     // insert audio track, if any
     if (audioRemaining > 0) {
 
@@ -135,6 +105,36 @@ for (let f = 1; ; f++) {
             audioBytesRead += actualBytesToRead
             audioRemaining -= actualBytesToRead
         }
+    }
+    // insert video frame
+    if (f <= TOTAL_FRAMES) {
+        let fname = PATHFUN(f)
+        let framefile = files.open(_G.shell.resolvePathInput(fname).full)
+        let fileLen = framefile.size
+        framefile.pread(infile, fileLen)
+
+
+        let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)
+
+        print(`Frame ${f}/${TOTAL_FRAMES} (Ch: ${channels}) ->`)
+
+    //    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
+        ipfFun(imagearea, ipfarea, WIDTH, HEIGHT, channels, false, f)
+
+        let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
+
+        let frameSize = [
+            (gzlen >>> 0) & 255,
+            (gzlen >>> 8) & 255,
+            (gzlen >>> 16) & 255,
+            (gzlen >>> 24) & 255
+        ]
+
+        appendToOutfile(packetType)
+        appendToOutfile(frameSize)
+        appendToOutfilePtr(gzippedImage, gzlen)
+
+        print(` ${gzlen} bytes\n`)
     }
 
     // if there is no video and audio remaining, exit the loop

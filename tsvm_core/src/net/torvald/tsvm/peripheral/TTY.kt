@@ -16,7 +16,7 @@ class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), Peri
     }
 
     private val chrrom = Texture("$assetsRoot/tty.png")
-    private val textBuffer = UnsafeHelper.allocate(TEXT_ROWS * TEXT_COLS * 2L)
+    private val textBuffer = UnsafeHelper.allocate(TEXT_ROWS * TEXT_COLS * 2L, this)
     override var rawCursorPos = 0
     
     private val TEXT_AREA_SIZE = TEXT_COLS * TEXT_ROWS

@@ -24,9 +24,9 @@ internal object UnsafeHelper {
     /**
      * A factory method to allocate a memory of given size and return its starting address as a pointer.
      */
-    fun allocate(size: Long): UnsafePtr {
+    fun allocate(size: Long, caller: Any): UnsafePtr {
         val ptr = unsafe.allocateMemory(size)
-        return UnsafePtr(ptr, size)
+        return UnsafePtr(ptr, size, caller)
     }
 
     fun memcpy(src: UnsafePtr, fromIndex: Long, dest: UnsafePtr, toIndex: Long, copyLength: Long) =
@@ -58,7 +58,7 @@ internal object UnsafeHelper {
  *
  * Use of hashCode() is forbidden, use the pointer instead.
  */
-internal class UnsafePtr(pointer: Long, allocSize: Long) {
+internal class UnsafePtr(pointer: Long, allocSize: Long, private val caller: Any) {
     var destroyed = false
         private set
 
@@ -162,7 +162,7 @@ internal class UnsafePtr(pointer: Long, allocSize: Long) {
         UnsafeHelper.unsafe.setMemory(ptr, size, byte)
     }
 
-    override fun toString() = "0x${ptr.toString(16)} with size $size"
+    override fun toString() = "0x${ptr.toString(16)} with size $size, created by $caller"
     override fun equals(other: Any?) = this.ptr == (other as UnsafePtr).ptr && this.size == other.size
 
     inline fun printStackTrace(obj: Any) = printStackTrace(obj, System.out) // because of Java

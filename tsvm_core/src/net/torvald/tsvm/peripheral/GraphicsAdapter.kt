@@ -7,8 +7,10 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import com.badlogic.gdx.math.Matrix4
+import com.badlogic.gdx.utils.Disposable
 import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
+import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.FBM
 import net.torvald.tsvm.LoadShader
@@ -17,6 +19,7 @@ import net.torvald.tsvm.kB
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
 import java.io.InputStream
 import java.io.OutputStream
+import java.lang.IllegalArgumentException
 import kotlin.experimental.and
 
 data class AdapterConfig(
@@ -64,8 +67,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected val theme = config.theme
     protected val TAB_SIZE = 8
 
-    internal val framebuffer = UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT)//Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
-    internal val framebuffer2 = if (sgr.bankCount >= 2) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT) else null
+    internal val framebuffer = UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this)//Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
+    internal val framebuffer2 = if (sgr.bankCount >= 2) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this) else null
     internal val framebufferOut = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
@@ -78,9 +81,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)
     protected val faketex: Texture
 
-    internal val textArea = UnsafeHelper.allocate(7682)
-    internal val unusedArea = UnsafeHelper.allocate(1024)
-    internal val scanlineOffsets = UnsafeHelper.allocate(1024)
+    internal val textArea = UnsafeHelper.allocate(7682, this)
+    internal val unusedArea = UnsafeHelper.allocate(1024, this)
+    internal val scanlineOffsets = UnsafeHelper.allocate(1024, this)
 
     protected val paletteShader = LoadShader(DRAW_SHADER_VERT, config.paletteShader)
     protected val textShader = LoadShader(DRAW_SHADER_VERT, config.fragShader)
@@ -124,7 +127,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
 //    override var halfrowMode = false
 
-    private val instArea = UnsafeHelper.allocate(65536L)
+    private val instArea = UnsafeHelper.allocate(65536L, this)
 
     override var rawCursorPos: Int
         get() = textArea.getShortFree(memTextCursorPosOffset).toInt()
@@ -943,27 +946,31 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
     }
 
+    fun Disposable.tryDispose() {
+        try { this.dispose() } catch (_: GdxRuntimeException) {} catch (_: IllegalArgumentException) {}
+    }
+
     override fun dispose() {
         //testTex.dispose()
-        try { framebuffer.destroy() } catch (_: GdxRuntimeException) {}
-        try { framebuffer2?.destroy() } catch (_: GdxRuntimeException) {}
-        try { framebufferOut.dispose() } catch (_: GdxRuntimeException) {}
-        rendertex.dispose()
+//        paletteShader.tryDispose()
+//        textShader.tryDispose()
+        framebuffer.destroy()
+        framebuffer2?.destroy()
+        framebufferOut.tryDispose()
+        rendertex.tryDispose()
         textArea.destroy()
-        textForePixmap.dispose()
-        textBackPixmap.dispose()
-        textPixmap.dispose()
-        paletteShader.dispose()
-        textShader.dispose()
-        faketex.dispose()
-        outFBOs.forEach { it.dispose() }
-        outFBObatch.dispose()
+        textForePixmap.tryDispose()
+        textBackPixmap.tryDispose()
+        textPixmap.tryDispose()
+        faketex.tryDispose()
+//        outFBOs.forEach { it.tryDispose() }
+        outFBObatch.tryDispose()
 
-        try { textForeTex.dispose() } catch (_: GdxRuntimeException) {}
-        try { textBackTex.dispose() } catch (_: GdxRuntimeException) {}
+        textForeTex.tryDispose()
+        textBackTex.tryDispose()
 
-        chrrom0.dispose()
-        chrrom.dispose()
+        chrrom0.tryDispose()
+        chrrom.tryDispose()
         unusedArea.destroy()
         scanlineOffsets.destroy()
         instArea.destroy()

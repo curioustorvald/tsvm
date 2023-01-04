@@ -87,7 +87,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                                 parent.killVMenv(theVM)
                             }
                             else if (mx in 395..415 && !theVM.isRunning) {
-                                parent.initVMenv(theVM)
+                                parent.initVMenv(theVM, profileName)
                             }
                         }
                     }

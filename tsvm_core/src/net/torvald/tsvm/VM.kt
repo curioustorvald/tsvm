@@ -14,6 +14,10 @@ import kotlin.math.ceil
 
 class ErrorIllegalAccess(vm: VM, addr: Long) : RuntimeException("Segmentation fault at 0x${addr.toString(16).padStart(8, '0')} on VM id ${vm.id}")
 
+inline class VmId(val text: String) {
+    override fun toString() = text
+}
+
 
 /**
  * A class representing an instance of a Virtual Machine
@@ -30,7 +34,9 @@ class VM(
 
     val peripheralSlots = _peripheralSlots.coerceIn(1,8)
 
-    val id = java.util.Random().nextInt()
+    val id = VmId(getHashStr(6).let { it.substring(0..2) + "-" + it.substring(3..5) })
+
+    override fun toString() = "tsvm.VM!$id"
 
     internal val contexts = ArrayList<Thread>()
 
@@ -38,7 +44,7 @@ class VM(
     val MALLOC_UNIT = 64
     private val mallocBlockSize = (memsize / MALLOC_UNIT).toInt()
 
-    internal val usermem = UnsafeHelper.allocate(memsize)
+    internal val usermem = UnsafeHelper.allocate(memsize, this)
 
     val peripheralTable = Array(peripheralSlots) { PeripheralEntry() }
 

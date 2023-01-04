@@ -27,20 +27,20 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     private val keyboardBuffer = CircularArray<Byte>(32, true)
 
     internal val blockTransferRx = arrayOf(
-        UnsafeHelper.allocate(4096),
-        UnsafeHelper.allocate(4096),
-        UnsafeHelper.allocate(4096),
-        UnsafeHelper.allocate(4096)
+        UnsafeHelper.allocate(4096, this),
+        UnsafeHelper.allocate(4096, this),
+        UnsafeHelper.allocate(4096, this),
+        UnsafeHelper.allocate(4096, this)
     )
     internal val blockTransferTx = arrayOf(
-        UnsafeHelper.allocate(4096),
-        UnsafeHelper.allocate(4096),
-        UnsafeHelper.allocate(4096),
-        UnsafeHelper.allocate(4096)
+        UnsafeHelper.allocate(4096, this),
+        UnsafeHelper.allocate(4096, this),
+        UnsafeHelper.allocate(4096, this),
+        UnsafeHelper.allocate(4096, this)
     )
     /*private*/ val blockTransferPorts = Array(4) { BlockTransferPort(vm, it) }
 
-    private val peripheralFast = UnsafeHelper.allocate(1024)
+    private val peripheralFast = UnsafeHelper.allocate(1024, this)
 
     private val keyEventBuffers = ByteArray(8)
 

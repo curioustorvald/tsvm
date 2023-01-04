@@ -1,7 +1,6 @@
 package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.audio.AudioDevice
-import com.badlogic.gdx.backends.lwjgl3.audio.OpenALAudioDevice
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.math.MathUtils
 import com.badlogic.gdx.utils.GdxRuntimeException
@@ -120,6 +119,14 @@ class OpenALBufferedAudioDevice(
         freeSourceMethod.invoke(audio, sourceID)
     }
 
+    private val alErrors = hashMapOf(
+        AL10.AL_INVALID_NAME to "AL_INVALID_NAME",
+        AL10.AL_INVALID_ENUM to "AL_INVALID_ENUM",
+        AL10.AL_INVALID_VALUE to "AL_INVALID_VALUE",
+        AL10.AL_INVALID_OPERATION to "AL_INVALID_OPERATION",
+        AL10.AL_OUT_OF_MEMORY to  "AL_OUT_OF_MEMORY"
+    )
+
     fun writeSamples(data: ByteArray, offset: Int, length: Int) {
         var offset = offset
         var length = length
@@ -129,8 +136,11 @@ class OpenALBufferedAudioDevice(
             if (sourceID == -1) return
             if (buffers == null) {
                 buffers = BufferUtils.createIntBuffer(bufferCount)
+                AL10.alGetError()
                 AL10.alGenBuffers(buffers)
-                if (AL10.alGetError() != AL10.AL_NO_ERROR) throw GdxRuntimeException("Unabe to allocate audio buffers.")
+                AL10.alGetError().let {
+                    if (it != AL10.AL_NO_ERROR) throw GdxRuntimeException("Unabe to allocate audio buffers: ${alErrors[it]}")
+                }
             }
             AL10.alSourcei(sourceID, AL10.AL_LOOPING, AL10.AL_FALSE)
             AL10.alSourcef(sourceID, AL10.AL_GAIN, volume)

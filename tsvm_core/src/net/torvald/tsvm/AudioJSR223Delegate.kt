@@ -7,7 +7,11 @@ import net.torvald.tsvm.peripheral.AudioAdapter
  */
 class AudioJSR223Delegate(private val vm: VM) {
 
-    private fun getFirstSnd(): AudioAdapter? = vm.findPeribyType(VM.PERITYPE_SOUND)?.peripheral as? AudioAdapter
+    private fun getFirstSnd(): AudioAdapter? {
+        val a = vm.findPeribyType(VM.PERITYPE_SOUND)?.peripheral as? AudioAdapter
+        println("get AudioAdapter: $a; vm: $vm")
+        return a
+    }
     private fun getPlayhead(playhead: Int) = getFirstSnd()?.playheads?.get(playhead)
     
     fun setPcmMode(playhead: Int) { getPlayhead(playhead)?.isPcmMode = true }
@@ -56,9 +60,9 @@ class AudioJSR223Delegate(private val vm: VM) {
     }
     fun getPcmData(index: Int) = getFirstSnd()?.pcmBin?.get(index.toLong())
 
-    fun setPcmQueueSizeIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex = index }
-    fun getPcmQueueSizeIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex }
-    fun getPcmQueueSize(playhead: Int, index: Int) { getPlayhead(playhead)?.getPcmQueueSize() }
+    fun setPcmQueueCapacityIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex = index }
+    fun getPcmQueueCapacityIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex }
+    fun getPcmQueueCapacity(playhead: Int, index: Int) { getPlayhead(playhead)?.getPcmQueueCapacity() }
 
     fun resetParams(playhead: Int) {
         getPlayhead(playhead)?.resetParams()

@@ -465,7 +465,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
         else if (1 == useDither) {
-            val srcimg = UnsafeHelper.allocate(width * height * 4L * channels) // array of floats!
+            val srcimg = UnsafeHelper.allocate(width * height * 4L * channels, this) // array of floats!
 
             for (k in 0L until len) {
                 srcimg.setFloat(channels * k + 0, vm.peek(srcPtr + channels * k + 0)!!.toUint().toFloat() / 255f)

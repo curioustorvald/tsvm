@@ -2,12 +2,14 @@ package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
+import com.badlogic.gdx.utils.GdxRuntimeException
 import com.badlogic.gdx.utils.Queue
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
+import net.torvald.tsvm.getHashStr
 
 private fun Boolean.toInt() = if (this) 1 else 0
 
@@ -17,14 +19,14 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     }
     @Volatile private var exit = false
     override fun run() {
-        while (!Thread.interrupted()) {
+        while (!exit) {
             if (playhead.isPcmMode) {
 
                 val writeQueue = playhead.pcmQueue
 
                 if (playhead.isPlaying && writeQueue.notEmpty()) {
 
-                    printdbg("Taking samples from queue (queue size: ${writeQueue.size})")
+                    printdbg("Taking samples from queue (queue size: ${writeQueue.size}/${playhead.getPcmQueueCapacity()})")
 
                     val samples = writeQueue.removeFirst()
                     playhead.position = writeQueue.size
@@ -46,7 +48,7 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
             Thread.sleep(1)
         }
-        Thread.currentThread().interrupt()
+        playhead.audioDevice.dispose()
     }
     fun stop() {
         exit = true
@@ -59,10 +61,10 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
     }
     @Volatile private var exit = false
     override fun run() {
-        while (!Thread.interrupted()) {
+        while (!exit) {
 
             playhead.let {
-                if (it.pcmQueue.size < it.getPcmQueueSize() && it.pcmUpload && it.pcmUploadLength > 0) {
+                if (it.pcmQueue.size < it.getPcmQueueCapacity() && it.pcmUpload && it.pcmUploadLength > 0) {
                     printdbg("Downloading samples ${it.pcmUploadLength}")
 
                     val samples = ByteArray(it.pcmUploadLength)
@@ -77,7 +79,6 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
 
             Thread.sleep(4)
         }
-        Thread.currentThread().interrupt()
     }
     fun stop() {
         exit = true
@@ -98,12 +99,12 @@ class AudioAdapter(val vm: VM) : PeriBase {
         const val SAMPLING_RATE = 30000
     }
 
-    internal val sampleBin = UnsafeHelper.allocate(114687L)
+    internal val sampleBin = UnsafeHelper.allocate(114687L, this)
     internal val instruments = Array(256) { TaudInst() }
     internal val playdata = Array(256) { Array(64) { TaudPlayData(0,0,0,0,0,0,0,0) } }
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(2048) { PlayCue() }
-    internal val pcmBin = UnsafeHelper.allocate(65536L)
+    internal val pcmBin = UnsafeHelper.allocate(65536L, this)
 
     private val renderRunnables: Array<RenderRunnable>
     private val renderThreads: Array<Thread>
@@ -114,6 +115,9 @@ class AudioAdapter(val vm: VM) : PeriBase {
         throwable.printStackTrace()
     }
 
+    val hash = getHashStr()
+
+    override fun toString() = "AudioAdapter!$hash"
 
     init {
 
@@ -140,13 +144,14 @@ class AudioAdapter(val vm: VM) : PeriBase {
             }
 
 
-            Playhead(index = it, audioDevice = adev)
+            Playhead(this, index = it, audioDevice = adev)
         }
 
+
         renderRunnables = Array(4) { RenderRunnable(playheads[it]) }
-        renderThreads = Array(4) { Thread(renderRunnables[it], "AudioRenderHead${it+1}") }
+        renderThreads = Array(4) { Thread(renderRunnables[it], "AudioRenderHead${it+1}!$hash") }
         writeQueueingRunnables = Array(4) { WriteQueueingRunnable(playheads[it], pcmBin) }
-        writeQueueingThreads = Array(4) { Thread(writeQueueingRunnables[it], "AudioQueueingHead${it+1}") }
+        writeQueueingThreads = Array(4) { Thread(writeQueueingRunnables[it], "AudioQueueingHead${it+1}!$hash") }
 
 //        printdbg("AudioAdapter latency: ${audioDevice.latency}")
         renderThreads.forEach { it.uncaughtExceptionHandler = threadExceptionHandler; it.start() }
@@ -290,6 +295,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
     internal object PlayInstNop : PlayInstruction(0)
 
     internal data class Playhead(
+        private val parent: AudioAdapter,
         val index: Int,
 
         var position: Int = 0,
@@ -372,10 +378,11 @@ class AudioAdapter(val vm: VM) : PeriBase {
             }
         }
         
-        fun getPcmQueueSize() = QUEUE_SIZE[pcmQueueSizeIndex]
+        fun getPcmQueueCapacity() = QUEUE_SIZE[pcmQueueSizeIndex]
 
         fun dispose() {
-            audioDevice.dispose()
+            println("AudioDevice dispose ${parent.renderThreads[index]}")
+            try { audioDevice.dispose() } catch (e: GdxRuntimeException) { println("   "+ e.message) }
         }
         
         companion object {

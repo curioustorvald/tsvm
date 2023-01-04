@@ -68,7 +68,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     val watchdogs = hashMapOf<String, VMWatchdog>("TEVD_SYNC" to TEVD_SYNC)
 
-    data class VMRunnerInfo(val vm: VM, val name: String)
+    data class VMRunnerInfo(val vm: VM, val profileName: String)
 
     private val vms = arrayOfNulls<VMRunnerInfo>(this.panelsX * this.panelsY - 1) // index: # of the window where the reboot was requested
 
@@ -78,8 +78,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     lateinit var fbatch: FlippingSpriteBatch
     lateinit var camera: OrthographicCamera
 
-    var vmRunners = HashMap<Int, VMRunner>() // <VM's identifier, VMRunner>
-    var coroutineJobs = HashMap<Int, Job>() // <VM's identifier, Job>
+    var vmRunners = HashMap<VmId, VMRunner>() // <VM's identifier, VMRunner>
+    var coroutineJobs = HashMap<VmId, Job>() // <VM's identifier, Job>
 
     companion object {
         val APPDATADIR = TsvmEmulator.defaultDir
@@ -100,7 +100,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val currentlyLoadedProfiles = HashMap<String, VM>()
     internal fun getVMbyProfileName(name: String): VM? {
         if (profiles.containsKey(name)) {
-            return currentlyLoadedProfiles.getOrPut(name) { _makeVMfromJson(profiles[name]!!, name) }
+            return currentlyLoadedProfiles.getOrPut(name) { makeVMfromJson(profiles[name]!!, name) }
         }
         else
             return null
@@ -177,7 +177,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         vms[0] = VMRunnerInfo(vm, "Initial VM")*/
 
         val vm1 = getVMbyProfileName("Initial VM")!!
-        initVMenv(vm1)
+        initVMenv(vm1, "Initial VM")
         vms[0] = VMRunnerInfo(vm1, "Initial VM")
 
         init()
@@ -195,9 +195,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() ?: null else vmEmuInputProcessor
     }
 
-    internal fun initVMenv(vm: VM) {
+    internal fun initVMenv(vm: VM, profileName: String) {
         val gpu = ReferenceGraphicsAdapter2("./assets", vm)
-        VMSetupBroker.initVMenv(vm, gpu, vmRunners, coroutineJobs) {
+        VMSetupBroker.initVMenv(vm, profiles[profileName]!!, profileName, gpu, vmRunners, coroutineJobs) {
             it.printStackTrace()
             VMSetupBroker.killVMenv(vm, vmRunners, coroutineJobs)
         }
@@ -258,12 +258,14 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         watchdogs.forEach { (_, watchdog) -> watchdog.update(dt) }
     }
 
-    private fun reboot(vm: VM) {
+    private fun reboot(profileName: String) {
+        val vm = currentlyLoadedProfiles[profileName]!!
+
         vmRunners[vm.id]!!.close()
         coroutineJobs[vm.id]!!.cancel("reboot requested")
 
         vm.init()
-        initVMenv(vm)
+        initVMenv(vm, profileName)
     }
 
     private fun updateGame(delta: Float) {
@@ -279,7 +281,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
 
         vms.forEachIndexed { index, it ->
-            if (it?.vm?.resetDown == true && index == currentVMselection) { reboot(it.vm) }
+            if (it?.vm?.resetDown == true && index == currentVMselection) { reboot(it.profileName) }
             if (it?.vm?.isRunning == true) it?.vm?.update(delta)
         }
 
@@ -302,7 +304,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                 it.fillRect(xoff, yoff, 2, windowHeight)
                 it.fillRect(xoff + windowWidth - 2, yoff, 2, windowHeight)
 
-                vmInfo?.name?.let { name ->
+                vmInfo?.profileName?.let { name ->
                     it.fillRect(xoff, yoff, (name.length + 2) * FONT.W, FONT.H)
                     it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else EmulatorGuiToolkit.Theme.COL_ACTIVE2
                     FONT.draw(it, name, xoff + FONT.W.toFloat(), yoff.toFloat())
@@ -501,7 +503,6 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
     """.trimIndent()
 
-
     /**
      * You'll want to further init the things using the VM this function returns, such as:
      *
@@ -512,72 +513,15 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
      * }
      * ```
      */
-    private fun _makeVMfromJson(json: JsonValue, profileName: String): VM {
+    private fun makeVMfromJson(json: JsonValue, profileName: String): VM {
         println("Processing profile '$profileName'")
-        
+
         val assetsDir = json.getString("assetsdir")
         val ramsize = json.getLong("ramsize")
         val cardslots = json.getInt("cardslots")
         val roms = json.get("roms").iterator().map { VMProgramRom(it.asString()) }.toTypedArray()
 
         val vm = VM(assetsDir, ramsize, TheRealWorld(), roms, cardslots, watchdogs)
-
-        // install peripherals
-        listOf("com1", "com2", "com3", "com4").map { json.get(it) }.forEachIndexed { index, jsonValue ->
-            jsonValue?.let { deviceInfo ->
-                val className = deviceInfo.getString("cls")
-
-                val loadedClass = Class.forName(className)
-
-                val argTypess = loadedClass.declaredConstructors
-                var successful = false
-                var k = 0
-                // just try out all the possible argTypes
-                while (!successful && k < argTypess.size) {
-                    try {
-                        val argTypes = argTypess[k].parameterTypes
-
-                        println("loadedClass = $className")
-                        println("trying constructor args[${k}/${argTypess.lastIndex}]: ${argTypes.joinToString { it.canonicalName }}")
-
-                        val args = deviceInfo.get("args").allIntoJavaType(argTypes.tail())
-                        val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
-                        val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
-
-                        vm.getIO().blockTransferPorts[index].attachDevice(loadedClassInstance as BlockTransferInterface)
-                        println("COM${index+1} = ${loadedClassInstance.javaClass.canonicalName}: ${args.joinToString()}")
-
-                        successful = true
-                    }
-                    catch (e: IllegalArgumentException) {
-//                        e.printStackTrace()
-                    }
-                    finally {
-                        k += 1
-                    }
-                }
-                if (!successful) {
-                    throw RuntimeException("Invalid or insufficient arguments for $className in the profile $profileName")
-                }
-
-            }
-        }
-        (2..cardslots).map { it to json.get("card$it") }.forEach { (index, jsonValue) ->
-            jsonValue?.let { deviceInfo ->
-                val className = deviceInfo.getString("cls")
-
-                val loadedClass = Class.forName(className)
-                val argTypes = loadedClass.declaredConstructors[0].parameterTypes
-                val args = deviceInfo.get("args").allIntoJavaType(argTypes.tail())
-                val loadedClassConstructor = loadedClass.getConstructor(*argTypes)
-                val loadedClassInstance = loadedClassConstructor.newInstance(vm, *args)
-
-                val peri = loadedClassInstance as PeriBase
-                vm.peripheralTable[index] = PeripheralEntry(
-                    peri
-                )
-            }
-        }
 
         return vm
     }

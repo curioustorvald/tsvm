@@ -19,7 +19,7 @@ open class RamBank(val vm: VM, bankCount: Int) : PeriBase {
         if (banks % 2 == 1) banks += 1
     }
 
-    internal val mem = UnsafeHelper.allocate(bankSize * banks)
+    internal val mem = UnsafeHelper.allocate(bankSize * banks, this)
 
     protected var map0 = 0
     protected var map1 = 1

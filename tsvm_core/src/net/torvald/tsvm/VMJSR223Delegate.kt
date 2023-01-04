@@ -13,6 +13,8 @@ import java.nio.charset.Charset
  */
 class VMJSR223Delegate(private val vm: VM) {
 
+    fun getVmId() = vm.id.toString()
+
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
     fun peek(addr: Int) = vm.peek(addr.toLong())!!.toInt().and(255)
     fun nanoTime() = System.nanoTime()

@@ -1094,7 +1094,7 @@ var execApp = (cmdsrc, args, appname) => {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Boot script
-serial.println("TVDOS.SYS initialised, running boot script...");
+serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);
 var _G = {};
 let cmdfile = files.open("A:/tvdos/bin/command.js")
 eval(`var _AUTOEXEC=function(exec_args){${cmdfile.sread()}\n};` +
