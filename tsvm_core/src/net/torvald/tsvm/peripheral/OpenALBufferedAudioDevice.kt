@@ -36,8 +36,8 @@ class OpenALBufferedAudioDevice(
     private val audio: OpenALLwjgl3Audio,
     val rate: Int,
     isMono: Boolean,
-    private val bufferSize: Int,
-    private val bufferCount: Int,
+    val bufferSize: Int,
+    val bufferCount: Int,
     private val fillBufferCallback: () -> Unit
 ) : AudioDevice {
     private val channels: Int

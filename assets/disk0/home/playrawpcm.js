@@ -16,8 +16,8 @@ const FILE_SIZE = filex.size
 
 
 
-println("Reading...")
-serial.println("!!! READING")
+//println("Reading...")
+//serial.println("!!! READING")
 
 com.sendMessage(port, "DEVRST\x17")
 com.sendMessage(port, `OPENR"${filename}",1`)
@@ -125,9 +125,9 @@ while (sampleSize > 0) {
         // upload four samples for lag-safely
         for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
             let readLength = (sampleSize < BLOCK_SIZE) ? sampleSize : BLOCK_SIZE
-            let samples = readBytes(readLength, decodePtr)
+            readBytes(readLength, decodePtr)
 
-            audio.putPcmDataByPtr(samples, readLength, 0)
+            audio.putPcmDataByPtr(decodePtr, readLength, 0)
             audio.setSampleUploadLength(0, readLength)
             audio.startSampleUpload(0)
 
@@ -145,5 +145,5 @@ while (sampleSize > 0) {
     sys.sleep(10)
 }
 
-audio.stop(0) // this shouldn't be necessary, it should stop automatically
-sys.free(samples)
+audio.stop(0)
+sys.free(decodePtr)

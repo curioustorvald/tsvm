@@ -9,7 +9,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     private fun getFirstSnd(): AudioAdapter? {
         val a = vm.findPeribyType(VM.PERITYPE_SOUND)?.peripheral as? AudioAdapter
-        println("get AudioAdapter: $a; vm: $vm")
+//        println("get AudioAdapter: $a; vm: $vm")
         return a
     }
     private fun getPlayhead(playhead: Int) = getFirstSnd()?.playheads?.get(playhead)

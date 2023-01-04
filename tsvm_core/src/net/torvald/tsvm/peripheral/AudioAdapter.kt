@@ -39,9 +39,9 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 //                printdbg("P${playhead.index+1} go back to spinning")
 
                 }
-                else if (playhead.isPlaying) {
-//                printdbg("Queue exhausted, stopping...")
-//                it.isPlaying = false
+                else if (playhead.isPlaying && writeQueue.isEmpty) {
+                    printdbg("Queue exhausted, stopping audio device...")
+                    playhead.audioDevice.stop()
                 }
             }
 
@@ -60,6 +60,7 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
         if (AudioAdapter.DBGPRN) println("[AudioAdapter] $msg")
     }
     @Volatile private var exit = false
+
     override fun run() {
         while (!exit) {
 
@@ -95,7 +96,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
     }
 
     companion object {
-        internal val DBGPRN = true
+        internal val DBGPRN = false
         const val SAMPLING_RATE = 30000
     }
 
@@ -294,7 +295,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
     internal object PlayInstNop : PlayInstruction(0)
 
-    internal data class Playhead(
+    internal class Playhead(
         private val parent: AudioAdapter,
         val index: Int,
 
@@ -302,9 +303,6 @@ class AudioAdapter(val vm: VM) : PeriBase {
         var pcmUploadLength: Int = 0,
         var masterVolume: Int = 0,
         var masterPan: Int = 0,
-        // flags
-        var isPcmMode: Boolean = false,
-        var isPlaying: Boolean = false,
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
         var bpm: Int = 120, // "stored" as 96
         var tickRate: Int = 6,
@@ -314,6 +312,24 @@ class AudioAdapter(val vm: VM) : PeriBase {
         var pcmQueueSizeIndex: Int = 0,
         val audioDevice: OpenALBufferedAudioDevice,
     ) {
+        // flags
+        var isPcmMode: Boolean = false
+            set(value) {
+                if (value != isPcmMode) {
+                    resetParams()
+                }
+                field = value
+            }
+        var isPlaying: Boolean = false
+            set(value) {
+                // play last bit from the buffer by feeding 0s
+                if (isPlaying && !value) {
+//                    println("!! inserting dummy bytes")
+                    pcmQueue.addLast(ByteArray(audioDevice.bufferSize * audioDevice.bufferCount))
+                }
+                field = value
+            }
+
         fun read(index: Int): Byte = when (index) {
             0 -> position.toByte()
             1 -> position.ushr(8).toByte()
@@ -341,12 +357,11 @@ class AudioAdapter(val vm: VM) : PeriBase {
                 }
                 5 -> { masterPan = byte }
                 6 -> { byte.let {
-                    val oldPcmMode = isPcmMode
                     isPcmMode = (it and 0b10000000) != 0
                     isPlaying = (it and 0b00010000) != 0
                     pcmQueueSizeIndex = (it and 0b00001111)
-                    
-                    if (it and 0b01000000 != 0 || oldPcmMode != isPcmMode) resetParams()
+
+
                     if (it and 0b00100000 != 0) purgeQueue()
                 } }
                 7 -> if (isPcmMode) { pcmUpload = true } else {}
