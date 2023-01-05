@@ -4,7 +4,7 @@ let HW_SAMPLING_RATE = 30000
 let filename = exec_args[1]
 const port = _TVDOS.DRV.FS.SERIAL._toPorts("A")[0]
 function printdbg(s) {
-    if (1) serial.println(s)
+    if (0) serial.println(s)
 }
 
 
@@ -183,15 +183,18 @@ let comments = {};
 let readPtr = undefined
 let decodePtr = undefined
 
-function clampS16(i) { return (i < -32768) ? -32768 : (i > 32767) ? 32767 : i }
+function clamp(val, low, hi) { return (val < low) ? low : (val > hi) ? hi : val }
+function clampS16(i) { return clamp(i, -32768, 32767) }
 const uNybToSnyb = [0,1,2,3,4,5,6,7,-8,-7,-6,-5,-4,-3,-2,-1]
 // returns: [unsigned high, unsigned low, signed high, signed low]
 function getNybbles(b) { return [b >> 4, b & 15, uNybToSnyb[b >> 4], uNybToSnyb[b & 15]] }
+function s8Tou8(i) { return i + 128 }
 function s16Tou8(i) { return ((i >>> 8)) + 128 }
 function u16Tos16(i) { return (i > 32767) ? i - 65536 : i }
 function checkIfPlayable() {
     if (pcmType != 1 && pcmType != 2) return `PCM Type not LPCM/ADPCM (${pcmType})`
-    if (nChannels != 2) return `Audio not stereo but instead has ${nChannels} channels`
+    if (pcmType == 2 && nChannels > 2) return `Audio not mono/stereo but instead has ${nChannels} channels`
+    if (pcmType != 2 && nChannels != 2) return `Audio not stereo but instead has ${nChannels} channels`
     if (pcmType != 1 && samplingRate != HW_SAMPLING_RATE) return `Format is ADPCM but sampling rate is not ${HW_SAMPLING_RATE}: ${samplingRate}`
     return "playable!"
 }
@@ -201,7 +204,7 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
     if (2 == bytes) {
         if (HW_SAMPLING_RATE == samplingRate) {
             for (let k = 0; k < inputLen / 2; k++) {
-                sys.poke(outPtr + k, s16Tou8(sys.peek(inPtr + k*2 + 1)))
+                sys.poke(outPtr + k, s8Tou8(sys.peek(inPtr + k*2 + 1)))
             }
             return inputLen / 2
         }
@@ -242,19 +245,7 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
 
                     }
                     // soothing visualiser(????)
-                    /*let ls = sample[0].toString(2)
-                    if (sample[0] < 0)
-                        ls = ls.padStart(16, ' ') + '                '
-                    else
-                        ls = '                ' + ls.padEnd(16, ' ')
-
-                    let rs = sample[1].toString(2)
-                    if (sample[1] < 0)
-                        rs = rs.padStart(16, ' ') + '                '
-                    else
-                        rs = '                ' + rs.padEnd(16, ' ')
-
-                    println(`${ls} | ${rs}`)*/
+//                    let ls = sample[0].toString(2);if (sample[0] < 0) ls = ls.padStart(16, ' ') + '                '; else ls = '                ' + ls.padEnd(16, ' ');let rs = sample[1].toString(2);if (sample[1] < 0) rs = rs.padStart(16, ' ') + '                '; else rs = '                ' + rs.padEnd(16, ' ');println(`${ls} | ${rs}`)
 
                     // writeout
                     sys.poke(outPtr + sendoutLength, s16Tou8(sample[channel]))
@@ -274,7 +265,7 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
     }
 }
 // @see https://wiki.multimedia.cx/index.php/Microsoft_ADPCM
-// @see https://github.com/Snack-X/node-ms-adpcm/blob/master/index.js
+// @see https://github.com/videolan/vlc/blob/master/modules/codec/adpcm.c#L423
 function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
     const adaptationTable = [
       230, 230, 230, 230, 307, 409, 512, 614,
@@ -282,17 +273,17 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
     ]
     const coeff1 = [256, 512, 0, 192, 240, 460, 392]
     const coeff2 = [  0,-256, 0,  64,   0,-208,-232]
+    let readOff = 0
+    if (blockSize < 7 * nChannels) return
     if (2 == nChannels) {
-        let predictorL = sys.peek(inPtr + 0)
-//        if (predictorL < 0 || predictorR > 6) throw Error(`undefined predictorL ${predictorL}`)
-        let coeffL1 = coeff1[predictorL]
-        let coeffL2 = coeff2[predictorL]
-        let predictorR = sys.peek(inPtr + 1)
-//        if (predictorR < 0 || predictorR > 6) throw Error(`undefined predictorR ${predictorR}`)
-        let coeffR1 = coeff1[predictorR]
-        let coeffR2 = coeff2[predictorR]
-        let deltaL = sys.peek(inPtr + 2) | (sys.peek(inPtr + 3) << 8)
-        let deltaR = sys.peek(inPtr + 4) | (sys.peek(inPtr + 5) << 8)
+        let predL = clamp(sys.peek(inPtr + 0), 0, 6)
+        let coeffL1 = coeff1[predL]
+        let coeffL2 = coeff2[predL]
+        let predR = clamp(sys.peek(inPtr + 1), 0, 6)
+        let coeffR1 = coeff1[predR]
+        let coeffR2 = coeff2[predR]
+        let deltaL = u16Tos16(sys.peek(inPtr + 2) | (sys.peek(inPtr + 3) << 8))
+        let deltaR = u16Tos16(sys.peek(inPtr + 4) | (sys.peek(inPtr + 5) << 8))
         // write initial two samples
         let samL1 = u16Tos16(sys.peek(inPtr + 6) | (sys.peek(inPtr + 7) << 8))
         let samR1 = u16Tos16(sys.peek(inPtr + 8) | (sys.peek(inPtr + 9) << 8))
@@ -303,34 +294,100 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
         sys.poke(outPtr + 2, s16Tou8(samL1))
         sys.poke(outPtr + 3, s16Tou8(samR1))
 
+//        println(`isamp\t${samL2}\t${samR2}\t${samL1}\t${samR1}`)
+
         let bytesSent = 4
         // start delta-decoding
         for (let curs = 14; curs < blockSize; curs++) {
             let byte = sys.peek(inPtr + curs)
             let [unybL, unybR, snybL, snybR] = getNybbles(byte)
             // predict
-            predictorL = clampS16(((samL1 * coeffL1 + samL2 * coeffL2) >> 8) + (snybL * deltaL))
-            predictorR = clampS16(((samR1 * coeffR1 + samR2 * coeffR2) >> 8) + (snybR * deltaR))
-            // sendout
-            sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
-            sys.poke(outPtr + bytesSent, s16Tou8(predictorR));bytesSent += 1;
+            let predictorL = clampS16(((samL1 * coeffL1 + samL2 * coeffL2) >> 8) + snybL * deltaL)
+            let predictorR = clampS16(((samR1 * coeffR1 + samR2 * coeffR2) >> 8) + snybR * deltaR)
             // shift samples
             samL2 = samL1
             samL1 = predictorL
             samR2 = samR1
             samR1 = predictorR
             // compute next adaptive scale factor
-            deltaL = (deltaL * adaptationTable[unybL]) >> 8
-            deltaR = (deltaR * adaptationTable[unybR]) >> 8
-            // saturate delta to lower bound of 16
+            deltaL = ((adaptationTable[unybL] * deltaL) >> 8)
+            deltaR = ((adaptationTable[unybR] * deltaR) >> 8)
+            // clamp delta
             if (deltaL < 16) deltaL = 16
             if (deltaR < 16) deltaR = 16
+
+            // another soothing numbers wheezg-by(?)
+//            println(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybL).padStart(2,' ')} ${(''+unybR).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}${(''+predictorR).padStart(9,' ')}\tdelta\t${deltaL}\t${deltaR}`)
+
+            // sendout
+            sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
+            sys.poke(outPtr + bytesSent, s16Tou8(predictorR));bytesSent += 1;
+        }
+
+        return bytesSent
+    }
+    else if (1 == nChannels) {
+        let predL = clamp(sys.peek(inPtr + 0), 0, 6)
+        let coeffL1 = coeff1[predL]
+        let coeffL2 = coeff2[predL]
+        let deltaL = u16Tos16(sys.peek(inPtr + 1) | (sys.peek(inPtr + 2) << 8))
+        // write initial two samples
+        let samL1 = u16Tos16(sys.peek(inPtr + 3) | (sys.peek(inPtr + 4) << 8))
+        let samL2 = u16Tos16(sys.peek(inPtr + 5) | (sys.peek(inPtr + 6) << 8))
+        sys.poke(outPtr + 0, s16Tou8(samL2))
+        sys.poke(outPtr + 1, s16Tou8(samL2))
+        sys.poke(outPtr + 2, s16Tou8(samL1))
+        sys.poke(outPtr + 3, s16Tou8(samL1))
+
+//        println(`isamp\t${samL2}\t${samL1}`)
+
+        let bytesSent = 4
+        // start delta-decoding
+        for (let curs = 7; curs < blockSize; curs++) {
+            let byte = sys.peek(inPtr + curs)
+            let [unybL, unybR, snybL, snybR] = getNybbles(byte)
+
+            //// upper nybble ////
+            // predict
+            let predictorL = clampS16(((samL1 * coeffL1 + samL2 * coeffL2) >> 8) + snybL * deltaL)
+            // shift samples
+            samL2 = samL1
+            samL1 = predictorL
+            // compute next adaptive scale factor
+            deltaL = ((adaptationTable[unybL] * deltaL) >> 8)
+            // clamp delta
+            if (deltaL < 16) deltaL = 16
+
+            // another soothing numbers wheezg-by(?)
+//            println(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybL).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}\tdelta\t${deltaL}`)
+
+            // sendout
+            sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
+            sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
+
+            //// lower nybble ////
+            // predict
+            predictorL = clampS16(((samL1 * coeffL1 + samL2 * coeffL2) >> 8) + snybR * deltaL)
+            // shift samples
+            samL2 = samL1
+            samL1 = predictorL
+            // compute next adaptive scale factor
+            deltaL = ((adaptationTable[unybR] * deltaL) >> 8)
+            // clamp delta
+            if (deltaL < 16) deltaL = 16
+
+            // another soothing numbers wheezg-by(?)
+//            println(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybR).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}\tdelta\t${deltaL}`)
+
+            // sendout
+            sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
+            sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
         }
 
         return bytesSent
     }
     else {
-        throw Error(`Only stereo sound decoding is supported (channels: ${nCHannels})`)
+        throw Error(`Only stereo and mono sound decoding is supported (channels: ${nCHannels})`)
     }
 }
 // @return decoded sample length (not count!)
@@ -375,7 +432,7 @@ while (readCount < FILE_SIZE - 8) {
             INFILE_BLOCK_SIZE = BLOCK_SIZE
         }
 
-
+        printdbg(`Format: ${pcmType}, Channels: ${nChannels}, Rate: ${samplingRate}, BitDepth: ${bitsPerSample}`)
         printdbg(`BLOCK_SIZE=${BLOCK_SIZE}, INFILE_BLOCK_SIZE=${INFILE_BLOCK_SIZE}`)
     }
     else if ("LIST" == chunkName) {
@@ -403,8 +460,12 @@ while (readCount < FILE_SIZE - 8) {
         let unplayableReason  = checkIfPlayable()
         if (unplayableReason != "playable!") throw Error("WAVE not playable: "+unplayableReason)
 
-        readPtr = sys.malloc(BLOCK_SIZE * bitsPerSample / 8)
-        decodePtr = sys.malloc(BLOCK_SIZE)
+        if (pcmType == 2)
+            readPtr = sys.malloc(BLOCK_SIZE)
+        else
+            readPtr = sys.malloc(BLOCK_SIZE * bitsPerSample / 8)
+
+        decodePtr = sys.malloc(BLOCK_SIZE * HW_SAMPLING_RATE / samplingRate)
 
         audio.resetParams(0)
         audio.purgeQueue(0)

@@ -38,6 +38,7 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
 //                printdbg("P${playhead.index+1} go back to spinning")
 
+                    Thread.sleep(2)
                 }
                 else if (playhead.isPlaying && writeQueue.isEmpty) {
                     printdbg("Queue exhausted, stopping audio device...")
@@ -74,11 +75,11 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
 
                     it.pcmUploadLength = 0
                     it.position += 1
+                    Thread.sleep(6)
                 }
             }
 
-
-            Thread.sleep(4)
+            Thread.sleep(1)
         }
     }
     fun stop() {
