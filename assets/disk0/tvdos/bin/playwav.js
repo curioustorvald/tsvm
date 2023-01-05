@@ -3,10 +3,8 @@
 let HW_SAMPLING_RATE = 30000
 let filename = exec_args[1]
 const port = _TVDOS.DRV.FS.SERIAL._toPorts("A")[0]
-function printdbg(s) {
-    if (0) serial.println(s)
-}
-
+function printdbg(s) { if (0) serial.println(s) }
+function printvis(s) { if (0) println(s) }
 
 //println("Reading...")
 //serial.println("!!! READING")
@@ -189,8 +187,27 @@ const uNybToSnyb = [0,1,2,3,4,5,6,7,-8,-7,-6,-5,-4,-3,-2,-1]
 // returns: [unsigned high, unsigned low, signed high, signed low]
 function getNybbles(b) { return [b >> 4, b & 15, uNybToSnyb[b >> 4], uNybToSnyb[b & 15]] }
 function s8Tou8(i) { return i + 128 }
-function s16Tou8(i) { return ((i >>> 8)) + 128 }
+function s16Tou8(i) {
+//    return s8Tou8((i >> 8) & 255)
+    // apply dithering
+    let ufval = (i / 65536.0) + 0.5
+    let ival = randomRound(ufval * 256.0)
+    return ival|0
+}
 function u16Tos16(i) { return (i > 32767) ? i - 65536 : i }
+function sampleToVisual(i) {
+    let rawstr = Math.abs(i).toString(2)
+    if (i < 0) rawstr = rawstr.padStart(16, '0')
+    else       rawstr = rawstr.padEnd(16, '0')
+
+    let strPiece = rawstr.substring(0, Math.ceil(Math.abs(i) / 2048))
+    if (i == 0)
+        return '               ][               '
+    if (i < 0)
+        return strPiece.padStart(16, ' ') + '                '
+    else
+        return '                ' + strPiece.padEnd(16, ' ')
+}
 function checkIfPlayable() {
     if (pcmType != 1 && pcmType != 2) return `PCM Type not LPCM/ADPCM (${pcmType})`
     if (pcmType == 2 && nChannels > 2) return `Audio not mono/stereo but instead has ${nChannels} channels`
@@ -203,8 +220,15 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
 
     if (2 == bytes) {
         if (HW_SAMPLING_RATE == samplingRate) {
-            for (let k = 0; k < inputLen / 2; k++) {
-                sys.poke(outPtr + k, s8Tou8(sys.peek(inPtr + k*2 + 1)))
+            for (let k = 0; k < inputLen / 2; k+=2) {
+                let sample = [
+                    u16Tos16(sys.peek(inPtr + k*2 + 0) | (sys.peek(inPtr + k*2 + 1) << 8)),
+                    u16Tos16(sys.peek(inPtr + k*2 + 2) | (sys.peek(inPtr + k*2 + 3) << 8))
+                ]
+                sys.poke(outPtr + k, s16Tou8(sample[0]))
+                sys.poke(outPtr + k + 1, s16Tou8(sample[1]))
+                // soothing visualiser(????)
+                printvis(`${sampleToVisual(sample[0])} | ${sampleToVisual(sample[1])}`)
             }
             return inputLen / 2
         }
@@ -245,7 +269,7 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
 
                     }
                     // soothing visualiser(????)
-//                    let ls = sample[0].toString(2);if (sample[0] < 0) ls = ls.padStart(16, ' ') + '                '; else ls = '                ' + ls.padEnd(16, ' ');let rs = sample[1].toString(2);if (sample[1] < 0) rs = rs.padStart(16, ' ') + '                '; else rs = '                ' + rs.padEnd(16, ' ');println(`${ls} | ${rs}`)
+                    printvis(`${sampleToVisual(sample[0])} | ${sampleToVisual(sample[1])}`)
 
                     // writeout
                     sys.poke(outPtr + sendoutLength, s16Tou8(sample[channel]))
@@ -263,6 +287,12 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
     else {
         throw Error(`24-bit or 32-bit PCM not supported (bits per sample: ${bitsPerSample})`)
     }
+}
+function randomRound(k) {
+    if (Math.random() < (k - (k|0)))
+        return Math.ceil(k)
+    else
+        return Math.floor(k)
 }
 // @see https://wiki.multimedia.cx/index.php/Microsoft_ADPCM
 // @see https://github.com/videolan/vlc/blob/master/modules/codec/adpcm.c#L423
@@ -294,7 +324,7 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
         sys.poke(outPtr + 2, s16Tou8(samL1))
         sys.poke(outPtr + 3, s16Tou8(samR1))
 
-//        println(`isamp\t${samL2}\t${samR2}\t${samL1}\t${samR1}`)
+//        printvis(`isamp\t${samL2}\t${samR2}\t${samL1}\t${samR1}`)
 
         let bytesSent = 4
         // start delta-decoding
@@ -317,13 +347,13 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
             if (deltaR < 16) deltaR = 16
 
             // another soothing numbers wheezg-by(?)
-//            println(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybL).padStart(2,' ')} ${(''+unybR).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}${(''+predictorR).padStart(9,' ')}\tdelta\t${deltaL}\t${deltaR}`)
+            printvis(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybL).padStart(2,' ')} ${(''+unybR).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}${(''+predictorR).padStart(9,' ')}\tdelta\t${deltaL}\t${deltaR}`)
+//            printvis(`${sampleToVisual(predictorL)} | ${sampleToVisual(predictorR)}`)
 
             // sendout
             sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
             sys.poke(outPtr + bytesSent, s16Tou8(predictorR));bytesSent += 1;
         }
-
         return bytesSent
     }
     else if (1 == nChannels) {
@@ -339,7 +369,7 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
         sys.poke(outPtr + 2, s16Tou8(samL1))
         sys.poke(outPtr + 3, s16Tou8(samL1))
 
-//        println(`isamp\t${samL2}\t${samL1}`)
+//        printvis(`isamp\t${samL2}\t${samL1}`)
 
         let bytesSent = 4
         // start delta-decoding
@@ -359,7 +389,7 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
             if (deltaL < 16) deltaL = 16
 
             // another soothing numbers wheezg-by(?)
-//            println(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybL).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}\tdelta\t${deltaL}`)
+            printvis(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybL).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}\tdelta\t${deltaL}`)
 
             // sendout
             sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
@@ -377,7 +407,7 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize) {
             if (deltaL < 16) deltaL = 16
 
             // another soothing numbers wheezg-by(?)
-//            println(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybR).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}\tdelta\t${deltaL}`)
+            printvis(`b ${(''+byte).padStart(3,' ')} nb ${(''+unybR).padStart(2,' ')}  pred${(''+predictorL).padStart(9,' ')}\tdelta\t${deltaL}`)
 
             // sendout
             sys.poke(outPtr + bytesSent, s16Tou8(predictorL));bytesSent += 1;
