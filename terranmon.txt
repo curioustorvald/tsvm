@@ -578,6 +578,11 @@ Sound Adapter MMIO
 
 32 ??: ???
 
+Sound Hardware Info
+    - Sampling rate: 30000 Hz
+    - Bit depth: 8 bits/sample, unsigned
+    - Always operate in stereo (mono samples must be expanded to stereo before uploading)
+
 Play Head Position
     - Tracker mode: Cuesheet Counter
     - PCM mode: Number of buffers uploaded and received by the adapter
@@ -625,10 +630,8 @@ Play Head Flags
     Byte 4 (Tracker Mode)
         - Tick Rate (Play Data will change this register)
 
-    Byte 3-4 (PCM Mode)
-        - Signed Int16 Sampling rate difference from 30000 Hz
-
-    Uploaded PCM data will be stored onto the queue and the queue is only 4-entries long; any more uploads will be silently discarded.
+    Uploaded PCM data will be stored onto the queue before being consumed by hardware.
+    If the queue is full, any more uploads will be silently discarded.
 
 
 32768..65535 RW: Cue Sheet (2048 cues)

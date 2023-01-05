@@ -371,12 +371,12 @@ class AudioAdapter(val vm: VM) : PeriBase {
             }
         }
 
-        fun getSamplingRate() = 30000 - ((bpm - 24).and(255) or tickRate.and(255).shl(8)).toShort().toInt()
+        /*fun getSamplingRate() = 30000 - ((bpm - 24).and(255) or tickRate.and(255).shl(8)).toShort().toInt()
         fun setSamplingRate(rate: Int) {
             val rateDiff = (rate.coerceIn(0, 95535) - 30000).toShort().toInt()
             bpm = rateDiff.and(255) + 24
             tickRate = rateDiff.ushr(8).and(255)
-        }
+        }*/
 
         fun resetParams() {
             position = 0

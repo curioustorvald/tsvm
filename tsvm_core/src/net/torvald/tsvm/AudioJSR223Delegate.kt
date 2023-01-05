@@ -38,8 +38,8 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun setSampleUploadLength(playhead: Int, length: Int) { getPlayhead(playhead)?.pcmUploadLength = length and 65535 }
 
-    fun setSamplingRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.setSamplingRate(rate) }
-    fun getSamplingRate(playhead: Int) = getPlayhead(playhead)?.getSamplingRate()
+//    fun setSamplingRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.setSamplingRate(rate) }
+//    fun getSamplingRate(playhead: Int) = getPlayhead(playhead)?.getSamplingRate()
 
     fun startSampleUpload(playhead: Int) { getPlayhead(playhead)?.pcmUpload = true }
 
