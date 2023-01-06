@@ -210,8 +210,7 @@ function sampleToVisual(i) {
 }
 function checkIfPlayable() {
     if (pcmType != 1 && pcmType != 2) return `PCM Type not LPCM/ADPCM (${pcmType})`
-    if (pcmType == 2 && nChannels > 2) return `Audio not mono/stereo but instead has ${nChannels} channels`
-    if (pcmType != 2 && nChannels != 2) return `Audio not stereo but instead has ${nChannels} channels`
+    if (nChannels < 1 || nChannels > 2) return `Audio not mono/stereo but instead has ${nChannels} channels`
     if (pcmType != 1 && samplingRate != HW_SAMPLING_RATE) return `Format is ADPCM but sampling rate is not ${HW_SAMPLING_RATE}: ${samplingRate}`
     return "playable!"
 }
@@ -220,17 +219,29 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
 
     if (2 == bytes) {
         if (HW_SAMPLING_RATE == samplingRate) {
-            for (let k = 0; k < inputLen / 2; k+=2) {
-                let sample = [
-                    u16Tos16(sys.peek(inPtr + k*2 + 0) | (sys.peek(inPtr + k*2 + 1) << 8)),
-                    u16Tos16(sys.peek(inPtr + k*2 + 2) | (sys.peek(inPtr + k*2 + 3) << 8))
-                ]
-                sys.poke(outPtr + k, s16Tou8(sample[0]))
-                sys.poke(outPtr + k + 1, s16Tou8(sample[1]))
-                // soothing visualiser(????)
-                printvis(`${sampleToVisual(sample[0])} | ${sampleToVisual(sample[1])}`)
+            if (2 == nChannels) {
+                for (let k = 0; k < inputLen / 2; k+=2) {
+                    let sample = [
+                        u16Tos16(sys.peek(inPtr + k*2 + 0) | (sys.peek(inPtr + k*2 + 1) << 8)),
+                        u16Tos16(sys.peek(inPtr + k*2 + 2) | (sys.peek(inPtr + k*2 + 3) << 8))
+                    ]
+                    sys.poke(outPtr + k, s16Tou8(sample[0]))
+                    sys.poke(outPtr + k + 1, s16Tou8(sample[1]))
+                    // soothing visualiser(????)
+                    printvis(`${sampleToVisual(sample[0])} | ${sampleToVisual(sample[1])}`)
+                }
+                return inputLen / 2
             }
-            return inputLen / 2
+            else if (1 == nChannels) {
+                for (let k = 0; k < inputLen; k+=1) {
+                    let sample = u16Tos16(sys.peek(inPtr + k*2 + 0) | (sys.peek(inPtr + k*2 + 1) << 8))
+                    sys.poke(outPtr + k*2, s16Tou8(sample))
+                    sys.poke(outPtr + k*2 + 1, s16Tou8(sample))
+                    // soothing visualiser(????)
+                    printvis(`${sampleToVisual(sample)}`)
+                }
+                return inputLen
+            }
         }
         // resample!
         else {
@@ -239,7 +250,7 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
             let indices = (inputLen / indexStride) / nChannels / bytes
             let sample = [
                 u16Tos16(sys.peek(inPtr+0) | (sys.peek(inPtr+1) << 8)),
-                u16Tos16(sys.peek(inPtr+2) | (sys.peek(inPtr+3) << 8))
+                u16Tos16(sys.peek(inPtr+bytes) | (sys.peek(inPtr+bytes+1) << 8))
             ]
 
             printdbg(`indices: ${indices}; indexStride = ${indexStride}`)
@@ -256,14 +267,14 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
                     if (Math.abs((iEnd / iA) - 1.0) < 0.0001) {
                         // iEnd on integer point (no lerp needed)
                         let iR = Math.round(iEnd)
-                        sample[channel] = u16Tos16(sys.peek(inPtr + 4*iR + 2*channel) | (sys.peek(inPtr + 4*iR + 2*channel + 1) << 8))
+                        sample[channel] = u16Tos16(sys.peek(inPtr + blockSize*iR + bytes*channel) | (sys.peek(inPtr + blockSize*iR + bytes*channel + 1) << 8))
                     }
                     else {
                         // iEnd not on integer point (lerp needed)
                         // sampleA = samples[iEnd|0], sampleB = samples[1 + (iEnd|0)], lerpScale = iEnd - (iEnd|0)
                         // sample = lerp(sampleA, sampleB, lerpScale)
-                        let sampleA = u16Tos16(sys.peek(inPtr + 4*iA + 2*channel + 0) | (sys.peek(inPtr + 4*iA + 2*channel + 1) << 8))
-                        let sampleB = u16Tos16(sys.peek(inPtr + 4*iA + 2*channel + 4) | (sys.peek(inPtr + 4*iA + 2*channel + 5) << 8))
+                        let sampleA = u16Tos16(sys.peek(inPtr + blockSize*iA + bytes*channel + 0) | (sys.peek(inPtr + blockSize*iA + bytes*channel + 1) << 8))
+                        let sampleB = u16Tos16(sys.peek(inPtr + blockSize*iA + bytes*channel + blockSize) | (sys.peek(inPtr + blockSize*iA + bytes*channel + blockSize + 1) << 8))
                         let scale = iEnd - iA
                         sample[channel] = (lerpAndRound(sampleA, sampleB, scale))
 
@@ -272,8 +283,10 @@ function decodeLPCM(inPtr, outPtr, inputLen) {
                     printvis(`${sampleToVisual(sample[0])} | ${sampleToVisual(sample[1])}`)
 
                     // writeout
-                    sys.poke(outPtr + sendoutLength, s16Tou8(sample[channel]))
-                    sendoutLength += 1
+                    sys.poke(outPtr + sendoutLength, s16Tou8(sample[channel]));sendoutLength += 1
+                    if (nChannels == 1) {
+                        sys.poke(outPtr + sendoutLength, s16Tou8(sample[channel]));sendoutLength += 1
+                    }
                 }
             }
             // pad with zero (might have lost the last sample of the input audio but whatever)
