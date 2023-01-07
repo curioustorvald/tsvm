@@ -400,6 +400,7 @@ METADATA -
       3,16: ADPCM Stereo
     <special>
     255,255: sync packet (wait until the next frame)
+    254,255: background colour packet
 
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
@@ -438,6 +439,12 @@ GLOBAL TYPE 255 Packet -
 Sync Packet (subset of GLOBAL TYPE 255 Packet) -
     uint16 0xFFFF (type of packet for Global Type 255)
 
+Background Colour Packet -
+    uint16 0xFEFF
+    uint8  Red (0-255)
+    uint8  Green (0-255)
+    uint8  Blue (0x255)
+    uint8  0x00 (pad byte)
 
 
 Frame Timing

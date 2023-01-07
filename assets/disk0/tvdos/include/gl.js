@@ -4,10 +4,9 @@ TVDOS Graphics Library
 Has no affiliation with OpenGL by Khronos Group
  */
 
-const GL = {};
 
 // bytes should be able to handle both JSArray and Java ByteArray (toString = "[B")?
-GL.Texture = function(w, h, bytes) {
+exports.Texture = function(w, h, bytes) {
     this.width = w;
     this.height = h;
     this.texData = bytes;
@@ -16,7 +15,7 @@ GL.Texture = function(w, h, bytes) {
         throw "Texture data is not an instance of array";
     }
 };
-GL.MonoTex = function(w, h, bits) {
+exports.MonoTex = function(w, h, bits) {
     this.width = w;
     this.height = h;
     this.texData = bits;
@@ -25,16 +24,16 @@ GL.MonoTex = function(w, h, bits) {
         throw "Texture data is not an instance of array";
     }
 };
-GL.SpriteSheet = function(tilew, tileh, tex) {
+exports.SpriteSheet = function(tilew, tileh, tex) {
     this.tileWidth = tilew;
     this.tileHeight = tileh;
     this.texture = tex;
 
-    if (!tex instanceof GL.Texture) {
-        throw "Texture is not an instance of GL.Texture";
+    if (!tex instanceof exports.Texture) {
+        throw "Texture is not an instance of exports.Texture";
     }
 
-    this.getOffX = function(x) { // THIS, or: GL.SpriteSheet.prototype.getOffX
+    this.getOffX = function(x) { // THIS, or: exports.SpriteSheet.prototype.getOffX
         let tx = this.tileWidth * (x|0);
         if (tx + this.tileWidth > this.texture.width) throw "Sprite x-offset of "+tx+" is greater than sprite width "+this.texture.width;
         return tx;
@@ -46,19 +45,19 @@ GL.SpriteSheet = function(tilew, tileh, tex) {
         return ty;
     };
 };
-GL.drawTexPattern = function(texture, x, y, width, height, framebuffer, fgcol, bgcol) {
-    if (!(texture instanceof GL.Texture) && !(texture instanceof GL.MonoTex)) throw Error("Texture is not a GL Texture types");
+exports.drawTexPattern = function(texture, x, y, width, height, framebuffer, fgcol, bgcol) {
+    if (!(texture instanceof exports.Texture) && !(texture instanceof exports.MonoTex)) throw Error("Texture is not a GL Texture types");
 
     let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
     for (let yy = 0; yy < height; yy++) {
         for (let xx = 0; xx < width;) {
             let tx = xx % texture.width;
             let ty = yy % texture.height;
-            if (texture instanceof GL.Texture) {
+            if (texture instanceof exports.Texture) {
                 let c = texture.texData[ty * texture.width + tx];
                 paint(x + xx, y + yy, c);
             }
-            else if (texture instanceof GL.MonoTex) {
+            else if (texture instanceof exports.MonoTex) {
                 let octet = texture.texData[ty * (texture.width >> 3) + (tx >> 3)];
                 for (let i = 0; i < 8; i++) {
                     let bit = ((octet >>> (7 - i)) & 1 != 0)
@@ -66,25 +65,25 @@ GL.drawTexPattern = function(texture, x, y, width, height, framebuffer, fgcol, b
                 }
             }
 
-            xx += (texture instanceof GL.MonoTex) ? 8 : 1;
+            xx += (texture instanceof exports.MonoTex) ? 8 : 1;
         }
     }
 };
-GL.drawTexPatternOver = function(texture, x, y, width, height, framebuffer, fgcol) {
-    if (!(texture instanceof GL.Texture) && !(texture instanceof GL.MonoTex)) throw Error("Texture is not a GL Texture types");
+exports.drawTexPatternOver = function(texture, x, y, width, height, framebuffer, fgcol) {
+    if (!(texture instanceof exports.Texture) && !(texture instanceof exports.MonoTex)) throw Error("Texture is not a GL Texture types");
 
     let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
     for (let yy = 0; yy < height; yy++) {
         for (let xx = 0; xx < width;) {
             let tx = xx % texture.width;
             let ty = yy % texture.height;
-            if (texture instanceof GL.Texture) {
+            if (texture instanceof exports.Texture) {
                 let c = texture.texData[ty * texture.width + tx];
                 if ((c & 255) != 255) {
                     paint(x + xx, y + yy, c);
                 }
             }
-            else if (texture instanceof GL.MonoTex) {
+            else if (texture instanceof exports.MonoTex) {
                 let octet = texture.texData[ty * (texture.width >> 3) + (tx >> 3)];
                 for (let i = 0; i < 8; i++) {
                     let bit = ((octet >>> (7 - i)) & 1 != 0)
@@ -92,21 +91,21 @@ GL.drawTexPatternOver = function(texture, x, y, width, height, framebuffer, fgco
                 }
             }
 
-            xx += (texture instanceof GL.MonoTex) ? 8 : 1;
+            xx += (texture instanceof exports.MonoTex) ? 8 : 1;
         }
     }
 };
 /*
  * Draws a texture verbatim - color of 255 will be written to the screen buffer
  */
-GL.drawTexImage = function(texture, x, y, framebuffer, fgcol, bgcol) {
-    GL.drawTexPattern(texture, x, y, texture.width, texture.height, framebuffer, fgcol, bgcol);
+exports.drawTexImage = function(texture, x, y, framebuffer, fgcol, bgcol) {
+    exports.drawTexPattern(texture, x, y, texture.width, texture.height, framebuffer, fgcol, bgcol);
 };
 /*
  * Draws texture with blitting - color of 255 will pass-thru what's already on the screen buffer
  */
-GL.drawTexImageOver = function(texture, x, y, framebuffer, fgcol) {
-    GL.drawTexPatternOver(texture, x, y, texture.width, texture.height, framebuffer, fgcol);
+exports.drawTexImageOver = function(texture, x, y, framebuffer, fgcol) {
+    exports.drawTexPatternOver(texture, x, y, texture.width, texture.height, framebuffer, fgcol);
 };
 /*
  * @param xi x-index in the spritesheet, ZERO-BASED INDEX
@@ -116,7 +115,7 @@ GL.drawTexImageOver = function(texture, x, y, framebuffer, fgcol) {
  * @param overrideFG if the value is set and the current pixel of the sheet is not 255, plots this colour instead
  * @param overrideBG if the value is set and the current pixel of the sheet is 255, plots this colour instead
  */
-GL.drawSprite = function(sheet, xi, yi, x, y, framebuffer, overrideFG, overrideBG) {
+exports.drawSprite = function(sheet, xi, yi, x, y, framebuffer, overrideFG, overrideBG) {
     let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
     let offx = sheet.getOffX(xi);
     let offy = sheet.getOffY(yi);
@@ -137,7 +136,7 @@ GL.drawSprite = function(sheet, xi, yi, x, y, framebuffer, overrideFG, overrideB
  * @param y y-position on the framebuffer where the sprite will be drawn
  * @param overrideFG if the value is set and the current pixel of the sheet is not 255, plots this colour instead
  */
-GL.drawSpriteOver = function(sheet, xi, yi, x, y, framebuffer, overrideFG) {
+exports.drawSpriteOver = function(sheet, xi, yi, x, y, framebuffer, overrideFG) {
     let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2
     let offx = sheet.getOffX(xi);
     let offy = sheet.getOffY(yi);
@@ -150,5 +149,3 @@ GL.drawSpriteOver = function(sheet, xi, yi, x, y, framebuffer, overrideFG) {
         }
     }
 };
-
-Object.freeze(GL); // this returns frozen 'GL'

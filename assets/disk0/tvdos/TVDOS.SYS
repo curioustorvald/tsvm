@@ -1062,8 +1062,17 @@ Object.freeze(unicode);
 ///////////////////////////////////////////////////////////////////////////////
 
 // install other stuffs
-let glfile = files.open("A:/tvdos/gl.js")
-const GL = eval(glfile.sread())
+var require = (absdir) => {
+    let moduleFile = files.open(absdir)
+    if (!moduleFile.exists) throw Error("No such file: " + absdir)
+    let moduleScript = moduleFile.sread()
+    return eval(`let exports = {}; ${moduleScript}; Object.freeze(exports)`)
+}
+
+
+var GL = require("A:/tvdos/include/gl.js")
+
+
 
 let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`
 let injectIntChk = (s, n) => {
@@ -1090,6 +1099,8 @@ var execApp = (cmdsrc, args, appname) => {
 
         execAppPrg(args);
 }
+
+
 
 ///////////////////////////////////////////////////////////////////////////////
 

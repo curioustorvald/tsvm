@@ -594,6 +594,19 @@ shell.stdio = {
     }
 }
 Object.freeze(shell.stdio)
+// install an improved version of require that takes care of relative path
+shell.require = require
+require = function(path) {
+    // absolute path?
+    if (path[1] == ":") return shell.require(path)
+    else {
+        // if the path starts with ".", look for the current directory
+        // if the path starts with [A-Za-z0-9], look for the DOSDIR/includes
+        if (path[0] == '.') return shell.require(shell.resolvePathInput(path).full + ".js")
+        else return shell.require(`A:${_TVDOS.variables.DOSDIR}/include/${path}.js`)
+    }
+}
+
 shell.execute = function(line) {
     if (0 == line.size) return
     let parsedTokens = shell.parse(line) // echo, "hai", |, less

@@ -188,6 +188,15 @@ while (readCount < FILE_LENGTH) {
                 if (65535 == packetType) {
                     frameUnit -= 1
                 }
+                // background colour packets
+                else if (65279 == packetType) {
+                    let rgbx = readInt()
+                    graphics.setBackground(
+                        (rgbx & 0xFF000000) >>> 24,
+                        (rgbx & 0x00FF0000) >>> 16,
+                        (rgbx & 0x0000FF00) >>> 8
+                    )
+                }
                 // video packets
                 else if (packetType < 2047) {
                     // iPF

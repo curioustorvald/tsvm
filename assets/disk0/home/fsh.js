@@ -21,7 +21,7 @@ _fsh.brandLogoTexSmall = new GL.Texture(24, 14, gzip.decomp(base64.atob(
 _fsh.scrlayout = ["com.fsh.clock","com.fsh.calendar","com.fsh.todo_list", "com.fsh.quick_access"];
 
 _fsh.drawWallpaper = function() {
-    let wp = files.open("A:/tvdos/wall.bytes")
+    let wp = files.open("A:/home/wall.bytes")
 //    filesystem.open("A", "/tvdos/wall.bytes", "R")
     let b = sys.malloc(250880)
 //    dma.comToRam(0, 0, b, 250880)
