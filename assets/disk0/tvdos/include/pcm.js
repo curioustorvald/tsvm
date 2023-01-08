@@ -1,12 +1,12 @@
 const HW_SAMPLING_RATE = 30000
 function printdbg(s) { if (0) serial.println(s) }
-function printvis(s) { if (1) println(s) }
+function printvis(s) { if (0) println(s) }
 function sampleToVisual(i) {
     let rawstr = Math.abs(i).toString(2)
     if (i < 0) rawstr = rawstr.padStart(16, '0')
     else       rawstr = rawstr.padEnd(16, '0')
 
-    let strPiece = rawstr.substring(0, Math.ceil(Math.abs(i) / 2048))
+    let strPiece = rawstr.substring(0, Math.ceil((Math.abs(i)) / 2048))
     if (i == 0)
         return '               ][               '
     if (i < 0)
@@ -29,7 +29,8 @@ function s16Tou8(i) {
 }
 function u16Tos16(i) { return (i > 32767) ? i - 65536 : i }
 function randomRound(k) {
-    if (Math.random() < (k - (k|0)))
+    let rnd = (Math.random() + Math.random()) / 2.0 // this produces triangular distribution
+    if (rnd < (k - (k|0)))
         return Math.ceil(k)
     else
         return Math.floor(k)
