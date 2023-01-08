@@ -54,3 +54,5 @@ if (portNumber < 4) {
 else {
     printerrln("No bootable medium found.");
 }
+
+sys.poke(-90,128)

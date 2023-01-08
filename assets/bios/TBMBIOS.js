@@ -80,3 +80,5 @@ else {
 
     if (response !== 0) println("No ROM BASIC system halted");
 }
+
+sys.poke(-90,128)

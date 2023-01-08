@@ -512,8 +512,8 @@ shell.coreutils = {
         let sourceFile = files.open(path.full)
         let destFile = files.open(pathd.full)
 
-        debugprintln(`[cp] source path: ${path.full}`)
-        debugprintln(`[cp] dest path: ${pathd.full}`)
+        debugprintln(`[mv] source path: ${path.full}`)
+        debugprintln(`[mv] dest path: ${pathd.full}`)
 
         if (sourceFile.isDirectory || !sourceFile.exists) { printerrln(`${args[0].toUpperCase()} failed for '${sourceFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned
         if (destFile.isDirectory) { printerrln(`${args[0].toUpperCase()} failed for '${destFile.fullPath}'`); return 1 } // if file is directory or failed to open, IO error code will be returned

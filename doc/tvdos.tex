@@ -10,15 +10,30 @@ All \thedos-related features requires the DOS to be fully loaded.
 \index{boot process}\thedos\ goes through follwing progress to deliver the \code{A:\rs} prompt:
 
 \section{Probing Bootable Devices}
-BIOS
+The BIOS will probe serial devices to find first bootable drive. If found, port number of the driver is written to the \code{\_BIOS} object, then attempts to load and run the bootloader.
 
 \section{The Bootloader}
-LOADBOOT
-
-Then the Bootsector will try to read and execute \code{A:\rs{}tvdos\rs{}TVDOS.SYS}
+The Bootloader is a short program that loads the \code{TVDOS.SYS} file.
 
 \section{TVDOS.SYS}
 \thedos.SYS will load system libraries and variables and then will try to run the boot script by executing \code{A:\rs{}AUTOEXEC.BAT}
+
+Boot Procedure:
+
+\begin{enumerate}
+ \item define \code{\_TVDOS} objects
+ \item probe filesystem devices
+ \item initialise DOS variables
+ \item install filesystem drivers
+ \item install input device drivers
+ \item install GL using the external file
+ \item execute \code{AUTOEXEC.BAT}
+ \begin{enumerate}
+  \item execute \code{command.js} with proper arguments
+  \item \code{command.js} to initialise \code{shell.*} functions (this includes coreutils and patched version of \code{require})
+  \item \code{command.js} to parse and run \code{AUTOEXEC.BAT}
+ \end{enumerate}
+\end{enumerate}
 
 \section{AUTOEXEC.BAT}
 
@@ -43,6 +58,7 @@ Variables can be set or changed using \textbf{SET} commands.
 \1\dossynopsis{echo}[text]{Print the given text or a variable.}
 \1\dossynopsis{exit}{Exits the current command processor.}
 \1\dossynopsis{mkdir}[path]{Creates a directory. Aliase: md}
+\1\dossynopsis{mv}[from to]{Moves or renames the file. Aliase: move}
 \1\dossynopsis{rem}{Comment-out the line.}
 \1\dossynopsis{set}[key=value]{Sets the global variable \code{key} to \code{value}, or displays the list of global variables if no arguments were given.}
 \1\dossynopsis{ver}{Prints the version of \thedos.}
@@ -95,7 +111,11 @@ DOS coreutils and some of the internal functions can be used on Javascript progr
 To invoke the coreutils, use \code{\_G.shell.coreutils.*}
 
 \begin{outline}
-\1\inlinesynopsis[\_G.shell]{resolvePathInput}[path]{Returns fully-qualified path of the input path, relative to the current working directory.}
+\1\inlinesynopsis[\_G.shell]{resolvePathInput}[path]{Returns path object for the input path, relative to the current working directory. Object contains:}
+ \2\argsynopsis{full}{fully-qualified path}
+ \2\argsynopsis{string}{fully-qualified path without the drive letter}
+ \2\argsynopsis{drive}{drive letter of the path}
+ \2\argsynopsis{pwd}{working directory for the path}
 \1\inlinesynopsis[\_G.shell]{getPwdString}[]{Returns the current working directory as a string.}
 \1\inlinesynopsis[\_G.shell]{getCurrentDrive}[]{Returns the drive letter of the current working drive.}
 \1\inlinesynopsis[\_G.shell]{execute}[command]{Executes the DOS command.}
@@ -177,6 +197,10 @@ Functions:
  \2\argsynopsis{offset}{when writing to the file, how many bytes on the file to skip before writing a first byte.}
 \1\formalsynopsis{bwrite}{bytes: Uint8Array}{Writes the bytes to the file.}
 \1\formalsynopsis{swrite}{string: String}{Writes the string to the file.}
+\1\formalsynopsis{pappend}{pointer: Int, count: Int}{Appends the bytes stored in the memory starting from the pointer to the end of the file.}
+\2\argsynopsis{count}{how many bytes to write}
+\1\formalsynopsis{bappend}{bytes: Uint8Array}{Appends the bytes to the end of the file.}
+\1\formalsynopsis{sappend}{string: String}{Appends the string to the end of the file.}
 \1\formalsynopsis{flush}{}{Flush the contents on the write buffer to the file immediately. Will do nothing if there is no write buffer implemented --- a write operation will always be performed imemdiately in such cases.}
 \1\formalsynopsis{close}{}{Tells the underlying device (usually a disk drive) to close a file. When dealing with multiple files on a single disk drive (in which can only have a single active---or opened---file), the underlying filesystem driver will automatically swap the files around, so this function is normally unused.}
 \1\formalsynopsis{list}{}[Array or undefined]{Lists files inside of the directory. If the path is indeed a directory, an array of file descriptors will be returned; \code{undefined} otherwise.}
@@ -246,11 +270,13 @@ Input events are Javascript array of: $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \c
  \2\argsynopsis{\argN{5}}{Y-position of the mouse cursor on the previous frame}
 \end{outline}
 
+
+
 \chapter{The Graphics Library}
 
 \thedos\ provides the library for drawing pixels to the screen.
 
-\dosnamespaceis{Graphics}{gl}
+\dosnamespaceis{Graphics}{GL}
 
 Classes:
 
@@ -283,3 +309,45 @@ Functions:
 \1\formalsynopsis{drawSpriteOver}{sheet, xi, yi, x, y, framebuffer, overrideFG}{Same as the \code{drawSprite} except the transparency will be taken into account.}
 
 \end{outline}
+
+
+
+\chapter{External Libraries}
+
+
+External libraries are packaged codes with the intention of being re-used by other programs, and can be loaded using the \code{require()} function.
+
+\section{Loading the Libraries}
+
+External libraries can be stored in following locations:
+
+\begin{enumerate}
+ \item \code{A:\rs{}tvdos\rs{}include}
+ \item a path relative to the user program
+ \item an absolute path that can be anywhere
+\end{enumerate}
+
+and can be loaded by:
+
+\begin{enumerate}
+ \item \code{let name = require(libraryname)} // no .js extension
+ \item \code{let name = require(./libraryname)} // the relative path must start with a dot-slash
+ \item \code{let name = require(A:/path/to/library.js)} // full path WITH the .js extension
+\end{enumerate}
+
+
+\section{Writing Your Own Libraries}
+
+Codes in the library must be exported to be made available to other programs, and \thedos\ provides \code{exports} variable for the purpose.
+
+Functions and variables can be exported by defining the \code{exports} object; example code:
+
+\begin{lstlisting}
+function foo() {
+    println("Hello, module!")
+}
+const BAR = 127
+
+// following line exports the function and the variable
+exports = { foo, BAR }
+\end{lstlisting}

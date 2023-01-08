@@ -162,3 +162,5 @@ while (sys.nanoTime() - tmr < 3 * 1000000000.0) {
 
 if (!sysRq) bootFromFirst()
 else runConfigurator()
+
+sys.poke(-90,128)
