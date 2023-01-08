@@ -38,11 +38,15 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
 //                printdbg("P${playhead.index+1} go back to spinning")
 
-                    Thread.sleep(2)
+                    Thread.sleep(12)
                 }
                 else if (playhead.isPlaying && writeQueue.isEmpty) {
                     printdbg("Queue exhausted, stopping audio device...")
-                    playhead.audioDevice.stop()
+
+                    // TODO: wait for 1-2 seconds then finally stop the device
+//                    playhead.audioDevice.stop()
+
+                    Thread.sleep(12)
                 }
             }
 
@@ -75,6 +79,10 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
 
                     it.pcmUploadLength = 0
                     it.position += 1
+                    Thread.sleep(6)
+                }
+                else if (it.pcmUpload) {
+                    printdbg("Rejecting samples (queueSize: ${it.pcmQueue.size}, uploadLength: ${it.pcmUploadLength})")
                     Thread.sleep(6)
                 }
             }
@@ -394,7 +402,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
             }
         }
         
-        fun getPcmQueueCapacity() = QUEUE_SIZE[pcmQueueSizeIndex]
+        fun getPcmQueueCapacity() = 2147483647//QUEUE_SIZE[pcmQueueSizeIndex]
 
         fun dispose() {
             println("AudioDevice dispose ${parent.renderThreads[index]}")

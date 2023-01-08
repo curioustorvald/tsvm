@@ -1,128 +1,12 @@
 // this program will serve as a step towards the ADPCM decoding, and tests if RIFF data are successfully decoded.
 
 let HW_SAMPLING_RATE = 30000
-let filename = exec_args[1]
-const port = _TVDOS.DRV.FS.SERIAL._toPorts("A")[0]
+let filename = _G.shell.resolvePathInput(exec_args[1]).full
 function printdbg(s) { if (0) serial.println(s) }
 function printvis(s) { if (0) println(s) }
 
-//println("Reading...")
-//serial.println("!!! READING")
+let seqread = require("seqread")
 
-com.sendMessage(port, "DEVRST\x17")
-com.sendMessage(port, `OPENR"${filename}",1`)
-let statusCode = com.getStatusCode(port)
-
-if (statusCode != 0) {
-    printerrln(`No such file (${statusCode})`)
-    return statusCode
-}
-
-com.sendMessage(port, "READ")
-statusCode = com.getStatusCode(port)
-if (statusCode != 0) {
-    printerrln("READ failed with "+statusCode)
-    return statusCode
-}
-
-
-
-
-let readCount = 0
-function readBytes(length, ptrToDecode) {
-    if (length <= 0) return
-    let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
-    let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
-
-    let completedReads = 0
-
-//    serial.println(`readBytes(${length}); readCount = ${readCount}`)
-
-    for (let bc = 0; bc < requiredBlocks + 1; bc++) {
-        if (completedReads >= length) break
-
-        if (readCount % 4096 == 0) {
-//            serial.println("READ from serial")
-            // pull the actual message
-            sys.poke(-4093 - port, 6);sys.sleep(0) // spinning is required as Graal run is desynced with the Java side
-
-            let blockTransferStatus = ((sys.peek(-4085 - port*2) & 255) | ((sys.peek(-4086 - port*2) & 255) << 8))
-            let thisBlockLen = blockTransferStatus & 4095
-            if (thisBlockLen == 0) thisBlockLen = 4096 // [1, 4096]
-            let hasMore = (blockTransferStatus & 0x8000 != 0)
-
-
-//            serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - k) & 255).toString(16).padStart(2,'0')).join()}]`)
-
-            let remaining = Math.min(thisBlockLen, length - completedReads)
-
-//            serial.println(`Pulled a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}, remaining = ${remaining}`)
-
-            // copy from read buffer to designated position
-            sys.memcpy(-4097, ptr + completedReads, remaining)
-
-            // increment readCount properly
-            readCount += remaining
-            completedReads += remaining
-        }
-        else {
-            let padding = readCount % 4096
-            let remaining = length - completedReads
-            let thisBlockLen = Math.min(4096 - padding, length - completedReads)
-
-//            serial.println(`padding = ${padding}; remaining = ${remaining}`)
-//            serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - padding - k) & 255).toString(16).padStart(2,'0')).join()}]`)
-//            serial.println(`Reusing a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
-
-            // copy from read buffer to designated position
-            sys.memcpy(-4097 - padding, ptr + completedReads, thisBlockLen)
-
-            // increment readCount properly
-            readCount += thisBlockLen
-            completedReads += thisBlockLen
-        }
-    }
-
-    //serial.println(`END readBytes(${length}); readCount = ${readCount}\n`)
-
-    return ptr
-}
-
-function readInt() {
-    let b = readBytes(4)
-    let i = (sys.peek(b)) | (sys.peek(b+1) << 8) | (sys.peek(b+2) << 16) | (sys.peek(b+3) << 24)
-    sys.free(b)
-    return i
-}
-
-function readShort() {
-    let b = readBytes(2)
-    let i = (sys.peek(b)) | (sys.peek(b+1) << 8)
-    sys.free(b)
-    return i
-}
-
-function readFourCC() {
-    let b = readBytes(4)
-    let s = String.fromCharCode(sys.peek(b), sys.peek(b+1), sys.peek(b+2), sys.peek(b+3))
-    sys.free(b)
-    return s
-}
-
-function readString(length) {
-    let b = readBytes(length)
-    let s = ""
-    for (let k = 0; k < length; k++) {
-        s += String.fromCharCode(sys.peek(b + k))
-    }
-    sys.free(b)
-    return s
-}
-
-function discardBytes(n) {
-    let b = readBytes(n)
-    if (b !== undefined) sys.free(b)
-}
 
 
 
@@ -156,14 +40,23 @@ function lerpAndRound(start, end, x) {
 }
 
 
+
+//println("Reading...")
+//serial.println("!!! READING")
+
+seqread.prepare(filename)
+
+
+
+
 // decode header
-if (readFourCC() != "RIFF") {
+if (seqread.readFourCC() != "RIFF") {
     throw Error("File not RIFF")
 }
 
-const FILE_SIZE = readInt() // size from "WAVEfmt"
+const FILE_SIZE = seqread.readInt() // size from "WAVEfmt"
 
-if (readFourCC() != "WAVE") {
+if (seqread.readFourCC() != "WAVE") {
     throw Error("File is RIFF but not WAVE")
 }
 
@@ -444,20 +337,20 @@ function decodeInfilePcm(inPtr, outPtr, inputLen) {
         throw Error(`PCM Type not LPCM or ADPCM (${pcmType})`)
 }
 // read chunks loop
-while (readCount < FILE_SIZE - 8) {
-    let chunkName = readFourCC()
-    let chunkSize = readInt()
-    printdbg(`Reading '${chunkName}' at ${readCount - 8}`)
+while (seqread.getReadCount() < FILE_SIZE - 8) {
+    let chunkName = seqread.readFourCC()
+    let chunkSize = seqread.readInt()
+    printdbg(`Reading '${chunkName}' at ${seqread.getReadCount() - 8}`)
 
     // here be lotsa if-else
     if ("fmt " == chunkName) {
-        pcmType = readShort()
-        nChannels = readShort()
-        samplingRate = readInt()
-        discardBytes(4)
-        blockSize = readShort()
-        bitsPerSample = readShort()
-        discardBytes(chunkSize - 16)
+        pcmType = seqread.readShort()
+        nChannels = seqread.readShort()
+        samplingRate = seqread.readInt()
+        seqread.skip(4)
+        blockSize = seqread.readShort()
+        bitsPerSample = seqread.readShort()
+        seqread.skip(chunkSize - 16)
 
         // define BLOCK_SIZE as integer multiple of blockSize, for LPCM
         // ADPCM will be decoded per-block basis
@@ -479,24 +372,24 @@ while (readCount < FILE_SIZE - 8) {
         printdbg(`BLOCK_SIZE=${BLOCK_SIZE}, INFILE_BLOCK_SIZE=${INFILE_BLOCK_SIZE}`)
     }
     else if ("LIST" == chunkName) {
-        let startOffset = readCount
-        let subChunkName = readFourCC()
-        while (readCount < startOffset + chunkSize) {
+        let startOffset = seqread.getReadCount()
+        let subChunkName = seqread.readFourCC()
+        while (seqread.getReadCount() < startOffset + chunkSize) {
             printdbg(`${chunkName} ${subChunkName}`)
             if ("INFO" == subChunkName) {
-                let key = readFourCC()
-                let valueLen = readInt()
-                let value = readString(valueLen)
+                let key = seqread.readFourCC()
+                let valueLen = seqread.readInt()
+                let value = seqread.readString(valueLen)
                 comments[key] = value
             }
             else {
-                discardBytes(startOffset + chunkSize - readCount)
+                seqread.skip(startOffset + chunkSize - seqread.getReadCount())
             }
         }
         printComments()
     }
     else if ("data" == chunkName) {
-        let startOffset = readCount
+        let startOffset = seqread.getReadCount()
 
         printdbg(`WAVE size: ${chunkSize}, startOffset=${startOffset}`)
         // check if the format is actually playable
@@ -516,12 +409,12 @@ while (readCount < FILE_SIZE - 8) {
         audio.setMasterVolume(0, 255)
 
         let readLength = 1
-        while (readCount < startOffset + chunkSize && readLength > 0) {
+        while (seqread.getReadCount() < startOffset + chunkSize && readLength > 0) {
             let queueSize = audio.getPosition(0)
             if (queueSize <= 1) {
                 // upload four samples for lag-safely
                 for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
-                    let remainingBytes = FILE_SIZE - 8 - readCount
+                    let remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
 
                     readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
                     if (readLength <= 0) {
@@ -529,9 +422,9 @@ while (readCount < FILE_SIZE - 8) {
                         break
                     }
 
-                    printdbg(`offset: ${readCount}/${FILE_SIZE + 8}; readLength: ${readLength}`)
+                    printdbg(`offset: ${seqread.getReadCount()}/${FILE_SIZE + 8}; readLength: ${readLength}`)
 
-                    readBytes(readLength, readPtr)
+                    seqread.readBytes(readLength, readPtr)
 
                     let decodedSampleLength = decodeInfilePcm(readPtr, decodePtr, readLength)
                     printdbg(`        decodedSampleLength: ${decodedSampleLength}`)
@@ -546,19 +439,19 @@ while (readCount < FILE_SIZE - 8) {
                 audio.play(0)
             }
 
-            let remainingBytes = FILE_SIZE - 8 - readCount
-            printdbg(`readLength = ${readLength}; remainingBytes2 = ${remainingBytes}; readCount = ${readCount}; startOffset + chunkSize = ${startOffset + chunkSize}`)
+            let remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
+            printdbg(`readLength = ${readLength}; remainingBytes2 = ${remainingBytes}; seqread.getReadCount() = ${seqread.getReadCount()}; startOffset + chunkSize = ${startOffset + chunkSize}`)
             sys.spin()
 
             sys.sleep(10)
         }
     }
     else {
-        discardBytes(chunkSize)
+        seqread.skip(chunkSize)
     }
 
 
-    let remainingBytes = FILE_SIZE - 8 - readCount
+    let remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
     printdbg(`remainingBytes2 = ${remainingBytes}`)
     sys.spin()
 }

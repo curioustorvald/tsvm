@@ -1,4 +1,6 @@
-exports.greet = function() { println("Hello, module!") }
+var testfun = function() { println("peekaboo!") }
+
+exports = {greet}
 
 /*
 

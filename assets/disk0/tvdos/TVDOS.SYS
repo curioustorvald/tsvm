@@ -1060,20 +1060,6 @@ print = function(str) {
 Object.freeze(unicode);
 
 ///////////////////////////////////////////////////////////////////////////////
-
-// install other stuffs
-var require = (absdir) => {
-    let moduleFile = files.open(absdir)
-    if (!moduleFile.exists) throw Error("No such file: " + absdir)
-    let moduleScript = moduleFile.sread()
-    return eval(`let exports = {}; ${moduleScript}; Object.freeze(exports)`)
-}
-
-
-var GL = require("A:/tvdos/include/gl.js")
-
-
-
 let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`
 let injectIntChk = (s, n) => {
     // primitive way of injecting a code; will replace a JS string that matches the regex...
@@ -1084,6 +1070,21 @@ let injectIntChk = (s, n) => {
     //serial.println(k);
     return k;
 }
+
+
+
+// install other stuffs
+var require = (absdir) => {
+    let moduleFile = files.open(absdir)
+    if (!moduleFile.exists) throw Error("No such file: " + absdir)
+    let moduleScript = moduleFile.sread()
+    var intchkFunName = `tvdosSIGTERM_${generateRandomHashStr(16)}`;
+    return eval(`var ${intchkFunName} = function(){ ${checkTerm} };let exports = {}; ${injectIntChk(moduleScript, intchkFunName)}; Object.freeze(exports)`)
+}
+
+
+var GL = require("A:/tvdos/include/gl.js")
+
 
 // @param cmdsrc JS source code
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
