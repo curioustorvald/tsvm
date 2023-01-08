@@ -190,6 +190,9 @@ class VM(
 
     fun peek(addr:Long): Byte? {
         val (memspace, offset) = translateAddr(addr)
+
+//        println("peek $addr -> ${offset}@${memspace?.javaClass?.canonicalName}")
+
         return if (memspace == null)
             null
         else if (memspace is UnsafePtr) {

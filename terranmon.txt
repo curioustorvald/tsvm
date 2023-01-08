@@ -155,7 +155,7 @@ From the start of the memory space:
 250880 bytes
     Framebuffer
 3 bytes
-    Initial background (and the border) colour RGB, of which only the lower 4 bits per each channel are used
+    Initial background (and the border) colour RGB, 8 bits per channel
 1 byte
     command (writing to this memory address changes the status)
         1: reset palette to default

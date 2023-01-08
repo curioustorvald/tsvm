@@ -192,9 +192,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
 
         if (theme.contains("color")) {
-            unusedArea[0] = 2
-            unusedArea[1] = 3
-            unusedArea[2] = 4
+            unusedArea[0] = 32
+            unusedArea[1] = 48
+            unusedArea[2] = 64
         }
 
         setCursorPos(0, 0)
@@ -202,7 +202,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun peek(addr: Long): Byte? {
         val adi = addr.toInt()
-        if (framebuffer2 != null) {
+        if (framebuffer2 != null && addr >= 262144) {
             return when (addr - 262144) {
                 in 0 until 250880 -> framebuffer2[addr - 262144]
                 else -> null
@@ -982,9 +982,10 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private var glowDecay = config.decay
     private var decayColor = Color(1f, 1f, 1f, 1f - glowDecay)
 
-    fun getBackgroundColour() = Color(unusedArea[0].toInt().and(15).toFloat() / 15f,
-        unusedArea[1].toInt().and(15).toFloat() / 15f,
-        unusedArea[2].toInt().and(15).toFloat() / 15f, 1f)
+    fun getBackgroundColour() = Color(
+        unusedArea[0].toUint() / 255f,
+        unusedArea[1].toUint() / 255f,
+        unusedArea[2].toUint() / 255f, 1f)
 
     private val isRefSize = (WIDTH == 560 && HEIGHT == 448)
 

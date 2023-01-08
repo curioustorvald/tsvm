@@ -1,5 +1,8 @@
 
-const FBUF_SIZE = 560*448
+const WIDTH = 560
+const HEIGHT = 448
+const FBUF_SIZE = WIDTH * HEIGHT
+const AUTO_BGCOLOUR_CHANGE = true
 const MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56]
 
 
@@ -68,6 +71,16 @@ audio.purgeQueue(0)
 audio.setPcmMode(0)
 audio.setMasterVolume(0, 255)
 
+function getRGBfromScr(x, y) {
+    let offset = y * WIDTH + x
+    let rg = sys.peek(-1048577 - offset)
+    let ba = sys.peek(-1310721 - offset)
+
+    return [(rg >>> 4) / 15.0, (rg & 15) / 15.0, (ba >>> 4) / 15.0]
+}
+
+let oldBgcol = [0.0, 0.0, 0.0]
+
 renderLoop:
 while (seqread.getReadCount() < FILE_LENGTH) {
     let t1 = sys.nanoTime()
@@ -94,6 +107,7 @@ while (seqread.getReadCount() < FILE_LENGTH) {
                 }
                 // background colour packets
                 else if (65279 == packetType) {
+                    AUTO_BGCOLOUR_CHANGE = false
                     let rgbx = seqread.readInt()
                     graphics.setBackground(
                         (rgbx & 0xFF000000) >>> 24,
@@ -119,6 +133,39 @@ while (seqread.getReadCount() < FILE_LENGTH) {
                         if (frameUnit == 1) {
                             gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
                             decodefun(ipfbuf, -1048577, -1310721, width, height, (packetType & 255) == 5)
+
+
+                            // calculate bgcolour from the edges of the screen
+                            if (AUTO_BGCOLOUR_CHANGE) {
+                                let samples = []
+                                for (let x = 8; x < 560; x+=32) {
+                                    samples.push(getRGBfromScr(x, 3))
+                                    samples.push(getRGBfromScr(x, 445))
+                                }
+                                for (let y = 29; y < 448; y+=26) {
+                                    samples.push(getRGBfromScr(8, y))
+                                    samples.push(getRGBfromScr(552, y))
+                                }
+
+                                let out = [0.0, 0.0, 0.0]
+                                samples.forEach(rgb=>{
+                                    out[0] += rgb[0]
+                                    out[1] += rgb[1]
+                                    out[2] += rgb[2]
+                                })
+                                out[0] = out[0] / samples.length / 2.0 // darken a bit
+                                out[1] = out[1] / samples.length / 2.0
+                                out[2] = out[2] / samples.length / 2.0
+
+                                let bgr = (oldBgcol[0]*5 + out[0]) / 6.0
+                                let bgg = (oldBgcol[1]*5 + out[1]) / 6.0
+                                let bgb = (oldBgcol[2]*5 + out[2]) / 6.0
+
+                                oldBgcol = [bgr, bgg, bgb]
+
+                                graphics.setBackground(Math.round(bgr * 255), Math.round(bgg * 255), Math.round(bgb * 255))
+                            }
+
 
                             // defer audio playback until a first frame is sent
                             if (!audioFired) {
