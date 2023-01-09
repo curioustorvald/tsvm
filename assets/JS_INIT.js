@@ -452,7 +452,10 @@ con.addch = function(c) {
     graphics.putSymbol(c|0);
 };
 con.prnch = function(c) {
-    print("\x84"+c+"u");
+    if (Array.isArray(c))
+        print(c.reduce((acc,char)=>acc+`\x84${char}u`, ''));
+    else
+        print("\x84"+c+"u");
 };
 con.mvaddch = function(y, x, c) {
     con.move(y, x); con.addch(c);
