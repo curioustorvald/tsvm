@@ -495,6 +495,8 @@ con.resetkeybuf = function() {
 con.video_reverse = function() {
     print("\x1B[7m");
 };
+con.get_color_fore = function() { return graphics.getTextFore() }
+con.get_color_back = function() { return graphics.getTextBack() }
 con.color_fore = function(n) { // 0..7; -1 for transparent
     if (n < 0)
         print("\x1B[38;5;255m");

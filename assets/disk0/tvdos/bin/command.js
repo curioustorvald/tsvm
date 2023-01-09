@@ -841,7 +841,7 @@ if (exec_args[1] !== undefined) {
         goInteractive = true
     }
     else if ("/fancy" == firstSwitch) {
-        graphics.setBackground(2,3,4)
+        graphics.setBackground(34,51,68)
         goFancy = true
         goInteractive = true
     }
