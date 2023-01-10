@@ -300,6 +300,14 @@ while (!exit) {
             [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
             drawFilePanel()
         }
+        else if (keysym == "<PAGE_UP>") {
+            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+            drawFilePanel()
+        }
+        else if (keysym == "<PAGE_DOWN>") {
+            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+            drawFilePanel()
+        }
         else if (keyJustHit && keycode == 66) { // enter
             let selectedFile = dirFileList[windowMode][cursor[windowMode]]
             if (selectedFile.isDirectory) {
