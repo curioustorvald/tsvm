@@ -17,6 +17,26 @@ const LIST_HEIGHT = HEIGHT - 3
 const FILESIZE_WIDTH = 7
 const FILELIST_WIDTH = WIDTH - SIDEBAR_WIDTH - 3 - FILESIZE_WIDTH
 
+const COL_HL_EXT = {
+    "js": 215,
+    "bas": 215,
+    "bat": 215,
+    "wav": 31,
+    "adpcm": 32,
+    "mov": 213,
+    "ipf1": 190,
+    "ipf2": 191,
+    "txt": 223,
+    "md": 223,
+}
+
+const EXEC_FUNS = {
+    "wav": (f) => { _G.shell.execute(`playwav ${f}`) },
+    "adpcm": (f) => { _G.shell.execute(`playwav ${f}`) },
+    "mov": (f) => { _G.shell.execute(`playmov ${f}`) },
+    "bas": (f) => { _G.shell.execute(`basic ${f}`) }
+}
+
 let windowMode = 0 // 0 == left, 1 == right
 let windowFocus = 0 // 0,2: files panel, 1: operation panel, -1: a wild popup message appeared
 
@@ -89,14 +109,15 @@ let filesPanelDraw = (wo) => {
     for (let i = 0; i < LIST_HEIGHT; i++) {
         let file = dirFileList[windowMode][i+s]
         let sizestr = (file) ? bytesToReadable(file.size) : ''
+        let filename = (file) ? file.name : ''
+        let fileext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase()
 
         // set bg colour
         let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
         // set fg colour (if there are more at the top/bottom, dim the colour)
-        let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : COL_TEXT
+        let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : (COL_HL_EXT[fileext] || COL_TEXT)
 
         // print filename
-        let filename = (file) ? file.name : ''
         con.color_pair(foreCol, backCol)
         con.move(wo.y + 2+i, wo.x + 1)
         print(((file && file.isDirectory) ? '\\' : ' ') + filename)
@@ -254,10 +275,17 @@ function drawOpPanel() {
 }
 
 function redraw() {
-    con.clear()
+    clearScr()
     drawTitle()
     drawFilePanel()
     drawOpPanel()
+}
+
+function clearScr() {
+    con.clear()
+    graphics.setBackground(34,51,68)
+    graphics.clearPixels(255)
+    graphics.setGraphicsMode(0)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -315,8 +343,24 @@ while (!exit) {
                 cursor[windowMode] = 0; scroll[windowMode] = 0
                 drawFilePanel()
             }
+            else {
+                let fileext = selectedFile.name.substring(selectedFile.name.lastIndexOf(".") + 1).toLowerCase()
+                let execfun = EXEC_FUNS[fileext] || ((f) => { _G.shell.execute(f) })
+
+                con.curs_set(1);clearScr();con.move(1,1)
+                try {
+                    serial.println(selectedFile.fullPath)
+                    execfun(selectedFile.fullPath)
+                }
+                catch (e) {
+                    // TODO popup error
+                    serial.println(e)
+                }
+                con.curs_set(0);clearScr()
+                redraw()
+            }
         }
-        else if (keyJustHit && keysym == 'u') {
+        else if (keyJustHit && (keysym == 'u' || keycode == 67)) { // bksp
             if (path[windowMode].length > 1) {
                 path[windowMode].pop()
                 cursor[windowMode] = 0; scroll[windowMode] = 0

@@ -9,21 +9,25 @@ catch (e) {
     printerrln("Could not allocate memory with size "+memsize);
     return 10;
 }
-let stubHead = "let mx="+memsize+";"+
-"let fmod=function(a,b){return Number((a-(Math.floor(a/b)*b)).toPrecision(8));};"+
-"let ip=function(){p=fmod(p+1,mx)};"+
-"let dp=function(){p=fmod(p-1,mx)};"+
-"let iv=function(){sys.poke(p,fmod(sys.peek(p)+1,256))};"+
-"let dv=function(){sys.poke(p,fmod(sys.peek(p)-1,256))};"+
-"let p="+nativePtr+";"
+let stubHead = "let x="+memsize+";"+
+"let a=()=>sys.print(String.fromCharCode(sys.peek(t)));"+
+"let k=(b)=>sys.poke(t,b);"+
+"let b=()=>k(sys.readKey());"+
+"let e=()=>sys.peek(t);"+
+"let m=(a,b)=>Number((a-(Math.floor(a/b)*b)).toPrecision(8));"+
+"let p=()=>{t=m(t+1,x)};"+
+"let q=()=>{t=m(t-1,x)};"+
+"let v=()=>k(m(e()+1,256));"+
+"let w=()=>k(m(e()-1,256));"+
+"let t="+nativePtr+";"
 let translation = {
-    62: "ip();",
-    60: "dp();",
-    43: "iv();",
-    45: "dv();",
-    46: "sys.print(String.fromCharCode(sys.peek(p)));",
-    44: "sys.poke(p,sys.readKey());",
-    91: "while(sys.peek(p)!=0){",
+    62: "p();",
+    60: "q();",
+    43: "v();",
+    45: "w();",
+    46: "a();",
+    44: "b();",
+    91: "while(e()){",
     93: "}"
 };
 if (exec_args[1] === undefined) {
@@ -32,8 +36,8 @@ if (exec_args[1] === undefined) {
 }
 let bfprg = "";
 try {
-    filesystem.open(_G.shell.getCurrentDrive(), exec_args[1], "R");
-    bfprg = filesystem.readAll(_G.shell.getCurrentDrive());
+    let f = files.open(_G.shell.resolvePathInput(exec_args[1]).full);
+    bfprg = f.sread();
 }
 catch(e) {
     printerrln(e);
@@ -53,7 +57,7 @@ try {
     }
 
     // run
-    execApp(tprg);
+    eval(tprg);
 }
 catch (e) {
     printerrln(e);
