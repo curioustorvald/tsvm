@@ -30,8 +30,8 @@ let cursor = [0, 0] // absolute position!
 
 function bytesToReadable(i) {
     return ''+ (
-       (i > 9999999) ? (((i / 100000)|0)/100 + "M") :
-       (i > 9999) ? (((i / 1000)|0)/10 + "K") :
+       (i > 999999) ? (((i / 10000)|0)/100 + "M") :
+       (i > 9999) ? (((i / 100)|0)/10 + "K") :
        i
    )
 }
@@ -86,9 +86,9 @@ let filesPanelDraw = (wo) => {
 
     let filesCount = dirFileList[windowMode].length
     // print entries
-    for (let i = 0; i < Math.min(filesCount - s, LIST_HEIGHT); i++) {
+    for (let i = 0; i < LIST_HEIGHT; i++) {
         let file = dirFileList[windowMode][i+s]
-        let sizestr = bytesToReadable(file.size)
+        let sizestr = (file) ? bytesToReadable(file.size) : ''
 
         // set bg colour
         let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
@@ -96,10 +96,11 @@ let filesPanelDraw = (wo) => {
         let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : COL_TEXT
 
         // print filename
+        let filename = (file) ? file.name : ''
         con.color_pair(foreCol, backCol)
         con.move(wo.y + 2+i, wo.x + 1)
-        print(((file.isDirectory) ? '\\' : ' ')+file.name)
-        print(' '.repeat(FILELIST_WIDTH - 2 - file.name.length))
+        print(((file && file.isDirectory) ? '\\' : ' ') + filename)
+        print(' '.repeat(FILELIST_WIDTH - 2 - filename.length))
 
         // print |
         con.color_pair(COL_TEXT, backCol)
@@ -108,8 +109,15 @@ let filesPanelDraw = (wo) => {
         // print filesize
         con.color_pair(foreCol, backCol)
         con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
-        print(' '.repeat(FILESIZE_WIDTH - sizestr.length + 1))
-        print(sizestr)
+        if (file && file.isDirectory) {
+            print(' '.repeat(FILESIZE_WIDTH - sizestr.length))
+            print(sizestr); con.prnch(0x7F)
+        }
+        else {
+            print(' '.repeat(FILESIZE_WIDTH - sizestr.length + 1))
+            print(sizestr)
+        }
+
     }
 
     con.color_pair(COL_TEXT, COL_BACK)
@@ -185,7 +193,7 @@ let opPanelDraw = (wo) => {
 
     // quit
     con.move(yp + 27, xp + 3)
-    con.prnch(0x7F)
+    con.prnch(0x58)
     con.move(yp + 28, xp)
     print(` \x1B[38;5;${COL_HLACTION}mQ\x1B[38;5;${COL_TEXT}muit`)
 
@@ -252,81 +260,62 @@ function redraw() {
     drawOpPanel()
 }
 
-function scrollFiles(ody) {
-    let dy = ody
-    let oldScroll = scroll[windowMode]
-    let peek = 1
-
-    // clamp dy
-    if (cursor[windowMode] + dy > dirFileList[windowMode].length - 1)
-        dy = (dirFileList[windowMode].length - 1) - cursor[windowMode]
-    else if (cursor[windowMode] + dy < 0)
-        dy = -cursor[windowMode]
-
-    let nextRow = cursor[windowMode] + dy
-    
-    // update vertical scroll stats
-    if (dy != 0) {
-        let visible = LIST_HEIGHT - 1 - peek
-
-        if (nextRow - scroll[windowMode] > visible) {
-            scroll[windowMode] = nextRow - visible
-        }
-        else if (nextRow - scroll[windowMode] < 0 + peek) {
-            scroll[windowMode] = nextRow - peek // nextRow is less than zero
-        }
-
-        // NOTE: future-proofing here -- scroll clamping is moved outside of go-up/go-down
-        // if-statements above because horizontal movements can disrupt vertical scrolls as well because
-        // "normally" when you go right at the end of the line, you appear at the start of the next line
-
-        // scroll to the bottom?
-        if (dirFileList[windowMode].length > LIST_HEIGHT && scroll[windowMode] > dirFileList[windowMode].length - LIST_HEIGHT)
-            // to make sure not show buncha empty lines
-            scroll[windowMode] = dirFileList[windowMode].length - LIST_HEIGHT
-        // scroll to the top? (order is important!)
-        if (scroll[windowMode] <= -1)
-            scroll[windowMode] = 0 // scroll of -1 would result to show "Line 0" on screen
-    }
-    
-    // move editor cursor
-    cursor[windowMode] = nextRow
-
-    // update screendraw
-    drawFilePanel()
-}
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
 redraw()
 
 let exit = false
+let firstRunLatch = true
 
 while (!exit) {
 
     input.withEvent(event => {
+
         let eventName = event[0]
         if (eventName == "key_down") {
 
         let keysym = event[1]
+        let keyJustHit = (1 == event[2])
         let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
         let keycode = keycodes[0]
 
-        if (keysym == "q") {
+        if (firstRunLatch) { // filter out the initial ENTER key as they would cause unwanted behaviours
+            keyJustHit = false
+            firstRunLatch = false
+        }
+        if (keyJustHit && keysym == "q") {
             exit = true
         }
-        else if (keysym == 'z') {
+        else if (keyJustHit && keysym == 'z') {
             windowMode = 1 - windowMode
             windowFocus = 2 - windowFocus
             redraw()
         }
         else if (keysym == "<UP>") {
-            scrollFiles(-1)
+            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+            drawFilePanel()
         }
         else if (keysym == "<DOWN>") {
-            scrollFiles(+1)
+            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+            drawFilePanel()
         }
+        else if (keyJustHit && keycode == 66) { // enter
+            let selectedFile = dirFileList[windowMode][cursor[windowMode]]
+            if (selectedFile.isDirectory) {
+                path[windowMode].push(selectedFile.name)
+                cursor[windowMode] = 0; scroll[windowMode] = 0
+                drawFilePanel()
+            }
+        }
+        else if (keyJustHit && keysym == 'u') {
+            if (path[windowMode].length > 1) {
+                path[windowMode].pop()
+                cursor[windowMode] = 0; scroll[windowMode] = 0
+                drawFilePanel()
+            }
+        }
+
 
 
     }})
