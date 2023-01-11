@@ -1,8 +1,8 @@
-// this program will serve as a step towards the ADPCM decoding, and tests if RIFF data are successfully decoded.
-
+// usage: playwav audiofile.wav [/i]
 let filename = _G.shell.resolvePathInput(exec_args[1]).full
 function printdbg(s) { if (0) serial.println(s) }
 
+const interactive = exec_args[2].toLowerCase() == "/i"
 const seqread = require("seqread")
 const pcm = require("pcm")
 
@@ -60,12 +60,27 @@ let nChannels;
 let samplingRate;
 let blockSize;
 let bitsPerSample;
+let byterate;
 let comments = {};
-
+let adpcmSamplesPerBlock;
 let readPtr = undefined
 let decodePtr = undefined
 
-
+function bytesToSec(i) {
+    if (adpcmSamplesPerBlock) {
+        let newByteRate = samplingRate
+        let generatedSamples = i / blockSize * adpcmSamplesPerBlock
+        return generatedSamples / newByteRate
+    }
+    else {
+        return i / byterate
+    }
+}
+function secToReadable(n) {
+    let mins = ''+((n/60)|0)
+    let secs = ''+(n % 60)
+    return `${mins.padStart(2,'0')}:${secs.padStart(2,'0')}`
+}
 function checkIfPlayable() {
     if (pcmType != 1 && pcmType != 2) return `PCM Type not LPCM/ADPCM (${pcmType})`
     if (nChannels < 1 || nChannels > 2) return `Audio not mono/stereo but instead has ${nChannels} channels`
@@ -82,8 +97,15 @@ function decodeInfilePcm(inPtr, outPtr, inputLen) {
     else
         throw Error(`PCM Type not LPCM or ADPCM (${pcmType})`)
 }
+let stopPlay = false
+con.curs_set(0)
+if (interactive) {
+    println("Push and hold Backspace to exit")
+}
+let [cy, cx] = con.getyx()
+let [__, CONSOLE_WIDTH] = con.getmaxyx()
 // read chunks loop
-while (seqread.getReadCount() < FILE_SIZE - 8) {
+while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
     let chunkName = seqread.readFourCC()
     let chunkSize = seqread.readInt()
     printdbg(`Reading '${chunkName}' at ${seqread.getReadCount() - 8}`)
@@ -93,10 +115,17 @@ while (seqread.getReadCount() < FILE_SIZE - 8) {
         pcmType = seqread.readShort()
         nChannels = seqread.readShort()
         samplingRate = seqread.readInt()
-        seqread.skip(4)
+        byterate = seqread.readInt()
         blockSize = seqread.readShort()
         bitsPerSample = seqread.readShort()
-        seqread.skip(chunkSize - 16)
+        if (pcmType != 2) {
+            seqread.skip(chunkSize - 16)
+        }
+        else {
+            seqread.skip(2)
+            adpcmSamplesPerBlock = seqread.readShort()
+            seqread.skip(chunkSize - (16 + 4))
+        }
 
         // define BLOCK_SIZE as integer multiple of blockSize, for LPCM
         // ADPCM will be decoded per-block basis
@@ -155,9 +184,41 @@ while (seqread.getReadCount() < FILE_SIZE - 8) {
         audio.setMasterVolume(0, 255)
 
         let readLength = 1
-        while (seqread.getReadCount() < startOffset + chunkSize && readLength > 0) {
+        while (!stopPlay && seqread.getReadCount() < startOffset + chunkSize && readLength > 0) {
+            if (interactive) {
+                sys.poke(-40, 1)
+                if (sys.peek(-41) == 67) {
+                    stopPlay = true
+                }
+            }
+
+
             let queueSize = audio.getPosition(0)
             if (queueSize <= 1) {
+                if (interactive) {
+                    let currently = seqread.getReadCount() - startOffset
+                    let total = FILE_SIZE - startOffset - 8
+
+                    let currentlySec = Math.round(bytesToSec(currently))
+                    let totalSec = Math.round(bytesToSec(total))
+
+                    con.move(cy, 1)
+                    print(' '.repeat(40))
+                    con.move(cy, 1)
+
+                    print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
+
+                    con.move(cy, 15)
+                    print(' ')
+
+                    let paintWidth = CONSOLE_WIDTH - 16
+                    let progressbar = '\x84205u'.repeat(paintWidth + 1)
+                    print(progressbar)
+
+                    con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
+                }
+
+
                 // upload four samples for lag-safely
                 for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
                     let remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
@@ -179,6 +240,7 @@ while (seqread.getReadCount() < FILE_SIZE - 8) {
                     audio.setSampleUploadLength(0, decodedSampleLength)
                     audio.startSampleUpload(0)
 
+
                     if (repeat > 1) sys.sleep(10)
                 }
 
@@ -187,7 +249,7 @@ while (seqread.getReadCount() < FILE_SIZE - 8) {
 
             let remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
             printdbg(`readLength = ${readLength}; remainingBytes2 = ${remainingBytes}; seqread.getReadCount() = ${seqread.getReadCount()}; startOffset + chunkSize = ${startOffset + chunkSize}`)
-            sys.spin()
+
 
             sys.sleep(10)
         }

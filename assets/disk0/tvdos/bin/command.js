@@ -5,7 +5,7 @@ let shell_pwd = [""]
 let goInteractive = false
 let goFancy = false
 
-let DEBUG_PRINT = false
+let DEBUG_PRINT = true
 
 let errorlevel = 0
 
@@ -318,29 +318,29 @@ shell.resolvePathInput = function(input) {
     }
 
 
-    debugprintln("command.js > resolvePathInput > sanitised input: "+pathstr)
+//    debugprintln("command.js > resolvePathInput > sanitised input: "+pathstr)
 
     let startsWithSlash = pathstr.startsWith('/')
     let newPwd = []
 
-    debugprintln("command.js > resolvePathInput > path starts with slash: "+startsWithSlash)
+//    debugprintln("command.js > resolvePathInput > path starts with slash: "+startsWithSlash)
 
     // split them into an array while filtering empty elements except for the root 'head'
     let ipwd = (startsWithSlash ? [""] : shell_pwd).concat(pathstr.split("/").filter(function(it) { return (it.length > 0); }))
 
-    debugprintln("command.js > resolvePathInput > ipwd = "+ipwd)
-    debugprintln("command.js > resolvePathInput > newPwd = "+newPwd)
+//    debugprintln("command.js > resolvePathInput > ipwd = "+ipwd)
+//    debugprintln("command.js > resolvePathInput > newPwd = "+newPwd)
 
     // process dots
     ipwd.forEach(function(it) {
-        debugprintln("command.js > resolvePathInput > ipwd.forEach > it = "+it)
+//        debugprintln("command.js > resolvePathInput > ipwd.forEach > it = "+it)
         if (it === ".." && newPwd[1] !== undefined) {
             newPwd.pop()
         }
         else if (it !== ".." && it !== ".") {
             newPwd.push(it)
         }
-        debugprintln("command.js > resolvePathInput > newPwd = "+newPwd)
+//        debugprintln("command.js > resolvePathInput > newPwd = "+newPwd)
     })
 
     // construct new pathstr from pwd arr so it will be sanitised
@@ -631,6 +631,14 @@ shell.execute = function(line) {
 
     let retValue = undefined // return value of the previous statement
     for (let c = 0; c < statements.length; c++) {
+        let tokens = statements[c]
+
+
+        if (retValue) {
+            debugprintln(`[shell.execute] previous statement "${tokens.join(' ')}" had non-zero errorlevel: ${retValue}, raising error...`)
+            return retValue
+        }
+
         let op = operators[c]
 
         // TODO : if operator is not undefined, swap built-in print functions with ones that 'prints' on pipes instead of stdout
@@ -652,8 +660,6 @@ shell.execute = function(line) {
         }
 
 
-
-        let tokens = statements[c]
 
         let cmd = tokens[0]
         if (cmd === undefined || cmd === '') {
@@ -694,9 +700,7 @@ shell.execute = function(line) {
                     let search = searchDir[i]; if (!search.endsWith('\\')) search += '\\'
                     searchPath = trimStartRevSlash(search + cmd + pathExt[j])
 
-                    if (DEBUG_PRINT) {
-                        debugprintln("[command.js > shell.execute] file search path: "+searchPath)
-                    }
+//                    debugprintln("[shell.execute] file search path: "+searchPath)
 
                     searchFile = files.open(`${CURRENT_DRIVE}:\\${searchPath}`)
                     if (searchFile.exists) {
@@ -736,6 +740,7 @@ shell.execute = function(line) {
                         sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1])
                         //serial.println(_G.shellProgramTitles)
 
+                        debugprintln("[shell.execute] exec app " + searchFile.fullPath)
                         errorlevel = execApp(programCode, tokens, `tvdosExec$${cmd}$${searchPath}`.replaceAll(/[^A-Za-z0-9_]/g, "$")) // return value of undefined will cast into 0
                     }
                     catch (e) {
@@ -754,11 +759,13 @@ shell.execute = function(line) {
                             errorlevel = 1
                     }
                     finally {
+                        debugprintln("[shell.execute] exec app " + searchFile.fullPath + "exit with no exception; errorlevel = " + errorlevel)
+
                         // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
                         if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))
                             errorlevel = 0
 
-                        debugprintln(`errorlevel: ${errorlevel}`)
+                        debugprintln(`[shell.execute] errorlevel: ${errorlevel}`)
 
                         _G.shellProgramTitles.pop()
                         sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1])
@@ -777,10 +784,9 @@ shell.execute = function(line) {
             debugprintln(`Statement #${c+1}: destroying pipe`)
             debugprintln(`its content was: ${shell.removePipe()}`)
         }
-
-
-        return retValue
     }
+    serial.println("[shell.execute] final retvalue: "+retValue)
+    return retValue
 }
 shell.pipes = {} // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows
 shell.currentlyActivePipes = [] // Queue of pipe's names. Use shell.removePipe() to dequeue and shell.pushPipe() to enqueue.
@@ -887,7 +893,7 @@ if (goInteractive) {
             else if (key === 10 || key === con.KEY_RETURN) {
                 println()
 
-                shell.execute(cmdbuf)
+                errorlevel = shell.execute(cmdbuf)
 
                 if (cmdbuf.trim().length > 0)
                     cmdHistory.push(cmdbuf)

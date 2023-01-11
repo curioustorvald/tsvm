@@ -1,4 +1,5 @@
-
+// usage: playmov moviefile.mov [/i]
+const interactive = exec_args[2].toLowerCase() == "/i"
 const WIDTH = 560
 const HEIGHT = 448
 const FBUF_SIZE = WIDTH * HEIGHT
@@ -80,22 +81,43 @@ function getRGBfromScr(x, y) {
 }
 
 let oldBgcol = [0.0, 0.0, 0.0]
-
+let stopPlay = false
+if (interactive) {
+    con.move(1,1)
+    println("Push and hold Backspace to exit")
+}
+let notifHideTimer = 0
+const NOTIF_SHOWUPTIME = 2000000000
+let [cy, cx] = con.getyx()
+let t1 = sys.nanoTime()
 renderLoop:
-while (seqread.getReadCount() < FILE_LENGTH) {
-    let t1 = sys.nanoTime()
+while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
     if (akku >= frameTime) {
 
         let frameUnit = 0 // 0: no decode, 1: normal playback, 2+: skip (n-1) frames
-        while (akku >= frameTime) {
+        while (!stopPlay && akku >= frameTime) {
+            if (interactive) {
+                sys.poke(-40, 1)
+                if (sys.peek(-41) == 67) {
+                    stopPlay = true
+                }
+            }
+
             akku -= frameTime
             frameUnit += 1
         }
 
         if (frameUnit != 0) {
             // skip frames if necessary
-            while (frameUnit >= 1 && seqread.getReadCount() < FILE_LENGTH) {
+            while (!stopPlay && frameUnit >= 1 && seqread.getReadCount() < FILE_LENGTH) {
+                if (interactive) {
+                    sys.poke(-40, 1)
+                    if (sys.peek(-41) == 67) {
+                        stopPlay = true
+                    }
+                }
+
 
                 let packetType = seqread.readShort()
 
@@ -212,6 +234,15 @@ while (seqread.getReadCount() < FILE_LENGTH) {
 
     let t2 = sys.nanoTime()
     akku += (t2 - t1) / 1000000000.0
+
+    if (interactive) {
+        notifHideTimer += (t2 - t1)
+        if (notifHideTimer > NOTIF_SHOWUPTIME) {
+            con.clear()
+        }
+    }
+
+    t1 = t2
 }
 let endTime = sys.nanoTime()
 

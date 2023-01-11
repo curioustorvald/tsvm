@@ -1,12 +1,12 @@
 // some manual configurations
 //
 let IPFMODE = 2 // 1 or 2
-let TOTAL_FRAMES = 3813
+let TOTAL_FRAMES = 1318
 let FPS = 30
 let WIDTH = 560
 let HEIGHT = 448
-let PATHFUN = (i) => `/ddol2/${(''+i).padStart(5,'0')}.bmp` // how can be the image file found, if a frame number (starts from 1) were given
-let AUDIOTRACK = 'ddol.pcm'
+let PATHFUN = (i) => `/namu2/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
+let AUDIOTRACK = 'namu.u8'
 // to export video to its frames:
 //     ffmpeg -i file.mp4 file/%05d.bmp
 // the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:

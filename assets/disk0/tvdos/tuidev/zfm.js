@@ -31,10 +31,10 @@ const COL_HL_EXT = {
 }
 
 const EXEC_FUNS = {
-    "wav": (f) => { _G.shell.execute(`playwav ${f}`) },
-    "adpcm": (f) => { _G.shell.execute(`playwav ${f}`) },
-    "mov": (f) => { _G.shell.execute(`playmov ${f}`) },
-    "bas": (f) => { _G.shell.execute(`basic ${f}`) }
+    "wav": (f) => _G.shell.execute(`playwav ${f} /i`),
+    "adpcm": (f) => _G.shell.execute(`playwav ${f} /i`),
+    "mov": (f) => _G.shell.execute(`playmov ${f} /i`),
+    "bas": (f) => _G.shell.execute(`basic ${f}`)
 }
 
 let windowMode = 0 // 0 == left, 1 == right
@@ -345,17 +345,27 @@ while (!exit) {
             }
             else {
                 let fileext = selectedFile.name.substring(selectedFile.name.lastIndexOf(".") + 1).toLowerCase()
-                let execfun = EXEC_FUNS[fileext] || ((f) => { _G.shell.execute(f) })
+                let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
+                let errorlevel = 0
 
                 con.curs_set(1);clearScr();con.move(1,1)
                 try {
                     serial.println(selectedFile.fullPath)
-                    execfun(selectedFile.fullPath)
+                    errorlevel = execfun(selectedFile.fullPath)
+//                    serial.println("1 errorlevel = " + errorlevel)
                 }
                 catch (e) {
                     // TODO popup error
-                    serial.println(e)
+                    println(e)
+                    errorlevel = 1
+//                    serial.println("2 errorlevel = " + errorlevel)
                 }
+
+                if (errorlevel) {
+                    println("Hit Return/Enter key to continue . . . .")
+                    sys.read()
+                }
+
                 con.curs_set(0);clearScr()
                 redraw()
             }
@@ -365,6 +375,10 @@ while (!exit) {
                 path[windowMode].pop()
                 cursor[windowMode] = 0; scroll[windowMode] = 0
                 drawFilePanel()
+            }
+            else {
+                // TODO list of drives
+
             }
         }
 
