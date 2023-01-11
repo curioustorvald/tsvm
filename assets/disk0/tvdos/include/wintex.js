@@ -2,10 +2,10 @@ class WindowObject {
 
     constructor(x, y, w, h, inputProcessor, drawContents, title, drawFrame) {
         this.isHighlighted = false
-        this.x = x
-        this.y = y
-        this.width = w
-        this.height = h
+        this.x = x|0
+        this.y = y|0
+        this.width = w|0
+        this.height = h|0
         this.inputProcessorFun = inputProcessor
         this.drawContentsFun = drawContents
         this.title = title
@@ -77,7 +77,7 @@ class WindowObject {
 
     drawContents() { this.drawContentsFun(this) }
     drawFrame() { this.drawFrameFun(this) }
-    processInput(event) { this.inputProcessor(this, event) }
+    processInput(event) { this.inputProcessorFun(this, event) }
 
 }
 

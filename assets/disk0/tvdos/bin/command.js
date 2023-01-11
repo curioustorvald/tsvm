@@ -635,7 +635,7 @@ shell.execute = function(line) {
 
 
         if (retValue) {
-            debugprintln(`[shell.execute] previous statement "${tokens.join(' ')}" had non-zero errorlevel: ${retValue}, raising error...`)
+            debugprintln(`[shell.execute] previous statement "${statements[c - 1].join(' ')}" had non-zero errorlevel: ${retValue}, raising error...`)
             return retValue
         }
 

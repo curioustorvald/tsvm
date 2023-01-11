@@ -16,6 +16,8 @@ const SIDEBAR_WIDTH = 9
 const LIST_HEIGHT = HEIGHT - 3
 const FILESIZE_WIDTH = 7
 const FILELIST_WIDTH = WIDTH - SIDEBAR_WIDTH - 3 - FILESIZE_WIDTH
+const POPUP_WIDTH = Math.ceil(WIDTH * 0.75) & 0xFFFE // always even number
+const POPUP_HEIGHT = HEIGHT * 0.5 + 2
 
 const COL_HL_EXT = {
     "js": 215,
@@ -57,24 +59,30 @@ function bytesToReadable(i) {
 }
 
 let filesPanelDraw = (wo) => {
-    let pathStr = path[windowMode].concat(['']).join("\\")
-    let port = _TVDOS.DRIVES[pathStr[0]]
-    _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
-    com.sendMessage(port[0], "USAGE")
-    let response = com.getStatusCode(port[0])
     let usedBytes = undefined
     let totalBytes = undefined
     let freeBytes = undefined
-    if (0 == response) {
-        let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
-        usedBytes = (rawStr[0].substring(4))|0
-        totalBytes = (rawStr[1].substring(5))|0
-        freeBytes = totalBytes - usedBytes
+    let pathStr = path[windowMode].concat(['']).join("\\")
+
+    let port = _TVDOS.DRIVES[pathStr[0]]
+
+    const showDrives = (pathStr.length == 0)
+
+    if (!showDrives) {
+        _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+        com.sendMessage(port[0], "USAGE")
+        let response = com.getStatusCode(port[0])
+        if (0 == response) {
+            let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
+            usedBytes = (rawStr[0].substring(4))|0
+            totalBytes = (rawStr[1].substring(5))|0
+            freeBytes = totalBytes - usedBytes
+        }
     }
 
-    let diskSizestr = bytesToReadable(freeBytes)+"/"+bytesToReadable(totalBytes)
+    let diskSizestr = (isNaN(freeBytes / totalBytes)) ? undefined : bytesToReadable(usedBytes)+"/"+bytesToReadable(totalBytes)
 
-    wo.titleLeft = pathStr
+    wo.titleLeft = (showDrives) ? "(drives)" : pathStr
     wo.titleRight = diskSizestr
 
 
@@ -87,8 +95,22 @@ let filesPanelDraw = (wo) => {
 
     con.color_pair(COL_TEXT, COL_BACK)
     // draw list
-    let directory = files.open(pathStr)
-    let fileList = directory.list()
+    let fileList = []
+    if (!showDrives) {
+        fileList = files.open(pathStr).list()
+    }
+    else {
+         Object.entries(_TVDOS.DRIVES).map(it=>{
+            let [letter, [port, drivenum]] = it
+            let dinfo = _TVDOS.DRIVEINFO[letter]
+
+            if (dinfo.type == "STOR") {
+                fileList.push(files.open(`${letter}:\\`))
+            }
+        })
+    }
+
+
     let s = scroll[windowMode]
 
     // sort fileList
@@ -105,11 +127,33 @@ let filesPanelDraw = (wo) => {
     dirFileList[windowMode] = ds.concat(fs)
 
     let filesCount = dirFileList[windowMode].length
+
     // print entries
     for (let i = 0; i < LIST_HEIGHT; i++) {
         let file = dirFileList[windowMode][i+s]
-        let sizestr = (file) ? bytesToReadable(file.size) : ''
-        let filename = (file) ? file.name : ''
+        let sizestr;
+        if (!showDrives) {
+            sizestr = (file) ? bytesToReadable(file.size) : ''
+        }
+        else if (file) {
+            let port = _TVDOS.DRIVES[file.driveLetter]
+            _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+            com.sendMessage(port[0], "USAGE")
+            let response = com.getStatusCode(port[0])
+            if (0 == response) {
+                let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
+                usedBytes = (rawStr[0].substring(4))|0
+                totalBytes = (rawStr[1].substring(5))|0
+                sizestr = bytesToReadable(usedBytes)
+            }
+            else {
+                sizestr = ''
+            }
+        }
+        else {
+            sizestr = ''
+        }
+        let filename = (showDrives && file) ? file.fullPath : (file) ? file.name : ''
         let fileext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase()
 
         // set bg colour
@@ -120,7 +164,7 @@ let filesPanelDraw = (wo) => {
         // print filename
         con.color_pair(foreCol, backCol)
         con.move(wo.y + 2+i, wo.x + 1)
-        print(((file && file.isDirectory) ? '\\' : ' ') + filename)
+        print(((file && file.isDirectory && !showDrives) ? '\\' : ' ') + filename)
         print(' '.repeat(FILELIST_WIDTH - 2 - filename.length))
 
         // print |
@@ -130,7 +174,7 @@ let filesPanelDraw = (wo) => {
         // print filesize
         con.color_pair(foreCol, backCol)
         con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
-        if (file && file.isDirectory) {
+        if (file && file.isDirectory && !showDrives) {
             print(' '.repeat(FILESIZE_WIDTH - sizestr.length))
             print(sizestr); con.prnch(0x7F)
         }
@@ -156,59 +200,67 @@ let opPanelDraw = (wo) => {
     let yp = wo.y + 1
 
     // other panel
-    con.move(yp + 3, xp + 3)
+    con.move(yp + 2, xp + 3)
     con.prnch((windowMode) ? 0x11 : 0x10)
-    con.move(yp + 4, xp)
+    con.move(yp + 3, xp)
     print(`  \x1B[38;5;${COL_TEXT}m[\x1B[38;5;${COL_HLACTION}mZ\x1B[38;5;${COL_TEXT}m]`)
+
+    hr(yp+5)
+
+    // go up
+    con.mvaddch(yp + 6, xp + 3, 0x18)
+    con.move(yp + 7, xp)
+    print(` \x1B[38;5;${COL_TEXT}mGo \x1B[38;5;${COL_HLACTION}mU\x1B[38;5;${COL_TEXT}mp`)
 
     hr(yp+8)
 
-    // go up
-    con.mvaddch(yp + 9, xp + 3, 0x18)
+    // copy
+    con.move(yp + 9, xp + 2)
+    con.prnch(0xDB);con.prnch((windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
     con.move(yp + 10, xp)
-    print(` \x1B[38;5;${COL_TEXT}mGo \x1B[38;5;${COL_HLACTION}mU\x1B[38;5;${COL_TEXT}mp`)
+    print(` \x1B[38;5;${COL_HLACTION}mC\x1B[38;5;${COL_TEXT}mopy`)
 
     hr(yp+11)
 
-    // copy
+    // move
     con.move(yp + 12, xp + 2)
-    con.prnch(0xDB);con.prnch((windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
+    if (windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
     con.move(yp + 13, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mC\x1B[38;5;${COL_TEXT}mopy`)
+    print(` \x1B[38;5;${COL_TEXT}mMo\x1B[38;5;${COL_HLACTION}mv\x1B[38;5;${COL_TEXT}me`)
 
     hr(yp+14)
 
-    // move
+    // delete
     con.move(yp + 15, xp + 2)
-    if (windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
+    if (windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
     con.move(yp + 16, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mM\x1B[38;5;${COL_TEXT}move`)
+    print(` \x1B[38;5;${COL_HLACTION}mD\x1B[38;5;${COL_TEXT}melete`)
 
     hr(yp+17)
 
-    // delete
-    con.move(yp + 18, xp + 2)
-    if (windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
-    con.move(yp + 19, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mD\x1B[38;5;${COL_TEXT}melete`)
-
-    hr(yp+20)
-
     // mkdir
-    con.move(yp + 21, xp + 2)
+    con.move(yp + 18, xp + 2)
     con.prnch(0xDB)
     con.video_reverse();con.prnch(0x2B);con.video_reverse()
     con.prnch(0xDF)
+    con.move(yp + 19, xp)
+    print(` \x1B[38;5;${COL_TEXT}mM\x1B[38;5;${COL_HLACTION}mk\x1B[38;5;${COL_TEXT}mDir`)
+
+    hr(yp+20)
+
+    // rename
+    con.move(yp + 21, xp + 2)
+    con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
     con.move(yp + 22, xp)
-    print(` \x1B[38;5;${COL_TEXT}mm\x1B[38;5;${COL_HLACTION}mK\x1B[38;5;${COL_TEXT}mdir`)
+    print(` \x1B[38;5;${COL_HLACTION}mR\x1B[38;5;${COL_TEXT}mename`)
 
     hr(yp+23)
 
-    // rename
-    con.move(yp + 24, xp + 2)
-    con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
+    // the dreaded hamburger menu
+    con.move(yp + 24, xp + 3)
+    con.prnch(0xf0)
     con.move(yp + 25, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mR\x1B[38;5;${COL_TEXT}mename`)
+    print(` \x1B[38;5;${COL_HLACTION}mM\x1B[38;5;${COL_TEXT}more`)
 
     hr(yp+26)
 
@@ -222,13 +274,133 @@ let opPanelDraw = (wo) => {
 }
 
 
+let paletteDraw = (wo) => {
 
+}
+
+
+let popupDraw = (wo) => {
+
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+let filenavOninput = (window, event) => {
+
+    let eventName = event[0]
+    if (eventName == "key_down") {
+
+    let keysym = event[1]
+    let keyJustHit = (1 == event[2])
+    let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
+    let keycode = keycodes[0]
+
+    if (keyJustHit && keysym == "q") {
+        exit = true
+    }
+    else if (keyJustHit && keysym == 'z') {
+        windowMode = 1 - windowMode
+        windowFocus = 2 - windowFocus
+        redraw()
+    }
+    else if (keysym == "<UP>") {
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        drawFilePanel()
+    }
+    else if (keysym == "<DOWN>") {
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        drawFilePanel()
+    }
+    else if (keysym == "<PAGE_UP>") {
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        drawFilePanel()
+    }
+    else if (keysym == "<PAGE_DOWN>") {
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        drawFilePanel()
+    }
+    else if (keyJustHit && keycode == 66) { // enter
+        let selectedFile = dirFileList[windowMode][cursor[windowMode]]
+
+        if (selectedFile.fullPath.length == 2) {
+            path[windowMode].push(selectedFile.fullPath)
+            cursor[windowMode] = 0; scroll[windowMode] = 0
+            drawFilePanel()
+        }
+        else if (selectedFile.isDirectory) {
+            path[windowMode].push(selectedFile.name)
+            cursor[windowMode] = 0; scroll[windowMode] = 0
+            drawFilePanel()
+        }
+        else {
+            let fileext = selectedFile.name.substring(selectedFile.name.lastIndexOf(".") + 1).toLowerCase()
+            let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
+            let errorlevel = 0
+
+            con.curs_set(1);clearScr();con.move(1,1)
+            try {
+//                    serial.println(selectedFile.fullPath)
+                errorlevel = execfun(selectedFile.fullPath)
+//                    serial.println("1 errorlevel = " + errorlevel)
+            }
+            catch (e) {
+                // TODO popup error
+                println(e)
+                errorlevel = 1
+//                    serial.println("2 errorlevel = " + errorlevel)
+            }
+
+            if (errorlevel) {
+                println("Hit Return/Enter key to continue . . . .")
+                sys.read()
+            }
+
+            con.curs_set(0);clearScr()
+            redraw()
+        }
+    }
+    else if (keyJustHit && keysym == 'u') { // no bksp: used as an exit key for playmov/playwav
+        if (path[windowMode].length >= 1) {
+            path[windowMode].pop()
+            cursor[windowMode] = 0; scroll[windowMode] = 0
+            drawFilePanel()
+        }
+        else {
+            // TODO list of drives
+
+        }
+    }
+
+
+
+    }
+}
+
+
+
+let paletteInput = (window, event) => {
+
+
+}
+
+
+
+let popupInput = (window, event) => {
+
+
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
 let windows = [[
-    new win.WindowObject(1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, ()=>{}, filesPanelDraw), // left panel
+    new win.WindowObject(1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // left panel
     new win.WindowObject(WIDTH - SIDEBAR_WIDTH+1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
 //    new win.WindowObject(1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
-    new win.WindowObject(SIDEBAR_WIDTH + 1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, ()=>{}, filesPanelDraw), // right panel
+    new win.WindowObject(SIDEBAR_WIDTH + 1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // right panel
+],[
+    new win.WindowObject((WIDTH - POPUP_WIDTH) / 2, (HEIGHT - POPUP_HEIGHT) / 2, POPUP_WIDTH, POPUP_HEIGHT, paletteInput, paletteDraw, "Commands")
+],[
+    new win.WindowObject((WIDTH - POPUP_WIDTH) / 2, (HEIGHT - POPUP_HEIGHT) / 2, POPUP_WIDTH, POPUP_HEIGHT, popupInput, popupDraw)
 ]]
 
 const LEFTPANEL = windows[0][0]
@@ -274,6 +446,7 @@ function drawOpPanel() {
     OPPANEL.drawFrame()
 }
 
+
 function redraw() {
     clearScr()
     drawTitle()
@@ -297,95 +470,23 @@ let exit = false
 let firstRunLatch = true
 
 while (!exit) {
-
     input.withEvent(event => {
 
-        let eventName = event[0]
-        if (eventName == "key_down") {
-
-        let keysym = event[1]
-        let keyJustHit = (1 == event[2])
-        let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
-        let keycode = keycodes[0]
-
-        if (firstRunLatch) { // filter out the initial ENTER key as they would cause unwanted behaviours
-            keyJustHit = false
+        if ((1 == event[2]) && event[3] != 66) { // release the latch right away if the key is not Return
             firstRunLatch = false
         }
-        if (keyJustHit && keysym == "q") {
-            exit = true
-        }
-        else if (keyJustHit && keysym == 'z') {
-            windowMode = 1 - windowMode
-            windowFocus = 2 - windowFocus
-            redraw()
-        }
-        else if (keysym == "<UP>") {
-            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
-            drawFilePanel()
-        }
-        else if (keysym == "<DOWN>") {
-            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
-            drawFilePanel()
-        }
-        else if (keysym == "<PAGE_UP>") {
-            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
-            drawFilePanel()
-        }
-        else if (keysym == "<PAGE_DOWN>") {
-            [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
-            drawFilePanel()
-        }
-        else if (keyJustHit && keycode == 66) { // enter
-            let selectedFile = dirFileList[windowMode][cursor[windowMode]]
-            if (selectedFile.isDirectory) {
-                path[windowMode].push(selectedFile.name)
-                cursor[windowMode] = 0; scroll[windowMode] = 0
-                drawFilePanel()
-            }
-            else {
-                let fileext = selectedFile.name.substring(selectedFile.name.lastIndexOf(".") + 1).toLowerCase()
-                let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
-                let errorlevel = 0
 
-                con.curs_set(1);clearScr();con.move(1,1)
-                try {
-                    serial.println(selectedFile.fullPath)
-                    errorlevel = execfun(selectedFile.fullPath)
-//                    serial.println("1 errorlevel = " + errorlevel)
+        if ((1 == event[2]) && firstRunLatch) { // filter out the initial ENTER key as they would cause unwanted behaviours
+            firstRunLatch = false
+        }
+        else {
+            windows[windowFocus].forEach(it => {
+                if (it.isHighlighted) {
+                    it.processInput(event)
                 }
-                catch (e) {
-                    // TODO popup error
-                    println(e)
-                    errorlevel = 1
-//                    serial.println("2 errorlevel = " + errorlevel)
-                }
-
-                if (errorlevel) {
-                    println("Hit Return/Enter key to continue . . . .")
-                    sys.read()
-                }
-
-                con.curs_set(0);clearScr()
-                redraw()
-            }
+            })
         }
-        else if (keyJustHit && (keysym == 'u' || keycode == 67)) { // bksp
-            if (path[windowMode].length > 1) {
-                path[windowMode].pop()
-                cursor[windowMode] = 0; scroll[windowMode] = 0
-                drawFilePanel()
-            }
-            else {
-                // TODO list of drives
-
-            }
-        }
-
-
-
-    }})
-
+    })
 }
 
 con.curs_set(1)
