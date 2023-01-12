@@ -142,7 +142,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
 
 
             if (repeat > 1) sys.sleep(10)
-            
+
             printPlayBar()
         }
 

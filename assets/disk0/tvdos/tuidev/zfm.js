@@ -43,7 +43,7 @@ const EXEC_FUNS = {
 }
 
 let windowMode = 0 // 0 == left, 1 == right
-let windowFocus = 0 // 0,2: files panel, 1: operation panel, -1: a wild popup message appeared
+let windowFocus = 0 // 0: files window, 1: palette window, 2: popup window
 
 // window states
 let path = [["A:"], ["A:"]]
@@ -301,11 +301,6 @@ let filenavOninput = (window, event) => {
     if (keyJustHit && keysym == "q") {
         exit = true
     }
-    else if (keyJustHit && keysym == 'z') {
-        windowMode = 1 - windowMode
-        windowFocus = 2 - windowFocus
-        redraw()
-    }
     else if (keysym == "<UP>") {
         [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
         drawFilePanel()
@@ -427,7 +422,7 @@ function drawTitle() {
 
 function drawFilePanel() {
     windows[0].forEach((panel, i)=>{
-        panel.isHighlighted = (i == windowFocus)
+        panel.isHighlighted = (i == 2 * windowMode)
     })
     if (windowMode) {
         RIGHTPANEL.drawContents()
@@ -475,14 +470,23 @@ let firstRunLatch = true
 while (!exit) {
     input.withEvent(event => {
 
-        if ((1 == event[2]) && event[3] != 66) { // release the latch right away if the key is not Return
+        let keysym = event[1]
+        let keyJustHit = (1 == event[2])
+
+        if (keyJustHit && event[3] != 66) { // release the latch right away if the key is not Return
             firstRunLatch = false
         }
 
-        if ((1 == event[2]) && firstRunLatch) { // filter out the initial ENTER key as they would cause unwanted behaviours
+        if (keyJustHit && firstRunLatch) { // filter out the initial ENTER key as they would cause unwanted behaviours
             firstRunLatch = false
         }
         else {
+
+            if (keyJustHit && keysym == 'z') {
+                windowMode = 1 - windowMode
+                redraw()
+            }
+
             windows[windowFocus].forEach(it => {
                 if (it.isHighlighted) {
                     it.processInput(event)
