@@ -2,7 +2,7 @@
 let filename = _G.shell.resolvePathInput(exec_args[1]).full
 function printdbg(s) { if (0) serial.println(s) }
 
-const interactive = exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 const seqread = require("seqread")
 const pcm = require("pcm")
 
@@ -104,6 +104,29 @@ if (interactive) {
 }
 let [cy, cx] = con.getyx()
 let [__, CONSOLE_WIDTH] = con.getmaxyx()
+let paintWidth = CONSOLE_WIDTH - 16
+function printPlayBar(startOffset) {
+    if (interactive) {
+        let currently = seqread.getReadCount() - startOffset
+        let total = FILE_SIZE - startOffset - 8
+
+        let currentlySec = Math.round(bytesToSec(currently))
+        let totalSec = Math.round(bytesToSec(total))
+
+        con.move(cy, 1)
+        print(' '.repeat(15))
+        con.move(cy, 1)
+
+        print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
+
+        con.move(cy, 15)
+        print(' ')
+        let progressbar = '\x84205u'.repeat(paintWidth + 1)
+        print(progressbar)
+
+        con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
+    }
+}
 // read chunks loop
 while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
     let chunkName = seqread.readFourCC()
@@ -195,29 +218,8 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
 
             let queueSize = audio.getPosition(0)
             if (queueSize <= 1) {
-                if (interactive) {
-                    let currently = seqread.getReadCount() - startOffset
-                    let total = FILE_SIZE - startOffset - 8
 
-                    let currentlySec = Math.round(bytesToSec(currently))
-                    let totalSec = Math.round(bytesToSec(total))
-
-                    con.move(cy, 1)
-                    print(' '.repeat(40))
-                    con.move(cy, 1)
-
-                    print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
-
-                    con.move(cy, 15)
-                    print(' ')
-
-                    let paintWidth = CONSOLE_WIDTH - 16
-                    let progressbar = '\x84205u'.repeat(paintWidth + 1)
-                    print(progressbar)
-
-                    con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
-                }
-
+                printPlayBar(startOffset)
 
                 // upload four samples for lag-safely
                 for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
@@ -242,6 +244,8 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
 
 
                     if (repeat > 1) sys.sleep(10)
+
+                    printPlayBar(startOffset)
                 }
 
                 audio.play(0)

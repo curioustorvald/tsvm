@@ -759,7 +759,7 @@ shell.execute = function(line) {
                             errorlevel = 1
                     }
                     finally {
-                        debugprintln("[shell.execute] exec app " + searchFile.fullPath + "exit with no exception; errorlevel = " + errorlevel)
+                        debugprintln("[shell.execute] exec app " + searchFile.fullPath + " exit with no exception; errorlevel = " + errorlevel)
 
                         // sometimes no-error program may return nothing as the errorlevel; force set to 0 then.
                         if (!gotError && (errorlevel == undefined || (typeof errorlevel.trim == "function" && errorlevel.trim().length == 0) || isNaN(errorlevel)))

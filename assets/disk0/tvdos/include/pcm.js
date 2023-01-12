@@ -24,7 +24,7 @@ function s16Tou8(i) {
 //    return s8Tou8((i >> 8) & 255)
     // apply dithering
     let ufval = (i / 65536.0) + 0.5
-    let ival = randomRound(ufval * 256.0)
+    let ival = randomRound(ufval * 255.0)
     return ival|0
 }
 function u16Tos16(i) { return (i > 32767) ? i - 65536 : i }

@@ -3,6 +3,7 @@ if (exec_args[1] == undefined) {
     return 1
 }
 
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 let infile = files.open(_G.shell.resolvePathInput(exec_args[1]).full)
 
 // read input file
@@ -50,3 +51,36 @@ graphics.clearText(); graphics.clearPixels(0); graphics.clearPixels2(0)
 decodefun(ipfbuf, -1048577, -1310721, width, height, hasAlpha)
 
 sys.free(ipfbuf)*/
+
+
+let wait = interactive
+
+if (interactive) {
+    con.clear(); con.curs_set(0); con.move(1,1)
+    println("Push and hold Backspace to exit")
+}
+
+let t1 = sys.nanoTime()
+let akku = 0
+let notifHideTimer = 0
+const NOTIF_SHOWUPTIME = 3000000000
+while (wait) {
+    sys.poke(-40, 1)
+    if (sys.peek(-41) == 67) {
+        wait = false
+        con.curs_set(1)
+    }
+
+    sys.sleep(50)
+
+    let t2 = sys.nanoTime()
+    akku += (t2 - t1) / 1000000000.0
+
+    notifHideTimer += (t2 - t1)
+    if (notifHideTimer > NOTIF_SHOWUPTIME) {
+        con.clear()
+    }
+
+    t1 = t2
+
+}

@@ -1,5 +1,5 @@
 // usage: playmov moviefile.mov [/i]
-const interactive = exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 const WIDTH = 560
 const HEIGHT = 448
 const FBUF_SIZE = WIDTH * HEIGHT
@@ -87,7 +87,7 @@ if (interactive) {
     println("Push and hold Backspace to exit")
 }
 let notifHideTimer = 0
-const NOTIF_SHOWUPTIME = 2000000000
+const NOTIF_SHOWUPTIME = 3000000000
 let [cy, cx] = con.getyx()
 let t1 = sys.nanoTime()
 renderLoop:
@@ -237,7 +237,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
     if (interactive) {
         notifHideTimer += (t2 - t1)
-        if (notifHideTimer > NOTIF_SHOWUPTIME) {
+        if (notifHideTimer > (NOTIF_SHOWUPTIME + frameTime)) {
             con.clear()
         }
     }

@@ -1,46 +1,108 @@
+const win = require("wintex")
+const [HEIGHt, WIDTH] = con.getmaxyx()
+
 println("let's install!")
 
 /* procedure:
 
 CANCELLED_BY_USER :=
-    println("Installation of TVDOS was cancelled by the user.")
-    exit with errorlevel 1
+    Untick all sidebar
+    title: Abort Installation
+    message: Installation of TVDOS was cancelled by the user.
+    with button: Quit
+    on button Quit: exit with errorlevel 1
+
+NO_SUITABLE_TARGET :=
+    Untick all sidebar
+    title: Unable to Install
+    message: Your system appears to not have a suitable disk for TVDOS installation. Please shut off the power, insert/plug the disk then restart the computer and the installer.
+    with button: Quit
+    on button Quit: exit with errorlevel 127
+
+Sidebar and Chapter Title :=
+    [] Welcome - License Agreement
+    [] Customisation - User Interface
+    [] Disk - Installation Target
+    [] Summary - Installation Settings
+    [] Installation - Perform Installation
+
+var USER_INTERFACE; // "zfm" or "cmd"
+
+0. Probe all suitable installation candidates
+0.1 If there is none, do NO_SUITABLE_TARGET
+    else, proceed to next step
 
 
-1. show the list of installable drives. Read-only drives are considered not installable
-1.1 if there is at least one installable drives, show the following message:
-    select drive to install [B,C,D]:
-1.2 else, show the following message:
-    No suitable drives were detected for installing TVDOS. The setup program will exit. (exit with errorlevel 2)
+1. Chapter Welcome
+    show wall of text: <COPYING>
+    with button: Abort, [], Next
+    on Abort: do CANCELLED_BY_USER
 
-2. check if the drive has boot sector. if there is, show message:
-    This drive appears to be bootable, which means there might be other operation system on this drive.
-    Proceed anyway? [Y/N]:
-2.1. if read().trim().toLowercase() is not "y", do CANCELLED_BY_USER
 
-3. show the following message:
-    In order to install TVDOS to the drive ${destDrive}, the drive must be wiped clean first.
-    THIS PROCESS WILL IRREVERSIBLY DESTROY ALL THE DATA IN THE DRIVE ${destDrive}!
-    Type "yes, I consent" to proceed, or type any other text to cancel the installation process:
-3.1. if read().trim().toLowercase() is not "yes, i consent" or "yes i consent", do CANCELLED_BY_USER
+2. Chapter Customisation
+    message: Select the default user interface your new system will have. You can change the configuration any time after the installation.
+    button1:
+        title: Z File Manager (emph with same goldenrod colour as the focused window frame)
+        desc: Text-based Graphical Interface for navigating the system using arrow keys
+    button2:
+        title: Command-line Interface (emph with same goldenrod colour as the focused window frame)
+        desc: Traditional DOS experience. Black screen, blinking cursor
+    with button: Abort, Back Next.
+    on Abort: do CANCELLED_BY_USER
+    on Next with button1: set USER_INTERFACE to "zfm"
+    on Next with button2: set USER_INTERFACE to "cmd"
 
-4. show the following message:
-    Enter the new name for the drive that TVDOS will be installed:
 
-5. show the following message:
-    The destination disk will be wiped now. Do not turn off the power...
+3. Chapter Disk
+    message: Choose the disk to install TVDOS.
+             Selected disk will be cleared only on the actual Installation step.
+    show buttons on grid arrangement. use template:
+        title: <drive letter>: // A:  B:  C:  etc
+        desc:
+            if clean: This disk is clear
+                      Total <disk size> bytes
+            if has bootsector: This disk has bootsector
+                               Used <used size> bytes/Total <disk size> bytes
+            if has files: This disk has files on it
+                          Used <used size> bytes/Total <disk size> bytes
+        with button: Abort, Back, Next
+        on Abort: do CANCELLED_BY_USER
+        on Next with non-clean disk selected: show popup
+            heading: Warning
+            title: Selected disk will be wiped clean and any files on it will be lost permanently. Proceed with installation?
+            with button: Cancel, Proceed
+            on Cancel: go back to disk selection
+            on Proceed: go to next step
 
-6. formatDrive(destDrive, newName, driveNum)
 
-7. show following message:
-    TVDOS will be installed into the drive ${destDrive}...
+4. Chapter Summary
+    message: This is the overview of the installation. Read carefully before clicking Next.
+    show wall of text:
+        Booting
+            - on Drive <drive letter>:
 
-8. copyFiles(destDrive)
+        Environment
+            - start system with <program>  (program := if USER_INTERFACE is zfm, "Z File Manager"; is cmd, "Command Line Interface")
+            - Size of packages to install: <filesize> kB
 
-9. show following message
-    TVDOS is successfully installed. You may continue using the Live Boot environment.
-    To boot from the newly-installed TVDOS, turn off the computer, remove the installation medium, then start the
-    computer again. (exit with errorlevel 0)
+    with button: Abort, Back, Next
+    on Abort: do CANCELLED_BY_USER
+
+
+5. Chapter Installation
+5.1 Disk Clear
+    message: Disk is being cleared, do not turn off the power
+    formatDrive(destDrive, "TVDOS", driveNum)
+5.2 Copy Files
+    message: Installing TVDOS...
+    copyFiles(destDrive)
+
+
+6. Still on Chapter Installtion but change title: Installation Was Successful
+    message: TVDOS is successfully installed. You may continue using the Live Boot environment.
+             To boot from the new disk, turn off the computer, remove the installation medium, then restart the computer.
+    with button: [], [], OK
+    on OK: con.clear(); exit with errorlevel 0
 
 */
 
