@@ -82,7 +82,7 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
                     Thread.sleep(6)
                 }
                 else if (it.pcmUpload) {
-                    printdbg("Rejecting samples (queueSize: ${it.pcmQueue.size}, uploadLength: ${it.pcmUploadLength})")
+//                    printdbg("Rejecting samples (queueSize: ${it.pcmQueue.size}, uploadLength: ${it.pcmUploadLength})")
                     Thread.sleep(6)
                 }
             }
@@ -106,7 +106,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
 
     companion object {
         internal val DBGPRN = false
-        const val SAMPLING_RATE = 30000
+        const val SAMPLING_RATE = 32000
     }
 
     internal val sampleBin = UnsafeHelper.allocate(114687L, this)
@@ -402,7 +402,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
             }
         }
         
-        fun getPcmQueueCapacity() = 2147483647//QUEUE_SIZE[pcmQueueSizeIndex]
+        fun getPcmQueueCapacity() = QUEUE_SIZE[pcmQueueSizeIndex]
 
         fun dispose() {
             println("AudioDevice dispose ${parent.renderThreads[index]}")

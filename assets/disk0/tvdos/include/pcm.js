@@ -1,4 +1,4 @@
-const HW_SAMPLING_RATE = 30000
+const HW_SAMPLING_RATE = 32000
 function printdbg(s) { if (0) serial.println(s) }
 function printvis(s) { if (0) println(s) }
 function sampleToVisual(i) {
@@ -269,4 +269,4 @@ function decodeMS_ADPCM(inPtr, outPtr, blockSize, config) {
 }
 
 
-exports = { HW_SAMPLING_RATE, randomRound, decodeMS_ADPCM, decodeLPCM }
+exports = { HW_SAMPLING_RATE, randomRound, decodeMS_ADPCM, decodeLPCM, s8Tou8, s16Tou8, u16Tos16 }

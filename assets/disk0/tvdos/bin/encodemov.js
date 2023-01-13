@@ -60,7 +60,7 @@ if (!ipfFun) throw Error("Unknown IPF mode "+IPFMODE)
 
 
 
-const AUDIO_SAMPLE_SIZE = 2 * ((30000 / FPS) + 1)|0 // times 2 because stereo
+const AUDIO_SAMPLE_SIZE = 2 * (((32000 / FPS) + 1)|0) // times 2 because stereo
 let audioBytesRead = 0
 const audioFile = (AUDIOTRACK) ? files.open(_G.shell.resolvePathInput(AUDIOTRACK).full) : undefined
 let audioRemaining = (audioFile) ? audioFile.size : 0
