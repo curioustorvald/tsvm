@@ -643,14 +643,8 @@ var Frame = {
     },
 
     readCRC: function (source) {
-        var result = source.readFull(2);
-        if (result.err) {
-            return {
-                err: result.err
-            }
-        }
-        var buf = result.buf;
-        if (buf.byteLength < 2) {
+        var buf = source.readFull(2)
+        if (buf.length < 2) {
             return "mp3: error at readCRC";
         }
     },

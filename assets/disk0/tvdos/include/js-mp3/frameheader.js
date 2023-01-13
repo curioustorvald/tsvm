@@ -2,6 +2,7 @@ var consts = require('A:/tvdos/include/js-mp3/consts.js');
 
 var Frameheader = {
     createNew: function (value) {
+
         // A mepg1FrameHeader is MPEG1 Layer 1-3 frame header
         var fh = {
             value: value
@@ -214,14 +215,8 @@ var Frameheader = {
     read: function (source, position) {
         var pos = position;
 
-        var result = source.readFull(4);
-        if (result.err) {
-            return {
-                err: result.err
-            }
-        }
-        var buf = result.buf;
-        if (buf.byteLength < 4) {
+        var buf = source.readFull(4)
+        if (buf.length < 4) {
             return {
                 h: 0,
                 position: 0,
@@ -238,15 +233,9 @@ var Frameheader = {
         while (!fh.isValid()) {
             // stopPosition++;
 
-            result = source.readFull(1);
-            if (result.err) {
-                return {
-                    err: result.err
-                }
-            }
-            buf = result.buf;
+            buf = source.readFull(1);
 
-            if (buf.byteLength < 1) {
+            if (buf.length < 1) {
                 return {
                     h: 0,
                     position: 0,

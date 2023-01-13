@@ -186,23 +186,24 @@ var read = function (source, prev, size, offset) {
     if (prev !== null) {
         vec = prev.Tail(offset);
     }
+
+
+
+//    serial.println(`maindata readFull(${size})`)
+
     // Read the main_data from file
-    var result = source.readFull(size);
-    if (result.err) {
-        return {
-            err: result.err
-        }
-    }
-    var buf = result.buf;
+    var buf = source.readFull(size);
     // var buf = new Uint8Array(source, 0, size);
-    if (buf.byteLength < size) {
+    if (buf.length < size) {
         return {
             b: null,
             err: "maindata.Read (2)"
         }
     }
+
     return {
-        b: bits.createNew(util.concatBuffers(vec, new Uint8Array(buf.slice()).buffer)),
+//        b: bits.createNew(util.concatBuffers(vec, new Uint8Array(buf.slice()).buffer)),
+        b: bits.createNew(util.concatBuffers(vec, new Uint8Array(buf).buffer)),
         err: null
     }
 };

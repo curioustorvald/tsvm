@@ -73,23 +73,21 @@ var Sideinfo = {
         if (fheader.protectionBit() === 0) {
             main_data_size -= 2;
         }
+
+
+//        serial.println(`sideinfo readFull(${sideinfo_size})`)
+
         // Read sideinfo from bitstream into buffer used by Bits()
-        var result = source.readFull(sideinfo_size);
-        if (result.err) {
-            return {
-                err: result.err
-            }
-        }
-        var buf = result.buf;
+        var buf = source.readFull(sideinfo_size);
         // var buf = new Uint8Array(source.buf, pos, sideinfo_size);
-        if (buf.byteLength < sideinfo_size) {
+        if (buf.length < sideinfo_size) {
             return {
                 v: null,
                 pos: pos,
                 err: "mp3: couldn't read sideinfo " + sideinfo_size + " bytes"
             }
         }
-        var s = Bits.createNew(new Uint8Array(buf.slice()).buffer);
+        var s = Bits.createNew(new Uint8Array(buf).buffer);
 
         // Parse audio data
         // Pointer to where we should start reading main data

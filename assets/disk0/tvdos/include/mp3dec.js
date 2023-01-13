@@ -53,6 +53,7 @@ var Mp3 = {
                     err: "position not correct"
                 }
             }
+            source.buf.seek(position)
             source.pos = position;
             return {
                 pos: source.pos
@@ -60,35 +61,23 @@ var Mp3 = {
         };
 
         source.readFull = function (length) {
+            if (length < 0) throw Error("Source.pos less than 0: "+source.pos)
 
-            try {
-                if (length < 0) throw Error("Source.pos less than 0: "+source.pos)
+            var l = Math.min(source.buf.byteLength - source.pos, length);
 
-                var l = Math.min(source.buf.byteLength - source.pos, length);
-
-                if (l < 0) {
-                    serial.println("l < 0: "+l)
-                    throw Error("l < 0: "+l)
-                }
-
-                var bbuf = new Uint8Array(source.buf, source.pos, l);
-
-                source.pos += bbuf.byteLength;
-
-                if (source.pos < 0) {
-                    throw Error("pos < 0: "+source.pos)
-                }
-
-                return {
-                    buf: bbuf,
-                    err: null
-                };
-            } catch (e) {
-                return {
-                    buf: null,
-                    err: e.toString()
-                }
+            if (l < 0) {
+                serial.println("l < 0: "+l)
+                throw Error("l < 0: "+l)
             }
+
+//            serial.println(`readFull(${length} -> ${l}); pos: ${source.pos}`)
+
+            if (source.pos + l < 0) {
+                throw Error("pos < 0: "+source.pos)
+            }
+
+            source.pos += l;
+            return source.buf.readByteNumbers(l)
         };
 
         source.getPos = function () {
@@ -99,69 +88,39 @@ var Mp3 = {
         };
 
         source.skipTags = function () {
-            var result = source.readFull(3);
-            if (result.err) {
-                return {
-                    err: result.err
-                }
-            }
-            var buf = result.buf;
+            var t = source.buf.readStr(3);
+
+//            var buf = result.buf;
 
             // decode UTF-8
-            var t = String.fromCharCode.apply(null, buf);
             switch (t) {
                 case "TAG":
-                    result = source.readFull(125);
-                    if (result.err) {
-                        return {
-                            err: result.err
-                        }
-                    }
-                    buf = result.buf;
+                    source.readFull(125);
                     break;
                 case 'ID3':
                     // Skip version (2 bytes) and flag (1 byte)
-                    result = source.readFull(3);
-                    if (result.err) {
-                        return {
-                            err: result.err
-                        }
-                    }
+                    source.readFull(3);
 
-                    result = source.readFull(4);
-                    if (result.err) {
-                        return {
-                            err: result.err
-                        }
-                    }
-                    buf = result.buf;
-                    if (buf.byteLength !== 4) {
+                    let buf = source.readFull(4)
+                    if (buf.length !== 4) {
                         return {
                             err: "data not enough."
                         };
                     }
                     var size = (((buf[0] >>> 0) << 21) >>> 0) | (((buf[1] >>> 0) << 14) >>> 0) | (((buf[2] >>> 0) << 7) >>> 0) | (buf[3] >>> 0);
-                    result = source.readFull(size);
-                    if (result.err) {
-                        return {
-                            err: result.err
-                        }
-                    }
-                    buf = result.buf;
+
+                    source.readFull(size)
                     break;
                 default:
-                    source.unread(buf);
+                    source.buf.unread(3);
 //                    source.pos -= 3;
                     break;
             }
             return {};
         };
 
-        source.unread = function (buf) {
-            source.pos -= buf.byteLength
-        };
-
         source.rewind = function() {
+            source.buf.rewind()
             source.pos = 0;
         };
 
@@ -197,6 +156,9 @@ var Mp3 = {
 
         decoder.decode = function (callback) {
             var result;
+
+            serial.println("Start decoding")
+
             while(true) {
                 result = decoder.readFrame();
 
@@ -227,6 +189,9 @@ var Mp3 = {
 
             var l = 0;
             while(true) {
+
+//                serial.println(`Reading Frames; l = ${l}`)
+
                 var result = Frameheader.read(decoder.source, decoder.source.pos);
                 if (result.err) {
                     if (result.err.toString().indexOf("UnexpectedEOF") > -1) {
@@ -236,10 +201,12 @@ var Mp3 = {
                         err: result.err
                     };
                 }
+
+
                 decoder.frameStarts.push(result.position);
                 l += consts.BytesPerFrame;
 
-                result = decoder.source.readFull(result.h.frameSize() - 4); // move to next frame position
+                result = decoder.source.readFull(result.h.frameSize() - 4)[0]; // move to next frame position
                 if (result.err) {
                     break;
                 }
@@ -255,11 +222,15 @@ var Mp3 = {
         };
         // ======= Methods of decoder :: end =========
 
+//        serial.println("Reading tags")
+
         var r = s.skipTags();
         if (r && r.err) {
             throw Error(`Error creating new MP3 source: ${r.err}`)
             return null;
         }
+
+//        serial.println("Reading first frame")
 
         var result = decoder.readFrame();
         if (result.err) {
@@ -267,9 +238,15 @@ var Mp3 = {
             return null;
         }
 
+//        serial.println("First frame finished reading")
+
         decoder.sampleRate = decoder.frame.samplingFrequency();
 
+        serial.println("Sampling rate: "+decoder.sampleRate + " Hz")
+
         result = decoder.ensureFrameStartsAndLength();
+
+        serial.println("Decode end")
         if (result.err) {
             throw Error(`Error ensuring Frame starts and length: ${result.err}`)
             return null;
