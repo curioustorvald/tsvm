@@ -216,6 +216,11 @@ var Frameheader = {
         var pos = position;
 
         var buf = source.readFull(4)
+        if (buf.err) {
+            return {
+                err: buf.err
+            }
+        }
         if (buf.length < 4) {
             return {
                 h: 0,

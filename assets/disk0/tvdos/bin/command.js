@@ -348,6 +348,13 @@ shell.resolvePathInput = function(input) {
 
     return { string: pathstr, pwd: newPwd, drive: driveLetter, full: `${driveLetter}:${pathstr}` }
 }
+shell.isValidDriveLetter = function(l) {
+    if (typeof l === 'string' || l instanceof String) {
+        let lc = l.charCodeAt(0)
+        return (l == '$' || 65 <= lc && lc <= 90 || 97 <= lc && lc <= 122)
+    }
+    else return false
+}
 shell.coreutils = {
 /* Args follow this format:
  * <command-name> <1st arg> <2nd arg> ...
@@ -682,30 +689,39 @@ shell.execute = function(line) {
             // search through PATH for execution
 
             var fileExists = false
-            var searchDir = (cmd.startsWith("/")) ? [""] : ["/"+shell_pwd.join("/")].concat(_TVDOS.getPath())
+            var searchFile;
+            var searchPath = "";
 
-            var pathExt = [] // it seems Nashorn does not like 'let' too much? this line gets ignored sometimes
-            // fill pathExt using %PATHEXT% but also capitalise them
-            if (cmd.split(".")[1] === undefined)
-                _TVDOS.variables.PATHEXT.split(';').forEach(function(it) { pathExt.push(it); pathExt.push(it.toUpperCase()); })
-            else
-                pathExt.push("") // final empty extension
+            // if the file is absolute path:
+            if (shell.isValidDriveLetter(cmd[0]) && cmd[1] == ':') {
+                searchFile = files.open(cmd)
+                searchPath = trimStartRevSlash(searchFile.path)
+                fileExists = searchFile.exists
+            }
+            // else
+            else {
+                var searchDir = (cmd.startsWith("/")) ? [""] : ["/"+shell_pwd.join("/")].concat(_TVDOS.getPath())
 
-            let searchPath = ""
-            let searchFile = 0
+                var pathExt = [] // it seems Nashorn does not like 'let' too much? this line gets ignored sometimes
+                // fill pathExt using %PATHEXT% but also capitalise them
+                if (cmd.split(".")[1] === undefined)
+                    _TVDOS.variables.PATHEXT.split(';').forEach(function(it) { pathExt.push(it); pathExt.push(it.toUpperCase()); })
+                else
+                    pathExt.push("") // final empty extension
 
-            searchLoop:
-            for (var i = 0; i < searchDir.length; i++) {
-                for (var j = 0; j < pathExt.length; j++) {
-                    let search = searchDir[i]; if (!search.endsWith('\\')) search += '\\'
-                    searchPath = trimStartRevSlash(search + cmd + pathExt[j])
+                searchLoop:
+                for (var i = 0; i < searchDir.length; i++) {
+                    for (var j = 0; j < pathExt.length; j++) {
+                        let search = searchDir[i]; if (!search.endsWith('\\')) search += '\\'
+                        searchPath = trimStartRevSlash(search + cmd + pathExt[j])
 
-//                    debugprintln("[shell.execute] file search path: "+searchPath)
+    //                    debugprintln("[shell.execute] file search path: "+searchPath)
 
-                    searchFile = files.open(`${CURRENT_DRIVE}:\\${searchPath}`)
-                    if (searchFile.exists) {
-                        fileExists = true
-                        break searchLoop
+                        searchFile = files.open(`${CURRENT_DRIVE}:\\${searchPath}`)
+                        if (searchFile.exists) {
+                            fileExists = true
+                            break searchLoop
+                        }
                     }
                 }
             }

@@ -61,13 +61,16 @@ var Mp3 = {
         };
 
         source.readFull = function (length) {
-            if (length < 0) throw Error("Source.pos less than 0: "+source.pos)
 
             var l = Math.min(source.buf.byteLength - source.pos, length);
 
-            if (l < 0) {
-                serial.println("l < 0: "+l)
-                throw Error("l < 0: "+l)
+            if (length <= 0 || l <= 0 || length === undefined) {
+                return { err: ("Source.pos less than 0: "+source.pos) }
+            }
+
+            if (l <= 0) {
+                serial.println("l <= 0: "+l)
+                throw Error("l <= 0: "+l)
             }
 
 //            serial.println(`readFull(${length} -> ${l}); pos: ${source.pos}`)
@@ -148,25 +151,35 @@ var Mp3 = {
                     err: result.err
                 }
             }
+
             decoder.frame = result.f;
-            var pcm_buf = decoder.frame.decode();
+            var [pcm_buf_ptr, pcm_buf_len] = decoder.frame.decode();
 //            decoder.buf = util.concatBuffers(decoder.buf, pcm_buf);
-            return { buf: pcm_buf };
+
+//            serial.println(`End of decoder.readFrame; ptr: ${pcm_buf_ptr} len: ${pcm_buf_len}`)
+
+            return {
+                ptr: pcm_buf_ptr,
+                len: pcm_buf_len,
+                pos: result.position
+            };
         };
 
         decoder.decode = function (callback) {
             var result;
 
-            serial.println("Start decoding")
+//            serial.println("Start decoding")
 
             while(true) {
                 result = decoder.readFrame();
-
-                if (typeof callback == "function") callback(result)
-
                 if (result.err) {
                     break;
                 }
+
+                if (typeof callback == "function") callback(result.ptr, result.len, result.pos)
+
+                sys.free(result.ptr)
+
             }
 //            return decoder.buf;
         };
@@ -230,6 +243,9 @@ var Mp3 = {
             return null;
         }
 
+
+
+
 //        serial.println("Reading first frame")
 
         var result = decoder.readFrame();
@@ -240,13 +256,15 @@ var Mp3 = {
 
 //        serial.println("First frame finished reading")
 
+        decoder.headerSize = decoder.source.pos
         decoder.sampleRate = decoder.frame.samplingFrequency();
+        decoder.frameSize = decoder.frame.header.frameSize()
 
-        serial.println("Sampling rate: "+decoder.sampleRate + " Hz")
+//        serial.println("Sampling rate: "+decoder.sampleRate + " Hz")
 
         result = decoder.ensureFrameStartsAndLength();
 
-        serial.println("Decode end")
+//        serial.println("Decode end")
         if (result.err) {
             throw Error(`Error ensuring Frame starts and length: ${result.err}`)
             return null;

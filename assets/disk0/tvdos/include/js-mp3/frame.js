@@ -198,12 +198,14 @@ var Frame = {
          */
         frame.decode = function () {
             var nch = frame.header.numberOfChannels();
-            var out;
+            var out_ptr;
+            var out_ptr_len;
             if (nch === 1) {
-                out = new Uint8Array(consts.BytesPerFrame / 2);
+                out_ptr_len = consts.BytesPerFrame / 2
             } else {
-                out = new Uint8Array(consts.BytesPerFrame);
+                out_ptr_len = consts.BytesPerFrame
             }
+            out_ptr = sys.malloc(out_ptr_len);
             for (var gr = 0; gr < 2; gr++) {
                 for (var ch = 0; ch < nch; ch++) {
                     frame.requantize(gr, ch);
@@ -212,16 +214,21 @@ var Frame = {
                 frame.stereo(gr);
                 for (var ch = 0; ch < nch; ch++) {
                     frame.antialias(gr, ch);
-                    frame.hybridSynthesis(gr, ch);
+
+                    audio.mp3_hybridSynthesis(frame.sideInfo, frame.mainData.Is, frame.store[ch], gr, ch)
+                    //frame.hybridSynthesis(gr, ch);
+
                     frame.frequencyInversion(gr, ch);
                     if (nch === 1) {
-                        frame.subbandSynthesis(gr, ch, out.subarray(consts.SamplesPerGr * 4 * gr / 2));
+                        audio.mp3_subbandSynthesis(nch, frame, gr, ch, out_ptr + (consts.SamplesPerGr * 4 * gr / 2))
+                        //frame.subbandSynthesis(gr, ch, out_ptr + (consts.SamplesPerGr * 4 * gr / 2));
                     } else {
-                        frame.subbandSynthesis(gr, ch, out.subarray(consts.SamplesPerGr * 4 * gr));
+                        audio.mp3_subbandSynthesis(nch, frame, gr, ch, out_ptr + (consts.SamplesPerGr * 4 * gr))
+                        //frame.subbandSynthesis(gr, ch, out_ptr + (consts.SamplesPerGr * 4 * gr));
                     }
                 }
             }
-            return out;
+            return [out_ptr, out_ptr_len];
         };
 
         frame.antialias = function (gr, ch) {
@@ -433,7 +440,7 @@ var Frame = {
                     var win_len = consts.SfBandIndicesSet[sfreq].S[sfb + 1] -
                                   consts.SfBandIndicesSet[sfreq].S[sfb];
 
-                    for (var i = 36; i < int(f.sideInfo.Count1[gr][ch]);) /* i++ done below! */ {
+                    for (var i = 36; i < int(frame.sideInfo.Count1[gr][ch]);) /* i++ done below! */ {
                         // Check if we're into the next scalefac band
                         if (i === next_sfb) {
                             sfb++;
@@ -573,7 +580,7 @@ var Frame = {
             }
         };
 
-        frame.subbandSynthesis = function (gr, ch, out) {
+        frame.subbandSynthesis = function (gr, ch, out_ptr) {
             var u_vec = new Float32Array(512);
             var s_vec = new Float32Array(32);
 
@@ -616,7 +623,7 @@ var Frame = {
                     } else if (samp < -32767) {
                         samp = -32767;
                     }
-                    var s = samp;
+                    var s = samp|0;
                     var idx;
                     if (nch === 1) {
                         idx = 2 * (32*ss + i);
@@ -624,15 +631,19 @@ var Frame = {
                         idx = 4 * (32*ss + i);
                     }
                     if (ch === 0) {
-                        out[idx] = s;
-                        out[idx + 1] = (s >>> 8) >>> 0;
+//                        out[idx] = s;
+//                        out[idx + 1] = (s >>> 8) >>> 0;
+                        sys.poke(out_ptr + idx, s)
+                        sys.poke(out_ptr + idx + 1, (s >>> 8) >>> 0)
                     } else {
-                        out[idx + 2] = s;
-                        out[idx + 3] = (s >>> 8) >>> 0;
+//                        out[idx + 2] = s;
+//                        out[idx + 3] = (s >>> 8) >>> 0;
+                        sys.poke(out_ptr + idx + 2, s)
+                        sys.poke(out_ptr + idx + 3, (s >>> 8) >>> 0)
                     }
                 }
             }
-            return out;
+            return out_ptr;
         };
 
         frame.samplingFrequency = function () {

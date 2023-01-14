@@ -586,7 +586,7 @@ Sound Adapter MMIO
 32 ??: ???
 
 Sound Hardware Info
-    - Sampling rate: 30000 Hz
+    - Sampling rate: 32000 Hz
     - Bit depth: 8 bits/sample, unsigned
     - Always operate in stereo (mono samples must be expanded to stereo before uploading)
 

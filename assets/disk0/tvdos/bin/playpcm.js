@@ -86,10 +86,10 @@ audio.setMasterVolume(0, 255)
 
 let readLength = 1
 
-function printPlayBar(startOffset) {
+function printPlayBar() {
     if (interactive) {
-        let currently = seqread.getReadCount() - startOffset
-        let total = FILE_SIZE - startOffset - 8
+        let currently = seqread.getReadCount()
+        let total = FILE_SIZE
 
         let currentlySec = Math.round(bytesToSec(currently))
         let totalSec = Math.round(bytesToSec(total))
@@ -157,6 +157,6 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
 }
 
 
-audio.stop(0)
+//audio.stop(0)
 if (readPtr !== undefined) sys.free(readPtr)
 if (decodePtr !== undefined) sys.free(decodePtr)

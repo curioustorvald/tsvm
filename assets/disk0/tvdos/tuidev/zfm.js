@@ -24,7 +24,10 @@ const COL_HL_EXT = {
     "bas": 215,
     "bat": 215,
     "wav": 31,
-    "adpcm": 32,
+    "adpcm": 31,
+    "pcm": 33,
+    "mp3": 34,
+    "mp2": 34,
     "mov": 213,
     "ipf1": 190,
     "ipf2": 191,
@@ -35,6 +38,7 @@ const COL_HL_EXT = {
 const EXEC_FUNS = {
     "wav": (f) => _G.shell.execute(`playwav ${f} /i`),
     "adpcm": (f) => _G.shell.execute(`playwav ${f} /i`),
+    "mp3": (f) => _G.shell.execute(`playmp3 ${f} /i`),
     "mov": (f) => _G.shell.execute(`playmov ${f} /i`),
     "pcm": (f) => _G.shell.execute(`playpcm ${f} /i`),
     "ipf1": (f) => _G.shell.execute(`decodeipf ${f} /i`),
@@ -46,7 +50,7 @@ let windowMode = 0 // 0 == left, 1 == right
 let windowFocus = 0 // 0: files window, 1: palette window, 2: popup window
 
 // window states
-let path = [["A:"], ["A:"]]
+let path = [["A:", "home"], ["A:"]]
 let scroll = [0, 0]
 let dirFileList = [[], []]
 let cursor = [0, 0] // absolute position!

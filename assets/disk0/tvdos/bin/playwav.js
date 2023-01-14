@@ -268,6 +268,6 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
     sys.spin()
 }
 
-audio.stop(0)
+//audio.stop(0)
 if (readPtr !== undefined) sys.free(readPtr)
 if (decodePtr !== undefined) sys.free(decodePtr)

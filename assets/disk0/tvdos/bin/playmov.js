@@ -247,7 +247,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 let endTime = sys.nanoTime()
 
 sys.free(ipfbuf)
-audio.stop(0)
+//audio.stop(0)
 
 let timeTook = (endTime - startTime) / 1000000000.0
 

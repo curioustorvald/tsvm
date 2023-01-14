@@ -145,5 +145,5 @@ while (sampleSize > 0) {
     sys.sleep(10)
 }
 
-audio.stop(0)
+//audio.stop(0)
 sys.free(decodePtr)
