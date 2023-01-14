@@ -86,6 +86,7 @@ class SequentialFileBuffer {
 
 
 // this reads file, initialises all the craps, gets initial frame size, then discards everything; truly wasteful :)
+// TODO use virtual audio hardware!
 function getInitialFrameSize() {
 
     let frame = filebuf.readBytes(4096)
@@ -159,6 +160,7 @@ function decodeEvent(frameSize, len) {
     audio.setSampleUploadLength(0, len)
     audio.startSampleUpload(0)
 
+    sys.sleep(10)
 
     let decodingTime = (t2 - t1) / 1000000.0
     bufRealTimeLen = (len) / 64000.0 * 1000
@@ -172,14 +174,14 @@ function decodeEvent(frameSize, len) {
 audio.resetParams(0)
 audio.purgeQueue(0)
 audio.setPcmMode(0)
-audio.setPcmQueueCapacityIndex(0, 5) // queue size is now 24
+audio.setPcmQueueCapacityIndex(0, 2) // queue size is now 8
 const QUEUE_MAX = audio.getPcmQueueCapacity(0)
 audio.setMasterVolume(0, 255)
 audio.play(0)
 
 
-let mp2context = mp2.kjmp2_make_mp2_state()
-mp2.kjmp2_init(mp2context)
+let mp2context = audio.createNewMP2context()
+audio.kjmp2_init(mp2context)
 
 // decode frame
 let frame = sys.malloc(FRAME_SIZE)
@@ -198,8 +200,7 @@ while (bytes_left >= 0) {
 
     let decodedL = []
     let decodedR = []
-    let pcm = []
-    let [frameSize, samples] = mp2.kjmp2_decode_frame(mp2context, frame, pcm, samplePtrL, samplePtrR)
+    let [frameSize, samples] = audio.kjmp2_decode_frame(mp2context, frame, true, samplePtrL, samplePtrR)
     if (frameSize) {
         // play using decodedLR
         decodeEvent(frameSize, samples)

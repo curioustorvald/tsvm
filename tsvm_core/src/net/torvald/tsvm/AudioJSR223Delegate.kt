@@ -1,5 +1,6 @@
 package net.torvald.tsvm
 
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.AudioAdapter
 import org.graalvm.polyglot.Value
 import kotlin.math.cos
@@ -407,15 +408,38 @@ class AudioJSR223Delegate(private val vm: VM) {
 
 
 
-
-
-
-
-    private val N = Array(64) { i -> IntArray(32) { j ->
+    private var mp2_frame: Long? = null; // ptr
+    private var STEREO=0;
+    // #define JOINT_STEREO 1
+    private var JOINT_STEREO=1;
+    // #define DUAL_CHANNEL 2
+    private var DUAL_CHANNEL=2;
+    // #define MONO         3
+    private var MONO=3;
+    private val mp2_sample_rates = arrayOf(44100, 48000, 32000, 0);
+    private val mp2_bitrates = arrayOf(32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384);
+    private val mp2_scf_value = arrayOf(
+        0x02000000, 0x01965FEA, 0x01428A30, 0x01000000,
+        0x00CB2FF5, 0x00A14518, 0x00800000, 0x006597FB,
+        0x0050A28C, 0x00400000, 0x0032CBFD, 0x00285146,
+        0x00200000, 0x001965FF, 0x001428A3, 0x00100000,
+        0x000CB2FF, 0x000A1451, 0x00080000, 0x00065980,
+        0x00050A29, 0x00040000, 0x00032CC0, 0x00028514,
+        0x00020000, 0x00019660, 0x0001428A, 0x00010000,
+        0x0000CB30, 0x0000A145, 0x00008000, 0x00006598,
+        0x000050A3, 0x00004000, 0x000032CC, 0x00002851,
+        0x00002000, 0x00001966, 0x00001429, 0x00001000,
+        0x00000CB3, 0x00000A14, 0x00000800, 0x00000659,
+        0x0000050A, 0x00000400, 0x0000032D, 0x00000285,
+        0x00000200, 0x00000196, 0x00000143, 0x00000100,
+        0x000000CB, 0x000000A1, 0x00000080, 0x00000066,
+        0x00000051, 0x00000040, 0x00000033, 0x00000028,
+        0x00000020, 0x00000019, 0x00000014, 0);
+    private val mp2_N = Array(64) { i -> IntArray(32) { j ->
         Math.floor(256.0 * Math.cos((16 + i) * ((j shl 1) + 1) * 0.0490873852123405)).toInt()
     } }
-    private val U = IntArray(512)
-    private val D= arrayOf(
+    private val mp2_U = IntArray(512)
+    private val mp2_D = arrayOf(
         0x00000, 0x00000, 0x00000, 0x00000, 0x00000, 0x00000, 0x00000,-0x00001,
         -0x00001,-0x00001,-0x00001,-0x00002,-0x00002,-0x00003,-0x00003,-0x00004,
         -0x00004,-0x00005,-0x00006,-0x00006,-0x00007,-0x00008,-0x00009,-0x0000A,
@@ -480,106 +504,388 @@ class AudioJSR223Delegate(private val vm: VM) {
         0x0000D, 0x0000B, 0x0000A, 0x00009, 0x00008, 0x00007, 0x00007, 0x00006,
         0x00005, 0x00005, 0x00004, 0x00004, 0x00003, 0x00003, 0x00002, 0x00002,
         0x00002, 0x00002, 0x00001, 0x00001, 0x00001, 0x00001, 0x00001, 0x00001);
+    private val mp2_quant_lut_step1= arrayOf(
+        arrayOf(0,  0,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,  2,  2 ),
+        arrayOf(0,  0,  0,  0,  0,  0,  1,  1,  1,  2,  2,  2,  2,  2 ));
+    private val mp2_QUANT_TAB_A = 27 or 64 // Table 3-B.2a: high-rate, sblimit = 27
+    private val mp2_QUANT_TAB_B = 30 or 64 // Table 3-B.2b: high-rate, sblimit = 30
+    private val mp2_QUANT_TAB_C = 8 // Table 3-B.2c:  low-rate, sblimit =  8
+    private val mp2_QUANT_TAB_D = 12 // Table 3-B.2d:  low-rate, sblimit = 12
+    private val mp2_quant_lut_step2 = arrayOf(
+        arrayOf(mp2_QUANT_TAB_C, mp2_QUANT_TAB_C, mp2_QUANT_TAB_D),
+        arrayOf(mp2_QUANT_TAB_A, mp2_QUANT_TAB_A, mp2_QUANT_TAB_A),
+        arrayOf(mp2_QUANT_TAB_B, mp2_QUANT_TAB_A, mp2_QUANT_TAB_B));
+    private val mp2_quant_lut_step3 = arrayOf(
+        arrayOf(0x44,0x44,
+            0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34,0x34
+        ),
+        arrayOf(0x43,0x43,0x43,
+            0x42,0x42,0x42,0x42,0x42,0x42,0x42,0x42,
+            0x31,0x31,0x31,0x31,0x31,0x31,0x31,0x31,0x31,0x31,0x31,0x31,
+            0x20,0x20,0x20,0x20,0x20,0x20,0x20));
+    private val mp2_quant_lut_step4 = arrayOf(
+        arrayOf(0, 1, 2, 17),
+        arrayOf(0, 1, 2, 3, 4, 5, 6, 17),
+        arrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17),
+        arrayOf(0, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
+        arrayOf(0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17));
+    private data class mp2_quantizer_spec(var nlevels: Int, var grouping: Boolean, var cw_bits: Int, var Smul: Int, var Sdiv: Int)
+    private val mp2_quantizer_table =arrayOf(
+        mp2_quantizer_spec   (     3, true,   5, 0x7FFF, 0xFFFF ),
+        mp2_quantizer_spec   (     5, true,   7, 0x3FFF, 0x0002 ),
+        mp2_quantizer_spec   (     7, false,  3, 0x2AAA, 0x0003 ),
+        mp2_quantizer_spec   (     9, true,  10, 0x1FFF, 0x0002 ),
+        mp2_quantizer_spec   (    15, false,  4, 0x1249, 0xFFFF ),
+        mp2_quantizer_spec   (    31, false,  5, 0x0888, 0x0003 ),
+        mp2_quantizer_spec   (    63, false,  6, 0x0421, 0xFFFF ),
+        mp2_quantizer_spec   (   127, false,  7, 0x0208, 0x0009 ),
+        mp2_quantizer_spec   (   255, false,  8, 0x0102, 0x007F ),
+        mp2_quantizer_spec   (   511, false,  9, 0x0080, 0x0002 ),
+        mp2_quantizer_spec   (  1023, false, 10, 0x0040, 0x0009 ),
+        mp2_quantizer_spec   (  2047, false, 11, 0x0020, 0x0021 ),
+        mp2_quantizer_spec   (  4095, false, 12, 0x0010, 0x0089 ),
+        mp2_quantizer_spec   (  8191, false, 13, 0x0008, 0x0249 ),
+        mp2_quantizer_spec   ( 16383, false, 14, 0x0004, 0x0AAB ),
+        mp2_quantizer_spec   ( 32767, false, 15, 0x0002, 0x3FFF ),
+        mp2_quantizer_spec   ( 65535, false, 16, 0x0001, 0xFFFF ));
 
-    fun mp2_synthesisLoop(read_samples: Value, allocation: Value, scalefactor: Value, sblimit: Long, mp2: Value, sample: Value, bound: Long, outL: Long, outR: Long): IntArray {
-        val V = mp2.getMember("V")
+    val KJMP2_MAGIC= 0x32706D;
+    private var mp2_initialized = false;
+    private var mp2_bit_window = 0;
+    private var mp2_bits_in_window = 0;
+    private var mp2_frame_pos = 0;
+
+    private fun syspeek(ptr: Long) = vm.peek(ptr)!!.toUint()
+
+    data class MP2(
+        var Voffs: Int = 0,
+        var id: Int = 0,
+        var V: Array<IntArray> = Array(2) { IntArray(1024) }
+    )
+
+    fun createNewMP2context() = MP2()
+
+    private fun show_bits(bit_count: Int) = (mp2_bit_window shr (24 - (bit_count)));
+    private fun get_bits(bit_count: Int): Int {
+        var result = show_bits(bit_count);
+        mp2_bit_window = (mp2_bit_window shl bit_count) and 0xFFFFFF;
+        mp2_bits_in_window -= bit_count;
+        while (mp2_bits_in_window < 16) {
+            mp2_bit_window = mp2_bit_window or (syspeek(mp2_frame!! + mp2_frame_pos++) shl (16 - mp2_bits_in_window));
+            mp2_bits_in_window += 8;
+        }
+        return result;
+    }
+
+    fun kjmp2_init(mp2: MP2) {
+        // check if global initialization is required
+        if (!mp2_initialized) {
+            mp2_initialized = true;
+        }
+
+        // perform local initialization: clean the context and put the magic in it
+        for (i in 0 until 2){
+            for (j in 1023 downTo 0){
+                mp2.V[i][j] = 0;
+            };
+        };
+        mp2.Voffs = 0;
+        mp2.id = KJMP2_MAGIC;
+    };
+
+    private fun kjmp2_get_sample_rate(frame: Long?): Int {
+        if (frame == null){
+            return 0;};
+        if ((syspeek(frame) != 0xFF) || (syspeek(frame +1) != 0xFD) || ((syspeek(frame +2) - 0x10) >= 0xE0)) {
+            return 0;};
+        return mp2_sample_rates[(syspeek(frame +2) shr 2) and 3];
+    };
+
+    private fun read_allocation(sb: Int, b2_table: Int): mp2_quantizer_spec? {
+        var table_idx = mp2_quant_lut_step3[b2_table][sb];
+        table_idx = mp2_quant_lut_step4[table_idx and 15][get_bits(table_idx shr 4)];
+        return if (table_idx != 0) (mp2_quantizer_table[table_idx - 1]) else null
+    }
+
+    private fun read_samples(q: mp2_quantizer_spec?, scalefactor: Int, sample: IntArray) {
+        var adj = 0;
+        var value = 0;
+        if (q == null) {
+            // no bits allocated for this subband
+            sample[0] = 0
+            sample[1] = 0
+            sample[2] = 0;
+            return;
+        }
+        // resolve scalefactor
+        var scalefactor = mp2_scf_value[scalefactor];
+
+        // decode samples
+        adj = q.nlevels;
+        if (q.grouping) {
+            // decode grouped samples
+            value = get_bits(q.cw_bits);
+            sample[0] = value % adj;
+            value = Math.floor(value.toDouble() / adj).toInt();
+            sample[1] = value % adj;
+            sample[2] = Math.floor(value.toDouble() / adj).toInt();
+        } else {
+            // decode direct samples
+            for(idx in 0 until 3)
+            sample[idx] = get_bits(q.cw_bits);
+        }
+
+        // postmultiply samples
+        adj = ((adj + 1) shr 1) - 1;
+        for (idx in 0 until 3) {
+            // step 1: renormalization to [-1..1]
+            value = adj - sample[idx];
+            value = (value * q.Smul) + Math.floor(value.toDouble() / q.Sdiv).toInt();
+            // step 2: apply scalefactor
+            sample[idx] = ( value * (scalefactor shr 12) + ((value * (scalefactor and 4095) + 2048) shr 12))  shr 12;  // scale adjust
+        }
+    }
+
+    private var mp2_allocation: Array<Array<mp2_quantizer_spec?>> = Array(2) { Array(32) { null } }
+    private var mp2_scfsi = Array(2) { IntArray(32) }
+    private var mp2_scalefactor = Array(2) { Array(32) { IntArray(3) } }
+    private var mp2_sample = Array(2) { Array(32) { IntArray(3) } }
+
+
+
+
+    fun kjmp2_decode_frame(mp2: MP2, framePtr: Long?, pcm: Boolean, outL: Long, outR: Long): IntArray {
 
         var pushSizeL = 0
         var pushSizeR = 0
         fun pushL(sampleL: Int) {
-            vm.poke(outL + pushSizeL + 0, (sampleL).toByte())
-            vm.poke(outL + pushSizeL + 1, (sampleL ushr 8).toByte())
+            vm.poke(outL + pushSizeL + 0, (sampleL and 255).toByte())
+            vm.poke(outL + pushSizeL + 1, (sampleL shr 8).toByte())
             pushSizeL += 2
         }
         fun pushR(sampleR: Int) {
-            vm.poke(outR + pushSizeR + 0, (sampleR).toByte())
-            vm.poke(outR + pushSizeR + 1, (sampleR ushr 8).toByte())
+            vm.poke(outR + pushSizeR + 0, (sampleR and 255).toByte())
+            vm.poke(outR + pushSizeR + 1, (sampleR shr 8).toByte())
             pushSizeR += 2
         }
 
-        var ppcm = 0
-        for (part in 0 until 3L){
-            for (gr in 0 until 4L) {
 
-                // read the samples
-                for (sb in 0 until bound) {
-                    for (ch in 0 until 2L) {
-                        read_samples.executeVoid(allocation.getArrayElement(ch).getArrayElement(sb), scalefactor.getArrayElement(ch).getArrayElement(sb).getArrayElement(part), sample.getArrayElement(ch).getArrayElement(sb))
-                    }
-                }
-                for (sb in bound until sblimit) {
-                    read_samples.executeVoid(allocation.getArrayElement(0L).getArrayElement(sb), scalefactor.getArrayElement(0L).getArrayElement(sb).getArrayElement(part), sample.getArrayElement(0L).getArrayElement(sb))
+        if (framePtr == null) {
+            throw Error("Frame is null")
+        }
+        mp2_frame = framePtr;
+        val bit_rate_index_minus1: Int;
+        val sampling_frequency: Int;
+        val padding_bit: Int;
+        val mode: Int;
+        val frame_size: Int;
+        var bound: Int
+        val sblimit: Int;
+        val nch: Int;
+        var sum: Int;
+        var table_idx: Int;
+        // general sanity check
+        if (!mp2_initialized || (mp2.id != KJMP2_MAGIC)){
+            throw Error("MP2 not initialised")
+        };
+        // check for valid header: syncword OK, MPEG-Audio Layer 2
+        if ((syspeek(mp2_frame!!) != 0xFF) || ((syspeek(mp2_frame!! +1) and 0xFE) != 0xFC)){
+            throw Error("Invalid header")
+        };
 
-                    for (idx in 0 until 3L){
-                        sample.getArrayElement(1L).getArrayElement(sb).setArrayElement(idx, sample.getArrayElement(0L).getArrayElement(sb).getArrayElement(idx))
-                        //sample[1][sb][idx] = sample[0][sb][idx]
-                    }
-                }
-                for (ch in 0 until 2L){
-                    for (sb in sblimit until 32L){
-                        for (idx in 0 until 3L){
-                            sample.getArrayElement(ch).getArrayElement(sb).setArrayElement(idx, 0)
-//                            sample[ch][sb][idx] = 0
+        // set up the bitstream reader
+        mp2_bit_window = syspeek(mp2_frame!! +2) shl 16;
+        mp2_bits_in_window = 8;
+        mp2_frame_pos = 3;
+
+        // read the rest of the header
+        bit_rate_index_minus1 = get_bits(4) - 1;
+        if (bit_rate_index_minus1 > 13){
+            throw Error("Invalid bit rate")  // invalid bit rate or 'free format'
+        };
+        sampling_frequency = get_bits(2);
+        if (sampling_frequency == 3){
+            throw Error("Invalid sampling frequency")
+        };
+        padding_bit = get_bits(1);
+        get_bits(1);  // discard private_bit
+        mode = get_bits(2);
+
+        // parse the mode_extension, set up the stereo bound
+        if (mode == JOINT_STEREO) {
+            bound = (get_bits(2) + 1) shl 2;
+        } else {
+            get_bits(2);
+            bound = if (mode == MONO) 0 else 32;
+        }
+
+        // discard the last 4 bits of the header and the CRC value, if present
+        get_bits(4);
+        if ((syspeek(mp2_frame!! +1) and 1) == 0)
+            get_bits(16);
+
+        // compute the frame size
+        frame_size = Math.floor(144000.0 * mp2_bitrates[bit_rate_index_minus1] / mp2_sample_rates[sampling_frequency]).toInt() + padding_bit;
+        if (!pcm){
+            return intArrayOf(frame_size, pushSizeL);  // no decoding
+        };
+
+        // prepare the quantizer table lookups
+        table_idx = if (mode == MONO) 0 else 1;
+        table_idx = mp2_quant_lut_step1[table_idx][bit_rate_index_minus1];
+        table_idx = mp2_quant_lut_step2[table_idx][sampling_frequency];
+        sblimit = table_idx and 63;
+        table_idx = table_idx shr 6;
+        if (bound > sblimit){
+            bound = sblimit;
+        };
+
+        // read the allocation information
+        for (sb in 0 until bound){
+            for (ch in 0 until 2){
+                mp2_allocation[ch][sb] = read_allocation(sb, table_idx)
+            };
+        };
+
+        for (sb in bound until sblimit){
+            val tmp = read_allocation(sb, table_idx)
+            mp2_allocation[0][sb] = tmp
+            mp2_allocation[1][sb] = tmp
+        };
+
+
+        // read scale factor selector information
+        nch = if (mode == MONO) 1 else 2;
+        for (sb in 0 until sblimit) {
+            for (ch in 0 until nch){
+                if (mp2_allocation[ch][sb] != null){
+                    mp2_scfsi[ch][sb] = get_bits(2);
+                };
+            }
+            if (mode == MONO){
+                mp2_scfsi[1][sb] = mp2_scfsi[0][sb];
+            };
+        };
+        // read scale factors
+        for (sb in 0 until sblimit) {
+            for (ch in 0 until nch) {
+                if (mp2_allocation[ch][sb] != null) {
+                    when (mp2_scfsi[ch][sb]) {
+                        0 -> {
+                            mp2_scalefactor[ch][sb][0] = get_bits(6);
+                            mp2_scalefactor[ch][sb][1] = get_bits(6);
+                            mp2_scalefactor[ch][sb][2] = get_bits(6);
+                        }
+                        1 -> {
+                            val tmp = get_bits(6);
+                            mp2_scalefactor[ch][sb][0] = tmp
+                            mp2_scalefactor[ch][sb][1] = tmp
+                            mp2_scalefactor[ch][sb][2] = get_bits(6);
+                        }
+                        2 -> {
+                            val tmp = get_bits(6);
+                            mp2_scalefactor[ch][sb][0] = tmp
+                            mp2_scalefactor[ch][sb][1] = tmp
+                            mp2_scalefactor[ch][sb][2] = tmp
+                        }
+                        3 -> {
+                            mp2_scalefactor[ch][sb][0] = get_bits(6);
+                            val tmp = get_bits(6);
+                            mp2_scalefactor[ch][sb][1] = tmp
+                            mp2_scalefactor[ch][sb][2] = tmp
                         }
                     }
                 }
+            }
+            if (mode == MONO){
+                for (part in 0 until 3){
+                    mp2_scalefactor[1][sb][part] = mp2_scalefactor[0][sb][part];
+                };
+            };
+        }
+        //  let ppcm=0;
+        // coefficient input and reconstruction
+        for (part in 0 until 3){
+            for (gr in 0 until 4) {
+
+                // read the samples
+                for (sb in 0 until bound){
+                    for (ch in 0 until 2){
+                        read_samples(mp2_allocation[ch][sb], mp2_scalefactor[ch][sb][part], mp2_sample[ch][sb]);
+                    };
+                };
+                for (sb in bound until sblimit) {
+                    read_samples(mp2_allocation[0][sb], mp2_scalefactor[0][sb][part], mp2_sample[0][sb]);
+
+                    for (idx in 0 until 3){
+                        mp2_sample[1][sb][idx] = mp2_sample[0][sb][idx];
+                    };
+                };
+                for (ch in 0 until 2){
+                    for (sb in sblimit until 32){
+                        for (idx in 0 until 3){
+                            mp2_sample[ch][sb][idx] = 0;
+                        };
+                    };
+                };
 
                 // synthesis loop
-                for (idx in 0 until 3L) {
+                for (idx in 0 until 3) {
                     // shifting step
-                    val table_idx = ((mp2.getMember("Voffs").asInt() - 64) and 1023).toLong()
-                    mp2.putMember("Voffs", table_idx)
+                    val tmp = (mp2.Voffs - 64) and 1023
+                    mp2.Voffs = tmp
+                    table_idx = tmp
 
-                    for (ch in 0 until 2L) {
+                    for (ch in 0 until 2) {
                         // matrixing
-                        for (i in 0 until 64L) {
-                            var sum = 0
-                            for (j in 0 until 32L) {
-                                sum += N[i.toInt()][j.toInt()] * sample.getArrayElement(ch).getArrayElement(j).getArrayElement(idx).asInt()  // 8b*15b=23b
-                            }
+                        for (i in 0 until 64) {
+                            sum = 0;
+                            for (j in 0 until 32)
+                                sum += mp2_N[i][j] * mp2_sample[ch][j][idx];  // 8b*15b=23b
                             // intermediate value is 28 bit (23 + 5), clamp to 14b
-                            V.getArrayElement(ch).setArrayElement(table_idx + i, (sum + 8192) shr 14)
-//                            mp2.V[ch][table_idx + i] = (sum + 8192) shr 14;
+                            mp2.V[ch][table_idx + i] = (sum + 8192) shr 14;
                         }
 
                         // construction of U
-                        for (i in 0 until 8L){
-                            for (j in 0 until 32L) {
-                                U[((i shl 6) + j      ).toInt()] = V.getArrayElement(ch).getArrayElement((table_idx + (i shl 7) + j     ) and 1023).asInt()
-                                U[((i shl 6) + j + 32L).toInt()] = V.getArrayElement(ch).getArrayElement((table_idx + (i shl 7) + j + 96) and 1023).asInt()
-
-//                                U[(i shl 6) + j]      = mp2.V[ch][(table_idx + (i shl 7) + j     ) and 1023]
-//                                U[(i shl 6) + j + 32] = mp2.V[ch][(table_idx + (i shl 7) + j + 96) and 1023]
-                            }
-                        }
+                        for (i in 0 until 8){
+                                for (j in 0 until 32) {
+                                mp2_U[(i shl 6) + j]      = mp2.V[ch][(table_idx + (i shl 7) + j     ) and 1023];
+                                mp2_U[(i shl 6) + j + 32] = mp2.V[ch][(table_idx + (i shl 7) + j + 96) and 1023];
+                            };
+                        };
                         // apply window
                         for (i in 0 until 512){
-                            U[i] = (U[i] * D[i] + 32) shr 6
-//                            U[i] = (U[i] * D[i] + 32) shr 6
-                        }
+                            mp2_U[i] = (mp2_U[i] * mp2_D[i] + 32) shr 6;
+                        };
                         // output samples
                         for (j in 0 until 32) {
-                            var sum = 0
+                            sum = 0;
                             for (i in 0 until 16){
-                                sum -= U[(i shl 5) + j]
-//                                sum -= U[(i shl 5) + j]
-                            }
-                            sum = (sum + 8) shr 4
-                            if (sum < -32768) {sum = -32768}
-                            if (sum > 32767) {sum = 32767}
-                            if (ch == 0L) { pushL(sum) }
-                            if (ch == 1L) { pushR(sum) }
+                                sum -= mp2_U[(i shl 5) + j];
+                            };
+                            sum = (sum + 8) shr 4;
+                            sum = sum.coerceIn(-32768, 32767)
+                            if (ch == 0) { pushL(sum) }
+                            if (ch == 1) { pushR(sum) }
                         }
                     } // end of synthesis channel loop
                 } // end of synthesis sub-block loop
 
                 // adjust PCM output pointer: decoded 3 * 32 = 96 stereo samples
-                ppcm += 192;
-            } // decoding of the granule finished
+                //            ppcm += 192;
 
+            } // decoding of the granule finished
         }
-        return intArrayOf(pushSizeL, pushSizeR)
-    }
+
+        if (pushSizeL != pushSizeR && pushSizeR > 0) {
+            throw Error("Push size mismatch -- U${pushSizeL} != R${pushSizeR}")
+        }
+        println(pushSizeL)
+        return intArrayOf(frame_size, pushSizeL);
+        //    return intArrayOf(frame_size, 2304);
+    };
+
+
 
 
 }

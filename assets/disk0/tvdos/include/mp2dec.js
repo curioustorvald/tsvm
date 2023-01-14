@@ -853,7 +853,6 @@ var kjmp2_decode_frame=function(mp2,fr,pcm,outL,outR) {
 
         } // decoding of the granule finished
     }
-    //;[pushSizeL, pushSizeR] = audio.mp2_synthesisLoop(read_samples, allocation, scalefactor, sblimit, mp2, sample, bound, outL, outR)
     if (pushSizeL != pushSizeR && pushSizeR > 0) {
         throw Error(`Push size mismatch -- U${pushSizeL} != R${pushSizeR}`)
     }
