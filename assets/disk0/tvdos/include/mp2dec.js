@@ -779,7 +779,7 @@ var kjmp2_decode_frame=function(mp2,fr,pcm,outL,outR) {
             };
         };
     }
-  let ppcm=0;
+//  let ppcm=0;
     // coefficient input and reconstruction
     for (part = 0;  part < 3;  ++part){
         for (gr = 0;  gr < 4;  ++gr) {
@@ -788,14 +788,10 @@ var kjmp2_decode_frame=function(mp2,fr,pcm,outL,outR) {
             for (sb = 0;  sb < bound;  ++sb){
                 for (ch = 0;  ch < 2;  ++ch){
                     read_samples(allocation[ch][sb], scalefactor[ch][sb][part], sample[ch][sb]);
-//                    read_samples(allocation[ch][sb], scalefactor[ch][sb][part], &sample[ch][sb][0]);
-// more pointer crap to fix
                 };
             };
             for (sb = bound;  sb < sblimit;  ++sb) {
                 read_samples(allocation[0][sb], scalefactor[0][sb][part], sample[0][sb]);
-//                read_samples(allocation[0][sb], scalefactor[0][sb][part], &sample[0][sb][0]);
-// Above needs looking at do something about the pointer
 
                 for (idx = 0;  idx < 3;  ++idx){
                     sample[1][sb][idx] = sample[0][sb][idx];
@@ -844,25 +840,26 @@ var kjmp2_decode_frame=function(mp2,fr,pcm,outL,outR) {
                         sum = (sum + 8) >> 4;
                         if (sum < -32768) {sum = -32768};
                         if (sum > 32767) {sum = 32767};
-                        //if(ch==0){l.push(sum/33000)};
-                        //if(ch==1){r.push(sum/33000)};
                         if (ch == 0) { pushL(sum) }
                         if (ch == 1) { pushR(sum) }
-//                        pcm[((idx << 6) | (j << 1) | ch)+ppcm] =sum;
                     }
                 } // end of synthesis channel loop
             } // end of synthesis sub-block loop
 
+
+
             // adjust PCM output pointer: decoded 3 * 32 = 96 stereo samples
-            ppcm += 192;
+//            ppcm += 192;
 
         } // decoding of the granule finished
     }
+    //;[pushSizeL, pushSizeR] = audio.mp2_synthesisLoop(read_samples, allocation, scalefactor, sblimit, mp2, sample, bound, outL, outR)
     if (pushSizeL != pushSizeR && pushSizeR > 0) {
         throw Error(`Push size mismatch -- U${pushSizeL} != R${pushSizeR}`)
     }
     serial.println(pushSizeL)
     return [frame_size, pushSizeL];
+//    return [frame_size, 2304];
 };
 
 var kjmp2_make_mp2_state=function(){
