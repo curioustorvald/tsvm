@@ -134,7 +134,6 @@ function decodeAndResample(inPtr, outPtr, inputLen) {
         // soothing visualiser(????)
 //        printvis(`${sampleToVisual(sample[0])} | ${sampleToVisual(sample[1])}`)
     }
-    return inputLen / 2
 }
 
 
@@ -201,15 +200,15 @@ try {
 
 
 
-        let declen = decodeAndResample(ptr, decodePtr, len)
+        decodeAndResample(ptr, decodePtr, len)
 
-        audio.putPcmDataByPtr(decodePtr, declen, 0)
-        audio.setSampleUploadLength(0, declen)
+        audio.putPcmDataByPtr(decodePtr, len >> 1, 0)
+        audio.setSampleUploadLength(0, len >> 1)
         audio.startSampleUpload(0)
 
 
         let decodingTime = (t2 - t1) / 1000000.0
-        bufRealTimeLen = (declen) / 64000.0 * 1000
+        bufRealTimeLen = (len >> 1) / 64000.0 * 1000
         t1 = t2
 
         printdbg(`Decoded ${decodedLength} bytes; target: ${bufRealTimeLen} ms, lag: ${decodingTime - bufRealTimeLen} ms`)

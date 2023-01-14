@@ -230,6 +230,8 @@ class VM(
     }
 
     internal fun malloc(size: Int): Int {
+        if (size <= 0) throw IllegalArgumentException("Invalid malloc size: $size")
+
         val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
         val blockStart = findEmptySpace(allocBlocks) ?: throw OutOfMemoryError()
 
