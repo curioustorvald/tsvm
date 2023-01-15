@@ -170,6 +170,7 @@ function printPlayBar(currently) {
     }
 }
 let t1 = sys.nanoTime()
+let errorlevel = 0
 let bufRealTimeLen = 36
 try {
     decoder.decode((ptr, len, pos)=>{
@@ -217,10 +218,15 @@ try {
     }) // now you got decoded PCM data
 }
 catch (e) {
-    if (e != "STOP") throw e
+    if (e != "STOP") {
+        printerrln(e)
+        errorlevel = 1
+    }
 }
 finally {
     //audio.stop(0)
     sys.free(readPtr)
     sys.free(decodePtr)
 }
+
+return errorlevel

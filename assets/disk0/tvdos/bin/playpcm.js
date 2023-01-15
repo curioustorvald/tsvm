@@ -108,6 +108,8 @@ function printPlayBar() {
         con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
     }
 }
+let errorlevel = 0
+try {
 while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
     if (interactive) {
         sys.poke(-40, 1)
@@ -155,8 +157,16 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
 
     sys.sleep(10)
 }
+}
+catch (e) {
+    printerrln(e)
+    errorlevel = 1
+}
+finally {
+    //audio.stop(0)
+    if (readPtr !== undefined) sys.free(readPtr)
+    if (decodePtr !== undefined) sys.free(decodePtr)
+}
 
+return errorlevel
 
-//audio.stop(0)
-if (readPtr !== undefined) sys.free(readPtr)
-if (decodePtr !== undefined) sys.free(decodePtr)

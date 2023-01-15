@@ -1,6 +1,7 @@
 
 let readCount = 0
 let port = undefined
+let fileHeader = new Uint8Array(4096)
 
 function prepare(fullPath) {
     if (fullPath[2] != '/' && fullPath[2] != '\\') throw Error("Expected full path with drive letter, got " + fullPath)
@@ -33,6 +34,14 @@ function prepare(fullPath) {
         throw Error("READ failed with "+statusCode)
         return statusCode
     }
+
+    sys.poke(-4093 - port, 6);sys.sleep(0)
+
+    for (let i = 0; i < 4096; i++) {
+        fileHeader[i] = sys.peek(-4097 - port*4096 - i)
+    }
+
+    return 0
 }
 
 function readBytes(length, ptrToDecode) {
@@ -50,7 +59,7 @@ function readBytes(length, ptrToDecode) {
         if (readCount % 4096 == 0) {
 //            serial.println("READ from serial")
             // pull the actual message
-            sys.poke(-4093 - port, 6);sys.sleep(0) // spinning is required as Graal run is desynced with the Java side
+            if (readCount > 0) { sys.poke(-4093 - port, 6);sys.sleep(0) } // spinning is required as Graal run is desynced with the Java side
 
             let blockTransferStatus = ((sys.peek(-4085 - port*2) & 255) | ((sys.peek(-4086 - port*2) & 255) << 8))
             let thisBlockLen = blockTransferStatus & 4095
@@ -65,7 +74,7 @@ function readBytes(length, ptrToDecode) {
 //            serial.println(`Pulled a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}, remaining = ${remaining}`)
 
             // copy from read buffer to designated position
-            sys.memcpy(-4097, ptr + completedReads, remaining)
+            sys.memcpy(-4097 - port*4096, ptr + completedReads, remaining)
 
             // increment readCount properly
             readCount += remaining
@@ -81,7 +90,7 @@ function readBytes(length, ptrToDecode) {
 //            serial.println(`Reusing a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
 
             // copy from read buffer to designated position
-            sys.memcpy(-4097 - padding, ptr + completedReads, thisBlockLen)
+            sys.memcpy(-4097 - port*4096 - padding, ptr + completedReads, thisBlockLen)
 
             // increment readCount properly
             readCount += thisBlockLen
@@ -134,4 +143,4 @@ function getReadCount() {
     return readCount
 }
 
-exports = {prepare, readBytes, readInt, readShort, readFourCC, readString, skip, getReadCount}
+exports = {fileHeader, prepare, readBytes, readInt, readShort, readFourCC, readString, skip, getReadCount}

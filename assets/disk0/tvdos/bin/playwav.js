@@ -127,7 +127,9 @@ function printPlayBar(startOffset) {
         con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
     }
 }
+let errorlevel = 0
 // read chunks loop
+try {
 while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
     let chunkName = seqread.readFourCC()
     let chunkSize = seqread.readInt()
@@ -267,7 +269,15 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
     printdbg(`remainingBytes2 = ${remainingBytes}`)
     sys.spin()
 }
+}
+catch (e) {
+    printerrln(e)
+    errorlevel = 1
+}
+finally {
+    //audio.stop(0)
+    if (readPtr !== undefined) sys.free(readPtr)
+    if (decodePtr !== undefined) sys.free(decodePtr)
+}
 
-//audio.stop(0)
-if (readPtr !== undefined) sys.free(readPtr)
-if (decodePtr !== undefined) sys.free(decodePtr)
+return errorlevel

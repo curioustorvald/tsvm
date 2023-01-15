@@ -80,6 +80,31 @@ class AudioJSR223Delegate(private val vm: VM) {
 
 
 
+    /*
+    js-mp3
+    https://github.com/soundbus-technologies/js-mp3
+
+    Copyright (c) 2018 SoundBus Technologies CO., LTD.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+    */
+
     private val synthNWin = Array(64) { i -> FloatArray(32) { j -> cos(((16 + i) * (2 * j + 1)) * (Math.PI / 64.0)).toFloat() } }
     private val synthDtbl = floatArrayOf(
         0.000000000f, -0.000015259f, -0.000015259f, -0.000015259f,
@@ -408,6 +433,48 @@ class AudioJSR223Delegate(private val vm: VM) {
 
 
 
+
+    /*
+    mp2dec.js JavaScript MPEG-1 Audio Layer II decoder
+    Copyright (C) 2011 Liam Wilson
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see http://www.gnu.org/licenses/.
+    */
+    /* Note this is a port of kjmp2 by Martin J. Fiedler: */
+
+    /******************************************************************************
+     ** kjmp2 -- a minimal MPEG-1 Audio Layer II decoder library                  **
+     *******************************************************************************
+     ** Copyright (C) 2006 Martin J. Fiedler martin.fiedler@gmx.net             **
+     **                                                                           **
+     ** This software is provided 'as-is', without any express or implied         **
+     ** warranty. In no event will the authors be held liable for any damages     **
+     ** arising from the use of this software.                                    **
+     **                                                                           **
+     ** Permission is granted to anyone to use this software for any purpose,     **
+     ** including commercial applications, and to alter it and redistribute it    **
+     ** freely, subject to the following restrictions:                            **
+     **   1. The origin of this software must not be misrepresented; you must not **
+     **      claim that you wrote the original software. If you use this software **
+     **      in a product, an acknowledgment in the product documentation would   **
+     **      be appreciated but is not required.                                  **
+     **   2. Altered source versions must be plainly marked as such, and must not **
+     **      be misrepresented as being the original software.                    **
+     **   3. This notice may not be removed or altered from any source            **
+     **      distribution.                                                        **
+     ******************************************************************************/
+
     private var mp2_frame: Long? = null; // ptr
     private var STEREO=0;
     // #define JOINT_STEREO 1
@@ -563,7 +630,6 @@ class AudioJSR223Delegate(private val vm: VM) {
         var V: Array<IntArray> = Array(2) { IntArray(1024) }
     )
 
-    fun createNewMP2context() = MP2()
 
     private fun show_bits(bit_count: Int) = (mp2_bit_window shr (24 - (bit_count)));
     private fun get_bits(bit_count: Int): Int {
@@ -577,7 +643,9 @@ class AudioJSR223Delegate(private val vm: VM) {
         return result;
     }
 
-    fun kjmp2_init(mp2: MP2) {
+    fun mp2Init(): MP2 {
+        val mp2 = MP2()
+
         // check if global initialization is required
         if (!mp2_initialized) {
             mp2_initialized = true;
@@ -591,6 +659,8 @@ class AudioJSR223Delegate(private val vm: VM) {
         };
         mp2.Voffs = 0;
         mp2.id = KJMP2_MAGIC;
+
+        return mp2
     };
 
     private fun kjmp2_get_sample_rate(frame: Long?): Int {
@@ -652,9 +722,26 @@ class AudioJSR223Delegate(private val vm: VM) {
     private var mp2_sample = Array(2) { Array(32) { IntArray(3) } }
 
 
+    fun mp2GetInitialFrameSize(bytes: IntArray): Int {
+        val b0 = bytes[0]
+        val b1 = bytes[1]
+        val b2 = bytes[2]
 
+        // check sync pattern
+        if ((b0 != 0xFF) || (b1 != 0xFD) || ((b2 - 0x10) >= 0xE0)) {
+            throw Error("Not a MP2 Frame Head: ${listOf(b0, b1, b2).map { it.toString(16).padStart(2,'0') }.joinToString(" ")}")
+        }
 
-    fun kjmp2_decode_frame(mp2: MP2, framePtr: Long?, pcm: Boolean, outL: Long, outR: Long): IntArray {
+        val sampling_frequency = (b2 shr 2) and 3
+        val bit_rate_index_minus1 = ((b2 shr 4) and 15) - 1
+        if (bit_rate_index_minus1 > 13){
+            throw Error("Invalid bit rate")  // invalid bit rate or 'free format'
+        }
+        val padding_bit = b2.shr(1) and 1
+        return Math.floor(144000.0 * mp2_bitrates[bit_rate_index_minus1] / mp2_sample_rates[sampling_frequency]).toInt() + padding_bit
+    }
+
+    fun mp2DecodeFrame(mp2: MP2, framePtr: Long?, pcm: Boolean, outL: Long, outR: Long): IntArray {
 
         var pushSizeL = 0
         var pushSizeR = 0
@@ -880,7 +967,6 @@ class AudioJSR223Delegate(private val vm: VM) {
         if (pushSizeL != pushSizeR && pushSizeR > 0) {
             throw Error("Push size mismatch -- U${pushSizeL} != R${pushSizeR}")
         }
-        println(pushSizeL)
         return intArrayOf(frame_size, pushSizeL);
         //    return intArrayOf(frame_size, 2304);
     };

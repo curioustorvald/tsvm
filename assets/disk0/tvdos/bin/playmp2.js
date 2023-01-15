@@ -1,10 +1,7 @@
-exec_args[1] = "A:/loopey.mp2"
-
-const mp2 = require('mp2dec')
 const pcm = require("pcm")
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+function printdbg(s) { if (0) serial.println(s) }
 
-function printdbg(s) { if (1) serial.println(s) }
 
 class SequentialFileBuffer {
 
@@ -26,12 +23,6 @@ class SequentialFileBuffer {
         return this.seq.readBytes(size, ptr)
     }
 
-    /*readFull(n) {
-        throw Error()
-        let ptr = this.seq.readBytes(n)
-        return ptr
-    }*/
-
     readStr(n) {
         let ptr = this.seq.readBytes(n)
         let s = ''
@@ -42,23 +33,6 @@ class SequentialFileBuffer {
         sys.free(ptr)
         return s
     }
-
-    /*readByteNumbers(n) {
-        let ptr = this.seq.readBytes(n)
-        try {
-            let s = []
-            for (let i = 0; i < n; i++) {
-                if (i >= this.length) break
-                s.push(sys.peek(ptr + i))
-            }
-            sys.free(ptr)
-            return s
-        }
-        catch (e) {
-            println(`n: ${n}; ptr: ${ptr}`)
-            println(e)
-        }
-    }*/
 
     unread(diff) {
         let newSkipLen = this.seq.getReadCount() - diff
@@ -79,43 +53,29 @@ class SequentialFileBuffer {
         return this.length
     }
 
+    get fileHeader() {
+        return this.seq.fileHeader
+    }
+
     /*get remaining() {
         return this.length - this.getReadCount()
     }*/
 }
 
 
-// this reads file, initialises all the craps, gets initial frame size, then discards everything; truly wasteful :)
-// TODO use virtual audio hardware!
-function getInitialFrameSize() {
-
-    let frame = filebuf.readBytes(4096)
-    let mp2 = require('mp2dec')
-    let mp2context = mp2.kjmp2_make_mp2_state()
-    mp2.kjmp2_init(mp2context)
-
-    let sampleRate = mp2.kjmp2_get_sample_rate(frame)
-    let [frameSize, _] = mp2.kjmp2_decode_frame(mp2context, frame, null, [])
-
-    filebuf.rewind()
-    sys.free(frame)
-
-    return [frameSize, sampleRate]
-}
-
 
 
 
 let filebuf = new SequentialFileBuffer(_G.shell.resolvePathInput(exec_args[1]).full)
 const FILE_SIZE = filebuf.length - 100
+let FRAME_SIZE = audio.mp2GetInitialFrameSize(filebuf.fileHeader)
 
 
-const [FRAME_SIZE, SAMPLE_RATE] = getInitialFrameSize()
 let bytes_left = FILE_SIZE
 let decodedLength = 0
 
 
-println(`Sampling rate: ${SAMPLE_RATE}, Frame size: ${FRAME_SIZE}`)
+//serial.println(`Frame size: ${FRAME_SIZE}`)
 
 
 
@@ -131,21 +91,10 @@ function decodeAndResample(inPtrL, inPtrR, outPtr, inputLen) {
     }
 }
 function decodeEvent(frameSize, len) {
-    if (interactive) {
-        sys.poke(-40, 1)
-        if (sys.peek(-41) == 67) {
-            stopPlay = true
-            throw "STOP"
-        }
-    }
-
-//    printPlayBar(pos)
 
     let t2 = sys.nanoTime()
 
-    decodedLength += frameSize
-
-    printdbg(`Audio queue size: ${audio.getPosition(0)}/${QUEUE_MAX}`)
+//    printdbg(`Audio queue size: ${audio.getPosition(0)}/${QUEUE_MAX}`)
 
     if (audio.getPosition(0) >= QUEUE_MAX) {
         while (audio.getPosition(0) >= (QUEUE_MAX >>> 1)) {
@@ -166,7 +115,48 @@ function decodeEvent(frameSize, len) {
     bufRealTimeLen = (len) / 64000.0 * 1000
     t1 = t2
 
-    println(`Decoded ${decodedLength} bytes; target: ${bufRealTimeLen} ms, lag: ${decodingTime - bufRealTimeLen} ms`)
+//    println(`Decoded ${decodedLength} bytes; target: ${bufRealTimeLen} ms, lag: ${decodingTime - bufRealTimeLen} ms`)
+}
+
+
+con.curs_set(0)
+con.curs_set(0)
+if (interactive) {
+    println("Push and hold Backspace to exit")
+}
+let [cy, cx] = con.getyx()
+let [__, CONSOLE_WIDTH] = con.getmaxyx()
+let paintWidth = CONSOLE_WIDTH - 16
+function bytesToSec(i) {
+    // using fixed value: FRAME_SIZE(216) bytes for 36 ms on sampling rate 32000 Hz
+    return i / (FRAME_SIZE * 1000 / bufRealTimeLen)
+}
+function secToReadable(n) {
+    let mins = ''+((n/60)|0)
+    let secs = ''+(n % 60)
+    return `${mins.padStart(2,'0')}:${secs.padStart(2,'0')}`
+}
+function printPlayBar(currently) {
+    if (interactive) {
+        let currently = decodedLength
+        let total = FILE_SIZE
+
+        let currentlySec = Math.round(bytesToSec(currently))
+        let totalSec = Math.round(bytesToSec(total))
+
+        con.move(cy, 1)
+        print(' '.repeat(15))
+        con.move(cy, 1)
+
+        print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
+
+        con.move(cy, 15)
+        print(' ')
+        let progressbar = '\x84205u'.repeat(paintWidth + 1)
+        print(progressbar)
+
+        con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
+    }
 }
 
 
@@ -180,35 +170,51 @@ audio.setMasterVolume(0, 255)
 audio.play(0)
 
 
-let mp2context = audio.createNewMP2context()
-audio.kjmp2_init(mp2context)
+let mp2context = audio.mp2Init()
 
 // decode frame
 let frame = sys.malloc(FRAME_SIZE)
-let samplePtrL = sys.malloc(6000) // 16b samples
-let samplePtrR = sys.malloc(6000) // 16b samples
-let decodePtr = sys.malloc(6000) // 8b samples
+let samplePtrL = sys.malloc(2304) // 16b samples
+let samplePtrR = sys.malloc(2304) // 16b samples
+let decodePtr = sys.malloc(2304) // 8b samples
 let t1 = sys.nanoTime()
 let bufRealTimeLen = 36
-while (bytes_left >= 0) {
+let stopPlay = false
+let errorlevel = 0
+try {
+    while (bytes_left >= 0 && !stopPlay) {
 
-//    println(`Bytes left: ${bytes_left}`)
+        if (interactive) {
+            sys.poke(-40, 1)
+            if (sys.peek(-41) == 67) {
+                stopPlay = true
+            }
+        }
 
+        printPlayBar()
 
-    filebuf.readBytes(FRAME_SIZE, frame)
-    bytes_left -= FRAME_SIZE
+        filebuf.readBytes(FRAME_SIZE, frame)
+        bytes_left -= FRAME_SIZE
+        decodedLength += FRAME_SIZE
 
-    let decodedL = []
-    let decodedR = []
-    let [frameSize, samples] = audio.kjmp2_decode_frame(mp2context, frame, true, samplePtrL, samplePtrR)
-    if (frameSize) {
-        // play using decodedLR
-        decodeEvent(frameSize, samples)
+        let [frameSize, samples] = audio.mp2DecodeFrame(mp2context, frame, true, samplePtrL, samplePtrR)
+        if (frameSize) {
+//            println(samples)
+            // play using decodedLR
+            decodeEvent(frameSize, samples)
+            FRAME_SIZE = frameSize // JUST IN CASE when a vbr mp2 is not filtered and played thru
+        }
     }
-
+}
+catch (e) {
+    printerrln(e)
+    errorlevel = 1
+}
+finally {
+    sys.free(frame)
+    sys.free(decodePtr)
+    sys.free(samplePtrL)
+    sys.free(samplePtrR)
 }
 
-sys.free(frame)
-sys.free(decodePtr)
-sys.free(samplePtrL)
-sys.free(samplePtrR)
+return errorlevel
