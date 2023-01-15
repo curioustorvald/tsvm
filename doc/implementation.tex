@@ -557,13 +557,16 @@ Address & RW & Description \\
 -39 & RW & Text Input Stream control. Write nonzero value to open it. The Keyboard Input Buffer will be cleared whenever the Input Stream is opened. \\
 -40 & WO & Latch Keyboard and Mouse input \\
 -41..-48 & RO & List of pressed keys (latched by -40) \\
--49 & RO & System Flags A (code{0b r000 000t}, where r: RESET button held, t: STOP button held) \\
+-49 & RO & System Flags A (\code{0b r000 000t}, where r: RESET button held, t: STOP button held) \\
 -50..-52 & RO & Unused System Flags \\
 -65..-68 & RO & Size of the Scratchpad Memory \\
 -69 & WO & Counter Latch (\code{0b01}--Uptime, \code{0b10}--RTC) \\
 -73..-80 & RO & System Uptime in nanoseconds (latched by -69) \\
 -81..-88 & RO & RTC in nanoseconds (latched by -69) \\
 -89 & RW & ROM Mapping \\
+-90 & RW & Power Management Flags (\code{0b P000 b0ca}), where P: CPU halted, b: the device is battery-operated, c: a battery is detected, a: the battery is charging \\
+-91 & RO & BMS Battery Percentage \\
+-92 & RO & BMS Battery Voltage multiplied by 10 \\
 -1025..-2048 & RW & Reserved for the integrated peripherals \\
 -4077..-20480 & $ \ast $ & See \ref{comm-mmio} \\
 -65537..-131072 & RO & Contents in the mapped ROM

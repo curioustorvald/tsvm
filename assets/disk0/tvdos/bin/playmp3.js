@@ -1,3 +1,8 @@
+println("DEPRECATION NOTICE: MP3 Playback function will be removed for following reason")
+println("\tMP3 does not really fit in the time TSVM targets to emulate")
+return 1
+
+
 const Mp3 = require('mp3dec')
 const pcm = require("pcm")
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
@@ -114,7 +119,6 @@ let readPtr = sys.malloc(8000)
 let decodePtr = sys.malloc(12000)
 
 function bytesToSec(i) {
-    // using fixed value: FRAME_SIZE(216) bytes for 36 ms on sampling rate 32000 Hz
     return i / (FRAME_SIZE * 1000 / bufRealTimeLen)
 }
 function secToReadable(n) {

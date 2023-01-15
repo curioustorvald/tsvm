@@ -964,8 +964,10 @@ input.withEvent = function(callback) {
         inputwork.stroboStatus = 0;
         inputwork.repeatCount = 0;
 
-        if (keys[0] == 0)
+        if (keys[0] == 0) {
             inputwork.keyChanged = false;
+            sys.sleep(25)
+        }
 
         if (keyChanged) {
             //callback(["key_change", keysToStr(arrayDiff(keys, inputwork.oldKeys)), inputwork.repeatCount].concat(keys));
@@ -977,7 +979,7 @@ input.withEvent = function(callback) {
         }
     }
     else if (inputwork.stroboStatus % 2 == 1 && sys.nanoTime() - inputwork.stroboTime < inputwork.stroboDelays[inputwork.stroboStatus]) {
-        sys.spin();
+        sys.sleep(25);
     }
     else {
         inputwork.stroboStatus += 1;
