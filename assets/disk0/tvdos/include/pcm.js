@@ -30,10 +30,7 @@ function s16Tou8(i) {
 function u16Tos16(i) { return (i > 32767) ? i - 65536 : i }
 function randomRound(k) {
     let rnd = (Math.random() + Math.random()) / 2.0 // this produces triangular distribution
-    if (rnd < (k - (k|0)))
-        return Math.ceil(k)
-    else
-        return Math.floor(k)
+    return (rnd < (k - (k|0))) ? Math.ceil(k) : Math.floor(k)
 }
 function lerp(start, end, x) {
     return (1 - x) * start + x * end

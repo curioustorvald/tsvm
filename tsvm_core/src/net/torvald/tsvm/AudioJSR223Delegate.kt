@@ -777,7 +777,7 @@ class AudioJSR223Delegate(private val vm: VM) {
         };
         // check for valid header: syncword OK, MPEG-Audio Layer 2
         if ((syspeek(mp2_frame!!) != 0xFF) || ((syspeek(mp2_frame!! +1) and 0xFE) != 0xFC)){
-            throw Error("Invalid header")
+            throw Error("Invalid header at $mp2_frame: ${syspeek(mp2_frame!!).toString(16)} ${syspeek(mp2_frame!! +1).toString(16)}")
         };
 
         // set up the bitstream reader

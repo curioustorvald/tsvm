@@ -67,7 +67,7 @@ class SequentialFileBuffer {
 
 
 let filebuf = new SequentialFileBuffer(_G.shell.resolvePathInput(exec_args[1]).full)
-const FILE_SIZE = filebuf.length - 100
+const FILE_SIZE = filebuf.length// - 100
 let FRAME_SIZE = audio.mp2GetInitialFrameSize(filebuf.fileHeader)
 
 
@@ -182,7 +182,7 @@ let bufRealTimeLen = 36
 let stopPlay = false
 let errorlevel = 0
 try {
-    while (bytes_left >= 0 && !stopPlay) {
+    while (bytes_left > 0 && !stopPlay) {
 
         if (interactive) {
             sys.poke(-40, 1)
@@ -194,9 +194,6 @@ try {
         printPlayBar()
 
         filebuf.readBytes(FRAME_SIZE, frame)
-        bytes_left -= FRAME_SIZE
-        decodedLength += FRAME_SIZE
-
         let [frameSize, samples] = audio.mp2DecodeFrame(mp2context, frame, true, samplePtrL, samplePtrR)
         if (frameSize) {
 //            println(samples)
@@ -204,6 +201,9 @@ try {
             decodeEvent(frameSize, samples)
             FRAME_SIZE = frameSize // JUST IN CASE when a vbr mp2 is not filtered and played thru
         }
+
+        bytes_left -= FRAME_SIZE
+        decodedLength += FRAME_SIZE
     }
 }
 catch (e) {

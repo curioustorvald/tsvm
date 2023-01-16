@@ -72,7 +72,7 @@ object VMRunnerFactory {
                         bind.putMember("graphics", GraphicsJSR223Delegate(vm))
                         bind.putMember("serial", VMSerialDebugger(vm))
                         bind.putMember("gzip", CompressorDelegate(vm))
-                        bind.putMember("base64", Base64Delegate)
+                        bind.putMember("base64", Base64Delegate(vm))
                         bind.putMember("com", SerialHelperDelegate(vm))
                         bind.putMember("dma", DMADelegate(vm))
                         bind.putMember("audio", AudioJSR223Delegate(vm))

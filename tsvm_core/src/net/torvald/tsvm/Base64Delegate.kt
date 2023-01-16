@@ -1,8 +1,9 @@
 package net.torvald.tsvm
 
 import com.badlogic.gdx.utils.Base64Coder
+import net.torvald.UnsafeHelper
 
-object Base64Delegate {
+class Base64Delegate(val vm: VM) {
 
     fun atob(inputstr: String): ByteArray {
         return Base64Coder.decode(inputstr)
@@ -16,6 +17,13 @@ object Base64Delegate {
         val sb = StringBuilder()
         sb.append(Base64Coder.encode(inputbytes))
         return sb.toString()
+    }
+
+    fun atoptr(inputstr: String): Int {
+        val b = atob(inputstr)
+        val ptr = vm.malloc(b.size)
+        UnsafeHelper.memcpyRaw(b, UnsafeHelper.getArrayOffset(b), null, vm.usermem.ptr + ptr, b.size.toLong())
+        return ptr
     }
 
 }
