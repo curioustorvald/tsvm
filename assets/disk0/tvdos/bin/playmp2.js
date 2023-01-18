@@ -82,12 +82,10 @@ let decodedLength = 0
 function decodeAndResample(inPtrL, inPtrR, outPtr, inputLen) {
     // TODO resample
     for (let k = 0; k < inputLen; k+=2) {
-        let sample = [
-            pcm.u16Tos16(sys.peek(inPtrL + k + 0) | (sys.peek(inPtrL + k + 1) << 8)),
-            pcm.u16Tos16(sys.peek(inPtrR + k + 0) | (sys.peek(inPtrR + k + 1) << 8))
-        ]
-        sys.poke(outPtr + k, pcm.s16Tou8(sample[0]))
-        sys.poke(outPtr + k + 1, pcm.s16Tou8(sample[1]))
+        let sample1 = pcm.u16Tos16(sys.peek(inPtrL + k + 0) | (sys.peek(inPtrL + k + 1) << 8))
+        let sample2 = pcm.u16Tos16(sys.peek(inPtrR + k + 0) | (sys.peek(inPtrR + k + 1) << 8))
+        sys.poke(outPtr + k, pcm.s16Tou8(sample1))
+        sys.poke(outPtr + k + 1, pcm.s16Tou8(sample2))
     }
 }
 function decodeEvent(frameSize, len) {

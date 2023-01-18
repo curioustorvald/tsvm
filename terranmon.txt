@@ -379,9 +379,18 @@ METADATA -
     uint16 FPS (0: play as fast as can)
     uint32 NUMBER OF FRAMES
     uint16 GLOBAL PACKET TYPE (will be deprecated; please use 255,0)
-    byte[12] RESERVED
+    uint16 AUDIO QUEUE INFO
+           when read as little endian:
+           0b nnnn bbbb bbbb bbbb
+              [byte 21] [byte 20]
+           n: size of the queue (number of entries). Allocate at least 1 more entry than the number specified!
+           b: size of each entry in bytes DIVIDED BY FOUR (all zero = 16384; always 0x240 for MP2 because MP2-VBR is not supported)
 
-    Packet Types:
+           n=0 indicates the video audio must be decoded on-the-fly instead of being queued, or has no audio packets
+    byte[10] RESERVED
+
+
+Packet Types -
     <video>
        0,0: 256-Colour frame
        1,0: 256-Colour frame with palette data
@@ -398,14 +407,14 @@ METADATA -
       1,16: Raw PCM Stereo
       2,16: ADPCM Mono
       3,16: ADPCM Stereo
+      0,17: MP2 Mono
+      1,17: MP2 Stereo
     <special>
     255,255: sync packet (wait until the next frame)
     254,255: background colour packet
 
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
-
-
 
 
 GLOBAL TYPE 0 Packet -

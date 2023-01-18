@@ -5,7 +5,7 @@ const HEIGHT = 448
 const FBUF_SIZE = WIDTH * HEIGHT
 const AUTO_BGCOLOUR_CHANGE = true
 const MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56]
-
+const pcm = require("pcm")
 
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
@@ -41,14 +41,18 @@ let fps = seqread.readShort(); if (fps == 0) fps = 9999
 
 //fps = 9999
 
-let frameTime = 1.0 / fps
-let frameCount = seqread.readInt() % 16777216
-let globalType = seqread.readShort()
-sys.free(seqread.readBytes(12)) // skip 12 bytes
-let akku = frameTime
+const FRAME_TIME = 1.0 / fps
+const FRAME_COUNT = seqread.readInt() % 16777216
+const globalType = seqread.readShort()
+const audioQueueInfo = seqread.readShort()
+let AUDIO_QUEUE_LENGTH = (audioQueueInfo >> 12) + 1
+const AUDIO_QUEUE_BYTES = (audioQueueInfo & 0xFFF) << 2
+sys.free(seqread.readBytes(10)) // skip 12 bytes
+let audioQueuePos = 0
+let akku = FRAME_TIME
 let framesRendered = 0
 //serial.println(seqread.getReadCount()) // must say 18
-//serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${frameCount}`)
+//serial.println(`Dim: (${width}x${height}), FPS: ${fps}, Frames: ${FRAME_COUNT}`)
 
 /*if (type != 4 && type != 5 && type != 260 && type != 261) {
     printerrln("Not an iPF mov")
@@ -58,6 +62,10 @@ if (globalType != 255) {
     printerrln(`Unsupported MOV type (${globalType})`)
     return 1
 }
+// MP2 stuffs
+let mp2context;
+let samplePtrL;
+let samplePtrR;
 
 
 let ipfbuf = sys.malloc(FBUF_SIZE)
@@ -66,11 +74,26 @@ graphics.setGraphicsMode(4)
 let startTime = sys.nanoTime()
 let framesRead = 0
 let audioFired = false
+let audioQueue = (AUDIO_QUEUE_LENGTH < 1) ? undefined : new Int32Array(AUDIO_QUEUE_LENGTH)
+if (AUDIO_QUEUE_BYTES > 0 && AUDIO_QUEUE_LENGTH > 1) {
+    for (let i = 0; i < AUDIO_QUEUE_LENGTH; i++) {
+        audioQueue[i] = sys.malloc(AUDIO_QUEUE_BYTES)
+    }
+}
 
 audio.resetParams(0)
 audio.purgeQueue(0)
 audio.setPcmMode(0)
 audio.setMasterVolume(0, 255)
+
+function s16StTou8St(inPtrL, inPtrR, outPtr, length) {
+    for (let k = 0; k < length; k+=2) {
+        let sample1 = pcm.u16Tos16(sys.peek(inPtrL + k + 0) | (sys.peek(inPtrL + k + 1) << 8))
+        let sample2 = pcm.u16Tos16(sys.peek(inPtrR + k + 0) | (sys.peek(inPtrR + k + 1) << 8))
+        sys.poke(outPtr + k, pcm.s16Tou8(sample1))
+        sys.poke(outPtr + k + 1, pcm.s16Tou8(sample2))
+    }
+}
 
 function getRGBfromScr(x, y) {
     let offset = y * WIDTH + x
@@ -89,14 +112,16 @@ if (interactive) {
 let notifHideTimer = 0
 const NOTIF_SHOWUPTIME = 3000000000
 let [cy, cx] = con.getyx()
+let errorlevel = 0
+try {
 let t1 = sys.nanoTime()
 renderLoop:
 while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
-    if (akku >= frameTime) {
+    if (akku >= FRAME_TIME) {
 
         let frameUnit = 0 // 0: no decode, 1: normal playback, 2+: skip (n-1) frames
-        while (!stopPlay && akku >= frameTime) {
+        while (!stopPlay && akku >= FRAME_TIME) {
             if (interactive) {
                 sys.poke(-40, 1)
                 if (sys.peek(-41) == 67) {
@@ -104,7 +129,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                 }
             }
 
-            akku -= frameTime
+            akku -= FRAME_TIME
             frameUnit += 1
         }
 
@@ -144,7 +169,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                         let decodefun = (packetType > 255) ? graphics.decodeIpf2 : graphics.decodeIpf1
                         let payloadLen = seqread.readInt()
 
-                        if (framesRead >= frameCount) {
+                        if (framesRead >= FRAME_COUNT) {
                             break renderLoop
                         }
 
@@ -156,6 +181,11 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                             gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
                             decodefun(ipfbuf, -1048577, -1310721, width, height, (packetType & 255) == 5)
 
+                            // defer audio playback until a first frame is sent
+                            if (!audioFired) {
+                                audio.play(0)
+                                audioFired = true
+                            }
 
                             // calculate bgcolour from the edges of the screen
                             if (AUTO_BGCOLOUR_CHANGE) {
@@ -187,13 +217,6 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
                                 graphics.setBackground(Math.round(bgr * 255), Math.round(bgg * 255), Math.round(bgb * 255))
                             }
-
-
-                            // defer audio playback until a first frame is sent
-                            if (!audioFired) {
-                                audio.play(0)
-                                audioFired = true
-                            }
                         }
 
                         sys.free(gzippedPtr)
@@ -203,18 +226,33 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                     }
                 }
                 // audio packets
-                else if (4096 <= packetType && packetType <= 6133) {
-                    if (4097 == packetType) {
-                        let readLength = seqread.readInt()
-                        let samples = seqread.readBytes(readLength)
+                else if (4096 <= packetType && packetType <= 6143) {
+                    let readLength = seqread.readInt()
+                    if (readLength == 0) throw Error("Readlength is zero")
 
-                        if (readLength == 0) throw Error("Readlength is zero")
+                    // MP2
+                    if (packetType == 0x1100 || packetType == 0x1101) {
+                        if (audioQueue[audioQueuePos] === undefined) {
+//                            throw Error(`Audio queue overflow: attempt to write to index ${audioQueuePos}; queue size: ${audioQueue.length}; frame: ${framesRead}`)
+                            AUDIO_QUEUE_LENGTH += 1
+                            audioQueue.push(sys.malloc(AUDIO_QUEUE_BYTES))
+                        }
+                        if (mp2context === undefined) mp2context = audio.mp2Init()
+                        if (samplePtrL === undefined) samplePtrL = sys.malloc(2304) // 16b samples
+                        if (samplePtrR === undefined) samplePtrR = sys.malloc(2304) // 16b samples
 
-                        audio.putPcmDataByPtr(samples, readLength, 0)
+                        let frame = seqread.readBytes(readLength)
+                        let [frameSize, samples] = audio.mp2DecodeFrame(mp2context, frame, true, samplePtrL, samplePtrR)
+                        s16StTou8St(samplePtrL, samplePtrR, audioQueue[audioQueuePos++], samples)
+                        sys.free(frame)
+                    }
+                    // RAW PCM packets (decode on the fly)
+                    else if (packetType == 0x1000 || packetType == 0x1001) {
+                        let frame = seqread.readBytes(readLength)
+                        audio.putPcmDataByPtr(frame, readLength, 0)
                         audio.setSampleUploadLength(0, readLength)
                         audio.startSampleUpload(0)
-
-                        sys.free(samples)
+                        sys.free(frame)
                     }
                     else {
                         throw Error(`Audio Packet with type ${packetType} at offset ${seqread.getReadCount() - 2}`)
@@ -223,10 +261,33 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                 else {
                     println(`Unknown Packet with type ${packetType} at offset ${seqread.getReadCount() - 2}`)
                 }
+
+
+                // manage audio playback
+                if (audioFired && audioQueue) {
+                    if (audio.getPosition(0) < 1 && audioQueuePos > 0) {
+                        // push audio sample
+                        audio.putPcmDataByPtr(audioQueue[0], AUDIO_QUEUE_BYTES, 0)
+                        audio.setSampleUploadLength(0, AUDIO_QUEUE_BYTES)
+                        audio.startSampleUpload(0)
+
+                        // unshift the queue
+                        const tmp = audioQueue[0]
+                        for (let i = 1; i < AUDIO_QUEUE_LENGTH; i++) audioQueue[i - 1] = audioQueue[i]
+                        audioQueue[AUDIO_QUEUE_LENGTH - 1] = tmp
+
+                        audioQueuePos -= 1
+                        sys.spin()
+                    }
+                }
             }
         }
         else {
+
+            serial.println(`frameunit ${frameUnit}`)
+
             framesRendered += 1
+
         }
 
     }
@@ -237,18 +298,34 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
     if (interactive) {
         notifHideTimer += (t2 - t1)
-        if (notifHideTimer > (NOTIF_SHOWUPTIME + frameTime)) {
+        if (notifHideTimer > (NOTIF_SHOWUPTIME + FRAME_TIME)) {
             con.clear()
         }
     }
 
     t1 = t2
 }
-let endTime = sys.nanoTime()
+}
+catch (e) {
+    printerrln(e)
+    errorlevel = 1
+}
+finally {
+    let endTime = sys.nanoTime()
 
-sys.free(ipfbuf)
-//audio.stop(0)
+    sys.free(ipfbuf)
+    if (audioQueue) {
+        for (let i = 0; i < AUDIO_QUEUE_LENGTH; i++) {
+            sys.free(audioQueue[i])
+        }
+    }
+    if (samplePtrL !== undefined) sys.free(samplePtrL)
+    if (samplePtrR !== undefined) sys.free(samplePtrR)
+    //audio.stop(0)
 
-let timeTook = (endTime - startTime) / 1000000000.0
+    let timeTook = (endTime - startTime) / 1000000000.0
 
-//println(`Actual FPS: ${framesRendered / timeTook}`)
+    //println(`Actual FPS: ${framesRendered / timeTook}`)
+}
+
+return errorlevel
