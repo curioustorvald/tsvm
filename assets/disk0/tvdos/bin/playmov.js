@@ -314,7 +314,7 @@ finally {
     let endTime = sys.nanoTime()
 
     sys.free(ipfbuf)
-    if (audioQueue) {
+    if (AUDIO_QUEUE_BYTES > 0 && AUDIO_QUEUE_LENGTH > 1) {
         for (let i = 0; i < AUDIO_QUEUE_LENGTH; i++) {
             sys.free(audioQueue[i])
         }
