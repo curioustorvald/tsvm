@@ -403,12 +403,10 @@ Packet Types -
       21,0: Series of TGA/GZs
      255,0: Every frame specifies the type
     <audio>
-      0,16: Raw PCM Mono
-      1,16: Raw PCM Stereo
-      2,16: ADPCM Mono
-      3,16: ADPCM Stereo
-      0,17: MP2 Mono
-      1,17: MP2 Stereo
+      0,16: Raw PCM Stereo
+      1,16: Raw PCM Mono
+      p,17: MP2, 32 kHz (see MP2 Format Details section for p-value)
+      q,18: ADPCM, 32 kHz (q = 2 * log_2(frameSize) + (1 if mono, 0 if stereo))
     <special>
     255,255: sync packet (wait until the next frame)
     254,255: background colour packet
@@ -416,6 +414,24 @@ Packet Types -
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
 
+    - MP2 Format Details
+    Rate | 2ch | 1ch
+      32 |   0 |   1
+      48 |   2 |   3
+      56 |   4 |   5
+      64 |   6 |   7
+      80 |   8 |   9
+      96 |  10 |  11
+     112 |  12 |  13
+     128 |  14 |  15
+     160 |  16 |  17
+     192 |  18 |  19
+     224 |  20 |  21
+     256 |  22 |  23
+     320 |  24 |  25
+     384 |  26 |  27
+    Add 128 to the resulting number if the frame has a padding bit (should not happen on 32kHz sampling rate)
+    Special value of 255 may indicate some errors
 
 GLOBAL TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA
@@ -439,6 +455,10 @@ GLOBAL iPF Packet -
 GLOBAL TYPE 16+ Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA (COMPRESSED IN GZIP for TGA/GZ)
+
+MP2 Packet & ADPCM Packet -
+    uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme
+    *      MP2 FRAME/ADPCM BLOCK
 
 GLOBAL TYPE 255 Packet -
     uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme

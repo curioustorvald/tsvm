@@ -6,7 +6,7 @@ const FBUF_SIZE = WIDTH * HEIGHT
 const AUTO_BGCOLOUR_CHANGE = true
 const MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56]
 const pcm = require("pcm")
-
+const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
 
@@ -227,11 +227,13 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                 }
                 // audio packets
                 else if (4096 <= packetType && packetType <= 6143) {
-                    let readLength = seqread.readInt()
+                    let readLength = (packetType >>> 8 == 17) ?
+                        MP2_FRAME_SIZE[(packetType & 255) >>> 1] // if the packet is MP2, deduce it from the packet type
+                        : seqread.readInt() // else, read 4 more bytes
                     if (readLength == 0) throw Error("Readlength is zero")
 
                     // MP2
-                    if (packetType == 0x1100 || packetType == 0x1101) {
+                    if (packetType >>> 8 == 17) {
                         if (audioQueue[audioQueuePos] === undefined) {
 //                            throw Error(`Audio queue overflow: attempt to write to index ${audioQueuePos}; queue size: ${audioQueue.length}; frame: ${framesRead}`)
                             AUDIO_QUEUE_LENGTH += 1

@@ -8,13 +8,14 @@ let HEIGHT = 448
 let PATHFUN = (i) => `/namu2/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
 let AUDIOTRACK = 'namu.mp2'
 let AUDIOFORMAT = 'MP2fr' // PCMu8 or MP2fr
-let MP2_PACKETSIZE;
 // to export video to its frames:
 //     ffmpeg -i file.mp4 file/%05d.bmp
 // the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:
 //     mogrify -path ./path/to/write/results/ -resize 560x448^ -gravity Center -extent 560x448 ./path/to/source/files/*
 //
 // end of manual configuration
+let MP2_RATE_INDEX;
+let MP2_PACKETSIZE;
 
 let outfilename = exec_args[1]
 if (!outfilename) {
@@ -43,7 +44,7 @@ function appendToOutfilePtr(ptr, len) {
 
 function audioFormatToAudioPacketType() {
     return ("PCMu8" == AUDIOFORMAT) ? [1, 16]
-    : ("MP2fr" == AUDIOFORMAT) ? [1, 17]
+    : ("MP2fr" == AUDIOFORMAT) ? [255, 17]
     : [255, 16]
 }
 
@@ -87,6 +88,25 @@ function getRepeatCount(fnum) {
     }
 }
 
+function mp2PacketSizeToRateIndex(packetSize, isMono) {
+    let r = (144  == packetSize) ?  0
+          : (216  == packetSize) ?  2
+          : (252  == packetSize) ?  4
+          : (288  == packetSize) ?  6
+          : (360  == packetSize) ?  8
+          : (432  == packetSize) ? 10
+          : (504  == packetSize) ? 12
+          : (576  == packetSize) ? 14
+          : (720  == packetSize) ? 16
+          : (864  == packetSize) ? 18
+          : (1008 == packetSize) ? 20
+          : (1152 == packetSize) ? 22
+          : (1440 == packetSize) ? 24
+          : (1728 == packetSize) ? 26 : undefined
+    if (r === undefined) throw Error("Unknown MP2 Packet Size: "+packetSize)
+    return r + isMono
+}
+
 let audioSamplesWrote = 0
 for (let f = 1; ; f++) {
 
@@ -115,6 +135,7 @@ for (let f = 1; ; f++) {
                 if (!MP2_PACKETSIZE) {
                     audioFile.pread(infile, 3, 0)
                     MP2_PACKETSIZE = audio.mp2GetInitialFrameSize([sys.peek(infile),sys.peek(infile+1),sys.peek(infile+2)])
+                    audioPacketType[0] = mp2PacketSizeToRateIndex(MP2_PACKETSIZE, sys.peek(infile+4) >> 6 == 3)
                 }
 
                 actualBytesToRead = Math.min(MP2_PACKETSIZE, audioRemaining)
@@ -132,7 +153,7 @@ for (let f = 1; ; f++) {
             ]
 
             appendToOutfile(audioPacketType)
-            appendToOutfile(audioSize)
+            if ("MP2fr" != AUDIOFORMAT) appendToOutfile(audioSize);
             appendToOutfilePtr(infile, actualBytesToRead)
 
 
