@@ -306,7 +306,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
                 vmInfo?.profileName?.let { name ->
                     it.fillRect(xoff, yoff, (name.length + 2) * FONT.W, FONT.H)
-                    it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else EmulatorGuiToolkit.Theme.COL_ACTIVE2
+                    it.color = if (index == currentVMselection) EmulatorGuiToolkit.Theme.COL_ACTIVE else EmulatorGuiToolkit.Theme.COL_ACTIVE4
                     FONT.draw(it, name, xoff + FONT.W.toFloat(), yoff.toFloat())
                 }
             }
@@ -451,7 +451,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                     batch.color = if (k % 2 == 0) EmulatorGuiToolkit.Theme.COL_TAB_NOT_SELECTED else EmulatorGuiToolkit.Theme.COL_TAB_NOT_SELECTED2
                     batch.fillRect(textX - FONT.W, y, FONT.W * (menuTabs[k].length + 2f), FONT.H.toFloat())
 
-                    batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE2
+                    batch.color = EmulatorGuiToolkit.Theme.COL_ACTIVE4
                     FONT.draw(batch, menuTabs[k], textX, y)
                 }
             }
@@ -560,14 +560,16 @@ object EmulatorGuiToolkit {
         val COL_INACTIVE = Color(0x858585ff.toInt())
         val COL_INACTIVE2 = Color(0x5a5a5fff.toInt())
         val COL_INACTIVE3 = Color.WHITE
-        val COL_ACTIVE = Color(0x23ff00ff.toInt()) // neon green
+        val COL_ACTIVE = Color(0x86fffeff.toInt()) // cyan
         val COL_ACTIVE2 = Color(0xfff600ff.toInt()) // yellow
-        val COL_ACTIVE3 = Color(0x5ff8ffff.toInt()) // cyan
-        val COL_HIGHLIGHT = Color(0xe43380ff.toInt()) // magenta
+        val COL_ACTIVE3 = Color(0x0aff9eff.toInt()) // "EL green"
+        val COL_ACTIVE4 = Color(0xd8e4eeff.toInt()) // not-so-white
+        val COL_HIGHLIGHT = Color(0xd99c00ff.toInt()) // "golden frame"
+        val COL_HIGHLIGHT2 = Color(0xb23a69ff.toInt()) // less saturated magenta
         val COL_DISABLED = Color(0xaaaaaaff.toInt())
 
-        val COL_TAB_NOT_SELECTED = Color(0x4d39cbff) // dark blue
-        val COL_TAB_NOT_SELECTED2 = Color(0x5949e0ff) // dark blue
+        val COL_TAB_NOT_SELECTED = Color(0x585858ff.toInt()) // grey
+        val COL_TAB_NOT_SELECTED2 = Color(0x686868ff.toInt()) // grey
 
         val COL_LAND = Color(0x6b8ba2ff.toInt())
         val COL_WELL = Color(0x374854ff.toInt())

@@ -117,7 +117,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
             for (i in 0 until Math.min(PROFILES_ROWS, profileNames.size)) {
                 val index = profilesScroll + i
 
-                val colBack = if (index == selectedProfileIndex) EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
+                val colBack = if (index == selectedProfileIndex) EmulatorGuiToolkit.Theme.COL_HIGHLIGHT2
                         else if (i % 2 == 0) EmulatorGuiToolkit.Theme.COL_WELL
                         else EmulatorGuiToolkit.Theme.COL_WELL2
                 val colFore = if (index == selectedProfileIndex) EmulatorGuiToolkit.Theme.COL_ACTIVE
