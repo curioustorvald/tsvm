@@ -6,9 +6,7 @@ import kotlinx.coroutines.launch
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
-import net.torvald.tsvm.peripheral.AudioAdapter
-import net.torvald.tsvm.peripheral.GraphicsAdapter
-import net.torvald.tsvm.peripheral.IOSpace
+import net.torvald.tsvm.peripheral.*
 import java.nio.charset.Charset
 
 /**
@@ -66,6 +64,14 @@ class VMJSR223Delegate(private val vm: VM) {
                 else if (relPtrInDev(fromRel, len, 253950, 261631)) dev.textArea.ptr + fromRel - 253950
                 else if (relPtrInDev(fromRel, len, 262144, 513023)) dev.framebuffer2?.ptr?.plus(fromRel)?.minus(253950)
                 else null
+            }
+            else if (dev is RamBank) {
+                if (relPtrInDev(fromRel, len, 0, 524287))
+                    dev.mem.ptr + 524288*dev.map0 + fromRel
+                else if (relPtrInDev(fromRel, len, 524288, 131071))
+                    dev.mem.ptr + 524288*dev.map1 + fromRel - 524288
+                else
+                    null
             }
             else null
         }

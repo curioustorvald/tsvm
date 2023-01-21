@@ -402,15 +402,21 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val menuTabX = windowWidth * (panelsX-1) + 2
     private val menuTabY =windowHeight * (panelsY-1) + FONT.H + 2
 
-    private val menuTabs = listOf("Profiles", "MMU", "Machine", "COMs", "Cards", "Setup")
+    private val menuTabs = listOf("Profiles", "MMIO", "MMU", "COM", "Card1", "Card2", "Card3", "Card4", "Card5", "Card6", "Card7", "Setup")
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
     private val tabs = listOf(
-        ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
-        MMUMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Profiles
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMIO
+        MMUMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMU
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card1
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card2
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card3
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card4
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card5
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card6
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card7
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Setup
     )
     private var menuTabSel = 0
 

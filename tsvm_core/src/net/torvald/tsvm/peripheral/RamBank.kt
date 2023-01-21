@@ -21,8 +21,8 @@ open class RamBank(val vm: VM, bankCount: Int) : PeriBase("ramb") {
 
     internal val mem = UnsafeHelper.allocate(bankSize * banks, this)
 
-    protected var map0 = 0
-    protected var map1 = 1
+    internal var map0 = 0
+    internal var map1 = 1
 
     override fun peek(addr: Long): Byte {
         return when (addr) {
@@ -68,4 +68,7 @@ open class RomBank(vm: VM, romfile: File, bankCount: Int) : RamBank(vm, bankCoun
         UnsafeHelper.memcpyRaw(bytes, 0, null, mem.ptr, bytes.size.toLong())
     }
     override val typestring = "ROMB"
+    override fun poke(addr: Long, byte: Byte) {
+
+    }
 }
