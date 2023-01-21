@@ -419,7 +419,7 @@ Packet Types -
       32 |   0 |   1
       48 |   2 |   3
       56 |   4 |   5
-      64 |   6 |   7
+      64 |   6 |   7  (libtwolame does not allow bitrate lower than this on 32 kHz)
       80 |   8 |   9
       96 |  10 |  11
      112 |  12 |  13
@@ -612,7 +612,17 @@ Sound Adapter MMIO
 
 ... auto-fill to Play head #4
 
-32 ??: ???
+40 WO: Media Decoder Control
+    Write 16 to initialise the MP2 context (call this before the decoding of NEW music)
+    Write 1 to decode the frame as MP2
+
+    When called with byte 17, initialisation will precede before the decoding
+
+41 RO: Media Decoder Status
+    Non-zero value indicates the decoder is busy
+
+64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
+2368..4095 RW: MP2 Frame to be decoded
 
 Sound Hardware Info
     - Sampling rate: 32000 Hz

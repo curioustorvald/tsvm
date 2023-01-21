@@ -10,7 +10,7 @@ import java.util.*
  * A paper tty must be able to implemented by extending this class (and butchering some of the features), of which it
  * sets limits on some of the functions (notably 'setCursorPos')
  */
-abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int) {
+abstract class GlassTty(val TEXT_ROWS: Int, val TEXT_COLS: Int): PeriBase("tty") {
 
     /**
      * (x, y)

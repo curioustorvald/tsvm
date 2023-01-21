@@ -64,7 +64,17 @@ class DMADelegate(private val vm: VM) {
         val response = SerialHelper.getStatusCode(vm, portNo)
         if (response == 0) {
             val file = SerialHelper.pullMessage(vm, portNo)
-            UnsafeHelper.memcpyRaw(file, UnsafeHelper.getArrayOffset(file) + srcOff.toLong(), null, vm.usermem.ptr + destOff, length.toLong())
+
+            // to user mem
+            if (destOff >= 0)
+                UnsafeHelper.memcpyRaw(file, UnsafeHelper.getArrayOffset(file) + srcOff.toLong(), null, vm.usermem.ptr + destOff, length.toLong())
+            // to hardware
+            else {
+                val destL = destOff.toLong()
+                for (i in 0 until length) {
+                    vm.poke(destL - i, file[i])
+                }
+            }
         }
     }
 
@@ -73,7 +83,16 @@ class DMADelegate(private val vm: VM) {
         val response = SerialHelper.getStatusCode(vm, portNo)
         if (response == 0) {
             val msg = ByteArray(length)
-            UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + srcOff, msg, UnsafeHelper.getArrayOffset(msg), length.toLong())
+            // from user mem
+            if (srcOff >= 0)
+                UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + srcOff, msg, UnsafeHelper.getArrayOffset(msg), length.toLong())
+            // from hardware
+            else {
+                val srcL = srcOff.toLong()
+                for (i in 0 until length) {
+                    msg[i] = vm.peek(srcL - i)!!
+                }
+            }
             SerialHelper.sendMessage(vm, portNo, msg)
             SerialHelper.sendMessage(vm, portNo, FLUSH)
             SerialHelper.sendMessage(vm, portNo, CLOSE)

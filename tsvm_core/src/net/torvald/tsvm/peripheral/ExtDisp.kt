@@ -13,13 +13,11 @@ import net.torvald.tsvm.VM
  *
  * Created by minjaesong on 2021-12-01.
  */
-class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase {
+class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase("oled") {
 
     constructor(vm: VM, w: java.lang.Integer, h: java.lang.Integer) : this(
         vm, w.toInt(), h.toInt()
     )
-
-    override val typestring = "oled"
 
     override fun getVM(): VM {
         return vm

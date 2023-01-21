@@ -21,6 +21,8 @@ class VMJSR223Delegate(private val vm: VM) {
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
     fun memcpy(from: Int, to: Int, len: Int) {
+        val fromVector = if (from >= 0) 1 else -1
+        val toVector = if (to >= 0) 1 else -1
         val len = len.toLong()
         // some special cases for native memcpy
         val ioSpace = vm.peripheralTable[0].peripheral!! as IOSpace
@@ -35,7 +37,8 @@ class VMJSR223Delegate(private val vm: VM) {
             UnsafeHelper.memcpy(vm.usermem.ptr + from, ioSpace.blockTransferTx[0].ptr + (-4097 - to), len)
         else
             for (i in 0 until len) {
-                vm.poke(to + i, vm.peek(from + i)!!)
+//                println("vm.memcpy($from, $to, $len) = mem[${to + i*toVector}] <- mem[${from + i*fromVector}]")
+                vm.poke(to + i*toVector, vm.peek(from + i*fromVector)!!)
             }
     }
     fun mapRom(slot: Int) {

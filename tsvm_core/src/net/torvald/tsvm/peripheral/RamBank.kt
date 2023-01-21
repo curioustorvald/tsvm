@@ -8,7 +8,7 @@ import java.io.File
 /**
  * Created by minjaesong on 2022-07-20.
  */
-open class RamBank(val vm: VM, bankCount: Int) : PeriBase {
+open class RamBank(val vm: VM, bankCount: Int) : PeriBase("ramb") {
 
     val bankSize = 524288L
 
@@ -60,8 +60,6 @@ open class RamBank(val vm: VM, bankCount: Int) : PeriBase {
     }
 
     override fun getVM() = vm
-
-    override val typestring = "RAMB"
 }
 
 open class RomBank(vm: VM, romfile: File, bankCount: Int) : RamBank(vm, bankCount) {

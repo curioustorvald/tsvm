@@ -12,9 +12,9 @@ import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
+import net.torvald.tsvm.*
 import net.torvald.tsvm.FBM
 import net.torvald.tsvm.LoadShader
-import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
 import java.io.InputStream
@@ -51,7 +51,7 @@ class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot,
  * NOTE: if TTY size is greater than 80*32, SEGFAULT will occur because text buffer is fixed in size
  */
 open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val config: AdapterConfig, val sgr: SuperGraphicsAddonConfig = SuperGraphicsAddonConfig()) :
-    GlassTty(config.textRows, config.textCols), PeriBase {
+    GlassTty(config.textRows, config.textCols) {
 
     override val typestring = VM.PERITYPE_GPU_AND_TERM
 
@@ -255,7 +255,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     }
 
     private fun getTextmodeAttirbutes(): Byte = (currentChrRom.and(15).shl(4) or
-            ttyRawMode.toInt().shl(1) or
+            ttyRawMode.toInt(1) or
             blinkCursor.toInt()).toByte()
 
     private fun getGraphicsAttributes(): Byte = graphicsUseSprites.toInt().toByte()
@@ -291,7 +291,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             16L -> framebufferScrollY.toByte()
             17L -> framebufferScrollY.ushr(8).toByte()
 
-            18L -> (drawCallBusy.toInt() or codecBusy.toInt().shl(1)).toByte()
+            18L -> (drawCallBusy.toInt() or codecBusy.toInt(1)).toByte()
             19L -> -1
             20L -> drawCallProgramCounter.and(255).toByte()
             21L -> drawCallProgramCounter.ushr(8).and(255).toByte()
@@ -363,11 +363,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
     }
 
-    private var codecBusy = false
+    @Volatile private var codecBusy = false
 
     private var drawCallSize = 0
     private val drawCallBuffer = Array<DrawCall>(3640) { DrawCallEnd }
-    private var drawCallBusy = false
+    @Volatile private var drawCallBusy = false
     internal var drawCallProgramCounter = 0
     internal var rScanline = 0
 
@@ -1361,8 +1361,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     override fun takeKey(): Int {
         return vm.peek(-38)!!.toInt().and(255)
     }
-
-    private fun Boolean.toInt() = if (this) 1 else 0
 
     companion object {
         val VRAM_SIZE = 256.kB()

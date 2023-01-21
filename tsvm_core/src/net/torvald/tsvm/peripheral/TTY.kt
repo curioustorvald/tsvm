@@ -6,7 +6,7 @@ import net.torvald.tsvm.VM
 import java.io.InputStream
 import java.io.OutputStream
 
-class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS), PeriBase {
+class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS) {
 
     override val typestring = VM.PERITYPE_GPU_AND_TERM
 

@@ -119,7 +119,7 @@ object SerialHelper {
     private fun setBlockTransferStatus(vm: VM, portNo: Int, blockSize: Int, moreToSend: Boolean = false) {
         vm.getIO().mmio_write(4084L + (portNo * 2), (blockSize and 255).toByte())
         vm.getIO().mmio_write(4085L + (portNo * 2),
-            ((blockSize ushr 8).and(15) or (moreToSend.toInt() shl 7)).toByte()
+            ((blockSize ushr 8).and(15) or (moreToSend.toInt(7))).toByte()
         )
     }
 
@@ -130,9 +130,6 @@ object SerialHelper {
         val gotMore = bits.and(0x8000) != 0
         return (if (rawcnt == 0) BLOCK_SIZE else rawcnt) to gotMore
     }
-
-
-    private fun Boolean.toInt() = if (this) 1 else 0
 
     data class DeviceStatus(val code: Int, val message: String)
 }

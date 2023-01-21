@@ -8,11 +8,11 @@ import net.torvald.DanglingPointerException
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.CircularArray
 import net.torvald.tsvm.VM
+import net.torvald.tsvm.isNonZero
+import net.torvald.tsvm.toInt
 import kotlin.experimental.and
 
-class IOSpace(val vm: VM) : PeriBase, InputProcessor {
-
-    override val typestring = "io"
+class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 
     override fun getVM(): VM {
         return vm
@@ -60,11 +60,11 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
     }
 
     private fun composeBlockTransferStatus(portno: Int): Int {
-        return blockTransferPorts[portno].isMaster.toInt().shl(5) or
-                blockTransferPorts[portno].isSlave.toInt().shl(4) or
-                blockTransferPorts[portno].getMode().toInt().shl(3) or
-                blockTransferPorts[portno].busy.get().toInt().shl(2) or
-                blockTransferPorts[portno].areYouReady().toInt().shl(1) or
+        return blockTransferPorts[portno].isMaster.toInt(5) or
+                blockTransferPorts[portno].isSlave.toInt(4) or
+                blockTransferPorts[portno].getMode().toInt(3) or
+                blockTransferPorts[portno].busy.get().toInt(2) or
+                blockTransferPorts[portno].areYouReady().toInt(1) or
                 blockTransferPorts[portno].cableConnected().toInt()
     }
 
@@ -103,17 +103,17 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             38L -> keyboardInputRequested.toInt().toByte()
             39L -> rawInputFunctionLatched.toInt().toByte()
             in 40..47 -> keyEventBuffers[adi - 40]
-            48L -> ((vm.resetDown.toInt() shl 7) or (vm.stopDown.toInt())).toByte()
+            48L -> ((vm.resetDown.toInt(7)) or (vm.stopDown.toInt())).toByte()
 
             in 64..67 -> vm.memsize.shr((adi - 64) * 8).toByte()
-            68L -> (uptimeCounterLatched.toInt() or RTClatched.toInt().shl(1)).toByte()
+            68L -> (uptimeCounterLatched.toInt() or RTClatched.toInt(1)).toByte()
 
             in 72..79 -> systemUptime.ushr((adi - 72) * 8).and(255).toByte()
             in 80..87 -> rtc.ushr((adi - 80) * 8).and(255).toByte()
 
             88L -> vm.romMapping.toByte()
 
-            89L -> ((acpiShutoff.toInt() shl 7) or (bmsIsBatteryOperated.toInt() shl 3) or (bmsHasBattery.toInt() shl 1)
+            89L -> ((acpiShutoff.toInt(7)) or (bmsIsBatteryOperated.toInt(3)) or (bmsHasBattery.toInt(1))
                     or bmsIsCharging.toInt()).toByte()
 
             in 1024..2047 -> peripheralFast[addr - 1024]
@@ -129,13 +129,13 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
             4083L -> blockTransferPorts[3].getYourStatusCode().toByte()
 
             4084L -> (blockTransferPorts[0].yourBlockSize().toByte())
-            4085L -> (blockTransferPorts[0].doYouHaveNext().toInt().shl(7) or blockTransferPorts[0].yourBlockSize().ushr(8).and(15)).toByte()
+            4085L -> (blockTransferPorts[0].doYouHaveNext().toInt(7) or blockTransferPorts[0].yourBlockSize().ushr(8).and(15)).toByte()
             4086L -> (blockTransferPorts[1].yourBlockSize().toByte())
-            4087L -> (blockTransferPorts[1].doYouHaveNext().toInt().shl(7) or blockTransferPorts[1].yourBlockSize().ushr(8).and(15)).toByte()
+            4087L -> (blockTransferPorts[1].doYouHaveNext().toInt(7) or blockTransferPorts[1].yourBlockSize().ushr(8).and(15)).toByte()
             4088L -> (blockTransferPorts[2].yourBlockSize().toByte())
-            4089L -> (blockTransferPorts[2].doYouHaveNext().toInt().shl(7) or blockTransferPorts[2].yourBlockSize().ushr(8).and(15)).toByte()
+            4089L -> (blockTransferPorts[2].doYouHaveNext().toInt(7) or blockTransferPorts[2].yourBlockSize().ushr(8).and(15)).toByte()
             4090L -> (blockTransferPorts[3].yourBlockSize().toByte())
-            4091L -> (blockTransferPorts[3].doYouHaveNext().toInt().shl(7) or blockTransferPorts[3].yourBlockSize().ushr(8).and(15)).toByte()
+            4091L -> (blockTransferPorts[3].doYouHaveNext().toInt(7) or blockTransferPorts[3].yourBlockSize().ushr(8).and(15)).toByte()
 
             in 4092..4095 -> composeBlockTransferStatus(adi - 4092).toByte()
 
@@ -389,6 +389,4 @@ class IOSpace(val vm: VM) : PeriBase, InputProcessor {
         return false
     }
 
-    private fun Boolean.toInt() = if (this) 1 else 0
-    private fun Byte.isNonZero() = this != 0.toByte()
 }

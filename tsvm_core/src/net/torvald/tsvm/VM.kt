@@ -119,6 +119,13 @@ class VM(
         return null
     }
 
+    fun findPeriSlotNum(peri: PeriBase): Int? {
+        for (i in 0 until peripheralSlots) {
+            if (peripheralTable[i].peripheral == peri) return i
+        }
+        return null
+    }
+
     fun update(delta: Float) {
         getIO().update(delta)
     }

@@ -1,3 +1,7 @@
+const SND_BASE_ADDR = audio.getBaseAddr()
+
+if (!SND_BASE_ADDR) return 10
+
 const pcm = require("pcm")
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 function printdbg(s) { if (0) serial.println(s) }
@@ -75,7 +79,7 @@ let bytes_left = FILE_SIZE
 let decodedLength = 0
 
 
-//serial.println(`Frame size: ${FRAME_SIZE}`)
+serial.println(`Frame size: ${FRAME_SIZE}`)
 
 
 
@@ -102,7 +106,8 @@ function decodeEvent(frameSize, len) {
     }
 
 
-    decodeAndResample(samplePtrL, samplePtrR, decodePtr, len)
+//    decodeAndResample(samplePtrL, samplePtrR, decodePtr, len)
+
     audio.putPcmDataByPtr(decodePtr, len, 0)
     audio.setSampleUploadLength(0, len)
     audio.startSampleUpload(0)
@@ -168,13 +173,10 @@ audio.setMasterVolume(0, 255)
 audio.play(0)
 
 
-let mp2context = audio.mp2Init()
+//let mp2context = audio.mp2Init()
+audio.mp2Init()
 
 // decode frame
-let frame = sys.malloc(FRAME_SIZE)
-let samplePtrL = sys.malloc(2304) // 16b samples
-let samplePtrR = sys.malloc(2304) // 16b samples
-let decodePtr = sys.malloc(2304) // 8b samples
 let t1 = sys.nanoTime()
 let bufRealTimeLen = 36
 let stopPlay = false
@@ -191,14 +193,23 @@ try {
 
         printPlayBar()
 
-        filebuf.readBytes(FRAME_SIZE, frame)
-        let [frameSize, samples] = audio.mp2DecodeFrame(mp2context, frame, true, samplePtrL, samplePtrR)
-        if (frameSize) {
-//            println(samples)
-            // play using decodedLR
-            decodeEvent(frameSize, samples)
-            FRAME_SIZE = frameSize // JUST IN CASE when a vbr mp2 is not filtered and played thru
+
+        filebuf.readBytes(FRAME_SIZE, SND_BASE_ADDR - 2368)
+        audio.mp2Decode()
+        sys.waitForMemChg(SND_BASE_ADDR - 41, 255, 255)
+
+        if (audio.getPosition(0) >= QUEUE_MAX) {
+            while (audio.getPosition(0) >= (QUEUE_MAX >>> 1)) {
+                printdbg(`Queue full, waiting until the queue has some space (${audio.getPosition(0)}/${QUEUE_MAX})`)
+                sys.sleep(bufRealTimeLen)
+            }
         }
+        audio.putPcmDataByPtr(SND_BASE_ADDR - 64, 2304, 0)
+        audio.setSampleUploadLength(0, 2304)
+        audio.startSampleUpload(0)
+        sys.sleep(10)
+
+
 
         bytes_left -= FRAME_SIZE
         decodedLength += FRAME_SIZE
@@ -209,10 +220,6 @@ catch (e) {
     errorlevel = 1
 }
 finally {
-    sys.free(frame)
-    sys.free(decodePtr)
-    sys.free(samplePtrL)
-    sys.free(samplePtrR)
 }
 
 return errorlevel

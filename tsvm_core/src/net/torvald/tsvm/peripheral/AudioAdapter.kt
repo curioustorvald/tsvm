@@ -10,8 +10,7 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.getHashStr
-
-private fun Boolean.toInt() = if (this) 1 else 0
+import net.torvald.tsvm.toInt
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
@@ -98,7 +97,7 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
 /**
  * Created by minjaesong on 2022-12-30.
  */
-class AudioAdapter(val vm: VM) : PeriBase {
+class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private fun printdbg(msg: Any) {
         if (DBGPRN) println("[AudioAdapter] $msg")
@@ -116,6 +115,11 @@ class AudioAdapter(val vm: VM) : PeriBase {
     internal val cueSheet = Array(2048) { PlayCue() }
     internal val pcmBin = UnsafeHelper.allocate(65536L, this)
 
+    internal val mediaFrameBin = UnsafeHelper.allocate(1728, this)
+    internal val mediaDecodedBin = UnsafeHelper.allocate(2304, this)
+
+    @Volatile private var mp2Busy = false
+
     private val renderRunnables: Array<RenderRunnable>
     private val renderThreads: Array<Thread>
     private val writeQueueingRunnables: Array<WriteQueueingRunnable>
@@ -125,7 +129,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
         throwable.printStackTrace()
     }
 
-    val hash = getHashStr()
+    internal val mp2Env = MP2Env(vm)
 
     override fun toString() = "AudioAdapter!$hash"
 
@@ -225,6 +229,10 @@ class AudioAdapter(val vm: VM) : PeriBase {
             in 10..19 -> playheads[1].read(adi - 10)
             in 20..29 -> playheads[2].read(adi - 20)
             in 30..39 -> playheads[3].read(adi - 30)
+            40 -> -1
+            41 -> mp2Busy.toInt().toByte()
+            in 64..2367 -> mediaDecodedBin[addr - 64]
+            in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 32768..65535 -> (adi - 32768).let {
                 cueSheet[it / 16].read(it % 15)
             }
@@ -241,6 +249,12 @@ class AudioAdapter(val vm: VM) : PeriBase {
             in 10..19 -> { playheads[1].write(adi - 10, bi) }
             in 20..29 -> { playheads[2].write(adi - 20, bi) }
             in 30..39 -> { playheads[3].write(adi - 30, bi) }
+            40 -> {
+                if (bi and 16 != 0) { mp2Context = mp2Env.initialise() }
+                if (bi and 1 != 0) decodeMp2()
+            }
+            in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
+            in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
             in 32768..65535 -> { (adi - 32768).let {
                 cueSheet[it / 16].write(it % 15, bi)
             } }
@@ -254,13 +268,20 @@ class AudioAdapter(val vm: VM) : PeriBase {
         playheads.forEach { it.dispose() }
         sampleBin.destroy()
         pcmBin.destroy()
+        mediaFrameBin.destroy()
+        mediaDecodedBin.destroy()
     }
 
     override fun getVM(): VM {
         return vm
     }
 
-    override val typestring = VM.PERITYPE_SOUND
+    private var mp2Context = mp2Env.initialise()
+
+    private fun decodeMp2() {
+        val periMmioBase = vm.findPeriSlotNum(this)!! * -131072 - 1L
+        mp2Env.decodeFrameU8(mp2Context, periMmioBase - 2368, true, periMmioBase - 64)
+    }
 
 
 
@@ -346,7 +367,7 @@ class AudioAdapter(val vm: VM) : PeriBase {
             3 -> pcmUploadLength.ushr(8).toByte()
             4 -> masterVolume.toByte()
             5 -> masterPan.toByte()
-            6 -> (isPcmMode.toInt().shl(7) or isPlaying.toInt().shl(4) or pcmQueueSizeIndex.and(15)).toByte()
+            6 -> (isPcmMode.toInt(7) or isPlaying.toInt(4) or pcmQueueSizeIndex.and(15)).toByte()
             7 -> 0
             8 -> (bpm - 24).toByte()
             9 -> tickRate.toByte()

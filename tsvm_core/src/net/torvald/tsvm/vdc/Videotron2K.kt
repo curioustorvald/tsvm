@@ -2,6 +2,7 @@ package net.torvald.tsvm.vdc
 
 import net.torvald.UnsafeHelper
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.toInt
 import net.torvald.tsvm.vdc.Command.instSet
 import java.lang.NumberFormatException
 import java.util.*
@@ -357,8 +358,6 @@ class Videotron2K(var gpu: GraphicsAdapter?) {
     fun dispose() {
         regs.destroy()
     }
-
-    private fun Boolean.toInt() = if (this) 1 else 0
 
     private fun <T> Array<T>.linearSearch(selector: (T) -> Boolean): Int? {
         this.forEachIndexed { index, it ->

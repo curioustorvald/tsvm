@@ -49,6 +49,8 @@ function readBytes(length, ptrToDecode) {
     let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
     let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
 
+    let destVector = (ptrToDecode >= 0) ? 1 : -1
+
     let completedReads = 0
 
 //    serial.println(`readBytes(${length}); readCount = ${readCount}`)
@@ -74,7 +76,7 @@ function readBytes(length, ptrToDecode) {
 //            serial.println(`Pulled a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}, remaining = ${remaining}`)
 
             // copy from read buffer to designated position
-            sys.memcpy(-4097 - port*4096, ptr + completedReads, remaining)
+            sys.memcpy(-4097 - port*4096, ptr + completedReads*destVector, remaining)
 
             // increment readCount properly
             readCount += remaining
@@ -90,7 +92,7 @@ function readBytes(length, ptrToDecode) {
 //            serial.println(`Reusing a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
 
             // copy from read buffer to designated position
-            sys.memcpy(-4097 - port*4096 - padding, ptr + completedReads, thisBlockLen)
+            sys.memcpy(-4097 - port*4096 - padding, ptr + completedReads*destVector, thisBlockLen)
 
             // increment readCount properly
             readCount += thisBlockLen
