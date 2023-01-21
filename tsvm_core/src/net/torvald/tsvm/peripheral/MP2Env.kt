@@ -47,6 +47,7 @@ import java.util.*
 import kotlin.collections.ArrayList
 import kotlin.math.ceil
 import kotlin.math.floor
+import kotlin.math.roundToInt
 
 class MP2Env(val vm: VM) {
     private var mp2_frame: Long? = null; // ptr

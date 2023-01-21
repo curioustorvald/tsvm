@@ -79,47 +79,7 @@ let bytes_left = FILE_SIZE
 let decodedLength = 0
 
 
-serial.println(`Frame size: ${FRAME_SIZE}`)
-
-
-
-function decodeAndResample(inPtrL, inPtrR, outPtr, inputLen) {
-    // TODO resample
-    for (let k = 0; k < inputLen; k+=2) {
-        let sample1 = pcm.u16Tos16(sys.peek(inPtrL + k + 0) | (sys.peek(inPtrL + k + 1) << 8))
-        let sample2 = pcm.u16Tos16(sys.peek(inPtrR + k + 0) | (sys.peek(inPtrR + k + 1) << 8))
-        sys.poke(outPtr + k, pcm.s16Tou8(sample1))
-        sys.poke(outPtr + k + 1, pcm.s16Tou8(sample2))
-    }
-}
-function decodeEvent(frameSize, len) {
-
-    let t2 = sys.nanoTime()
-
-//    printdbg(`Audio queue size: ${audio.getPosition(0)}/${QUEUE_MAX}`)
-
-    if (audio.getPosition(0) >= QUEUE_MAX) {
-        while (audio.getPosition(0) >= (QUEUE_MAX >>> 1)) {
-            printdbg(`Queue full, waiting until the queue has some space (${audio.getPosition(0)}/${QUEUE_MAX})`)
-            sys.sleep(bufRealTimeLen)
-        }
-    }
-
-
-//    decodeAndResample(samplePtrL, samplePtrR, decodePtr, len)
-
-    audio.putPcmDataByPtr(decodePtr, len, 0)
-    audio.setSampleUploadLength(0, len)
-    audio.startSampleUpload(0)
-
-    sys.sleep(10)
-
-    let decodingTime = (t2 - t1) / 1000000.0
-    bufRealTimeLen = (len) / 64000.0 * 1000
-    t1 = t2
-
-//    println(`Decoded ${decodedLength} bytes; target: ${bufRealTimeLen} ms, lag: ${decodingTime - bufRealTimeLen} ms`)
-}
+//serial.println(`Frame size: ${FRAME_SIZE}`)
 
 
 con.curs_set(0)
@@ -203,9 +163,7 @@ try {
                 sys.sleep(bufRealTimeLen)
             }
         }
-        audio.putPcmDataByPtr(SND_BASE_ADDR - 64, 2304, 0)
-        audio.setSampleUploadLength(0, 2304)
-        audio.startSampleUpload(0)
+        audio.mp2UploadDecoded(0)
         sys.sleep(10)
 
 

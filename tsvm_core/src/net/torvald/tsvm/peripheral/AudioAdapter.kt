@@ -69,7 +69,7 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
         while (!exit) {
 
             playhead.let {
-                if (it.pcmQueue.size < it.getPcmQueueCapacity() && it.pcmUpload && it.pcmUploadLength > 0) {
+                if (/*it.pcmQueue.size < it.getPcmQueueCapacity() &&*/ it.pcmUpload && it.pcmUploadLength > 0) {
                     printdbg("Downloading samples ${it.pcmUploadLength}")
 
                     val samples = ByteArray(it.pcmUploadLength)

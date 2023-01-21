@@ -1,5 +1,6 @@
 package net.torvald.tsvm
 
+import net.torvald.UnsafeHelper
 import net.torvald.tsvm.peripheral.AudioAdapter
 import net.torvald.tsvm.peripheral.MP2Env
 
@@ -84,6 +85,13 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun mp2Init() = getFirstSnd()?.mmio_write(40L, 16)
     fun mp2Decode() = getFirstSnd()?.mmio_write(40L, 1)
     fun mp2InitThenDecode() = getFirstSnd()?.mmio_write(40L, 17)
+    fun mp2UploadDecoded(playhead: Int) {
+        getFirstSnd()?.let {  snd ->
+            val ba = ByteArray(2304)
+            UnsafeHelper.memcpyRaw(null, snd.mediaDecodedBin.ptr, ba, UnsafeHelper.getArrayOffset(ba), 2304)
+            snd.playheads[playhead].pcmQueue.addLast(ba)
+        }
+    }
 
 
 

@@ -82,7 +82,7 @@ class VMJSR223Delegate(private val vm: VM) {
         val from = from.toLong()
         val to = to.toLong()
         val len = len.toLong()
-        
+
         val fromVector = if (from >= 0) 1 else -1
         val toVector = if (to >= 0) 1 else -1
         val fromDev = getDev(from, len, false)

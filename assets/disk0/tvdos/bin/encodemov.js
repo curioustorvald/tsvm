@@ -83,7 +83,7 @@ function getRepeatCount(fnum) {
         return (fnum == 1) ? 2 : 1
     }
     else if ("MP2fr" == AUDIOFORMAT) {
-        let r = Math.ceil((AUDIO_SAMPLE_SIZE*2 - audioSamplesWrote) / AUDIO_SAMPLE_SIZE) + ((fnum == 1) ? 1 : 0)
+        let r = Math.ceil((AUDIO_SAMPLE_SIZE - audioSamplesWrote) / AUDIO_SAMPLE_SIZE) + ((fnum == 1) ? 1 : 0)
         return (fnum > TOTAL_FRAMES) ? Math.ceil(audioRemaining / MP2_PACKETSIZE) : r
     }
 }

@@ -236,7 +236,10 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                             AUDIO_QUEUE_LENGTH += 1
                             audioQueue.push(sys.malloc(AUDIO_QUEUE_BYTES))
                         }
-                        if (!mp2Initialised) audio.mp2Init()
+                        if (!mp2Initialised) {
+                            mp2Initialised = true
+                            audio.mp2Init()
+                        }
 
                         seqread.readBytes(readLength, SND_BASE_ADDR - 2368)
                         audio.mp2Decode()
