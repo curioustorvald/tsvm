@@ -98,7 +98,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     var framebufferScrollX = 0
     var framebufferScrollY = 0
     private var fontRomMappingMode = 0 // 0: low, 1: high
-    private var mappedFontRom = ByteArray(1920)
+    internal var mappedFontRom = UnsafeHelper.allocate(2048, this)
 
     override var ttyFore: Int = TTY_FORE_DEFAULT // cannot be Byte
     override var ttyBack: Int = TTY_BACK_DEFAULT // cannot be Byte
@@ -127,7 +127,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
 //    override var halfrowMode = false
 
-    private val instArea = UnsafeHelper.allocate(65536L, this)
+    internal val instArea = UnsafeHelper.allocate(65536L, this)
 
     override var rawCursorPos: Int
         get() = textArea.getShortFree(memTextCursorPosOffset).toInt()
@@ -210,7 +210,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
         return when (addr) {
             in 0 until 250880 -> framebuffer[addr]
-            in 252030 until 252030+1920 -> mappedFontRom[adi- 252030]
             in 250880 until 250880+1024 -> unusedArea[addr - 250880]
             in 253950 until 261632 -> textArea[addr - 253950]
             in 261632 until 262144 -> peekPalette(adi - 261632)
@@ -243,7 +242,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 unusedArea[addr - 250880] = byte
                 runCommand(byte)
             }
-            in 252030 until 252030+1920 -> mappedFontRom[adi- 252030] = byte
             in 250880 until 250880+1024 -> unusedArea[addr - 250880] = byte
             in 253950 until 261632 -> textArea[addr - 253950] = byte
             in 261632 until 262144 -> pokePalette(adi - 261632, byte)
@@ -296,8 +294,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             20L -> drawCallProgramCounter.and(255).toByte()
             21L -> drawCallProgramCounter.ushr(8).and(255).toByte()
 
-            
+
             in 1024L..2047L -> scanlineOffsets[addr - 1024]
+            in 2048L..4095L -> mappedFontRom[addr - 2048]
 
             in 65536L..131071L -> instArea[addr - 65536]
 
@@ -323,6 +322,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             19L -> { if (bi != 0) compileAndRunDrawCalls() }
 
             in 1024L..2047L -> { scanlineOffsets[addr - 1024] = byte }
+            in 2048L..4095L ->  { mappedFontRom[addr - 2048] = byte }
 
             in 65536L..131071L -> instArea[addr - 65536] = byte
 
@@ -596,7 +596,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                     val pixel = (scanline[bm] < 0).toInt()
                     word = word or (pixel shl (scanline.size - 1 - bm))
                 }
-                mappedFontRom[char * ch + line] = word.toByte()
+                mappedFontRom[char.toLong() * ch + line] = word.toByte()
             }
         }
 
@@ -622,7 +622,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             val px = (char % 16) * cw; val py = (char / 16) * ch
             val off = dataOffset + (py * 16 * cw) + px
             for (line in 0 until ch) {
-                val word = mappedFontRom[char * ch + line].toInt()
+                val word = mappedFontRom[char.toLong() * ch + line].toInt()
                 for (bm in 0 until scanline.size) {
                     val pixel = 255 * ((word shr (cw - 1 - bm)) and 1)
                     scanline[bm] = pixel.toByte()
@@ -974,6 +974,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         unusedArea.destroy()
         scanlineOffsets.destroy()
         instArea.destroy()
+        mappedFontRom.destroy()
     }
 
     private var textCursorBlinkTimer = 0f

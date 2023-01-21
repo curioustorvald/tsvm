@@ -196,7 +196,6 @@ try {
 
         filebuf.readBytes(FRAME_SIZE, SND_BASE_ADDR - 2368)
         audio.mp2Decode()
-        sys.waitForMemChg(SND_BASE_ADDR - 41, 255, 255)
 
         if (audio.getPosition(0) >= QUEUE_MAX) {
             while (audio.getPosition(0) >= (QUEUE_MAX >>> 1)) {

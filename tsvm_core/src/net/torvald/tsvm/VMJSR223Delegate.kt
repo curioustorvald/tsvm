@@ -4,7 +4,10 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import net.torvald.UnsafeHelper
+import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
+import net.torvald.tsvm.peripheral.AudioAdapter
+import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.IOSpace
 import java.nio.charset.Charset
 
@@ -12,6 +15,61 @@ import java.nio.charset.Charset
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
  */
 class VMJSR223Delegate(private val vm: VM) {
+
+    private fun relPtrInDev(from: Long, len: Long, start: Int, end: Int) =
+        (from in start..end && (from + len) in start..end)
+
+    private fun getDev(from: Long, len: Long, isDest: Boolean): Long? {
+        return if (from >= 0) vm.usermem.ptr + from
+        // MMIO area
+        else if (from in -1048576..-1 && (from - len) in -1048577..-1) {
+            val fromIndex = (-from-1) / 131072
+            val dev = vm.peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val fromRel = (-from-1) % 131072
+            if (fromRel + len > 131072) return null
+
+            return if (dev is IOSpace) {
+                if (relPtrInDev(fromRel, len, 1024, 2047)) dev.peripheralFast.ptr + fromRel - 1024
+                else if (relPtrInDev(fromRel, len, 4096, 8191)) (if (isDest) dev.blockTransferTx[0] else dev.blockTransferRx[0]).ptr + fromRel - 4096
+                else if (relPtrInDev(fromRel, len, 8192, 12287)) (if (isDest) dev.blockTransferTx[1] else dev.blockTransferRx[1]).ptr + fromRel - 8192
+                else if (relPtrInDev(fromRel, len, 12288, 16383)) (if (isDest) dev.blockTransferTx[2] else dev.blockTransferRx[2]).ptr + fromRel - 12288
+                else if (relPtrInDev(fromRel, len, 16384, 20479)) (if (isDest) dev.blockTransferTx[3] else dev.blockTransferRx[3]).ptr + fromRel - 16384
+                else null
+            }
+            else if (dev is AudioAdapter) {
+                if (relPtrInDev(fromRel, len, 64, 2367)) dev.mediaDecodedBin.ptr + fromRel - 64
+                else if (relPtrInDev(fromRel, len, 2368, 4096)) dev.mediaFrameBin.ptr + fromRel - 2368
+                else null
+            }
+            else if (dev is GraphicsAdapter) {
+                if (relPtrInDev(fromRel, len, 1024, 2047)) dev.scanlineOffsets.ptr + fromRel - 1024
+                else if (relPtrInDev(fromRel, len, 2048, 4095)) dev.mappedFontRom.ptr + fromRel - 2048
+                else if (relPtrInDev(fromRel, len, 65536, 131071)) dev.instArea.ptr + fromRel - 65536
+                else null
+            }
+            else null
+        }
+        // memory area
+        else {
+            val fromIndex = (-from-1) / 1048576
+            val dev = vm.peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val fromRel = (-from-1) % 1048576
+            if (fromRel + len > 1048576) return null
+
+            return if (dev is AudioAdapter) {
+                if (relPtrInDev(fromRel, len, 0, 114687)) dev.sampleBin.ptr + fromRel - 0
+                else null
+            }
+            else if (dev is GraphicsAdapter) {
+                if (relPtrInDev(fromRel, len, 0, 250879)) dev.framebuffer.ptr + fromRel - 0
+                else if (relPtrInDev(fromRel, len, 250880, 251903)) dev.unusedArea.ptr + fromRel - 250880
+                else if (relPtrInDev(fromRel, len, 253950, 261631)) dev.textArea.ptr + fromRel - 253950
+                else if (relPtrInDev(fromRel, len, 262144, 513023)) dev.framebuffer2?.ptr?.plus(fromRel)?.minus(253950)
+                else null
+            }
+            else null
+        }
+    }
 
     fun getVmId() = vm.id.toString()
 
@@ -21,25 +79,32 @@ class VMJSR223Delegate(private val vm: VM) {
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
     fun memcpy(from: Int, to: Int, len: Int) {
+        val from = from.toLong()
+        val to = to.toLong()
+        val len = len.toLong()
+        
         val fromVector = if (from >= 0) 1 else -1
         val toVector = if (to >= 0) 1 else -1
-        val len = len.toLong()
-        // some special cases for native memcpy
-        val ioSpace = vm.peripheralTable[0].peripheral!! as IOSpace
-        // within scratchpad memory?
-        if (from in 0 until 8388608 && (to + len) in 0 until 8388608)
-            UnsafeHelper.memcpy(vm.usermem.ptr + from, vm.usermem.ptr + to, len)
-        // first serial read buffer -> usermem
-        else if (from in -4097 downTo -8192 && (to + len) in 0 until 8388608)
-            UnsafeHelper.memcpy(ioSpace.blockTransferRx[0].ptr + (-4097 - from), vm.usermem.ptr + to, len)
-        // usermem -> first serial write buffer
-        else if (from in 0 until 8388608 && (to + len) in -4097L downTo -8192L)
-            UnsafeHelper.memcpy(vm.usermem.ptr + from, ioSpace.blockTransferTx[0].ptr + (-4097 - to), len)
-        else
-            for (i in 0 until len) {
-//                println("vm.memcpy($from, $to, $len) = mem[${to + i*toVector}] <- mem[${from + i*fromVector}]")
-                vm.poke(to + i*toVector, vm.peek(from + i*fromVector)!!)
-            }
+        val fromDev = getDev(from, len, false)
+        val toDev = getDev(to, len, true)
+
+//        println("from = $from, to = $to")
+//        println("fromDev = $fromDev, toDev = $toDev")
+
+        if (fromDev != null && toDev != null)
+            UnsafeHelper.memcpy(fromDev, toDev, len)
+        else if (fromDev == null && toDev != null) {
+            val buf = UnsafeHelper.allocate(len, this)
+            for (i in 0 until len) buf[i] = vm.peek(from + i*fromVector)!!
+            UnsafeHelper.memcpy(buf.ptr, toDev, len)
+            buf.destroy()
+        }
+        else if (fromDev != null) {
+            for (i in 0 until len) vm.poke(to + i*toVector, UnsafeHelper.unsafe.getByte(fromDev + i))
+        }
+        else {
+            for (i in 0 until len) vm.poke(to + i*toVector, vm.peek(from + i*fromVector)!!)
+        }
     }
     fun mapRom(slot: Int) {
         vm.romMapping = slot.and(255)
@@ -171,7 +236,7 @@ class VMJSR223Delegate(private val vm: VM) {
 
     fun waitForMemChg(addr: Int, andMask: Int, xorMask: Int) {
         while ((peek(addr) xor xorMask) and andMask == 0) {
-            spin();
+            Thread.sleep(1L)
         }
     }
     fun waitForMemChg(addr: Int, andMask: Int) = waitForMemChg(addr, andMask, 0)

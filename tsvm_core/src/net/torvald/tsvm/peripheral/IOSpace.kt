@@ -40,7 +40,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     )
     /*private*/ val blockTransferPorts = Array(4) { BlockTransferPort(vm, it) }
 
-    private val peripheralFast = UnsafeHelper.allocate(1024, this)
+    internal val peripheralFast = UnsafeHelper.allocate(1024, this)
 
     private val keyEventBuffers = ByteArray(8)
 

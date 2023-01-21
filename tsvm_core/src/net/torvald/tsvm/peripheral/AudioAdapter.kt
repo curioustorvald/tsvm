@@ -40,7 +40,7 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
                     Thread.sleep(12)
                 }
                 else if (playhead.isPlaying && writeQueue.isEmpty) {
-                    printdbg("Queue exhausted, stopping audio device...")
+                    printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
 
                     // TODO: wait for 1-2 seconds then finally stop the device
 //                    playhead.audioDevice.stop()

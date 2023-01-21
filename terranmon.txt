@@ -174,10 +174,6 @@ From the start of the memory space:
     write to this address FIRST and then write to "command" to execute the command
 1134 bytes
     unused
-(1920) !!PENDING FOR REMOVAL!!
-    mapped to font ROM
-    Font Mapping area holds 128 characters in consecutive order, each character is always 15 bytes.
-    (designer's note: it's still useful to divide the char rom to two halves, lower half being characters ROM and upper half being symbols ROM)
 2 bytes
     Cursor position in: (y*80 + x)
 2560 bytes

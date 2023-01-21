@@ -1,4 +1,5 @@
 // usage: playmov moviefile.mov [/i]
+const SND_BASE_ADDR = audio.getBaseAddr()
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 const WIDTH = 560
 const HEIGHT = 448
@@ -34,6 +35,7 @@ if (!magicMatching) {
     return 1
 }
 
+let mp2Initialised = false
 
 let width = seqread.readShort()
 let height = seqread.readShort()
@@ -62,11 +64,6 @@ if (globalType != 255) {
     printerrln(`Unsupported MOV type (${globalType})`)
     return 1
 }
-// MP2 stuffs
-let mp2context;
-let samplePtrL;
-let samplePtrR;
-
 
 let ipfbuf = sys.malloc(FBUF_SIZE)
 graphics.setGraphicsMode(4)
@@ -239,14 +236,11 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                             AUDIO_QUEUE_LENGTH += 1
                             audioQueue.push(sys.malloc(AUDIO_QUEUE_BYTES))
                         }
-                        if (mp2context === undefined) mp2context = audio.mp2Init()
-                        if (samplePtrL === undefined) samplePtrL = sys.malloc(2304) // 16b samples
-                        if (samplePtrR === undefined) samplePtrR = sys.malloc(2304) // 16b samples
+                        if (!mp2Initialised) audio.mp2Init()
 
-                        let frame = seqread.readBytes(readLength)
-                        let [frameSize, samples] = audio.mp2DecodeFrame(mp2context, frame, true, samplePtrL, samplePtrR)
-                        s16StTou8St(samplePtrL, samplePtrR, audioQueue[audioQueuePos++], samples)
-                        sys.free(frame)
+                        seqread.readBytes(readLength, SND_BASE_ADDR - 2368)
+                        audio.mp2Decode()
+                        sys.memcpy(SND_BASE_ADDR - 64, audioQueue[audioQueuePos++], 2304)
                     }
                     // RAW PCM packets (decode on the fly)
                     else if (packetType == 0x1000 || packetType == 0x1001) {
@@ -321,8 +315,6 @@ finally {
             sys.free(audioQueue[i])
         }
     }
-    if (samplePtrL !== undefined) sys.free(samplePtrL)
-    if (samplePtrR !== undefined) sys.free(samplePtrR)
     //audio.stop(0)
 
     let timeTook = (endTime - startTime) / 1000000000.0

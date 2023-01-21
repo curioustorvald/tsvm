@@ -49,7 +49,7 @@ function readBytes(length, ptrToDecode) {
     let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
     let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
 
-    let destVector = (ptrToDecode >= 0) ? 1 : -1
+    let destVector = (ptr >= 0) ? 1 : -1
 
     let completedReads = 0
 
