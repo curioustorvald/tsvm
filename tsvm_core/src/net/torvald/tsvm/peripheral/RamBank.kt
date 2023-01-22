@@ -67,7 +67,7 @@ open class RomBank(vm: VM, romfile: File, bankCount: Int) : RamBank(vm, bankCoun
         val bytes = romfile.readBytes()
         UnsafeHelper.memcpyRaw(bytes, 0, null, mem.ptr, bytes.size.toLong())
     }
-    override val typestring = "ROMB"
+    override val typestring = "romb"
     override fun poke(addr: Long, byte: Byte) {
 
     }

@@ -75,6 +75,10 @@ object TinyAlphNum : BitmapFont() {
         return null
     }
 
+    fun drawRalign(batch: Batch, text: CharSequence, x: Float, y: Float): GlyphLayout? {
+        return draw(batch, text, x - W*text.length, y)
+    }
+
     override fun getLineHeight() = H.toFloat()
     override fun getCapHeight() = getLineHeight()
     override fun getXHeight() = getLineHeight()

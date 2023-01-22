@@ -5,7 +5,7 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 /**
  * Created by minjaesong on 2022-10-25.
  */
-abstract class EmuMenu(val parent: VMEmuExecutable, val x: Int, val y: Int, val w: Int, val h: Int) {
+abstract class EmuMenu(val parent: VMEmuExecutable, val x: Int, val y: Int, val w: Int, val h: Int, var cardIndex: Int? = null) {
 
     abstract fun show()
     abstract fun hide()

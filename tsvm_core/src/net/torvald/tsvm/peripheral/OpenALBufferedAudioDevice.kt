@@ -49,6 +49,7 @@ class OpenALBufferedAudioDevice(
     private var renderedSeconds = 0f
     private val secondsPerBuffer: Float
     private var bytes: ByteArray? = null
+    private var bytesLength = 2
     private val tempBuffer: ByteBuffer
 
     /**
@@ -75,6 +76,7 @@ class OpenALBufferedAudioDevice(
             bytes!![ii++] = sample
             i++
         }
+        bytesLength = ii
         writeSamples(bytes!!, 0, numSamples * 2)
     }
 
@@ -89,6 +91,7 @@ class OpenALBufferedAudioDevice(
             bytes!![ii++] = (sample.toInt() shr 8 and 0xFF).toByte()
             i++
         }
+        bytesLength = ii
         writeSamples(bytes!!, 0, numSamples * 2)
     }
 
@@ -105,6 +108,7 @@ class OpenALBufferedAudioDevice(
             bytes!![ii++] = (intSample shr 8 and 0xFF).toByte()
             i++
         }
+        bytesLength = ii
         writeSamples(bytes!!, 0, numSamples * 2)
     }
 

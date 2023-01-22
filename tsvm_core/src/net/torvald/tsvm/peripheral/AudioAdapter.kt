@@ -77,7 +77,7 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
                     it.pcmQueue.addLast(samples)
 
                     it.pcmUploadLength = 0
-                    it.position += 1
+                    it.position = it.pcmQueue.size
                     Thread.sleep(6)
                 }
                 else if (it.pcmUpload) {
@@ -325,14 +325,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
     internal object PlayInstNop : PlayInstruction(0)
 
-    internal class Playhead(
+    class Playhead(
         private val parent: AudioAdapter,
         val index: Int,
 
         var position: Int = 0,
         var pcmUploadLength: Int = 0,
         var masterVolume: Int = 0,
-        var masterPan: Int = 0,
+        var masterPan: Int = 128,
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
         var bpm: Int = 120, // "stored" as 96
         var tickRate: Int = 6,
@@ -435,7 +435,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
-    internal data class TaudPlayData(
+    data class TaudPlayData(
         var note: Int, // 0..65535
         var instrment: Int, // 0..255
         var volume: Int, // 0..63
@@ -471,8 +471,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     }
 
-    internal data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
-    internal data class TaudInst(
+    data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
+    data class TaudInst(
         var samplePtr: Int, // 17-bit number
         var sampleLength: Int,
         var samplingRate: Int,

@@ -193,6 +193,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         currentVMselection = index
         // TODO somehow implement the inputstream that cares about the currentVMselection
         Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() ?: null else vmEmuInputProcessor
+
+        refreshCardTabs()
     }
 
     internal fun initVMenv(vm: VM, profileName: String) {
@@ -402,9 +404,15 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val menuTabX = windowWidth * (panelsX-1) + 2
     private val menuTabY =windowHeight * (panelsY-1) + FONT.H + 2
 
+    private val dummyMenu = DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH)
+    private val menuRepository = mapOf(
+        VM.PERITYPE_SOUND to AudioMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        "DUMMY" to dummyMenu
+    )
+
     private val menuTabs = listOf("Profiles", "MMIO", "MMU", "COM", "Card1", "Card2", "Card3", "Card4", "Card5", "Card6", "Card7", "Setup")
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
-    private val tabs = listOf(
+    private val tabs = arrayOf(
         ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Profiles
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMIO
         MMUMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMU
@@ -421,6 +429,20 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private var menuTabSel = 0
 
     private var tabChangeRequested: Int? = 0 // null: not requested
+
+    // call this whenever the VM selection has changed
+    private fun refreshCardTabs() {
+        val vm = getCurrentlySelectedVM()?.vm
+
+        if (vm != null) {
+            for (i in 1..7) {
+                val periType = vm.peripheralTable[i].type ?: "DUMMY"
+                val menu = menuRepository[periType] ?: dummyMenu
+                menu.cardIndex = i
+                tabs[3 + i] = menu
+            }
+        }
+    }
 
     private fun drawMenu(batch: SpriteBatch, x: Float, y: Float) {
         if (tabChangeRequested != null) {
