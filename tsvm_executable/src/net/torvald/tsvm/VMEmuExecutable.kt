@@ -122,6 +122,12 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     internal fun getCurrentlySelectedVM(): VMRunnerInfo? = if (currentVMselection == null) null else vms[currentVMselection!!]
+    internal var currentlyPersistentVM: VMRunnerInfo? = null
+        get() {
+            if (currentVMselection != null) { field = vms[currentVMselection!!] }
+            return field
+        }
+        private set
 
     private fun writeProfilesToFile(outFile: FileHandle) {
         val out = StringBuilder()

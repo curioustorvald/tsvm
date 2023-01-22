@@ -33,8 +33,10 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private val COL_SOUNDSCOPE_FORE = Color(0x80f782ff.toInt())
     private val STR_PLAY = "\u00D2\u00D3"
 
+
     override fun render(batch: SpriteBatch) {
-        val adev = parent.getCurrentlySelectedVM()?.vm?.peripheralTable?.getOrNull(cardIndex ?: -1)?.peripheral as? AudioAdapter
+
+        val adev = parent.currentlyPersistentVM?.vm?.peripheralTable?.getOrNull(cardIndex ?: -1)?.peripheral as? AudioAdapter
 
         if (adev != null) {
             batch.inUse {

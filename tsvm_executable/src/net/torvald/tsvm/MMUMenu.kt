@@ -24,27 +24,27 @@ class MMUMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMenu
     override fun update() {
     }
 
-    private var vmInfo: VMEmuExecutable.VMRunnerInfo? = null // to remember previous selection as `parent.getCurrentlySelectedVM()` will return null when MMU menu is clicked
 
     override fun render(batch: SpriteBatch) {
         batch.color = Color.WHITE
 
-        vmInfo = parent.getCurrentlySelectedVM() ?: vmInfo
+        parent.currentlyPersistentVM.let { vmInfo ->
 
-        if (vmInfo == null) {
-            batch.inUse {
-                FONT.draw(batch, "Please select a VM", 12f, 11f + 0* FONT.H)
+            if (vmInfo == null) {
+                batch.inUse {
+                    FONT.draw(batch, "Please select a VM", 12f, 11f + 0* FONT.H)
+                }
             }
-        }
-        else vmInfo!!.let { (vm, vmName) ->
-            batch.inUse {
-                FONT.draw(batch, "Allocated size: ${vm.allocatedBlockCount * vm.MALLOC_UNIT}", 12f, 11f + 0* FONT.H)
+            else vmInfo.let { (vm, vmName) ->
+                batch.inUse {
+                    FONT.draw(batch, "Allocated size: ${vm.allocatedBlockCount * vm.MALLOC_UNIT}", 12f, 11f + 0* FONT.H)
 
 
 
+                }
+
+                drawAllocMap(batch, vm, 62f, 2f * FONT.H)
             }
-
-            drawAllocMap(batch, vm, 62f, 2f * FONT.H)
         }
     }
 
