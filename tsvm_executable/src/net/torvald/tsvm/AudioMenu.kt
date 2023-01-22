@@ -9,6 +9,10 @@ import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_HIGHLIGHT2
 import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_WELL
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.peripheral.AudioAdapter
+import java.lang.Math.pow
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /**
@@ -30,23 +34,28 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private val STR_PLAY = "\u00D2\u00D3"
 
     override fun render(batch: SpriteBatch) {
-
         val adev = parent.getCurrentlySelectedVM()?.vm?.peripheralTable?.getOrNull(cardIndex ?: -1)?.peripheral as? AudioAdapter
 
-        batch.inUse {
-            // draw backgrounds
-            batch.color = COL_WELL
-            for (i in 0..3) { batch.fillRect(7, 3 + 116*i, 102, 8*FONT.H + 4) }
-            batch.color = COL_SOUNDSCOPE_BACK
-            for (i in 0..3) { batch.fillRect(117, 3 + 116*i, 512, 8*FONT.H + 4) }
-        }
-
-
         if (adev != null) {
+            batch.inUse {
+                // draw backgrounds
+                batch.color = COL_WELL
+                for (i in 0..3) { batch.fillRect(7, 5 + 115*i, 102, 8*FONT.H + 4) }
+                batch.color = COL_SOUNDSCOPE_BACK
+                for (i in 0..3) { batch.fillRect(117, 5 + 115*i, 512, 8*FONT.H + 4) }
+            }
+
+
             for (i in 0..3) {
                 val ahead = (adev.extortField("playheads") as Array<AudioAdapter.Playhead>)[i]
-                drawStatusLCD(adev, ahead, batch, i, 9f + 7, 5f + 7 + 116 * i)
-                drawSoundscope(adev, ahead, batch, i, 117f, 5f + 116 * i)
+                drawStatusLCD(adev, ahead, batch, i, 9f + 7, 7f + 7 + 115 * i)
+                drawSoundscope(adev, ahead, batch, i, 117f, 5f + 115 * i)
+            }
+        }
+        else {
+            batch.inUse {
+                batch.color = Color.WHITE
+                FONT.draw(batch, "Please select a VM", 12f, 11f + 0* FONT.H)
             }
         }
 
@@ -100,6 +109,9 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
     fun Int.u16Tos16() = if (this > 32767) this - 65536 else this
 
+    private fun bipolarCeil(d: Double) =  (if (d >= 0.0) ceil(d) else floor(d)).toInt()
+    private fun bipolarFloor(d: Double) = (if (d >= 0.0) floor(d) else ceil(d)).toInt()
+
     private fun drawSoundscope(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float) {
         val gdxadev = ahead.audioDevice
         val bytes = gdxadev.extortField("bytes") as ByteArray?
@@ -107,7 +119,6 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         val envelopeHalfHeight = 27
 
         batch.inUse {
-            batch.color = COL_SOUNDSCOPE_FORE
             if (ahead.isPcmMode && bytes != null) {
                 val smpCnt = bytesLen / 4 - 1
 
@@ -116,11 +127,32 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
                     val smpL = (bytes[i*4].toUint() or bytes[i*4+1].toUint().shl(8)).u16Tos16().toDouble().div(32767)
                     val smpR = (bytes[i*4+2].toUint() or bytes[i*4+3].toUint().shl(8)).u16Tos16().toDouble().div(32767)
-                    val smpLH = (smpL * envelopeHalfHeight).roundToInt() // -50..50
-                    val smpRH = (smpR * envelopeHalfHeight).roundToInt() // -50..50
 
-                    batch.fillRect(x + s, y + 27, 1, smpLH)
-                    batch.fillRect(x + s, y + 81, 1, smpRH)
+                    val smpLH = smpL * envelopeHalfHeight
+                    val smpRH = smpR * envelopeHalfHeight
+
+                    val smpLHi = bipolarFloor(smpLH)
+                    val smpRHi = bipolarFloor(smpRH)
+                    val smpLHi2 = bipolarCeil(smpLH)
+                    val smpRHi2 = bipolarCeil(smpRH)
+
+                    val smpLHe = abs(smpLH - smpLHi).toFloat()
+                    val smpRHe = abs(smpRH - smpRHi).toFloat()
+
+                    // antialias in y-axis
+                    if (smpLHi != smpLHi2) {
+                        batch.color = COL_SOUNDSCOPE_FORE.cpy().mul(smpLHe)
+                        batch.fillRect(x + s, y + 27, 1, smpLHi2)
+                    }
+                    if (smpRHi != smpRHi2) {
+                        batch.color = COL_SOUNDSCOPE_FORE.cpy().mul(smpRHe)
+                        batch.fillRect(x + s, y + 81, 1, smpRHi2)
+                    }
+
+                    // base texture
+                    batch.color = COL_SOUNDSCOPE_FORE
+                    batch.fillRect(x + s, y + 27, 1, smpLHi)
+                    batch.fillRect(x + s, y + 81, 1, smpRHi)
                 }
             }
             else {
