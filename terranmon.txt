@@ -429,6 +429,8 @@ Packet Types -
     Add 128 to the resulting number if the frame has a padding bit (should not happen on 32kHz sampling rate)
     Special value of 255 may indicate some errors
 
+    To encode an audio to compliant format, use ffmpeg: ffmpeg -i <your_music> -acodec libtwolame -b:a <rate>k -ar 32000 <output.mp2>
+
 GLOBAL TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA
     *      FRAMEDATA COMPRESSED IN GZIP

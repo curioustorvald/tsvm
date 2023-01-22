@@ -120,7 +120,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                     val smpRH = (smpR * envelopeHalfHeight).roundToInt() // -50..50
 
                     batch.fillRect(x + s, y + 27, 1, smpLH)
-                    batch.fillRect(x + s, y + 81, 1, smpLH)
+                    batch.fillRect(x + s, y + 81, 1, smpRH)
                 }
             }
             else {
