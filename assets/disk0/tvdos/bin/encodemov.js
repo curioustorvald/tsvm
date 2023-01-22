@@ -1,12 +1,12 @@
 // some manual configurations
 //
 let IPFMODE = 2 // 1 or 2
-let TOTAL_FRAMES = 1318
+let TOTAL_FRAMES = 3813
 let FPS = 30
 let WIDTH = 560
 let HEIGHT = 448
-let PATHFUN = (i) => `/namu2/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
-let AUDIOTRACK = 'namu.mp2'
+let PATHFUN = (i) => `/ddol2/${(''+i).padStart(5,'0')}.bmp` // how can be the image file found, if a frame number (starts from 1) were given
+let AUDIOTRACK = 'ddol.mp2'
 let AUDIOFORMAT = 'MP2fr' // PCMu8 or MP2fr
 // to export video to its frames:
 //     ffmpeg -i file.mp4 file/%05d.bmp
@@ -16,6 +16,7 @@ let AUDIOFORMAT = 'MP2fr' // PCMu8 or MP2fr
 // end of manual configuration
 let MP2_RATE_INDEX;
 let MP2_PACKETSIZE;
+const DECODE_TIME_FACTOR = 1.000
 
 let outfilename = exec_args[1]
 if (!outfilename) {
@@ -52,7 +53,7 @@ const videoPacketType = [4, (IPFMODE - 1)]
 const syncPacket = [255, 255]
 const AUDIO_SAMPLE_SIZE = 2 * (((32000 / FPS) + 1)|0) // times 2 because stereo
 const AUDIO_BLOCK_SIZE = ("MP2fr" == AUDIOFORMAT) ? 0x240 : 0
-const AUDIO_QUEUE_SIZE = ("MP2fr" == AUDIOFORMAT) ? Math.ceil(AUDIO_SAMPLE_SIZE / 2304) + 1 : 0
+const AUDIO_QUEUE_SIZE = ("MP2fr" == AUDIOFORMAT) ? Math.ceil(AUDIO_SAMPLE_SIZE / (2304 * DECODE_TIME_FACTOR)) + 1 : 0
 // write header to the file
 let headerBytes = [
     0x1F, 0x54, 0x53, 0x56, 0x4D, 0x4D, 0x4F, 0x56, // magic
@@ -83,8 +84,8 @@ function getRepeatCount(fnum) {
         return (fnum == 1) ? 2 : 1
     }
     else if ("MP2fr" == AUDIOFORMAT) {
-        let r = Math.ceil((AUDIO_SAMPLE_SIZE - audioSamplesWrote) / AUDIO_SAMPLE_SIZE) + ((fnum == 1) ? 1 : 0)
-        return (fnum > TOTAL_FRAMES) ? Math.ceil(audioRemaining / MP2_PACKETSIZE) : r
+        let r = Math.ceil((AUDIO_SAMPLE_SIZE - audioSamplesWrote) / AUDIO_SAMPLE_SIZE) * ((fnum == 1) ? 2 : 1)
+        return (fnum == 2) ? 1 : (fnum > TOTAL_FRAMES) ? Math.ceil(audioRemaining / MP2_PACKETSIZE) : r
     }
 }
 
@@ -117,7 +118,8 @@ for (let f = 1; ; f++) {
     if (audioRemaining > 0) {
 
         // first frame gets two audio packets
-        for (let repeat = 0; repeat < getRepeatCount(f); repeat++) {
+        let rrrr = getRepeatCount(f) // must be called only once
+        for (let q = 0; q < rrrr; q++) {
 
             print(`Frame ${f}/${TOTAL_FRAMES} (${AUDIOFORMAT}) ->`)
             serial.print(`Frame ${f}/${TOTAL_FRAMES} (${AUDIOFORMAT}) ->`)
@@ -140,7 +142,7 @@ for (let f = 1; ; f++) {
 
                 actualBytesToRead = Math.min(MP2_PACKETSIZE, audioRemaining)
                 audioFile.pread(infile, actualBytesToRead, audioBytesRead)
-                audioSamplesWrote += 2304
+                if (f > 1) audioSamplesWrote += 2304 / DECODE_TIME_FACTOR // a little hack to ensure first 2 or so frames get more MP2 frames than they should
             }
             else throw Error("Unknown audio format: " + AUDIOFORMAT)
 

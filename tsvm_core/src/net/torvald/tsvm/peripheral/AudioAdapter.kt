@@ -412,7 +412,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             position = 0
             pcmUploadLength = 0
             isPlaying = false
-            pcmQueueSizeIndex = 0
+            pcmQueueSizeIndex = 2
         }
 
         fun purgeQueue() {
@@ -431,7 +431,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
         
         companion object {
-            val QUEUE_SIZE = intArrayOf(4,6,8,12,16,24,32,48,64,96,128,256,384,512,768)
+            val QUEUE_SIZE = intArrayOf(4,6,8,12,16,24,32,48,64,96,128,192,256,384,512,768)
         }
     }
 

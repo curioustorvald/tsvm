@@ -53,7 +53,7 @@ if (seqread.readFourCC() != "WAVE") {
 
 let BLOCK_SIZE = 0
 let INFILE_BLOCK_SIZE = 0
-const QUEUE_MAX = 4 // according to the spec
+const QUEUE_MAX = 8 // according to the spec
 
 let pcmType;
 let nChannels;
@@ -217,14 +217,14 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
                 }
             }
 
+            printPlayBar(startOffset)
 
             let queueSize = audio.getPosition(0)
             if (queueSize <= 1) {
 
-                printPlayBar(startOffset)
 
                 // upload four samples for lag-safely
-                for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
+                for (let repeat = 0; repeat < QUEUE_MAX; repeat++) {
                     let remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
 
                     readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
@@ -244,10 +244,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
                     audio.setSampleUploadLength(0, decodedSampleLength)
                     audio.startSampleUpload(0)
 
-
-                    if (repeat > 1) sys.sleep(10)
-
-                    printPlayBar(startOffset)
+                    sys.spin()
                 }
 
                 audio.play(0)

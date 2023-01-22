@@ -643,6 +643,7 @@ Play Head Flags
             resetting will:
                 set position to 0,
                 set length param to 0,
+                set queue capacity to 8 samples,
                 unset play bit
           q: purge queues (likely do nothing if not PCM); always 0 when read
           p: play (0 if not -- mute all output)
@@ -650,7 +651,7 @@ Play Head Flags
           ssss: PCM Mode set PCM Queue Size
             0 - 4 samples
             1 - 6 samples
-            2 - 8 samples
+            2 - 8 samples  (the default size)
             3 - 12 samples
             4 - 16 samples
             5 - 24 samples

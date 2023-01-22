@@ -47,7 +47,7 @@ const FRAME_TIME = 1.0 / fps
 const FRAME_COUNT = seqread.readInt() % 16777216
 const globalType = seqread.readShort()
 const audioQueueInfo = seqread.readShort()
-let AUDIO_QUEUE_LENGTH = (audioQueueInfo >> 12) + 1
+const AUDIO_QUEUE_LENGTH = (audioQueueInfo >> 12) + 1
 const AUDIO_QUEUE_BYTES = (audioQueueInfo & 0xFFF) << 2
 sys.free(seqread.readBytes(10)) // skip 12 bytes
 let audioQueuePos = 0
@@ -71,12 +71,6 @@ graphics.setGraphicsMode(4)
 let startTime = sys.nanoTime()
 let framesRead = 0
 let audioFired = false
-let audioQueue = (AUDIO_QUEUE_LENGTH < 1) ? undefined : new Int32Array(AUDIO_QUEUE_LENGTH)
-if (AUDIO_QUEUE_BYTES > 0 && AUDIO_QUEUE_LENGTH > 1) {
-    for (let i = 0; i < AUDIO_QUEUE_LENGTH; i++) {
-        audioQueue[i] = sys.malloc(AUDIO_QUEUE_BYTES)
-    }
-}
 
 audio.resetParams(0)
 audio.purgeQueue(0)
@@ -231,11 +225,6 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
                     // MP2
                     if (packetType >>> 8 == 17) {
-                        if (audioQueue[audioQueuePos] === undefined) {
-//                            throw Error(`Audio queue overflow: attempt to write to index ${audioQueuePos}; queue size: ${audioQueue.length}; frame: ${framesRead}`)
-                            AUDIO_QUEUE_LENGTH += 1
-                            audioQueue.push(sys.malloc(AUDIO_QUEUE_BYTES))
-                        }
                         if (!mp2Initialised) {
                             mp2Initialised = true
                             audio.mp2Init()
@@ -243,7 +232,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
                         seqread.readBytes(readLength, SND_BASE_ADDR - 2368)
                         audio.mp2Decode()
-                        sys.memcpy(SND_BASE_ADDR - 64, audioQueue[audioQueuePos++], 2304)
+                        audio.mp2UploadDecoded(0)
                     }
                     // RAW PCM packets (decode on the fly)
                     else if (packetType == 0x1000 || packetType == 0x1001) {
@@ -262,23 +251,6 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                 }
 
 
-                // manage audio playback
-                if (audioFired && audioQueue) {
-                    if (audio.getPosition(0) < 1 && audioQueuePos > 0) {
-                        // push audio sample
-                        audio.putPcmDataByPtr(audioQueue[0], AUDIO_QUEUE_BYTES, 0)
-                        audio.setSampleUploadLength(0, AUDIO_QUEUE_BYTES)
-                        audio.startSampleUpload(0)
-
-                        // unshift the queue
-                        const tmp = audioQueue[0]
-                        for (let i = 1; i < AUDIO_QUEUE_LENGTH; i++) audioQueue[i - 1] = audioQueue[i]
-                        audioQueue[AUDIO_QUEUE_LENGTH - 1] = tmp
-
-                        audioQueuePos -= 1
-                        sys.spin()
-                    }
-                }
             }
         }
         else {
@@ -314,9 +286,7 @@ finally {
 
     sys.free(ipfbuf)
     if (AUDIO_QUEUE_BYTES > 0 && AUDIO_QUEUE_LENGTH > 1) {
-        for (let i = 0; i < AUDIO_QUEUE_LENGTH; i++) {
-            sys.free(audioQueue[i])
-        }
+
     }
     //audio.stop(0)
 

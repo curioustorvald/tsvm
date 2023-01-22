@@ -81,7 +81,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 // Queue sparkline
                 batch.color = COL_SOUNDSCOPE_BACK
                 batch.fillRect(x + 5*FONT.W + 2, y + 2*FONT.H, FONT.W * 7, FONT.H)
-                val qgrsize = ahead.getPcmQueueCapacity().let { ahead.position.coerceAtMost(it) / it.toDouble() }.times(FONT.W * 7).roundToInt()
+                val qgrsize = ahead.getPcmQueueCapacity().let { ahead.position / it.toDouble() }.times(FONT.W * 7).roundToInt()
                 batch.color = COL_HIGHLIGHT2
                 batch.fillRect(x + 5*FONT.W + 2, y + 2*FONT.H + 1, qgrsize, FONT.H - 2)
 

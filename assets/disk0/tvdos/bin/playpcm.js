@@ -45,7 +45,7 @@ seqread.prepare(filename)
 
 let BLOCK_SIZE = 4096
 let INFILE_BLOCK_SIZE = BLOCK_SIZE
-const QUEUE_MAX = 4 // according to the spec
+const QUEUE_MAX = 8 // according to the spec
 
 let nChannels = 2
 let samplingRate = pcm.HW_SAMPLING_RATE;
