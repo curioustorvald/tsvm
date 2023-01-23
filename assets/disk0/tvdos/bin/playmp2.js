@@ -2,6 +2,8 @@ const SND_BASE_ADDR = audio.getBaseAddr()
 
 if (!SND_BASE_ADDR) return 10
 
+const MP2_BITRATES = ["VBR", 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384]
+const MP2_CHANNELMODES = ["Stereo", "Joint", "Dual", "Mono"]
 const pcm = require("pcm")
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 function printdbg(s) { if (0) serial.println(s) }
@@ -72,7 +74,9 @@ class SequentialFileBuffer {
 
 let filebuf = new SequentialFileBuffer(_G.shell.resolvePathInput(exec_args[1]).full)
 const FILE_SIZE = filebuf.length// - 100
-let FRAME_SIZE = audio.mp2GetInitialFrameSize(filebuf.fileHeader)
+const FRAME_SIZE = audio.mp2GetInitialFrameSize(filebuf.fileHeader)
+const MEDIA_BITRATE = MP2_BITRATES[filebuf.fileHeader[2] >>> 4]
+const MEDIA_CHANNEL_MODE = MP2_CHANNELMODES[filebuf.fileHeader[3] >>> 6]
 
 
 let bytes_left = FILE_SIZE
@@ -83,13 +87,36 @@ let decodedLength = 0
 
 
 con.curs_set(0)
-con.curs_set(0)
+let [__, CONSOLE_WIDTH] = con.getmaxyx()
 if (interactive) {
-    println("Push and hold Backspace to exit")
+    let [cy, cx] = con.getyx()
+    // file name
+    con.mvaddch(cy, 1)
+    con.prnch(0xC9);con.prnch(0xCD);con.prnch(0xB5)
+    print(filebuf.file.name)
+    con.prnch(0xC6);con.prnch(0xCD)
+    print("\x84205u".repeat(CONSOLE_WIDTH - 26 - filebuf.file.name.length))
+    con.prnch(0xB5)
+    print("Hold Bksp to Exit")
+    con.prnch(0xC6);con.prnch(0xCD);con.prnch(0xBB)
+
+    // L R pillar
+    con.prnch(0xBA)
+    con.mvaddch(cy+1, CONSOLE_WIDTH, 0xBA)
+
+    // media info
+    let mediaInfoStr = `MP2 ${MEDIA_CHANNEL_MODE} ${MEDIA_BITRATE}kbps`
+    con.move(cy+2,1)
+    con.prnch(0xC8)
+    print("\x84205u".repeat(CONSOLE_WIDTH - 5 - mediaInfoStr.length))
+    con.prnch(0xB5)
+    print(mediaInfoStr)
+    con.prnch(0xC6);con.prnch(0xCD);con.prnch(0xBC)
+
+    con.move(cy+1, 2)
 }
 let [cy, cx] = con.getyx()
-let [__, CONSOLE_WIDTH] = con.getmaxyx()
-let paintWidth = CONSOLE_WIDTH - 16
+let paintWidth = CONSOLE_WIDTH - 20
 function bytesToSec(i) {
     // using fixed value: FRAME_SIZE(216) bytes for 36 ms on sampling rate 32000 Hz
     return i / (FRAME_SIZE * 1000 / bufRealTimeLen)
@@ -107,18 +134,18 @@ function printPlayBar(currently) {
         let currentlySec = Math.round(bytesToSec(currently))
         let totalSec = Math.round(bytesToSec(total))
 
-        con.move(cy, 1)
+        con.move(cy, 3)
         print(' '.repeat(15))
-        con.move(cy, 1)
+        con.move(cy, 3)
 
         print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
 
-        con.move(cy, 15)
+        con.move(cy, 17)
         print(' ')
-        let progressbar = '\x84205u'.repeat(paintWidth + 1)
+        let progressbar = '\x84196u'.repeat(paintWidth + 1)
         print(progressbar)
 
-        con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
+        con.mvaddch(cy, 18 + Math.round(paintWidth * (currently / total)), 0xDB)
     }
 }
 

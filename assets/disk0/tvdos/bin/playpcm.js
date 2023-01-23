@@ -1,5 +1,6 @@
 // usage: playpcm audiofile.pcm [/i]
-let filename = _G.shell.resolvePathInput(exec_args[1]).full
+let fileeeee = files.open(_G.shell.resolvePathInput(exec_args[1]).full)
+let filename = fileeeee.fullPath
 function printdbg(s) { if (0) serial.println(s) }
 
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
@@ -67,13 +68,36 @@ function secToReadable(n) {
 
 let stopPlay = false
 con.curs_set(0)
+let [__, CONSOLE_WIDTH] = con.getmaxyx()
 if (interactive) {
-    con.clear(); con.move(1,1)
-    println("Push and hold Backspace to exit")
+    let [cy, cx] = con.getyx()
+    // file name
+    con.mvaddch(cy, 1)
+    con.prnch(0xC9);con.prnch(0xCD);con.prnch(0xB5)
+    print(fileeeee.name)
+    con.prnch(0xC6);con.prnch(0xCD)
+    print("\x84205u".repeat(CONSOLE_WIDTH - 26 - fileeeee.name.length))
+    con.prnch(0xB5)
+    print("Hold Bksp to Exit")
+    con.prnch(0xC6);con.prnch(0xCD);con.prnch(0xBB)
+
+    // L R pillar
+    con.prnch(0xBA)
+    con.mvaddch(cy+1, CONSOLE_WIDTH, 0xBA)
+
+    // media info
+    let mediaInfoStr = `Raw PCM 512kbps`
+    con.move(cy+2,1)
+    con.prnch(0xC8)
+    print("\x84205u".repeat(CONSOLE_WIDTH - 5 - mediaInfoStr.length))
+    con.prnch(0xB5)
+    print(mediaInfoStr)
+    con.prnch(0xC6);con.prnch(0xCD);con.prnch(0xBC)
+
+    con.move(cy+1, 2)
 }
 let [cy, cx] = con.getyx()
-let [__, CONSOLE_WIDTH] = con.getmaxyx()
-let paintWidth = CONSOLE_WIDTH - 16
+let paintWidth = CONSOLE_WIDTH - 20
 // read chunks loop
 readPtr = sys.malloc(BLOCK_SIZE * bitsPerSample / 8)
 decodePtr = sys.malloc(BLOCK_SIZE * pcm.HW_SAMPLING_RATE / samplingRate)
@@ -94,18 +118,18 @@ function printPlayBar() {
         let currentlySec = Math.round(bytesToSec(currently))
         let totalSec = Math.round(bytesToSec(total))
 
-        con.move(cy, 1)
+        con.move(cy, 3)
         print(' '.repeat(15))
-        con.move(cy, 1)
+        con.move(cy, 3)
 
         print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
 
-        con.move(cy, 15)
+        con.move(cy, 17)
         print(' ')
-        let progressbar = '\x84205u'.repeat(paintWidth + 1)
+        let progressbar = '\x84196u'.repeat(paintWidth + 1)
         print(progressbar)
 
-        con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
+        con.mvaddch(cy, 18 + Math.round(paintWidth * (currently / total)), 0xDB)
     }
 }
 let errorlevel = 0

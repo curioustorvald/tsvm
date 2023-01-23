@@ -1,7 +1,10 @@
 // usage: playwav audiofile.wav [/i]
-let filename = _G.shell.resolvePathInput(exec_args[1]).full
+let fileeeee = files.open(_G.shell.resolvePathInput(exec_args[1]).full)
+let filename = fileeeee.fullPath
 function printdbg(s) { if (0) serial.println(s) }
 
+const WAV_FORMATS = ["LPCM", "ADPCM"]
+const WAV_CHANNELS = ["Mono", "Stereo", "3ch", "Quad", "4.1", "5.1", "6.1", "7.1"]
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
 const seqread = require("seqread")
 const pcm = require("pcm")
@@ -98,13 +101,41 @@ function decodeInfilePcm(inPtr, outPtr, inputLen) {
         throw Error(`PCM Type not LPCM or ADPCM (${pcmType})`)
 }
 let stopPlay = false
+
+
 con.curs_set(0)
-if (interactive) {
-    println("Push and hold Backspace to exit")
-}
-let [cy, cx] = con.getyx()
 let [__, CONSOLE_WIDTH] = con.getmaxyx()
-let paintWidth = CONSOLE_WIDTH - 16
+function printPlayerShell() {
+if (interactive) {
+    let [cy, cx] = con.getyx()
+    // file name
+    con.mvaddch(cy, 1)
+    con.prnch(0xC9);con.prnch(0xCD);con.prnch(0xB5)
+    print(fileeeee.name)
+    con.prnch(0xC6);con.prnch(0xCD)
+    print("\x84205u".repeat(CONSOLE_WIDTH - 26 - fileeeee.name.length))
+    con.prnch(0xB5)
+    print("Hold Bksp to Exit")
+    con.prnch(0xC6);con.prnch(0xCD);con.prnch(0xBB)
+
+    // L R pillar
+    con.prnch(0xBA)
+    con.mvaddch(cy+1, CONSOLE_WIDTH, 0xBA)
+
+    // media info
+    let mediaInfoStr = `WAV ${WAV_FORMATS[pcmType-1]} ${WAV_CHANNELS[nChannels-1]} ${byterate*0.008*(pcmType == 2 ? 2 : 1)}kbps`
+    con.move(cy+2,1)
+    con.prnch(0xC8)
+    print("\x84205u".repeat(CONSOLE_WIDTH - 5 - mediaInfoStr.length))
+    con.prnch(0xB5)
+    print(mediaInfoStr)
+    con.prnch(0xC6);con.prnch(0xCD);con.prnch(0xBC)
+
+    con.move(cy+1, 2)
+}
+}
+let [cy, cx] = con.getyx(); cy++
+let paintWidth = CONSOLE_WIDTH - 20
 function printPlayBar(startOffset) {
     if (interactive) {
         let currently = seqread.getReadCount() - startOffset
@@ -113,18 +144,18 @@ function printPlayBar(startOffset) {
         let currentlySec = Math.round(bytesToSec(currently))
         let totalSec = Math.round(bytesToSec(total))
 
-        con.move(cy, 1)
+        con.move(cy, 3)
         print(' '.repeat(15))
-        con.move(cy, 1)
+        con.move(cy, 3)
 
         print(`${secToReadable(currentlySec)} / ${secToReadable(totalSec)}`)
 
-        con.move(cy, 15)
+        con.move(cy, 17)
         print(' ')
-        let progressbar = '\x84205u'.repeat(paintWidth + 1)
+        let progressbar = '\x84196u'.repeat(paintWidth + 1)
         print(progressbar)
 
-        con.mvaddch(cy, 16 + Math.round(paintWidth * (currently / total)), 0xDB)
+        con.mvaddch(cy, 18 + Math.round(paintWidth * (currently / total)), 0xDB)
     }
 }
 let errorlevel = 0
@@ -170,6 +201,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
 
         printdbg(`Format: ${pcmType}, Channels: ${nChannels}, Rate: ${samplingRate}, BitDepth: ${bitsPerSample}`)
         printdbg(`BLOCK_SIZE=${BLOCK_SIZE}, INFILE_BLOCK_SIZE=${INFILE_BLOCK_SIZE}`)
+        printPlayerShell()
     }
     else if ("LIST" == chunkName) {
         let startOffset = seqread.getReadCount()
