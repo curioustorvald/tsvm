@@ -9,7 +9,7 @@ let PATHFUN = (i) => `/ddol2/${(''+i).padStart(5,'0')}.bmp` // how can be the im
 let AUDIOTRACK = 'ddol.mp2'
 let AUDIOFORMAT = 'MP2fr' // PCMu8 or MP2fr
 // to export video to its frames:
-//     ffmpeg -i file.mp4 file/%05d.bmp
+//     ffmpeg -i file.mp4 file/%05d.png
 // the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:
 //     mogrify -path ./path/to/write/results/ -resize 560x448^ -gravity Center -extent 560x448 ./path/to/source/files/*
 //

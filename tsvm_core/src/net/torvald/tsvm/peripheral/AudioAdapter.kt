@@ -233,11 +233,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             41 -> mp2Busy.toInt().toByte()
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
+            in 4096..4097 -> 0
             in 32768..65535 -> (adi - 32768).let {
                 cueSheet[it / 16].read(it % 15)
             }
             in 65536..131071 -> pcmBin[addr - 65536]
-            else -> mmio_read(addr % 131072)
+            else -> {
+                println("[AudioAdapter] Bus mirroring on mmio_reading while trying to read address $addr")
+                mmio_read(addr % 131072)
+            }
         }
     }
 

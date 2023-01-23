@@ -338,7 +338,13 @@ class MP2Env(val vm: VM) {
             samplesR[pushSizeR++] = sampleR
         }
 
-        val ret = _decodeFrame(mp2, framePtr, pcm, pushL, pushR)
+        val ret = try {
+            _decodeFrame(mp2, framePtr, pcm, pushL, pushR)
+        }
+        catch (e: Throwable) {
+            e.printStackTrace()
+            intArrayOf(0, 0)
+        }
 
         // dither samples and store them to the given "out" pointer
         var outPos = out

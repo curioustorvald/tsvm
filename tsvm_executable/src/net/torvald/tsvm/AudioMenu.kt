@@ -39,18 +39,26 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         val adev = parent.currentlyPersistentVM?.vm?.peripheralTable?.getOrNull(cardIndex ?: -1)?.peripheral as? AudioAdapter
 
         if (adev != null) {
+
+            // draw status LCD
             batch.inUse {
                 // draw backgrounds
                 batch.color = COL_WELL
                 for (i in 0..3) { batch.fillRect(7, 5 + 115*i, 102, 8*FONT.H + 4) }
-                batch.color = COL_SOUNDSCOPE_BACK
-                for (i in 0..3) { batch.fillRect(117, 5 + 115*i, 512, 8*FONT.H + 4) }
             }
-
-
             for (i in 0..3) {
                 val ahead = (adev.extortField("playheads") as Array<AudioAdapter.Playhead>)[i]
                 drawStatusLCD(adev, ahead, batch, i, 9f + 7, 7f + 7 + 115 * i)
+            }
+
+            // draw Soundscope like this so that the overflown queue sparkline would not be overlaid on top of the envelopes
+            batch.inUse {
+                // draw backgrounds
+                batch.color = COL_SOUNDSCOPE_BACK
+                for (i in 0..3) { batch.fillRect(117, 5 + 115*i, 512, 8*FONT.H + 4) }
+            }
+            for (i in 0..3) {
+                val ahead = (adev.extortField("playheads") as Array<AudioAdapter.Playhead>)[i]
                 drawSoundscope(adev, ahead, batch, i, 117f, 5f + 115 * i)
             }
         }
@@ -64,6 +72,8 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     }
 
     private fun drawStatusLCD(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float) {
+        // NOTE: Samples count for PCM mode is drawn by drawSoundscope() function, not this one!
+
         batch.inUse {
             batch.color = Color.WHITE
             // PLAY icon
@@ -156,6 +166,12 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                     batch.fillRect(x + s, y + 27, 1, smpLHi)
                     batch.fillRect(x + s, y + 81, 1, smpRHi)
                 }
+
+                batch.color = Color.WHITE
+                FONT.draw(batch, "Samples", x - 101, y + 5*FONT.H + 9)
+                batch.color = COL_ACTIVE3
+                FONT.drawRalign(batch, "${smpCnt+1}", x - 17, y + 5*FONT.H + 9)
+
             }
             else {
 

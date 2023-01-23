@@ -621,6 +621,7 @@ Sound Adapter MMIO
 
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded
+4096..4097 RO: MP2 Frame guard bytes; always return 0 on read
 
 Sound Hardware Info
     - Sampling rate: 32000 Hz
