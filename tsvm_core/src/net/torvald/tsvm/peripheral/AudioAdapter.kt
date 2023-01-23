@@ -480,13 +480,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var samplePtr: Int, // 17-bit number
         var sampleLength: Int,
         var samplingRate: Int,
+        var samplePlayStart: Int,
         var sampleLoopStart: Int,
         var sampleLoopEnd: Int,
         // flags
         var loopMode: Int,
         var envelopes: Array<TaudInstVolEnv> // first int: volume (0..255), second int: offsets (minifloat indices)
     ) {
-        constructor() : this(0, 0, 0, 0, 0, 0, Array(24) { TaudInstVolEnv(0, ThreeFiveMiniUfloat(0)) })
+        constructor() : this(0, 0, 0, 0, 0, 0, 0, Array(24) { TaudInstVolEnv(0, ThreeFiveMiniUfloat(0)) })
 
         fun getByte(offset: Int): Byte = when (offset) {
             0 -> samplePtr.toByte()
@@ -498,14 +499,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             4 -> samplingRate.toByte()
             5 -> samplingRate.ushr(8).toByte()
 
-            6 -> sampleLoopStart.toByte()
-            7 -> sampleLoopStart.ushr(8).toByte()
+            6 -> samplePlayStart.toByte()
+            7 -> samplePlayStart.ushr(8).toByte()
 
-            8 -> sampleLoopEnd.toByte()
-            9 -> sampleLoopEnd.ushr(8).toByte()
+            8 -> sampleLoopStart.toByte()
+            9 -> sampleLoopStart.ushr(8).toByte()
 
-            10 -> (samplePtr.ushr(16).and(1).shl(7) or loopMode.and(3)).toByte()
-            11,12,13,14,15 -> -1
+            10 -> sampleLoopEnd.toByte()
+            11 -> sampleLoopEnd.ushr(8).toByte()
+
+            12 -> (samplePtr.ushr(16).and(1).shl(7) or loopMode.and(3)).toByte()
+            13,14,15 -> -1
             in 16..63 step 2 -> envelopes[offset - 16].volume.toByte()
             in 17..63 step 2 -> envelopes[offset - 16].offset.index.toByte()
             else -> throw InternalError("Bad offset $offset")

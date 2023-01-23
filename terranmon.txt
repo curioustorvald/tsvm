@@ -575,13 +575,13 @@ Instrument bin: Registry for 256 instruments, formatted as:
     Uint16 Sample Pointer
     Uint16 Sample length
     Uint16 Sampling rate at C3
-    Uint16 Loop start
-    Uint16 Loop end
-     Bit16 Flags
+    Uint16 Play Start (usually 0 but not always)
+    Uint16 Loop Start (can be smaller than Play Start)
+    Uint16 Loop End
+     Bit32 Flags
         0b h000 00pp
             h: sample pointer high bit
            pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
-     Bit32 Unused
   Bit16x24 Volume envelopes
        Byte 1: Volume
        Byte 2: Second offset from the prev point, in 3.5 Unsigned Minifloat
