@@ -13,7 +13,7 @@ const pcm = require("pcm")
 
 function printComments() {
     for (const [key, value] of Object.entries(comments)) {
-        printdbg(`${key}: ${value}`)
+        printdbg(`Wave Comment ${key}: ${value}`)
     }
 }
 
@@ -207,14 +207,31 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
         let startOffset = seqread.getReadCount()
         let subChunkName = seqread.readFourCC()
         while (seqread.getReadCount() < startOffset + chunkSize) {
-            printdbg(`${chunkName} ${subChunkName}`)
             if ("INFO" == subChunkName) {
                 let key = seqread.readFourCC()
                 let valueLen = seqread.readInt()
+
+                // f-you WAVE encoders with nonstandard behaviours
+                // related: https://stackoverflow.com/questions/49537639/riff-icmt-tag-size-doesnt-seem-to-match-data
+                while (0 == key.charCodeAt(0)) {
+                    printdbg(`Previous key had more zero bytes padded than its marked length, skipping one byte...`)
+
+                    let kbytes = [key.charCodeAt(1), key.charCodeAt(2), key.charCodeAt(3), valueLen & 255]
+                    let klen = [(valueLen >>> 8) & 255, (valueLen >>> 16) & 255, (valueLen >>> 24) & 255, seqread.readOneByte()]
+
+                    key = String.fromCharCode.apply(null, kbytes)
+                    valueLen = klen[0] | (klen[1] << 8) | (klen[2] << 16) | (klen[3] << 24)
+                }
+
+                printdbg(`Reading LIST INFO ${key}[${[0,1,2,3].map((i)=>"0x"+key.charCodeAt(i).toString(16).padStart(2,'0'))}] (${valueLen} bytes): `)
+
+
                 let value = seqread.readString(valueLen)
+                printdbg("   |"+value)
                 comments[key] = value
             }
             else {
+                printdbg(`LIST skip subchunk ${subChunkName} (${startOffset + chunkSize - seqread.getReadCount()} bytes)`)
                 seqread.skip(startOffset + chunkSize - seqread.getReadCount())
             }
         }

@@ -3,6 +3,7 @@ package net.torvald.tsvm
 import kotlinx.coroutines.Job
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex
 import net.torvald.tsvm.peripheral.IOSpace
 import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.VMProgramRom
@@ -240,7 +241,7 @@ class VM(
         if (size <= 0) throw IllegalArgumentException("Invalid malloc size: $size")
 
         val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
-        val blockStart = findEmptySpace(allocBlocks) ?: throw OutOfMemoryError()
+        val blockStart = findEmptySpace(allocBlocks) ?: throw OutOfMemoryError("No space for $allocBlocks blocks ($size bytes requested)")
 
         allocatedBlockCount += allocBlocks
         mallocSizes[blockStart] = allocBlocks
@@ -249,7 +250,7 @@ class VM(
 
     internal fun free(ptr: Int) {
         val index = ptr / MALLOC_UNIT
-        val count = mallocSizes[index] ?: throw OutOfMemoryError()
+        val count = mallocSizes[index] ?: throw OutOfMemoryError("No allocation for pointer 0x${ptr.toHex()}")
 
         mallocMap.set(index, index + count, false)
         mallocSizes.remove(index)
