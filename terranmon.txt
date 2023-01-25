@@ -415,7 +415,7 @@ Packet Types -
       32 |   0 |   1
       48 |   2 |   3
       56 |   4 |   5
-      64 |   6 |   7  (libtwolame does not allow bitrate lower than this on 32 kHz)
+      64 |   6 |   7  (libtwolame does not allow bitrate lower than this on 32 kHz stereo)
       80 |   8 |   9
       96 |  10 |  11
      112 |  12 |  13
@@ -429,7 +429,12 @@ Packet Types -
     Add 128 to the resulting number if the frame has a padding bit (should not happen on 32kHz sampling rate)
     Special value of 255 may indicate some errors
 
-    To encode an audio to compliant format, use ffmpeg: ffmpeg -i <your_music> -acodec libtwolame -b:a <rate>k -ar 32000 <output.mp2>
+    To encode an audio to compliant format, use ffmpeg: ffmpeg -i <your_music> -acodec libtwolame -psymodel 4 -b:a <rate>k -ar 32000 <output.mp2>
+        Rationale:
+        -acodec libtwolame : ffmpeg has two mp2 encoders, and libtwolame produces vastly higher quality audio
+        -psymodel 4 : use alternative psychoacoustic model -- the default model (3) tends to insert "clunk" sounds throughout the audio
+        -b:a : 256k is recommended for high quality audio (trust me, you don't need 384k)
+        -ar 32000 : resample the audio to 32kHz, the sampling rate of the TSVM soundcard
 
 GLOBAL TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA

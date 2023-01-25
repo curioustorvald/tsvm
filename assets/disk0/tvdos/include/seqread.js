@@ -46,6 +46,7 @@ function prepare(fullPath) {
 
 function readBytes(length, ptrToDecode) {
     if (length <= 0) return
+//    serial.println(`readBytes(${length}); readCount = ${readCount}`)
     let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
     let requiredBlocks = Math.floor((readCount + length) / 4096) - Math.floor(readCount / 4096)
 
@@ -53,7 +54,6 @@ function readBytes(length, ptrToDecode) {
 
     let completedReads = 0
 
-//    serial.println(`readBytes(${length}); readCount = ${readCount}`)
 
     for (let bc = 0; bc < requiredBlocks + 1; bc++) {
         if (completedReads >= length) break
@@ -119,10 +119,20 @@ function readShort() {
     return i
 }
 
+function readOneByte() {
+    let b = readBytes(1)
+    let i = sys.peek(b)
+    sys.free(b)
+    return i
+}
+
 function readFourCC() {
     let b = readBytes(4)
-    let s = String.fromCharCode(sys.peek(b), sys.peek(b+1), sys.peek(b+2), sys.peek(b+3))
+    let a = [sys.peek(b), sys.peek(b+1), sys.peek(b+2), sys.peek(b+3)]
     sys.free(b)
+    let s = String.fromCharCode.apply(null, a)
+//    serial.println(`readFourCC: ${s}; ${a.map(it=>"0x"+it.toString(16).padStart(2,'0')).join()}`)
+    if (s.length != 4) throw Error(`FourCC is not 4 characters long (${s}; ${a.map(it=>"0x"+it.toString(16).padStart(2,'0')).join()})`)
     return s
 }
 
@@ -145,4 +155,4 @@ function getReadCount() {
     return readCount
 }
 
-exports = {fileHeader, prepare, readBytes, readInt, readShort, readFourCC, readString, skip, getReadCount}
+exports = {fileHeader, prepare, readBytes, readInt, readShort, readFourCC, readOneByte, readString, skip, getReadCount}
