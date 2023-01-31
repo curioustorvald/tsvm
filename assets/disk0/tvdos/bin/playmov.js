@@ -12,6 +12,8 @@ const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
 
 con.clear();con.curs_set(0)
+graphics.clearPixels(255)
+graphics.clearPixels2(240)
 
 
 let seqread = require("seqread")

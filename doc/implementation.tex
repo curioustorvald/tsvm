@@ -971,14 +971,15 @@ Address & RW & Description \\
 -131086 & RW & Current Layer Arrangement Index \\
 -131087..-131088 & RW & Framebuffer Horizontal Scroll \\
 -131089..-131090 & RW & Framebuffer Vertical Scroll \\
--132097..-131120 & RW & Scanline Offsets \\
+-132097..-133120 & RW & Scanline Offsets \\
+-133121..-135168 & RW & Font ROM Mapping Area \\
+-196609..-262144 & RW & Draw Instructions Area \\
 -1048577..-1299456 & RW & First Framebuffer \\
 -1299457 & RW & Screen Background RED \\
 -1299458 & RW & Screen Background GREEN \\
 -1299459 & RW & Screen Background BLUE \\
 -1299460 & RW & Command \\
 -1299461..-1299472 & RW & Command Arguments \\
--1300607..-1302526 & RW & Font ROM Mapping Area \\
 -1302527..-1302528 & RW & Text Cursor Position in $row \times 80 + col$ \\
 -1302529..-1305088 & RW & Text Foreground Colours \\
 -1305089..-1307648 & RW & Text Background Colours \\
