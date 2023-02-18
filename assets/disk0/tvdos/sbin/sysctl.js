@@ -23,7 +23,7 @@ const actions = {
             graphics.setBackground(34,51,68)
             sys.poke(-1299460, 20)
             sys.poke(-1299460, 21)
-        }
+        },
         "audio": ()=>{
             for (let k = 0; k < 4; k++) {
                 audio.stop(k)
@@ -46,7 +46,7 @@ if (!verb) {
     return 10
 }
 
-let actionfun = actions[verb][target]
+let actionfun = actions[verb.toLowerCase()][target.toLowerCase()]
 if (actionfun) actionfun()
 else {
     printerrln(`sysctl: unknown target ${target}`)

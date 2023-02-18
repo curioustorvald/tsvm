@@ -7,13 +7,13 @@ import java.io.IOException
 /**
  * Created by minjaesong on 2022-12-17.
  */
-class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
+class TevdFileDescriptor(val DOM: PartialDOM, _pathstr: String) {
 
     val path = _pathstr.replace('\\', '/')
     val vdPath = VDUtil.VDPath(path, VM.CHARSET)
 
     val entryID: EntryID?
-        get() = VDUtil.getFile(DOM, vdPath)?.entryID
+        get() = DOM.requestFile(path)?.entryID
 
     val canonicalPath = path.replace('/', '\\')
 
@@ -29,25 +29,34 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
 
 
     val isFile: Boolean
-        get() = entryID.let { if (it == null) false else VDUtil.isFileFollowSymlink(DOM, it) }
+        get() = DOM.requestFile(path)?.contents is EntryFile // TODO follow symlink
 
     val isDirectory: Boolean
-        get() = entryID.let { if (it == null) false else VDUtil.isDirectoryFollowSymlink(DOM, it) }
+        get() = DOM.requestFile(path)?.contents is EntryDirectory // TODO follow symlink
+
+
+    private fun requestFile(): Pair<DiskEntry, DiskEntryContent> {
+        val file = DOM.requestFile(path) ?: throw IOException("File not found")
+        val fileContent = file.contents
+
+        return file to fileContent
+    }
 
 
     fun appendBytes(bytes: ByteArray) {
-        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath) // this is not an object properties: the reference to the file may have been changed
-        fileContent.getContent().appendBytes(bytes)
-        VDUtil.getFile(DOM, vdPath)!!.modificationDate = VDUtil.currentUnixtime
+//        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath) // this is not an object properties: the reference to the file may have been changed
+        val (file, fileContent) = requestFile()
+        (fileContent as EntryFile).getContent().appendBytes(bytes) // TODO follow symlink
+        file.modificationDate = VDUtil.currentUnixtime
     }
 
     fun writeBytes(bytes: ByteArray) {
-        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
+        val (file, fileContent) = requestFile()
 //        println("[TevdFileDesc] ${path} writing ${bytes.size} bytes...")
 //        println("Old: ${fileContent.getContent().toByteArray().toString(VM.CHARSET)}")
-        fileContent.replaceContent(ByteArray64.fromByteArray(bytes))
+        (fileContent as EntryFile).replaceContent(ByteArray64.fromByteArray(bytes)) // TODO follow symlink
 //        println("New: ${fileContent.getContent().toByteArray().toString(VM.CHARSET)}")
-        VDUtil.getFile(DOM, vdPath)!!.modificationDate = VDUtil.currentUnixtime
+        file.modificationDate = VDUtil.currentUnixtime
     }
 
     /**
@@ -55,12 +64,8 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
      * @return actual bytes read, the size may be less than `length` if the actual file size is smaller
      */
     fun getHeadBytes64(length: Long): ByteArray64 {
-        if (isDirectory) throw RuntimeException("Not a file")
-        if (!exists()) throw IOException("File not found")
-
-        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
-
-        return fileContent.getContent().let {
+        val (file, fileContent) = requestFile()
+        return (fileContent as EntryFile).getContent().let {
             it.sliceArray64(0L until minOf(length, it.size))
         }
     }
@@ -69,25 +74,22 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
      * @return actual bytes read, the size may be less than `length` if the actual file size is smaller
      */
     fun getHeadBytes(length: Int): ByteArray {
-        if (isDirectory) throw RuntimeException("Not a file")
-        if (!exists()) throw IOException("File not found")
-
-        val fileContent = VDUtil.getAsNormalFile(DOM, vdPath)
-
-        return fileContent.getContent().let {
+        val (file, fileContent) = requestFile()
+        return (fileContent as EntryFile).getContent().let {
             it.sliceArray(0 until minOf(length.toLong(), it.size).toInt())
         }
     }
 
     fun exists(): Boolean {
-        return VDUtil.getFile(DOM, vdPath) != null
+        return (DOM.requestFile(path) != null)
     }
 
     fun delete(): Boolean {
         return try {
-            val parentDir = vdPath.getParent()
-            VDUtil.deleteFile(DOM, vdPath)
-            VDUtil.getFile(DOM, parentDir)!!.modificationDate = VDUtil.currentUnixtime
+            val parentDir = vdPath.getParent().toString()
+            DOM.removeFile(path)
+            DOM.requestFile(parentDir)!!.modificationDate = VDUtil.currentUnixtime
+
             true
         }
         catch (e: KotlinNullPointerException) {
@@ -96,33 +98,43 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
     }
 
     fun length(): Long {
-        return if (isFile) VDUtil.getAsNormalFileOrNull(DOM, vdPath)?.getSizePure() ?: 0L
+        val (file, fileContent) = requestFile()
+        return if (fileContent is EntryFile)
+            fileContent.getSizePure()
         else -1L
     }
 
     fun listFiles(): Array<TevdFileDescriptor>? {
-        if (isFile) return null
-
-        entryID.let {
-            if (it == null) return null
-
-            return VDUtil.getDirectoryEntries(DOM, it).map {
-                TevdFileDescriptor(DOM, path + '/' + it.getFilenameString(VM.CHARSET))
-            }.toTypedArray()
-        }
+        val (file, fileContent) = requestFile()
+        return if (fileContent !is EntryDirectory) null // TODO follow symlink
+        else (DOM.requestFile(path)?.contents as EntryDirectory).getContent().map { id -> DOM.requestFile(id)!! }.map {
+            TevdFileDescriptor(DOM, path + '/' + it.getFilenameString(VM.CHARSET))
+        }.toTypedArray()
     }
 
     fun readBytes(): ByteArray {
-        if (isDirectory) throw RuntimeException("Not a file")
-        if (!exists()) throw IOException("File not found")
-        return VDUtil.getAsNormalFile(DOM, vdPath).getContent().toByteArray()
+        val (file, fileContent) = requestFile()
+        if (fileContent !is EntryFile) throw RuntimeException("Not a file") // TODO follow symlink
+        else
+            return fileContent.getContent().toByteArray()
     }
 
     fun mkdir(): Boolean {
         return try {
-            val parentDir = vdPath.getParent()
-            VDUtil.addDir(DOM, parentDir, nameBytes)
-            VDUtil.getFile(DOM, parentDir)!!.modificationDate = VDUtil.currentUnixtime
+            val parentDir = vdPath.getParent().toString()
+
+            val dir = DOM.requestFile(parentDir)!!
+            val dirContent = dir.contents as EntryDirectory
+
+            val newTime = VDUtil.currentUnixtime
+            val newID = DOM.generateUniqueID()
+            val newDir = DiskEntry(newID, dir.entryID, nameBytes, newTime, newTime, EntryDirectory())
+
+            DOM.addNewFile(newDir)
+            dirContent.add(newID)
+
+            dir.modificationDate = newTime
+
             true
         }
         catch (e: KotlinNullPointerException) {
@@ -135,9 +147,22 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
         val time_t = System.currentTimeMillis() / 1000
         val newFile = DiskEntry(-1, -1, nameBytes, time_t, time_t, fileContent)
         return try {
-            val parentDir = vdPath.getParent()
-            VDUtil.addFile(DOM, parentDir, newFile)
-            VDUtil.getFile(DOM, parentDir)!!.modificationDate = VDUtil.currentUnixtime
+            val parentDir = vdPath.getParent().toString()
+
+            val dir = DOM.requestFile(parentDir)!!
+            val dirContent = dir.contents as EntryDirectory
+
+            val newTime = VDUtil.currentUnixtime
+            val newID = DOM.generateUniqueID()
+
+            newFile.entryID = newID
+            newFile.parentEntryID = dir.entryID
+
+            DOM.addNewFile(newFile)
+            dirContent.add(newID)
+
+            dir.modificationDate = newTime
+
             true
         }
         catch (e: KotlinNullPointerException) {
@@ -146,12 +171,12 @@ class TevdFileDescriptor(val DOM: VirtualDisk, _pathstr: String) {
     }
 
     fun setLastModified(newTime_t: Long): Boolean {
-        return VDUtil.getFile(DOM, vdPath).let {
-            if (it != null) {
-                it.modificationDate = newTime_t
-                true
-            }
-            else false
+        return try {
+            DOM.requestFile(path)!!.modificationDate = newTime_t
+            true
+        }
+        catch (e: KotlinNullPointerException) {
+            false
         }
     }
 

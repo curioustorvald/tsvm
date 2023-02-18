@@ -23,7 +23,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
     }
 
     private val tevdPath = File(theTevdPath)
-    private val DOM = VDUtil.readDiskArchive(tevdPath, charset = VM.CHARSET)
+    private val DOM = PartialDOM(tevdPath, VM.CHARSET)//VDUtil.readDiskArchive(tevdPath, charset = VM.CHARSET)
 
     private var fileOpen = false
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
@@ -131,7 +131,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
             val file = EntryFile(BLOCK_SIZE.toLong())
             file.getContent().appendBytes(inputData)
 
-            DOM.entries[1] = DiskEntry(1, 1, "TEVDBOOT".toByteArray(VM.CHARSET), creationTime, creationTime, file)
+            DOM.addNewFile(DiskEntry(1, 1, "TEVDBOOT".toByteArray(VM.CHARSET), creationTime, creationTime, file))
+
 
             fileOpenMode = -1
 
@@ -345,7 +346,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
-                val bootFile = DOM.entries[1]
+                val bootFile = DOM.requestFile(1)
 
                 printdbg("bootFile = $bootFile, ID: 1, exists = ${bootFile != null}")
 
@@ -355,7 +356,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 try {
-                    val retMsg = VDUtil.getAsNormalFile(DOM, 1).getContent().sliceArray(0 until BLOCK_SIZE)
+                    val retMsg = (bootFile.contents as EntryFile).getContent().sliceArray(0 until BLOCK_SIZE) //VDUtil.getAsNormalFile(DOM, 1).getContent().sliceArray(0 until BLOCK_SIZE)
 
                     printdbg("retMsg = ${retMsg.toString(VM.CHARSET)}")
 
@@ -488,8 +489,9 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
-                DOM.entries.clear()
-                DOM.diskName = newName.toByteArray(VM.CHARSET)
+                TODO()
+//                DOM.entries.clear()
+//                DOM.diskName = newName.toByteArray(VM.CHARSET)
             }
             else
                 statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
