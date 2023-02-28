@@ -1458,7 +1458,7 @@ void main() {
 
         val TEXT_TILING_SHADER_COLOUR = """
 #version 150
-//#extension GL_EXT_gpu_shader4 : enable
+#extension GL_EXT_gpu_shader4 : enable // Mac report that this extension is not supported
 
 out vec4 fragColor;
 #ifdef GL_ES
@@ -1583,12 +1583,12 @@ void main() {
 
         val TEXT_TILING_SHADER_MONOCHROME = """
 #version 150
+#extension GL_EXT_gpu_shader4 : enable
 
 out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
-#extension GL_EXT_gpu_shader4 : enable
 
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left
@@ -1713,12 +1713,12 @@ void main() {
 
         val TEXT_TILING_SHADER_LCD = """
 #version 150
+#extension GL_EXT_gpu_shader4 : enable
 
 out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
-#extension GL_EXT_gpu_shader4 : enable
 
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left
@@ -1812,12 +1812,12 @@ void main() {
 
         val TEXT_TILING_SHADER_LCD_NOINV = """
 #version 150
+#extension GL_EXT_gpu_shader4 : enable
 
 out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
-#extension GL_EXT_gpu_shader4 : enable
 
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left

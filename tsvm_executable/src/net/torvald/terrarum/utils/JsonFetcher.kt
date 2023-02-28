@@ -13,7 +13,7 @@ object JsonFetcher {
     @Throws(java.io.IOException::class)
     operator fun invoke(jsonFilePath: String): JsonValue {
         jsonString = StringBuffer() // reset buffer every time it called
-        readJsonFileAsString(jsonFilePath)
+        try { readJsonFileAsString(jsonFilePath) } catch (e: NoSuchFileException) { jsonString = null }
 
 //        printdbg(this, "Reading JSON $jsonFilePath")
 
@@ -27,7 +27,8 @@ object JsonFetcher {
     @Throws(java.io.IOException::class)
     operator fun invoke(jsonFile: java.io.File): JsonValue {
         jsonString = StringBuffer() // reset buffer every time it called
-        readJsonFileAsString(jsonFile.canonicalPath)
+        try { readJsonFileAsString(jsonFile.canonicalPath) } catch (e: NoSuchFileException) { jsonString = null }
+
 
 //        printdbg(this, "Reading JSON ${jsonFile.path}")
 

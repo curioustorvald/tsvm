@@ -105,6 +105,7 @@ fun main() {
     ShaderProgram.pedantic = false
 
     val appConfig = Lwjgl3ApplicationConfiguration()
+    appConfig.setOpenGLEmulation(Lwjgl3ApplicationConfiguration.GLEmulation.GL30, 3, 2)
     appConfig.setIdleFPS(60)
     appConfig.setForegroundFPS(60)
     appConfig.useVsync(false)

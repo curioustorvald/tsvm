@@ -83,6 +83,7 @@ public class TsvmEmulator {
         HEIGHT = VIEWPORT_H * PANELS_Y;
 
         appConfig = new Lwjgl3ApplicationConfiguration();
+        appConfig.setOpenGLEmulation(Lwjgl3ApplicationConfiguration.GLEmulation.GL30, 3, 2);
         appConfig.setIdleFPS(60);
         appConfig.setForegroundFPS(60);
         appConfig.useVsync(false);

@@ -255,6 +255,14 @@ class OpenALBufferedAudioDevice(
         return (secondsPerBuffer * bufferCount * 1000).toInt()
     }
 
+    override fun pause() {
+        // A buffer underflow will cause the source to stop.
+    }
+
+    override fun resume() {
+        // Automatically resumes when samples are written
+    }
+
     companion object {
         private const val bytesPerSample = 2
         private val ui8toI16Hi = ByteArray(256) { (128 + it).toByte() }
