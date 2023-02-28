@@ -54,7 +54,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         )
         updateFullscreenQuad(TerranBASIC.WIDTH, TerranBASIC.HEIGHT)
 
-        batch = SpriteBatch()
+        batch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
         camera = OrthographicCamera(TerranBASIC.WIDTH.toFloat(), TerranBASIC.HEIGHT.toFloat())
         camera.setToOrtho(false)
         camera.update()

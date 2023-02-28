@@ -10,6 +10,7 @@ import com.badlogic.gdx.graphics.glutils.ShaderProgram
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.tsvm.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 
@@ -38,7 +39,7 @@ class V2kRunTest : ApplicationAdapter() {
 //            0
         )
 
-        batch = SpriteBatch()
+        batch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
         camera = OrthographicCamera(560f, 448f)
         camera.setToOrtho(false)
         camera.update()

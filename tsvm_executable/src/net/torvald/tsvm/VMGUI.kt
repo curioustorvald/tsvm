@@ -5,6 +5,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
+import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.tsvmperipheral.WorldRadar
 import net.torvald.tsvm.peripheral.*
 import java.io.File
@@ -59,7 +60,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         )
         updateFullscreenQuad(AppLoader.WIDTH, AppLoader.HEIGHT)
 
-        batch = SpriteBatch()
+        batch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
         camera = OrthographicCamera(AppLoader.WIDTH.toFloat(), AppLoader.HEIGHT.toFloat())
         camera.setToOrtho(false)
         camera.update()

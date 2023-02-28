@@ -10,6 +10,7 @@ import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
 import net.torvald.terrarum.utils.JsonFetcher
@@ -153,7 +154,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
         updateFullscreenQuad(TsvmEmulator.WIDTH, TsvmEmulator.HEIGHT)
 
-        batch = SpriteBatch()
+        batch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
         fbatch = FlippingSpriteBatch()
         camera = OrthographicCamera(TsvmEmulator.WIDTH.toFloat(), TsvmEmulator.HEIGHT.toFloat())
         camera.setToOrtho(true)

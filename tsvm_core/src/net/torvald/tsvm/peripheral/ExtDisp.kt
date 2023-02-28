@@ -5,6 +5,7 @@ import com.badlogic.gdx.graphics.Pixmap
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.math.Matrix4
+import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.tsvm.LoadShader
 import net.torvald.tsvm.VM
 
@@ -24,7 +25,7 @@ class ExtDisp(val vm: VM, val width: Int, val height: Int) : PeriBase("oled") {
     }
 
     internal val framebuffer = Pixmap(width, height, Pixmap.Format.Alpha)
-    private val outFBObatch = SpriteBatch()
+    private val outFBObatch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
 
     protected val drawShader = LoadShader(GraphicsAdapter.DRAW_SHADER_VERT, OLED_PAL_SHADER)
 

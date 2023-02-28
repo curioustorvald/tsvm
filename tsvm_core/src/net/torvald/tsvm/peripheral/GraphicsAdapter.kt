@@ -11,6 +11,7 @@ import com.badlogic.gdx.utils.Disposable
 import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
+import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.*
 import net.torvald.tsvm.FBM
@@ -113,7 +114,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     private val outFBOs = Array(2) { FrameBuffer(Pixmap.Format.RGBA8888, WIDTH, HEIGHT, false) }
     private val outFBOregion = Array(2) { TextureRegion(outFBOs[it].colorBufferTexture) }
-    private val outFBObatch = SpriteBatch()
+    private val outFBObatch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
 
     private var graphicsMode = 0
     private var layerArrangement = 0
@@ -1374,23 +1375,27 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         private val LCD_BASE_COL = Color(0xa1a99cff.toInt())
 
         val DRAW_SHADER_FRAG = """
-#version 130
+#version 150
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+out vec4 fragColor;
+
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 uniform vec4 pal[256];
 
 void main(void) {
-    gl_FragColor = texture2D(u_texture, v_texCoords);
+    fragColor = texture(u_texture, v_texCoords);
 }
         """.trimIndent()
 
         val DRAW_SHADER_FRAG_LCD = """
-#version 130
+#version 150
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+out vec4 fragColor;
+
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 uniform vec4 pal[256];
 
@@ -1398,21 +1403,23 @@ float intensitySteps = 4.0;
 uniform vec4 lcdBaseCol;
 
 void main(void) {
-//    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
-    vec4 palCol = texture2D(u_texture, v_texCoords);
+//    vec4 palCol = pal[int(texture(u_texture, v_texCoords).a * 255.0)];
+    vec4 palCol = texture(u_texture, v_texCoords);
     float lum = ceil((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
-    gl_FragColor = lcdBaseCol * outIntensity;
+    fragColor = lcdBaseCol * outIntensity;
 }
         """.trimIndent()
 
         val DRAW_SHADER_FRAG_LCD_NOINV = """
-#version 130
+#version 150
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+out vec4 fragColor;
+
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 uniform vec4 pal[256];
 
@@ -1420,46 +1427,49 @@ float intensitySteps = 4.0;
 uniform vec4 lcdBaseCol;
 
 void main(void) {
-//    vec4 palCol = pal[int(texture2D(u_texture, v_texCoords).a * 255.0)];
-    vec4 palCol = texture2D(u_texture, v_texCoords);    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
+//    vec4 palCol = pal[int(texture(u_texture, v_texCoords).a * 255.0)];
+    vec4 palCol = texture(u_texture, v_texCoords);    float lum = floor((3.0 * palCol.r + 4.0 * palCol.g + palCol.b) / 8.0 * intensitySteps) / intensitySteps;
     vec4 outIntensity = vec4(vec3(lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
-    gl_FragColor = lcdBaseCol * outIntensity;
+    fragColor = lcdBaseCol * outIntensity;
 }
         """.trimIndent()
 
         val DRAW_SHADER_VERT = """
-#version 130
+#version 150
 
-attribute vec4 a_position;
-attribute vec4 a_color;
-attribute vec2 a_texCoord0;
+in vec4 a_position;
+in vec4 a_color;
+in vec2 a_texCoord0;
 
 uniform mat4 u_projTrans;
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+out vec4 v_color;
+out vec2 v_texCoords;
 
 void main() {
     v_color = a_color;
+    v_color.a *= 255.0 / 254.0;
     v_texCoords = a_texCoord0;
     gl_Position = u_projTrans * a_position;
 }
         """.trimIndent()
 
         val TEXT_TILING_SHADER_COLOUR = """
-#version 130
+#version 150
+//#extension GL_EXT_gpu_shader4 : enable
+
+out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
-#extension GL_EXT_gpu_shader4 : enable
 
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 
 
@@ -1545,9 +1555,9 @@ void main() {
 
     // get required tile numbers //
 
-    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
-    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / screenDimension);
-    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / screenDimension);
+    vec4 tileFromMap = texture(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = texture(foreColours, flippedFragCoord / screenDimension);
+    vec4 backColFromMap = texture(backColours, flippedFragCoord / screenDimension);
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);
@@ -1564,15 +1574,17 @@ void main() {
 
     // blending a breakage tex with main tex //
 
-    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+    vec4 tileCol = texture(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
+    fragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
 }
 """.trimIndent()
 
         val TEXT_TILING_SHADER_MONOCHROME = """
-#version 130
+#version 150
+
+out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -1581,8 +1593,8 @@ precision mediump float;
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 
 
@@ -1673,9 +1685,9 @@ void main() {
 
     // get required tile numbers //
 
-    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
-    vec4 foreColFromMap = grey(texture2D(foreColours, flippedFragCoord / screenDimension));
-    vec4 backColFromMap = grey(texture2D(backColours, flippedFragCoord / screenDimension));
+    vec4 tileFromMap = texture(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = grey(texture(foreColours, flippedFragCoord / screenDimension));
+    vec4 backColFromMap = grey(texture(backColours, flippedFragCoord / screenDimension));
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);
@@ -1692,15 +1704,17 @@ void main() {
 
     // blending a breakage tex with main tex //
 
-    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+    vec4 tileCol = texture(tilesAtlas, finalUVCoordForTile);
 
     // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
-    gl_FragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
+    fragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
 }
 """.trimIndent()
 
         val TEXT_TILING_SHADER_LCD = """
-#version 130
+#version 150
+
+out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -1709,8 +1723,8 @@ precision mediump float;
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 
 
@@ -1758,9 +1772,9 @@ void main() {
 
     // get required tile numbers //
 
-    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
-    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / screenDimension);
-    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / screenDimension);
+    vec4 tileFromMap = texture(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = texture(foreColours, flippedFragCoord / screenDimension);
+    vec4 backColFromMap = texture(backColours, flippedFragCoord / screenDimension);
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);
@@ -1777,7 +1791,7 @@ void main() {
 
     // blending a breakage tex with main tex //
 
-    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+    vec4 tileCol = texture(tilesAtlas, finalUVCoordForTile);
 
     vec4 palCol = vec4(1.0);
     // apply colour
@@ -1792,12 +1806,14 @@ void main() {
     vec4 outIntensity = vec4(vec3(1.0 - lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
-    gl_FragColor = lcdBaseCol * outIntensity;
+    fragColor = lcdBaseCol * outIntensity;
 }
 """.trimIndent()
 
         val TEXT_TILING_SHADER_LCD_NOINV = """
-#version 130
+#version 150
+
+out vec4 fragColor;
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -1806,8 +1822,8 @@ precision mediump float;
 //layout(origin_upper_left) in vec4 gl_FragCoord; // commented; requires #version 150 or later
 // gl_FragCoord is origin to bottom-left
 
-varying vec4 v_color;
-varying vec2 v_texCoords;
+in vec4 v_color;
+in vec2 v_texCoords;
 uniform sampler2D u_texture;
 
 
@@ -1855,9 +1871,9 @@ void main() {
 
     // get required tile numbers //
 
-    vec4 tileFromMap = texture2D(tilemap, flippedFragCoord / screenDimension); // raw tile number
-    vec4 foreColFromMap = texture2D(foreColours, flippedFragCoord / screenDimension);
-    vec4 backColFromMap = texture2D(backColours, flippedFragCoord / screenDimension);
+    vec4 tileFromMap = texture(tilemap, flippedFragCoord / screenDimension); // raw tile number
+    vec4 foreColFromMap = texture(foreColours, flippedFragCoord / screenDimension);
+    vec4 backColFromMap = texture(backColours, flippedFragCoord / screenDimension);
 
     int tile = getTileFromColor(tileFromMap);
     ivec2 tileXY = getTileXY(tile);
@@ -1874,7 +1890,7 @@ void main() {
 
     // blending a breakage tex with main tex //
 
-    vec4 tileCol = texture2D(tilesAtlas, finalUVCoordForTile);
+    vec4 tileCol = texture(tilesAtlas, finalUVCoordForTile);
 
     vec4 palCol = vec4(1.0);
     // apply colour
@@ -1889,7 +1905,7 @@ void main() {
     vec4 outIntensity = vec4(vec3(lum), palCol.a);
 
     // LCD output will invert the luminosity. That is, normally white colour will be black on PM-LCD.
-    gl_FragColor = lcdBaseCol * outIntensity;
+    fragColor = lcdBaseCol * outIntensity;
 }
 """.trimIndent()
 
