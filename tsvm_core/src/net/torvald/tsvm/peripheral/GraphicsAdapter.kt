@@ -77,8 +77,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected fun getOriginalChrrom() = Pixmap(Gdx2DPixmap(Gdx.files.internal("$assetsRoot/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_ALPHA))
-    protected var chrrom: Pixmap = getOriginalChrrom()
+    protected fun getOriginalChrrom() = Pixmap(Gdx2DPixmap(Gdx.files.internal("$assetsRoot/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_RGBA8888))
+    protected lateinit var chrrom: Pixmap
     protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)
     protected val faketex: Texture
 
@@ -199,6 +199,16 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
 
         setCursorPos(0, 0)
+
+
+        // fill in chrrom
+        chrrom = Pixmap(16 * (config.width / config.textCols), 16 * (config.height / config.textRows), Pixmap.Format.RGBA8888)
+        //chrrom = getOriginalChrrom()
+
+        resetFontRom(0)
+        resetFontRom(1)
+
+
     }
 
     override fun peek(addr: Long): Byte? {
@@ -616,19 +626,23 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         if (cw > 8 || ch > 15) throw UnsupportedOperationException()
 
         val pixmap = chrrom
-        val scanline = ByteArray(cw)
-        val dataOffset = mode * chrrom0.width * chrrom0.height / 2
+        val scanline = ByteArray(4 * cw)
+        val dataOffset = mode * 4 * chrrom0.width * chrrom0.height / 2
 
         for (char in 0 until 128) {
             val px = (char % 16) * cw; val py = (char / 16) * ch
-            val off = dataOffset + (py * 16 * cw) + px
+            val off = dataOffset + 4 * ((py * 16 * cw) + px)
             for (line in 0 until ch) {
                 val word = mappedFontRom[char.toLong() * ch + line].toInt()
-                for (bm in 0 until scanline.size) {
+                for (bm in scanline.indices step 4) {
                     val pixel = 255 * ((word shr (cw - 1 - bm)) and 1)
-                    scanline[bm] = pixel.toByte()
+                    val matte = (if (pixel == 0) 0 else 255).toByte()
+                    scanline[bm+0] = matte
+                    scanline[bm+1] = matte
+                    scanline[bm+2] = matte
+                    scanline[bm+3] = pixel.toByte()
                 }
-                pixmap.pixels.position(off + (line * 16 * cw))
+                pixmap.pixels.position(off + (line * 16 * 4 * cw))
                 pixmap.pixels.put(scanline)
                 pixmap.pixels.position(0) // rewinding to avoid graphical glitch
             }
@@ -641,14 +655,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
      */
     open fun resetFontRom(mode: Int) {
         val pixmap = getOriginalChrrom()
-        val data = ByteArray(chrrom0.width * chrrom0.height / 2)
-        val dataOffset = mode * chrrom0.width * chrrom0.height / 2
-        pixmap.pixels.position(dataOffset)
-        pixmap.pixels.get(data)
 
-        chrrom.pixels.position(dataOffset)
-        chrrom.pixels.put(data)
-        chrrom.pixels.position(0)
+        val dy = mode * chrrom.height / 2
+
+        chrrom.blending = Pixmap.Blending.None
+        chrrom.drawPixmap(pixmap, 0, dy, 0, dy, chrrom.width, chrrom.height / 2)
 
         pixmap.dispose()
     }
@@ -1148,6 +1159,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
         chrrom0.dispose()
         chrrom0 = Texture(chrrom)
+        chrrom0.setWrap(Texture.TextureWrap.Repeat, Texture.TextureWrap.Repeat)
         rendertex.dispose()
         rendertex = Texture(framebufferOut, Pixmap.Format.RGBA8888, false)
 
@@ -1458,7 +1470,6 @@ void main() {
 
         val TEXT_TILING_SHADER_COLOUR = """
 #version 150
-#extension GL_EXT_gpu_shader4 : enable // Mac report that this extension is not supported
 
 out vec4 fragColor;
 #ifdef GL_ES
@@ -1491,7 +1502,7 @@ ivec2 getTileXY(int tileNumber) {
 
 // return: int=0xaarrggbb
 int _colToInt(vec4 color) {
-    return int(color.b * 255) | (int(color.g * 255) << 8) | (int(color.r * 255) << 16) | (int(color.a * 255) << 24);
+    return int(color.b * 255) | (int(color.g * 255) << 8) | (int(color.r * 255) << 16);
 }
 
 // 0x0rggbb where int=0xaarrggbb
@@ -1541,6 +1552,8 @@ vec4 sigmoidmix(vec4 a, vec4 b, float x) {
     return sigmoid(mix(invsigmoid(a), invsigmoid(b), x));
 }
 
+const vec2 bc = vec2(1.0, 0.0); //binary constant
+
 void main() {
 
     // READ THE FUCKING MANUAL, YOU DONKEY !! //
@@ -1560,23 +1573,20 @@ void main() {
     vec4 backColFromMap = texture(backColours, flippedFragCoord / screenDimension);
 
     int tile = getTileFromColor(tileFromMap);
-    ivec2 tileXY = getTileXY(tile);
+    vec2 tileXY = getTileXY(tile);
 
     // calculate the UV coord value for texture sampling //
 
     // don't really need highp here; read the GLES spec
-    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordForTile = mod(flippedFragCoord, tileSizeInPx) / atlasTexSize;
     vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
 
     // get final UV coord for the actual sampling //
 
     vec2 finalUVCoordForTile = uvCoordForTile + uvCoordOffsetTile;// where we should be actually looking for in atlas, using UV coord (0..1)
 
-    // blending a breakage tex with main tex //
-
     vec4 tileCol = texture(tilesAtlas, finalUVCoordForTile);
 
-    // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
     fragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
 }
 """.trimIndent()
@@ -1695,18 +1705,15 @@ void main() {
     // calculate the UV coord value for texture sampling //
 
     // don't really need highp here; read the GLES spec
-    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordForTile = mod(flippedFragCoord, tileSizeInPx) / atlasTexSize;
     vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
 
     // get final UV coord for the actual sampling //
 
     vec2 finalUVCoordForTile = uvCoordForTile + uvCoordOffsetTile;// where we should be actually looking for in atlas, using UV coord (0..1)
 
-    // blending a breakage tex with main tex //
-
     vec4 tileCol = texture(tilesAtlas, finalUVCoordForTile);
 
-    // apply colour. I'm expecting FONT ROM IMAGE to be greyscale
     fragColor = linmix(backColFromMap, foreColFromMap, tileCol.a);
 }
 """.trimIndent()
@@ -1782,7 +1789,7 @@ void main() {
     // calculate the UV coord value for texture sampling //
 
     // don't really need highp here; read the GLES spec
-    vec2 uvCoordForTile = (mod(flippedFragCoord, tileSizeInPx) / tileSizeInPx) / tilesInAtlas; // 0..0.00390625 regardless of tile position in atlas
+    vec2 uvCoordForTile = mod(flippedFragCoord, tileSizeInPx) / atlasTexSize;
     vec2 uvCoordOffsetTile = tileXY / tilesInAtlas; // where the tile starts in the atlas, using uv coord (0..1)
 
     // get final UV coord for the actual sampling //
