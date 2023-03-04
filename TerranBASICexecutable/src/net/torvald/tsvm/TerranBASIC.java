@@ -29,7 +29,8 @@ public class TerranBASIC {
         appConfig.setWindowedMode(WIDTH, HEIGHT);
 
         HashMap<String, VMWatchdog> watchdogs = new HashMap<>();
-        watchdogs.put("TEVD_SYNC", TevdSyncWatchdog.INSTANCE);
+        watchdogs.put("TEVD_COMMIT", TevdPartialDomCommitWatchdog.INSTANCE);
+        watchdogs.put("TEVD_SYNC", TevdPartialDomSyncWatchdog.INSTANCE);
 
         VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE}, 2, watchdogs);
         EmulInstance tbasrunner = new EmulInstance(tbasvm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0", 560, 448);

@@ -1,6 +1,6 @@
 package net.torvald.tsvm
 
-import com.badlogic.gdx.utils.Queue
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.PartialDOM
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VirtualDisk
 import java.io.File
@@ -29,15 +29,15 @@ abstract class VMWatchdog(val interval: Float) {
 }
 
 
-object TevdSyncWatchdog : VMWatchdog(5f) {
+object TevdPartialDomCommitWatchdog : VMWatchdog(5f) {
 
-    private val messageQueue = ArrayList<Pair<File, VirtualDisk>>()
+    private val messageQueue = ArrayList<Pair<File, PartialDOM>>()
 
     override fun consumeMessages() {
         synchronized(this) {
             messageQueue.forEach { (outfile, dom) ->
-                VDUtil.dumpToRealMachine(dom, outfile)
-//                println("[${this.javaClass.simpleName}] dump ${outfile.path}")
+                dom.commit()
+                println("[${this.javaClass.simpleName}] commit ${outfile.path}")
             }
             messageQueue.clear()
         }
@@ -45,7 +45,33 @@ object TevdSyncWatchdog : VMWatchdog(5f) {
 
     override fun addMessage(message: Array<Any?>) {
         val file = message[0] as File
-        val dom = message[1] as VirtualDisk
+        val dom = message[1] as PartialDOM
+
+        val hasDup = messageQueue.fold(false) { acc, pair -> acc or (pair.first.path == file.path) }
+        if (!hasDup) {
+            messageQueue.add(file to dom)
+        }
+    }
+}
+
+
+object TevdPartialDomSyncWatchdog : VMWatchdog(120f) {
+
+    private val messageQueue = ArrayList<Pair<File, PartialDOM>>()
+
+    override fun consumeMessages() {
+        synchronized(this) {
+            messageQueue.forEach { (outfile, dom) ->
+                dom.sync()
+                println("[${this.javaClass.simpleName}] sync ${outfile.path}")
+            }
+            messageQueue.clear()
+        }
+    }
+
+    override fun addMessage(message: Array<Any?>) {
+        val file = message[0] as File
+        val dom = message[1] as PartialDOM
 
         val hasDup = messageQueue.fold(false) { acc, pair -> acc or (pair.first.path == file.path) }
         if (!hasDup) {

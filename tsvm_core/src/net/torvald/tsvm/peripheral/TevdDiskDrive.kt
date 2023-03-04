@@ -47,9 +47,15 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
         }
     }
 
-
+    private var tevdSyncFilteringCounter = 0
     fun notifyDiskCommit() {
-        vm.watchdogs["TEVD_SYNC"]?.addMessage(arrayOf(tevdPath, DOM))
+        vm.watchdogs["TEVD_COMMIT"]?.addMessage(arrayOf(tevdPath, DOM))
+
+        if (tevdSyncFilteringCounter >= 1) {
+            vm.watchdogs["TEVD_SYNC"]?.addMessage(arrayOf(tevdPath, DOM))
+            tevdSyncFilteringCounter = 0
+        }
+        tevdSyncFilteringCounter += 1
     }
 
 
@@ -98,11 +104,23 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
     override fun writeoutImpl(inputData: ByteArray) {
         printdbg("inputString=${inputData.trimNull().toString(VM.CHARSET)}")
 
-        if (writeMode || appendMode) {
+        if ((writeMode || appendMode) && writeModeLength >= 0) {
+            printdbg("writeout with inputdata length of ${inputData.size}")
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
 
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
+
+            if (!file.exists()) {
+                printdbg("File '${file.path}' not exists, creating new...")
+                val (result, failReason) = file.createNewFile()
+                if (failReason != null) {
+                    throw failReason
+                }
+                else {
+                    printdbg("Operation successful")
+                }
+            }
 
             System.arraycopy(inputData, 0, writeBuffer, writeBufferUsage, minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE))
             writeBufferUsage += inputData.size
@@ -121,6 +139,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
             }
         }
         else if (fileOpenMode == 17) {
+            printdbg("File open mode 17")
+
             if (!fileOpen) throw InternalError("Bootloader file is not open but the drive is in boot write mode")
 
             val inputData = if (inputData.size != BLOCK_SIZE) ByteArray(BLOCK_SIZE) { if (it < inputData.size) inputData[it] else 0 }
@@ -140,6 +160,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
             notifyDiskCommit()
         }
         else {
+            printdbg("(cmd mode)")
+
             val inputString = inputData.trimNull().toString(VM.CHARSET)
 
             if (inputString.startsWith("DEVRST\u0017")) {
@@ -222,7 +244,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 try {
-                    val successful = file.delete()
+                    val (successful, whyFailed) = file.delete()
                     if (!successful) {
                         statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_FAILED)
                         return
@@ -381,7 +403,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 try {
-                    val status = file.mkdir()
+                    val (status, whyFailed) = file.mkdir()
                     statusCode.set(if (status) 0 else 1)
                     if (status) {
                         printdbg("Notifying disk commit (mkdir)")
@@ -402,7 +424,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 try {
-                    val f1 = file.createNewFile()
+                    val (f1, whyFailed) = file.createNewFile()
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
                     if (f1) {
                         printdbg("Notifying disk commit (mkfile)")
@@ -427,7 +449,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 try {
-                    val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
+                    val (f1, whyFailed) = file.setLastModified(vm.worldInterface.currentTimeInMills())
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
                     if (f1) {
                         printdbg("Notifying disk commit (touch)")
@@ -452,11 +474,16 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                     return
                 }
                 if (!file.exists()) {
-                    val f1 = file.createNewFile()
+                    val (f1, whyFailed) = file.createNewFile()
                     statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
                     if (!f1) { return }
                 }
+//                if (fileOpenMode == 1) { writeMode = true; appendMode = false }
+//                else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
+
+                printdbg("WRITE issued with len $writeModeLength")
+
                 writeBuffer = ByteArray(writeModeLength)
                 writeBufferUsage = 0
                 statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
@@ -493,8 +520,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 //                DOM.entries.clear()
 //                DOM.diskName = newName.toByteArray(VM.CHARSET)
             }
-            else
+            else {
+                printdbg("Illegal command: ${inputString}")
                 statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
+            }
         }
     }
 

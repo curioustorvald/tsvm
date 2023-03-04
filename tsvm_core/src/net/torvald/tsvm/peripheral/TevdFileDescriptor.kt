@@ -9,7 +9,12 @@ import java.io.IOException
  */
 class TevdFileDescriptor(val DOM: PartialDOM, _pathstr: String) {
 
-    val path = _pathstr.replace('\\', '/')
+    val path = _pathstr.replace('\\', '/').let {
+        var s = it.substring(0)
+        while (s.startsWith("/"))
+            s = s.substring(1)
+        s
+    }
     val vdPath = VDUtil.VDPath(path, VM.CHARSET)
 
     val entryID: EntryID?
@@ -84,16 +89,19 @@ class TevdFileDescriptor(val DOM: PartialDOM, _pathstr: String) {
         return (DOM.requestFile(path) != null)
     }
 
-    fun delete(): Boolean {
+    fun delete(): Pair<Boolean, Throwable?> {
         return try {
             val parentDir = vdPath.getParent().toString()
             DOM.removeFile(path)
-            DOM.requestFile(parentDir)!!.modificationDate = VDUtil.currentUnixtime
+            DOM.requestFile(parentDir)!!.let {
+                it.modificationDate = VDUtil.currentUnixtime
+                DOM.touchFile(it)
+            }
 
-            true
+            true to null
         }
         catch (e: KotlinNullPointerException) {
-            false
+            false to e
         }
     }
 
@@ -119,7 +127,7 @@ class TevdFileDescriptor(val DOM: PartialDOM, _pathstr: String) {
             return fileContent.getContent().toByteArray()
     }
 
-    fun mkdir(): Boolean {
+    fun mkdir(): Pair<Boolean, Throwable?> {
         return try {
             val parentDir = vdPath.getParent().toString()
 
@@ -131,18 +139,19 @@ class TevdFileDescriptor(val DOM: PartialDOM, _pathstr: String) {
             val newDir = DiskEntry(newID, dir.entryID, nameBytes, newTime, newTime, EntryDirectory())
 
             DOM.addNewFile(newDir)
+            DOM.touchFile(dir)
             dirContent.add(newID)
 
             dir.modificationDate = newTime
 
-            true
+            true to null
         }
         catch (e: KotlinNullPointerException) {
-            false
+            false to e
         }
     }
 
-    fun createNewFile(): Boolean {
+    fun createNewFile(): Pair<Boolean, Throwable?> {
         val fileContent = EntryFile(ByteArray64())
         val time_t = System.currentTimeMillis() / 1000
         val newFile = DiskEntry(-1, -1, nameBytes, time_t, time_t, fileContent)
@@ -159,24 +168,28 @@ class TevdFileDescriptor(val DOM: PartialDOM, _pathstr: String) {
             newFile.parentEntryID = dir.entryID
 
             DOM.addNewFile(newFile)
+            DOM.touchFile(dir)
             dirContent.add(newID)
 
             dir.modificationDate = newTime
 
-            true
+            true to null
         }
         catch (e: KotlinNullPointerException) {
-            false
+            false to e
         }
     }
 
-    fun setLastModified(newTime_t: Long): Boolean {
+    fun setLastModified(newTime_t: Long): Pair<Boolean, Throwable?> {
         return try {
-            DOM.requestFile(path)!!.modificationDate = newTime_t
-            true
+            DOM.requestFile(path)!!.let {
+                it.modificationDate = newTime_t
+                DOM.touchFile(it)
+            }
+            true to null
         }
         catch (e: KotlinNullPointerException) {
-            false
+            false to e
         }
     }
 

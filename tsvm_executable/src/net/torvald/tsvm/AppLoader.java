@@ -3,11 +3,8 @@ package net.torvald.tsvm;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
-import kotlin.Pair;
-import kotlin.collections.CollectionsKt;
 import net.torvald.tsvm.peripheral.*;
 
-import java.io.File;
 import java.util.HashMap;
 
 public class AppLoader {
@@ -32,7 +29,8 @@ public class AppLoader {
         appConfig.setWindowedMode(WIDTH, HEIGHT);
 
         HashMap<String, VMWatchdog> watchdogs = new HashMap<>();
-        watchdogs.put("TEVD_SYNC", TevdSyncWatchdog.INSTANCE);
+        watchdogs.put("TEVD_COMMIT", TevdPartialDomCommitWatchdog.INSTANCE);
+        watchdogs.put("TEVD_SYNC", TevdPartialDomSyncWatchdog.INSTANCE);
 
 
         String diskPath = "assets/disk0";
