@@ -699,3 +699,25 @@ Play Head Flags
         0000000 0 - No operation
 
 65536..131071 RW: PCM Sample buffer
+
+--------------------------------------------------------------------------------
+
+RomBank / RamBank
+
+MMIO
+
+0 RW : Bank number for the first 512 kbytes
+1 RW : Bank number for the last 512 kbytes
+16..23 RW : DMA Control for Lane 1..8
+32..34 RW : DMA Lane 1 -- Addr on the Scratchpad Memory
+35..37 RW : DMA Lane 1 -- Addr on the Peripheral's Memory (addr can be across-the-bank)
+38..40 RW : DMA Lane 1 -- Transfer Length
+41..42 RW : DMA Lane 1 -- First/Last Bank Number
+43 RW : DMA Lane 1 -- (reserved)
+44..55 RW : DMA Lane 2 Props
+56..67 RW : DMA Lane 3 Props
+68..79 RW : DMA Lane 4 Props
+80..91 RW : DMA Lane 5 Props
+92..103 RW : DMA Lane 6 Props
+104..115 RW : DMA Lane 7 Props
+116..127 RW : DMA Lane 8 Props
