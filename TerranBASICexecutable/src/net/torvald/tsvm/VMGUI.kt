@@ -5,6 +5,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import kotlinx.coroutines.*
+import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.tsvm.peripheral.*
 import java.io.File
 

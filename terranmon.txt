@@ -704,11 +704,17 @@ Play Head Flags
 
 RomBank / RamBank
 
+Endianness: Little
+
 MMIO
 
 0 RW : Bank number for the first 512 kbytes
 1 RW : Bank number for the last 512 kbytes
 16..23 RW : DMA Control for Lane 1..8
+    Write 0x01: copy from Scratchpad to Peripheral
+    Write 0x02: copy from Peripleral to Scratchpad
+    * NOTE: after the transfer, the bank numbers will revert to the value that was befer the operation
+24..31 RW : DMA Control reserved
 32..34 RW : DMA Lane 1 -- Addr on the Scratchpad Memory
 35..37 RW : DMA Lane 1 -- Addr on the Peripheral's Memory (addr can be across-the-bank)
 38..40 RW : DMA Lane 1 -- Transfer Length
