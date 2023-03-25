@@ -3,6 +3,7 @@ package net.torvald.tsvm
 import com.badlogic.gdx.Audio
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import net.torvald.reflection.extortField
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_ACTIVE3
 import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_HIGHLIGHT2
@@ -182,17 +183,5 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     override fun dispose() {
     }
 
-    private fun Any.extortField(name: String): Any? { // yes I'm deliberately using negative words for the function name
-        return this.javaClass.getDeclaredField(name).let {
-            it.isAccessible = true
-            it.get(this)
-        }
-    }
-    private fun Any.forceInvoke(name: String, params: Array<Any>): Any? { // yes I'm deliberately using negative words for the function name
-        return this.javaClass.getDeclaredMethod(name, *(params.map { it.javaClass }.toTypedArray())).let {
-            it.isAccessible = true
-            it.invoke(this, *params)
-        }
-    }
 
 }
