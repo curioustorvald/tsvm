@@ -421,13 +421,16 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         "DUMMY" to dummyMenu
     )
 
-    private val menuTabs = listOf("Profiles", "MMIO", "MMU", "COM", "Card1", "Card2", "Card3", "Card4", "Card5", "Card6", "Card7", "Setup")
+    private val menuTabs = listOf("Profiles", "MMIO", "MMU", "COM1", "COM2", "COM3", "COM4", "Crd1", "Crd2", "Crd3", "Crd4", "Crd5", "Crd6", "Crd7")
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
     private val tabs = arrayOf(
         ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Profiles
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMIO
         MMUMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMU
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM1
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM2
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM3
+        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM4
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card1
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card2
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card3
@@ -435,9 +438,11 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card5
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card6
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Card7
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Setup
     )
     private var menuTabSel = 0
+
+    private val cardTabIndex = menuTabs.indexOf("Crd1")
+    private val comTabIndex = menuTabs.indexOf("COM1")
 
     private var tabChangeRequested: Int? = 0 // null: not requested
 
@@ -450,7 +455,20 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                 val periType = vm.peripheralTable[i].type ?: "DUMMY"
                 val menu = menuRepository[periType] ?: dummyMenu
                 menu.cardIndex = i
-                tabs[3 + i] = menu
+                tabs[cardTabIndex + i - 1] = menu
+            }
+        }
+    }
+    // call this whenever the VM selection has changed
+    private fun refreshComTabs() {
+        val vm = getCurrentlySelectedVM()?.vm
+
+        if (vm != null) {
+            for (i in 1..7) {
+                val periType = TODO() ?: "DUMMY"
+                val menu = menuRepository[periType] ?: dummyMenu
+                menu.cardIndex = i // COM will recycle cardIndex
+                tabs[comTabIndex + i - 1] = menu
             }
         }
     }

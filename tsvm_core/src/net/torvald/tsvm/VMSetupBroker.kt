@@ -111,7 +111,7 @@ object VMSetupBroker {
                     try {
                         val argTypes = argTypess[k].parameterTypes
 
-                        println("loadedClass = $className")
+                        println("COM${index+1} loadedClass = $className")
                         println("trying constructor args[${k}/${argTypess.lastIndex}]: ${argTypes.joinToString { it.canonicalName }}")
 
                         val args = deviceInfo.get("args").allIntoJavaType(argTypes.tail())
@@ -139,6 +139,8 @@ object VMSetupBroker {
         (2..cardslots).map { it to json.get("card$it") }.forEach { (index, jsonValue) ->
             jsonValue?.let { deviceInfo ->
                 val className = deviceInfo.getString("cls")
+
+                println("CARD${index} loadedClass = $className")
 
                 val loadedClass = Class.forName(className)
                 val argTypes = loadedClass.declaredConstructors[0].parameterTypes

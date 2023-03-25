@@ -8,7 +8,9 @@ import java.io.File
 /**
  * Created by minjaesong on 2022-07-20.
  */
-open class RamBank(val vm: VM, bankCount: Int, val writable: Boolean = true) : PeriBase("ramb") {
+open class RamBank(val vm: VM, bankCount: Int) : PeriBase("ramb") {
+
+    open val writable = true
 
     val bankSize = 524288L
 
@@ -283,12 +285,13 @@ open class RamBank(val vm: VM, bankCount: Int, val writable: Boolean = true) : P
     override fun getVM() = vm
 }
 
-open class RomBank(vm: VM, romfile: File, bankCount: Int) : RamBank(vm, bankCount, false) {
+open class RomBank(vm: VM, romfile: File, bankCount: Int) : RamBank(vm, bankCount) {
     init {
         val bytes = romfile.readBytes()
         UnsafeHelper.memcpyRaw(bytes, 0, null, mem.ptr, bytes.size.toLong())
     }
     override val typestring = "romb"
+    override val writable = false
     override fun poke(addr: Long, byte: Byte) {
 
     }
