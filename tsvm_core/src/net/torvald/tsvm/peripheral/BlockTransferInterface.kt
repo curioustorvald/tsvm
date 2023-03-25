@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean) {
 
-    protected var recipient: BlockTransferInterface? = null
+    var recipient: BlockTransferInterface? = null; protected set
 
     val ready = AtomicBoolean(true)
     val busy = AtomicBoolean(false)

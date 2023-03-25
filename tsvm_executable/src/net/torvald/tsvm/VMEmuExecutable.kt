@@ -206,6 +206,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         Gdx.input.inputProcessor = if (currentVMselection != null) vms[currentVMselection!!]?.vm?.getIO() ?: null else vmEmuInputProcessor
 
         refreshCardTabs()
+        refreshComTabs()
     }
 
     internal fun initVMenv(vm: VM, profileName: String) {
@@ -418,6 +419,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val dummyMenu = DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH)
     private val menuRepository = mapOf(
         VM.PERITYPE_SOUND to AudioMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
+        "TevdDiskDrive" to TevdMenu(this, menuTabX, menuTabY, menuTabW, menuTabH),
         "DUMMY" to dummyMenu
     )
 
@@ -456,6 +458,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
                 val menu = menuRepository[periType] ?: dummyMenu
                 menu.cardIndex = i
                 tabs[cardTabIndex + i - 1] = menu
+//                println("Tabs[${cardTabIndex + i - 1}] = $periType")
             }
         }
     }
@@ -464,11 +467,12 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val vm = getCurrentlySelectedVM()?.vm
 
         if (vm != null) {
-            for (i in 1..7) {
-                val periType = TODO() ?: "DUMMY"
+            for (i in 0..3) {
+                val periType = vm.getIO().blockTransferPorts[i].recipient?.javaClass?.simpleName ?: "DUMMY"
                 val menu = menuRepository[periType] ?: dummyMenu
                 menu.cardIndex = i // COM will recycle cardIndex
-                tabs[comTabIndex + i - 1] = menu
+                tabs[comTabIndex + i] = menu
+//                println("Tabs[${comTabIndex + i}] = $periType")
             }
         }
     }
