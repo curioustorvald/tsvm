@@ -37,7 +37,7 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
                 FONT.draw(batch, "F I L E   C A C H E", 12f, 12f+FONT.H)
                 var row = 2
                 DOMfileCache.forEach { (id, entry) ->
-                    val str = "ID $id"
+                    val str = "${(row-1).toString().padStart(2,' ')}. ID $id"
                     FONT.draw(batch, str, 12f, 12f + FONT.H * row)
 
                     row += 1
