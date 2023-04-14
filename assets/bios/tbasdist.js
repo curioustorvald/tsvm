@@ -1,4 +1,4 @@
-println("TSVM - Copyright 2020 CuriousTorvald");
+println("TSVM - Copyright 2020-2023 CuriousTorvald");
 
 var _BIOS = {};
 
@@ -26,6 +26,12 @@ if (r == 0){
             println("Reading basic.js...");
             let g=com.pullMessage(0);
             let execAppPrg = eval("var _appStub=function(exec_args){"+g+"};_appStub;"); // making 'exec_args' a app-level global
+
+            // show TerranBASIC on the character LCD (aka the window title)
+            [..."TerranBASIC"].map(s=>s.charCodeAt(0)).forEach((c,i)=>{
+                sys.poke(-1025 - i, c)
+            })
+
             execAppPrg();
         }
         catch (e) {
