@@ -78,9 +78,8 @@ object VMRunnerFactory {
                         bind.putMember("audio", AudioJSR223Delegate(vm))
                         bind.putMember("parallel", ringOneParallel)
 
-                        val fr = FileReader("$assetsRoot/JS_INIT.js")
-                        val prg = fr.readText()
-                        fr.close()
+                        val fr = this::class.java.classLoader.getResourceAsStream("net/torvald/tsvm/JS_INIT.js")
+                        val prg = fr.readAllBytes().decodeToString()
                         context.eval("js", sanitiseJS(prg))
                     }
 

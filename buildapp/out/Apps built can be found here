@@ -1,0 +1,7 @@
+You should be able to find following files here:
+
+TerranBASIC_macOS.x86.app (a directory)
+TerranBASIC_macOS.arm.app (a directory)
+TerranBASIC_linux.x86.AppImage (an ELF executable)
+TerranBASIC_linux.arm.AppImage (an ELF executable)
+TerranBASIC_windows.x86.exe (a Windows executable)

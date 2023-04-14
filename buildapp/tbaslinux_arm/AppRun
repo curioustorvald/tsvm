@@ -1,0 +1,3 @@
+#!/bin/bash
+cd "${0%/*}"
+./runtime-linux-arm/bin/java -Xms128M -Xmx2G -Dswing.aatext=true -Dawt.useSystemAAFontSettings=lcd -jar ./TerranBASIC.jar

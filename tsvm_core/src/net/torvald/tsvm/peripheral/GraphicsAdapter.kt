@@ -1,6 +1,7 @@
 package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.Gdx2DPixmap
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
@@ -77,7 +78,15 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         val channel = it % 4
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
-    protected fun getOriginalChrrom() = Pixmap(Gdx2DPixmap(Gdx.files.internal("$assetsRoot/"+config.chrRomPath).read(), Gdx2DPixmap.GDX2D_FORMAT_RGBA8888))
+    protected fun getOriginalChrrom(): Pixmap {
+        fun getFileHandle(): FileHandle =
+            if (config.chrRomPath.isEmpty())
+                Gdx.files.classpath("net/torvald/tsvm/rom/FontROM7x14.png")
+            else
+                Gdx.files.internal("$assetsRoot/"+config.chrRomPath)
+
+        return Pixmap(Gdx2DPixmap(getFileHandle().read(), Gdx2DPixmap.GDX2D_FORMAT_RGBA8888))
+    }
     protected lateinit var chrrom: Pixmap
     protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)
     protected val faketex: Texture
@@ -1919,16 +1928,16 @@ void main() {
 
         val DEFAULT_CONFIG_COLOR_CRT = AdapterConfig(
             "crt_color",
-            560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0.32f, TEXT_TILING_SHADER_COLOUR
+            560, 448, 80, 32, 253, 255, 256.kB(), "", 0.32f, TEXT_TILING_SHADER_COLOUR
         )
         val DEFAULT_CONFIG_PMLCD = AdapterConfig(
             "pmlcd_inverted",
-            560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
+            560, 448, 80, 32, 253, 255, 256.kB(), "", 0.64f, TEXT_TILING_SHADER_LCD, DRAW_SHADER_FRAG_LCD
         )
 
         val DEFAULT_CONFIG_FOR_TESTING = AdapterConfig(
             "crt_color",
-            560, 448, 80, 32, 253, 255, 256.kB(), "FontROM7x14.png", 0f, TEXT_TILING_SHADER_COLOUR
+            560, 448, 80, 32, 253, 255, 256.kB(), "", 0f, TEXT_TILING_SHADER_COLOUR
         )
 
 

@@ -1,6 +1,6 @@
 <component name="ArtifactManager">
   <artifact type="jar" name="TerranBASIC">
-    <output-path>$PROJECT_DIR$/out/artifacts/TerranBASIC</output-path>
+    <output-path>$PROJECT_DIR$/out</output-path>
     <root id="archive" name="TerranBASIC.jar">
       <element id="directory" name="META-INF">
         <element id="file-copy" path="$PROJECT_DIR$/TerranBASICexecutable/META-INF/MANIFEST.MF" />

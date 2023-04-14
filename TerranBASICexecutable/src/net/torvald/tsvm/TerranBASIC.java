@@ -5,6 +5,8 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
 import net.torvald.tsvm.peripheral.*;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.HashMap;
 
 public class TerranBASIC {
@@ -15,7 +17,24 @@ public class TerranBASIC {
     public static int WIDTH = 640;
     public static int HEIGHT = 480;
 
+
+    public static String diskDir = "My_BASIC_Programs";
+
+    private static void createDirs() {
+        File[] dirs = {
+                new File(diskDir)
+        };
+
+        for (File it : dirs) {
+            if (!it.exists())
+                it.mkdirs();
+        }
+    }
+
     public static void main(String[] args) {
+        createDirs();
+
+
         ShaderProgram.pedantic = false;
 
         appConfig = new Lwjgl3ApplicationConfiguration();
@@ -30,8 +49,8 @@ public class TerranBASIC {
 
         HashMap<String, VMWatchdog> watchdogs = new HashMap<>();
 
-        VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TBASRelBios.INSTANCE}, 2, watchdogs);
-        EmulInstance tbasrunner = new EmulInstance(tbasvm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", "assets/disk0", 560, 448);
+        VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TerranBASICreleaseBios.INSTANCE}, 2, watchdogs);
+        EmulInstance tbasrunner = new EmulInstance(tbasvm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", diskDir, 560, 448);
         new Lwjgl3Application(new VMGUI(tbasrunner, WIDTH, HEIGHT), appConfig);
     }
 }

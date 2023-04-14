@@ -4,6 +4,11 @@ bin/*
 build/*
 .gradle/*
 TerrarumBuild.jar
+My_BASIC_Programs/*
+buildapp/out/TerranBASIC*
+buildapp/TerranBASIC_linux.*
+buildapp/TerranBASIC_macOS.*
+buildapp/TerranBASIC_windows.*
 
 # Java native errors
 hs_err_pid*
