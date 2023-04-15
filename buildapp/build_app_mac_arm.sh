@@ -1,4 +1,6 @@
 #!/bin/bash
+if (( $EUID == 0 )); then echo "The build process is not meant to be run with root privilege, exiting now." >&2; exit 1; fi
+
 cd "${0%/*}"
 SRCFILES="tbasmac_arm"
 DESTDIR="out/TerranBASIC_macOS.arm.app"
