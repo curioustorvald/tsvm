@@ -45,7 +45,7 @@ object VMSetupBroker {
         vmRunners[vm.id] = VMRunnerFactory(vm.assetsDir, vm, "js")
         coroutineJobs[vm.id] = GlobalScope.launch {
             try {
-                vmRunners[vm.id]?.executeCommand(vm.roms[0]!!.readAll())
+                vmRunners[vm.id]?.executeCommand(vm.roms[0].readAll())
             }
             catch (e: Throwable) {
                 whatToDoOnVmException(e)

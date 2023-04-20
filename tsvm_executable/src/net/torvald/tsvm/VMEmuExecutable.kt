@@ -17,6 +17,7 @@ import net.torvald.terrarum.utils.JsonFetcher
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.SQTEX
 import net.torvald.tsvm.peripheral.*
+import java.io.File
 import kotlin.system.exitProcess
 
 class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
@@ -580,7 +581,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val assetsDir = json.getString("assetsdir")
         val ramsize = json.getLong("ramsize")
         val cardslots = json.getInt("cardslots")
-        val roms = json.get("roms").iterator().map { VMProgramRom(it.asString()) }.toTypedArray()
+        val roms = json.get("roms").iterator().map { VMProgramRom(File(it.asString())) }.toTypedArray()
 
         val vm = VM(assetsDir, ramsize, TheRealWorld(), roms, cardslots, watchdogs)
 
