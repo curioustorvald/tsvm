@@ -3,7 +3,8 @@ package net.torvald.tsvm
 /**
  * Created by minjaesong on 2022-12-30.
  */
-inline class ThreeFiveMiniUfloat(val index: Int = 0) {
+@JvmInline
+value class ThreeFiveMiniUfloat(val index: Int = 0) {
 
     init {
         if (index and 0xffffff00.toInt() != 0) throw IllegalArgumentException("Index not in 0..255 ($index)")

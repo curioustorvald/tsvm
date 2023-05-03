@@ -1,8 +1,8 @@
 package net.torvald.tsvm
 
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import kotlin.coroutines.GlobalScope
+import kotlin.coroutines.Job
+import kotlin.coroutines.launch
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong

@@ -1,6 +1,6 @@
 package net.torvald.tsvm
 
-import kotlinx.coroutines.Job
+import kotlin.coroutines.Job
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex
@@ -15,7 +15,8 @@ import kotlin.math.ceil
 
 class ErrorIllegalAccess(vm: VM, addr: Long) : RuntimeException("Segmentation fault at 0x${addr.toString(16).padStart(8, '0')} on VM id ${vm.id}")
 
-inline class VmId(val text: String) {
+@JvmInline
+value class VmId(val text: String) {
     override fun toString() = text
 }
 

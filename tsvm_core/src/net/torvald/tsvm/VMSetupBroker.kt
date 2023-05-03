@@ -3,10 +3,7 @@ package net.torvald.tsvm
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.utils.GdxRuntimeException
 import com.badlogic.gdx.utils.JsonValue
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
+import kotlin.coroutines.*
 import net.torvald.tsvm.peripheral.BlockTransferInterface
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.PeriBase
@@ -23,7 +20,7 @@ object VMSetupBroker {
      * @param vm VM to initialise
      * @param gpu Display device to attach
      * @param vmRunners Hashmap on the host of VMs that holds the instances of the VMRunners for the given VM. Key: Int(VM's identifier), value: [net.torvald.tsvm.VMRunner]
-     * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlinx.coroutines.Job]
+     * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlin.coroutines.Job]
      */
     fun initVMenv(vm: VM, profileJson: JsonValue, profileName: String, gpu: GraphicsAdapter, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Job>, whatToDoOnVmException: (Throwable) -> Unit) {
         vm.init()
@@ -58,7 +55,7 @@ object VMSetupBroker {
      *
      * @param vm VM to initialise
      * @param vmRunners Hashmap on the host of VMs that holds the instances of the VMRunners for the given VM. Key: Int(VM's identifier), value: [net.torvald.tsvm.VMRunner]
-     * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlinx.coroutines.Job]
+     * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlin.coroutines.Job]
      */
     fun killVMenv(vm: VM, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Job>) {
 

@@ -7,9 +7,9 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShaderProgram
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import kotlin.coroutines.GlobalScope
+import kotlin.coroutines.Job
+import kotlin.coroutines.launch
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.tsvm.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter

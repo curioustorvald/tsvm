@@ -8,8 +8,8 @@ import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlin.coroutines.Job
+import kotlin.coroutines.cancel
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
