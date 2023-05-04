@@ -8,8 +8,8 @@ import java.io.FileReader
 import javax.script.ScriptEngineManager
 
 abstract class VMRunner(val extension: String) {
-    abstract suspend fun evalGlobal(command: String) // Ring 0
-    abstract suspend fun executeCommand(command: String) // Ring 1
+    abstract fun evalGlobal(command: String) // Ring 0
+    abstract fun executeCommand(command: String) // Ring 1
     abstract fun eval(command: String) // Ring 2 (for child processes spawned using Parallel API)
     abstract fun close()
 }
@@ -34,7 +34,7 @@ object VMRunnerFactory {
                     val engine =
                         Videotron2K(vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)!!.peripheral!! as GraphicsAdapter)
 
-                    override suspend fun executeCommand(command: String) {
+                    override fun executeCommand(command: String) {
                         engine.eval(command)
                     }
 
@@ -42,7 +42,7 @@ object VMRunnerFactory {
                         TODO("Not yet implemented")
                     }
 
-                    override suspend fun evalGlobal(command: String) {
+                    override fun evalGlobal(command: String) {
                         TODO("Not yet implemented")
                     }
 
@@ -83,7 +83,7 @@ object VMRunnerFactory {
                         context.eval("js", sanitiseJS(prg))
                     }
 
-                    override suspend fun executeCommand(command: String) {
+                    override fun executeCommand(command: String) {
                         try {
                             bind.putMember("parallel", ringOneParallel)
                             context.eval("js", encapsulateJS(sanitiseJS(command)))
@@ -106,7 +106,7 @@ object VMRunnerFactory {
                             throw e
                         }                    }
 
-                    override suspend fun evalGlobal(command: String) {
+                    override fun evalGlobal(command: String) {
                         bind.putMember("parallel", ringOneParallel)
                         context.eval("js", "\"use strict\";" + sanitiseJS(command))
                     }

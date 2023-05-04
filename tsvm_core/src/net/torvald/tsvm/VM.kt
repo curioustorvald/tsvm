@@ -1,6 +1,5 @@
 package net.torvald.tsvm
 
-import kotlin.coroutines.Job
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex

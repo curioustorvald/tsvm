@@ -7,9 +7,6 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShaderProgram
-import kotlin.coroutines.GlobalScope
-import kotlin.coroutines.Job
-import kotlin.coroutines.launch
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.tsvm.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter
@@ -24,7 +21,7 @@ class V2kRunTest : ApplicationAdapter() {
 
     lateinit var vmRunner: VMRunner
 
-    lateinit var coroutineJob: Job
+    lateinit var coroutineJob: Thread
     lateinit var vdc: Videotron2K
 
     override fun create() {
@@ -53,9 +50,9 @@ class V2kRunTest : ApplicationAdapter() {
         vdc = Videotron2K(gpu)
 
         vmRunner = VMRunnerFactory("./assets", vm, "js")
-        coroutineJob = GlobalScope.launch {
+        coroutineJob = Thread({
             vdc.eval(Videotron2K.screenfiller)
-        }
+        }, "VmRunner:${vm.id}")
 
 
         Gdx.input.inputProcessor = vm.getIO()
@@ -96,7 +93,7 @@ class V2kRunTest : ApplicationAdapter() {
     override fun dispose() {
         super.dispose()
         batch.dispose()
-        coroutineJob.cancel()
+        coroutineJob.interrupt()
         vm.dispose()
     }
 }

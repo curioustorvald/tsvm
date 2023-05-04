@@ -22,7 +22,7 @@ object VMSetupBroker {
      * @param vmRunners Hashmap on the host of VMs that holds the instances of the VMRunners for the given VM. Key: Int(VM's identifier), value: [net.torvald.tsvm.VMRunner]
      * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlin.coroutines.Job]
      */
-    fun initVMenv(vm: VM, profileJson: JsonValue, profileName: String, gpu: GraphicsAdapter, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Job>, whatToDoOnVmException: (Throwable) -> Unit) {
+    fun initVMenv(vm: VM, profileJson: JsonValue, profileName: String, gpu: GraphicsAdapter, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Thread>, whatToDoOnVmException: (Throwable) -> Unit) {
         vm.init()
 
         try {
@@ -40,13 +40,16 @@ object VMSetupBroker {
         vm.poke(-90L, 0)
 
         vmRunners[vm.id] = VMRunnerFactory(vm.assetsDir, vm, "js")
-        coroutineJobs[vm.id] = GlobalScope.launch {
+        Thread({
             try {
                 vmRunners[vm.id]?.executeCommand(vm.roms[0].readAll())
             }
             catch (e: Throwable) {
                 whatToDoOnVmException(e)
             }
+        }, "VmRunner:${vm.id}").let {
+            coroutineJobs[vm.id] = it
+            it.start()
         }
     }
 
@@ -57,7 +60,7 @@ object VMSetupBroker {
      * @param vmRunners Hashmap on the host of VMs that holds the instances of the VMRunners for the given VM. Key: Int(VM's identifier), value: [net.torvald.tsvm.VMRunner]
      * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlin.coroutines.Job]
      */
-    fun killVMenv(vm: VM, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Job>) {
+    fun killVMenv(vm: VM, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Thread>) {
 
         vm.park()
         vm.poke(-90L, -128)
@@ -69,7 +72,7 @@ object VMSetupBroker {
             catch (_: Throwable) {}
         }
 
-        coroutineJobs[vm.id]?.cancel("VM kill command received")
+        coroutineJobs[vm.id]?.interrupt()
         vmRunners[vm.id]?.close()
 
         vm.getPrintStream = { TODO() }

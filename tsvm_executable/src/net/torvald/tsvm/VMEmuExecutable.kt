@@ -8,8 +8,6 @@ import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
-import kotlin.coroutines.Job
-import kotlin.coroutines.cancel
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.FlippingSpriteBatch
 import net.torvald.terrarum.imagefont.TinyAlphNum
@@ -85,7 +83,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     lateinit var camera: OrthographicCamera
 
     var vmRunners = HashMap<VmId, VMRunner>() // <VM's identifier, VMRunner>
-    var coroutineJobs = HashMap<VmId, Job>() // <VM's identifier, Job>
+    var coroutineJobs = HashMap<VmId, Thread>() // <VM's identifier, Job>
 
     companion object {
         val APPDATADIR = TsvmEmulator.defaultDir
@@ -277,7 +275,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val vm = currentlyLoadedProfiles[profileName]!!
 
         vmRunners[vm.id]!!.close()
-        coroutineJobs[vm.id]!!.cancel("reboot requested")
+        coroutineJobs[vm.id]!!.interrupt()
 
         vm.init()
         initVMenv(vm, profileName)
@@ -406,7 +404,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         batch.dispose()
         fbatch.dispose()
         fullscreenQuad.dispose()
-        coroutineJobs.values.forEach { it.cancel() }
+        coroutineJobs.values.forEach { it.interrupt() }
         vms.forEach { it?.vm?.dispose() }
 
         writeProfilesToFile(Gdx.files.absolute("$APPDATADIR/profiles.json"))

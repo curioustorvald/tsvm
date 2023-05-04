@@ -41,7 +41,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     var gpu: GraphicsAdapter? = null
     lateinit var vmRunner: VMRunner
-    lateinit var coroutineJob: Job
+    lateinit var coroutineJob: Thread
     lateinit var fullscreenQuad: Mesh
 
     override fun create() {
@@ -110,16 +110,17 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
 
         vmRunner = VMRunnerFactory("./assets", vm, "js")
-        coroutineJob = GlobalScope.launch {
+        coroutineJob = Thread({
             vmRunner.executeCommand(vm.roms[0]!!.readAll())
-        }
+        }, "VmRunner:${vm.id}")
+        coroutineJob.start()
     }
 
     private var rebootRequested = false
 
     private fun reboot() {
         vmRunner.close()
-        coroutineJob.cancel("reboot requested")
+        coroutineJob.interrupt()
 
         vm.init()
         init()
@@ -208,7 +209,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         super.dispose()
         batch.dispose()
         fullscreenQuad.dispose()
-        coroutineJob.cancel()
+        coroutineJob.interrupt()
         vm.dispose()
     }
 

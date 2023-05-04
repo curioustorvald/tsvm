@@ -1,13 +1,9 @@
 package net.torvald.tsvm
 
-import kotlin.coroutines.GlobalScope
-import kotlin.coroutines.Job
-import kotlin.coroutines.launch
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.peripheral.*
-import java.nio.charset.Charset
 
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
