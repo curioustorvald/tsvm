@@ -22,6 +22,57 @@ class SIG {
 const SIGTERM = new SIG("TERM",15);
 const SIGSEGV = new SIG("SEGV",11);
 
+class PmemFSdir {
+    constructor(targetpath) {
+        if (targetpath === undefined) {
+            this.data = ""
+            return
+        }
+
+        if (typeof myVar === 'string' || myVar instanceof String) {
+            this.target = targetpath
+        }
+        else {
+            throw Error("Invalid type for directory")
+        }
+    }
+}
+class PmemFSfile {
+    constructor(bytes) {
+        if (bytes === undefined) {
+            this.data = ""
+            return
+        }
+
+        // string representation (preferable)
+        if (typeof myVar === 'string' || myVar instanceof String) {
+            this.data = bytes
+        }
+        // Javascript array OR JVM byte[]
+        else if (Array.isArray(bytes) || bytes.toString().startsWith("[B")) {
+            this.data = ""
+            for (let i = 0; i < array.length; i++) {
+                this.data += String.fromCharCode(bytes[i])
+            }
+        }
+        else {
+            throw Error("Invalid type for directory")
+        }
+    }
+
+    dataAsString() {
+        return this.data
+    }
+
+    dataAsBytes() {
+        let bytes = new Uint8Array(this.data.length)
+        for (let i = 0; i < this.data.length; i++) {
+            bytes[i] = this.data.charCodeAt(i)
+        }
+        return bytes
+    }
+}
+
 function generateRandomHashStr(len) {
     let cs = 'qwfpgarstdzxcvbjluyhneiokmQWFPGARSTDZXCVBJLUYHNEIOKM';
     let s = '';
@@ -45,9 +96,13 @@ _TVDOS.DRIVEINFO["A"] = {
     name: com.sendMessageGetBytes(_BIOS.FIRST_BOOTABLE_PORT[0], "DEVNAM\x17").init(),
     type: com.sendMessageGetBytes(_BIOS.FIRST_BOOTABLE_PORT[0], "DEVTYP\x17").substring(0,4)
 }
+_TVDOS.TMPFS = {
+    ".": new PmemFSdir("TMP/"),
+    "..": new PmemFSdir("TMP/"),
+};
 
 // probe filesystem devices
-let devnameToDriver = {"PRNT":"LP","STOR":"SERIAL","COMM":"COM","HTTP":"NET"}
+let devnameToDriver = {"PRNT":"LP","STOR":"SERIAL","COMM":"COM","HTTP":"NET","TMP":"PMEMFS"}
 let currentDriveLetter = ["A","B","C","D"]
 for (let portNo = 1; portNo < 4; portNo++) {
     if (com.areYouThere(portNo)) {
@@ -658,6 +713,48 @@ Object.freeze(_TVDOS.DRV.FS.DEVFBIPF)
 
 ///////////////////////////////////////////////////////////////////////////////
 
+_TVDOS.DRV.FS.DEVTMP = {}
+
+_TVDOS.DRV.FS.DEVTMP.sread = (fd) => {
+    if (_TVDOS.TMPFS[fd.path] === undefined) throw Error(`No such file: ${fd.fullPath}`)
+    return _TVDOS.TMPFS[fd.path].dataAsString()
+}
+_TVDOS.DRV.FS.DEVTMP.bread = (fd) => {
+    if (_TVDOS.TMPFS[fd.path] === undefined) throw Error(`No such file: ${fd.fullPath}`)
+    return _TVDOS.TMPFS[fd.path].dataAsBytes()
+}
+_TVDOS.DRV.FS.DEVTMP.pread = (fd, ptr, count, offset) => {
+    if (_TVDOS.TMPFS[fd.path] === undefined) throw Error(`No such file: ${fd.fullPath}`)
+    let str = _TVDOS.TMPFS[fd.path].dataAsString()
+    for (let i = 0; i < count - offset; i++) {
+        sys.poke(ptr + i, String.charCodeAt(i + offset))
+    }
+}
+
+_TVDOS.DRV.FS.DEVTMP.flush = (fd) => {}
+_TVDOS.DRV.FS.DEVTMP.close = (fd) => {}
+_TVDOS.DRV.FS.DEVTMP.isDirectory = (fd) => (_TVDOS.TMPFS[fd.path] != undefined && _TVDOS.TMPFS[fd.path] instanceof PmemFSdir)
+_TVDOS.DRV.FS.DEVTMP.listFiles = (fd) => undefined
+_TVDOS.DRV.FS.DEVTMP.touch = (fd) => {}
+_TVDOS.DRV.FS.DEVTMP.mkDir = (fd) => {
+    _TVDOS.TMPFS[fd.path] = new PmemFSdir(fd.path)
+    return true
+}
+_TVDOS.DRV.FS.DEVTMP.mkFile = (fd) => {
+    _TVDOS.TMPFS[fd.path] = new PmemFSfile(fd.path)
+    return true
+}
+_TVDOS.DRV.FS.DEVTMP.remove = (fd) => {
+    delete _TVDOS.TMPFS[fd.path]
+    return true
+}
+_TVDOS.DRV.FS.DEVTMP.exists = (fd) => (_TVDOS.TMPFS[fd.path] !== undefined)
+
+Object.freeze(_TVDOS.DRV.FS.DEVTMP)
+
+
+///////////////////////////////////////////////////////////////////////////////
+
 _TVDOS.DRV.FS.NET = {}
 
 
@@ -839,6 +936,7 @@ files.reservedNames = ["AUX", // unused
 "PMEM0","PMEM1","PMEM2","PMEM3","PMEM4","PMEM5","PMEM6","PMEM7", // /dev/mem for peripherals
 "PRN", // a printer
 "RND", // /dev/urandom
+"TMP", // tmp file that resides in the Program Memory
 "XFB", // raw framebuffer, 4096 colours, typ. 560x448. Memory layout follows the gpu's (0..250779: RG-plane, 250880..262143: gap, 262144..513023: BA-plane)
 "ZERO"] // /dev/zero
 

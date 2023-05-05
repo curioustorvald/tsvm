@@ -12,7 +12,7 @@ exports.Texture = function(w, h, bytes) {
     this.texData = bytes;
 
     if (!Array.isArray(bytes) && !bytes.toString().startsWith("[B")) {
-        throw "Texture data is not an instance of array";
+        throw Error("Texture data is not an instance of array");
     }
 };
 exports.MonoTex = function(w, h, bits) {
@@ -21,7 +21,7 @@ exports.MonoTex = function(w, h, bits) {
     this.texData = bits;
 
     if (!Array.isArray(bits) && !bits.toString().startsWith("[B")) {
-        throw "Texture data is not an instance of array";
+        throw Error("Texture data is not an instance of array");
     }
 };
 exports.SpriteSheet = function(tilew, tileh, tex) {
@@ -30,18 +30,18 @@ exports.SpriteSheet = function(tilew, tileh, tex) {
     this.texture = tex;
 
     if (!tex instanceof exports.Texture) {
-        throw "Texture is not an instance of exports.Texture";
+        throw Error("Texture is not an instance of exports.Texture");
     }
 
     this.getOffX = function(x) { // THIS, or: exports.SpriteSheet.prototype.getOffX
         let tx = this.tileWidth * (x|0);
-        if (tx + this.tileWidth > this.texture.width) throw "Sprite x-offset of "+tx+" is greater than sprite width "+this.texture.width;
+        if (tx + this.tileWidth > this.texture.width) throw Error("Sprite x-offset of "+tx+" is greater than sprite width "+this.texture.width);
         return tx;
     };
 
     this.getOffY = function(y) {
         let ty = this.tileHeight * (y|0);
-        if (ty + this.tileHeight > this.texture.height) throw "Sprite y-offset of "+ty+" is greater than sprite height "+this.texture.height;
+        if (ty + this.tileHeight > this.texture.height) throw Error("Sprite y-offset of "+ty+" is greater than sprite height "+this.texture.height);
         return ty;
     };
 };

@@ -3,7 +3,6 @@ package net.torvald.tsvm
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.utils.GdxRuntimeException
 import com.badlogic.gdx.utils.JsonValue
-import kotlin.coroutines.*
 import net.torvald.tsvm.peripheral.BlockTransferInterface
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.PeriBase
