@@ -29,7 +29,7 @@ class PmemFSdir {
             return
         }
 
-        if (typeof myVar === 'string' || myVar instanceof String) {
+        if (typeof targetpath === 'string' || targetpath instanceof String) {
             this.target = targetpath
         }
         else {
@@ -45,7 +45,7 @@ class PmemFSfile {
         }
 
         // string representation (preferable)
-        if (typeof myVar === 'string' || myVar instanceof String) {
+        if (typeof bytes === 'string' || bytes instanceof String) {
             this.data = bytes
         }
         // Javascript array OR JVM byte[]
@@ -150,7 +150,9 @@ class TVDOSFileDescriptor {
 
     constructor(path0, driverID) {
         if (path0.startsWith("$")) {
-            let devName = path0.substring(3)
+            let path1 = path0.substring(3)
+            let slashPos = path1.indexOf("/")
+            let devName = path1.substring(0, (slashPos < 0) ? path1.length : slashPos)
 
             if (!files.reservedNames.includes(devName)) {
                 throw Error(`${devName} is not a valid device file`)
@@ -726,9 +728,24 @@ _TVDOS.DRV.FS.DEVTMP.bread = (fd) => {
 _TVDOS.DRV.FS.DEVTMP.pread = (fd, ptr, count, offset) => {
     if (_TVDOS.TMPFS[fd.path] === undefined) throw Error(`No such file: ${fd.fullPath}`)
     let str = _TVDOS.TMPFS[fd.path].dataAsString()
-    for (let i = 0; i < count - offset; i++) {
-        sys.poke(ptr + i, String.charCodeAt(i + offset))
+    for (let i = 0; i < count - (offset || 0); i++) {
+        sys.poke(ptr + i, String.charCodeAt(i + (offset || 0)))
     }
+}
+
+_TVDOS.DRV.FS.DEVTMP.swrite = (fd, str) => {
+    _TVDOS.TMPFS[fd.path] = new PmemFSfile(str)
+}
+_TVDOS.DRV.FS.DEVTMP.bwrite = (fd, bytes) => {
+    _TVDOS.TMPFS[fd.path] = new PmemFSfile(bytes)
+}
+_TVDOS.DRV.FS.DEVTMP.pwrite = (fd, ptr, count, offset) => {
+    let appendstr = ""
+    for (let i = 0; i < count; i++) {
+        appendstr += String.fromCharCode(sys.peek(ptr + i))
+    }
+    let oldstr = (_TVDOS.TMPFS[fd.path] === undefined) ? "" : _TVDOS.TMPFS[fd.path].dataAsString().substring(0, offset || 0)
+    _TVDOS.TMPFS[fd.path] = new PmemFSfile(oldstr + appendstr)
 }
 
 _TVDOS.DRV.FS.DEVTMP.flush = (fd) => {}
