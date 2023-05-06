@@ -51,7 +51,7 @@ class PmemFSfile {
         // Javascript array OR JVM byte[]
         else if (Array.isArray(bytes) || bytes.toString().startsWith("[B")) {
             this.data = ""
-            for (let i = 0; i < array.length; i++) {
+            for (let i = 0; i < bytes.length; i++) {
                 this.data += String.fromCharCode(bytes[i])
             }
         }

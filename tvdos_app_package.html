@@ -1,0 +1,684 @@
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><title>TVDOS App Package</title><style>
+/* cspell:disable-file */
+/* webkit printing magic: print all background colors */
+html {
+	-webkit-print-color-adjust: exact;
+}
+* {
+	box-sizing: border-box;
+	-webkit-print-color-adjust: exact;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+@media only screen {
+	body {
+		margin: 2em auto;
+		max-width: 900px;
+		color: rgb(55, 53, 47);
+	}
+}
+
+body {
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+
+a,
+a.visited {
+	color: inherit;
+	text-decoration: underline;
+}
+
+.pdf-relative-link-path {
+	font-size: 80%;
+	color: #444;
+}
+
+h1,
+h2,
+h3 {
+	letter-spacing: -0.01em;
+	line-height: 1.2;
+	font-weight: 600;
+	margin-bottom: 0;
+}
+
+.page-title {
+	font-size: 2.5rem;
+	font-weight: 700;
+	margin-top: 0;
+	margin-bottom: 0.75em;
+}
+
+h1 {
+	font-size: 1.875rem;
+	margin-top: 1.875rem;
+}
+
+h2 {
+	font-size: 1.5rem;
+	margin-top: 1.5rem;
+}
+
+h3 {
+	font-size: 1.25rem;
+	margin-top: 1.25rem;
+}
+
+.source {
+	border: 1px solid #ddd;
+	border-radius: 3px;
+	padding: 1.5em;
+	word-break: break-all;
+}
+
+.callout {
+	border-radius: 3px;
+	padding: 1rem;
+}
+
+figure {
+	margin: 1.25em 0;
+	page-break-inside: avoid;
+}
+
+figcaption {
+	opacity: 0.5;
+	font-size: 85%;
+	margin-top: 0.5em;
+}
+
+mark {
+	background-color: transparent;
+}
+
+.indented {
+	padding-left: 1.5em;
+}
+
+hr {
+	background: transparent;
+	display: block;
+	width: 100%;
+	height: 1px;
+	visibility: visible;
+	border: none;
+	border-bottom: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+img {
+	max-width: 100%;
+}
+
+@media only print {
+	img {
+		max-height: 100vh;
+		object-fit: contain;
+	}
+}
+
+@page {
+	margin: 1in;
+}
+
+.collection-content {
+	font-size: 0.875rem;
+}
+
+.column-list {
+	display: flex;
+	justify-content: space-between;
+}
+
+.column {
+	padding: 0 1em;
+}
+
+.column:first-child {
+	padding-left: 0;
+}
+
+.column:last-child {
+	padding-right: 0;
+}
+
+.table_of_contents-item {
+	display: block;
+	font-size: 0.875rem;
+	line-height: 1.3;
+	padding: 0.125rem;
+}
+
+.table_of_contents-indent-1 {
+	margin-left: 1.5rem;
+}
+
+.table_of_contents-indent-2 {
+	margin-left: 3rem;
+}
+
+.table_of_contents-indent-3 {
+	margin-left: 4.5rem;
+}
+
+.table_of_contents-link {
+	text-decoration: none;
+	opacity: 0.7;
+	border-bottom: 1px solid rgba(55, 53, 47, 0.18);
+}
+
+table,
+th,
+td {
+	border: 1px solid rgba(55, 53, 47, 0.09);
+	border-collapse: collapse;
+}
+
+table {
+	border-left: none;
+	border-right: none;
+}
+
+th,
+td {
+	font-weight: normal;
+	padding: 0.25em 0.5em;
+	line-height: 1.5;
+	min-height: 1.5em;
+	text-align: left;
+}
+
+th {
+	color: rgba(55, 53, 47, 0.6);
+}
+
+ol,
+ul {
+	margin: 0;
+	margin-block-start: 0.6em;
+	margin-block-end: 0.6em;
+}
+
+li > ol:first-child,
+li > ul:first-child {
+	margin-block-start: 0.6em;
+}
+
+ul > li {
+	list-style: disc;
+}
+
+ul.to-do-list {
+	padding-inline-start: 0;
+}
+
+ul.to-do-list > li {
+	list-style: none;
+}
+
+.to-do-children-checked {
+	text-decoration: line-through;
+	opacity: 0.375;
+}
+
+ul.toggle > li {
+	list-style: none;
+}
+
+ul {
+	padding-inline-start: 1.7em;
+}
+
+ul > li {
+	padding-left: 0.1em;
+}
+
+ol {
+	padding-inline-start: 1.6em;
+}
+
+ol > li {
+	padding-left: 0.2em;
+}
+
+.mono ol {
+	padding-inline-start: 2em;
+}
+
+.mono ol > li {
+	text-indent: -0.4em;
+}
+
+.toggle {
+	padding-inline-start: 0em;
+	list-style-type: none;
+}
+
+/* Indent toggle children */
+.toggle > li > details {
+	padding-left: 1.7em;
+}
+
+.toggle > li > details > summary {
+	margin-left: -1.1em;
+}
+
+.selected-value {
+	display: inline-block;
+	padding: 0 0.5em;
+	background: rgba(206, 205, 202, 0.5);
+	border-radius: 3px;
+	margin-right: 0.5em;
+	margin-top: 0.3em;
+	margin-bottom: 0.3em;
+	white-space: nowrap;
+}
+
+.collection-title {
+	display: inline-block;
+	margin-right: 1em;
+}
+
+.simple-table {
+	margin-top: 1em;
+	font-size: 0.875rem;
+	empty-cells: show;
+}
+.simple-table td {
+	height: 29px;
+	min-width: 120px;
+}
+
+.simple-table th {
+	height: 29px;
+	min-width: 120px;
+}
+
+.simple-table-header-color {
+	background: rgb(247, 246, 243);
+	color: black;
+}
+.simple-table-header {
+	font-weight: 500;
+}
+
+time {
+	opacity: 0.5;
+}
+
+.icon {
+	display: inline-block;
+	max-width: 1.2em;
+	max-height: 1.2em;
+	text-decoration: none;
+	vertical-align: text-bottom;
+	margin-right: 0.5em;
+}
+
+img.icon {
+	border-radius: 3px;
+}
+
+.user-icon {
+	width: 1.5em;
+	height: 1.5em;
+	border-radius: 100%;
+	margin-right: 0.5rem;
+}
+
+.user-icon-inner {
+	font-size: 0.8em;
+}
+
+.text-icon {
+	border: 1px solid #000;
+	text-align: center;
+}
+
+.page-cover-image {
+	display: block;
+	object-fit: cover;
+	width: 100%;
+	max-height: 30vh;
+}
+
+.page-header-icon {
+	font-size: 3rem;
+	margin-bottom: 1rem;
+}
+
+.page-header-icon-with-cover {
+	margin-top: -0.72em;
+	margin-left: 0.07em;
+}
+
+.page-header-icon img {
+	border-radius: 3px;
+}
+
+.link-to-page {
+	margin: 1em 0;
+	padding: 0;
+	border: none;
+	font-weight: 500;
+}
+
+p > .user {
+	opacity: 0.5;
+}
+
+td > .user,
+td > time {
+	white-space: nowrap;
+}
+
+input[type="checkbox"] {
+	transform: scale(1.5);
+	margin-right: 0.6em;
+	vertical-align: middle;
+}
+
+p {
+	margin-top: 0.5em;
+	margin-bottom: 0.5em;
+}
+
+.image {
+	border: none;
+	margin: 1.5em 0;
+	padding: 0;
+	border-radius: 0;
+	text-align: center;
+}
+
+.code,
+code {
+	background: rgba(135, 131, 120, 0.15);
+	border-radius: 3px;
+	padding: 0.2em 0.4em;
+	border-radius: 3px;
+	font-size: 85%;
+	tab-size: 2;
+}
+
+code {
+	color: #eb5757;
+}
+
+.code {
+	padding: 1.5em 1em;
+}
+
+.code-wrap {
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.code > code {
+	background: none;
+	padding: 0;
+	font-size: 100%;
+	color: inherit;
+}
+
+blockquote {
+	font-size: 1.25em;
+	margin: 1em 0;
+	padding-left: 1em;
+	border-left: 3px solid rgb(55, 53, 47);
+}
+
+.bookmark {
+	text-decoration: none;
+	max-height: 8em;
+	padding: 0;
+	display: flex;
+	width: 100%;
+	align-items: stretch;
+}
+
+.bookmark-title {
+	font-size: 0.85em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	height: 1.75em;
+	white-space: nowrap;
+}
+
+.bookmark-text {
+	display: flex;
+	flex-direction: column;
+}
+
+.bookmark-info {
+	flex: 4 1 180px;
+	padding: 12px 14px 14px;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+}
+
+.bookmark-image {
+	width: 33%;
+	flex: 1 1 180px;
+	display: block;
+	position: relative;
+	object-fit: cover;
+	border-radius: 1px;
+}
+
+.bookmark-description {
+	color: rgba(55, 53, 47, 0.6);
+	font-size: 0.75em;
+	overflow: hidden;
+	max-height: 4.5em;
+	word-break: break-word;
+}
+
+.bookmark-href {
+	font-size: 0.75em;
+	margin-top: 0.25em;
+}
+
+.sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol"; }
+.code { font-family: "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace; }
+.serif { font-family: Lyon-Text, Georgia, ui-serif, serif; }
+.mono { font-family: iawriter-mono, Nitti, Menlo, Courier, monospace; }
+.pdf .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK JP'; }
+.pdf:lang(zh-CN) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK SC'; }
+.pdf:lang(zh-TW) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK TC'; }
+.pdf:lang(ko-KR) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK KR'; }
+.pdf .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK JP'; }
+.pdf:lang(zh-CN) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK SC'; }
+.pdf:lang(zh-TW) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK TC'; }
+.pdf:lang(ko-KR) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK KR'; }
+.pdf .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK JP'; }
+.pdf:lang(zh-CN) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK SC'; }
+.pdf:lang(zh-TW) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK TC'; }
+.pdf:lang(ko-KR) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK KR'; }
+.pdf .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK JP'; }
+.pdf:lang(zh-CN) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK SC'; }
+.pdf:lang(zh-TW) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK TC'; }
+.pdf:lang(ko-KR) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK KR'; }
+.highlight-default {
+	color: rgba(55, 53, 47, 1);
+}
+.highlight-gray {
+	color: rgba(120, 119, 116, 1);
+	fill: rgba(120, 119, 116, 1);
+}
+.highlight-brown {
+	color: rgba(159, 107, 83, 1);
+	fill: rgba(159, 107, 83, 1);
+}
+.highlight-orange {
+	color: rgba(217, 115, 13, 1);
+	fill: rgba(217, 115, 13, 1);
+}
+.highlight-yellow {
+	color: rgba(203, 145, 47, 1);
+	fill: rgba(203, 145, 47, 1);
+}
+.highlight-teal {
+	color: rgba(68, 131, 97, 1);
+	fill: rgba(68, 131, 97, 1);
+}
+.highlight-blue {
+	color: rgba(51, 126, 169, 1);
+	fill: rgba(51, 126, 169, 1);
+}
+.highlight-purple {
+	color: rgba(144, 101, 176, 1);
+	fill: rgba(144, 101, 176, 1);
+}
+.highlight-pink {
+	color: rgba(193, 76, 138, 1);
+	fill: rgba(193, 76, 138, 1);
+}
+.highlight-red {
+	color: rgba(212, 76, 71, 1);
+	fill: rgba(212, 76, 71, 1);
+}
+.highlight-gray_background {
+	background: rgba(241, 241, 239, 1);
+}
+.highlight-brown_background {
+	background: rgba(244, 238, 238, 1);
+}
+.highlight-orange_background {
+	background: rgba(251, 236, 221, 1);
+}
+.highlight-yellow_background {
+	background: rgba(251, 243, 219, 1);
+}
+.highlight-teal_background {
+	background: rgba(237, 243, 236, 1);
+}
+.highlight-blue_background {
+	background: rgba(231, 243, 248, 1);
+}
+.highlight-purple_background {
+	background: rgba(244, 240, 247, 0.8);
+}
+.highlight-pink_background {
+	background: rgba(249, 238, 243, 0.8);
+}
+.highlight-red_background {
+	background: rgba(253, 235, 236, 1);
+}
+.block-color-default {
+	color: inherit;
+	fill: inherit;
+}
+.block-color-gray {
+	color: rgba(120, 119, 116, 1);
+	fill: rgba(120, 119, 116, 1);
+}
+.block-color-brown {
+	color: rgba(159, 107, 83, 1);
+	fill: rgba(159, 107, 83, 1);
+}
+.block-color-orange {
+	color: rgba(217, 115, 13, 1);
+	fill: rgba(217, 115, 13, 1);
+}
+.block-color-yellow {
+	color: rgba(203, 145, 47, 1);
+	fill: rgba(203, 145, 47, 1);
+}
+.block-color-teal {
+	color: rgba(68, 131, 97, 1);
+	fill: rgba(68, 131, 97, 1);
+}
+.block-color-blue {
+	color: rgba(51, 126, 169, 1);
+	fill: rgba(51, 126, 169, 1);
+}
+.block-color-purple {
+	color: rgba(144, 101, 176, 1);
+	fill: rgba(144, 101, 176, 1);
+}
+.block-color-pink {
+	color: rgba(193, 76, 138, 1);
+	fill: rgba(193, 76, 138, 1);
+}
+.block-color-red {
+	color: rgba(212, 76, 71, 1);
+	fill: rgba(212, 76, 71, 1);
+}
+.block-color-gray_background {
+	background: rgba(241, 241, 239, 1);
+}
+.block-color-brown_background {
+	background: rgba(244, 238, 238, 1);
+}
+.block-color-orange_background {
+	background: rgba(251, 236, 221, 1);
+}
+.block-color-yellow_background {
+	background: rgba(251, 243, 219, 1);
+}
+.block-color-teal_background {
+	background: rgba(237, 243, 236, 1);
+}
+.block-color-blue_background {
+	background: rgba(231, 243, 248, 1);
+}
+.block-color-purple_background {
+	background: rgba(244, 240, 247, 0.8);
+}
+.block-color-pink_background {
+	background: rgba(249, 238, 243, 0.8);
+}
+.block-color-red_background {
+	background: rgba(253, 235, 236, 1);
+}
+.select-value-color-pink { background-color: rgba(245, 224, 233, 1); }
+.select-value-color-purple { background-color: rgba(232, 222, 238, 1); }
+.select-value-color-green { background-color: rgba(219, 237, 219, 1); }
+.select-value-color-gray { background-color: rgba(227, 226, 224, 1); }
+.select-value-color-translucentGray { background-color: rgba(255, 255, 255, 0.0375); }
+.select-value-color-orange { background-color: rgba(250, 222, 201, 1); }
+.select-value-color-brown { background-color: rgba(238, 224, 218, 1); }
+.select-value-color-red { background-color: rgba(255, 226, 221, 1); }
+.select-value-color-yellow { background-color: rgba(253, 236, 200, 1); }
+.select-value-color-blue { background-color: rgba(211, 229, 239, 1); }
+
+.checkbox {
+	display: inline-flex;
+	vertical-align: text-bottom;
+	width: 16;
+	height: 16;
+	background-size: 16px;
+	margin-left: 2px;
+	margin-right: 5px;
+}
+
+.checkbox-on {
+	background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Crect%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%2358A9D7%22%2F%3E%0A%3Cpath%20d%3D%22M6.71429%2012.2852L14%204.9995L12.7143%203.71436L6.71429%209.71378L3.28571%206.2831L2%207.57092L6.71429%2012.2852Z%22%20fill%3D%22white%22%2F%3E%0A%3C%2Fsvg%3E");
+}
+
+.checkbox-off {
+	background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Crect%20x%3D%220.75%22%20y%3D%220.75%22%20width%3D%2214.5%22%20height%3D%2214.5%22%20fill%3D%22white%22%20stroke%3D%22%2336352F%22%20stroke-width%3D%221.5%22%2F%3E%0A%3C%2Fsvg%3E");
+}
+
+</style></head><body><article id="0e7fd58f-dbe7-4054-9d78-69dfb5d0fe5f" class="page sans"><header><h1 class="page-title">TVDOS App Package</h1></header><div class="page-body"><nav id="3038e3fe-2c40-4866-b003-ec4180a51b6e" class="block-color-gray table_of_contents"><div class="table_of_contents-item table_of_contents-indent-0"><a class="table_of_contents-link" href="#06ff64cd-37f9-4feb-aabc-a9c3b951fc3f">How It Runs</a></div><div class="table_of_contents-item table_of_contents-indent-0"><a class="table_of_contents-link" href="#5f88ce7b-f8bf-4f7d-9c7b-f338c217a8b1">ᅟTVDOS App Package Format</a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#1b878823-c760-4256-bbf4-2a9fd73463be">Structure</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#02c513e8-a8a0-4844-a82c-029d951d737e">Overview</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#8882efdc-9a3d-484b-855f-feaccef13d1f">Header Area</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#f3e16d7d-34af-46dc-808f-01776b4f5836">Section Table</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#e1aa7d20-3035-4295-9435-08ad71aaaa45">The Section Structure (not RODATA)</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#fa412242-2729-495b-9e69-a127075ff56e">RODATA Section Structure</a></div><div class="table_of_contents-item table_of_contents-indent-0"><a class="table_of_contents-link" href="#3441357a-dbb1-4a51-bab4-2cec3b4210e7">ApP Devkit</a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#22c6654f-c29c-4420-87b1-35ed7568e299">Package Simulator Components</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#0f09e925-2b46-4a6c-9538-6ae62edfea82">apprun.js</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#11dce10e-8297-47eb-b38f-4cc2847f1e72">rodata.json</a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3613c6a8-3b54-4af9-a545-734f9b965c62">run.com</a></div></nav><p id="bc5f3a52-d607-4eba-aad7-be7488b32222" class="">TVDOS App Package brings the convenience of the self-packaged executable to the TVDOS. Applications containing multiple resources, library dependencies, specific environment variables, etc. are compressed, self-contained, and upon execution, unpacked and presented to your application — all in a single <code>.app</code> file.</p><p id="0f172dd4-2390-403b-a109-cae81db98856" class="">TVDOS App Package is built with following goals in mind:</p><ul id="64d2c5e1-04d4-4add-8c8b-97e3d2e14c50" class="bulleted-list"><li style="list-style-type:disc">Smaller file size than “everything spilled out”</li></ul><ul id="84859080-24de-493d-9b76-64362cd39fca" class="bulleted-list"><li style="list-style-type:disc">All required libraries are self-contained</li></ul><ul id="1bbf88d6-b3a5-46ff-8ebe-3c97f7f66dc5" class="bulleted-list"><li style="list-style-type:disc">Has its own bootloader so that minimal extra code is required on DOS-side</li></ul><ul id="e964cec7-82d6-466c-a394-f1dbebb802e0" class="bulleted-list"><li style="list-style-type:disc">Bootloader must be versatile enough that DOS code needs no change when more advanced features were added</li></ul><h1 id="06ff64cd-37f9-4feb-aabc-a9c3b951fc3f" class="">How It Runs</h1><p id="4e725f75-ebdd-4b1d-9400-52ac456a4c1a" class="">TVDOS will recognise that the file is an App Package, by considering the <code>.app</code> extension and the file header. Once recognised, TVDOS will go through the following steps to present the packed app to the end user:</p><ol type="1" id="0274353c-c0b0-42f3-9ded-e896cc6a4502" class="numbered-list" start="1"><li>Internally defines the path named <code>MOUNT</code> (typically under <code>$:\TMP\</code>)</li></ol><ol type="1" id="d4239767-5172-4412-b3db-c26799fb1d37" class="numbered-list" start="2"><li>An empty filesystem is then created and mounted to the <code>MOUNT</code></li></ol><ol type="1" id="e9bbf950-83c9-4616-81d6-f20296206add" class="numbered-list" start="3"><li>Optional VDISK is unpacked to Program Memory and then mounted under the <code>MOUNT\</code></li></ol><ol type="1" id="ea41f18b-b70c-4f4f-a618-5f50c9f0bf5e" class="numbered-list" start="4"><li>Resources defined in RODATA are loaded into the Scratchpad Memory</li></ol><ol type="1" id="126e334f-1012-4b0d-af90-b6511dfbf27b" class="numbered-list" start="5"><li>Pointers to the loaded resources are injected as an JavaScript Object <code>__RODATA</code>, into the main executable code (format: __RODATA.mylabel = 123456)</li></ol><ol type="1" id="72cfc6ef-ae48-4ea5-bb91-e91ff61bfbbc" class="numbered-list" start="6"><li>Injects patched <code>files.open()</code> which redirects any file references that are defined in the VDISK to the mounted VDISK</li></ol><ol type="1" id="189896b5-38dd-494a-a486-5598123026e2" class="numbered-list" start="7"><li>Main executable code (“bootloader” for the App Package) is copied as <code>MOUNT\run.com</code></li></ol><ol type="1" id="163e7207-0c90-4002-9726-7b772095df13" class="numbered-list" start="8"><li><code>MOUNT\run.com</code> is then read and called</li></ol><ol type="1" id="16c072ad-d630-4e4b-94a2-031e1eee0696" class="numbered-list" start="9"><li>If any exceptions were caught or quit successfully, undoes any patching, unmounts itself, then returns the Errorlevel of the app to TVDOS</li></ol><h1 id="5f88ce7b-f8bf-4f7d-9c7b-f338c217a8b1" class="">ᅟTVDOS App Package Format</h1><h2 id="1b878823-c760-4256-bbf4-2a9fd73463be" class="">Structure</h2><h3 id="02c513e8-a8a0-4844-a82c-029d951d737e" class="">Overview</h3><table id="708ad817-b5a7-4b76-9b12-ad4549758b03" class="simple-table"><tbody><tr id="07d9094d-9592-41c8-998a-fd633a872fdf"><td id="s{tG" class="">Header Area</td></tr><tr id="0501294b-30d7-471a-8959-b20f40fe9b8b"><td id="s{tG" class="">Section Table</td></tr><tr id="046ae17f-9024-4ce3-ac3d-23f30f047736"><td id="s{tG" class="">VDISK</td></tr><tr id="0b9d6be0-3998-4360-945b-0b204381fca7"><td id="s{tG" class="">RODATA</td></tr><tr id="64bdae71-be75-41bb-abe8-7d05e5afa793"><td id="s{tG" class="">TEXT</td></tr></tbody></table><h3 id="8882efdc-9a3d-484b-855f-feaccef13d1f" class="">Header Area</h3><table id="fd4fe073-9fb1-4f4e-a271-f8ec5c21cc8c" class="simple-table"><thead class="simple-table-header"><tr id="0809ed8b-e7ac-4a9d-b4f8-99a35d0d80e2"><th id="vU=j" class="simple-table-header-color simple-table-header" style="width:55.93333435058594px">Offset</th><th id="fQYN" class="simple-table-header-color simple-table-header" style="width:85.91667175292969px">Type</th><th id="XH\j" class="simple-table-header-color simple-table-header" style="width:512.8500061035156px">Description</th></tr></thead><tbody><tr id="f53f91b9-09ca-489d-bb91-ca21d0a50837"><td id="vU=j" class="" style="width:55.93333435058594px">0</td><td id="fQYN" class="" style="width:85.91667175292969px">\x7F <strong>A p P</strong></td><td id="XH\j" class="" style="width:512.8500061035156px">Magic (<em><strong>Ap</strong></em>p <em><strong>P</strong></em>ackage)</td></tr><tr id="fe240225-613d-4698-a1c4-d5e7d31c796e"><td id="vU=j" class="" style="width:55.93333435058594px">4</td><td id="fQYN" class="" style="width:85.91667175292969px">Uint8</td><td id="XH\j" class="" style="width:512.8500061035156px">Endianness. 1 for Big</td></tr><tr id="af343070-17ee-4e9c-9320-ee083e56c6d9"><td id="vU=j" class="" style="width:55.93333435058594px">5</td><td id="fQYN" class="" style="width:85.91667175292969px">Uint8</td><td id="XH\j" class="" style="width:512.8500061035156px">Version. Always 1</td></tr><tr id="6529db99-231f-4458-971e-18abd7f95406"><td id="vU=j" class="" style="width:55.93333435058594px">6</td><td id="fQYN" class="" style="width:85.91667175292969px">Uint8</td><td id="XH\j" class="" style="width:512.8500061035156px">Section Compression. 0—None, 1—Gzip</td></tr><tr id="9316c0f2-16d4-48d1-9b40-5642fbdf6b0b"><td id="vU=j" class="" style="width:55.93333435058594px">7</td><td id="fQYN" class="" style="width:85.91667175292969px">Uint8</td><td id="XH\j" class="" style="width:512.8500061035156px">Number of Sections. Always greater than zero because of the ENDSECTION</td></tr><tr id="827e5669-9ed8-4a4d-aee9-be5cbc376fb0"><td id="vU=j" class="" style="width:55.93333435058594px">8</td><td id="fQYN" class="" style="width:85.91667175292969px">Uint8</td><td id="XH\j" class="" style="width:512.8500061035156px">Target OS. 1—TVDOS, 0—Unspecified</td></tr><tr id="2b335cbd-2987-415b-b3d7-4970f72b53d7"><td id="vU=j" class="" style="width:55.93333435058594px">9</td><td id="fQYN" class="" style="width:85.91667175292969px">Byte[7]</td><td id="XH\j" class="" style="width:512.8500061035156px">Padding bytes</td></tr></tbody></table><h3 id="f3e16d7d-34af-46dc-808f-01776b4f5836" class="">Section Table</h3><p id="1198e254-be0c-4c32-bfdc-3f250a859734" class="">Repetition of:</p><table id="1751f3ca-679b-4634-a7d2-4571fbe482cd" class="simple-table"><tbody><tr id="076b322a-67d7-46d9-a1ae-732b9b0e3be0"><td id="kL&lt;s" class="" style="width:246px">Section Name
+    <br />(10 bytes, \x00 padded)</td><td id="]GAW" class="" style="width:146px">Offset
+    <br />(Uint48; 6 bytes)</td></tr></tbody></table><p id="5d2540e8-ba19-41d0-a7fe-7222c01a143c" class="">Recognised section names:</p><ul id="94b8ecf9-1ffb-411a-b62b-43beb5250002" class="bulleted-list"><li style="list-style-type:disc"><strong>VDISK</strong> — Virtual Disk. Extra libraries must be contained here</li></ul><ul id="9cf1cb9f-96f2-4107-806f-207fe0190e1d" class="bulleted-list"><li style="list-style-type:disc"><strong>RODATA</strong> — Read-only Data. Typically graphical resources</li></ul><ul id="22b8f0c5-e39f-43d5-bae7-5c86bbbf0cb6" class="bulleted-list"><li style="list-style-type:disc"><strong>TEXT</strong> — The Bootloader (<code>run.com</code>)</li></ul><ul id="102d8a4e-554c-465a-a7f8-8537066744e0" class="bulleted-list"><li style="list-style-type:disc"><strong>APPINFO</strong> — Desktop Entry text that contains information about the App</li></ul><ul id="6b365c0d-3805-4f5d-b808-8af6c7b34c8f" class="bulleted-list"><li style="list-style-type:disc"><strong>COPYING</strong> — Licence text</li></ul><ul id="a6fefa84-5d68-4887-9690-ddc076d2e1fa" class="bulleted-list"><li style="list-style-type:disc"><strong>ENDSECTION</strong> — Marker for the end of the penultimate section. The offset is identical to the size of the entire App Package if no extra bytes (aka footers) are followed</li></ul><h3 id="e1aa7d20-3035-4295-9435-08ad71aaaa45" class="">The Section Structure (not RODATA)</h3><table id="edb2b323-e095-486d-a937-7529dfeb6e1c" class="simple-table"><tbody><tr id="69c9d62e-e2b4-4405-b9f8-b9777b2b3b6a"><td id="\`^W" class="" style="width:183.10000610351562px">Uncompressed Size
+    <br />(Uint48; 6 bytes)</td><td id="a|Q&lt;" class="" style="width:472.8999938964844px">Compressed Payload
+    <br />(arbitrary size)</td></tr></tbody></table><h3 id="fa412242-2729-495b-9e69-a127075ff56e" class="">RODATA Section Structure</h3><p id="7e009b47-6ebe-4a07-b978-d408c38186cf" class="">Repetition of:</p><table id="ae658c4d-30bd-4c13-9274-758282b8cd78" class="simple-table"><tbody><tr id="dadcbd2c-6c10-4d0b-910f-84f379d4dc5d"><td id="ojud" class="" style="width:99.86666870117188px">Label Length
+    <br />(1—255)</td><td id="d&lt;xm" class="" style="width:108.75px">Label
+    <br />(arbitrary size)</td><td id=";Rlj" class="" style="width:129.38333129882812px">Compressed Size
+    <br />(Uint48; 6 bytes)</td><td id="k&lt;GS" class="" style="width:144.10000610351562px">Uncompressed Size
+    <br />(Uint48; 6 bytes)</td><td id="S{Kv" class="" style="width:204px">Payload
+    <br />(arbitrary size)</td></tr></tbody></table><ul id="6aa900b6-21c3-4459-8e07-bb1e70521db9" class="bulleted-list"><li style="list-style-type:disc">Compressed Size is equal to the size of the Payload block</li></ul><h1 id="3441357a-dbb1-4a51-bab4-2cec3b4210e7" class="">ApP Devkit</h1><p id="6af755eb-f0fc-4c2f-8988-129c6063c20d" class="">The ApP Devkit allows the programmers to test their to-be-packaged apps before the actual packaging. All the required files are placed into a directory, and the Package Simulator will run the contents in the directory as if they were packed into the App Package.</p><h2 id="22c6654f-c29c-4420-87b1-35ed7568e299" class="">Package Simulator Components</h2><h3 id="0f09e925-2b46-4a6c-9538-6ae62edfea82" class="">apprun.js</h3><p id="608a102e-b4d7-4066-9a61-22f042772083" class=""><code>apprun</code> is an executable provided by the Simulator that simulates the runtime for the App Package.</p><p id="ea6fd9e8-9e57-4cb3-acde-ca530cc17c7b" class="">Synopsis: <code>apprun dir\to\app\files</code></p><h3 id="11dce10e-8297-47eb-b38f-4cc2847f1e72" class="">rodata.json</h3><p id="28171361-c513-4bd4-9b02-27a59578d801" class=""><code>rodata.json</code> simulates the RODATA map of the App Package, and is required to actually create the App Package. The map contains the simple list of paths to the assets. The load order is the same as the order in the text file.</p><p id="aa5ce1e3-5b1a-4d9a-9d9f-d45c5b4f6433" class="">This file must reside in the root directory of your app.</p><p id="08de9258-ecd6-47d5-b24d-4b6b4efd6f53" class="">Example:</p><pre id="632e351b-fded-4f9e-ac86-c687eecb4398" class="code"><code>{
+	&quot;splash&quot;: &quot;A:\myapp\assets\splash.ipf&quot;,
+	&quot;icons&quot;: &quot;A:\myapp\assets\icons.bin&quot;,
+	&quot;frame&quot;: &quot;A:\myapp\assets\guiframe.bin&quot;,
+	&quot;jingle&quot;: &quot;A:\myapp\assets\jingle.mp2&quot;
+}</code></pre><p id="1e0e2c36-4b7a-45d0-87e8-9ef86529c195" class="">The key of the JSON object will be the label for finding the pointer to the loaded assets. In this example, the pointer where <code>guiframe.bin</code> is stored is found on <code>__RODATA.frame</code> in your app’s code.</p><h3 id="3613c6a8-3b54-4af9-a545-734f9b965c62" class="">run.com</h3><p id="4081b4c2-4c8b-4d91-a17d-39a88ab48cd3" class=""><code>run.com</code> is an entry point and the bootloader for your app.</p><p id="04f5635f-8a17-4d33-b7a7-8d8ce4a4ba13" class="">This file must reside in the root directory of your app.</p><p id="cb29d2ae-b73a-42fc-acf7-9d354b7f15c6" class="">
+</p></div></article></body></html>
