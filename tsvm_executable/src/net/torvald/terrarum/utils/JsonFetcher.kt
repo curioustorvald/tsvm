@@ -2,6 +2,7 @@ package net.torvald.terrarum.utils
 
 import com.badlogic.gdx.utils.JsonReader
 import com.badlogic.gdx.utils.JsonValue
+import java.lang.NullPointerException
 
 /**
  * Created by minjaesong on 2016-02-15.
@@ -36,7 +37,13 @@ object JsonFetcher {
             throw Error("[JsonFetcher] jsonString is null!")
         }
 
-        return JsonReader().parse(jsonString.toString())
+        try {
+            return JsonReader().parse(jsonString.toString())
+        }
+        catch (e: NullPointerException) {
+            System.err.println("[JsonFetcher] NullPointerException while processing ${jsonFile.path}")
+            throw e
+        }
     }
 
     @Throws(java.io.IOException::class)

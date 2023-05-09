@@ -109,6 +109,11 @@ for (let i = 0; i < sectionTable.length - 1; i++) {
     }
 }
 
-_G.shell.execute(PATH_MOUNT + "run.com")
+let errorlevel = _G.shell.execute(PATH_MOUNT + "run.com")
 
-// TODO delete PATH_MOUNT
+try {
+    files.open(PATH_MOUNT).remove()
+}
+catch (e) {}
+
+return errorlevel

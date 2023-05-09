@@ -8,6 +8,7 @@ import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.VMProgramRom
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.charset.Charset
 import java.util.*
 import kotlin.math.ceil
 
@@ -156,7 +157,7 @@ class VM(
 
 
     companion object {
-        val CHARSET = Charsets.ISO_8859_1
+        val CHARSET = Charset.forName("iso-8859-1") // no cp437 because i dunno
 
         val MMIO_SIZE = 128.kB()
         val HW_RESERVE_SIZE = 1024.kB()

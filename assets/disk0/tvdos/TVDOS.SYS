@@ -762,7 +762,16 @@ _TVDOS.DRV.FS.DEVTMP.mkFile = (fd) => {
     return true
 }
 _TVDOS.DRV.FS.DEVTMP.remove = (fd) => {
+    let path = _TVDOS.TMPFS[fd.path]
     delete _TVDOS.TMPFS[fd.path]
+
+    // delete all the keys starting with _TVDOS.TMPFS[fd.path]
+    if (_TVDOS.DRV.FS.DEVTMP.isDirectory(fd)) {
+        Object.keys(_TVDOS.TMPFS).filter(it=>it.startsWith(path)).forEach(childs=>{
+            delete _TVDOS.TMPFS[childs]
+        })
+    }
+
     return true
 }
 _TVDOS.DRV.FS.DEVTMP.exists = (fd) => (_TVDOS.TMPFS[fd.path] !== undefined)
