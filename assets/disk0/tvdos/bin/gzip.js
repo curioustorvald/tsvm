@@ -14,3 +14,34 @@ if (exec_args[1] === undefined) {
     printUsage()
     return 0
 }
+
+const options = exec_args.filter(it=>it.startsWith("/")).map(it=>it.toUpperCase())
+const filePath = exec_args.filter(it=>!it.startsWith("/"))[1]
+
+if (filePath === undefined) {
+    printUsage()
+    return 0
+}
+
+const decompMode = (options.indexOf("/D") >= 0)
+const toStdout = (options.indexOf("/C") >= 0)
+
+
+const file = files.open(_G.shell.resolvePath(filePath).full)
+
+// returns Java byte[]
+const actionfun = if (decompMode)
+    (str) => gzip.decomp(str)
+else
+    (str) => gzip.comp(str)
+
+
+const writefun = if (toStdout)
+    (bytes) => print(String.fromCharCode.apply(null, bytes))
+else
+    (bytes) => file.swrite(String.fromCharCode.apply(null, bytes))
+
+
+////////////////////////////////////////
+
+writefun(actionfun(file.sread()))
