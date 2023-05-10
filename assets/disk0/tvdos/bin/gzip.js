@@ -15,8 +15,9 @@ if (exec_args[1] === undefined) {
     return 0
 }
 
-const options = exec_args.filter(it=>it.startsWith("/")).map(it=>it.toUpperCase())
-const filePath = exec_args.filter(it=>!it.startsWith("/"))[1]
+const options = exec_args.filter(it=>it.startsWith("-")).map(it=>it.toUpperCase())
+const filePath = exec_args.filter(it=>!it.startsWith("-"))[1]
+
 
 if (filePath === undefined) {
     printUsage()
@@ -27,21 +28,26 @@ const decompMode = (options.indexOf("-D") >= 0)
 const toStdout = (options.indexOf("-C") >= 0)
 
 
-const file = files.open(_G.shell.resolvePath(filePath).full)
+const file = files.open(_G.shell.resolvePathInput(filePath).full)
+const file2 = files.open(_G.shell.resolvePathInput(filePath).full + ".gz")
 
 // returns Java byte[]
-const actionfun = if (decompMode)
+const actionfun = (decompMode) ?
     (str) => gzip.decomp(str)
-else
+:
     (str) => gzip.comp(str)
 
 
-const writefun = if (toStdout)
+const writefun = (toStdout) ?
     (bytes) => print(String.fromCharCode.apply(null, bytes))
-else
-    (bytes) => file.swrite(String.fromCharCode.apply(null, bytes))
+:
+    (bytes) => file2.swrite(String.fromCharCode.apply(null, bytes))
 
 
 ////////////////////////////////////////
 
-writefun(actionfun(file.sread()))
+writefun(actionfun(file.bread()))
+//file2.swrite(file.sread())
+
+
+// FIXME compression seems to work fine but this program writes lots of ?????s

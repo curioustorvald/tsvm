@@ -50,10 +50,7 @@ class PmemFSfile {
         }
         // Javascript array OR JVM byte[]
         else if (Array.isArray(bytes) || bytes.toString().startsWith("[B")) {
-            this.data = ""
-            for (let i = 0; i < bytes.length; i++) {
-                this.data += String.fromCharCode(bytes[i])
-            }
+            this.bdata = bytes[i]
         }
         else {
             throw Error("Invalid type for directory")
@@ -61,15 +58,22 @@ class PmemFSfile {
     }
 
     dataAsString() {
+        if (this.data !== undefined) return this.data
+        this.data = ""
+        for (let i = 0; i < bytes.length; i++) {
+            this.data += String.fromCharCode(bytes[i])
+        }
         return this.data
     }
 
     dataAsBytes() {
-        let bytes = new Uint8Array(this.data.length)
+        if (this.bdata !== undefined) return this.bdata
+        this.bdata = new Int8Array(this.data.length)
         for (let i = 0; i < this.data.length; i++) {
-            bytes[i] = this.data.charCodeAt(i)
+            let p = this.data.charCodeAt(i)
+            this.bdata[i] = (p > 127) ? p - 255 : p
         }
-        return bytes
+        return this.bdata
     }
 }
 
@@ -171,9 +175,12 @@ class TVDOSFileDescriptor {
             }
             this._driveLetter = p[0]
             this._path = p.substring(2) // detaches $:
+
+            if (driverID == undefined) driverID = "UNDEFINED"
+
             this._driverID = driverID
             this._driver = _TVDOS.DRV.FS[driverID]
-//            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}`)
+            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}, driver = ${driverID}`)
         }
     }
 
@@ -208,7 +215,7 @@ class TVDOSFileDescriptor {
     pread(ptr, count, offset) {
         this.driver.pread(this, ptr, count, offset)
     }
-    /** @return bytewise contents of the file in JS array */
+    /** @return bytewise (actually SIGNED Int8) contents of the file in JS array */
     bread() {
         return this.driver.bread(this)
     }
@@ -391,8 +398,10 @@ _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
 }
 _TVDOS.DRV.FS.SERIAL.bread = (fd) => {
     let str = _TVDOS.DRV.FS.SERIAL.sread(fd)
-    let bytes = new Uint8Array(str.length)
+    let bytes = new Int8Array(str.length)
     for (let i = 0; i < str.length; i++) {
+//        let p = str.charCodeAt(i)
+//        bytes[i] = (p > 127) ? p - 255 : p
         bytes[i] = str.charCodeAt(i)
     }
     return bytes
@@ -523,7 +532,7 @@ Object.freeze(_TVDOS.DRV.FS.SERIAL)
 _TVDOS.DRV.FS.DEVRND = {}
 
 _TVDOS.DRV.FS.DEVRND._mkrndbytes = (length) => {
-    let bytes = new Uint8Array(length)
+    let bytes = new Int8Array(length)
     let timeNow = sys.currentTimeInMills()
     let state = 12345678910 + timeNow
 
@@ -563,6 +572,31 @@ _TVDOS.DRV.FS.DEVRND.remove = () => {}
 _TVDOS.DRV.FS.DEVRND.exists = () => true
 
 Object.freeze(_TVDOS.DRV.FS.DEVRND)
+
+///////////////////////////////////////////////////////////////////////////////
+
+_TVDOS.DRV.FS.UNDEFINED = {}
+
+_TVDOS.DRV.FS.UNDEFINED.pread = (fd, ptr, count, offset) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.bread = (fd) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.sread = (fd) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.pwrite = (fd, ptr, count, offset) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.bwrite = (fd, bytes) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.swrite = (fd, string) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.pappend = (fd, ptr, count, offset) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.bappend = (fd, bytes) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.sappend = (fd, string) => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.flush = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.close = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.isDirectory = () => false
+_TVDOS.DRV.FS.UNDEFINED.listFiles = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.touch = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.mkDir = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.mkFile = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.remove = () => { throw Error("File does not exist") }
+_TVDOS.DRV.FS.UNDEFINED.exists = () => false
+
+Object.freeze(_TVDOS.DRV.FS.UNDEFINED)
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -632,8 +666,10 @@ _TVDOS.DRV.FS.DEVCON.pread = (fd, ptr, count, offset) => {
 _TVDOS.DRV.FS.DEVCON.bread = (fd) => {
     let mem = graphics.getGpuMemBase()
     let consize = Math.min(count, grapihcs.getTermDimension().sum())
-    let r = new Uint8Array(consize)
+    let r = new Int8Array(consize)
     for (let i = 0; i < consize; i++) {
+//        let p = sys.peek(mem - 5122 - i)
+//        r[i] = (p > 127) ? p - 255 : p
         r[i] = sys.peek(mem - 5122 - i)
     }
     return r
@@ -968,6 +1004,8 @@ files.reservedNames = ["AUX", // unused
 
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
 files.open = (fullPath) => {
+    // FIXME nonexisting file must NOT return undefined (try: 'cd Q:\' on command.js)
+
     if (files.reservedNames.includes(fullPath.toUpperCase())) {
         return new TVDOSFileDescriptor(fullPath.toUpperCase())
     }
