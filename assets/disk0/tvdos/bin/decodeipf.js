@@ -3,7 +3,7 @@ if (exec_args[1] == undefined) {
     return 1
 }
 
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 let infile = files.open(_G.shell.resolvePathInput(exec_args[1]).full)
 
 // read input file

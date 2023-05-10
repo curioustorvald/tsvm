@@ -1,6 +1,6 @@
 // usage: playmov moviefile.mov [/i]
 const SND_BASE_ADDR = audio.getBaseAddr()
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const WIDTH = 560
 const HEIGHT = 448
 const FBUF_SIZE = WIDTH * HEIGHT

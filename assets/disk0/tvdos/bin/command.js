@@ -848,21 +848,21 @@ _G.shell = shell
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 if (exec_args[1] !== undefined) {
-    // only meaningful switches would be either /c or /k anyway
+    // only meaningful switches would be either -c or -k anyway
     var firstSwitch = exec_args[1].toLowerCase()
 
-    // command /c   <commands>
+    // command -c   <commands>
     // ^[0]    ^[1] ^[2]
-    if ("/c" == firstSwitch) {
+    if ("-c" == firstSwitch) {
         if ("" == exec_args[2]) return 0 // no commands were given, just exit successfully
         return shell.execute(exec_args[2])
     }
-    else if ("/k" == firstSwitch) {
+    else if ("-k" == firstSwitch) {
         if ("" == exec_args[2]) return 0 // no commands were given, just exit successfully
         shell.execute(exec_args[2])
         goInteractive = true
     }
-    else if ("/fancy" == firstSwitch) {
+    else if ("-fancy" == firstSwitch) {
         graphics.setBackground(34,51,68)
         goFancy = true
         goInteractive = true

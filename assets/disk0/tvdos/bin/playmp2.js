@@ -5,7 +5,7 @@ if (!SND_BASE_ADDR) return 10
 const MP2_BITRATES = ["???", 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384]
 const MP2_CHANNELMODES = ["Stereo", "Joint", "Dual", "Mono"]
 const pcm = require("pcm")
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 function printdbg(s) { if (0) serial.println(s) }
 
 

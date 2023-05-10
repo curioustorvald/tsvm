@@ -1,9 +1,9 @@
 if (exec_args[3] == undefined) {
-    println("encodeipf <1/2> <input picture> <output filename> [/noalpha]")
+    println("encodeipf <1/2> <input picture> <output filename> [-noalpha]")
     return 1
 }
 
-let noalpha = exec_args[4] != undefined && exec_args[4].toLowerCase() == "/noalpha"
+let noalpha = exec_args[4] != undefined && exec_args[4].toLowerCase() == "-noalpha"
 
 let infile = files.open(_G.shell.resolvePathInput(exec_args[2]).full)
 let outfile = files.open(_G.shell.resolvePathInput(exec_args[3]).full)

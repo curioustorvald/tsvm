@@ -5,7 +5,7 @@ return 1
 
 const Mp3 = require('mp3dec')
 const pcm = require("pcm")
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 
 function printdbg(s) { if (0) serial.println(s) }
 

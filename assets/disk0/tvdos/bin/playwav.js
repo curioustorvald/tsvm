@@ -5,7 +5,7 @@ function printdbg(s) { if (0) serial.println(s) }
 
 const WAV_FORMATS = ["LPCM", "ADPCM"]
 const WAV_CHANNELS = ["Mono", "Stereo", "3ch", "Quad", "4.1", "5.1", "6.1", "7.1"]
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const seqread = require("seqread")
 const pcm = require("pcm")
 

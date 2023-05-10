@@ -3,7 +3,7 @@ let fileeeee = files.open(_G.shell.resolvePathInput(exec_args[1]).full)
 let filename = fileeeee.fullPath
 function printdbg(s) { if (0) serial.println(s) }
 
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "/i"
+const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const pcm = require("pcm")
 const FILE_SIZE = files.open(filename).size
 

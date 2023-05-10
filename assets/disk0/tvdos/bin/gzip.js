@@ -1,13 +1,13 @@
 function printUsage() {
-    println(`Usage: gzip [/d /c] file
+    println(`Usage: gzip [-c] [-d] file
 To compress a file, replacing it with a gzipped compressed version:
        gzip file.ext
 To decompress a file, replacing it with the original uncompressed version:
-       gzip /d file.ext.gz
+       gzip -d file.ext.gz
 To compress a file specifying the output filename:
-       gzip /c file.ext > compressed_file.ext.gz
+       gzip -c file.ext > compressed_file.ext.gz
 To decompress a gzipped file specifying the output filename:
-       gzip /c /d file.ext.gz > uncompressed_file.ext`)
+       gzip -c -d file.ext.gz > uncompressed_file.ext`)
 }
 
 if (exec_args[1] === undefined) {
@@ -23,8 +23,8 @@ if (filePath === undefined) {
     return 0
 }
 
-const decompMode = (options.indexOf("/D") >= 0)
-const toStdout = (options.indexOf("/C") >= 0)
+const decompMode = (options.indexOf("-D") >= 0)
+const toStdout = (options.indexOf("-C") >= 0)
 
 
 const file = files.open(_G.shell.resolvePath(filePath).full)
