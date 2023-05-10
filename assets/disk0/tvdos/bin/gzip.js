@@ -29,7 +29,7 @@ const toStdout = (options.indexOf("-C") >= 0)
 
 
 const file = files.open(_G.shell.resolvePathInput(filePath).full)
-const file2 = files.open(_G.shell.resolvePathInput(filePath).full + ".gz")
+//const file2 = files.open(_G.shell.resolvePathInput(filePath).full + ".gz")
 
 // returns Java byte[]
 const actionfun = (decompMode) ?
@@ -39,15 +39,11 @@ const actionfun = (decompMode) ?
 
 
 const writefun = (toStdout) ?
-    (bytes) => print(String.fromCharCode.apply(null, bytes))
+    (bytes) => print(btostr(bytes))
 :
-    (bytes) => file2.swrite(String.fromCharCode.apply(null, bytes))
+    (bytes) => file.swrite(btostr(bytes))
 
 
 ////////////////////////////////////////
 
 writefun(actionfun(file.bread()))
-//file2.swrite(file.sread())
-
-
-// FIXME compression seems to work fine but this program writes lots of ?????s

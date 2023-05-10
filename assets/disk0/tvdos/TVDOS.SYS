@@ -1,3 +1,11 @@
+let _fromCharCode = b => String.fromCharCode((b >= 0) ? b : 256 + b)
+function btostr(bytes) {
+    let s = ""
+    for (let i = 0; i < bytes.length; i++) {
+        s += _fromCharCode(bytes[i])
+    }
+    return s
+}
 // define exceptions
 function InterruptedException(m) {
     this.message = m;
@@ -180,7 +188,7 @@ class TVDOSFileDescriptor {
 
             this._driverID = driverID
             this._driver = _TVDOS.DRV.FS[driverID]
-            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}, driver = ${driverID}`)
+//            serial.println(`TVDOSFileDescriptor input path: ${path0}, p = ${p}, driveLetter = ${this._driveLetter}, path = ${this._path}, driver = ${driverID}`)
         }
     }
 
@@ -430,7 +438,7 @@ _TVDOS.DRV.FS.SERIAL.swrite = (fd, string) => {
     _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
 }
 _TVDOS.DRV.FS.SERIAL.bwrite = (fd, bytes) => { // pwrite replaces DMA.ramToCom
-    let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
+    let string = btostr(bytes) // no spreading: has length limit
     _TVDOS.DRV.FS.SERIAL.swrite(fd, string)
 }
 _TVDOS.DRV.FS.SERIAL.pappend = (fd, ptr, count) => {
@@ -440,7 +448,7 @@ _TVDOS.DRV.FS.SERIAL.pappend = (fd, ptr, count) => {
     dma.ramToCom(ptr, port[0], count)
 }
 _TVDOS.DRV.FS.SERIAL.bappend = (fd, bytes) => { // pwrite replaces DMA.ramToCom
-    let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
+    let string = btostr(bytes) // no spreading: has length limit
     _TVDOS.DRV.FS.SERIAL.sappend(fd, string)
 }
 _TVDOS.DRV.FS.SERIAL.sappend = (fd, string) => {
@@ -686,7 +694,7 @@ _TVDOS.DRV.FS.DEVCON.sread = (fd) => {
 
 _TVDOS.DRV.FS.DEVCON.pwrite = (fd, ptr, count, offset) => {}
 _TVDOS.DRV.FS.DEVCON.bwrite = (fd, bytes) => {
-    let string = String.fromCharCode.apply(null, bytes) // no spreading: has length limit
+    let string = btostr(bytes) // no spreading: has length limit
     _TVDOS.DRV.FS.DEVZERO.swrite(fd, string)
 }
 _TVDOS.DRV.FS.DEVCON.swrite = (fd, string) => {
@@ -941,7 +949,7 @@ filesystem.write = (driveLetter, string) => {
     filesystem._flush(port[0]); filesystem._close(port[0]);
 };
 filesystem.writeBytes = (driveLetter, bytes) => {
-    var string = String.fromCharCode.apply(null, bytes); // no spreading: has length limit
+    var string = btostr(bytes); // no spreading: has length limit
     filesystem.write(driveLetter, string);
 };
 filesystem.isDirectory = (driveLetter) => {
@@ -1004,8 +1012,6 @@ files.reservedNames = ["AUX", // unused
 
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
 files.open = (fullPath) => {
-    // FIXME nonexisting file must NOT return undefined (try: 'cd Q:\' on command.js)
-
     if (files.reservedNames.includes(fullPath.toUpperCase())) {
         return new TVDOSFileDescriptor(fullPath.toUpperCase())
     }

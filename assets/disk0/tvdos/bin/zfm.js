@@ -36,14 +36,14 @@ const COL_HL_EXT = {
 }
 
 const EXEC_FUNS = {
-    "wav": (f) => _G.shell.execute(`playwav ${f} /i`),
-    "adpcm": (f) => _G.shell.execute(`playwav ${f} /i`),
-    "mp3": (f) => _G.shell.execute(`playmp3 ${f} /i`),
-    "mp2": (f) => _G.shell.execute(`playmp2 ${f} /i`),
-    "mov": (f) => _G.shell.execute(`playmov ${f} /i`),
-    "pcm": (f) => _G.shell.execute(`playpcm ${f} /i`),
-    "ipf1": (f) => _G.shell.execute(`decodeipf ${f} /i`),
-    "ipf2": (f) => _G.shell.execute(`decodeipf ${f} /i`),
+    "wav": (f) => _G.shell.execute(`playwav ${f} -i`),
+    "adpcm": (f) => _G.shell.execute(`playwav ${f} -i`),
+    "mp3": (f) => _G.shell.execute(`playmp3 ${f} -i`),
+    "mp2": (f) => _G.shell.execute(`playmp2 ${f} -i`),
+    "mov": (f) => _G.shell.execute(`playmov ${f} -i`),
+    "pcm": (f) => _G.shell.execute(`playpcm ${f} -i`),
+    "ipf1": (f) => _G.shell.execute(`decodeipf ${f} -i`),
+    "ipf2": (f) => _G.shell.execute(`decodeipf ${f} -i`),
     "bas": (f) => _G.shell.execute(`basic ${f}`)
 }
 
