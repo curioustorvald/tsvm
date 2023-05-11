@@ -40,9 +40,9 @@ if (targetOS != 1 && targetOS != 0) {
 }
 
 
-function strToInt48(str) {
+function strToInt32(str) {
     let s = [...str].map(it=>it.charCodeAt(0))
-    return ((4294967296 + (s[0] << 40)) + (s[1] << 32) + (s[2] << 24) + (s[3] << 16) + (s[4] << 8) + s[5]) - 4294967296
+    return (s[0] << 24) + (s[1] << 16) + (s[2] << 8) + s[3]
 
 }
 function makeHash(length) {
@@ -63,8 +63,8 @@ let sectionTable = []
 let rodata = {}
 
 for (let i = 0; i < sectionCount; i++) {
-    let sectName = filebytes.substring(16 * (i+1), 16 * (i+1) + 10).trimNull()
-    let sectOffset = strToInt48(filebytes.substring(16 * (i+1) + 10, 16 * (i+1) + 16))
+    let sectName = filebytes.substring(16 * (i+1), 16 * (i+1) + 12).trimNull()
+    let sectOffset = strToInt32(filebytes.substring(16 * (i+1) + 12, 16 * (i+1) + 16))
     sectionTable.push([sectName, sectOffset])
 }
 
@@ -72,17 +72,17 @@ for (let i = 0; i < sectionTable.length - 1; i++) {
     let [sectName, sectOffset] = sectionTable[i]
     let nextSectOffset = sectionTable[i+1][1]
 
-    let uncompLen = strToInt48(filebytes.substring(sectOffset, sectOffset + 6))
-    let compPayload = filebytes.substring(sectOffset + 6, nextSectOffset)
+    let uncompLen = strToInt32(filebytes.substring(sectOffset, sectOffset + 4))
+    let compPayload = filebytes.substring(sectOffset + 4, nextSectOffset)
 
     if ("RODATA" == sectName) {
         let rodataPtr = 0
         while (rodataPtr < nextSectOffset - sectOffset) {
             let labelLen = filebytes.charCodeAt(sectOffset + rodataPtr)
             let label = filebytes.substring(sectOffset + rodataPtr + 1, sectOffset + rodataPtr + 1 + labelLen)
-            let payloadLen = strToInt48(filebytes.substring(sectOffset + rodataPtr + 1 + labelLen, sectOffset + rodataPtr + 1 + labelLen + 6))
-            let uncompLen = strToInt48(filebytes.substring(sectOffset + rodataPtr + 1 + labelLen + 6, sectOffset + rodataPtr + 1 + labelLen + 12))
-            let sectPayload = filebytes.substring(sectOffset + rodataPtr + 1 + labelLen + 12, sectOffset + rodataPtr + 1 + labelLen + 12 + payloadLen)
+            let payloadLen = strToInt32(filebytes.substring(sectOffset + rodataPtr + 1 + labelLen, sectOffset + rodataPtr + 1 + labelLen + 4))
+            let uncompLen = strToInt32(filebytes.substring(sectOffset + rodataPtr + 1 + labelLen + 4, sectOffset + rodataPtr + 1 + labelLen + 8))
+            let sectPayload = filebytes.substring(sectOffset + rodataPtr + 1 + labelLen + 8, sectOffset + rodataPtr + 1 + labelLen + 8 + payloadLen)
 
 
             try {
@@ -96,11 +96,11 @@ for (let i = 0; i < sectionTable.length - 1; i++) {
 
             decompFun(payload)
 
-            rodataPtr += 13 + labelLen + payloadLen
+            rodataPtr += 9 + labelLen + payloadLen
         }
     }
     else if ("TEXT" == sectName) {
-        let program = String.fromCharCode.apply(null, decompFun(compPayload))
+        let program = btostr(decompFun(compPayload))
 
         // inject RODATA map
         let rodataSnippet = `const __RODATA=Object.freeze(${JSON.stringify(rodata)});`
