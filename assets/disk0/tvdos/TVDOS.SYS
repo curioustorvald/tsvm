@@ -798,7 +798,7 @@ _TVDOS.DRV.FS.DEVTMP.mkDir = (fd) => {
     return true
 }
 _TVDOS.DRV.FS.DEVTMP.mkFile = (fd) => {
-    _TVDOS.TMPFS[fd.path] = new PmemFSfile(fd.path)
+    _TVDOS.TMPFS[fd.path] = new PmemFSfile("")
     return true
 }
 _TVDOS.DRV.FS.DEVTMP.remove = (fd) => {

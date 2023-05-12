@@ -802,6 +802,10 @@ shell.execute = function(line) {
         }
     }
     serial.println("[shell.execute] final retvalue: "+retValue)
+
+    // flush pipes
+    while (1) { if (undefined === shell.removePipe()) break }
+
     return retValue
 }
 shell.pipes = {} // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows

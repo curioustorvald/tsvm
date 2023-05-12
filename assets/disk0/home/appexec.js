@@ -107,6 +107,27 @@ for (let i = 0; i < sectionTable.length - 1; i++) {
 
         files.open(PATH_MOUNT + "run.com").swrite(rodataSnippet+program)
     }
+    else if ("VDISK" == sectName) {
+        let bytes = btostr(decompFun(compPayload))
+        // unpack vdisk
+        if (bytes.substring(0, 9) != "TVDOSLFS\x01") {
+            printerrln("VDISK is not LFS")
+            return 2
+        }
+        let curs = 16
+        while (curs < bytes.length) {
+            let fileType = bytes.charCodeAt(curs)
+            let pathlen = (bytes.charCodeAt(curs+1) << 8) | bytes.charCodeAt(curs+2)
+            curs += 3
+            let path = bytes.substring(curs, curs + pathlen)
+            curs += pathlen
+            let filelen = (bytes.charCodeAt(curs) << 24) | (bytes.charCodeAt(curs+1) << 16) | (bytes.charCodeAt(curs+2) << 8) | bytes.charCodeAt(curs+3)
+            curs += 4
+            let filebytes = bytes.substring(curs, curs + filelen)
+            files.open(`${PATH_MOUNT}${path}`).swrite(filebytes)
+            curs += filelen
+        }
+    }
 }
 
 let errorlevel = _G.shell.execute(PATH_MOUNT + "run.com")
