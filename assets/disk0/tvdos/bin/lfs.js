@@ -6,7 +6,7 @@ To collect a directory into myarchive.lfs:
 To extract an archive to path\\to\\my\\files:
        lfs -x myarchive.lfs \\path\\to\\my\\files
 To list the collected files:
-       lfs -t`)
+       lfs -t myarchive.lfs`)
 }
 
 let option = exec_args[1]
@@ -33,11 +33,14 @@ function recurseDir(file, action) {
     }
 
 }
+function mkDirs(fd) {
+    let parent = files.open(`${fd.driveLetter}:${fd.parentPath}\\`)
+    if (parent.exists) fd.mkDir()
+    else mkDirs(parent)
+}
 
 const lfsFile = files.open(_G.shell.resolvePathInput(lfsPath).full)
-const rootDir = files.open(_G.shell.resolvePathInput(dirPath).full)
-
-const rootDirPathLen = rootDir.fullPath.length
+const rootDir = ("-T" == option) ? undefined : files.open(_G.shell.resolvePathInput(dirPath).full)
 
 if ("-C" == option) {
     if (!rootDir.exists) {
@@ -46,6 +49,7 @@ if ("-C" == option) {
     }
 
     let out = "TVDOSLFS\x01\x00\x00\x00\x00\x00\x00\x00"
+    const rootDirPathLen = rootDir.fullPath.length
 
     recurseDir(rootDir, file=>{
         let f = files.open(file.fullPath)
@@ -72,15 +76,46 @@ if ("-C" == option) {
 
     lfsFile.swrite(out)
 }
-else if ("T" == option || "-X" == option) {
+else if ("-T" == option || "-X" == option) {
     if (!lfsFile.exists) {
         printerrln(`No such file: ${lfsFile.fullPath}`)
         return 1
     }
 
+    const bytes = lfsFile.sread()
+    if (bytes.substring(0, 9) != "TVDOSLFS\x01") {
+        printerrln("File is not LFS")
+        return 2
+    }
 
-    TODO()
+    if ("-X" == option && !rootDir.exists) {
+        rootDir.mkDir()
+    }
 
+    let curs = 16
+    while (curs < bytes.length) {
+        let fileType = bytes.charCodeAt(curs)
+        let pathlen = (bytes.charCodeAt(curs+1) << 8) | bytes.charCodeAt(curs+2)
+        curs += 3
+        let path = bytes.substring(curs, curs + pathlen)
+        curs += pathlen
+        let filelen = (bytes.charCodeAt(curs) << 24) | (bytes.charCodeAt(curs+1) << 16) | (bytes.charCodeAt(curs+2) << 8) | bytes.charCodeAt(curs+3)
+        curs += 4
+
+        if ("-X" == option) {
+            let filebytes = bytes.substring(curs, curs + filelen)
+            let outfile = files.open(`${rootDir.fullPath}\\${path}`)
+
+            mkDirs(files.open(`${rootDir.driveLetter}:${files.open(`${rootDir.fullPath}\\${path}`).parentPath}`))
+            outfile.mkFile()
+            outfile.swrite(filebytes)
+        }
+        else if ("-T" == option) {
+            println(`${filelen}\t${path}`)
+        }
+
+        curs += filelen
+    }
 }
 else {
     printerrln("Unknown option: " + option)

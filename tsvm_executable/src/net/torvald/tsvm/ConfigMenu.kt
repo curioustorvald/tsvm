@@ -1,5 +1,7 @@
 package net.torvald.tsvm
 
+import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.Input
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
@@ -15,16 +17,52 @@ class ConfigMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuM
     override fun hide() {
     }
 
+
+    private var guiClickLatched = arrayOf(false, false, false, false, false, false, false, false)
+
     override fun update() {
 
+        if (Gdx.input.isButtonPressed(Input.Buttons.LEFT)) {
+            if (!guiClickLatched[Input.Buttons.LEFT]) {
+                val mx = Gdx.input.x - x
+                val my = Gdx.input.y - y
 
+                // make com/card/ram buttons work
+                if (mx in 26 until 76) {
+                    // com
+                    if (my in 37 until 37 + FONT.H*4) {
+                        selectedPort = "com${1+((my-37) / FONT.H)}"
+                    }
+                    // card
+                    else if (my in 102 until 102 + FONT.H*7) {
+                        selectedPort = "card${1+((my-102) / FONT.H)}"
+                    }
+
+
+                    //ram
+                    if (my in 206 until 206 + FONT.H*10) {
+                        selectedRAM = "ram${ramsize[(my-206) / FONT.H]}k"
+                    }
+
+
+                }
+
+
+
+                guiClickLatched[Input.Buttons.LEFT] = true
+            }
+        }
+        else {
+            guiClickLatched[Input.Buttons.LEFT] = false
+        }
 
     }
 
     private val STR_COM = "\u00D6\u00D7\u00D8\u00D9"
     private val STR_CARD = "\u00DA\u00DB\u00DC\u00DD"
 
-    private val selectedPort = "" // com1-4, card1-7, ram16k..ram8192k
+    private var selectedPort = "" // com1-4, card1-7
+    private var selectedRAM = ""// ram16k..ram8192k
     private val ramsize = listOf(16,32,64,128,256,512,1024,2048,4096,8192)
 
 
@@ -77,11 +115,22 @@ class ConfigMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuM
 
                     for (i in 0..9) {
                         val ramnum = ramsize[i]
-                        batch.setColourBy { selectedPort == "ram${ramnum}k" }
+                        batch.setColourBy { selectedRAM == "ram${ramnum}k" }
                         FONT.draw(batch, "${ramnum}K", 36f + (if (ramnum < 100) 7f else if (ramnum < 1000) 4f else 0f), 206f + FONT.H * i)
                     }
 
 
+
+                    // test print
+                    val text = if (selectedPort.startsWith("com"))
+                        vm.getIO().blockTransferPorts[selectedPort[3].code - 0x31].recipient?.javaClass?.simpleName
+                    else if (selectedPort.startsWith("card"))
+                        vm.peripheralTable[selectedPort[4].code - 0x30].peripheral?.javaClass?.simpleName
+                    else
+                        ""
+
+                    batch.color = Color.WHITE
+                    FONT.draw(batch, text ?: "Nothing", 96f, 37f)
                 }
             }
 
