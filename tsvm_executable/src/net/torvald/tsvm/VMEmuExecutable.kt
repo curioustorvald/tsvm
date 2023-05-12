@@ -426,7 +426,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private val tabPos = (menuTabs + "").mapIndexed { index, _ -> 1 + menuTabs.subList(0, index).sumBy { it.length } + 2 * index }
     private val tabs = arrayOf(
         ProfilesMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Profiles
-        DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Config
+        ConfigMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // Config
         MMUMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // MMU
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM1
         DummyMenu(this, menuTabX, menuTabY, menuTabW, menuTabH), // COM2
