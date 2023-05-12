@@ -33,7 +33,7 @@ const SIGSEGV = new SIG("SEGV",11);
 class PmemFSdir {
     constructor(targetpath) {
         if (targetpath === undefined) {
-            this.data = ""
+            this.data = "" // the values is not used by anything :p
             return
         }
 
@@ -483,14 +483,8 @@ _TVDOS.DRV.FS.SERIAL.listFiles = (fd) => {
     let response = com.getStatusCode(port[0])
     if (response !== 0) return undefined
     let rawStr = com.pullMessage(port[0]) // {\x11 | \x12} <name> [ \x1E {\x11 | \x12} <name> ] \x17
-    let fdsInDir = []
     let parentPath = fd.fullPath
-    rawStr.substring(0, rawStr.length).split('\x1E').forEach(it => {
-        let filename = it.substring(1)
-        let newfd = new TVDOSFileDescriptor(`${parentPath}/${filename}`, "SERIAL")
-        fdsInDir.push(newfd)
-    })
-    return fdsInDir
+    return rawStr.substring(0, rawStr.length).split('\x1E').map(it => new TVDOSFileDescriptor(`${parentPath}/${it.substring(1)}`, "SERIAL"))
 }
 _TVDOS.DRV.FS.SERIAL.touch = (fd) => {
     let rrrr = _TVDOS.DRV.FS.SERIAL._openw(fd); if (rrrr != 0) throw Error("Touching a file failed with "+rrrr)
@@ -795,7 +789,9 @@ _TVDOS.DRV.FS.DEVTMP.pwrite = (fd, ptr, count, offset) => {
 _TVDOS.DRV.FS.DEVTMP.flush = (fd) => {}
 _TVDOS.DRV.FS.DEVTMP.close = (fd) => {}
 _TVDOS.DRV.FS.DEVTMP.isDirectory = (fd) => (_TVDOS.TMPFS[fd.path] != undefined && _TVDOS.TMPFS[fd.path] instanceof PmemFSdir)
-_TVDOS.DRV.FS.DEVTMP.listFiles = (fd) => undefined
+_TVDOS.DRV.FS.DEVTMP.listFiles = (fd) => {
+    Object.keys(_TVDOS.TMPFS).filter(it => it.startsWith(fd.path)).map(it => new TVDOSFileDescriptor(`$:/TMP/${it}`))
+}
 _TVDOS.DRV.FS.DEVTMP.touch = (fd) => {}
 _TVDOS.DRV.FS.DEVTMP.mkDir = (fd) => {
     _TVDOS.TMPFS[fd.path] = new PmemFSdir(fd.path)
