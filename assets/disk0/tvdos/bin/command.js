@@ -810,7 +810,7 @@ shell.execute = function(line) {
 }
 shell.pipes = {} // syntax: _G.shell.pipes[name] = contents; all pipes are named pipes just like in Windows
 shell.currentlyActivePipes = [] // Queue of pipe's names. Use shell.removePipe() to dequeue and shell.pushPipe() to enqueue.
-shell._rndstr = '0123456789+qwfpgjluyarstdhneiozxcvbkm/QWFPGJLUYARSTDHNEIOZXCVBKM'
+shell._rndstr = '0123456789+qwfpgjluyarstdhneiozxcvbkm&QWFPGJLUYARSTDHNEIOZXCVBKM'
 shell.generateAnonPipeName = function() {
     let name = ''
     while (true) {

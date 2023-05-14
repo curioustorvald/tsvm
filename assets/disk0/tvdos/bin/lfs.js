@@ -1,10 +1,38 @@
+/*
+TVDOS Linear File Strip.
+
+Format:
+
+- Header
+- FileBlock... (repeatedly appended for every file collected)
+
+# Header
+
+Bytes   "TVDOSLFS\x01" - header
+Uint16  Encoding
+    00 00 : Pure ASCII/CP437
+    01 00..0F : ISO 8859-1..16
+    10 00 : UTF-8
+    10 01 : UTF-16BE
+    10 02 : UTF-16LE
+Byte[5] Padding
+
+# FileBlocks
+Uint8    File type (only 1 is used)
+Uint16   Length of the Path
+Bytes[*] Fully Qualified Path string
+Uint32   Length of the binary
+Bytes[*] Binary representation of the file, no extra compression (to reduce the size of the archive, gzip the entire LFS
+instead of compressing individual files)
+ */
+
 function printUsage() {
     println(`Collects files under a directory into a single archive.
 Usage: lfs [-c/-x/-t] dest.lfs path\\to\\source
 To collect a directory into myarchive.lfs:
        lfs -c myarchive.lfs path\\to\\directory
 To extract an archive to path\\to\\my\\files:
-       lfs -x myarchive.lfs \\path\\to\\my\\files
+       lfs -x myarchive.lfs path\\to\\my\\files
 To list the collected files:
        lfs -t myarchive.lfs`)
 }
