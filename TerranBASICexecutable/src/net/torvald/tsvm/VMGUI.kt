@@ -45,6 +45,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     lateinit var fullscreenQuad: Mesh
 
     override fun create() {
+        println("[VMGUI] create()")
+
         super.create()
 
         fullscreenQuad = Mesh(
@@ -66,6 +68,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     }
 
     private fun init() {
+        println("[VMGUI] init()")
+
         if (loaderInfo.display != null) {
             val loadedClass = Class.forName(loaderInfo.display)
             val loadedClassConstructor = loadedClass.getConstructor(String::class.java, vm::class.java)
@@ -107,7 +111,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         }
 
         Gdx.input.inputProcessor = vm.getIO()
-
 
         vmRunner = VMRunnerFactory("./assets", vm, "js")
         coroutineJob = Thread({

@@ -6,8 +6,6 @@
       <root url="jar://$PROJECT_DIR$/lib/gdx-controllers-core-2.2.1.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-controllers-desktop-2.2.1.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-jnigen-loader-2.3.1.jar!/" />
-      <root url="jar://$PROJECT_DIR$/lib/gdx-lwjgl3-glfw-awt-macos-1.11.0-sources.jar!/" />
-      <root url="jar://$PROJECT_DIR$/lib/gdx-lwjgl3-glfw-awt-macos-1.11.0.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-platform-1.11.0-natives-arm64-v8a.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-platform-1.11.0-natives-armeabi-v7a.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-platform-1.11.0-natives-desktop.jar!/" />
@@ -60,6 +58,8 @@
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-opengl-3.3.1-natives-linux.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-opengl-3.3.1-natives-linux-arm64.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-opengl-3.3.1-natives-linux-arm32.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jlayer-1.0.1-gdx.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jorbis-0.0.17.jar!/" />
     </CLASSES>
     <JAVADOC>
       <root url="jar://$PROJECT_DIR$/lib/gdx-1.11.0-javadoc.jar!/" />
@@ -67,13 +67,13 @@
       <root url="jar://$PROJECT_DIR$/lib/gdx-controllers-core-2.2.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-controllers-desktop-2.2.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-jnigen-loader-2.3.1-javadoc.jar!/" />
-      <root url="jar://$PROJECT_DIR$/lib/gdx-lwjgl3-glfw-awt-macos-1.11.0-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-3.3.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-glfw-3.3.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-jemalloc-3.3.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-openal-3.3.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-stb-3.3.1-javadoc.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-opengl-3.3.1-javadoc.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jlayer-1.0.1-gdx-javadoc.jar!/" />
     </JAVADOC>
     <SOURCES>
       <root url="jar://$PROJECT_DIR$/lib/gdx-1.11.0-sources.jar!/" />
@@ -81,13 +81,14 @@
       <root url="jar://$PROJECT_DIR$/lib/gdx-controllers-core-2.2.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-controllers-desktop-2.2.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/gdx-jnigen-loader-2.3.1-sources.jar!/" />
-      <root url="jar://$PROJECT_DIR$/lib/gdx-lwjgl3-glfw-awt-macos-1.11.0-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-3.3.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-glfw-3.3.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-jemalloc-3.3.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-openal-3.3.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-stb-3.3.1-sources.jar!/" />
       <root url="jar://$PROJECT_DIR$/lib/lwjgl-opengl-3.3.1-sources.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jlayer-1.0.1-gdx-sources.jar!/" />
+      <root url="jar://$PROJECT_DIR$/lib/jorbis-0.0.17-sources.jar!/" />
     </SOURCES>
   </library>
 </component>

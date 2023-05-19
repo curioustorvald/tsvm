@@ -1,5 +1,7 @@
 package net.torvald.tsvm;
 
+import com.badlogic.gdx.ApplicationAdapter;
+import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
@@ -105,6 +107,13 @@ public class TerranBASIC {
 
         VM tbasvm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TerranBASICreleaseBios.INSTANCE}, 2, watchdogs);
         EmulInstance tbasrunner = new EmulInstance(tbasvm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", diskDir, 560, 448);
-        new Lwjgl3Application(new VMGUI(tbasrunner, WIDTH, HEIGHT), appConfig);
+
+        try {
+            new Lwjgl3Application(new VMGUI(tbasrunner, WIDTH, HEIGHT), appConfig);
+        }
+        catch (Throwable e) {
+            e.printStackTrace();
+            if (Gdx.app != null) Gdx.app.exit();
+        }
     }
 }
