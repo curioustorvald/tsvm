@@ -24,7 +24,7 @@ cp -r "../out/$RUNTIME" $DESTDIR/
 cp -r "../out/TerranBASIC.jar" $DESTDIR/
 
 # Pack everything to AppImage
-"./$APPIMAGETOOL" $DESTDIR "out/$DESTDIR.AppImage" || { echo 'Building AppImage failed' >&2; exit 1; }
+ARCH=arm_aarch64 "./$APPIMAGETOOL" $DESTDIR "out/$DESTDIR.AppImage" || { echo 'Building AppImage failed' >&2; exit 1; }
 chmod +x "out/$DESTDIR.AppImage"
 rm -rf $DESTDIR || true
 echo "Build successful: $DESTDIR"
