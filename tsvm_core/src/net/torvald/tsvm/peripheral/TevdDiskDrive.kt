@@ -56,6 +56,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
         }
     }
 
+    val diskUUIDstr: String; get() = DOM.uuid.toString()
     private val DBGPRN = false
 
     private fun printdbg(msg: Any) {

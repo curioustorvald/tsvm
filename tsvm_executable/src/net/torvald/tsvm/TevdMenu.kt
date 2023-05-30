@@ -29,19 +29,12 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
         if (dev?.javaClass?.simpleName == "TevdDiskDrive") {
             val dev = dev as TevdDiskDrive
             val DOM = dev.extortField("DOM") as PartialDOM
-            val DOMfileCache = DOM.extortField("fileCache") as HashMap<EntryID, *>
 
             batch.inUse {
                 batch.color = Color.WHITE
                 FONT.draw(batch, "Disk UUID: ${dev.diskUUIDstr}", 12f, 12f)
-                FONT.draw(batch, "F I L E   C A C H E", 12f, 12f+FONT.H)
-                var row = 2
-                DOMfileCache.forEach { (id, entry) ->
-                    val str = "${(row-1).toString().padStart(2,' ')}. ID $id (hits: ${entry.extortField("hits")})"
-                    FONT.draw(batch, str, 12f, 12f + FONT.H * row)
 
-                    row += 1
-                }
+
             }
         }
         else {
