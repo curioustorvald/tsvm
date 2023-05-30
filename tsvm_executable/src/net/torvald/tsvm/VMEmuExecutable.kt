@@ -64,12 +64,12 @@ class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var pa
  */
 class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: Int, var panelsY: Int, val diskPathRoot: String) : ApplicationAdapter() {
 
-    val TEVD_COMMIT = TevdPartialDomCommitWatchdog
-    val TEVD_SYNC = TevdPartialDomCommitWatchdog
+//    val TEVD_COMMIT = TevdPartialDomCommitWatchdog
+//    val TEVD_SYNC = TevdPartialDomCommitWatchdog
 
     val watchdogs = hashMapOf<String, VMWatchdog>(
-        "TEVD_COMMIT" to TEVD_COMMIT,
-        "TEVD_SYNC" to TEVD_SYNC
+//        "TEVD_COMMIT" to TEVD_COMMIT,
+//        "TEVD_SYNC" to TEVD_SYNC
     )
 
     data class VMRunnerInfo(val vm: VM, val profileName: String)

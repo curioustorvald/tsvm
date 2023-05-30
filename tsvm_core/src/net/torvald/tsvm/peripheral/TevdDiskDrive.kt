@@ -1,61 +1,95 @@
 package net.torvald.tsvm.peripheral
 
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.*
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil.checkReadOnly
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.archivers.ClusteredFormatDOM
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.archivers.Clustfile
 import net.torvald.tsvm.VM
 import java.io.*
 import java.util.*
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Created by minjaesong on 2022-12-15.
+ * @param driveNum 0 for COM drive number 1, but the file path will still be zero-based
  */
-class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val theTevdPath: String, val diskUUIDstr: String) : BlockTransferInterface(false, true) {
+class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: String) : BlockTransferInterface(false, true) {
+
+    companion object {
+        const val STATE_CODE_STANDBY = 0
+        const val STATE_CODE_OPERATION_FAILED = 1
+
+        const val STATE_CODE_ILLEGAL_COMMAND = 128
+        const val STATE_CODE_NO_SUCH_FILE_EXISTS = 129
+        const val STATE_CODE_FILE_ALREADY_OPENED = 130
+        const val STATE_CODE_OPERATION_NOT_PERMITTED = 131
+        const val STATE_CODE_READ_ONLY = 132
+        const val STATE_CODE_NOT_A_FILE = 133
+        const val STATE_CODE_NOT_A_DIRECTORY = 134
+        const val STATE_CODE_NO_FILE_OPENED = 135
+        const val STATE_CODE_SYSTEM_IO_ERROR = 192
+        const val STATE_CODE_SYSTEM_SECURITY_ERROR = 193
 
 
-    private val DBGPRN = true
+        val errorMsgs = Array(256) { "" }
 
-    val diskID: UUID = UUID.fromString(diskUUIDstr)
+        init {
+            errorMsgs[STATE_CODE_STANDBY] = "READY"
+            errorMsgs[STATE_CODE_OPERATION_FAILED] = "OPERATION FAILED"
 
+            errorMsgs[STATE_CODE_ILLEGAL_COMMAND] = "SYNTAX ERROR"
+            errorMsgs[STATE_CODE_NO_SUCH_FILE_EXISTS] = "NO SUCH FILE EXISTS"
+            errorMsgs[STATE_CODE_FILE_ALREADY_OPENED] = "FILE ALREADY OPENED"
+            errorMsgs[STATE_CODE_SYSTEM_IO_ERROR] = "IO ERROR ON SIMULATED DRIVE"
+            errorMsgs[STATE_CODE_SYSTEM_SECURITY_ERROR] = "SECURITY ERROR ON SIMULATED DRIVE"
+            errorMsgs[STATE_CODE_OPERATION_NOT_PERMITTED] = "OPERATION NOT PERMITTED"
+            errorMsgs[STATE_CODE_NOT_A_FILE] = "NOT A FILE"
+            errorMsgs[STATE_CODE_NOT_A_DIRECTORY] = "NOT A DIRECTORY"
+            errorMsgs[STATE_CODE_NO_FILE_OPENED] = "NO FILE OPENED"
+        }
+
+        fun composePositiveAns(vararg msg: String): ByteArray {
+            val sb = ArrayList<Byte>()
+            sb.addAll(msg[0].toByteArray().toTypedArray())
+            for (k in 1 until msg.size) {
+                sb.add(UNIT_SEP)
+                sb.addAll(msg[k].toByteArray().toTypedArray())
+            }
+            sb.add(END_OF_SEND_BLOCK)
+            return sb.toByteArray()
+        }
+    }
+
+    private val DBGPRN = false
 
     private fun printdbg(msg: Any) {
         if (DBGPRN) println("[TevDiskDrive] $msg")
     }
 
-    private val tevdPath = File(theTevdPath)
-    private val DOM = PartialDOM(tevdPath, VM.CHARSET)//VDUtil.readDiskArchive(tevdPath, charset = VM.CHARSET)
+    private val DOM = ClusteredFormatDOM(RandomAccessFile(theTevdPath, "rw"))
 
     private var fileOpen = false
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
-    private var file: TevdFileDescriptor = TevdFileDescriptor(DOM, "")
+    private var file = Clustfile(DOM, "")
     //private var readModeLength = -1 // always 4096
-    private val writeMode
-        get() = fileOpenMode == 1
-    private val appendMode
-        get() = fileOpenMode == 2
+    private var writeMode = false
+    private var appendMode = false
     private var writeModeLength = -1
 
     private val messageComposeBuffer = ByteArrayOutputStream(BLOCK_SIZE) // always use this and don't alter blockSendBuffer please
     private var blockSendBuffer = ByteArray(1)
     private var blockSendCount = 0
-    
+    /*set(value) {
+        println("[TevDiskDrive] blockSendCount $field -> $value")
+        val indentation = " ".repeat(this.javaClass.simpleName.length + 4)
+        Thread.currentThread().stackTrace.forEachIndexed { index, it ->
+            if (index == 1)
+                println("[${this.javaClass.simpleName}]> $it")
+            else if (index in 1..8)
+                println("$indentation$it")
+        }
+        field = value
+    }*/
+
+
     init {
-        statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
-
-        if (!tevdPath.exists()) {
-            throw FileNotFoundException("Disk file '${theTevdPath}' not found")
-        }
-    }
-
-    private var tevdSyncFilteringCounter = 0
-    fun notifyDiskCommit() {
-        vm.watchdogs["TEVD_COMMIT"]?.addMessage(arrayOf(tevdPath, DOM))
-
-        if (tevdSyncFilteringCounter >= 1) {
-            vm.watchdogs["TEVD_SYNC"]?.addMessage(arrayOf(tevdPath, DOM))
-            tevdSyncFilteringCounter = 0
-        }
-        tevdSyncFilteringCounter += 1
+        statusCode.set(STATE_CODE_STANDBY)
     }
 
 
@@ -84,6 +118,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
             blockSendBuffer.size % BLOCK_SIZE
         else BLOCK_SIZE
 
+//        println("blockSendCount = ${blockSendCount}; sendSize = $sendSize; blockSendBuffer.size = ${blockSendBuffer.size}")
+
         recipient.writeout(ByteArray(sendSize) {
             blockSendBuffer[blockSendCount * BLOCK_SIZE + it]
         })
@@ -102,93 +138,64 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
      * Disk drive must create desired side effects in accordance with the input message.
      */
     override fun writeoutImpl(inputData: ByteArray) {
-        printdbg("inputString=${inputData.trimNull().toString(VM.CHARSET)}")
-
-        if ((writeMode || appendMode) && writeModeLength >= 0) {
-            printdbg("writeout with inputdata length of ${inputData.size}")
+        if (writeMode || appendMode) {
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
 
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
-
-            if (!file.exists()) {
-                printdbg("File '${file.path}' not exists, creating new...")
-                val (result, failReason) = file.createNewFile()
-                if (failReason != null) {
-                    throw failReason
-                }
-                else {
-                    printdbg("Operation successful")
-                }
-            }
 
             System.arraycopy(inputData, 0, writeBuffer, writeBufferUsage, minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE))
             writeBufferUsage += inputData.size
 
             if (writeBufferUsage >= writeModeLength) {
                 // commit to the disk
-                if (appendMode)
-                    file.appendBytes(writeBuffer)
+                if (appendMode) {
+                    val filesize = file.length()
+                    file.pwrite(writeBuffer, 0, writeBuffer.size, filesize)
+                }
                 else if (writeMode)
                     file.writeBytes(writeBuffer)
 
-                fileOpenMode = -1
-
-                printdbg("Notifying disk commit (end of write)")
-                notifyDiskCommit()
+                writeMode = false
+                appendMode = false
             }
         }
         else if (fileOpenMode == 17) {
-            printdbg("File open mode 17")
-
             if (!fileOpen) throw InternalError("Bootloader file is not open but the drive is in boot write mode")
 
             val inputData = if (inputData.size != BLOCK_SIZE) ByteArray(BLOCK_SIZE) { if (it < inputData.size) inputData[it] else 0 }
             else inputData
 
-            val creationTime = VDUtil.currentUnixtime
-            DOM.checkReadOnly()
-            val file = EntryFile(BLOCK_SIZE.toLong())
-            file.getContent().appendBytes(inputData)
-
-            DOM.addNewFile(DiskEntry(1, 1, "TEVDBOOT".toByteArray(VM.CHARSET), creationTime, creationTime, file))
-
+            file.writeBytes(inputData)
 
             fileOpenMode = -1
-
-            printdbg("Notifying disk commit (end of bootloader write)")
-            notifyDiskCommit()
         }
         else {
-            printdbg("(cmd mode)")
-
             val inputString = inputData.trimNull().toString(VM.CHARSET)
+
+//            println("[TevDiskDrive] $inputString")
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")
                 //readModeLength = -1
                 fileOpen = false
                 fileOpenMode = -1
-                file = TevdFileDescriptor(DOM, "")
+                file = Clustfile(DOM, "")
                 blockSendCount = 0
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
+                writeMode = false
                 writeModeLength = -1
             }
             else if (inputString.startsWith("DEVSTU\u0017"))
-                recipient?.writeout(
-                    TestDiskDrive.composePositiveAns(
-                        "${statusCode.get().toChar()}",
-                        TestDiskDrive.errorMsgs[statusCode.get()]
-                    )
-                )
+                recipient?.writeout(composePositiveAns("${statusCode.get().toChar()}", errorMsgs[statusCode.get()]))
             else if (inputString.startsWith("DEVTYP\u0017"))
-                recipient?.writeout(TestDiskDrive.composePositiveAns("STOR"))
+                recipient?.writeout(composePositiveAns("STOR"))
             else if (inputString.startsWith("DEVNAM\u0017"))
-                recipient?.writeout(TestDiskDrive.composePositiveAns("Generic Disk Drive"))
+                recipient?.writeout(composePositiveAns("Testtec Virtual Disk Drive"))
             else if (inputString.startsWith("OPENR\"") || inputString.startsWith("OPENW\"") || inputString.startsWith("OPENA\"")) {
                 if (fileOpen) {
 
-                    statusCode.set(TestDiskDrive.STATE_CODE_FILE_ALREADY_OPENED)
+                    statusCode.set(STATE_CODE_FILE_ALREADY_OPENED)
                     return
                 }
 
@@ -205,7 +212,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 }
                 // sanity check if path is actually enclosed with double-quote
                 if (commaIndex != 6 && inputString[commaIndex - 1] != '"') {
-                    statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
+                    statusCode.set(STATE_CODE_ILLEGAL_COMMAND)
                     return
                 }
                 val pathStr = inputString.substring(6, if (commaIndex == 6) inputString.lastIndex else commaIndex - 1)
@@ -215,21 +222,16 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
-                file = TevdFileDescriptor(DOM, filePath)
-                printdbg("file path: ${file.canonicalPath}, drive num: $driveNum")
+                file = Clustfile(DOM, filePath)
+                printdbg("file path: ${file.path}, drive num: $driveNum")
 
                 if (openMode == 'R' && !file.exists()) {
                     printdbg("! file not found")
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_SUCH_FILE_EXISTS)
-                    return
-                }
-                else if (DOM.isReadOnly && (openMode == 'W' || openMode == 'A')) {
-                    printdbg("! disk is read-only")
-                    statusCode.set(TestDiskDrive.STATE_CODE_READ_ONLY)
+                    statusCode.set(STATE_CODE_NO_SUCH_FILE_EXISTS)
                     return
                 }
 
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
                 fileOpen = true
                 fileOpenMode = when (openMode) {
                     'W' -> 1
@@ -240,24 +242,18 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
             }
             else if (inputString.startsWith("DELETE")) {
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 try {
-                    val (successful, whyFailed) = file.delete()
-                    if (!successful) {
-                        statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_FAILED)
-                        return
-                    }
-                    printdbg("Notifying disk commit (file deleted)")
-                    notifyDiskCommit()
+                    file.delete()
                 }
                 catch (e: SecurityException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                     return
                 }
                 catch (e1: IOException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
             }
@@ -265,7 +261,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 try {
@@ -276,19 +272,19 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                             messageComposeBuffer.write(lsfile.name.toByteArray(VM.CHARSET))
                         }
 
-                        statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                        statusCode.set(STATE_CODE_STANDBY)
                     }
                     else {
-                        statusCode.set(TestDiskDrive.STATE_CODE_NOT_A_DIRECTORY)
+                        statusCode.set(STATE_CODE_NOT_A_DIRECTORY)
                         return
                     }
                 }
                 catch (e: SecurityException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                     return
                 }
                 catch (e1: IOException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
             }
@@ -296,28 +292,28 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
 
                 messageComposeBuffer.write(getSizeStr().toByteArray(VM.CHARSET))
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("LIST")) {
                 // TODO temporary behaviour to ignore any arguments
                 resetBuf()
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
 
                 messageComposeBuffer.write(getReadableLs().toByteArray(VM.CHARSET))
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("CLOSE")) {
                 fileOpen = false
                 fileOpenMode = -1
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("READ")) {
                 //readModeLength = inputString.substring(4 until inputString.length).toInt()
@@ -326,14 +322,14 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
                 if (file.isFile) {
                     try {
                         messageComposeBuffer.write(file.readBytes())
-                        statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                        statusCode.set(STATE_CODE_STANDBY)
                     }
                     catch (e: IOException) {
-                        statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
+                        statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     }
                 }
                 else {
-                    statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_NOT_PERMITTED)
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
             }
@@ -347,13 +343,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
-                if (DOM.isReadOnly) {
-                    printdbg("! disk is read-only")
-                    statusCode.set(TestDiskDrive.STATE_CODE_READ_ONLY)
-                    return
-                }
-
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
                 fileOpen = true
                 fileOpenMode = 17
                 blockSendCount = 0
@@ -368,163 +358,146 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
 
                 // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
 
-                val bootFile = DOM.requestFile(1)
-
-                printdbg("bootFile = $bootFile, ID: 1, exists = ${bootFile != null}")
-
-                if (bootFile == null) {
-                    printdbg("bootfile not exists!")
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_SUCH_FILE_EXISTS)
-                    return
-                }
                 try {
-                    val retMsg = (bootFile.contents as EntryFile).getContent().sliceArray(0 until BLOCK_SIZE) //VDUtil.getAsNormalFile(DOM, 1).getContent().sliceArray(0 until BLOCK_SIZE)
-
-                    printdbg("retMsg = ${retMsg.toString(VM.CHARSET)}")
-
+                    val retMsg = DOM.readBoot()
                     recipient?.writeout(retMsg)
-                    statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                    statusCode.set(STATE_CODE_STANDBY)
                 }
                 catch (e: IOException) {
-                    printdbg("exception:")
-                    e.printStackTrace()
-
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     return
                 }
             }
             else if (inputString.startsWith("MKDIR")) {
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 1) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_NOT_PERMITTED)
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 try {
-                    val (status, whyFailed) = file.mkdir()
+                    val status = file.mkdir()
                     statusCode.set(if (status) 0 else 1)
-                    if (status) {
-                        printdbg("Notifying disk commit (mkdir)")
-                        notifyDiskCommit()
-                    }
                 }
                 catch (e: SecurityException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                 }
             }
             else if (inputString.startsWith("MKFILE")) {
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 1) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_NOT_PERMITTED)
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 try {
-                    val (f1, whyFailed) = file.createNewFile()
-                    statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
-                    if (f1) {
-                        printdbg("Notifying disk commit (mkfile)")
-                        notifyDiskCommit()
-                    }
+                    val f1 = file.createNewFile()
+                    statusCode.set(if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED)
                     return
                 }
                 catch (e: IOException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                 }
                 catch (e1: SecurityException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                 }
             }
             else if (inputString.startsWith("TOUCH")) {
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 1) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_NOT_PERMITTED)
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
                 try {
-                    val (f1, whyFailed) = file.setLastModified(vm.worldInterface.currentTimeInMills())
-                    statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
-                    if (f1) {
-                        printdbg("Notifying disk commit (touch)")
-                        notifyDiskCommit()
-                    }
+                    val f1 = file.setLastModified(vm.worldInterface.currentTimeInMills())
+                    statusCode.set(if (f1) STATE_CODE_STANDBY else STATE_CODE_OPERATION_FAILED)
                     return
                 }
                 catch (e: IOException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_IO_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                 }
                 catch (e1: SecurityException) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_SYSTEM_SECURITY_ERROR)
+                    statusCode.set(STATE_CODE_SYSTEM_SECURITY_ERROR)
                 }
             }
             else if (inputString.startsWith("WRITE")) {
                 if (!fileOpen) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_NO_FILE_OPENED)
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
                 if (fileOpenMode < 0) {
-                    statusCode.set(TestDiskDrive.STATE_CODE_OPERATION_NOT_PERMITTED)
+                    statusCode.set(STATE_CODE_OPERATION_NOT_PERMITTED)
                     return
                 }
-                if (!file.exists()) {
-                    val (f1, whyFailed) = file.createNewFile()
-                    statusCode.set(if (f1) TestDiskDrive.STATE_CODE_STANDBY else TestDiskDrive.STATE_CODE_OPERATION_FAILED)
-                    if (!f1) { return }
-                }
-//                if (fileOpenMode == 1) { writeMode = true; appendMode = false }
-//                else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
+                if (fileOpenMode == 1) { writeMode = true; appendMode = false }
+                else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
                 writeModeLength = inputString.substring(5, inputString.length).toInt()
-
-                printdbg("WRITE issued with len $writeModeLength")
-
                 writeBuffer = ByteArray(writeModeLength)
                 writeBufferUsage = 0
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("USAGE")) {
-                recipient?.writeout(TestDiskDrive.composePositiveAns("USED${DOM.usedBytes}/TOTAL${DOM.capacity}"))
-                statusCode.set(TestDiskDrive.STATE_CODE_STANDBY)
+                recipient?.writeout(composePositiveAns("USED123456/TOTAL654321"))
+                statusCode.set(STATE_CODE_STANDBY)
             }
-            else if (inputString.startsWith("TEVDDISCARDDRIVE\"")) {
-                // the actual capacity of the floppy must be determined when the floppy gameitem was created
+            else
+                statusCode.set(STATE_CODE_ILLEGAL_COMMAND)
+        }
+    }
 
-                if (DOM.isReadOnly) {
-                    printdbg("! disk is read-only")
-                    statusCode.set(TestDiskDrive.STATE_CODE_READ_ONLY)
-                    return
+    val diskID: UUID = UUID(0, 0)
+
+    private fun getReadableLs(): String {
+        val sb = StringBuilder()
+        val isRoot = (file.path == "")
+
+        if (file.isFile) sb.append(file.name)
+        else {
+            sb.append("Current directory: ")
+            sb.append(if (isRoot) "(root)" else file.path)
+            sb.append('\n')
+
+            sb.append(".\n")
+            if (isRoot) sb.append("..\n")
+            // actual entries
+            file.listFiles()!!.forEach {
+                var filenameLen = it.name.length
+
+                sb.append(it.name)
+
+                if (it.isDirectory) {
+                    sb.append("/")
+                    filenameLen += 1
                 }
 
-                var commaIndex = inputString.lastIndex
-                while (commaIndex > 6) {
-                    if (inputString[commaIndex] == ',') break; commaIndex -= 1
-                }
-                // sanity check if path is actually enclosed with double-quote
-                if (commaIndex != 6 && inputString[commaIndex - 1] != '"') {
-                    statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
-                    return
-                }
-                val newName = inputString.substring(6, if (commaIndex == 6) inputString.lastIndex else commaIndex - 1)
-                val driveNum =
-                    if (commaIndex == 6) null else inputString.substring(commaIndex + 1, inputString.length).toInt()
+                sb.append(" ".repeat(40 - filenameLen))
 
-                // TODO driveNum is for disk drives that may have two or more slots built; for testing purposes we'll ignore it
+                if (it.isFile) {
+                    sb.append("${it.length()} B")
+                }
 
-                TODO()
-//                DOM.entries.clear()
-//                DOM.diskName = newName.toByteArray(VM.CHARSET)
-            }
-            else {
-                printdbg("Illegal command: ${inputString}")
-                statusCode.set(TestDiskDrive.STATE_CODE_ILLEGAL_COMMAND)
+                sb.append('\n')
             }
         }
+
+        return if (sb.last() == '\n') sb.substring(0, sb.lastIndex) else sb.toString()
+    }
+
+    private fun getSizeStr(): String {
+        val sb = StringBuilder()
+//        val isRoot = (file.absolutePath == rootPath.absolutePath)
+
+        if (file.isFile) sb.append(file.length())
+        else sb.append(file.listFiles()!!.size)
+
+        return sb.toString()
     }
 
     private fun sanitisePath(s: String) = s.replace('\\','/').replace(Regex("""\?<>:\*\|"""),"-")
@@ -555,65 +528,6 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, private val t
         }
 
         return newPaths.joinToString("/")
-    }
-
-    private fun getReadableLs(): String {
-        val sb = StringBuilder()
-        val isRoot = (file.entryID == 0)
-
-        if (file.isFile) sb.append(file.name)
-        else {
-            var filesCount = 0
-            var dirsCount = 0
-
-            sb.append("Current directory: ")
-            sb.append(if (isRoot) "(root)" else file.path)
-            sb.append('\n')
-
-            sb.append(".\n")
-            if (isRoot) sb.append("..\n")
-            // actual entries
-            file.listFiles()!!.forEach {
-                var filenameLen = it.name.length
-
-                sb.append(it.name)
-
-                if (it.isDirectory) {
-                    sb.append("/")
-                    filenameLen += 1
-
-                    dirsCount += 1
-                }
-
-                sb.append(" ".repeat(40 - filenameLen))
-
-                if (it.isFile) {
-                    sb.append("${it.length()} B")
-
-                    filesCount += 1
-                }
-
-                sb.append('\n')
-            }
-
-            sb.append("\n")
-            sb.append("\n$filesCount Files, $dirsCount, Directories")
-            sb.append("\nDisk used ${DOM.usedBytes} bytes")
-            sb.append("\n${DOM.capacity - DOM.usedBytes} bytes free")
-            if (DOM.isReadOnly)
-                sb.append("\nThe disk is read-only!")
-        }
-
-        return if (sb.last() == '\n') sb.substring(0, sb.lastIndex) else sb.toString()
-    }
-
-    private fun getSizeStr(): String {
-        val sb = StringBuilder()
-
-        if (file.isFile) sb.append(file.length())
-        else sb.append(file.listFiles()!!.size)
-
-        return sb.toString()
     }
 
 }
