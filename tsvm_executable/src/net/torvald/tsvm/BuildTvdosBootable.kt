@@ -1,8 +1,7 @@
 package net.torvald.tsvm
 
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.EntryFile
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil
-import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.VDUtil.checkReadOnly
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.archivers.ClusteredFormatDOM
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.archivers.Clustfile
 import java.io.File
 
 /**
@@ -12,46 +11,27 @@ fun main(args: Array<String>) {
     if (args.size != 1)
         println("Usage: java -jar BuildTvdosBootable.jar outfile")
 
-    val disk = VDUtil.createNewDisk(720L shl 10, "TVDOS", VM.CHARSET)
+    val outfile = File(args[0])
 
-    val tvdosDir = VDUtil.addDir(disk, 0, "tvdos".toByteArray(VM.CHARSET))
-    val homeDir = VDUtil.addDir(disk, 0, "home".toByteArray(VM.CHARSET))
+    val disk = ClusteredFormatDOM.createNewArchive(outfile, VM.CHARSET, "TVDOS", 240, byteArrayOf(0x10, 0x01))
+    val DOM = ClusteredFormatDOM(disk)
+
+    Clustfile(DOM, "/home").also { it.mkdir() }
 
     //tvdos/bin/*
-    VDUtil.importDirRecurse(disk, File("assets/disk0/tvdos/bin"), tvdosDir, VM.CHARSET)
+    Clustfile(DOM, "/tvdos/bin").importFrom(File("assets/disk0/tvdos/bin"))
+    Clustfile(DOM, "/tvdos/include").importFrom(File("assets/disk0/tvdos/include"))
+    Clustfile(DOM, "/tvdos/installer").importFrom(File("assets/disk0/tvdos/installer"))
+    Clustfile(DOM, "/tvdos/sbin").importFrom(File("assets/disk0/tvdos/sbin"))
 
     //tvdos/*
-    listOf(
-        VDUtil.importFile(File("assets/disk0/tvdos/gl.js"), disk.generateUniqueID(), VM.CHARSET),
-        VDUtil.importFile(File("assets/disk0/tvdos/TVDOS.SYS"), disk.generateUniqueID(), VM.CHARSET),
-        VDUtil.importFile(File("assets/disk0/tvdos/us_colemak.key"), disk.generateUniqueID(), VM.CHARSET),
-        VDUtil.importFile(File("assets/disk0/tvdos/us_qwerty.key"), disk.generateUniqueID(), VM.CHARSET),
-//        VDUtil.importFile(File("assets/disk0/tvdos/wall.bytes"), disk.generateUniqueID(), VM.CHARSET),
-//        VDUtil.importFile(File("assets/disk0/tvdos/wall.png"), disk.generateUniqueID(), VM.CHARSET),
-    ).forEach {
-        VDUtil.addFile(disk, tvdosDir, it)
-    }
+    Clustfile(DOM, "/tvdos/TVDOS.SYS").also { it.importFrom(File("assets/disk0/tvdos/TVDOS.SYS")) }
+    Clustfile(DOM, "/tvdos/us_colemak.key").also { it.importFrom(File("assets/disk0/tvdos/us_colemak.key")) }
+    Clustfile(DOM, "/tvdos/us_qwerty.key").also { it.importFrom(File("assets/disk0/tvdos/us_qwerty.key")) }
+
 
     // bare file in root dir
-    listOf(
-        VDUtil.importFile(File("assets/disk0/root.bootable/AUTOEXEC.BAT"), disk.generateUniqueID(), VM.CHARSET),
-    ).forEach {
-        VDUtil.addFile(disk, 0, it)
-    }
+    Clustfile(DOM, "/AUTOEXEC.BAT").also { it.importFrom(File("assets/disk0/root.bootable/AUTOEXEC.BAT")) }
 
-    VDUtil.importFile(File("assets/disk0/root.bootable/!BOOTSEC"), 1, VM.CHARSET).let {
-        disk.checkReadOnly()
-//        disk.checkCapacity(4096)
-
-        it.parentEntryID = 1
-
-        (it.contents as EntryFile).let { file ->
-            val bytes = file.getContent()
-            bytes.appendBytes(ByteArray(4096 - bytes.size.toInt()))
-        }
-
-        disk.entries[1] = it
-    }
-
-    VDUtil.dumpToRealMachine(disk, File(args[0]))
+    DOM.writeBoot(File("assets/disk0/root.bootable/!BOOTSEC").readBytes())
 }
