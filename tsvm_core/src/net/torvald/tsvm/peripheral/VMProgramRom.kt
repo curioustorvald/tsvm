@@ -6,6 +6,7 @@ import net.torvald.tsvm.CompressorDelegate
 import net.torvald.tsvm.CompressorDelegate.Companion.GZIP_HEADER
 import net.torvald.tsvm.VM
 import java.io.File
+import kotlin.experimental.xor
 
 open class VMProgramRom {
     private val contents: ByteArray
@@ -26,13 +27,58 @@ open class VMProgramRom {
 
     fun readAll(): String {
         // check if bios is compressed in gzip
-        return if (contents.startsWith(GZIP_HEADER))
+        return if (contents.startsWith(byteArrayOf(31, -85, 26)))
+            CompressorDelegate.decomp(dec(contents)).toString(VM.CHARSET)
+        else if (contents.startsWith(GZIP_HEADER))
             CompressorDelegate.decomp(contents).toString(VM.CHARSET)
         else
             contents.toString(VM.CHARSET)
     }
 
     fun get(addr: Int): Byte = contents[addr]
+
+
+    private fun seq(s: String): String {
+        var out = ""
+        var cnt = 0
+        var oldchar = s[0]
+        for (char in s) {
+            if (char == oldchar) {
+                cnt += 1
+            }
+            else {
+                out += "$cnt$oldchar"
+                cnt = 1
+            }
+            oldchar = char
+        }
+        return out + cnt + oldchar
+    }
+
+    private data class EncState(
+        var key: String = "00",
+        var keyBytes: ByteArray = byteArrayOf(0),
+        var keyCursor: Int = 0
+    )
+
+    private fun getNewKeySeq(s: EncState) {
+        s.key = seq(s.key)
+        s.keyCursor = 0
+        s.keyBytes = ByteArray(s.key.length / 2) {
+            Integer.parseInt(s.key.substring(it*2, it*2 + 2), 16).toByte()
+        }
+    }
+
+    private fun dec(b: ByteArray): ByteArray {
+        val s = EncState()
+        return ByteArray(b.size) {
+            (b[it] xor s.keyBytes[s.keyCursor++]).also {
+                if (s.keyCursor >= s.keyBytes.size) {
+                    getNewKeySeq(s)
+                }
+            }
+        }
+    }
 }
 
 object GenericBios : VMProgramRom(File("./assets/bios/bios1.bin"))
@@ -40,7 +86,7 @@ object OEMBios : VMProgramRom(File("./assets/bios/TBMBIOS.js"))
 object QuickBios : VMProgramRom(File("./assets/bios/quick.js"))
 object BasicBios : VMProgramRom(File("./assets/bios/basicbios.js"))
 object TandemBios : VMProgramRom(File("./assets/bios/tandemport.js"))
-object TsvmBios : VMProgramRom(File("./assets/bios/tsvmbios.js"))
+object TsvmBios : VMProgramRom(File("./assets/bios/tsvmbios.bin"))
 object BasicRom : VMProgramRom(File("./assets/bios/basic.bin"))
 object WPBios : VMProgramRom(File("./assets/bios/wp.js"))
 object OpenBios : VMProgramRom(File("./assets/bios/openbios.js"))
