@@ -63,7 +63,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
         if (DBGPRN) println("[TevDiskDrive] $msg")
     }
 
-    private val DOM = ClusteredFormatDOM(RandomAccessFile(theTevdPath, "rw"))
+    private val DOM = ClusteredFormatDOM(RandomAccessFile(theTevdPath, "rwd"))
 
     private var fileOpen = false
     private var fileOpenMode = -1 // 1: 'W", 2: 'A'
