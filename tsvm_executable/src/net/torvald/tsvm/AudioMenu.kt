@@ -48,7 +48,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 for (i in 0..3) { batch.fillRect(7, 5 + 115*i, 102, 8*FONT.H + 4) }
             }
             for (i in 0..3) {
-                val ahead = (adev.extortField("playheads") as Array<AudioAdapter.Playhead>)[i]
+                val ahead = adev.extortField<Array<AudioAdapter.Playhead>>("playheads")!![i]
                 drawStatusLCD(adev, ahead, batch, i, 9f + 7, 7f + 7 + 115 * i)
             }
 
@@ -59,7 +59,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 for (i in 0..3) { batch.fillRect(117, 5 + 115*i, 512, 8*FONT.H + 4) }
             }
             for (i in 0..3) {
-                val ahead = (adev.extortField("playheads") as Array<AudioAdapter.Playhead>)[i]
+                val ahead = adev.extortField<Array<AudioAdapter.Playhead>>("playheads")!![i]
                 drawSoundscope(adev, ahead, batch, i, 117f, 5f + 115 * i)
             }
         }
@@ -127,8 +127,8 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
     private fun drawSoundscope(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float) {
         val gdxadev = ahead.audioDevice
-        val bytes = gdxadev.extortField("bytes") as ByteArray?
-        val bytesLen = gdxadev.extortField("bytesLength") as Int
+        val bytes = gdxadev.extortField<ByteArray>("bytes")
+        val bytesLen = gdxadev.extortField<Int>("bytesLength")!!
         val envelopeHalfHeight = 27
 
         batch.inUse {

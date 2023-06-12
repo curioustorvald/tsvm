@@ -28,7 +28,7 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
 
         if (dev?.javaClass?.simpleName == "TevdDiskDrive") {
             val dev = dev as TevdDiskDrive
-            val DOM = dev.extortField("DOM") as PartialDOM
+            val DOM = dev.extortField<PartialDOM>("DOM")
 
             batch.inUse {
                 batch.color = Color.WHITE
