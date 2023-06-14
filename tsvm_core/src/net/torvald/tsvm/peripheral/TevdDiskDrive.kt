@@ -445,7 +445,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
                 statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("USAGE")) {
-                recipient?.writeout(composePositiveAns("USED123456/TOTAL654321"))
+                recipient?.writeout(composePositiveAns("USED${DOM.usedSpace}/TOTAL${DOM.totalSpace}"))
                 statusCode.set(STATE_CODE_STANDBY)
             }
             else
