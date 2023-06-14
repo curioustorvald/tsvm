@@ -39,12 +39,10 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
             // this fails due to two reasons:
             // 1. vm context is not GL context
             // 2. probing at the disk during read/write operation corrupts shits
-            /*DOM.diskModifiedHook = {
-                val batchInUse = batch.isDrawing
-                if (!batchInUse) batch.begin()
-                rebuildClustmap(batch, DOM, ARCHIVE, 12, 12 + 13 * 3 + btnGap)
-                if (!batchInUse) batch.end()
-            }*/
+            DOM.diskModifiedHook = {
+                // FIXME TEVD: need custom version of RandomAccessFile that keeps track of the file cursor
+//                rebuildClustmap(DOM, ARCHIVE)
+            }
 
         }
     }
@@ -67,6 +65,8 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
                 FONT.draw(batch, "Used: ${DOM.usedClusterCount}/${DOM.totalClusterCount} Clusters", 12f, 12f + 13*1)
                 FONT.draw(batch, "Cluster Map:", 12f, 12f + 13*2)
 
+                val ccnt = DOM.totalClusterCount
+                drawUsingClustermap(batch, ccnt, getMapdim(ccnt))
             }
         }
         else {
@@ -79,6 +79,37 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
 
     }
 
+    private data class Mapdim(val px: Int, val py: Int, val bw: Int, val bh: Int, val bgap: Int, val ccntrow: Int)
+
+    private fun getMapdim(clusterCount: Int): Mapdim {
+        val bw = when (clusterCount) {
+            in 0..240 -> 50
+            in 241..480 -> 24
+            in 481..960 -> 11
+            in 961..2500 -> 4
+            else -> 4
+        }
+        val bh = when (clusterCount) {
+            in 0..2499 -> 18
+            in 2500..4999 -> 19
+            in 5000..9999 -> 9
+            else -> 4
+        }
+        val bgap = when (clusterCount) {
+            in 0..2499 -> 2
+            in 2500..9999 -> 1
+            else -> 1
+        }
+        val ccntrow = when (clusterCount) {
+            in 0..4999 -> 20
+            in 5000..9999 -> 40
+            else -> 80
+        }
+        val clustersX = clusterCount / ccntrow
+        val px = (636 - (clustersX * (bw + bgap) - bgap)) / 2
+        val py = 12 + 13*3 + 6
+        return Mapdim(px, py, bw, bh, bgap, ccntrow)
+    }
 
     private val buttonColourFree = Color(0xfafafaff.toInt())
     private val buttonColourOccupied = listOf(
@@ -99,14 +130,11 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
     private val buttonColourFAT = Color(0x6cee91ff.toInt())
     private val buttonColourFATdata = Color(0xf6cb07ff.toInt())
     private val buttonColourReserved = Color(0x12adffff.toInt())
-    private val buttonColourVirtual = Color(0xece8d9ff.toInt())
+    private val buttonColourVirtual = EmulatorGuiToolkit.Theme.COL_WELL2
 
-    private var btnW = 12
-    private var btnH = 12
-    private var btnGap = 2
+    private val clusterMap = HashMap<Int, Color>()
 
-
-    private fun rebuildClustmap(batch: SpriteBatch, vdisk: ClusteredFormatDOM, ARCHIVE: RandomAccessFile, paintX: Int, paintY: Int) {
+    private fun rebuildClustmap(vdisk: ClusteredFormatDOM, ARCHIVE: RandomAccessFile) {
         val fatClusterCount = vdisk.extortField<Int>("fatClusterCount")!!
 
         vdisk?.let { vdisk ->
@@ -125,13 +153,18 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
                     contentsSizeToButtonColour(vdisk.contentSizeInThisCluster(i))
                 }
 
-                // do something with buttonCol
-                val x = paintX + (i / 20) * (btnW + btnGap)
-                val y = paintY + (i % 20) * (btnH + btnGap)
-                batch.color = buttonCol
-                batch.fillRect(x, y, btnW, btnH)
-
+                clusterMap[i] = buttonCol
             }
+        }
+    }
+
+    private fun drawUsingClustermap(batch: SpriteBatch, totalClusterCount: Int, mapdim: Mapdim) {
+        for (i in 0 until totalClusterCount) {
+            // do something with buttonCol
+            val x = mapdim.px + (i / mapdim.ccntrow) * (mapdim.bw + mapdim.bgap)
+            val y = mapdim.py + (i % mapdim.ccntrow) * (mapdim.bh + mapdim.bgap)
+            batch.color = clusterMap.getOrDefault(i, buttonColourFree)
+            batch.fillRect(x, y, mapdim.bw, mapdim.bh)
         }
     }
 
