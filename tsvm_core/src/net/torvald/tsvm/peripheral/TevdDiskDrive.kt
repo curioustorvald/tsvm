@@ -155,7 +155,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
                     file.pwrite(writeBuffer, 0, writeBuffer.size, filesize)
                 }
                 else if (writeMode)
-                    file.writeBytes(writeBuffer)
+                    file.overwrite(writeBuffer)
 
                 writeMode = false
                 appendMode = false
@@ -167,9 +167,10 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
             val inputData = if (inputData.size != BLOCK_SIZE) ByteArray(BLOCK_SIZE) { if (it < inputData.size) inputData[it] else 0 }
             else inputData
 
-            file.writeBytes(inputData)
+            DOM.writeBoot(inputData)
 
             fileOpenMode = -1
+            fileOpen = false
         }
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)

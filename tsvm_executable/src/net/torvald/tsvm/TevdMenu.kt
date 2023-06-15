@@ -7,6 +7,7 @@ import net.torvald.reflection.forceInvoke
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.DiskSkimmer.Companion.read
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.archivers.ClusteredFormatDOM
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.archivers.seekToCluster
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.peripheral.TevdDiskDrive
@@ -24,6 +25,15 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
     }
 
     override fun hide() {
+
+        val dev = parent.currentlyPersistentVM?.vm?.getIO()?.blockTransferPorts?.getOrNull(cardIndex ?: -1)?.recipient
+        if (dev?.javaClass?.simpleName == "TevdDiskDrive") {
+            val dev = dev as TevdDiskDrive
+            val DOM = dev.extortField<ClusteredFormatDOM>("DOM")!!
+
+            DOM.forceInvoke<Unit>("bbbb", arrayOf("false"))
+        }
+
     }
 
     override fun update() {
@@ -56,6 +66,8 @@ class TevdMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMen
             val dev = dev as TevdDiskDrive
             val DOM = dev.extortField<ClusteredFormatDOM>("DOM")!!
             val ARCHIVE = DOM.extortField<RandomAccessFile>("ARCHIVE")!!
+
+            DOM.forceInvoke<Unit>("bbbb", arrayOf("true"))
 
             setupHook(dev, batch)
 
