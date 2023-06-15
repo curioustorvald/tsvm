@@ -129,13 +129,13 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             4083L -> blockTransferPorts[3].getYourStatusCode().toByte()
 
             4084L -> (blockTransferPorts[0].yourBlockSize().toByte())
-            4085L -> (blockTransferPorts[0].doYouHaveNext().toInt(7) or blockTransferPorts[0].yourBlockSize().ushr(8).and(15)).toByte()
+            4085L -> (blockTransferPorts[0].doYouHaveNext().toInt(7) or (blockTransferPorts[0].yourBlockSize() == 0).toInt(4) or blockTransferPorts[0].yourBlockSize().ushr(8).and(15)).toByte()
             4086L -> (blockTransferPorts[1].yourBlockSize().toByte())
-            4087L -> (blockTransferPorts[1].doYouHaveNext().toInt(7) or blockTransferPorts[1].yourBlockSize().ushr(8).and(15)).toByte()
+            4087L -> (blockTransferPorts[1].doYouHaveNext().toInt(7) or (blockTransferPorts[1].yourBlockSize() == 0).toInt(4) or blockTransferPorts[1].yourBlockSize().ushr(8).and(15)).toByte()
             4088L -> (blockTransferPorts[2].yourBlockSize().toByte())
-            4089L -> (blockTransferPorts[2].doYouHaveNext().toInt(7) or blockTransferPorts[2].yourBlockSize().ushr(8).and(15)).toByte()
+            4089L -> (blockTransferPorts[2].doYouHaveNext().toInt(7) or (blockTransferPorts[2].yourBlockSize() == 0).toInt(4) or blockTransferPorts[2].yourBlockSize().ushr(8).and(15)).toByte()
             4090L -> (blockTransferPorts[3].yourBlockSize().toByte())
-            4091L -> (blockTransferPorts[3].doYouHaveNext().toInt(7) or blockTransferPorts[3].yourBlockSize().ushr(8).and(15)).toByte()
+            4091L -> (blockTransferPorts[3].doYouHaveNext().toInt(7) or (blockTransferPorts[3].yourBlockSize() == 0).toInt(4) or blockTransferPorts[3].yourBlockSize().ushr(8).and(15)).toByte()
 
             in 4092..4095 -> composeBlockTransferStatus(adi - 4092).toByte()
 
@@ -196,7 +196,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 4085L -> {
                     blockTransferPorts[0].hasNext.set(byte < 0)
                     blockTransferPorts[0].blockSize.getAcquire().let {
-                        blockTransferPorts[0].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                        blockTransferPorts[0].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15) or (it == 0).toInt(4))
                     }
                 }
 
@@ -207,7 +207,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 4087L -> {
                     blockTransferPorts[1].hasNext.set(byte < 0)
                     blockTransferPorts[1].blockSize.getAcquire().let {
-                        blockTransferPorts[1].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                        blockTransferPorts[1].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15) or (it == 0).toInt(4))
                     }
                 }
 
@@ -218,7 +218,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 4089L -> {
                     blockTransferPorts[2].hasNext.set(byte < 0)
                     blockTransferPorts[2].blockSize.getAcquire().let {
-                        blockTransferPorts[2].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                        blockTransferPorts[2].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15) or (it == 0).toInt(4))
                     }
                 }
 
@@ -229,7 +229,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 4091L -> {
                     blockTransferPorts[3].hasNext.set(byte < 0)
                     blockTransferPorts[3].blockSize.getAcquire().let {
-                        blockTransferPorts[3].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15))
+                        blockTransferPorts[3].blockSize.setRelease(it.and(0x00FF) or byte.toInt().and(15) or (it == 0).toInt(4))
                     }
                 }
 

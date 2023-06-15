@@ -143,22 +143,37 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
 
+            println("[TevDiskDrive] write-payload (${inputData.size} bytes)")
+
+
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
 
-            System.arraycopy(inputData, 0, writeBuffer, writeBufferUsage, minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE))
-            writeBufferUsage += inputData.size
-
-            if (writeBufferUsage >= writeModeLength) {
-                // commit to the disk
-                if (appendMode) {
-                    val filesize = file.length()
-                    file.pwrite(writeBuffer, 0, writeBuffer.size, filesize)
-                }
-                else if (writeMode)
-                    file.overwrite(writeBuffer)
-
+            if (writeBuffer.isEmpty()) {
                 writeMode = false
                 appendMode = false
+            }
+            else {
+                System.arraycopy(
+                    inputData,
+                    0,
+                    writeBuffer,
+                    writeBufferUsage,
+                    minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE)
+                )
+                writeBufferUsage += inputData.size
+
+                if (writeBufferUsage >= writeModeLength) {
+                    // commit to the disk
+                    if (appendMode) {
+                        val filesize = file.length()
+                        file.pwrite(writeBuffer, 0, writeBuffer.size, filesize)
+                    }
+                    else if (writeMode)
+                        file.overwrite(writeBuffer)
+
+                    writeMode = false
+                    appendMode = false
+                }
             }
         }
         else if (fileOpenMode == 17) {
@@ -175,7 +190,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
 
-//            println("[TevDiskDrive] $inputString")
+            println("[TevDiskDrive] $inputString")
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")
@@ -430,6 +445,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
                 }
             }
             else if (inputString.startsWith("WRITE")) {
+                writeModeLength = inputString.substring(5, inputString.length).toInt()
                 if (!fileOpen) {
                     statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
@@ -440,7 +456,6 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
                 }
                 if (fileOpenMode == 1) { writeMode = true; appendMode = false }
                 else if (fileOpenMode == 2) { writeMode = false; appendMode = true }
-                writeModeLength = inputString.substring(5, inputString.length).toInt()
                 writeBuffer = ByteArray(writeModeLength)
                 writeBufferUsage = 0
                 statusCode.set(STATE_CODE_STANDBY)

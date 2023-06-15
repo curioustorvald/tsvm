@@ -110,15 +110,17 @@ MMIO
 4080..4083 RO: 8-bit status code for connected device
 
 4084..4091 RO: Block transfer status
-    0b nnnnnnnn a000 mmmm
+    0b nnnnnnnn a00z mmmm
 
     n-read: size of the block from the other device, LSB (4096-full block size is zero)
     m-read: size of the block from the other device, MSB (4096-full block size is zero)
     a-read: if the other device hasNext (doYouHaveNext), false if device not present
+    z-read: set if the size is actually 0 instead of 4096
 
     n-write: size of the block I'm sending, LSB (4096-full block size is zero)
     m-write: size of the block I'm sending, MSB (4096-full block size is zero)
     a-write: if there's more to send (hasNext)
+    z-write: set if the size is actually 0 instead of 4096
 
 4092..4095 RW: Block transfer control for Port 1 through 4
     0b 00ms abcd
