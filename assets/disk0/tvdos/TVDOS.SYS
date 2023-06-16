@@ -146,8 +146,8 @@ _TVDOS.variables = {
     DOSDIR: "\\tvdos",
     LANG: "EN",
     KEYBOARD: "us_qwerty",
-    PATH: "\\tvdos\\bin;\\tbas;\\home",
-    PATHEXT: ".com;.bat;.js",
+    PATH: "\\tvdos\\bin;\\home",
+    PATHEXT: ".com;.bat;.app;.js",
     HELPPATH: "\\tvdos\\help",
     OS_NAME: "TSVM Disk Operating System",
     OS_VERSION: _TVDOS.VERSION
@@ -177,12 +177,20 @@ class TVDOSFileDescriptor {
         }
         else {
             let p = path0.replaceAll("/", "\\")
-            // oh well...
+            this._driveLetter = p[0]
+            p = p.substring(2) // detaches A:
+            // remove trailing slashes
             while (p.endsWith("\\")) {
                 p = p.substring(0, p.length - 1)
             }
-            this._driveLetter = p[0]
-            this._path = p.substring(2) // detaches $:
+            // remove initial slashes...
+            while (p.startsWith("\\")) {
+                p = p.substring(1)
+            }
+            // then add our own
+            p = "\\" + p
+
+            this._path = p
 
             if (driverID == undefined) driverID = "UNDEFINED"
 
@@ -275,6 +283,12 @@ class TVDOSFileDescriptor {
 
     get name() {
         return this.path.split("\\").last()
+    }
+    get extension() {
+        let fname = this.name
+        let dotpos = fname.lastIndexOf('.')
+        if (dotpos < 0) return ''
+        else return fname.substring(dotpos+1)
     }
     get parentPath() {
 //        return this.path.split("\\").init().join("\\")

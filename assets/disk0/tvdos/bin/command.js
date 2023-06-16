@@ -733,10 +733,7 @@ shell.execute = function(line) {
             }
             else {
                 let programCode = searchFile.sread()
-                let extension = undefined
-                // get proper extension
-                let dotSepTokens = cmd.split('.')
-                if (dotSepTokens.length > 1) extension = dotSepTokens[dotSepTokens.length - 1].toUpperCase()
+                let extension = searchFile.extension.toUpperCase()
 
                 if ("BAT" == extension) {
                     // parse and run as batch file
@@ -744,6 +741,13 @@ shell.execute = function(line) {
                     lines.forEach(function(line) {
                         shell.execute(line)
                     })
+                }
+                else if ("APP" == extension) {
+                    let appexec = `A:${_TVDOS.variables.DOSDIR}\\sbin\\appexec.js`
+                    let foundFile = searchFile.fullPath
+
+//                    println(`${appexec} ${foundFile} ${parsedTokens.tail().join(' ')}`)
+                    shell.execute(`${appexec} ${foundFile} ${parsedTokens.tail().join(' ')}`)
                 }
                 else {
                     let gotError = false

@@ -197,7 +197,7 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
         else {
             val inputString = inputData.trimNull().toString(VM.CHARSET)
 
-            println("[TevDiskDrive] $inputString")
+//            println("[TevDiskDrive] $inputString")
 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")

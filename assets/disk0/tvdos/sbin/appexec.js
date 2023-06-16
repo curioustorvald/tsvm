@@ -130,7 +130,7 @@ for (let i = 0; i < sectionTable.length - 1; i++) {
     }
 }
 
-let errorlevel = _G.shell.execute(PATH_MOUNT + "run.com")
+let errorlevel = _G.shell.execute(PATH_MOUNT + "run.com" + " " + exec_args.tail().join(' '))
 
 try {
     files.open(PATH_MOUNT).remove()
