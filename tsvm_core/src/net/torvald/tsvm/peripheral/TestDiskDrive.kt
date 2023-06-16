@@ -121,6 +121,8 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
 
         val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
             blockSendBuffer.size % BLOCK_SIZE
+        else if (blockSendBuffer.size <= BLOCK_SIZE)
+            blockSendBuffer.size
         else BLOCK_SIZE
 
 //        println("blockSendCount = ${blockSendCount}; sendSize = $sendSize; blockSendBuffer.size = ${blockSendBuffer.size}")
@@ -147,20 +149,40 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
 
+//            println("[TestDiskDrive] (write-payload of ${inputData.size} bytes; $writeBufferUsage out of $writeModeLength bytes has been written so far)")
+
+
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
 
-            System.arraycopy(inputData, 0, writeBuffer, writeBufferUsage, minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE))
-            writeBufferUsage += inputData.size
+            if (writeModeLength == 0) {
+//                println("[TestDiskDrive] write mode was initiated with zero-byte writing; closing immediately")
 
-            if (writeBufferUsage >= writeModeLength) {
-                // commit to the disk
-                if (appendMode)
-                    file.appendBytes(writeBuffer)
-                else if (writeMode)
-                    file.writeBytes(writeBuffer)
+                if (writeMode)
+                    file.writeBytes(ByteArray(0))
 
                 writeMode = false
                 appendMode = false
+            }
+            else {
+                System.arraycopy(
+                    inputData,
+                    0,
+                    writeBuffer,
+                    writeBufferUsage,
+                    minOf(writeModeLength - writeBufferUsage, inputData.size, BLOCK_SIZE)
+                )
+                writeBufferUsage += inputData.size
+
+                if (writeBufferUsage >= writeModeLength) {
+                    // commit to the disk
+                    if (appendMode)
+                        file.appendBytes(writeBuffer)
+                    else if (writeMode)
+                        file.writeBytes(writeBuffer)
+
+                    writeMode = false
+                    appendMode = false
+                }
             }
         }
         else if (fileOpenMode == 17) {

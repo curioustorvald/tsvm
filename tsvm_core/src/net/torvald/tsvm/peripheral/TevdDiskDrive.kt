@@ -117,6 +117,8 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
 
         val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
             blockSendBuffer.size % BLOCK_SIZE
+        else if (blockSendBuffer.size <= BLOCK_SIZE)
+            blockSendBuffer.size
         else BLOCK_SIZE
 
 //        println("blockSendCount = ${blockSendCount}; sendSize = $sendSize; blockSendBuffer.size = ${blockSendBuffer.size}")
@@ -143,12 +145,17 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
             //println("[DiskDrive] writeout with inputdata length of ${inputData.size}")
             //println("[DiskDriveMsg] ${inputData.toString(Charsets.UTF_8)}")
 
-            println("[TevDiskDrive] write-payload (${inputData.size} bytes)")
+//            println("[TevDiskDrive] (write-payload of ${inputData.size} bytes; $writeBufferUsage out of $writeModeLength bytes has been written so far)")
 
 
             if (!fileOpen) throw InternalError("File is not open but the drive is in write mode")
 
-            if (writeBuffer.isEmpty()) {
+            if (writeModeLength == 0) {
+//                println("[TevDiskDrive] write mode was initiated with zero-byte writing; closing immediately")
+
+                if (writeMode)
+                    file.overwrite(ByteArray(0))
+
                 writeMode = false
                 appendMode = false
             }
