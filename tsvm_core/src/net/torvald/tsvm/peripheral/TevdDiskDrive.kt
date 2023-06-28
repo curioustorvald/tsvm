@@ -339,6 +339,15 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
                 fileOpenMode = -1
                 statusCode.set(STATE_CODE_STANDBY)
             }
+            else if (inputString.startsWith("READCLUST")) {
+                if (fileOpen) {
+                    statusCode.set(STATE_CODE_FILE_ALREADY_OPENED)
+                    return
+                }
+                val clustnum = inputString.substring(9 until inputString.length).toInt()
+                resetBuf()
+                messageComposeBuffer.write(DOM.getRawCluster(clustnum))
+            }
             else if (inputString.startsWith("READ")) {
                 //readModeLength = inputString.substring(4 until inputString.length).toInt()
 
