@@ -70,7 +70,9 @@ let filesPanelDraw = (wo) => {
     let usedBytes = undefined
     let totalBytes = undefined
     let freeBytes = undefined
-    let pathStr = path[windowMode].concat(['']).join("\\")
+    let pathStr = path[windowMode].concat(['']).join("\\").replaceAll('\\\\', '\\')
+
+    // serial.println(`pathStr=${pathStr}`)
 
     let port = _TVDOS.DRIVES[pathStr[0]]
 
@@ -105,6 +107,7 @@ let filesPanelDraw = (wo) => {
     // draw list
     let fileList = []
     if (!showDrives) {
+        // serial.println(`pathStr=${pathStr}`)
         fileList = files.open(pathStr).list()
     }
     else {
@@ -113,7 +116,9 @@ let filesPanelDraw = (wo) => {
             let dinfo = _TVDOS.DRIVEINFO[letter]
 
             if (dinfo.type == "STOR") {
-                fileList.push(files.open(`${letter}:\\`))
+                let file = files.open(`${letter}:\\`)
+                fileList.push(file)
+                // serial.println(`fileList ${file.fullPath}`)
             }
         })
     }
@@ -325,12 +330,15 @@ let filenavOninput = (window, event) => {
     else if (keyJustHit && keycode == 66) { // enter
         let selectedFile = dirFileList[windowMode][cursor[windowMode]]
 
-        if (selectedFile.fullPath.length == 2) {
+        // serial.println(`selectedFile = ${selectedFile.fullPath}`)
+
+        if (selectedFile.fullPath[1] == ":" && selectedFile.fullPath[2] == "\\" && selectedFile.fullPath.length == 3) {
             path[windowMode].push(selectedFile.fullPath)
             cursor[windowMode] = 0; scroll[windowMode] = 0
             drawFilePanel()
         }
         else if (selectedFile.isDirectory) {
+            // serial.println(`selectedFile.name = ${selectedFile.name}`)
             path[windowMode].push(selectedFile.name)
             cursor[windowMode] = 0; scroll[windowMode] = 0
             drawFilePanel()
@@ -342,15 +350,15 @@ let filenavOninput = (window, event) => {
 
             con.curs_set(1);clearScr();con.move(1,1)
             try {
-//                    serial.println(selectedFile.fullPath)
+//                    // serial.println(selectedFile.fullPath)
                 errorlevel = execfun(selectedFile.fullPath)
-//                    serial.println("1 errorlevel = " + errorlevel)
+//                    // serial.println("1 errorlevel = " + errorlevel)
             }
             catch (e) {
                 // TODO popup error
                 println(e)
                 errorlevel = 1
-//                    serial.println("2 errorlevel = " + errorlevel)
+//                    // serial.println("2 errorlevel = " + errorlevel)
             }
 
             if (errorlevel) {
