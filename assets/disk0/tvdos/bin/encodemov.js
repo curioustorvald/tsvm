@@ -2,16 +2,17 @@
 //
 let IPFMODE = 2 // 1 or 2
 let TOTAL_FRAMES = 3813
-let FPS = 30
+let FPS = 30 // must be integer
 let WIDTH = 560
 let HEIGHT = 448
-let PATHFUN = (i) => `/ddol2/${(''+i).padStart(5,'0')}.bmp` // how can be the image file found, if a frame number (starts from 1) were given
+let PATHFUN = (i) => `/ddol2/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
 let AUDIOTRACK = 'ddol.mp2'
-let AUDIOFORMAT = 'MP2fr' // PCMu8 or MP2fr
-// to export video to its frames:
-//     ffmpeg -i file.mp4 file/%05d.png
-// the input frames must be resized (and cropped) beforehand, using ImageMagick is recommended, like so:
-//     mogrify -path ./path/to/write/results/ -resize 560x448^ -gravity Center -extent 560x448 ./path/to/source/files/*
+let AUDIOFORMAT = 'MP2fr' // undefined or PCMu8 or MP2fr
+// to export video to its frames (with automatic scaling and cropping):
+//     ffmpeg -i file.mp4 -vf scale=560:448:force_original_aspect_ratio=increase,crop=560:448 file/%05d.png
+//
+// to convert audio to MP2:
+//     ffmpeg -i file.mp4 -acodec libtwolame -psymodel 4 -b:a <rate>k -ar 32000 output.mp2
 //
 // end of manual configuration
 let MP2_RATE_INDEX;
@@ -144,7 +145,7 @@ for (let f = 1; ; f++) {
                 audioFile.pread(infile, actualBytesToRead, audioBytesRead)
                 if (f > 1) audioSamplesWrote += 2304 / DECODE_TIME_FACTOR // a little hack to ensure first 2 or so frames get more MP2 frames than they should
             }
-            else throw Error("Unknown audio format: " + AUDIOFORMAT)
+            else if (AUDIOFORMAT !== undefined) throw Error("Unknown audio format: " + AUDIOFORMAT)
 
             // writeout
             let audioSize = [
