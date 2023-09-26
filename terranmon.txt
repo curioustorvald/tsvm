@@ -500,22 +500,25 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
 # File Structure
 \x1F T S V M i P F
 [HEADER]
-[Blocks.gz]
+[Blocks]
 
 - Header
     uint16 WIDTH
     uint16 HEIGHT
-    uint8 HAS ALPHA
-    uint8  IPF Type
-        0: Type 1 (4:2:0 chroma subsampling)
-        1: Type 2 (4:2:2 chroma subsampling)
+    uint8 Flags
+        0b p00z 000a
+        - a: has alpha
+        - z: gzipped (p flag always sets this flag)
+        - p: progressive ordering (Adam7)
+    uint8  iPF Type/Colour Mode
+        0: Type 1 (4:2:0 chroma subsampling; 2048 colours?)
+        1: Type 2 (4:2:2 chroma subsampling; 2048 colours?)
+       16: Type 16 (full RGBA4444; 4096 colours)
     byte[10] RESERVED
-    uint32 UNCOMPRESSED SIZE
+    uint32 UNCOMPRESSED SIZE (somewhat redundant but included for convenience)
 
-- *.gz
-    literally a .gz of the iPF bytes
-
-- Blocks
+- Chroma Subsampled Blocks
+    Gzipped unless the z-flag is not set.
     4x4 pixels are sampled, then divided into YCoCg planes.
     CoCg planes are "chroma subsampled" by 4:2:0, then quantised to 4 bits (8 bits for CoCg combined)
     Y plane is quantised to 4 bits
@@ -564,6 +567,10 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
     11111010 -> 0xFA
 
     which packs into: [ 30 | 30 | FA | FA ] (because little endian)
+
+- Progressive Blocks
+    Ordered string of words (word size varies by the colour mode) are stored here.
+    If progressive mode is enabled, words are stored in the order that accomodates it.
 
 --------------------------------------------------------------------------------
 
