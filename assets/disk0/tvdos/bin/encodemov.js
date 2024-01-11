@@ -1,12 +1,12 @@
 // some manual configurations
 //
-let IPFMODE = 2 // 1 or 2
-let TOTAL_FRAMES = 3813
-let FPS = 30 // must be integer
+let IPFMODE = 1 // 1 or 2
+let TOTAL_FRAMES = 6636
+let FPS = 15 // must be integer
 let WIDTH = 560
 let HEIGHT = 448
-let PATHFUN = (i) => `/ddol2/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
-let AUDIOTRACK = 'ddol.mp2'
+let PATHFUN = (i) => `C:/steamboat/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
+let AUDIOTRACK = 'C:/steamboat.mp2'
 let AUDIOFORMAT = 'MP2fr' // undefined or PCMu8 or MP2fr
 // to export video to its frames (with automatic scaling and cropping):
 //     ffmpeg -i file.mp4 -vf scale=560:448:force_original_aspect_ratio=increase,crop=560:448 file/%05d.png

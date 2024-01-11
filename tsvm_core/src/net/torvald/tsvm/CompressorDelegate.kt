@@ -1,6 +1,9 @@
 package net.torvald.tsvm
 
 import com.badlogic.gdx.utils.compression.Lzma
+import io.airlift.compress.zstd.ZstdInputStream
+import io.airlift.compress.zstd.ZstdOutputStream
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.zip.GZIPInputStream
@@ -77,13 +80,14 @@ class CompressorDelegate(private val vm: VM) {
 
     companion object {
         val GZIP_HEADER = byteArrayOf(31, -117, 8) // .gz in DEFLATE
+        val ZSTD_HEADER = byteArrayOf(40, -75, 47, -3)
 
         fun comp(str: String) = comp(str.toByteArray(VM.CHARSET))
 
         fun comp(ba: ByteArray): ByteArray {
             val baos = ByteArrayOutputStream()
-            val gz = GZIPOutputStream(baos)
-            gz.write(ba); gz.flush(); gz.finish()
+            val gz = ZstdOutputStream(baos)
+            gz.write(ba); gz.flush(); gz.close()
             baos.flush(); baos.close()
             return baos.toByteArray()
         }
@@ -92,10 +96,16 @@ class CompressorDelegate(private val vm: VM) {
         fun decomp(str: String) = decomp(str.toByteArray(VM.CHARSET))
 
         fun decomp(ba: ByteArray): ByteArray {
+            val header = ba[0].toUint().shl(24) or ba[1].toUint().shl(16) or ba[2].toUint().shl(8) or ba[3].toUint()
+
             val bais = ByteArrayInputStream(ba)
-            val gz = GZIPInputStream(bais)
-            val ret = gz.readBytes()
-            gz.close(); bais.close()
+            val zis = when (header) {
+                in 0x1F8B0800..0x1F8B08FF -> GZIPInputStream(bais)
+                0x28B52FFD -> ZstdInputStream(bais)
+                else -> throw Error()
+            }
+            val ret = zis.readBytes()
+            zis.close(); bais.close()
             return ret
         }
     }

@@ -4,6 +4,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 import net.torvald.tsvm.CompressorDelegate
 import net.torvald.tsvm.CompressorDelegate.Companion.GZIP_HEADER
+import net.torvald.tsvm.CompressorDelegate.Companion.ZSTD_HEADER
 import net.torvald.tsvm.VM
 import java.io.File
 import kotlin.experimental.xor
@@ -27,9 +28,9 @@ open class VMProgramRom {
 
     fun readAll(): String {
         // check if bios is compressed in gzip
-        return if (contents.startsWith(byteArrayOf(31, -85, 26)))
+        return if (contents.startsWith(dec(GZIP_HEADER)) || contents.startsWith(dec(ZSTD_HEADER)))
             CompressorDelegate.decomp(dec(contents)).toString(VM.CHARSET)
-        else if (contents.startsWith(GZIP_HEADER))
+        else if (contents.startsWith(GZIP_HEADER) || contents.startsWith(ZSTD_HEADER))
             CompressorDelegate.decomp(contents).toString(VM.CHARSET)
         else
             contents.toString(VM.CHARSET)

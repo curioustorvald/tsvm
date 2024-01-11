@@ -440,26 +440,26 @@ Packet Types -
 
 GLOBAL TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA
-    *      FRAMEDATA COMPRESSED IN GZIP
+    *      COMPRESSED FRAMEDATA
 
 GLOBAL TYPE 1 Packet -
     byte[512] Palette Data
     uint32 SIZE OF FRAMEDATA
-    *      FRAMEDATA COMPRESSED IN GZIP
+    *      COMPRESSED FRAMEDATA
 
 GLOBAL TYPE 2 Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
-    *      FRAMEDATA COMPRESSED IN GZIP
+    *      COMPRESSED FRAMEDATA
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
-    *      FRAMEDATA COMPRESSED IN GZIP
+    *      COMPRESSED FRAMEDATA
 
 GLOBAL iPF Packet -
     uint32 SIZE OF FRAMEDATA
-    *      FRAMEDATA COMPRESSED IN GZIP // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
+    *      COMPRESSED FRAMEDATA // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
 
 GLOBAL TYPE 16+ Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
-    *      FRAMEDATA (COMPRESSED IN GZIP for TGA/GZ)
+    *      FRAMEDATA (COMPRESSED for TGA/GZ)
 
 MP2 Packet & ADPCM Packet -
     uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme
@@ -485,6 +485,12 @@ Frame Timing
     If the global type is not 255, each packet is interpreted as a single full frame, and then will wait for the next
     frame time; For type 255 however, the assumption no longer holds and each frame can have multiple packets, and thus
     needs explicit "sync" packet for proper frame timing.
+
+
+Comperssion Method
+    Old standard used Gzip, new standard is Zstd.
+    tsvm will read the zip header and will use appropriate decompression method, so that the old Gzipped
+    files remain compatible.
 
 
 NOTE FROM DEVELOPER
