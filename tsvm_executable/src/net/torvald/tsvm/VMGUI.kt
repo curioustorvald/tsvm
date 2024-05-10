@@ -71,6 +71,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     }
 
     private fun init() {
+        vm.init()
+
         if (loaderInfo.display != null) {
             val loadedClass = Class.forName(loaderInfo.display)
             val loadedClassConstructor = loadedClass.getConstructor(String::class.java, vm::class.java)
@@ -118,6 +120,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         coroutineJob = Thread({
             vmRunner.executeCommand(vm.roms[0]!!.readAll())
         }, "VmRunner:${vm.id}")
+        coroutineJob.start()
     }
 
     private var rebootRequested = false
