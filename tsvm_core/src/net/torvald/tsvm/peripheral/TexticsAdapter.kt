@@ -11,7 +11,7 @@ import kotlin.math.absoluteValue
 
 open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(assetsRoot, vm, config) {
 
-    private val crtGradTex = Texture("$assetsRoot/crt_grad.png")
+//    private val crtGradTex = Texture("$assetsRoot/crt_grad.png")
 
     companion object {
         val crtColor = hashMapOf(
@@ -58,16 +58,15 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
             batch.color = phosphorCol
             batch.draw(faketex, xoff, HEIGHT + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
 
-            // CRT glass
-            batch.setBlendFunction(GL20.GL_ONE, GL20.GL_ONE_MINUS_SRC_COLOR)
-            batch.color = Color.WHITE
-            batch.draw(crtGradTex, xoff, HEIGHT + ALIGN + yoff, WIDTH.toFloat(), -TEX_HEIGHT)
-            //batch.draw(crtGradTex, xoff, HEIGHT + yoff, WIDTH.toFloat(), -HEIGHT.toFloat())
+            // CRT glass is overlaid by the caller (e.g. VMGUI)
+//            batch.setBlendFunction(GL20.GL_ONE, GL20.GL_ONE_MINUS_SRC_COLOR)
+//            batch.color = Color.WHITE
+//            batch.draw(crtGradTex, xoff, HEIGHT + ALIGN + yoff, WIDTH.toFloat(), -TEX_HEIGHT)
         }
     }
 
     override fun dispose() {
-        crtGradTex.dispose()
+//        crtGradTex.dispose()
         super.dispose()
     }
 }

@@ -4,6 +4,7 @@ import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.graphics.g2d.TextureRegion
 import kotlin.coroutines.*
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.tsvmperipheral.WorldRadar
@@ -49,6 +50,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     val usememvwr = false
 
+    private lateinit var crtGradTex: TextureRegion
+
     override fun create() {
         super.create()
 
@@ -66,6 +69,9 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         camera.update()
         batch.projectionMatrix = camera.combined
 
+        crtGradTex = TextureRegion(Texture("${vm.assetsDir}/crt_grad.png")).also {
+            it.flip(false, true)
+        }
 
         init()
     }
@@ -184,6 +190,13 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
         gpu?.render(delta, batch, (viewportWidth - loaderInfo.drawWidth).div(2).toFloat(), (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
 
+        // draw CRT glass overlay
+        batch.inUse {
+            batch.setBlendFunction(GL20.GL_ONE, GL20.GL_ONE_MINUS_SRC_COLOR)
+            batch.color = Color.WHITE
+            batch.draw(crtGradTex, 0f, 0f, viewportWidth.toFloat(), viewportHeight.toFloat())
+        }
+
         vm.findPeribyType("oled")?.let {
             val disp = it.peripheral as ExtDisp
 
@@ -221,6 +234,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         batch.dispose()
         fullscreenQuad.dispose()
         coroutineJob.interrupt()
+        crtGradTex.texture.dispose()
         vm.dispose()
     }
 
