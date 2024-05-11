@@ -40,7 +40,7 @@ data class AdapterConfig(
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
     val baudRate: Double = 115200.0,
-    val bitsPerChar: Int = 8
+    val bitsPerChar: Int = 10 // start bit + 8 data bits + stop bit
 )
 
 data class SuperGraphicsAddonConfig(
