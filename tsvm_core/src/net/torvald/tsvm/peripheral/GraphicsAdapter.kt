@@ -39,6 +39,8 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG,
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
+    val baudRate: Double = 115200.0,
+    val bitsPerChar: Int = 8
 )
 
 data class SuperGraphicsAddonConfig(

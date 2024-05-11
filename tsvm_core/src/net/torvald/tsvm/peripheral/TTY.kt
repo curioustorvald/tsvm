@@ -8,6 +8,11 @@ import java.io.OutputStream
 
 class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS) {
 
+    @SuppressWarnings()
+    protected inline fun applyDelay() {
+        Thread.sleep(1L, 0)
+    }
+
     override val typestring = VM.PERITYPE_GPU_AND_TERM
 
     companion object {
@@ -56,6 +61,8 @@ class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS) {
         }
 
         rawCursorPos = toTtyTextOffset(newx, newy)
+
+        applyDelay()
     }
     private fun toTtyTextOffset(x: Int, y: Int) = y * TEXT_COLS + x
 
@@ -82,11 +89,13 @@ class TTY(assetsRoot: String, val vm: VM) : GlassTty(TEXT_ROWS, TEXT_COLS) {
         val textOff = toTtyTextOffset(x, y)
         textBuffer[memTextAttrOffset + textOff] = 0
         textBuffer[memTextOffset + textOff] = text
+        applyDelay()
     }
 
     override fun resetTtyStatus() {
         ttyFore = 0
         ttyInv = false
+        applyDelay()
     }
 
     override fun cursorUp(arg: Int) {

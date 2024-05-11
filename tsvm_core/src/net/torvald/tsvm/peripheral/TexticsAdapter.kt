@@ -8,8 +8,36 @@ import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
+import kotlin.math.floor
 
 open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(assetsRoot, vm, config) {
+
+    protected val sleepMillis = if (config.baudRate == 0.0 || config.baudRate >= 10000000.0) // sleep time of 100ns or less is considered as instant
+        0L
+    else
+        floor((1.0 / (config.baudRate / config.bitsPerChar)) * 1000).toLong()
+
+    protected val sleepNanos = if (config.baudRate == 0.0 || config.baudRate >= 10000000.0) // sleep time of 100ns or less is considered as instant
+        0
+    else
+        (((1.0 / (config.baudRate / config.bitsPerChar)) * 1000 * 1000000) % 1000000).toInt()
+
+    protected var slpcnt = 0L
+
+    init {
+        println("Baud: $sleepMillis ms $sleepNanos ns")
+    }
+
+    @SuppressWarnings()
+    protected inline fun applyDelay() {
+        slpcnt += sleepMillis * 1000000L + sleepNanos
+        val millis = slpcnt / 1000000L
+
+        if (slpcnt >= 1000000L) {
+            Thread.sleep(millis, 0)
+            slpcnt -= millis * 1000000L
+        }
+    }
 
 //    private val crtGradTex = Texture("$assetsRoot/crt_grad.png")
 
@@ -26,6 +54,7 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
             in 0 until 250972 -> (-1).toByte()
             else -> super.peek(addr)
         }
+        applyDelay()
     }
 
     override fun poke(addr: Long, byte: Byte) {
@@ -33,6 +62,17 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
             in 0 until 250972 -> { /*do nothing*/ }
             else -> super.poke(addr, byte)
         }
+        applyDelay()
+    }
+
+    override fun setCursorPos(x: Int, y: Int) {
+        super.setCursorPos(x, y)
+        applyDelay()
+    }
+
+    override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
+        super.putChar(x, y, text, foreColour, backColour)
+        applyDelay()
     }
 
     private val TEX_HEIGHT = WIDTH * Math.sqrt(HEIGHT.toDouble() / WIDTH).toFloat()
@@ -82,7 +122,8 @@ class Term(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, Adap
     256.kB(),
     "./hp2640.png",
     0.32f,
-    GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME
+    GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME,
+    baudRate = 115200.0
 ))
 
 class WpTerm(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, AdapterConfig(
