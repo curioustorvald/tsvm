@@ -54,7 +54,6 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
             in 0 until 250972 -> (-1).toByte()
             else -> super.peek(addr)
         }
-        applyDelay()
     }
 
     override fun poke(addr: Long, byte: Byte) {
@@ -62,12 +61,10 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
             in 0 until 250972 -> { /*do nothing*/ }
             else -> super.poke(addr, byte)
         }
-        applyDelay()
     }
 
     override fun setCursorPos(x: Int, y: Int) {
         super.setCursorPos(x, y)
-        applyDelay()
     }
 
     override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
@@ -123,7 +120,7 @@ class Term(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, Adap
     "./hp2640.png",
     0.32f,
     GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME,
-    baudRate = 115200.0
+    baudRate = 57600.0
 ))
 
 class WpTerm(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, AdapterConfig(

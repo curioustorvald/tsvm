@@ -39,7 +39,7 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG,
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
-    val baudRate: Double = 115200.0,
+    val baudRate: Double = 57600.0,
     val bitsPerChar: Int = 10 // start bit + 8 data bits + stop bit
 )
 
