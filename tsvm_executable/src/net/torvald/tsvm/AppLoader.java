@@ -56,7 +56,7 @@ public class AppLoader {
 
 
         EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter2", diskPath, 560, 448, defaultPeripherals);
-        EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", diskPath, 560, 448);
+        EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", diskPath, 560, 448, defaultPeripherals);
         EmulInstance term = new EmulInstance(vm, "net.torvald.tsvm.peripheral.Term", diskPath, 720, 480);
         EmulInstance portable = new EmulInstance(vm, "net.torvald.tsvm.peripheral.CLCDDisplay", diskPath, 1080, 436);
         EmulInstance wp = new EmulInstance(vm, "net.torvald.tsvm.peripheral.WpTerm", "assets/wpdisk", 810, 360);
@@ -69,6 +69,6 @@ public class AppLoader {
                 pipvm, 160, 140
         ))));*/
 
-        new Lwjgl3Application(new VMGUI(reference, WIDTH, HEIGHT), appConfig);
+        new Lwjgl3Application(new VMGUI(reference2, WIDTH, HEIGHT), appConfig);
     }
 }

@@ -236,7 +236,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             in 253950 until 261632 -> textArea[addr - 253950]
             in 261632 until 262144 -> peekPalette(adi - 261632)
             in 0 until VM.HW_RESERVE_SIZE -> {
-                println("[GraphicsAdapter] mirroring with input address $addr")
+//                println("[GraphicsAdapter] mirroring with input address $addr")
                 peek(addr % VRAM_SIZE)
             } // HW mirroring
             else -> null
@@ -268,7 +268,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             in 253950 until 261632 -> textArea[addr - 253950] = byte
             in 261632 until 262144 -> pokePalette(adi - 261632, byte)
             in 0 until VM.HW_RESERVE_SIZE -> {
-                println("[GraphicsAdapter] mirroring with input address $addr")
+//                println("[GraphicsAdapter] mirroring with input address $addr")
                 poke(addr % VRAM_SIZE, byte)
             } // HW mirroring
         }
