@@ -271,9 +271,6 @@ class PeripheralEntry(
 }
 
 class PeripheralEntry2(
-    val memsize: Long = 0,
-    val mmioSize: Int = 0,
-    val interruptCount: Int = 0, // max: 4
     val peripheralClassname: String,
     vararg val args: Any
 )
