@@ -82,7 +82,7 @@ function printmotd() {
         let margin = 4
         let internalWidth = width - 2*margin
 
-        con.video_reverse()
+        con.color_pair(255,253) // white text, transparent back (initial ribbon)
 
         let [cy, cx] = con.getyx()
 
@@ -91,6 +91,7 @@ function printmotd() {
         const PCX_INIT = margin - 2
         let tcnt = 0
         let pcx = PCX_INIT
+        con.color_pair(240,253) // black text, white back (first line of text)
         while (tcnt <= motd.length) {
             let char = motd.charAt(tcnt)
 
@@ -106,20 +107,22 @@ function printmotd() {
                 // current line ending
                 let [_, ncx] = con.getyx()
                 for (let k = 0; k < width - margin - ncx + 1; k++) print(' ')
+                con.color_pair(255,253) // white text, transparent back
                 con.addch(17);println()
 
                 if (tcnt == motd.length) break
 
                 // next line header
                 let [ncy, __] = con.getyx()
-                con.mvaddch(ncy, 4, 16);con.curs_right();print(' ')
+                con.color_pair(255,253) // white text, transparent back
+                con.mvaddch(ncy, 4, 16);con.curs_right();print(' ');con.color_pair(240,253) // black text, white back (subsequent lines of the text)
                 pcx = PCX_INIT
             }
 
             tcnt += 1
         }
 
-        con.video_reverse()
+        con.reset_graphics()
     }
     else {
         println()

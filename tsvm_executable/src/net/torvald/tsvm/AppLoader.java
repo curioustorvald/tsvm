@@ -69,6 +69,6 @@ public class AppLoader {
                 pipvm, 160, 140
         ))));*/
 
-        new Lwjgl3Application(new VMGUI(reference2, WIDTH, HEIGHT), appConfig);
+        new Lwjgl3Application(new VMGUI(reference, WIDTH, HEIGHT), appConfig);
     }
 }
