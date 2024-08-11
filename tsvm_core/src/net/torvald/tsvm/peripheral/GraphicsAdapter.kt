@@ -23,6 +23,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.lang.IllegalArgumentException
 import kotlin.experimental.and
+import kotlin.math.floor
 
 data class AdapterConfig(
     val theme: String,
@@ -39,7 +40,7 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG,
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
-    val baudRate: Double = 57600.0,
+    val baudRate: Double = 20_480_000.0,//57600.0,
     val bitsPerChar: Int = 10 // start bit + 8 data bits + stop bit
 )
 
@@ -243,6 +244,31 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
     }
 
+
+    protected val sleepMillis = if (config.baudRate == 0.0 || config.baudRate >= 1000000000.0) // sleep time of 1ns or less is considered as instant
+        0L
+    else
+        floor((1.0 / (config.baudRate / config.bitsPerChar)) * 1000).toLong()
+
+    protected val sleepNanos = if (config.baudRate == 0.0 || config.baudRate >= 1000000000.0) // sleep time of 1ns or less is considered as instant
+        0
+    else
+        (((1.0 / (config.baudRate / config.bitsPerChar)) * 1000 * 1000000) % 1000000).toInt()
+
+    protected var slpcnt = 0L
+
+
+    @SuppressWarnings()
+    protected fun applyDelay() {
+        slpcnt += sleepMillis * 1000000L + sleepNanos
+        val millis = slpcnt / 1000000L
+
+        if (slpcnt >= 1000000L) {
+            Thread.sleep(millis, 0)
+            slpcnt -= millis * 1000000L
+        }
+    }
+
     override fun poke(addr: Long, byte: Byte) {
         val adi = addr.toInt()
         val bi = byte.toInt().and(255)
@@ -272,6 +298,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 poke(addr % VRAM_SIZE, byte)
             } // HW mirroring
         }
+        applyDelay()
     }
 
     private fun getTextmodeAttirbutes(): Byte = (currentChrRom.and(15).shl(4) or

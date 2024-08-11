@@ -389,4 +389,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
         return false
     }
 
+    override fun touchCancelled(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
+        return false
+    }
 }

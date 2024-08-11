@@ -38,4 +38,8 @@ class VMEmuInputProcessor(val host: VMEmuExecutable) : InputProcessor {
     override fun scrolled(amountX: Float, amountY: Float): Boolean {
         return false
     }
+
+    override fun touchCancelled(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
+        return false
+    }
 }

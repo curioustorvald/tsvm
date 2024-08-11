@@ -12,31 +12,8 @@ import kotlin.math.floor
 
 open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(assetsRoot, vm, config) {
 
-    protected val sleepMillis = if (config.baudRate == 0.0 || config.baudRate >= 10000000.0) // sleep time of 100ns or less is considered as instant
-        0L
-    else
-        floor((1.0 / (config.baudRate / config.bitsPerChar)) * 1000).toLong()
-
-    protected val sleepNanos = if (config.baudRate == 0.0 || config.baudRate >= 10000000.0) // sleep time of 100ns or less is considered as instant
-        0
-    else
-        (((1.0 / (config.baudRate / config.bitsPerChar)) * 1000 * 1000000) % 1000000).toInt()
-
-    protected var slpcnt = 0L
-
     init {
         println("Baud: $sleepMillis ms $sleepNanos ns")
-    }
-
-    @SuppressWarnings()
-    protected inline fun applyDelay() {
-        slpcnt += sleepMillis * 1000000L + sleepNanos
-        val millis = slpcnt / 1000000L
-
-        if (slpcnt >= 1000000L) {
-            Thread.sleep(millis, 0)
-            slpcnt -= millis * 1000000L
-        }
     }
 
 //    private val crtGradTex = Texture("$assetsRoot/crt_grad.png")
@@ -120,7 +97,7 @@ class Term(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, Adap
     "./hp2640.png",
     0.32f,
     GraphicsAdapter.TEXT_TILING_SHADER_MONOCHROME,
-    baudRate = 57600.0
+    baudRate = 9600.0
 ))
 
 class WpTerm(assetsRoot: String, vm: VM) : TexticsAdapterBase(assetsRoot, vm, AdapterConfig(
