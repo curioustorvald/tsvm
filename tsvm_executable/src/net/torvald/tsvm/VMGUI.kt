@@ -10,6 +10,7 @@ import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.tsvmperipheral.WorldRadar
 import net.torvald.tsvm.peripheral.*
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 
 class EmulInstance(
@@ -124,9 +125,42 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
         vmRunner = VMRunnerFactory(vm.assetsDir, vm, "js")
         coroutineJob = Thread({
-            vmRunner.executeCommand(vm.roms[0]!!.readAll())
+            try {
+                vmRunner.executeCommand(vm.roms[0]!!.readAll())
+            }
+            catch (e: Throwable) {
+                e.printStackTrace()
+                killVMenv()
+            }
         }, "VmRunner:${vm.id}")
         coroutineJob.start()
+
+        vmKilled.set(false)
+    }
+
+    private val vmKilled = AtomicBoolean(false)
+
+    private fun killVMenv() {
+        if (vmKilled.compareAndSet(false, true)) {
+            System.err.println("VMGUI is killing VM environment...")
+            vm.park()
+            vm.poke(-90L, -128)
+            for (i in 1 until vm.peripheralTable.size) {
+                try {
+                    vm.peripheralTable[i].peripheral?.dispose()
+                }
+                catch (_: Throwable) {
+                }
+            }
+            coroutineJob.interrupt()
+            vmRunner.close()
+            vm.getPrintStream = { TODO() }
+            vm.getErrorStream = { TODO() }
+            vm.getInputStream = { TODO() }
+        }
+        else {
+            System.err.println("VMGUI is NOT killing VM environment: already been killed")
+        }
     }
 
     private var rebootRequested = false
@@ -135,7 +169,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         vmRunner.close()
         coroutineJob.interrupt()
 
-        vm.init()
         init()
     }
 
@@ -230,6 +263,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     }
 
     override fun dispose() {
+        killVMenv()
         super.dispose()
         batch.dispose()
         fullscreenQuad.dispose()
