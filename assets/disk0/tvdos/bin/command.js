@@ -684,8 +684,13 @@ shell.execute = function(line) {
         }
 
         if (shell.coreutils[cmd.toLowerCase()] !== undefined) {
-            var retval = shell.coreutils[cmd.toLowerCase()](tokens)
-            retValue = retval|0 // return value of undefined will cast into 0
+            try {
+                var retval = shell.coreutils[cmd.toLowerCase()](tokens)
+                retValue = retval|0 // return value of undefined will cast into 0
+            }
+            catch {
+                if (!retValue) retValue = 1
+            }
             continue
         }
         else {
