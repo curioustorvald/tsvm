@@ -258,7 +258,13 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected var slpcnt = 0L
 
 
-    fun applyDelay() {
+    @SuppressWarnings("inline")
+    internal inline fun applyDelay() {
+        if (sleepMillis == 0L && sleepNanos == 0) return
+        applyDelay0()
+    }
+
+    internal fun applyDelay0() {
         slpcnt += sleepMillis * 1000000L + sleepNanos
         val millis = slpcnt / 1000000L
 
