@@ -2,7 +2,10 @@ package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
-import com.badlogic.gdx.graphics.*
+import com.badlogic.gdx.graphics.Color
+import com.badlogic.gdx.graphics.GL20
+import com.badlogic.gdx.graphics.Pixmap
+import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.Gdx2DPixmap
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
@@ -11,17 +14,12 @@ import com.badlogic.gdx.math.Matrix4
 import com.badlogic.gdx.utils.Disposable
 import com.badlogic.gdx.utils.GdxRuntimeException
 import net.torvald.UnsafeHelper
-import net.torvald.UnsafePtr
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.*
-import net.torvald.tsvm.FBM
-import net.torvald.tsvm.LoadShader
-import net.torvald.tsvm.kB
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
 import java.io.InputStream
 import java.io.OutputStream
-import java.lang.IllegalArgumentException
 import kotlin.experimental.and
 import kotlin.math.floor
 
@@ -49,7 +47,7 @@ data class SuperGraphicsAddonConfig(
 )
 
 class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
-class ReferenceGraphicsAdapter2(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
+class ReferenceGraphicsAdapter2(assetsRoot: String, vm: VM) : RemoteGraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
 class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
 
 /**
@@ -257,14 +255,10 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     protected var slpcnt = 0L
 
-
-    @SuppressWarnings("inline")
-    internal inline fun applyDelay() {
-        if (sleepMillis == 0L && sleepNanos == 0) return
-        applyDelay0()
+    open fun applyDelay() {
     }
 
-    internal fun applyDelay0() {
+    protected fun applyDelay0() {
         slpcnt += sleepMillis * 1000000L + sleepNanos
         val millis = slpcnt / 1000000L
 

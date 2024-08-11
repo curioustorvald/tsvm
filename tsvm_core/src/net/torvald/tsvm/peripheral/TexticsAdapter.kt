@@ -2,13 +2,11 @@ package net.torvald.tsvm.peripheral
 
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.GL20
-import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
-import kotlin.math.floor
 
 open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig) : GraphicsAdapter(assetsRoot, vm, config) {
 
@@ -24,6 +22,10 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
             "amber" to Color(0xffd600ff.toInt()),
             "green" to Color(0x4aff00ff)
         )
+    }
+
+    override fun applyDelay() {
+        applyDelay0()
     }
 
     override fun peek(addr: Long): Byte? {
