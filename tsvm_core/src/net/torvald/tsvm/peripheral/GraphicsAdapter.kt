@@ -40,7 +40,7 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG,
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
-    val baudRate: Double = 20_480_000.0,//57600.0,
+    val baudRate: Double = 10_240_000.0,//57600.0,
     val bitsPerChar: Int = 10 // start bit + 8 data bits + stop bit
 )
 
@@ -258,8 +258,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected var slpcnt = 0L
 
 
-    @SuppressWarnings()
-    protected fun applyDelay() {
+    fun applyDelay() {
         slpcnt += sleepMillis * 1000000L + sleepNanos
         val millis = slpcnt / 1000000L
 
@@ -298,7 +297,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 poke(addr % VRAM_SIZE, byte)
             } // HW mirroring
         }
-        applyDelay()
     }
 
     private fun getTextmodeAttirbutes(): Byte = (currentChrRom.and(15).shl(4) or
@@ -713,6 +711,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         textArea[memTextForeOffset + textOff] = foreColour
         textArea[memTextBackOffset + textOff] = backColour
         textArea[memTextOffset + textOff] = text
+        applyDelay()
     }
 
     override fun emitChar(code: Int) {

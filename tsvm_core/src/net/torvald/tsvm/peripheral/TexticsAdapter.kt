@@ -46,7 +46,6 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
 
     override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
         super.putChar(x, y, text, foreColour, backColour)
-        applyDelay()
     }
 
     private val TEX_HEIGHT = WIDTH * Math.sqrt(HEIGHT.toDouble() / WIDTH).toFloat()

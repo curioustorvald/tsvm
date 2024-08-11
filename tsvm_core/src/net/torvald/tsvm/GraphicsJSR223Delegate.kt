@@ -19,11 +19,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     fun getVramSize() {
-        getFirstGPU()?.mmio_read(11)
+        getFirstGPU()?.let {
+            it.mmio_read(11)
+            it.applyDelay()
+        }
     }
 
     fun resetPalette() {
-        getFirstGPU()?.poke(250883L, 1)
+        getFirstGPU()?.let {
+            it.poke(250883L, 1)
+            it.applyDelay()
+        }
     }
 
     /**
@@ -36,6 +42,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             it.paletteOfFloats[index * 4 + 1] = (g and 15) / 15f
             it.paletteOfFloats[index * 4 + 2] = (b and 15) / 15f
             it.paletteOfFloats[index * 4 + 3] = (a and 15) / 15f
+            it.applyDelay()
         }
     }
 
@@ -62,6 +69,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?.let {
             if (x in 0 until it.config.width && y in 0 until it.config.height) {
                 it.poke(y.toLong() * it.config.width + x, color.toByte())
+                it.applyDelay()
             }
         }
     }
@@ -70,6 +78,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?.let {
             if (x in 0 until it.config.width && y in 0 until it.config.height) {
                 it.poke(262144 + y.toLong() * it.config.width + x, color.toByte())
+                it.applyDelay()
             }
         }
     }
@@ -81,11 +90,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?.let {
             it.framebufferScrollX = x
             it.framebufferScrollY = y
+            it.applyDelay()
         }
     }
 
     fun getFramebufferScroll(): IntArray {
-        getFirstGPU()?.let { return intArrayOf(it.framebufferScrollX, it.framebufferScrollY) }
+        getFirstGPU()?.let {
+            it.applyDelay()
+            return intArrayOf(it.framebufferScrollX, it.framebufferScrollY)
+        }
         return intArrayOf(0, 0)
     }
 
@@ -93,6 +106,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?.let {
             it.framebufferScrollX = (it.framebufferScrollX + xdelta) fmod it.WIDTH
             it.framebufferScrollY = (it.framebufferScrollY + ydelta) fmod it.HEIGHT
+            it.applyDelay()
         }
     }
 
@@ -100,6 +114,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?.let {
             it.scanlineOffsets[2L * line] = offset.toByte()
             it.scanlineOffsets[2L * line + 1] = offset.shr(8).toByte() // absolutely not USHR
+            it.applyDelay()
         }
     }
 
@@ -107,37 +122,54 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?.let {
             var xoff = it.scanlineOffsets[2L * line].toUint() or it.scanlineOffsets[2L * line + 1].toUint().shl(8)
             if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+            it.applyDelay()
             return xoff
         }
         return 0
     }
 
     fun setGraphicsMode(mode: Int) {
-        getFirstGPU()?.mmio_write(12L, mode.toByte())
+        getFirstGPU()?.let {
+            it.mmio_write(12L, mode.toByte())
+            it.applyDelay()
+        }
     }
 
-    fun getGraphicsMode() = getFirstGPU()?.mmio_read(12L)?.toUint() ?: 0
+    fun getGraphicsMode() = getFirstGPU()?.let {
+        it.applyDelay()
+        it.mmio_read(12L)?.toUint() ?: 0
+    }
 
     fun getPixelDimension(): IntArray {
-        getFirstGPU()?.let { return intArrayOf(it.WIDTH, it.HEIGHT) }
+        getFirstGPU()?.let {
+            it.applyDelay()
+            return intArrayOf(it.WIDTH, it.HEIGHT)
+        }
         return intArrayOf(-1, -1)
     }
 
     fun getTermDimension(): IntArray {
-        getFirstGPU()?.let { return intArrayOf(it.TEXT_ROWS, it.TEXT_COLS) }
+        getFirstGPU()?.let {
+            it.applyDelay()
+            return intArrayOf(it.TEXT_ROWS, it.TEXT_COLS)
+        }
         return intArrayOf(-1, -1)
     }
 
     fun getCursorYX(): IntArray {
         getFirstGPU()?.let {
             val (cx, cy) = it.getCursorPos()
+            it.applyDelay()
             return intArrayOf(cy + 1, cx + 1)
         }
         return intArrayOf(-1, -1)
     }
 
     fun setCursorYX(cy: Int, cx: Int) {
-        getFirstGPU()?.setCursorPos(cx - 1, cy - 1)
+        getFirstGPU()?.let {
+            it.setCursorPos(cx - 1, cy - 1)
+            it.applyDelay()
+        }
     }
 
 
@@ -146,21 +178,31 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             it.poke(250880, r.toByte())
             it.poke(250881, g.toByte())
             it.poke(250882, b.toByte())
+            it.applyDelay()
         }
     }
 
     fun clearText() {
-        getFirstGPU()?.eraseInDisp(2)
+        getFirstGPU()?.let {
+            it.eraseInDisp(2)
+            it.applyDelay()
+        }
     }
 
     fun clearPixels(col: Int) {
-        getFirstGPU()?.poke(250884L, col.toByte())
-        getFirstGPU()?.poke(250883L, 2)
+        getFirstGPU()?.let {
+            it.poke(250884L, col.toByte())
+            it.poke(250883L, 2)
+            it.applyDelay()
+        }
     }
 
     fun clearPixels2(col: Int) {
-        getFirstGPU()?.poke(250884L, col.toByte())
-        getFirstGPU()?.poke(250883L, 4)
+        getFirstGPU()?.let {
+            it.poke(250883L, 4)
+            it.poke(250884L, col.toByte())
+            it.applyDelay()
+        }
     }
 
     /**
@@ -172,11 +214,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
 
             it.putChar(cx, cy, c.toByte())
+
+            it.applyDelay()
         }
     }
 
     fun putSymbolAt(cy: Int, cx: Int, c: Int) {
-        getFirstGPU()?.putChar(cx - 1, cy - 1, c.toByte())
+        getFirstGPU()?.let {
+            it.putChar(cx - 1, cy - 1, c.toByte())
+            it.applyDelay()
+        }
     }
 
     /*private fun GraphicsAdapter._loadbulk(fromAddr: Int, toAddr: Int, length: Int) {
@@ -821,14 +868,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     fun decodeIpf1(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
+        val gpu = getFirstGPU()
         val sign = if (destRG >= 0) 1 else -1
         if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
         val sptr = srcPtr.toLong()
         val dptr1 = destRG.toLong()
         val dptr2 = destBA.toLong()
         var readCount = 0
-        fun readShort() = 
-            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
+        fun readShort() =
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8).also {
+                gpu?.applyDelay()
+            }
 
 
         for (blockY in 0 until ceil(height / 4f)) {
@@ -889,6 +939,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     fun decodeIpf2(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
+        val gpu = getFirstGPU()
         val sign = if (destRG >= 0) 1 else -1
         if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
         val sptr = srcPtr.toLong()
@@ -896,9 +947,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val dptr2 = destBA.toLong()
         var readCount = 0
         fun readShort() =
-            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8).also {
+                gpu?.applyDelay()
+            }
         fun readInt() =
-            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8) or vm.peek(sptr + readCount++)!!.toUint().shl(16) or vm.peek(sptr + readCount++)!!.toUint().shl(24)
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8) or vm.peek(sptr + readCount++)!!.toUint().shl(16) or vm.peek(sptr + readCount++)!!.toUint().shl(24).also {
+                gpu?.applyDelay()
+                gpu?.applyDelay()
+            }
 
 
         for (blockY in 0 until ceil(height / 4f)) {
