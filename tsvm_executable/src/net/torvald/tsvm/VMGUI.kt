@@ -403,6 +403,16 @@ const mat4 yuv_to_rgb = mat4(
     0.0, 0.0, 0.0, 1.0
 );
 
+const float ALFA = 0.2;
+const float BETA = 0.2;
+
+const mat4 crosstalk_mat = mat4(
+    1.0,  0.0, 0.0, 0.0,
+    ALFA, 1.0, 0.0, 0.0,
+    BETA, 0.0, 1.0, 0.0,
+    0.0,  0.0, 0.0, 1.0
+);
+
 const float gamma = 2.4;
 const float blurH = 0.8;
 const float blurV = 0.4;
@@ -421,9 +431,11 @@ vec4 avr(vec4 a, vec4 b, float gam) {
     );
 }
 
-vec4 grading(vec4 col, vec4 args) {
+vec4 grading(vec4 col0, vec4 args) {
     vec4 vel = vec4(1.0, 1.0 / args.y, 1.0 / args.z, 1.0);
     vec4 power = vec4(args.x, args.x, args.x, 1.0);
+    
+    vec4 col = crosstalk_mat * col0;
     
     vec4 sgn = sign(col);
     vec4 absval = abs(col);
@@ -452,9 +464,9 @@ void main() {
     vec4 LRavr = avr(colourL, colourR, gamma);
     vec4 wgtavr = avr(LRavr, colourIn, gamma);
         
-    vec4 outCol = wgtavr * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one);
+    vec4 outCol = wgtavr;
 
-    fragColor = grading(outCol, gradingarg);
+    fragColor = grading(outCol, gradingarg) * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one);
 
 }
 
