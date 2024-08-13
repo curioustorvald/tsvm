@@ -8,6 +8,7 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import org.lwjgl.BufferUtils
 import org.lwjgl.openal.AL10
 import org.lwjgl.openal.AL11
+import java.lang.reflect.InvocationTargetException
 import java.nio.Buffer
 import java.nio.ByteBuffer
 import java.nio.IntBuffer
@@ -118,9 +119,12 @@ class OpenALBufferedAudioDevice(
         return obtainSourceMethod.invoke(audio, isMusic) as Int
     }
     private fun audioFreeSource(sourceID: Int) {
-        val freeSourceMethod = OpenALLwjgl3Audio::class.java.getDeclaredMethod("freeSource", java.lang.Integer.TYPE)
-        freeSourceMethod.isAccessible = true
-        freeSourceMethod.invoke(audio, sourceID)
+        try {
+            val freeSourceMethod = OpenALLwjgl3Audio::class.java.getDeclaredMethod("freeSource", java.lang.Integer.TYPE)
+            freeSourceMethod.isAccessible = true
+            freeSourceMethod.invoke(audio, sourceID)
+        }
+        catch (_: InvocationTargetException) {}
     }
 
     private val alErrors = hashMapOf(

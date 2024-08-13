@@ -42,8 +42,8 @@ public class AppLoader {
 //        VM vm = new VM(64 << 10, new TheRealWorld(), new VMProgramRom[]{OEMBios.INSTANCE, BasicRom.INSTANCE});
 //        VM vm = new VM("./assets", 64 << 10, new TheRealWorld(), new VMProgramRom[]{TandemBios.INSTANCE, BasicRom.INSTANCE}, 2, watchdogs);
 //        VM vm = new VM("./assets", 128 << 10, new TheRealWorld(), new VMProgramRom[]{BasicBios.INSTANCE, WPBios.INSTANCE}, 2, watchdogs);
-//        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE}, 8, watchdogs);
-        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE}, 8, watchdogs);
+        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{TsvmBios.INSTANCE}, 8, watchdogs);
+//        VM vm = new VM("./assets", 8192 << 10, new TheRealWorld(), new VMProgramRom[]{OpenBios.INSTANCE}, 8, watchdogs);
 //        VM pipvm = new VM("./assets", 4096, new TheRealWorld(), new VMProgramRom[]{PipBios.INSTANCE, PipROM.INSTANCE}, 8, watchdogs);
 
         vm.getIO().getBlockTransferPorts()[0].attachDevice(new TestDiskDrive(vm, 0, diskPath));

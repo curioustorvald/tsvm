@@ -12,6 +12,7 @@ import net.torvald.tsvm.peripheral.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_VERT
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.*
 
 
@@ -162,13 +163,13 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         }, "VmRunner:${vm.id}")
         coroutineJob.start()
 
-        vmKilled.set(false)
+        vmKilled.set(0)
     }
 
-    private val vmKilled = AtomicBoolean(false)
+    private val vmKilled = AtomicLong(0)
 
     private fun killVMenv() {
-        if (vmKilled.compareAndSet(false, true)) {
+        if (vmKilled.compareAndSet(0, System.currentTimeMillis())) {
             System.err.println("VMGUI is killing VM environment...")
             vm.park()
             vm.poke(-90L, -128)
@@ -403,7 +404,10 @@ const mat4 yuv_to_rgb = mat4(
 );
 
 const float gamma = 2.4;
-const float blur = 0.8;
+const float blurH = 0.8;
+const float blurV = 0.4;
+
+const vec4 gradingarg = vec4(1.4, 1.1, 1.1, 1.0);
 
 vec4 toYUV(vec4 rgb) { return rgb_to_yuv * rgb; }
 vec4 toRGB(vec4 ycc) { return yuv_to_rgb * ycc; }
@@ -417,11 +421,30 @@ vec4 avr(vec4 a, vec4 b, float gam) {
     );
 }
 
+vec4 grading(vec4 col, vec4 args) {
+    vec4 vel = vec4(1.0, 1.0 / args.y, 1.0 / args.z, 1.0);
+    vec4 power = vec4(args.x, args.x, args.x, 1.0);
+    
+    vec4 sgn = sign(col);
+    vec4 absval = abs(col);
+    vec4 raised = pow(absval, vel);
+    
+    vec4 rgb = toRGB(sgn * raised);
+    
+    return pow(rgb, power);
+}
+
 void main() {
     vec4 rgbColourIn = v_color * texture(u_texture, v_texCoords);
-    vec4 rgbColourL = v_color * texture(u_texture, v_texCoords + (vec2(-blur, 0.0) / resolution));
-    vec4 rgbColourR = v_color * texture(u_texture, v_texCoords + (vec2(+blur, 0.0) / resolution));
-    
+    vec4 rgbColourL = v_color * mix(
+            texture(u_texture, v_texCoords + (vec2(-blurH, -blurV) / resolution)),
+            texture(u_texture, v_texCoords + (vec2(-blurH, +blurV) / resolution)),
+            0.5);
+    vec4 rgbColourR = v_color * mix(
+            texture(u_texture, v_texCoords + (vec2(+blurH, -blurV) / resolution)),
+            texture(u_texture, v_texCoords + (vec2(+blurH, +blurV) / resolution)),
+            0.5);
+                
     vec4 colourIn = toYUV(rgbColourIn);
     vec4 colourL = toYUV(rgbColourL);
     vec4 colourR = toYUV(rgbColourR);
@@ -431,7 +454,7 @@ void main() {
         
     vec4 outCol = wgtavr * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one);
 
-    fragColor = toRGB(outCol);
+    fragColor = grading(outCol, gradingarg);
 
 }
 

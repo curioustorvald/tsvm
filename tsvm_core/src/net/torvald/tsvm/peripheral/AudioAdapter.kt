@@ -267,6 +267,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     override fun dispose() {
+        System.err.println("Dispose AudioAdapter")
         renderRunnables.forEach { it.stop() }
         writeQueueingRunnables.forEach { it.stop() }
         playheads.forEach { it.dispose() }
@@ -430,8 +431,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         fun getPcmQueueCapacity() = QUEUE_SIZE[pcmQueueSizeIndex]
 
         fun dispose() {
-            println("AudioDevice dispose ${parent.renderThreads[index]}")
-            try { audioDevice.dispose() } catch (e: GdxRuntimeException) { println("   "+ e.message) }
+            // audioDevice.dispose() is called by RenderRunnable.stop()
+//            System.err.println("AudioDevice dispose ${parent.renderThreads[index]}")
+//            try { audioDevice.dispose() } catch (e: GdxRuntimeException) { println("   "+ e.message) }
         }
         
         companion object {
