@@ -16,46 +16,46 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
         if (AudioAdapter.DBGPRN) println("[AudioAdapter] $msg")
     }
-    @Volatile private var exit = false
     override fun run() {
-        while (!exit) {
-            if (playhead.isPcmMode) {
+        while (!Thread.currentThread().isInterrupted) {
+            try {
+                if (playhead.isPcmMode) {
 
-                val writeQueue = playhead.pcmQueue
+                    val writeQueue = playhead.pcmQueue
 
-                if (playhead.isPlaying && writeQueue.notEmpty()) {
+                    if (playhead.isPlaying && writeQueue.notEmpty()) {
 
-                    printdbg("Taking samples from queue (queue size: ${writeQueue.size}/${playhead.getPcmQueueCapacity()})")
+                        printdbg("Taking samples from queue (queue size: ${writeQueue.size}/${playhead.getPcmQueueCapacity()})")
 
-                    val samples = writeQueue.removeFirst()
-                    playhead.position = writeQueue.size
+                        val samples = writeQueue.removeFirst()
+                        playhead.position = writeQueue.size
 
 //                printdbg("P${playhead.index+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
 //                    printdbg(""+(0..42).joinToString { String.format("%.2f", samples[it]) })
 
-                    playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
+                        playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
 
 //                printdbg("P${playhead.index+1} go back to spinning")
 
-                    Thread.sleep(12)
-                }
-                else if (playhead.isPlaying && writeQueue.isEmpty) {
-                    printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
+                        Thread.sleep(12)
+                    }
+                    else if (playhead.isPlaying && writeQueue.isEmpty) {
+                        printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
 
-                    // TODO: wait for 1-2 seconds then finally stop the device
+                        // TODO: wait for 1-2 seconds then finally stop the device
 //                    playhead.audioDevice.stop()
 
-                    Thread.sleep(12)
+                        Thread.sleep(12)
+                    }
                 }
+
+
+                Thread.sleep(1)
             }
-
-
-            Thread.sleep(1)
+            catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
-        playhead.audioDevice.dispose()
-    }
-    fun stop() {
-        exit = true
     }
 }
 
@@ -63,34 +63,39 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
     private fun printdbg(msg: Any) {
         if (AudioAdapter.DBGPRN) println("[AudioAdapter] $msg")
     }
-    @Volatile private var exit = false
-
     override fun run() {
-        while (!exit) {
+        while (!Thread.currentThread().isInterrupted) {
+            try {
+                playhead.let {
+                    if (/*it.pcmQueue.size < it.getPcmQueueCapacity() &&*/ it.pcmUpload && it.pcmUploadLength > 0) {
+                        printdbg("Downloading samples ${it.pcmUploadLength}")
 
-            playhead.let {
-                if (/*it.pcmQueue.size < it.getPcmQueueCapacity() &&*/ it.pcmUpload && it.pcmUploadLength > 0) {
-                    printdbg("Downloading samples ${it.pcmUploadLength}")
+                        val samples = ByteArray(it.pcmUploadLength)
+                        UnsafeHelper.memcpyRaw(
+                            null,
+                            pcmBin.ptr,
+                            samples,
+                            UnsafeHelper.getArrayOffset(samples),
+                            it.pcmUploadLength.toLong()
+                        )
+                        it.pcmQueue.addLast(samples)
 
-                    val samples = ByteArray(it.pcmUploadLength)
-                    UnsafeHelper.memcpyRaw(null, pcmBin.ptr, samples, UnsafeHelper.getArrayOffset(samples), it.pcmUploadLength.toLong())
-                    it.pcmQueue.addLast(samples)
-
-                    it.pcmUploadLength = 0
-                    it.position = it.pcmQueue.size
-                    Thread.sleep(6)
-                }
-                else if (it.pcmUpload) {
+                        it.pcmUploadLength = 0
+                        it.position = it.pcmQueue.size
+                        Thread.sleep(6)
+                    }
+                    else if (it.pcmUpload) {
 //                    printdbg("Rejecting samples (queueSize: ${it.pcmQueue.size}, uploadLength: ${it.pcmUploadLength})")
-                    Thread.sleep(6)
+                        Thread.sleep(6)
+                    }
                 }
-            }
 
-            Thread.sleep(1)
+                Thread.sleep(1)
+            }
+            catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
-    }
-    fun stop() {
-        exit = true
     }
 }
 
@@ -124,6 +129,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private val renderThreads: Array<Thread>
     private val writeQueueingRunnables: Array<WriteQueueingRunnable>
     private val writeQueueingThreads: Array<Thread>
+
+    private val renderThreadGroup = ThreadGroup("AudioRenderThreadGroup")
+    private val writeQueueingGroup = ThreadGroup("AudioQriteQueueingThreadGroup")
 
     private val threadExceptionHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
         throwable.printStackTrace()
@@ -163,9 +171,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
 
         renderRunnables = Array(4) { RenderRunnable(playheads[it]) }
-        renderThreads = Array(4) { Thread(renderRunnables[it], "AudioRenderHead${it+1}!$hash") }
+        renderThreads = Array(4) { Thread(renderThreadGroup, renderRunnables[it], "AudioRenderHead${it+1}!$hash") }
         writeQueueingRunnables = Array(4) { WriteQueueingRunnable(playheads[it], pcmBin) }
-        writeQueueingThreads = Array(4) { Thread(writeQueueingRunnables[it], "AudioQueueingHead${it+1}!$hash") }
+        writeQueueingThreads = Array(4) { Thread(writeQueueingGroup, writeQueueingRunnables[it], "AudioQueueingHead${it+1}!$hash") }
 
 //        printdbg("AudioAdapter latency: ${audioDevice.latency}")
         renderThreads.forEach { it.uncaughtExceptionHandler = threadExceptionHandler; it.start() }
@@ -266,17 +274,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    private var disposed = false
+
     override fun dispose() {
-        System.err.println("Dispose AudioAdapter")
-        renderRunnables.forEach { it.stop() }
-        renderThreads.forEach { it.interrupt() }
-        writeQueueingRunnables.forEach { it.stop() }
-        writeQueueingThreads.forEach { it.interrupt() }
-        playheads.forEach { it.dispose() }
-        sampleBin.destroy()
-        pcmBin.destroy()
-        mediaFrameBin.destroy()
-        mediaDecodedBin.destroy()
+        if (!disposed) {
+            disposed = true
+            System.err.println("Dispose AudioAdapter")
+            renderThreadGroup.interrupt()
+            writeQueueingGroup.interrupt()
+            playheads.forEach { it.dispose() }
+            sampleBin.destroy()
+            pcmBin.destroy()
+            mediaFrameBin.destroy()
+            mediaDecodedBin.destroy()
+        }
+        else {
+            System.err.println("AudioAdapter already disposed")
+        }
     }
 
     override fun getVM(): VM {
@@ -435,7 +449,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         fun dispose() {
             // audioDevice.dispose() is called by RenderRunnable.stop()
             System.err.println("AudioDevice dispose ${parent.renderThreads[index]}")
-            try { audioDevice.dispose() } catch (e: GdxRuntimeException) { println("   "+ e.message) }
+            try { audioDevice.dispose() } catch (e: GdxRuntimeException) { System.err.println("   "+ e.message) }
         }
         
         companion object {

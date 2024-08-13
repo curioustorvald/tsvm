@@ -14,6 +14,7 @@ import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.*
+import kotlin.system.exitProcess
 
 
 class EmulInstance(
@@ -320,6 +321,9 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         crtShader.dispose()
         gpuFBO.dispose()
         vm.dispose()
+
+        System.err.println("VM disposed: ${vm.id}")
+        exitProcess(0)
     }
 
     companion object {

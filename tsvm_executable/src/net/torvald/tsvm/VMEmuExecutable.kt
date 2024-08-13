@@ -54,7 +54,7 @@ class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var pa
 //        println("App Dispose")
         executable.dispose()
         SQTEX.dispose()
-        exitProcess(1)
+        exitProcess(0)
     }
 }
 
