@@ -10,6 +10,7 @@ import com.badlogic.gdx.graphics.g2d.Gdx2DPixmap
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.graphics.glutils.ShaderProgram
 import com.badlogic.gdx.math.Matrix4
 import com.badlogic.gdx.utils.Disposable
 import com.badlogic.gdx.utils.GdxRuntimeException
@@ -1039,7 +1040,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     private val isRefSize = (WIDTH == 560 && HEIGHT == 448)
 
-    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false,  uiFBO: FrameBuffer? = null) {
+    open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false, shader: ShaderProgram? = null, uiFBO: FrameBuffer? = null) {
         uiFBO?.end()
 
 
@@ -1346,7 +1347,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         uiFBO?.begin()
 
         uiBatch.inUse {
-            uiBatch.shader = null
+            uiBatch.shader = shader
             //Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
             //Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
             blendNormal(uiBatch)

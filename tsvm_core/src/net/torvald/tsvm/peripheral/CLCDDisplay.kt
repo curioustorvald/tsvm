@@ -4,6 +4,7 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.graphics.glutils.ShaderProgram
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.TsvmTextureRegionPack
 import net.torvald.tsvm.VM
@@ -41,6 +42,7 @@ class CLCDDisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, 
         xoff: Float,
         yoff: Float,
         flipY: Boolean,
+        shader: ShaderProgram?,
         uiFBO: FrameBuffer?
     ) {
         batch.shader = null
@@ -48,7 +50,7 @@ class CLCDDisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, 
             batch.color = Color.WHITE
             batch.draw(machine, xoff, yoff)
         }
-        super.render(delta, batch, xoff+60, yoff+90, flipY, uiFBO)
+        super.render(delta, batch, xoff+60, yoff+90, flipY, shader, uiFBO)
     }
 
 

@@ -4,6 +4,7 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.GL20
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.graphics.glutils.ShaderProgram
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.kB
 import kotlin.math.absoluteValue
@@ -60,10 +61,11 @@ open class TexticsAdapterBase(assetsRoot: String, vm: VM, config: AdapterConfig)
         xoff: Float,
         yoff: Float,
         flipY: Boolean,
+        shader: ShaderProgram?,
         uiFBO: FrameBuffer?
     ) {
 
-        super.render(delta, batch, xoff, yoff, flipY, uiFBO)
+        super.render(delta, batch, xoff, yoff, flipY, shader, uiFBO)
 
         batch.inUse {
             batch.enableBlending()

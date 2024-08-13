@@ -5,12 +5,14 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
-import kotlin.coroutines.*
+import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.graphics.glutils.ShaderProgram
 import net.torvald.terrarum.DefaultGL32Shaders
-import net.torvald.terrarum.modulecomputers.tsvmperipheral.WorldRadar
 import net.torvald.tsvm.peripheral.*
-import java.io.File
+import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_VERT
+import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.*
 
 
 class EmulInstance(
@@ -48,10 +50,31 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     lateinit var coroutineJob: Thread
     lateinit var memvwr: Memvwr
     lateinit var fullscreenQuad: Mesh
+    lateinit var gpuFBO: FrameBuffer
 
     val usememvwr = false
 
     private lateinit var crtGradTex: TextureRegion
+    private lateinit var crtShader: ShaderProgram
+
+    fun loadShaderInline(frag0: String): ShaderProgram {
+        // insert version code
+        val frag: String
+        if (Gdx.graphics.glVersion.majorVersion >= 4) {
+            frag = "#version 400\n$frag0"
+        }
+        else {
+            frag = "#version 330\n#define fma(a,b,c) (((a)*(b))+(c))\n$frag0"
+        }
+
+        val s = ShaderProgram(DRAW_SHADER_VERT, frag)
+
+        if (s.log.lowercase(Locale.getDefault()).contains("error")) {
+            throw java.lang.Error(String.format("Shader program loaded with %s failed:\n%s", frag, s.log))
+        }
+
+        return s
+    }
 
     override fun create() {
         super.create()
@@ -74,6 +97,10 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             it.flip(false, true)
         }
 
+        crtShader = loadShaderInline(CRT_POST_SHADER)
+
+        gpuFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
+
         init()
     }
 
@@ -83,7 +110,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         if (loaderInfo.display != null) {
             val loadedClass = Class.forName(loaderInfo.display)
             val loadedClassConstructor = loadedClass.getConstructor(String::class.java, vm::class.java)
-            val loadedClassInstance = loadedClassConstructor.newInstance("./assets", vm, )
+            val loadedClassInstance = loadedClassConstructor.newInstance("./assets", vm)
             gpu = (loadedClassInstance as GraphicsAdapter)
 
             vm.peripheralTable[1] = PeripheralEntry(
@@ -218,15 +245,35 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private val defaultGuiBackgroundColour = Color(0x444444ff)
 
     private fun renderGame(delta: Float) {
-        val clearCol = gpu?.getBackgroundColour() ?: defaultGuiBackgroundColour
-        Gdx.gl.glClearColor(clearCol.r, clearCol.g, clearCol.b, clearCol.a)
-        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
-        gpu?.render(delta, batch, (viewportWidth - loaderInfo.drawWidth).div(2).toFloat(), (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
+        gpuFBO.begin()
+            val clearCol = gpu?.getBackgroundColour() ?: defaultGuiBackgroundColour
+            Gdx.gl.glClearColor(clearCol.r, clearCol.g, clearCol.b, clearCol.a)
+            Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
-        // draw CRT glass overlay
+            gpu?.render(
+                delta, batch,
+                (viewportWidth - loaderInfo.drawWidth).div(2).toFloat(),
+                (viewportHeight - loaderInfo.drawHeight).div(2).toFloat(),
+                flipY = true,
+                uiFBO = gpuFBO
+            )
+        gpuFBO.end()
+
+
+        Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+
         batch.inUse {
-            batch.setBlendFunction(GL20.GL_ONE, GL20.GL_ONE_MINUS_SRC_COLOR)
             batch.color = Color.WHITE
+
+            // draw GPU and border
+            batch.shader = crtShader
+            batch.setBlendFunctionSeparate(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, GL20.GL_SRC_ALPHA, GL20.GL_ONE)
+            batch.draw(gpuFBO.colorBufferTexture, 0f, 0f)
+
+            // draw CRT glass overlay
+            batch.shader = null
+            batch.setBlendFunction(GL20.GL_ONE, GL20.GL_ONE_MINUS_SRC_COLOR)
             batch.draw(crtGradTex, 0f, 0f, viewportWidth.toFloat(), viewportHeight.toFloat())
         }
 
@@ -269,6 +316,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         fullscreenQuad.dispose()
         coroutineJob.interrupt()
         crtGradTex.texture.dispose()
+        crtShader.dispose()
+        gpuFBO.dispose()
         vm.dispose()
     }
 
@@ -323,3 +372,67 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 }
 
 const val EMDASH = 0x2014.toChar()
+
+const val CRT_POST_SHADER = """
+#ifdef GL_ES
+    precision mediump float;
+#endif
+
+in vec4 v_color;
+in vec4 v_generic;
+in vec2 v_texCoords;
+uniform sampler2D u_texture;
+uniform vec2 resolution = vec2(560.0, 448.0);
+out vec4 fragColor;
+
+const vec4 scanline = vec4(0.9, 0.9, 0.9, 1.0);
+const vec4 one = vec4(1.0);
+
+const mat4 rgb_to_yuv = mat4(
+    0.2126, -0.09991,  0.615,    0.0,
+    0.7152, -0.33609, -0.55861, 0.0,
+    0.0722,  0.436,    -0.05639, 0.0,
+    0.0, 0.0, 0.0, 1.0
+);
+
+const mat4 yuv_to_rgb = mat4(
+    1.0,      1.0,       1.0,      0.0,
+    0.0,     -0.21482, 2.12798, 0.0,
+    1.28033,-0.38059, 0.0,      0.0,
+    0.0, 0.0, 0.0, 1.0
+);
+
+const float gamma = 2.4;
+const float blur = 0.8;
+
+vec4 toYUV(vec4 rgb) { return rgb_to_yuv * rgb; }
+vec4 toRGB(vec4 ycc) { return yuv_to_rgb * ycc; }
+
+vec4 avr(vec4 a, vec4 b, float gam) {
+    return vec4(
+        pow((pow(a.x, 1.0 / gam) + pow(b.x, 1.0 / gam)) / 2.0, gam),
+        (a.y + b.y) / 2.0,
+        (a.z + b.z) / 2.0,
+        (a.w + b.w) / 2.0
+    );
+}
+
+void main() {
+    vec4 rgbColourIn = v_color * texture(u_texture, v_texCoords);
+    vec4 rgbColourL = v_color * texture(u_texture, v_texCoords + (vec2(-blur, 0.0) / resolution));
+    vec4 rgbColourR = v_color * texture(u_texture, v_texCoords + (vec2(+blur, 0.0) / resolution));
+    
+    vec4 colourIn = toYUV(rgbColourIn);
+    vec4 colourL = toYUV(rgbColourL);
+    vec4 colourR = toYUV(rgbColourR);
+        
+    vec4 LRavr = avr(colourL, colourR, gamma);
+    vec4 wgtavr = avr(LRavr, colourIn, gamma);
+        
+    vec4 outCol = wgtavr * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one);
+
+    fragColor = toRGB(outCol);
+
+}
+
+"""

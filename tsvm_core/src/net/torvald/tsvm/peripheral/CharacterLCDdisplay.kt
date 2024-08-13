@@ -4,6 +4,7 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
+import com.badlogic.gdx.graphics.glutils.ShaderProgram
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.TsvmTextureRegionPack
 import net.torvald.tsvm.VM
@@ -36,6 +37,7 @@ class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRo
         xoff: Float,
         yoff: Float,
         flipY: Boolean,
+        shader: ShaderProgram?,
         uiFBO: FrameBuffer?
     ) {
         batch.shader = null
@@ -44,9 +46,9 @@ class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRo
             batch.draw(machine, xoff, yoff)
         }
         if (!flipY)
-            super.render(delta, batch, xoff+74, yoff+102, flipY, uiFBO)
+            super.render(delta, batch, xoff+74, yoff+102, flipY, shader, uiFBO)
         else
-            super.render(delta, batch, xoff+74, yoff+72, flipY, uiFBO)
+            super.render(delta, batch, xoff+74, yoff+72, flipY, shader, uiFBO)
 
         // draw BMS and RTC
         val batPerc = "89"
