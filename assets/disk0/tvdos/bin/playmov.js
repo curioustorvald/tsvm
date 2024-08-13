@@ -47,7 +47,7 @@ let fps = seqread.readShort(); if (fps == 0) fps = 9999
 
 const FRAME_TIME = 1.0 / fps
 const FRAME_COUNT = seqread.readInt() % 16777216
-const globalType = seqread.readShort()
+seqread.readShort() // skip unused field
 const audioQueueInfo = seqread.readShort()
 const AUDIO_QUEUE_LENGTH = (audioQueueInfo >> 12) + 1
 const AUDIO_QUEUE_BYTES = (audioQueueInfo & 0xFFF) << 2
@@ -62,10 +62,6 @@ let framesRendered = 0
     printerrln("Not an iPF mov")
     return 1
 }*/
-if (globalType != 255) {
-    printerrln(`Unsupported MOV type (${globalType})`)
-    return 1
-}
 
 let ipfbuf = sys.malloc(FBUF_SIZE)
 graphics.setGraphicsMode(4)

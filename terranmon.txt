@@ -376,7 +376,7 @@ METADATA -
     uint16 HEIGHT
     uint16 FPS (0: play as fast as can)
     uint32 NUMBER OF FRAMES
-    uint16 GLOBAL PACKET TYPE (will be deprecated; please use 255,0)
+    uint16 UNUSED (fill with 255,0)
     uint16 AUDIO QUEUE INFO
            when read as little endian:
            0b nnnn bbbb bbbb bbbb
@@ -399,7 +399,6 @@ Packet Types -
       18,0: Series of PNGs
       20,0: Series of TGAs
       21,0: Series of TGA/GZs
-     255,0: Every frame specifies the type
     <audio>
       0,16: Raw PCM Stereo
       1,16: Raw PCM Mono
@@ -411,6 +410,7 @@ Packet Types -
 
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
+        128..135: Patch-encoded iPF Type 1..8
 
     - MP2 Format Details
     Rate | 2ch | 1ch
@@ -438,37 +438,45 @@ Packet Types -
         -b:a : 256k is recommended for high quality audio (trust me, you don't need 384k)
         -ar 32000 : resample the audio to 32kHz, the sampling rate of the TSVM soundcard
 
-GLOBAL TYPE 0 Packet -
+TYPE 0 Packet -
     uint32 SIZE OF FRAMEDATA
     *      COMPRESSED FRAMEDATA
 
-GLOBAL TYPE 1 Packet -
+TYPE 1 Packet -
     byte[512] Palette Data
     uint32 SIZE OF FRAMEDATA
     *      COMPRESSED FRAMEDATA
 
-GLOBAL TYPE 2 Packet -
+TYPE 2 Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      COMPRESSED FRAMEDATA
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
     *      COMPRESSED FRAMEDATA
 
-GLOBAL iPF Packet -
+iPF Packet -
     uint32 SIZE OF FRAMEDATA
     *      COMPRESSED FRAMEDATA // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
 
-GLOBAL TYPE 16+ Packet -
+Patch-encoded iPF Packet -
+    uint8  X-coord of the patch (pixel position divided by four)
+    uint8  Y-coord of the patch (pixel position divided by four)
+    uint8  width of the patch (size divided by four)
+    uint8  height of the patch (size divided by four)
+    (calculating size)
+    (iPF1 no alpha: width * height * 12)
+    (iPF1 with alpha: width * height * 20)
+    (iPF2 no alpha: width * height * 16)
+    (iPF2 with alpha: width * height * 24)
+    *      COMPRESSED FRAMEDATA // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
+
+
+TYPE 16+ Packet -
     uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA (COMPRESSED for TGA/GZ)
 
 MP2 Packet & ADPCM Packet -
     uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme
     *      MP2 FRAME/ADPCM BLOCK
-
-GLOBAL TYPE 255 Packet -
-    uint16 TYPE OF PACKET // follows the Metadata Packet Type scheme
-    uint32 SIZE OF PACKET
-    *      FRAMEDATA or PACKET
 
 Sync Packet (subset of GLOBAL TYPE 255 Packet) -
     uint16 0xFFFF (type of packet for Global Type 255)
@@ -519,7 +527,6 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
     uint8  iPF Type/Colour Mode
         0: Type 1 (4:2:0 chroma subsampling; 2048 colours?)
         1: Type 2 (4:2:2 chroma subsampling; 2048 colours?)
-       16: Type 16 (full RGBA4444; 4096 colours)
     byte[10] RESERVED
     uint32 UNCOMPRESSED SIZE (somewhat redundant but included for convenience)
 
@@ -530,21 +537,29 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
     Y plane is quantised to 4 bits
 
     By doing so, CoCg planes will reduce to 4 pixels
-    For the description of packing, pixels in Y plane will be numbered as:
-        0 1 2 3
-        4 5 6 7
-        8 9 A B
-        C D E F
+    For the description of packing, pixels in Y/Cx plane will be numbered as:
+        Y0 Y1 Y2 Y3 || Cx1   Cx2 | Cx1   Cx2
+        Y4 Y5 Y6 Y7 ||  (iPF 1)  | Cx3   Cx4
+        Y8 Y9 YA YB || Cx3   Cx4 | Cx5   Cx6
+        YC YD YE YF ||  (iPF 1)  | Cx7   Cx8
 
     Bits are packed like so:
 
-    uint8 [Cg-Top Left | Co-Top Left]
+iPF1:
+    uint16 [Co4 | Co3 | Co2 | Co1]
+    uint16 [Cg4 | Cg3 | Cg2 | Cg1]
     uint16 [Y1 | Y0 | Y5 | Y4]
-    uint8 [Cg-Top Right | Co-Top Right]
     uint16 [Y3 | Y2 | Y7 | Y6]
-    uint8 [Cg-Bottom Left | Co-Bottom Left]
     uint16 [Y9 | Y8 | YD | YC]
-    uint8 [Cg-Bottom Right | Co-Bottom Right]
+    uint16 [YB | YA | YF | YE]
+    (total: 12 bytes)
+
+iPF2:
+    uint32 [Co8 | Co7 | Co6 | Co5 | Co4 | Co3 | Co2 | Co1]
+    uint32 [Cg8 | Cg7 | Cg6 | Cg5 | Cg4 | Cg3 | Cg2 | Cg1]
+    uint16 [Y1 | Y0 | Y5 | Y4]
+    uint16 [Y3 | Y2 | Y7 | Y6]
+    uint16 [Y9 | Y8 | YD | YC]
     uint16 [YB | YA | YF | YE]
     (total: 16 bytes)
 
@@ -553,7 +568,7 @@ Image is divided into 4x4 blocks and each block is serialised, then the entire i
     uint16 [a3 | a2 | a7 | a6]
     uint16 [a9 | a8 | aD | aC]
     uint16 [aB | aA | aF | aE]
-    (total: 24 bytes)
+    (total: 20/24 bytes)
 
     Subsampling mask:
 
