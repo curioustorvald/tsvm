@@ -53,6 +53,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     lateinit var memvwr: Memvwr
     lateinit var fullscreenQuad: Mesh
     lateinit var gpuFBO: FrameBuffer
+    lateinit var winFBO: FrameBuffer
 
     val usememvwr = false
 
@@ -102,6 +103,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         crtShader = loadShaderInline(CRT_POST_SHADER)
 
         gpuFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
+        winFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
 
         init()
     }
@@ -247,6 +249,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private val defaultGuiBackgroundColour = Color(0x444444ff)
 
     private fun renderGame(delta: Float) {
+        camera.setToOrtho(false, viewportWidth.toFloat(), viewportHeight.toFloat())
+        batch.projectionMatrix = camera.combined
         gpuFBO.begin()
             val clearCol = gpu?.getBackgroundColour() ?: defaultGuiBackgroundColour
             Gdx.gl.glClearColor(clearCol.r, clearCol.g, clearCol.b, clearCol.a)
@@ -262,6 +266,9 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         gpuFBO.end()
 
 
+        camera.setToOrtho(false, viewportWidth.toFloat(), viewportHeight.toFloat())
+        batch.projectionMatrix = camera.combined
+        winFBO.begin()
         Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
@@ -285,6 +292,19 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             disp.render(batch,
                 (viewportWidth - loaderInfo.drawWidth).div(2).toFloat() + (gpu?.config?.width ?: 0),
                 (viewportHeight - loaderInfo.drawHeight).div(2).toFloat())
+        }
+        winFBO.end()
+
+
+        camera.setToOrtho(true, viewportWidth * AppLoader.MAGN, viewportHeight * AppLoader.MAGN)
+        batch.projectionMatrix = camera.combined
+
+        Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+        batch.inUse {
+            batch.shader = null
+            batch.color = Color.WHITE
+            batch.draw(winFBO.colorBufferTexture, 0f, 0f, viewportWidth * AppLoader.MAGN, viewportHeight * AppLoader.MAGN)
         }
     }
 
@@ -320,11 +340,13 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         crtGradTex.texture.dispose()
         crtShader.dispose()
         gpuFBO.dispose()
+        winFBO.dispose()
         vm.dispose()
 
         System.err.println("VM disposed: ${vm.id}")
         exitProcess(0)
     }
+
 
     companion object {
         val cp437toUni = hashMapOf<Int, Char>(

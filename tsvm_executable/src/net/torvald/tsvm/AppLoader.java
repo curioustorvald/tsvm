@@ -16,6 +16,7 @@ public class AppLoader {
 
     public static int WIDTH = 640;
     public static int HEIGHT = 480;
+    public static float MAGN = 2f;
 
     public static void main(String[] args) {
         ShaderProgram.pedantic = false;
@@ -28,7 +29,7 @@ public class AppLoader {
         appConfig.setResizable(false);
         appConfig.setTitle(appTitle);
 
-        appConfig.setWindowedMode(WIDTH, HEIGHT);
+        appConfig.setWindowedMode(((int) (WIDTH * MAGN)), ((int) (HEIGHT * MAGN)));
 
         HashMap<String, VMWatchdog> watchdogs = new HashMap<>();
         watchdogs.put("TEVD_COMMIT", TevdPartialDomCommitWatchdog.INSTANCE);
