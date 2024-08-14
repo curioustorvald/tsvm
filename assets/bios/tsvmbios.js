@@ -42,7 +42,7 @@ for(let x=1;x<81;x++)graphics.putSymbolAt(19,x,220);
 for(let y=20;y<33;y++)for(let x=1;x<81;x++)graphics.putSymbolAt(y,x,219);
 // scroll up
 let tmr=sys.nanoTime();
-let tlen=1073741824;
+let tlen=1500000000;
 while(1){let tdiff=sys.nanoTime()-tmr;if(tdiff>=tlen)break;
 graphics.setFramebufferScroll(0,-((1.0-tdiff/tlen)*164)|0);}
 
