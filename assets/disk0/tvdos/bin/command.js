@@ -306,6 +306,9 @@ shell.parse = function(input) {
 }
 /** @return fully resolved path, starting with '\' but not a drive letter */
 shell.resolvePathInput = function(input) {
+    if (input === undefined) return undefined
+
+
     // replace slashes
     let pathstr0 = input.replaceAll('\\','/') // JS thinks '/' as a regex, so we're doing this to circumvent the issue
     let pathstr = ''

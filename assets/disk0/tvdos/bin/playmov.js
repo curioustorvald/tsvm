@@ -51,7 +51,7 @@ seqread.readShort() // skip unused field
 const audioQueueInfo = seqread.readShort()
 const AUDIO_QUEUE_LENGTH = (audioQueueInfo >> 12) + 1
 const AUDIO_QUEUE_BYTES = (audioQueueInfo & 0xFFF) << 2
-sys.free(seqread.readBytes(10)) // skip 12 bytes
+seqread.skip(10) // skip 12 bytes
 let audioQueuePos = 0
 let akku = FRAME_TIME
 let framesRendered = 0
