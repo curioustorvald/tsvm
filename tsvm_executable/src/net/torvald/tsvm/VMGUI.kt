@@ -57,7 +57,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     val usememvwr = false
 
-    private lateinit var crtGradTex: TextureRegion
     private lateinit var crtShader: ShaderProgram
 
     fun loadShaderInline(frag0: String): ShaderProgram {
@@ -95,10 +94,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         camera.setToOrtho(false)
         camera.update()
         batch.projectionMatrix = camera.combined
-
-        crtGradTex = TextureRegion(Texture("${vm.assetsDir}/crt_grad.png")).also {
-            it.flip(false, true)
-        }
 
         crtShader = loadShaderInline(CRT_POST_SHADER)
 
@@ -277,13 +272,9 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
             // draw GPU and border
             batch.shader = crtShader
+            batch.shader.setUniformf("resolution", viewportWidth.toFloat(), viewportHeight.toFloat())
             batch.setBlendFunctionSeparate(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, GL20.GL_SRC_ALPHA, GL20.GL_ONE)
             batch.draw(gpuFBO.colorBufferTexture, 0f, 0f)
-
-            // draw CRT glass overlay
-            batch.shader = null
-            batch.setBlendFunction(GL20.GL_ONE, GL20.GL_ONE_MINUS_SRC_COLOR)
-            batch.draw(crtGradTex, 0f, 0f, viewportWidth.toFloat(), viewportHeight.toFloat())
         }
 
         vm.findPeribyType("oled")?.let {
@@ -337,7 +328,6 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         batch.dispose()
         fullscreenQuad.dispose()
         coroutineJob.interrupt()
-        crtGradTex.texture.dispose()
         crtShader.dispose()
         gpuFBO.dispose()
         winFBO.dispose()
@@ -409,33 +399,33 @@ in vec4 v_color;
 in vec4 v_generic;
 in vec2 v_texCoords;
 uniform sampler2D u_texture;
-uniform vec2 resolution = vec2(560.0, 448.0);
+uniform vec2 resolution = vec2(640.0, 480.0);
 out vec4 fragColor;
 
 const vec4 scanline = vec4(0.9, 0.9, 0.9, 1.0);
 const vec4 one = vec4(1.0);
+const vec4 pointfive = vec4(0.5);
 
 const mat4 rgb_to_yuv = mat4(
-    0.2126, -0.09991,  0.615,    0.0,
+    0.2126, -0.09991,  0.615,   0.0,
     0.7152, -0.33609, -0.55861, 0.0,
-    0.0722,  0.436,    -0.05639, 0.0,
+    0.0722,  0.436,   -0.05639, 0.0,
     0.0, 0.0, 0.0, 1.0
 );
 
 const mat4 yuv_to_rgb = mat4(
-    1.0,      1.0,       1.0,      0.0,
+    1.0,      1.0,       1.0,   0.0,
     0.0,     -0.21482, 2.12798, 0.0,
-    1.28033,-0.38059, 0.0,      0.0,
+    1.28033, -0.38059, 0.0,     0.0,
     0.0, 0.0, 0.0, 1.0
 );
 
-const float ALFA = 0.2;
-const float BETA = 0.2;
+const float CRS = 0.2;
 
 const mat4 crosstalk_mat = mat4(
     1.0,  0.0, 0.0, 0.0,
-    ALFA, 1.0, 0.0, 0.0,
-    BETA, 0.0, 1.0, 0.0,
+    CRS, 1.0, 0.0, 0.0,
+    CRS, 0.0, 1.0, 0.0,
     0.0,  0.0, 0.0, 1.0
 );
 
@@ -444,6 +434,15 @@ const float blurH = 0.8;
 const float blurV = 0.4;
 
 const vec4 gradingarg = vec4(1.4, 1.1, 1.1, 1.0);
+
+const int bayer[14 * 14] = int[](131,187,8,78,50,18,134,89,155,102,29,95,184,73,22,86,113,171,142,105,34,166,9,60,151,128,40,110,168,137,45,28,64,188,82,54,124,189,80,13,156,56,7,61,186,121,154,6,108,177,24,100,38,176,93,123,83,148,96,17,88,133,44,145,69,161,139,72,30,181,115,27,163,47,178,65,164,14,120,48,5,127,153,52,190,58,126,81,116,21,106,77,173,92,191,63,99,12,76,144,4,185,37,149,192,39,135,23,117,31,170,132,35,172,103,66,129,79,3,97,57,159,70,141,53,94,114,20,49,158,19,146,169,122,183,11,104,180,2,165,152,87,182,118,91,42,67,25,84,147,43,85,125,68,16,136,71,10,193,112,160,138,51,111,162,26,194,46,174,107,41,143,33,74,1,101,195,15,75,140,109,90,32,62,157,98,167,119,179,59,36,130,175,55,0,150);
+const float bayerSize = 14.0;
+const float bayerDivider = bayerSize * bayerSize;
+
+uniform float rcount = 96.0;
+uniform float gcount = 96.0;
+uniform float bcount = 96.0;
+uniform float acount = 1.0;
 
 vec4 toYUV(vec4 rgb) { return rgb_to_yuv * rgb; }
 vec4 toRGB(vec4 ycc) { return yuv_to_rgb * ycc; }
@@ -472,6 +471,41 @@ vec4 grading(vec4 col0, vec4 args) {
     return pow(rgb, power);
 }
 
+const vec4 gradLow = vec4(0.05, 0.05, 0.05, 0.8);
+const vec4 gradHigh = vec4(0.2, 0.2, 0.2, 1.0);
+const float SQRT_2 = 1.4142135623730950488;
+
+vec4 getRadialGrad(vec2 uv0) {
+    vec2 uv = uv0 * vec2(2.0) - one.xy; // -1..1
+    float distFromOrigin = length(uv); // 0..1.4142; origin is (0,0)
+    float step = 1.0 - pow(distFromOrigin / SQRT_2, 2.0);
+    return mix(gradLow, gradHigh, step);
+}
+
+vec4 screen(vec4 a, vec4 b) {
+    return one - (one - a) * (one - b);
+}
+
+vec4 gammaIn(vec4 col) {
+    return pow(col, vec4(gamma));
+}
+
+vec4 gammaOut(vec4 col) {
+    return pow(col, vec4(1.0 / gamma));
+}
+
+vec4 nearestColour(vec4 incolor) {
+    vec4 rgbaCounts = vec4(rcount, gcount, bcount, acount);
+    vec4 color = incolor;
+
+    color.r = floor((rgbaCounts.r - 1.0) * color.r + 0.5) / (rgbaCounts.r - 1.0);
+    color.g = floor((rgbaCounts.g - 1.0) * color.g + 0.5) / (rgbaCounts.g - 1.0);
+    color.b = floor((rgbaCounts.b - 1.0) * color.b + 0.5) / (rgbaCounts.b - 1.0);
+    color.a = 1.0;//floor((rgbaCounts.a - 1.0) * color.a + 0.5) / (rgbaCounts.a - 1.0);
+
+    return color;
+}
+
 void main() {
     vec4 rgbColourIn = v_color * texture(u_texture, v_texCoords);
     vec4 rgbColourL = v_color * mix(
@@ -491,9 +525,13 @@ void main() {
     vec4 wgtavr = avr(LRavr, colourIn, gamma);
         
     vec4 outCol = wgtavr;
+    vec4 out2 = clamp(grading(outCol, gradingarg) * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one), 0.0, 1.0);
 
-    fragColor = grading(outCol, gradingarg) * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one);
-
+    // mix in CRT glass overlay
+    float spread = 1.0 / (0.299 * (rcount - 1.0) + 0.587 * (gcount - 1.0) + 0.114 * (bcount - 1.0));  // this spread value is optimised one -- try your own values for various effects!
+    vec4 inColor = screen(out2, getRadialGrad((gl_FragCoord - pointfive).xy / resolution));
+    vec2 entry = mod((gl_FragCoord - pointfive).xy, vec2(bayerSize, bayerSize));
+    fragColor = nearestColour(inColor + spread * (bayer[int(entry.y) * int(bayerSize) + int(entry.x)] / bayerDivider - 0.5));
 }
 
 """
