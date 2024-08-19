@@ -47,7 +47,7 @@ data class SuperGraphicsAddonConfig(
     val bankCount: Int = 1
 )
 
-class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT)
+class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
 class ReferenceGraphicsAdapter2(assetsRoot: String, vm: VM) : RemoteGraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
 class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
 
