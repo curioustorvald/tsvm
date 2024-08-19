@@ -439,39 +439,46 @@ Packet Types -
         -ar 32000 : resample the audio to 32kHz, the sampling rate of the TSVM soundcard
 
 TYPE 0 Packet -
-    uint32 SIZE OF FRAMEDATA
+    uint32 SIZE OF COMPRESSED FRAMEDATA
     *      COMPRESSED FRAMEDATA
 
 TYPE 1 Packet -
     byte[512] Palette Data
-    uint32 SIZE OF FRAMEDATA
+    uint32 SIZE OF COMPRESSED FRAMEDATA
     *      COMPRESSED FRAMEDATA
 
 TYPE 2 Packet -
-    uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
+    uint32 SIZE OF COMPRESSED FRAMEDATA BYTE-PLANE 1
     *      COMPRESSED FRAMEDATA
-    uint32 SIZE OF FRAMEDATA BYTE-PLANE 2
+    uint32 SIZE OF COMPRESSED FRAMEDATA BYTE-PLANE 2
     *      COMPRESSED FRAMEDATA
 
 iPF Packet -
-    uint32 SIZE OF FRAMEDATA
+    uint32 SIZE OF COMPRESSED FRAMEDATA
     *      COMPRESSED FRAMEDATA // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
 
 Patch-encoded iPF Packet -
-    uint8  X-coord of the patch (pixel position divided by four)
-    uint8  Y-coord of the patch (pixel position divided by four)
-    uint8  width of the patch (size divided by four)
-    uint8  height of the patch (size divided by four)
-    (calculating size)
-    (iPF1 no alpha: width * height * 12)
-    (iPF1 with alpha: width * height * 20)
-    (iPF2 no alpha: width * height * 16)
-    (iPF2 with alpha: width * height * 24)
-    *      COMPRESSED FRAMEDATA // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
+    uint32 SIZE OF COMPRESSED PATCHES
+    *      COMPRESSED PATCHES
+
+    PATCHES are bunch of PATCHes concatenated
+
+    where each PATCH is encoded as:
+
+        uint8  X-coord of the patch (pixel position divided by four)
+        uint8  Y-coord of the patch (pixel position divided by four)
+        uint8  width of the patch (size divided by four)
+        uint8  height of the patch (size divided by four)
+        (calculating uncompressed size)
+        (iPF1 no alpha: width * height * 12)
+        (iPF1 with alpha: width * height * 20)
+        (iPF2 no alpha: width * height * 16)
+        (iPF2 with alpha: width * height * 24)
+        *      UN-COMPRESSED PATCHDATA
 
 
 TYPE 16+ Packet -
-    uint32 SIZE OF FRAMEDATA BYTE-PLANE 1
+    uint32 SIZE OF COMPRESSED FRAMEDATA BYTE-PLANE 1
     *      FRAMEDATA (COMPRESSED for TGA/GZ)
 
 MP2 Packet & ADPCM Packet -
