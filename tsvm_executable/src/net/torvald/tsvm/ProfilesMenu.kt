@@ -201,6 +201,7 @@ class ProfilesMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : Em
                 batch.setColourBy { theVM?.isRunning == true }
                 FONT.draw(batch, STR_PLAY, 398f, 382f)
                 batch.setColourBy(Color.RED, Color.LIME) { (theVM?.peek(-90)?.and(-128) ?: 0.toByte()).toInt() != 0 }
+                batch.setColourBy(Color.YELLOW, batch.color) { theVM?.isIdle?.get() == true }
                 FONT.draw(batch, STR_POWER, 419f, 382f)
             }
         }

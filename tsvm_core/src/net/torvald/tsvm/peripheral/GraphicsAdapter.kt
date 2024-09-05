@@ -19,10 +19,13 @@ import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.*
 import kotlin.experimental.and
 import kotlin.math.floor
+import kotlin.math.min
 
 data class AdapterConfig(
     val theme: String,
@@ -39,7 +42,7 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG,
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
-    val baudRate: Double = 10_240_000.0,//57600.0,
+    val baudRate: Double = 16_384_000.0,//57600.0,
     val bitsPerChar: Int = 10 // start bit + 8 data bits + stop bit
 )
 
@@ -934,6 +937,20 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 override fun write(p0: Int) {
                     writeOut(p0.toByte())
                 }
+
+                override fun write(b: ByteArray) {
+                    this.write(b, 0, b.size)
+                }
+
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    vm.isIdle.set(true)
+                    Objects.checkFromIndexSize(off, len, b.size)
+
+                    for (i in 0 until len) {
+                        writeOut(b[off + i])
+                    }
+                    vm.isIdle.set(false)
+                }
             }
 
             return PRINTSTREAM_INSTANCE
@@ -951,15 +968,22 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 private val SGI_RESET = byteArrayOf(0x1B, 0x5B, 0x6D)
 
                 override fun write(p0: Int) {
+                    vm.isIdle.set(true)
                     SGI_RED.forEach { writeOut(it) }
                     writeOut(p0.toByte())
                     SGI_RESET.forEach { writeOut(it) }
+                    vm.isIdle.set(false)
                 }
 
-                override fun write(p0: ByteArray) {
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    Objects.checkFromIndexSize(off, len, b.size)
+                    vm.isIdle.set(true)
                     SGI_RED.forEach { writeOut(it) }
-                    p0.forEach { writeOut(it) }
+                    for (i in 0 until len) {
+                        writeOut(b[off + i])
+                    }
                     SGI_RESET.forEach { writeOut(it) }
+                    vm.isIdle.set(false)
                 }
             }
 
@@ -2242,7 +2266,8 @@ void main() {
             )
         }
 
-        val LAYERORDERS4 = listOf( // [drawn first, second, third, fourth], zero-indexed
+        val LAYERORDERS4 = listOf(
+            // [drawn first, second, third, fourth], zero-indexed
             "1234",
             "1243",
             "1324",
@@ -2269,7 +2294,8 @@ void main() {
             "4321",
         ).map { s -> (0..3).map { s[it].toInt() - 49 } }
 
-        val LAYERORDERS2 = listOf( // [drawn first, second], zero-indexed
+        val LAYERORDERS2 = listOf(
+            // [drawn first, second], zero-indexed
             "12",
             "12",
             "12",

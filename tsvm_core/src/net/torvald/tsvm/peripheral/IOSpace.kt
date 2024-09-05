@@ -166,7 +166,12 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 37L -> keyboardBuffer.appendHead(byte)
                 38L -> {
                     keyboardInputRequested = (byte.isNonZero())
-                    if (keyboardInputRequested) keyboardBuffer.clear()
+                    if (keyboardInputRequested) {
+                        keyboardBuffer.clear()
+                        vm.isIdle.set(true)
+                    }
+                    else
+                        vm.isIdle.set(false)
                 }
 
                 39L -> rawInputFunctionLatched = (byte.isNonZero())

@@ -229,16 +229,22 @@ class VMJSR223Delegate(private val vm: VM) {
     }
 
     fun spin() {
+        vm.isIdle.set(true)
         Thread.sleep(4L)
+        vm.isIdle.set(false)
     }
 
     fun sleep(time: Long) {
+        vm.isIdle.set(true)
         Thread.sleep(time)
+        Thread.sleep(4L)
     }
 
     fun waitForMemChg(addr: Int, andMask: Int, xorMask: Int) {
         while ((peek(addr) xor xorMask) and andMask == 0) {
+            vm.isIdle.set(true)
             Thread.sleep(1L)
+            vm.isIdle.set(false)
         }
     }
     fun waitForMemChg(addr: Int, andMask: Int) = waitForMemChg(addr, andMask, 0)
