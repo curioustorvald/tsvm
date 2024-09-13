@@ -19,6 +19,7 @@ var _BIOS = {};
 // Port #0-3: Serial port 1-4
 //      #4+ : Left for future extension
 // Drive-number always starts at 1
+_BIOS.HYVE = true;
 _BIOS.FIRST_BOOTABLE_PORT = [0,1]; // ah screw it
 
 Object.freeze(_BIOS);
@@ -56,8 +57,15 @@ else {
 let runner = parallel.attachProgram("TVDOS", context, bios)
 parallel.launch(runner)
 
+sys.sleep(1000);
+
 while (parallel.isRunning(runner)) {
-    sys.sleep(1000)
+    graphics.plotPixel( // test fill the framebuffer to prove VM is shared
+        (Math.random() * 560) | 0,
+        (Math.random() * 448) | 0,
+        (Math.random() * 256) | 0
+    )
+    sys.sleep(0)
 }
 
 println(" LX4 cya!")
