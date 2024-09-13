@@ -54,7 +54,7 @@ object VMRunnerFactory {
             "js" -> {
                 object : VMRunner(extension) {
                     private val ringOneParallel = Parallel(vm)
-                    private val ringTwoParallel = ParallelDummy()
+                    private val ringTwoParallel = Parallel(vm)//ParallelDummy()
 
                     private val context = Context.newBuilder("js")
                         .allowHostAccess(HostAccess.ALL)

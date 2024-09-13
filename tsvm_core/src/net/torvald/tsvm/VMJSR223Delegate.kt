@@ -293,6 +293,7 @@ class Parallel(private val vm: VM) {
         thread.interrupt()
         vm.contexts.remove(thread)
     }
+    fun isRunning(thread: Thread) = thread.isAlive
     fun getThreadPool() = vm.contexts
 }
 

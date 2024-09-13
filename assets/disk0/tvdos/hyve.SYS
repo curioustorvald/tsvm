@@ -1,0 +1,63 @@
+/*
+hyve is a hypervisor for tsvm.
+
+## hyve boot sequence
+
+0. bios starts up
+1. bootloader calls hyve.js
+2. hyve sets up itself, spawns new context which runs TVDOS.SYS
+3. hands the control over to the TVDOS until SysRq sequence is struck
+*/
+
+let context = parallel.spawnNewContext()
+let bios = `
+// probe bootable device
+
+var _BIOS = {};
+
+// Syntax: [Port, Drive-number]
+// Port #0-3: Serial port 1-4
+//      #4+ : Left for future extension
+// Drive-number always starts at 1
+_BIOS.FIRST_BOOTABLE_PORT = [0,1]; // ah screw it
+
+Object.freeze(_BIOS);
+
+///////////////////////////////////////////////////////////////////////////////
+
+// load a bootsector using 'LOADBOOT'
+let portNumber = 0;
+let driveStatus = 0;
+let guestExit = false;
+while (portNumber < 4) {
+    if (com.areYouThere(portNumber)) {
+        com.sendMessage(portNumber,"DEVRST\x17");
+        com.sendMessage(portNumber, 'OPENR"tvdos/TVDOS.SYS",'+_BIOS.FIRST_BOOTABLE_PORT[1]);
+        driveStatus = com.getStatusCode(portNumber);
+        if (driveStatus == 0) break;
+    }
+    portNumber += 1;
+}
+if (portNumber < 4) {
+    com.sendMessage(portNumber,"READ");
+    let r = com.getStatusCode(portNumber);
+    if (r == 0) {
+        let g = com.pullMessage(portNumber);
+        eval(g);
+    }
+    else {
+        println("I/O Error");
+    }
+}
+else {
+    printerrln("No bootable medium found.");
+}
+`
+let runner = parallel.attachProgram("TVDOS", context, bios)
+parallel.launch(runner)
+
+while (parallel.isRunning(runner)) {
+    sys.sleep(1000)
+}
+
+println(" LX4 cya!")
