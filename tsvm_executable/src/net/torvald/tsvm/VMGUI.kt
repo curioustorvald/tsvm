@@ -59,6 +59,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     private lateinit var crtShader: ShaderProgram
 
+    internal val whatToDoOnVmExceptionQueue = ArrayList<() -> Unit>()
+
     fun loadShaderInline(frag0: String): ShaderProgram {
         // insert version code
         val frag: String
@@ -156,7 +158,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             }
             catch (e: Throwable) {
                 e.printStackTrace()
-                killVMenv()
+                whatToDoOnVmExceptionQueue.add { killVMenv() }
             }
         }, "VmRunner:${vm.id}")
         coroutineJob.start()
@@ -192,10 +194,12 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private var rebootRequested = false
 
     private fun reboot() {
-        vmRunner.close()
+        /*vmRunner.close()
         coroutineJob.interrupt()
 
-        init()
+        init()*/
+
+        // hypervisor will take over by monitoring MMIO addr 48
     }
 
     private var updateAkku = 0.0
@@ -226,6 +230,15 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         renderGame(dt)
 
         vm.watchdogs.forEach { (_, watchdog) -> watchdog.update(dt) }
+
+
+        val vmExceptionHandlers = whatToDoOnVmExceptionQueue.toList()
+        vmExceptionHandlers.forEach { it.invoke() }
+        synchronized(whatToDoOnVmExceptionQueue) {
+            vmExceptionHandlers.forEach {
+                whatToDoOnVmExceptionQueue.remove(it)
+            }
+        }
     }
 
     private fun updateGame(delta: Float) {

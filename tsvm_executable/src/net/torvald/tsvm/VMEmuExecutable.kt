@@ -285,11 +285,13 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     private fun reboot(profileName: String) {
         val vm = currentlyLoadedProfiles[profileName]!!
 
-        vmRunners[vm.id]!!.close()
+        /*vmRunners[vm.id]!!.close()
         coroutineJobs[vm.id]!!.interrupt()
 
         vm.init()
-        initVMenv(vm, profileName)
+        initVMenv(vm, profileName)*/
+
+        // hypervisor will take over by monitoring MMIO addr 48
     }
 
     private fun updateGame(delta: Float) {

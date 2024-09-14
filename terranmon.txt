@@ -74,9 +74,10 @@ MMIO
     stores keys that are held down. Can accomodate 8-key rollover (in keyboard geeks' terms)
     0x0 is written for the empty area; numbers are always sorted
 48..51 RO: System flags
-    48: 0b r000 000t
+    48: 0b rq00 000t
         t: STOP button (should raise SIGTERM)
-        r: RESET button (should reset the system)
+        r: RESET button (hypervisor should reset the system)
+        q: SysRq button (hypervisor should respond to it)
 
 64..67 RO: User area memory size in bytes
 68 WO: Counter latch
@@ -104,9 +105,11 @@ MMIO
 90 RO: BMS calculated battery percentage where 255 is 100%
 91 RO: BMS battery voltage multiplied by 10 (127 = "12.7 V")
 
-92..127 RW: Used by the hypervisor
-
 1024..2047 RW: Reserved for integrated peripherals (e.g. built-in status display)
+
+2048..4075 RW: Used by the hypervisor
+    2048..2051 RW: Status flags
+
 
 4076..4079 RW: 8-bit status code for the port
 4080..4083 RO: 8-bit status code for connected device

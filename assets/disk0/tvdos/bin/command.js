@@ -37,7 +37,7 @@ function print_prompt_text() {
         con.addch(16);con.curs_right()
         con.color_pair(0,253)
         print(" \\"+shell_pwd.join("\\").substring(1)+" ")
-        if (errorlevel != 0) {
+        if (errorlevel != 0 && errorlevel != "undefined" && errorlevel != undefined) {
             con.color_pair(166,253)
             print("["+errorlevel+"] ")
         }
@@ -48,7 +48,7 @@ function print_prompt_text() {
     }
     else {
 //        con.color_pair(253,255)
-        if (errorlevel != 0)
+        if (errorlevel != 0 && errorlevel != "undefined" && errorlevel != undefined)
             print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT)
         else
             print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT)

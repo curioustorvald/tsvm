@@ -103,7 +103,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             38L -> keyboardInputRequested.toInt().toByte()
             39L -> rawInputFunctionLatched.toInt().toByte()
             in 40..47 -> keyEventBuffers[adi - 40]
-            48L -> ((vm.resetDown.toInt(7)) or (vm.stopDown.toInt())).toByte()
+            48L -> (vm.resetDown.toInt(7) or vm.sysrqDown.toInt(6) or vm.stopDown.toInt()).toByte()
 
             in 64..67 -> vm.memsize.shr((adi - 64) * 8).toByte()
             68L -> (uptimeCounterLatched.toInt() or RTClatched.toInt(1)).toByte()
@@ -116,7 +116,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             89L -> ((acpiShutoff.toInt(7)) or (bmsIsBatteryOperated.toInt(3)) or (bmsHasBattery.toInt(1))
                     or bmsIsCharging.toInt()).toByte()
 
-            in 92L..127L -> hyveArea[addr.toInt()]
+            in 2048L..4075L -> hyveArea[addr.toInt() - 2048]
 
             in 1024..2047 -> peripheralFast[addr - 1024]
 
@@ -160,7 +160,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
         }
     }
 
-    private val hyveArea = ByteArray(128)
+    private val hyveArea = ByteArray(2048)
 
     override fun mmio_write(addr: Long, byte: Byte) {
         val adi = addr.toInt()
@@ -190,7 +190,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                     acpiShutoff = byte.and(-128).isNonZero()
                 }
 
-                in 92L..127L -> hyveArea[addr.toInt()] = byte
+                in 2048L..4075L -> hyveArea[addr.toInt() - 2048] = byte
 
                 in 1024..2047 -> peripheralFast[addr - 1024] = byte
 
