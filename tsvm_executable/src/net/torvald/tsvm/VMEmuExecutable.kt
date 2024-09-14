@@ -85,6 +85,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     var vmRunners = HashMap<VmId, VMRunner>() // <VM's identifier, VMRunner>
     var coroutineJobs = HashMap<VmId, Thread>() // <VM's identifier, Job>
 
+    internal val whatToDoOnVmExceptionQueue = ArrayList<() -> Unit>()
+
     companion object {
         val APPDATADIR = TsvmEmulator.defaultDir
 
@@ -212,7 +214,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val gpu = ReferenceGraphicsAdapter("./assets", vm)
         VMSetupBroker.initVMenv(vm, profiles[profileName]!!, profileName, gpu, vmRunners, coroutineJobs) {
             it.printStackTrace()
-            VMSetupBroker.killVMenv(vm, vmRunners, coroutineJobs)
+            whatToDoOnVmExceptionQueue.add { VMSetupBroker.killVMenv(vm, vmRunners, coroutineJobs) }
         }
     }
 
@@ -269,6 +271,15 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         renderGame(dt)
 
         watchdogs.forEach { (_, watchdog) -> watchdog.update(dt) }
+
+
+        val vmExceptionHandlers = whatToDoOnVmExceptionQueue.toList()
+        vmExceptionHandlers.forEach { it.invoke() }
+        synchronized(whatToDoOnVmExceptionQueue) {
+            vmExceptionHandlers.forEach {
+                whatToDoOnVmExceptionQueue.remove(it)
+            }
+        }
     }
 
     private fun reboot(profileName: String) {
