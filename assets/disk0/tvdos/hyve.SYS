@@ -65,6 +65,9 @@ function startNewInstance() {
 
 
 // initial kickstart
+graphics.setBackground(34,51,68)
+println("== h y v e ============================================== Hypervisor for tsvm ==")
+
 startNewInstance()
 
 while (parallel.isRunning(runner)) {

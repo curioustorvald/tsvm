@@ -16,7 +16,7 @@ import java.net.URL
  * Note that there is no double-slash after the protocol (or scheme)
  *
  * @param artificialDelayBlockSize How many bytes should be retrieved in a single block-read
- * @param artificialDelayWaitTime Delay in milliseconds between the block-reads. Put non-negative value to NOT introduce a delay.
+ * @param artificialDelayWaitTime Delay in milliseconds between the block-reads. Put positive value in milliseconds to add a delay, zero or negative value to NOT add one.
  *
  * Created by minjaesong on 2022-09-22.
  */
@@ -149,7 +149,7 @@ class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 
                             bufferedOut.write(data, 0, count)
                         }
 
-                        if (artificialDelayWaitTime >= 0) {
+                        if (artificialDelayWaitTime > 0) {
                             try {
                                 Thread.sleep(artificialDelayWaitTime.toLong())
                             }
