@@ -288,7 +288,25 @@ let opPanelDraw = (wo) => {
 
 
 let paletteDraw = (wo) => {
+    function hr(y) {
+        con.move(y, xp)
+        print(`\x84196u`.repeat(POPUP_WIDTH - 2))
+    }
 
+    con.color_pair(COL_TEXT, COL_BACK)
+
+    let xp = wo.x + 1
+    let yp = wo.y + 1
+
+    // erase first
+    for (let y = 0; y <= POPUP_HEIGHT-2; y++) {
+        con.move(yp + y, xp)
+        print(" ".repeat(POPUP_WIDTH-2))
+    }
+
+    // finally draw something
+    con.move(yp, xp)
+    print("More commands (hit m to return):")
 }
 
 
@@ -418,6 +436,8 @@ const LEFTPANEL = windows[0][0]
 const OPPANEL = windows[0][1]
 const RIGHTPANEL = windows[0][2]
 
+let currentPopup = 0
+
 function drawTitle() {
     // draw window title
     con.color_pair(COL_BACK, COL_TEXT)
@@ -457,12 +477,20 @@ function drawOpPanel() {
     OPPANEL.drawFrame()
 }
 
+function drawPopupPanel() {
+    if (currentPopup) {
+        windows[currentPopup][0].drawContents()
+        windows[currentPopup][0].drawFrame()
+    }
+}
+
 
 function redraw() {
     clearScr()
     drawTitle()
     drawFilePanel()
     drawOpPanel()
+    drawPopupPanel()
 }
 
 function clearScr() {
@@ -495,9 +523,15 @@ while (!exit) {
         }
         else {
 
-            if (keyJustHit && keysym == 'z') {
-                windowMode = 1 - windowMode
-                redraw()
+            if (keyJustHit) {
+                if (keysym == 'z') {
+                    windowMode = 1 - windowMode
+                    redraw()
+                }
+                else if (keysym == 'm') {
+                    currentPopup = 1 - currentPopup
+                    redraw()
+                }
             }
 
             windows[windowFocus].forEach(it => {
