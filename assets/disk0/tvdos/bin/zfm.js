@@ -498,9 +498,18 @@ function drawTitle() {
 
 
 function drawFilePanel() {
-    windows[0].forEach((panel, i)=>{
-        panel.isHighlighted = (i == 2 * windowMode)
-    })
+    // set highlight status
+    const currentTopPanel = windowFocus.last()
+    if (currentTopPanel == 0) {
+        windows[0].forEach((panel, i)=>{
+            panel.isHighlighted = (i == 2 * windowMode)
+        })
+    }
+    else {
+        windows[0].forEach((panel, i)=>{
+            panel.isHighlighted = false
+        })
+    }
     if (windowMode) {
         RIGHTPANEL.drawContents()
         RIGHTPANEL.drawFrame()
@@ -571,8 +580,6 @@ while (!exit) {
             firstRunLatch = false
         }
         else {
-            serial.println(`current windowFocus: ${windowFocus}; last() = ${windowFocus.last()}`)
-
             windows[windowFocus.last()].forEach(it => {
                 if (it.isHighlighted) { // double input processing without this? wtf?!
                     it.processInput(event)
