@@ -16,8 +16,8 @@ const SIDEBAR_WIDTH = 9
 const LIST_HEIGHT = HEIGHT - 3
 const FILESIZE_WIDTH = 7
 const FILELIST_WIDTH = WIDTH - SIDEBAR_WIDTH - 3 - FILESIZE_WIDTH
-const POPUP_WIDTH = Math.ceil(WIDTH * 0.75) & 0xFFFE // always even number
-const POPUP_HEIGHT = HEIGHT * 0.5 + 2
+const POPUP_WIDTH = 52 // always even number
+const POPUP_HEIGHT = 16
 
 const COL_HL_EXT = {
     "js": 215,
@@ -48,7 +48,7 @@ const EXEC_FUNS = {
 }
 
 let windowMode = 0 // 0 == left, 1 == right
-let windowFocus = 0 // 0: files window, 1: palette window, 2: popup window
+let windowFocus = [0] // is a stack; 0: files window, 1: palette window, 2: popup window
 
 // window states
 let path = [["A:", "home"], ["A:"]]
@@ -329,6 +329,10 @@ let filenavOninput = (window, event) => {
     if (keyJustHit && keysym == "q") {
         exit = true
     }
+    else if (keyJustHit && keysym == "z") {
+        windowMode = 1 - windowMode
+        redraw() // this would double-redraw (hence no panel switching) or something if redraw() is not merely a request to do so
+    }
     else if (keysym == "<UP>") {
         [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
         drawFilePanel()
@@ -384,6 +388,7 @@ let filenavOninput = (window, event) => {
                 sys.read()
             }
 
+            firstRunLatch = true
             con.curs_set(0);clearScr()
             redraw()
         }
@@ -399,6 +404,9 @@ let filenavOninput = (window, event) => {
 
         }
     }
+    else if (keyJustHit && keysym == 'm') {
+        makePopup(1); redraw()
+    }
 
 
 
@@ -409,7 +417,19 @@ let filenavOninput = (window, event) => {
 
 let paletteInput = (window, event) => {
 
+    let eventName = event[0]
+    if (eventName == "key_down") {
 
+    let keysym = event[1]
+    let keyJustHit = (1 == event[2])
+    let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
+    let keycode = keycodes[0]
+
+    if (keyJustHit && keysym == 'm') {
+        removePopup(); redraw()
+    }
+
+    }
 }
 
 
@@ -421,14 +441,17 @@ let popupInput = (window, event) => {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-let windows = [[
+let windows = [
+/*index 0: main three panels*/[
     new win.WindowObject(1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // left panel
     new win.WindowObject(WIDTH - SIDEBAR_WIDTH+1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
 //    new win.WindowObject(1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
     new win.WindowObject(SIDEBAR_WIDTH + 1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // right panel
-],[
+],
+/*index 1: commands palette*/[
     new win.WindowObject((WIDTH - POPUP_WIDTH) / 2, (HEIGHT - POPUP_HEIGHT) / 2, POPUP_WIDTH, POPUP_HEIGHT, paletteInput, paletteDraw, "Commands")
-],[
+],
+/*index 2: popup messages*/[
     new win.WindowObject((WIDTH - POPUP_WIDTH) / 2, (HEIGHT - POPUP_HEIGHT) / 2, POPUP_WIDTH, POPUP_HEIGHT, popupInput, popupDraw)
 ]]
 
@@ -437,6 +460,27 @@ const OPPANEL = windows[0][1]
 const RIGHTPANEL = windows[0][2]
 
 let currentPopup = 0
+
+function makePopup(index) {
+    currentPopup = index
+    windowFocus.push(currentPopup)
+    for (let i = 0; i < windows.length; i++) {
+        windows[i].forEach(it => {
+            it.isHighlighted = (i == index)
+        })
+    }
+}
+
+function removePopup() {
+    windowFocus.pop()
+    const index = windowFocus.last
+    currentPopup = 0
+    for (let i = 0; i < windows.length; i++) {
+        windows[i].forEach(it => {
+            it.isHighlighted = (i == index)
+        })
+    }
+}
 
 function drawTitle() {
     // draw window title
@@ -486,6 +530,10 @@ function drawPopupPanel() {
 
 
 function redraw() {
+    redrawRequested = true
+}
+
+function _redraw() {
     clearScr()
     drawTitle()
     drawFilePanel()
@@ -503,8 +551,9 @@ function clearScr() {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
-redraw()
+_redraw()
 
+let redrawRequested = false
 let exit = false
 let firstRunLatch = true
 
@@ -522,23 +571,18 @@ while (!exit) {
             firstRunLatch = false
         }
         else {
+            serial.println(`current windowFocus: ${windowFocus}; last() = ${windowFocus.last()}`)
 
-            if (keyJustHit) {
-                if (keysym == 'z') {
-                    windowMode = 1 - windowMode
-                    redraw()
-                }
-                else if (keysym == 'm') {
-                    currentPopup = 1 - currentPopup
-                    redraw()
-                }
-            }
-
-            windows[windowFocus].forEach(it => {
-                if (it.isHighlighted) {
+            windows[windowFocus.last()].forEach(it => {
+                if (it.isHighlighted) { // double input processing without this? wtf?!
                     it.processInput(event)
                 }
             })
+        }
+
+        if (redrawRequested) {
+            redrawRequested = false
+            _redraw()
         }
     })
 }
