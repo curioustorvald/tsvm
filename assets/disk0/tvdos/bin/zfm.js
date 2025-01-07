@@ -66,6 +66,82 @@ function bytesToReadable(i) {
    )
 }
 
+let filePanelCache = [[], []]
+
+function refreshFilePanelCache(side) {
+    let pathStr = path[side].concat(['']).join("\\").replaceAll('\\\\', '\\')
+    const showDrives = (pathStr.length == 0)
+
+    filePanelCache[side] = []
+
+    let fileList = []
+    if (!showDrives) {
+        // serial.println(`pathStr=${pathStr}`)
+        fileList = files.open(pathStr).list()
+    }
+    else {
+        Object.entries(_TVDOS.DRIVES).map(it=>{
+            let [letter, [port, drivenum]] = it
+            let dinfo = _TVDOS.DRIVEINFO[letter]
+
+            if (dinfo.type == "STOR") {
+                let file = files.open(`${letter}:\\`)
+                fileList.push(file)
+                // serial.println(`fileList ${file.fullPath}`)
+            }
+        })
+    }
+
+    let ds = []
+    let fs = []
+    fileList.forEach((file)=>{
+        if (file.isDirectory)
+            ds.push(file)
+        else
+            fs.push(file)
+    })
+    ds.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
+    fs.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
+    dirFileList[side] = ds.concat(fs)
+
+    let filesCount = dirFileList[side].length
+
+    for (let i = 0; i < filesCount; i++) {
+        let file = dirFileList[side][i]
+        let sizestr;
+        if (!showDrives) {
+            sizestr = (file) ? bytesToReadable(file.size) : ''
+        }
+        else if (file) {
+            let port = _TVDOS.DRIVES[file.driveLetter]
+            _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
+            com.sendMessage(port[0], "USAGE")
+            let response = com.getStatusCode(port[0])
+            if (0 == response) {
+                let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
+                let usedBytes = (rawStr[0].substring(4))|0
+                let totalBytes = (rawStr[1].substring(5))|0
+                sizestr = bytesToReadable(usedBytes)
+            }
+            else {
+                sizestr = ''
+            }
+        }
+        else {
+            sizestr = ''
+        }
+        let filename = (showDrives && file) ? file.fullPath : (file) ? file.name : ''
+        let fileext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase()
+
+        filePanelCache[side].push({
+            file: file,
+            sizestr: sizestr,
+            filename: filename,
+            fileext: fileext
+        })
+    }
+}
+
 let filesPanelDraw = (wo) => {
     let usedBytes = undefined
     let totalBytes = undefined
@@ -104,98 +180,66 @@ let filesPanelDraw = (wo) => {
 
 
     con.color_pair(COL_TEXT, COL_BACK)
-    // draw list
-    let fileList = []
-    if (!showDrives) {
-        // serial.println(`pathStr=${pathStr}`)
-        fileList = files.open(pathStr).list()
-    }
-    else {
-         Object.entries(_TVDOS.DRIVES).map(it=>{
-            let [letter, [port, drivenum]] = it
-            let dinfo = _TVDOS.DRIVEINFO[letter]
-
-            if (dinfo.type == "STOR") {
-                let file = files.open(`${letter}:\\`)
-                fileList.push(file)
-                // serial.println(`fileList ${file.fullPath}`)
-            }
-        })
-    }
-
 
     let s = scroll[windowMode]
-
-    // sort fileList
-    let ds = []
-    let fs = []
-    fileList.forEach((file)=>{
-        if (file.isDirectory)
-            ds.push(file)
-        else
-            fs.push(file)
-    })
-    ds.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
-    fs.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
-    dirFileList[windowMode] = ds.concat(fs)
-
     let filesCount = dirFileList[windowMode].length
 
     // print entries
     for (let i = 0; i < LIST_HEIGHT; i++) {
-        let file = dirFileList[windowMode][i+s]
-        let sizestr;
-        if (!showDrives) {
-            sizestr = (file) ? bytesToReadable(file.size) : ''
-        }
-        else if (file) {
-            let port = _TVDOS.DRIVES[file.driveLetter]
-            _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
-            com.sendMessage(port[0], "USAGE")
-            let response = com.getStatusCode(port[0])
-            if (0 == response) {
-                let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
-                usedBytes = (rawStr[0].substring(4))|0
-                totalBytes = (rawStr[1].substring(5))|0
-                sizestr = bytesToReadable(usedBytes)
+        let listObj = filePanelCache[windowMode][i+s]
+        if (listObj) {
+            let file = listObj.file
+            let sizestr = listObj.sizestr
+            let filename = listObj.filename//(showDrives && file) ? file.fullPath : (file) ? file.name : ''
+            let fileext = listObj.fileext
+
+            // set bg colour
+            let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
+            // set fg colour (if there are more at the top/bottom, dim the colour)
+            let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : (COL_HL_EXT[fileext] || COL_TEXT)
+
+            // print filename
+            con.color_pair(foreCol, backCol)
+            con.move(wo.y + 2+i, wo.x + 1)
+            print(((file && file.isDirectory && !showDrives) ? '\\' : ' ') + filename)
+            print(' '.repeat(FILELIST_WIDTH - 2 - filename.length))
+
+            // print |
+            con.color_pair(COL_TEXT, backCol)
+            con.mvaddch(wo.y + 2+i, wo.x + FILELIST_WIDTH, 0xB3)
+
+            // print filesize
+            con.color_pair(foreCol, backCol)
+            con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
+            if (file && file.isDirectory && !showDrives) {
+                print(' '.repeat(FILESIZE_WIDTH - sizestr.length))
+                print(sizestr); con.prnch(0x7F)
             }
             else {
-                sizestr = ''
+                print(' '.repeat(FILESIZE_WIDTH - sizestr.length + 1))
+                print(sizestr)
             }
         }
         else {
-            sizestr = ''
+            // set bg colour
+            let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
+            // set fg colour (if there are more at the top/bottom, dim the colour)
+            let foreCol = COL_TEXT
+
+            // print empty filename
+            con.color_pair(foreCol, backCol)
+            con.move(wo.y + 2+i, wo.x + 1)
+            print(' '.repeat(FILELIST_WIDTH - 2))
+
+            // print |
+            con.color_pair(COL_TEXT, backCol)
+            con.mvaddch(wo.y + 2+i, wo.x + FILELIST_WIDTH, 0xB3)
+
+            // print empty filesize
+            con.color_pair(foreCol, backCol)
+            con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
+            print(' '.repeat(FILESIZE_WIDTH + 1))
         }
-        let filename = (showDrives && file) ? file.fullPath : (file) ? file.name : ''
-        let fileext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase()
-
-        // set bg colour
-        let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
-        // set fg colour (if there are more at the top/bottom, dim the colour)
-        let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : (COL_HL_EXT[fileext] || COL_TEXT)
-
-        // print filename
-        con.color_pair(foreCol, backCol)
-        con.move(wo.y + 2+i, wo.x + 1)
-        print(((file && file.isDirectory && !showDrives) ? '\\' : ' ') + filename)
-        print(' '.repeat(FILELIST_WIDTH - 2 - filename.length))
-
-        // print |
-        con.color_pair(COL_TEXT, backCol)
-        con.mvaddch(wo.y + 2+i, wo.x + FILELIST_WIDTH, 0xB3)
-
-        // print filesize
-        con.color_pair(foreCol, backCol)
-        con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
-        if (file && file.isDirectory && !showDrives) {
-            print(' '.repeat(FILESIZE_WIDTH - sizestr.length))
-            print(sizestr); con.prnch(0x7F)
-        }
-        else {
-            print(' '.repeat(FILESIZE_WIDTH - sizestr.length + 1))
-            print(sizestr)
-        }
-
     }
 
     con.color_pair(COL_TEXT, COL_BACK)
@@ -357,12 +401,14 @@ let filenavOninput = (window, event) => {
         if (selectedFile.fullPath[1] == ":" && selectedFile.fullPath[2] == "\\" && selectedFile.fullPath.length == 3) {
             path[windowMode].push(selectedFile.fullPath)
             cursor[windowMode] = 0; scroll[windowMode] = 0
+            refreshFilePanelCache(windowMode)
             drawFilePanel()
         }
         else if (selectedFile.isDirectory) {
             // serial.println(`selectedFile.name = ${selectedFile.name}`)
             path[windowMode].push(selectedFile.name)
             cursor[windowMode] = 0; scroll[windowMode] = 0
+            refreshFilePanelCache(windowMode)
             drawFilePanel()
         }
         else {
@@ -397,6 +443,7 @@ let filenavOninput = (window, event) => {
         if (path[windowMode].length >= 1) {
             path[windowMode].pop()
             cursor[windowMode] = 0; scroll[windowMode] = 0
+            refreshFilePanelCache(windowMode)
             drawFilePanel()
         }
         else {
@@ -560,6 +607,8 @@ function clearScr() {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
+refreshFilePanelCache(0)
+refreshFilePanelCache(1)
 _redraw()
 
 let redrawRequested = false
