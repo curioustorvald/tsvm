@@ -229,7 +229,7 @@ let filesPanelDraw = (wo) => {
             // print empty filename
             con.color_pair(foreCol, backCol)
             con.move(wo.y + 2+i, wo.x + 1)
-            print(' '.repeat(FILELIST_WIDTH - 2))
+            print(' '.repeat(FILELIST_WIDTH - 1))
 
             // print |
             con.color_pair(COL_TEXT, backCol)
