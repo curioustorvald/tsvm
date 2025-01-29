@@ -615,8 +615,8 @@ require = function(path) {
     else {
         // if the path starts with ".", look for the current directory
         // if the path starts with [A-Za-z0-9], look for the DOSDIR/includes
-        if (path[0] == '.') return shell.require(shell.resolvePathInput(path).full + ".js")
-        else return shell.require(`A:${_TVDOS.variables.DOSDIR}/include/${path}.js`)
+        if (path[0] == '.') return shell.require(shell.resolvePathInput(path).full + ".mjs")
+        else return shell.require(`A:${_TVDOS.variables.DOSDIR}/include/${path}.mjs`)
     }
 }
 
