@@ -9,14 +9,14 @@ class Base64Delegate(val vm: VM) {
         return Base64Coder.decode(inputstr)
     }
 
-    fun atostr(inputstr: String): String {
-        return Base64Coder.decode(inputstr).toString(VM.CHARSET)
+    fun atostr(inputstr: String): java.lang.String {
+        return Base64Coder.decode(inputstr).toString(VM.CHARSET) as java.lang.String
     }
 
-    fun btoa(inputbytes: ByteArray): String {
+    fun btoa(inputbytes: ByteArray): java.lang.String {
         val sb = StringBuilder()
         sb.append(Base64Coder.encode(inputbytes))
-        return sb.toString()
+        return sb.toString() as java.lang.String
     }
 
     fun atoptr(inputstr: String): Int {

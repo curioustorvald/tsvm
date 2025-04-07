@@ -2,8 +2,10 @@ package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.peripheral.*
+import java.nio.charset.Charset
 
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
@@ -111,9 +113,9 @@ class VMJSR223Delegate(private val vm: VM) {
     fun mapRom(slot: Int) {
         vm.romMapping = slot.and(255)
     }
-    fun romReadAll(): String {
-        if (vm.romMapping == 255 || vm.romMapping !in vm.roms.indices || vm.roms[vm.romMapping] == null) return ""
-        return vm.roms[vm.romMapping]!!.readAll()
+    fun romReadAll(): java.lang.String {
+        if (vm.romMapping == 255 || vm.romMapping !in vm.roms.indices || vm.roms[vm.romMapping] == null) return "" as java.lang.String
+        return vm.roms[vm.romMapping]!!.readAll() as java.lang.String
     }
 
     // @return in milliseconds
@@ -261,6 +263,62 @@ class VMJSR223Delegate(private val vm: VM) {
     }
     fun getMallocStatus(): IntArray {
         return intArrayOf(vm.MALLOC_UNIT, vm.allocatedBlockCount)
+    }
+
+    fun toObjectCode(ptr: Int): java.lang.String {
+        val payloadSize = peek(ptr+1).shl(16) or peek(ptr+2).shl(8) or peek(ptr+3)
+
+        val decrypted = decryptPayload(ptr, payloadSize)
+        val image = CompressorDelegate.decomp(decrypted)
+        return java.lang.String(image)
+    }
+
+
+    private fun decryptPayload(ptr: Int, payloadSize: Int): ByteArray {
+        var key = "00"
+        var keyBytes = byteArrayOf(0x00)
+        var keyCursor = 0
+
+        fun seq(s: String): String {
+            var out = ""
+            var cnt = 0
+            var oldchar = s[0]
+
+            for (char in s) {
+                if (char == oldchar) {
+                    cnt += 1
+                } else {
+                    out += cnt.toString() + oldchar
+                    cnt = 1
+                }
+                oldchar = char
+            }
+
+            return out + cnt + oldchar
+        }
+
+        fun getNewKeySeq() {
+            key = seq(key)
+            keyBytes = ByteArray(key.length / 2)
+            keyCursor = 0
+
+            for (i in 0 until key.length step 2) {
+                keyBytes[i / 2] = key.substring(i, minOf(i + 2, key.length)).toInt(16).toByte()
+            }
+        }
+
+        ////////////////////////////
+
+        val encrypted = ByteArray(payloadSize)
+
+        for (outcnt in 0 until payloadSize) {
+            encrypted[outcnt] = (peek(ptr + 4 + outcnt) xor keyBytes[keyCursor++].toUint()).toByte()
+            if (keyCursor >= keyBytes.size) {
+                getNewKeySeq()
+            }
+        }
+
+        return encrypted
     }
 }
 
