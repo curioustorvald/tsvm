@@ -1,0 +1,29 @@
+if (exec_args[1] === undefined) {
+    println("Usage: load myfile.out")
+    println("   This will load the binary image onto the Core Memory")
+    return 1
+}
+
+let infilePath = _G.shell.resolvePathInput(exec_args[1]).full
+let infile = files.open(infilePath)
+
+const metaArea = sys.malloc(12)
+infile.pread(metaArea, 12, 0)
+let addrToLoad = (sys.peek(metaArea+5) << 16) | (sys.peek(metaArea+6) << 8) | (sys.peek(metaArea+7))
+const imageSize = (sys.peek(metaArea+9) << 16) | (sys.peek(metaArea+10) << 8) | (sys.peek(metaArea+11))
+sys.free(metaArea)
+
+if (addrToLoad == 0)
+    addrToLoad = sys.malloc(imageSize + 4)
+else
+    forceAlloc(addrToLoad, imageSize + 4)
+
+// writes IMAGE_SIZE and the BINARY_IMAGE directly to the memory
+infile.pread(addrToLoad, imageSize + 4, 8)
+infile.close()
+
+// write magic 0xA5 to the beginning of the image area
+sys.poke(addrToLoad, 0xA5)
+
+println(addrToLoad.toString(16).toUpperCase() + "h")
+return addrToLoad

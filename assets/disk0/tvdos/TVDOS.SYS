@@ -1022,6 +1022,8 @@ files.reservedNames = ["AUX", // unused
 
 /** This function only creates a file descriptor; will not actually interact with the drives yet. */
 files.open = (fullPath) => {
+    if (fullPath == undefined) throw Error("path is undefined")
+
     if (files.reservedNames.includes(fullPath.toUpperCase())) {
         return new TVDOSFileDescriptor(fullPath.toUpperCase())
     }
@@ -1263,7 +1265,7 @@ var require = (absdir) => {
 }
 
 
-var GL = require("A:/tvdos/include/gl.js")
+var GL = require("A:/tvdos/include/gl.mjs")
 
 
 // @param cmdsrc JS source code
