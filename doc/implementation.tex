@@ -109,15 +109,15 @@ Functions:
 \namespaceis{Gzip}{gzip}
 
 \begin{outline}
-\1\formalsynopsis{comp}{String}[Uint8Array]{Compresses the given string.}
-\1\formalsynopsis{comp}{Uint8Array}[Uint8Array]{Compresses the given bytes.}
+\1\formalsynopsis{comp}{String}[Int8Array]{Compresses the given string.}
+\1\formalsynopsis{comp}{Int8Array}[Int8Array]{Compresses the given bytes.}
 \1\formalsynopsis{compTo}{str: String, outputptr: Int}[Int]{Compresses the given string onto the memory, then returns the size of the compressed bytes.}
-\1\formalsynopsis{compTo}{bytes: Uint8Array, outputptr: Int}[Int]{Compresses the given bytes onto the memory, then returns the size of the compressed bytes.}
+\1\formalsynopsis{compTo}{bytes: Int8Array, outputptr: Int}[Int]{Compresses the given bytes onto the memory, then returns the size of the compressed bytes.}
 \1\formalsynopsis{compFromTo}{inputptr: Int, length: Int, outputptr: Int}[Int]{Compresses the bytes onto the memory, then returns the size of the compressed bytes.}
-\1\formalsynopsis{decomp}{String}[Uint8Array]{Decompresses the given string (compressed bytes represented as series of characters)}
-\1\formalsynopsis{decomp}{Uint8Array}[Uint8Array]{Decompresses the given bytes.}
+\1\formalsynopsis{decomp}{String}[Int8Array]{Decompresses the given string (compressed bytes represented as series of characters)}
+\1\formalsynopsis{decomp}{Int8Array}[Int8Array]{Decompresses the given bytes.}
 \1\formalsynopsis{decompTo}{str: String, outputptr: Int}[Int]{Decompresses the given string onto the memory, then returns the size of the decompressed bytes.}
-\1\formalsynopsis{decompTo}{bytes: Uint8Array, outputptr: Int}[Int]{Decompresses the given bytes onto the memory, then returns the size of the decompressed bytes.}
+\1\formalsynopsis{decompTo}{bytes: Int8Array, outputptr: Int}[Int]{Decompresses the given bytes onto the memory, then returns the size of the decompressed bytes.}
 \1\formalsynopsis{decompFromTo}{inputptr: Int, length: Int, outputptr: Int}[Int]{Decompresses the bytes onto the memory, then returns the size of the decompressed bytes.}
 \end{outline}
 
@@ -130,9 +130,9 @@ Functions:
 \namespaceis{Base64}{base64}
 
 \begin{outline}
-\1\formalsynopsis{atob}{String}[Uint8Array]{Decodes the Base64 string to bytes.}
+\1\formalsynopsis{atob}{String}[Int8Array]{Decodes the Base64 string to bytes.}
 \1\formalsynopsis{atostr}{String}[String]{Decodes the Base64 string to string.}
-\1\formalsynopsis{btoa}{Uint8Array}[String]{Encodes bytes to Base64 string.}
+\1\formalsynopsis{btoa}{Int8Array}[String]{Encodes bytes to Base64 string.}
 \end{outline}
 
 
