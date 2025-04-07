@@ -45,6 +45,7 @@ class VM(
 
     val memsize = minOf(USER_SPACE_SIZE, _memsize.toLong())
     val MALLOC_UNIT = 64
+    val MALLOC_RESERVED_BLOCKS = 4 // 4*64=256 bytes are always reserved and won't be allocated to a pointer
     private val mallocBlockSize = (memsize / MALLOC_UNIT).toInt()
 
     internal val usermem = UnsafeHelper.allocate(memsize, this)
@@ -218,7 +219,7 @@ class VM(
     }
 
     private fun findEmptySpace(blockSize: Int): Int? {
-        var cursorHead = 0
+        var cursorHead = MALLOC_RESERVED_BLOCKS
         var cursorTail: Int
         val cursorHeadMaxInclusive = mallocBlockSize - blockSize
         while (cursorHead <= cursorHeadMaxInclusive) {
@@ -259,6 +260,19 @@ class VM(
         mallocMap.set(index, index + count, false)
         mallocSizes.remove(index)
         allocatedBlockCount -= count
+    }
+
+    internal fun forceAlloc(ptr: Int, size: Int) {
+        val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
+        val blockStart = ptr / MALLOC_UNIT
+
+        var previouslyUnallocated = 0
+        for (i in blockStart until blockStart + allocBlocks) {
+            if (mallocMap.get(i) == false) previouslyUnallocated++
+            mallocMap.set(i, true)
+        }
+        allocatedBlockCount += previouslyUnallocated
+        mallocSizes[blockStart] = allocBlocks
     }
 
     internal data class VMNativePtr(val address: Int, val size: Int)

@@ -16,7 +16,7 @@ sys.free(metaArea)
 if (addrToLoad == 0)
     addrToLoad = sys.malloc(imageSize + 4)
 else
-    forceAlloc(addrToLoad, imageSize + 4)
+    sys.forceAlloc(addrToLoad, imageSize + 4)
 
 // writes IMAGE_SIZE and the BINARY_IMAGE directly to the memory
 infile.pread(addrToLoad, imageSize + 4, 8)
