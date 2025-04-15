@@ -5,13 +5,19 @@ let WIDTH = 560
 let HEIGHT = 448
 let PATHFUN = (i) => `/ddol/${(''+i).padStart(5,'0')}.png`
 
+if (WIDTH % 4 != 0 || HEIGHT % 4 != 0) {
+    printerrln(`Frame dimension is not multiple of 4 (${WIDTH}x${HEIGHT})`)
+    return 5
+}
 
 const FBUF_SIZE = WIDTH * HEIGHT
-let infile = sys.malloc(512000) // allocate somewhat arbitrary amount of memory
-let imagearea = sys.malloc(FBUF_SIZE*3) // allocate exact amount of memory
-let decodearea = sys.malloc(FBUF_SIZE) // allocate exact amount of memory
-let ipfarea = sys.malloc(FBUF_SIZE) // allocate exact amount of memory
-let gzippedImage = sys.malloc(512000) // allocate somewhat arbitrary amount of memory
+let infile = sys.malloc(512000) // somewhat arbitrary
+let imagearea = sys.malloc(FBUF_SIZE*3)
+let decodearea = sys.malloc(FBUF_SIZE)
+let ipfarea1 = sys.malloc(FBUF_SIZE)
+let ipfarea2 = sys.malloc(FBUF_SIZE)
+let ipfDelta = sys.malloc(FBUF_SIZE)
+let gzippedImage = sys.malloc(512000) // somewhat arbitrary
 
 let outfilename = exec_args[1]
 
@@ -41,6 +47,10 @@ let headerBytes = [
 filesystem.open("A", outfilename, "W")
 filesystem.writeBytes("A", headerBytes)
 
+let ipfAreaOld = ipfarea2
+let ipfAreaNew = ipfarea1
+
+
 for (let f = 1; f <= TOTAL_FRAMES; f++) {
     let fname = PATHFUN(f)
     filesystem.open("A", fname, "R")
@@ -49,29 +59,43 @@ for (let f = 1; f <= TOTAL_FRAMES; f++) {
 
     let [_1, _2, channels, _3] = graphics.decodeImageTo(infile, fileLen, imagearea)
 
+    const val IPF_BLOCK_SIZE = (channels == 3) ? 12 : 20;
+
     print(`Frame ${f}/${TOTAL_FRAMES} (Ch: ${channels}) ->`)
 
 //    graphics.imageToDisplayableFormat(imagearea, decodearea, 560, 448, 3, 1)
-    graphics.encodeIpf1(imagearea, ipfarea, WIDTH, HEIGHT, channels, false, f)
+    graphics.encodeIpf1(imagearea, ipfAreaNew, WIDTH, HEIGHT, channels, false, 0)
 
-    let gzlen = gzip.compFromTo(ipfarea, FBUF_SIZE, gzippedImage)
+    // get the difference map
+    let patchEncodedSize = graphics.encodeIpf1d(ipfAreaOld, ipfAreaNew, ipfDelta, WIDTH, HEIGHT, 0.90)
 
+    // decide whether or not the patch encoding should be used
+    let gzlen = gzip.compFromTo(
+        (patchEncodedSize) ? ipfDelta : ipfAreaNew,
+        patchEncodedSize || FBUF_SIZE,
+        gzippedImage
+    )
     let frameSize = [
         (gzlen >>> 0) & 255,
         (gzlen >>> 8) & 255,
         (gzlen >>> 16) & 255,
         (gzlen >>> 24) & 255
     ]
-
     appendToOutfile(frameSize)
     appendToOutfilePtr(gzippedImage, gzlen)
 
     print(` ${gzlen} bytes\n`)
+
+    // swap two pointers
+    let t = ipfAreaOld
+    ipfAreaOld = ipfAreaNew
+    ipfAreaNew = t
 }
 
-// free all the memory that has been allocated
 sys.free(infile)
 sys.free(imagearea)
 sys.free(decodearea)
-sys.free(ipfarea)
+sys.free(ipfarea1)
+sys.free(ipfarea2)
+sys.free(ipfDelta)
 sys.free(gzippedImage)

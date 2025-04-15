@@ -704,6 +704,113 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }} 
     }
 
+    /**
+     * @return non-zero if delta-encoded, 0 if delta encoding is worthless
+     */
+    fun encodeIpf1d(
+        prevIPFptr: Int, // full iPF picture frame for t minus one
+        newIPFptr: Int, // full iPF picture frame for t equals zero
+        currentFrame: Int, // where to write delta-encoded payloads to. Not touched if delta-encoding is worthless
+        width: Int, height: Int,
+        inefficiencyThreshold: Double = 0.90
+    ): Int {
+        val frameSize = width * height
+
+        val BLOCK_SIZE = 12
+        val totalBlocks = frameSize / BLOCK_SIZE
+
+        var skipCount = 0
+        var repeatCount = 0
+        val temp = ByteArray(frameSize * 2) // Overallocate
+        var tempPtr = 0
+
+        var lastDelta = ByteArray(BLOCK_SIZE)
+
+        fun readBlock(ptr: Int): ByteArray {
+            return ByteArray(BLOCK_SIZE) { i -> vm.peek(ptr.toLong() + i)!!.toByte() }
+        }
+
+        // MSB is a "continuation flag"; varint decoding terminates when it sees byte with no MSB set
+        fun writeVarInt(buf: ByteArray, start: Int, value: Int): Int {
+            var v = value
+            var i = 0
+            while (v >= 0x80) {
+                buf[start + i] = ((v and 0x7F) or 0x80).toByte()
+                v = v ushr 7
+                i++
+            }
+            buf[start + i] = v.toByte()
+            return i + 1
+        }
+
+        fun flushSkips() {
+            if (skipCount > 0) {
+                temp[tempPtr++] = 0x00
+                tempPtr += writeVarInt(temp, tempPtr, skipCount)
+                skipCount = 0
+            }
+        }
+
+        fun flushRepeats() {
+            if (repeatCount > 0) {
+                temp[tempPtr++] = 0x20
+                tempPtr += writeVarInt(temp, tempPtr, repeatCount)
+                repeatCount = 0
+            }
+        }
+
+        for (blockIndex in 0 until totalBlocks) {
+            val offset = blockIndex * BLOCK_SIZE
+            val prevBlock = readBlock(prevIPFptr + offset)
+            val currBlock = readBlock(newIPFptr + offset)
+
+            val diff = isSignificantlyDifferent(prevBlock, currBlock)
+
+            if (!diff) {
+                if (repeatCount > 0) flushRepeats()
+                skipCount++
+            } else if (lastDelta.contentEquals(currBlock)) {
+                flushSkips()
+                repeatCount++
+            } else {
+                flushSkips()
+                flushRepeats()
+                temp[tempPtr++] = 0x10
+                currBlock.copyInto(temp, tempPtr)
+                tempPtr += BLOCK_SIZE
+                lastDelta = currBlock
+            }
+        }
+
+        flushSkips()
+        flushRepeats()
+        temp[tempPtr++] = 0xF0.toByte()
+
+        if (tempPtr >= (frameSize * inefficiencyThreshold).toInt()) {
+            return 0 // delta is inefficient, do not write
+        }
+
+        // Write delta to memory
+        if (currentFrame >= 0) {
+            UnsafeHelper.memcpyRaw(temp, UnsafeHelper.getArrayOffset(temp), null, vm.usermem.ptr + currentFrame, tempPtr.toLong())
+        }
+        else {
+            for (i in 0 until tempPtr) {
+                vm.poke(currentFrame.toLong() + i, temp[i])
+            }
+        }
+
+        return tempPtr
+    }
+
+    private fun isSignificantlyDifferent(a: ByteArray, b: ByteArray, threshold: Int = 5): Boolean {
+        var total = 0
+        for (i in a.indices) {
+            total += kotlin.math.abs((a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF))
+        }
+        return total > threshold
+    }
+
     fun encodeIpf2(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
         var writeCount = 0L
 
@@ -868,7 +975,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     fun decodeIpf1(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
-        val gpu = getFirstGPU()
         val sign = if (destRG >= 0) 1 else -1
         if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
         val sptr = srcPtr.toLong()
@@ -876,9 +982,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val dptr2 = destBA.toLong()
         var readCount = 0
         fun readShort() =
-            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8).also {
-                gpu?.applyDelay()
-            }
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
 
 
         for (blockY in 0 until ceil(height / 4f)) {
@@ -938,8 +1042,110 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }}
     }
 
+    fun applyIpf1d(ipf1DeltaPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int) {
+        val blocksPerRow = (width + 3) / 4
+        val totalBlocks = ((width + 3) / 4) * ((height + 3) / 4)
+
+        val sign = if (destRG >= 0) 1 else -1
+        if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain")
+
+        var ptr = ipf1DeltaPtr.toLong()
+        var blockIndex = 0
+
+        fun readByte(): Int = (vm.peek(ptr++)!!.toInt() and 0xFF)
+        fun readShort(): Int {
+            val low = readByte()
+            val high = readByte()
+            return low or (high shl 8)
+        }
+
+        fun readVarInt(): Int {
+            var value = 0
+            var shift = 0
+            while (true) {
+                val byte = readByte()
+                value = value or ((byte and 0x7F) shl shift)
+                if ((byte and 0x80) == 0) break
+                shift += 7
+            }
+            return value
+        }
+
+        while (true) {
+            val opcode = readByte()
+            when (opcode) {
+                0x00 -> { // Skip blocks
+                    val count = readVarInt()
+                    blockIndex += count
+                }
+                0x10 -> { // Write literal patch
+                    if (blockIndex >= totalBlocks) break
+
+                    val co = readShort()
+                    val cg = readShort()
+                    val y1 = readShort()
+                    val y2 = readShort()
+                    val y3 = readShort()
+                    val y4 = readShort()
+
+                    val rg = IntArray(16)
+                    val ba = IntArray(16)
+
+                    var px = ycocgToRGB(co and 15, cg and 15, y1, 65535)
+                    rg[0] = px[0]; ba[0] = px[1]
+                    rg[1] = px[2]; ba[1] = px[3]
+                    rg[4] = px[4]; ba[4] = px[5]
+                    rg[5] = px[6]; ba[5] = px[7]
+
+                    px = ycocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, 65535)
+                    rg[2] = px[0]; ba[2] = px[1]
+                    rg[3] = px[2]; ba[3] = px[3]
+                    rg[6] = px[4]; ba[6] = px[5]
+                    rg[7] = px[6]; ba[7] = px[7]
+
+                    px = ycocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, 65535)
+                    rg[8] = px[0]; ba[8] = px[1]
+                    rg[9] = px[2]; ba[9] = px[3]
+                    rg[12] = px[4]; ba[12] = px[5]
+                    rg[13] = px[6]; ba[13] = px[7]
+
+                    px = ycocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, 65535)
+                    rg[10] = px[0]; ba[10] = px[1]
+                    rg[11] = px[2]; ba[11] = px[3]
+                    rg[14] = px[4]; ba[14] = px[5]
+                    rg[15] = px[6]; ba[15] = px[7]
+
+                    val blockX = blockIndex % blocksPerRow
+                    val blockY = blockIndex / blocksPerRow
+
+                    for (py in 0..3) {
+                        for (pxi in 0..3) {
+                            val ox = blockX * 4 + pxi
+                            val oy = blockY * 4 + py
+                            if (ox < width && oy < height) {
+                                val offset = oy * 560 + ox
+                                val i = py * 4 + pxi
+                                vm.poke((destRG + offset * sign).toLong(), rg[i].toByte())
+                                vm.poke((destBA + offset * sign).toLong(), ba[i].toByte())
+                            }
+                        }
+                    }
+
+                    blockIndex++
+                }
+                0x20 -> { // Repeat last literal
+                    val repeatCount = readVarInt()
+                    // Just skip applying. We assume previous patch was already applied visually.
+                    blockIndex += repeatCount
+                }
+                0xF0 -> return // End of stream
+                else -> error("Unknown delta opcode: ${opcode.toString(16)}")
+            }
+        }
+    }
+
+
     fun decodeIpf2(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
-        val gpu = getFirstGPU()
         val sign = if (destRG >= 0) 1 else -1
         if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
         val sptr = srcPtr.toLong()
@@ -947,14 +1153,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val dptr2 = destBA.toLong()
         var readCount = 0
         fun readShort() =
-            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8).also {
-                gpu?.applyDelay()
-            }
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
         fun readInt() =
-            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8) or vm.peek(sptr + readCount++)!!.toUint().shl(16) or vm.peek(sptr + readCount++)!!.toUint().shl(24).also {
-                gpu?.applyDelay()
-                gpu?.applyDelay()
-            }
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8) or vm.peek(sptr + readCount++)!!.toUint().shl(16) or vm.peek(sptr + readCount++)!!.toUint().shl(24)
 
 
         for (blockY in 0 until ceil(height / 4f)) {

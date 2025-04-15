@@ -42,7 +42,7 @@ data class AdapterConfig(
     val paletteShader: String = DRAW_SHADER_FRAG,
     val drawScale: Float = 1f,
     val scaleFiltered: Boolean = false,
-    val baudRate: Double = 16_384_000.0,//57600.0,
+    val baudRate: Double = 115200.0,//16_384_000.0,//57600.0,
     val bitsPerChar: Int = 10 // start bit + 8 data bits + stop bit
 )
 
@@ -260,6 +260,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected var slpcnt = 0L
 
     open fun applyDelay() {
+        applyDelay0()
     }
 
     protected fun applyDelay0() {

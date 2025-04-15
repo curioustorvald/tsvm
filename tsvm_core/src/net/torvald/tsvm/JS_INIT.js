@@ -346,6 +346,16 @@ String.prototype.tail = function() {
 String.prototype.init = function() {
     return this.substring(0, this.length - 1)
 }
+String.prototype.substringBeforeLast = function(delimiter) {
+    if (!this || this.length === 0) return ""
+    if (!delimiter || delimiter.length === 0) return ""
+
+    const lastIndex = this.lastIndexOf(delimiter)
+
+    if (lastIndex === -1) return this
+
+    return this.substring(0, lastIndex)
+}
 Array.prototype.shuffle = function() {
     let counter = this.length;
 

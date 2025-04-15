@@ -56,7 +56,8 @@ public class AppLoader {
         defaultPeripherals.add(new Pair(3, new PeripheralEntry2("net.torvald.tsvm.peripheral.AudioAdapter", vm)));
 
 
-        EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter2", diskPath, 560, 448, defaultPeripherals);
+        EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", diskPath, 560, 448, defaultPeripherals);
+        EmulInstance referenceRemote = new EmulInstance(vm, "net.torvald.tsvm.peripheral.RemoteGraphicsAdapter", diskPath, 560, 448, defaultPeripherals);
         EmulInstance reference2 = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceLikeLCD", diskPath, 560, 448, defaultPeripherals);
         EmulInstance term = new EmulInstance(vm, "net.torvald.tsvm.peripheral.Term", diskPath, 720, 480);
         EmulInstance portable = new EmulInstance(vm, "net.torvald.tsvm.peripheral.CLCDDisplay", diskPath, 1080, 436);

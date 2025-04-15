@@ -3,9 +3,7 @@ package net.torvald.tsvm
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex
-import net.torvald.tsvm.peripheral.IOSpace
-import net.torvald.tsvm.peripheral.PeriBase
-import net.torvald.tsvm.peripheral.VMProgramRom
+import net.torvald.tsvm.peripheral.*
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.Charset
@@ -273,6 +271,98 @@ class VM(
         }
         allocatedBlockCount += previouslyUnallocated
         mallocSizes[blockStart] = allocBlocks
+    }
+
+    fun memcpy(from: Int, to: Int, len: Int) {
+        val from = from.toLong()
+        val to = to.toLong()
+        val len = len.toLong()
+
+        val fromVector = if (from >= 0) 1 else -1
+        val toVector = if (to >= 0) 1 else -1
+        val fromDev = getDev(from, len, false)
+        val toDev = getDev(to, len, true)
+
+//        println("from = $from, to = $to")
+//        println("fromDev = $fromDev, toDev = $toDev")
+
+        if (fromDev != null && toDev != null)
+            UnsafeHelper.memcpy(fromDev, toDev, len)
+        else if (fromDev == null && toDev != null) {
+            val buf = UnsafeHelper.allocate(len, this)
+            for (i in 0 until len) buf[i] = peek(from + i*fromVector)!!
+            UnsafeHelper.memcpy(buf.ptr, toDev, len)
+            buf.destroy()
+        }
+        else if (fromDev != null) {
+            for (i in 0 until len) poke(to + i*toVector, UnsafeHelper.unsafe.getByte(fromDev + i))
+        }
+        else {
+            for (i in 0 until len) poke(to + i*toVector, peek(from + i*fromVector)!!)
+        }
+    }
+
+    private fun relPtrInDev(from: Long, len: Long, start: Int, end: Int) =
+        (from in start..end && (from + len) in start..end)
+
+    private fun getDev(from: Long, len: Long, isDest: Boolean): Long? {
+        return if (from >= 0) usermem.ptr + from
+        // MMIO area
+        else if (from in -1048576..-1 && (from - len) in -1048577..-1) {
+            val fromIndex = (-from-1) / 131072
+            val dev = peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val fromRel = (-from-1) % 131072
+            if (fromRel + len > 131072) return null
+
+            return if (dev is IOSpace) {
+                if (relPtrInDev(fromRel, len, 1024, 2047)) dev.peripheralFast.ptr + fromRel - 1024
+                else if (relPtrInDev(fromRel, len, 4096, 8191)) (if (isDest) dev.blockTransferTx[0] else dev.blockTransferRx[0]).ptr + fromRel - 4096
+                else if (relPtrInDev(fromRel, len, 8192, 12287)) (if (isDest) dev.blockTransferTx[1] else dev.blockTransferRx[1]).ptr + fromRel - 8192
+                else if (relPtrInDev(fromRel, len, 12288, 16383)) (if (isDest) dev.blockTransferTx[2] else dev.blockTransferRx[2]).ptr + fromRel - 12288
+                else if (relPtrInDev(fromRel, len, 16384, 20479)) (if (isDest) dev.blockTransferTx[3] else dev.blockTransferRx[3]).ptr + fromRel - 16384
+                else null
+            }
+            else if (dev is AudioAdapter) {
+                if (relPtrInDev(fromRel, len, 64, 2367)) dev.mediaDecodedBin.ptr + fromRel - 64
+                else if (relPtrInDev(fromRel, len, 2368, 4096)) dev.mediaFrameBin.ptr + fromRel - 2368
+                else null
+            }
+            else if (dev is GraphicsAdapter) {
+                if (relPtrInDev(fromRel, len, 1024, 2047)) dev.scanlineOffsets.ptr + fromRel - 1024
+                else if (relPtrInDev(fromRel, len, 2048, 4095)) dev.mappedFontRom.ptr + fromRel - 2048
+                else if (relPtrInDev(fromRel, len, 65536, 131071)) dev.instArea.ptr + fromRel - 65536
+                else null
+            }
+            else null
+        }
+        // memory area
+        else {
+            val fromIndex = (-from-1) / 1048576
+            val dev = peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val fromRel = (-from-1) % 1048576
+            if (fromRel + len > 1048576) return null
+
+            return if (dev is AudioAdapter) {
+                if (relPtrInDev(fromRel, len, 0, 114687)) dev.sampleBin.ptr + fromRel - 0
+                else null
+            }
+            else if (dev is GraphicsAdapter) {
+                if (relPtrInDev(fromRel, len, 0, 250879)) dev.framebuffer.ptr + fromRel - 0
+                else if (relPtrInDev(fromRel, len, 250880, 251903)) dev.unusedArea.ptr + fromRel - 250880
+                else if (relPtrInDev(fromRel, len, 253950, 261631)) dev.textArea.ptr + fromRel - 253950
+                else if (relPtrInDev(fromRel, len, 262144, 513023)) dev.framebuffer2?.ptr?.plus(fromRel)?.minus(253950)
+                else null
+            }
+            else if (dev is RamBank) {
+                if (relPtrInDev(fromRel, len, 0, 524287))
+                    dev.mem.ptr + 524288*dev.map0 + fromRel
+                else if (relPtrInDev(fromRel, len, 524288, 131071))
+                    dev.mem.ptr + 524288*dev.map1 + fromRel - 524288
+                else
+                    null
+            }
+            else null
+        }
     }
 
     internal data class VMNativePtr(val address: Int, val size: Int)

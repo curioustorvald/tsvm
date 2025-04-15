@@ -601,6 +601,36 @@ iPF2:
 
     which packs into: [ 30 | 30 | FA | FA ] (because little endian)
 
+iPF1-delta (for video encoding):
+
+Delta encoded frames contain "insutructions" for delta-encoding the existing frame.
+Or, a collection of [OPCODE | PAYLOAD] pairs
+
+Opcode:
+0x00 : Skip N blocks
+    payload: (varint) number of 4x4 blocks
+0x10 : Patch
+    payload: (12 bytes) encoded delta block
+0x20 : Repeat
+    payload: (varint) repeat last delta N times
+0xF0 : End of delta stream
+    payload: none
+
+Sample stream:
+    [SKIP 10] [PATCH A] [REPEAT 3] [SKIP 5] [PATCH B] [END]
+
+Delta block format:
+
+    Each PATCH delta payload is still:
+        8 bytes of Luma (4-bit deltas for 16 pixels)
+        2 bytes of Co deltas (4× 4-bit deltas)
+        2 bytes of Cg deltas (4× 4-bit deltas)
+    Total: 12 bytes per PATCH.
+
+    These are always relative to the same-position block in the previous frame.
+
+
+
 - Progressive Blocks
     Ordered string of words (word size varies by the colour mode) are stored here.
     If progressive mode is enabled, words are stored in the order that accomodates it.

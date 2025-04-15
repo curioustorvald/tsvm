@@ -8,7 +8,10 @@ if (exec_args[1] === undefined || exec_args[2] === undefined) {
 
 let infilePath = _G.shell.resolvePathInput(exec_args[2]).full
 let infile = files.open(infilePath)
-let outfile = files.open(infilePath + ".out")
+
+if (!infile.exists) throw Error("No such file: " + infilePath)
+
+let outfile = files.open(infilePath.substringBeforeLast(".") + ".out")
 let outMode = exec_args[1].toLowerCase()
 
 let type = {
