@@ -603,18 +603,14 @@ iPF2:
 
 iPF1-delta (for video encoding):
 
-Delta encoded frames contain "insutructions" for delta-encoding the existing frame.
-Or, a collection of [OPCODE | PAYLOAD] pairs
+Delta encoded frames contain "insutructions" for patch-encoding the existing frame.
+Or, a collection of [StateChangeCode] [Optional VarInts] [Payload...] pairs
 
-Opcode:
-0x00 : Skip N blocks
-    payload: (varint) number of 4x4 blocks
-0x10 : Patch
-    payload: (12 bytes) encoded delta block
-0x20 : Repeat
-    payload: (varint) repeat last delta N times
-0xF0 : End of delta stream
-    payload: none
+States:
+0x00 SKIP [varint skipCount]
+0x01 PATCH [varint blockCount] [12x blockCount bytes]
+0x02 REPEAT [varint repeatCount] [a block]
+0xFF END
 
 Sample stream:
     [SKIP 10] [PATCH A] [REPEAT 3] [SKIP 5] [PATCH B] [END]

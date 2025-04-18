@@ -260,7 +260,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     protected var slpcnt = 0L
 
     open fun applyDelay() {
-        applyDelay0()
     }
 
     protected fun applyDelay0() {

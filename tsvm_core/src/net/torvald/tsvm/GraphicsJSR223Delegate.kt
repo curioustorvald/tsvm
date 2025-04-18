@@ -6,6 +6,7 @@ import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class GraphicsJSR223Delegate(private val vm: VM) {
@@ -627,7 +628,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // TODO oob-check
             val ox = blockX * 4 + px
             val oy = blockY * 4 + py
-            val t = bayerKernels[pattern % bayerKernels.size][4 * (py % 4) + (px % 4)]
+            val t = if (pattern < 0) 0f else bayerKernels[pattern % bayerKernels.size][4 * (py % 4) + (px % 4)]
             val offset = channels * (oy * width + ox)
 
             val r0 = vm.peek(srcPtr + offset+0L)!!.toUint() / 255f
@@ -708,107 +709,92 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @return non-zero if delta-encoded, 0 if delta encoding is worthless
      */
     fun encodeIpf1d(
-        prevIPFptr: Int, // full iPF picture frame for t minus one
-        newIPFptr: Int, // full iPF picture frame for t equals zero
-        currentFrame: Int, // where to write delta-encoded payloads to. Not touched if delta-encoding is worthless
+        previousPtr: Int, // full iPF picture frame for t minus one
+        currentPtr: Int, // full iPF picture frame for t equals zero
+        outPtr: Int, // where to write delta-encoded payloads to. Not touched if delta-encoding is worthless
         width: Int, height: Int,
-        inefficiencyThreshold: Double = 0.90
     ): Int {
-        val frameSize = width * height
-
-        val BLOCK_SIZE = 12
-        val totalBlocks = frameSize / BLOCK_SIZE
-
         var skipCount = 0
-        var repeatCount = 0
-        val temp = ByteArray(frameSize * 2) // Overallocate
-        var tempPtr = 0
+        var outOffset = outPtr.toLong()
+        val blockSize = 12
+        val blocksPerRow = ceil(width / 4f).toInt()
+        val blocksPerCol = ceil(height / 4f).toInt()
+        val tempBlockA = ByteArray(blockSize)
+        val tempBlockB = ByteArray(blockSize)
 
-        var lastDelta = ByteArray(BLOCK_SIZE)
-
-        fun readBlock(ptr: Int): ByteArray {
-            return ByteArray(BLOCK_SIZE) { i -> vm.peek(ptr.toLong() + i)!!.toByte() }
-        }
-
-        // MSB is a "continuation flag"; varint decoding terminates when it sees byte with no MSB set
-        fun writeVarInt(buf: ByteArray, start: Int, value: Int): Int {
-            var v = value
-            var i = 0
-            while (v >= 0x80) {
-                buf[start + i] = ((v and 0x7F) or 0x80).toByte()
-                v = v ushr 7
-                i++
+        fun writeVarInt(n: Int) {
+            var value = n
+            while (true) {
+                val part = value and 0x7F
+                value = value ushr 7
+                vm.poke(outOffset++, (if (value > 0) (part or 0x80) else part).toByte())
+                if (value == 0) break
             }
-            buf[start + i] = v.toByte()
-            return i + 1
         }
 
-        fun flushSkips() {
-            if (skipCount > 0) {
-                temp[tempPtr++] = 0x00
-                tempPtr += writeVarInt(temp, tempPtr, skipCount)
+        for (blockIndex in 0 until (blocksPerRow * blocksPerCol)) {
+            val offsetA = previousPtr.toLong() + blockIndex * blockSize
+            val offsetB = currentPtr.toLong() + blockIndex * blockSize
+
+            for (i in 0 until blockSize) {
+                tempBlockA[i] = vm.peek(offsetA + i)!!
+                tempBlockB[i] = vm.peek(offsetB + i)!!
+            }
+
+            if (isSignificantlyDifferent(tempBlockA, tempBlockB)) {
+                // [skip payload]
+                if (skipCount > 0) {
+                    vm.poke(outOffset++, SKIP)
+                    writeVarInt(skipCount)
+                }
                 skipCount = 0
+
+                // [block payload]
+                vm.poke(outOffset++, PATCH)
+                for (i in 0 until blockSize) {
+                    vm.poke(outOffset++, tempBlockB[i])
+                }
             }
-        }
-
-        fun flushRepeats() {
-            if (repeatCount > 0) {
-                temp[tempPtr++] = 0x20
-                tempPtr += writeVarInt(temp, tempPtr, repeatCount)
-                repeatCount = 0
-            }
-        }
-
-        for (blockIndex in 0 until totalBlocks) {
-            val offset = blockIndex * BLOCK_SIZE
-            val prevBlock = readBlock(prevIPFptr + offset)
-            val currBlock = readBlock(newIPFptr + offset)
-
-            val diff = isSignificantlyDifferent(prevBlock, currBlock)
-
-            if (!diff) {
-                if (repeatCount > 0) flushRepeats()
+            else {
                 skipCount++
-            } else if (lastDelta.contentEquals(currBlock)) {
-                flushSkips()
-                repeatCount++
-            } else {
-                flushSkips()
-                flushRepeats()
-                temp[tempPtr++] = 0x10
-                currBlock.copyInto(temp, tempPtr)
-                tempPtr += BLOCK_SIZE
-                lastDelta = currBlock
             }
         }
 
-        flushSkips()
-        flushRepeats()
-        temp[tempPtr++] = 0xF0.toByte()
+        vm.poke(outOffset++, -1)
 
-        if (tempPtr >= (frameSize * inefficiencyThreshold).toInt()) {
-            return 0 // delta is inefficient, do not write
-        }
-
-        // Write delta to memory
-        if (currentFrame >= 0) {
-            UnsafeHelper.memcpyRaw(temp, UnsafeHelper.getArrayOffset(temp), null, vm.usermem.ptr + currentFrame, tempPtr.toLong())
-        }
-        else {
-            for (i in 0 until tempPtr) {
-                vm.poke(currentFrame.toLong() + i, temp[i])
-            }
-        }
-
-        return tempPtr
+        return (outOffset - outPtr).toInt()
     }
 
-    private fun isSignificantlyDifferent(a: ByteArray, b: ByteArray, threshold: Int = 5): Boolean {
-        var total = 0
-        for (i in a.indices) {
-            total += kotlin.math.abs((a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF))
+    private fun isSignificantlyDifferent(a: ByteArray, b: ByteArray): Boolean {
+        var score = 0
+
+        // Co (bytes 0–1): 4 nybbles
+        val coA = (a[0].toInt() and 0xFF) or ((a[1].toInt() and 0xFF) shl 8)
+        val coB = (b[0].toInt() and 0xFF) or ((b[1].toInt() and 0xFF) shl 8)
+        for (i in 0 until 4) {
+            val delta = abs((coA shr (i * 4) and 0xF) - (coB shr (i * 4) and 0xF))
+            score += delta * 3
         }
-        return total > threshold
+
+        // Cg (bytes 2–3): 4 nybbles
+        val cgA = (a[2].toInt() and 0xFF) or ((a[3].toInt() and 0xFF) shl 8)
+        val cgB = (b[2].toInt() and 0xFF) or ((b[3].toInt() and 0xFF) shl 8)
+        for (i in 0 until 4) {
+            val delta = abs((cgA shr (i * 4) and 0xF) - (cgB shr (i * 4) and 0xF))
+            score += delta * 3
+        }
+
+        // Y (bytes 4–9): 16 nybbles
+        for (i in 4 until 10) {
+            val byteA = a[i].toInt() and 0xFF
+            val byteB = b[i].toInt() and 0xFF
+            val highDelta = abs((byteA shr 4) - (byteB shr 4))
+            val lowDelta = abs((byteA and 0xF) - (byteB and 0xF))
+            score += highDelta * 2
+            score += lowDelta * 2
+        }
+
+        return score > 0
     }
 
     fun encodeIpf2(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
@@ -1043,16 +1029,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     fun applyIpf1d(ipf1DeltaPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int) {
+        val BLOCK_SIZE = 12
         val blocksPerRow = (width + 3) / 4
         val totalBlocks = ((width + 3) / 4) * ((height + 3) / 4)
 
+        val gpu = getFirstGPU()
         val sign = if (destRG >= 0) 1 else -1
         if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain")
 
         var ptr = ipf1DeltaPtr.toLong()
         var blockIndex = 0
 
-        fun readByte(): Int = (vm.peek(ptr++)!!.toInt() and 0xFF)
+        fun readByte(): Int = vm.peek(ptr++)!!.toInt() and 0xFF
         fun readShort(): Int {
             val low = readByte()
             val high = readByte()
@@ -1072,13 +1060,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         while (true) {
-            val opcode = readByte()
+            val opcode = readByte().toByte()
             when (opcode) {
-                0x00 -> { // Skip blocks
+                SKIP -> { // Skip blocks
                     val count = readVarInt()
                     blockIndex += count
                 }
-                0x10 -> { // Write literal patch
+
+                PATCH -> { // Write literal patch
                     if (blockIndex >= totalBlocks) break
 
                     val co = readShort()
@@ -1133,12 +1122,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                     blockIndex++
                 }
-                0x20 -> { // Repeat last literal
+
+                REPEAT -> { // Repeat last literal
                     val repeatCount = readVarInt()
-                    // Just skip applying. We assume previous patch was already applied visually.
-                    blockIndex += repeatCount
+                    repeat(repeatCount) {
+                        // Just skip applying. We assume previous patch was already applied visually.
+                        blockIndex++
+                    }
                 }
-                0xF0 -> return // End of stream
+
+                END -> return // End of stream
                 else -> error("Unknown delta opcode: ${opcode.toString(16)}")
             }
         }
@@ -1215,4 +1208,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }}
     }
 
+
+    private val SKIP = 0x00.toByte()
+    private val PATCH = 0x01.toByte()
+    private val REPEAT = 0x02.toByte()
+    private val END = 0xFF.toByte()
 }

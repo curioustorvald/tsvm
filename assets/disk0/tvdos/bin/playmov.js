@@ -122,6 +122,8 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
             frameUnit += 1
         }
 
+        if (frameUnit > 1) frameUnit = 1 // comment to enable frameskip
+
         if (frameUnit != 0) {
             // skip frames if necessary
             while (!stopPlay && frameUnit >= 1 && seqread.getReadCount() < FILE_LENGTH) {
@@ -169,6 +171,62 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                         if (frameUnit == 1) {
                             gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
                             decodefun(ipfbuf, -1048577, -1310721, width, height, (packetType & 255) == 5)
+
+                            // defer audio playback until a first frame is sent
+                            if (!audioFired) {
+                                audio.play(0)
+                                audioFired = true
+                            }
+
+                            // calculate bgcolour from the edges of the screen
+                            if (AUTO_BGCOLOUR_CHANGE) {
+                                let samples = []
+                                for (let x = 8; x < 560; x+=32) {
+                                    samples.push(getRGBfromScr(x, 3))
+                                    samples.push(getRGBfromScr(x, 445))
+                                }
+                                for (let y = 29; y < 448; y+=26) {
+                                    samples.push(getRGBfromScr(8, y))
+                                    samples.push(getRGBfromScr(552, y))
+                                }
+
+                                let out = [0.0, 0.0, 0.0]
+                                samples.forEach(rgb=>{
+                                    out[0] += rgb[0]
+                                    out[1] += rgb[1]
+                                    out[2] += rgb[2]
+                                })
+                                out[0] = out[0] / samples.length / 2.0 // darken a bit
+                                out[1] = out[1] / samples.length / 2.0
+                                out[2] = out[2] / samples.length / 2.0
+
+                                let bgr = (oldBgcol[0]*5 + out[0]) / 6.0
+                                let bgg = (oldBgcol[1]*5 + out[1]) / 6.0
+                                let bgb = (oldBgcol[2]*5 + out[2]) / 6.0
+
+                                oldBgcol = [bgr, bgg, bgb]
+
+                                graphics.setBackground(Math.round(bgr * 255), Math.round(bgg * 255), Math.round(bgb * 255))
+                            }
+                        }
+
+                        sys.free(gzippedPtr)
+                    }
+                    // iPF1d
+                    else if (packetType == 516) {
+                        let payloadLen = seqread.readInt()
+
+                        if (framesRead >= FRAME_COUNT) {
+                            break renderLoop
+                        }
+
+                        framesRead += 1
+                        let gzippedPtr = seqread.readBytes(payloadLen)
+                        framesRendered += 1
+
+                        if (frameUnit == 1) {
+                            gzip.decompFromTo(gzippedPtr, payloadLen, ipfbuf) // should return FBUF_SIZE
+                            graphics.applyIpf1d(ipfbuf, -1048577, -1310721, width, height)
 
                             // defer audio playback until a first frame is sent
                             if (!audioFired) {
