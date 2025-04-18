@@ -722,6 +722,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tempBlockA = ByteArray(blockSize)
         val tempBlockB = ByteArray(blockSize)
 
+        var currentState: Byte? = null
+        fun emitState(newState: Byte) {
+            if (currentState != newState) {
+                currentState = newState
+                vm.poke(outOffset++, newState)
+            }
+        }
+
         fun writeVarInt(n: Int) {
             var value = n
             while (true) {
@@ -729,6 +737,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 value = value ushr 7
                 vm.poke(outOffset++, (if (value > 0) (part or 0x80) else part).toByte())
                 if (value == 0) break
+            }
+        }
+
+        val blockBuffer = ArrayList<ByteArray>()
+
+        fun flushBlockBuffer() {
+            if (blockBuffer.isNotEmpty()) {
+                // change state
+                emitState(PATCH)
+                // write length
+                writeVarInt(blockBuffer.size)
+                blockBuffer.forEach {
+                    for (i in 0 until blockSize) {
+                        vm.poke(outOffset++, it[i])
+                    }
+                }
+                blockBuffer.clear()
             }
         }
 
@@ -744,21 +769,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             if (isSignificantlyDifferent(tempBlockA, tempBlockB)) {
                 // [skip payload]
                 if (skipCount > 0) {
-                    vm.poke(outOffset++, SKIP)
+                    emitState(SKIP)
                     writeVarInt(skipCount)
                 }
                 skipCount = 0
 
                 // [block payload]
-                vm.poke(outOffset++, PATCH)
-                for (i in 0 until blockSize) {
-                    vm.poke(outOffset++, tempBlockB[i])
-                }
+                blockBuffer.add(tempBlockB.copyOf())
             }
             else {
+                flushBlockBuffer()
                 skipCount++
             }
         }
+        flushBlockBuffer()
 
         vm.poke(outOffset++, -1)
 
@@ -766,35 +790,52 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun isSignificantlyDifferent(a: ByteArray, b: ByteArray): Boolean {
-        var score = 0
+        var score = 0.0
+
+        fun contrastWeight(v1: Int, v2: Int, delta: Int, weight: Int): Double {
+            val avg = (v1 + v2) / 2.0
+            val contrast = if (avg < 4 || avg > 11) 1.5 else 1.0
+            return delta * weight * contrast
+        }
 
         // Co (bytes 0–1): 4 nybbles
         val coA = (a[0].toInt() and 0xFF) or ((a[1].toInt() and 0xFF) shl 8)
         val coB = (b[0].toInt() and 0xFF) or ((b[1].toInt() and 0xFF) shl 8)
         for (i in 0 until 4) {
-            val delta = abs((coA shr (i * 4) and 0xF) - (coB shr (i * 4) and 0xF))
-            score += delta * 3
+            val va = (coA shr (i * 4)) and 0xF
+            val vb = (coB shr (i * 4)) and 0xF
+            val delta = abs(va - vb)
+            score += contrastWeight(va, vb, delta, 3)
         }
 
         // Cg (bytes 2–3): 4 nybbles
         val cgA = (a[2].toInt() and 0xFF) or ((a[3].toInt() and 0xFF) shl 8)
         val cgB = (b[2].toInt() and 0xFF) or ((b[3].toInt() and 0xFF) shl 8)
         for (i in 0 until 4) {
-            val delta = abs((cgA shr (i * 4) and 0xF) - (cgB shr (i * 4) and 0xF))
-            score += delta * 3
+            val va = (cgA shr (i * 4)) and 0xF
+            val vb = (cgB shr (i * 4)) and 0xF
+            val delta = abs(va - vb)
+            score += contrastWeight(va, vb, delta, 3)
         }
 
         // Y (bytes 4–9): 16 nybbles
         for (i in 4 until 10) {
             val byteA = a[i].toInt() and 0xFF
             val byteB = b[i].toInt() and 0xFF
-            val highDelta = abs((byteA shr 4) - (byteB shr 4))
-            val lowDelta = abs((byteA and 0xF) - (byteB and 0xF))
-            score += highDelta * 2
-            score += lowDelta * 2
+
+            val yAHigh = (byteA shr 4) and 0xF
+            val yALow = byteA and 0xF
+            val yBHigh = (byteB shr 4) and 0xF
+            val yBLow = byteB and 0xF
+
+            val deltaHigh = abs(yAHigh - yBHigh)
+            val deltaLow = abs(yALow - yBLow)
+
+            score += contrastWeight(yAHigh, yBHigh, deltaHigh, 2)
+            score += contrastWeight(yALow, yBLow, deltaLow, 2)
         }
 
-        return score > 0
+        return score > 14.0
     }
 
     fun encodeIpf2(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
@@ -1068,59 +1109,63 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
 
                 PATCH -> { // Write literal patch
-                    if (blockIndex >= totalBlocks) break
+                    val count = readVarInt()
 
-                    val co = readShort()
-                    val cg = readShort()
-                    val y1 = readShort()
-                    val y2 = readShort()
-                    val y3 = readShort()
-                    val y4 = readShort()
+                    for (i in 0 until count) {
+                        if (blockIndex >= totalBlocks) break
 
-                    val rg = IntArray(16)
-                    val ba = IntArray(16)
+                        val co = readShort()
+                        val cg = readShort()
+                        val y1 = readShort()
+                        val y2 = readShort()
+                        val y3 = readShort()
+                        val y4 = readShort()
 
-                    var px = ycocgToRGB(co and 15, cg and 15, y1, 65535)
-                    rg[0] = px[0]; ba[0] = px[1]
-                    rg[1] = px[2]; ba[1] = px[3]
-                    rg[4] = px[4]; ba[4] = px[5]
-                    rg[5] = px[6]; ba[5] = px[7]
+                        val rg = IntArray(16)
+                        val ba = IntArray(16)
 
-                    px = ycocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, 65535)
-                    rg[2] = px[0]; ba[2] = px[1]
-                    rg[3] = px[2]; ba[3] = px[3]
-                    rg[6] = px[4]; ba[6] = px[5]
-                    rg[7] = px[6]; ba[7] = px[7]
+                        var px = ycocgToRGB(co and 15, cg and 15, y1, 65535)
+                        rg[0] = px[0]; ba[0] = px[1]
+                        rg[1] = px[2]; ba[1] = px[3]
+                        rg[4] = px[4]; ba[4] = px[5]
+                        rg[5] = px[6]; ba[5] = px[7]
 
-                    px = ycocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, 65535)
-                    rg[8] = px[0]; ba[8] = px[1]
-                    rg[9] = px[2]; ba[9] = px[3]
-                    rg[12] = px[4]; ba[12] = px[5]
-                    rg[13] = px[6]; ba[13] = px[7]
+                        px = ycocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, 65535)
+                        rg[2] = px[0]; ba[2] = px[1]
+                        rg[3] = px[2]; ba[3] = px[3]
+                        rg[6] = px[4]; ba[6] = px[5]
+                        rg[7] = px[6]; ba[7] = px[7]
 
-                    px = ycocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, 65535)
-                    rg[10] = px[0]; ba[10] = px[1]
-                    rg[11] = px[2]; ba[11] = px[3]
-                    rg[14] = px[4]; ba[14] = px[5]
-                    rg[15] = px[6]; ba[15] = px[7]
+                        px = ycocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, 65535)
+                        rg[8] = px[0]; ba[8] = px[1]
+                        rg[9] = px[2]; ba[9] = px[3]
+                        rg[12] = px[4]; ba[12] = px[5]
+                        rg[13] = px[6]; ba[13] = px[7]
 
-                    val blockX = blockIndex % blocksPerRow
-                    val blockY = blockIndex / blocksPerRow
+                        px = ycocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, 65535)
+                        rg[10] = px[0]; ba[10] = px[1]
+                        rg[11] = px[2]; ba[11] = px[3]
+                        rg[14] = px[4]; ba[14] = px[5]
+                        rg[15] = px[6]; ba[15] = px[7]
 
-                    for (py in 0..3) {
-                        for (pxi in 0..3) {
-                            val ox = blockX * 4 + pxi
-                            val oy = blockY * 4 + py
-                            if (ox < width && oy < height) {
-                                val offset = oy * 560 + ox
-                                val i = py * 4 + pxi
-                                vm.poke((destRG + offset * sign).toLong(), rg[i].toByte())
-                                vm.poke((destBA + offset * sign).toLong(), ba[i].toByte())
+                        val blockX = blockIndex % blocksPerRow
+                        val blockY = blockIndex / blocksPerRow
+
+                        for (py in 0..3) {
+                            for (pxi in 0..3) {
+                                val ox = blockX * 4 + pxi
+                                val oy = blockY * 4 + py
+                                if (ox < width && oy < height) {
+                                    val offset = oy * 560 + ox
+                                    val i = py * 4 + pxi
+                                    vm.poke((destRG + offset * sign).toLong(), rg[i].toByte())
+                                    vm.poke((destBA + offset * sign).toLong(), ba[i].toByte())
+                                }
                             }
                         }
-                    }
 
-                    blockIndex++
+                        blockIndex++
+                    }
                 }
 
                 REPEAT -> { // Repeat last literal

@@ -192,7 +192,7 @@ for (let f = 1; ; f++) {
         // get the difference map
         let patchEncodedSize = graphics.encodeIpf1d(ipfAreaOld, ipfAreaNew, ipfDelta, WIDTH, HEIGHT)
 
-        if (f < 2 || patchEncodedSize > WIDTH * HEIGHT * 0.90) patchEncodedSize = 0
+        if (f < 2 || f == TOTAL_FRAMES || patchEncodedSize > WIDTH * HEIGHT * 0.70) patchEncodedSize = 0
 
         // decide whether or not the patch encoding should be used
         let gzlen = gzip.compFromTo(
