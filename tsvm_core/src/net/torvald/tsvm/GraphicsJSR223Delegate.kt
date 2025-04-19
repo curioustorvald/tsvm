@@ -835,7 +835,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             score += contrastWeight(yALow, yBLow, deltaLow, 2)
         }
 
-        return score > 14.0
+        return score > 4.0
     }
 
     fun encodeIpf2(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
