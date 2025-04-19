@@ -1,19 +1,21 @@
 // some manual configurations
 //
 let IPFMODE = 3 // 1 or 2
-let TOTAL_FRAMES = 800
-let FPS = 24 // must be integer
+let TOTAL_FRAMES = 15347
+let FPS = 30 // must be integer
 let WIDTH = 560
 let HEIGHT = 448
-let PATHFUN = (i) => `C:/welkom/${(''+i).padStart(4,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
-let AUDIOTRACK = 'C:/welkom.pcm'
-let AUDIOFORMAT = 'PCMu8' // undefined or PCMu8 or MP2fr
+let PATHFUN = (i) => `C:/yain/${(''+i).padStart(5,'0')}.png` // how can be the image file found, if a frame number (starts from 1) were given
+let AUDIOTRACK = 'C:/yain.mp2'
+let AUDIOFORMAT = 'MP2fr' // undefined or PCMu8 or MP2fr
 // to export video to its frames (with automatic scaling and cropping):
 //     ffmpeg -i file.mp4 -vf scale=560:448:force_original_aspect_ratio=increase,crop=560:448 file/%05d.png
 //
 // to convert audio to MP2:
 //     ffmpeg -i file.mp4 -acodec libtwolame -psymodel 4 -b:a <rate>k -ar 32000 output.mp2
 //
+const FPS_IS_NTSC = true // when set to true, every 1000th frame will be dropped
+const KEYFRAME_DETECTION_THRESHOLD = 0.576
 // end of manual configuration
 let MP2_RATE_INDEX;
 let MP2_PACKETSIZE;
@@ -173,8 +175,10 @@ for (let f = 1; ; f++) {
             audioRemaining -= actualBytesToRead
         }
     }
+    if (FPS_IS_NTSC && f > 0 && f % 1000 == 0) {
+    }
     // insert video frame
-    if (f <= TOTAL_FRAMES) {
+    else if (f <= TOTAL_FRAMES) {
         let fname = PATHFUN(f)
         let framefile = files.open(_G.shell.resolvePathInput(fname).full)
         let fileLen = framefile.size
@@ -192,7 +196,7 @@ for (let f = 1; ; f++) {
         // get the difference map
         let patchEncodedSize = graphics.encodeIpf1d(ipfAreaOld, ipfAreaNew, ipfDelta, WIDTH, HEIGHT)
 
-        if (f < 2 || f == TOTAL_FRAMES || patchEncodedSize > WIDTH * HEIGHT * 0.70) patchEncodedSize = 0
+        if (f < 2 || f == TOTAL_FRAMES || patchEncodedSize > WIDTH * HEIGHT * KEYFRAME_DETECTION_THRESHOLD) patchEncodedSize = 0
 
         // decide whether or not the patch encoding should be used
         let gzlen = gzip.compFromTo(
