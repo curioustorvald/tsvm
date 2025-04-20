@@ -12,7 +12,8 @@ if (magic != 0xA5) return 1
 
 
 const source = sys.toObjectCode(ptr)
-const wrapper = new Function("exec_args", `const g={exec_args};with(g){${source}}`);
+//const wrapper = new Function("exec_args", `const g={exec_args};with(g){${source}}`);
+const wrapper = new Function("_BIOS", "_G", "_TVDOS", "exec_args", source)
 const newArgs = ["@ptr:"+ptr].concat(exec_args.slice(2))
 
-wrapper(newArgs)
+wrapper(_BIOS, _G, _TVDOS, newArgs)
