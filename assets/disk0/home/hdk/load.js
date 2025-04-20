@@ -26,7 +26,7 @@ if (3 == intent) {
     if (!_G.SO)
         _G.SO = {}
 
-    let libname = exec_args[1].split("\\").last().substringBeforeLast(".")
+    let libname = infile.path.split("\\").last().substringBeforeLast(".")
     _G.SO[libname] = addrToLoad
 }
 
