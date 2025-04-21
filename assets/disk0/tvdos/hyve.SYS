@@ -76,9 +76,10 @@ while (parallel.isRunning(runner)) {
 
         parallel.kill(runner)
 
+        sys.sleep(50)
+
         graphics.clearText()
         graphics.clearPixels(255)
-
         startNewInstance()
     }
     else if (sys.peek(-49) >>> 6 == 1) {
@@ -87,7 +88,8 @@ while (parallel.isRunning(runner)) {
         let threads = parallel.getThreadPool()
 
         serial.println("======================")
-        for (let i = 0; i < threads.size; i++) {
+        serial.println("Currently running threads:")
+        for (let i = 0; i < threads.length; i++) {
             serial.println(`Thread #${i+1}: ${threads[i]}`)
         }
         serial.println("======================")

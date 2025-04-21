@@ -17,23 +17,21 @@ User area: 8 MB, hardware area: 8 MB
 8192 kB
     User Space
 1024 kB
-    Peripheral #8
-1024 kB
     Peripheral #7
+1024 kB
+    Peripheral #6
 ...
 1024 kB  (where Peripheral #0 would be)
     MMIO and Interrupt Vectors
     128 kB
-        MMIO for Peri #8
-    128 kB
         MMIO for Peri #7
+    128 kB
+        MMIO for Peri #6
     ...
     128 kB  (where Peripheral #0 would be)
         MMIO for the computer
-        130816 bytes
-            MMIO for Ports, etc.
-        256 bytes
-            Vectors for 64 interrupts
+
+Certain memory mapper may allow extra 4 MB of User Space in exchange for the Peripheral slot #4 through #7.
 
 --------------------------------------------------------------------------------
 
@@ -108,7 +106,39 @@ MMIO
 1024..2047 RW: Reserved for integrated peripherals (e.g. built-in status display)
 
 2048..4075 RW: Used by the hypervisor
-    2048..2051 RW: Status flags
+    2048..3071 RW: Interrupt vectors (0-255), 32-bit address. Used regardless of the existence of the hypervisor.
+        If hypervisor is installed, the interrupt calls are handled using the hypervisor
+        If no hypervisors are installed, the interrupt call is performed by the "hardware"
+    Interrupt Vector Table:
+        0x00 - Initial Stack Pointer (currently unused)
+        0x01 - Reset
+        0x02 - NMI
+        0x03 - Out of Memory
+
+        0x0C - IRQ_COM1
+        0x0D - IRQ_COM2
+        0x0E - IRQ_COM3
+        0x0F - IRQ_COM4
+
+        0x10 - Core Memory Access Violation
+        0x11 - Card 1 Access Violation
+        0x12 - Card 2 Access Violation
+        0x13 - Card 3 Access Violation
+        0x14 - Card 4 Access Violation
+        0x15 - Card 5 Access Violation
+        0x16 - Card 6 Access Violation
+        0x17 - Card 7 Access Violation
+
+        0x20 - IRQ_Core
+        0x21 - IRQ_CARD1
+        0x22 - IRQ_CARD2
+        0x23 - IRQ_CARD3
+        0x24 - IRQ_CARD4
+        0x25 - IRQ_CARD5
+        0x26 - IRQ_CARD6
+        0x27 - IRQ_CARD7
+    3072..3075 RW: Status flags
+
 
 
 4076..4079 RW: 8-bit status code for the port
