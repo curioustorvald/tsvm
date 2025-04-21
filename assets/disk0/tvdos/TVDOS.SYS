@@ -1253,15 +1253,80 @@ let injectIntChk = (s, n) => {
     return k;
 }
 
+var _G = {} // The Glorious Global Table
 
+const moduleCache = {}
 
 // install other stuffs
-var require = (absdir) => {
+// js source-based impl
+/*var require = (absdir) => {
     let moduleFile = files.open(absdir)
     if (!moduleFile.exists) throw Error("No such file: " + absdir)
     let moduleScript = moduleFile.sread()
     var intchkFunName = `tvdosSIGTERM_${generateRandomHashStr(16)}`;
     return eval(`var ${intchkFunName} = function(){ ${checkTerm} };let exports = {}; ${injectIntChk(moduleScript, intchkFunName)}; Object.freeze(exports)`)
+}*/
+// COCC-based impl
+let loadImgToMem = (str) => {
+    let intent = str.charCodeAt(4) // 2 for executable, 3 for shared
+    let addrToLoad = (str.charCodeAt(5) << 16) | (str.charCodeAt(6) << 8) | (str.charCodeAt(7))
+    const imageSize = (str.charCodeAt(9) << 16) | (str.charCodeAt(10) << 8) | (str.charCodeAt(11))
+
+    if (addrToLoad == 0)
+        addrToLoad = sys.malloc(imageSize + 4)
+    else
+        sys.forceAlloc(addrToLoad, imageSize + 4)
+
+    dma.strToRam(str, addrToLoad, 0, str.length)
+
+    // write magic 0xA5 to the beginning of the image area
+    sys.poke(addrToLoad, 0xA5)
+
+    return addrToLoad
+}
+var require = (absdir) => {
+    let moduleFile = files.open(absdir)
+    if (!moduleFile.exists) throw Error("No such file: " + absdir)
+    let moduleScript = moduleFile.sread()
+    let moduleName = absdir.split("\\").last().substringBeforeLast(".")
+
+    // load the "string" into memory
+    let ptr = loadImgToMem(moduleScript)
+    let intent = sys.peek(ptr + 4)
+
+    // if it's a shared library, put it into the global table
+    if (3 == intent) {
+        // create the table if it's not there
+        if (!_G.SO)
+            _G.SO = {}
+
+        _G.SO[moduleName] = ptr
+    }
+
+    requireFromMemory(ptr)
+}
+let requireFromMemory = (ptr) => {
+    if (moduleCache[ptr]) return moduleCache[ptr]
+
+    const codeStr = sys.toObjectCode(ptr)
+
+    // expose args through a wrapper -- just like calling a syscall
+    const wrapper = new Function("require", "module", "exports", "args", `
+        ${codeStr}
+        if (typeof module.exports === 'function') {
+            return module.exports(...args)
+        }
+        return module.exports
+    `)
+
+    const moduleRunner = (...args) => {
+        const exports = {}
+        const module = { exports }
+        return wrapper((id) => requireFromMemory(id), module, exports, args);
+    }
+
+    moduleCache[moduleId] = moduleRunner
+    return moduleRunner
 }
 
 
@@ -1289,7 +1354,7 @@ var execApp = (cmdsrc, args, appname) => {
 
 // Boot script
 serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);
-var _G = {};
+
 let cmdfile = files.open("A:/tvdos/bin/command.js")
 eval(`var _AUTOEXEC=function(exec_args){${cmdfile.sread()}\n};` +
       `_AUTOEXEC`)(["", "-c", "\\AUTOEXEC.BAT"])

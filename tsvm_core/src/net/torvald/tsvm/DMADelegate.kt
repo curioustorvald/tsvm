@@ -102,4 +102,10 @@ class DMADelegate(private val vm: VM) {
     fun ramToRam(from: Int, to: Int, length: Int) {
         UnsafeHelper.memcpy(vm.usermem.ptr + from, vm.usermem.ptr + to, length.toLong())
     }
+
+    fun strToRam(str: String, to: Int, srcOff: Int, length: Int) {
+        for (i in srcOff until srcOff + length) {
+            vm.poke(to.toLong() + i, str[i - srcOff].code.toByte())
+        }
+    }
 }
