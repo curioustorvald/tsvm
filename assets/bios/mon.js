@@ -97,14 +97,20 @@ while (1) {
         let arg = buf[1]
         if (arg == undefined)
             pE = "No arguments given"
-        else if (arg.length % 2 == 1)
-            pE = "Length of byte string is odd number"
         else {
-            for (let i = 0; i < arg.length; i += 2) {
-                let b = parseInt(arg.charAt(i)+arg.charAt(i+1), 16)
-                putNinc(b)
+            let str = buf.slice(1).join('').trim()
+
+            if (str.length % 2 == 1)
+                pE = "Length of byte string is odd number"
+            else if (str.length == 0)
+                pE = "No bytes given"
+            else {
+                for (let i = 0; i < str.length; i += 2) {
+                    let b = parseInt(str.charAt(i)+str.charAt(i+1), 16)
+                    putNinc(b)
+                }
+                pE = undefined
             }
-            pE = undefined
         }
     }
     else if ("R" == cmd) {
