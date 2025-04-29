@@ -12,7 +12,7 @@ import kotlin.math.ceil
 
 object SerialHelper {
 
-    private const val SLEEP_TIME = 4L
+    private const val SLEEP_TIME = 1L
 
     fun sendMessageGetBytes(vm: VM, portNo: Int, message: ByteArray): ByteArray {
         sendMessage(vm, portNo, message)

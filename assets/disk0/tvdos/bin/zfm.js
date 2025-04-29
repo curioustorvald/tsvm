@@ -44,7 +44,8 @@ const EXEC_FUNS = {
     "pcm": (f) => _G.shell.execute(`playpcm "${f}" -i`),
     "ipf1": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
     "ipf2": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
-    "bas": (f) => _G.shell.execute(`basic "${f}"`)
+    "bas": (f) => _G.shell.execute(`basic "${f}"`),
+    "txt": (f) => _G.shell.execute(`less "${f}"`)
 }
 
 let windowMode = 0 // 0 == left, 1 == right

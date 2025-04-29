@@ -1259,14 +1259,15 @@ const moduleCache = {}
 
 // install other stuffs
 // js source-based impl
-/*var require = (absdir) => {
+var require = (absdir) => {
     let moduleFile = files.open(absdir)
     if (!moduleFile.exists) throw Error("No such file: " + absdir)
     let moduleScript = moduleFile.sread()
     var intchkFunName = `tvdosSIGTERM_${generateRandomHashStr(16)}`;
     return eval(`var ${intchkFunName} = function(){ ${checkTerm} };let exports = {}; ${injectIntChk(moduleScript, intchkFunName)}; Object.freeze(exports)`)
-}*/
-// COCC-based impl
+}
+
+// COCC-based impl helper functions
 let loadImgToMem = (str) => {
     let intent = str.charCodeAt(4) // 2 for executable, 3 for shared
     let addrToLoad = (str.charCodeAt(5) << 16) | (str.charCodeAt(6) << 8) | (str.charCodeAt(7))
@@ -1283,27 +1284,6 @@ let loadImgToMem = (str) => {
     sys.poke(addrToLoad, 0xA5)
 
     return addrToLoad
-}
-var require = (absdir) => {
-    let moduleFile = files.open(absdir)
-    if (!moduleFile.exists) throw Error("No such file: " + absdir)
-    let moduleScript = moduleFile.sread()
-    let moduleName = absdir.split("\\").last().substringBeforeLast(".")
-
-    // load the "string" into memory
-    let ptr = loadImgToMem(moduleScript)
-    let intent = sys.peek(ptr + 4)
-
-    // if it's a shared library, put it into the global table
-    if (3 == intent) {
-        // create the table if it's not there
-        if (!_G.SO)
-            _G.SO = {}
-
-        _G.SO[moduleName] = ptr
-    }
-
-    requireFromMemory(ptr)
 }
 let requireFromMemory = (ptr) => {
     if (moduleCache[ptr]) return moduleCache[ptr]
@@ -1328,6 +1308,28 @@ let requireFromMemory = (ptr) => {
     moduleCache[moduleId] = moduleRunner
     return moduleRunner
 }
+// COCC-based impl
+/*var require = (absdir) => {
+    let moduleFile = files.open(absdir)
+    if (!moduleFile.exists) throw Error("No such file: " + absdir)
+    let moduleScript = moduleFile.sread()
+    let moduleName = absdir.split("\\").last().substringBeforeLast(".")
+
+    // load the "string" into memory
+    let ptr = loadImgToMem(moduleScript)
+    let intent = sys.peek(ptr + 4)
+
+    // if it's a shared library, put it into the global table
+    if (3 == intent) {
+        // create the table if it's not there
+        if (!_G.SO)
+            _G.SO = {}
+
+        _G.SO[moduleName] = ptr
+    }
+
+    requireFromMemory(ptr)
+}*/
 
 
 var GL = require("A:/tvdos/include/gl.mjs")
