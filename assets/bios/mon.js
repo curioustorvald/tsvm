@@ -38,6 +38,13 @@ let peek = (p) => {
     }
 }
 
+let printAddr = (P) => {
+if (P >= 0)
+    print(' $'+(uhex(P, 6))+' : ')
+else
+    print('-$'+(uhex(-P, 6))+' : ')
+}
+
 while (1) {
     print(prompt[+!pE])
     let buf = read().split(' ')
@@ -50,13 +57,15 @@ while (1) {
         let addr = parseInt(buf[1], 16)
         let addr2 = parseInt(buf[2], 16)
         if (Number.isNaN(addr)) {
-            println((uhex(P, 6))+' : '+uhex(peek(P)))
+            printAddr(P)
+            println(uhex(peek(P)))
             pE = undefined
         }
         else {
             let oldP = P
             P = addr
             if (Number.isNaN(addr2)) {
+                printAddr(P)
                 println(uhex(peek(P)))
                 pE = undefined
             }
@@ -65,7 +74,7 @@ while (1) {
             else {
                 for (let i = 0; i <= Math.abs(addr2) - Math.abs(addr); i++) {
                     if (i % 16 == 0 && i > 0) { println() }
-                    if (i % 16 == 0) { print((uhex(P, 6))+' : ') }
+                    if (i % 16 == 0) { printAddr(P) }
                     print(uhex(peek(P)) + ' ')
                     if (addr < 0 && addr2 < 0) { P-- } else { P++ }
                 }
@@ -77,7 +86,8 @@ while (1) {
     }
     else if ("N" == cmd) {
         if (P >= 0) { P++ } else { P-- }
-        println((uhex(P, 6))+' : '+uhex(peek(P)))
+        printAddr(P)
+        println(uhex(peek(P)))
         pE = undefined
     }
     else if ("J" == cmd) {
@@ -90,7 +100,12 @@ while (1) {
         }
     }
     else if ("P" == cmd) {
-        println(` ${P} ($${uhex(P, 6)})`)
+        if (P >= 0) {
+            println(` ${P} ($${uhex(P, 6)})`)
+        }
+        else {
+            println(` ${P} (-$${uhex(-P, 6)})`)
+        }
         pE = undefined
     }
     else if ("W" == cmd) {

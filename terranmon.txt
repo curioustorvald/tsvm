@@ -86,6 +86,9 @@ MMIO
 80..87 RO: RTC in microseconds
 
 88 RW: Rom mapping
+    write 0xFF to NOT map any rom
+    write 0x00 to map BIOS
+    write 0x01 to map first "extra ROM"
 
 89 RW: BMS flags
     0b P000 b0ca
@@ -102,6 +105,10 @@ MMIO
 
 90 RO: BMS calculated battery percentage where 255 is 100%
 91 RO: BMS battery voltage multiplied by 10 (127 = "12.7 V")
+
+92 RW: Memory Mapping
+    0: 8 MB Core, 8 MB Hardware-reserved, 7 card slots
+    1: 12 MB Core, 4 MB Hardware-reserved, 3 card slots (HW addr 131072..1048575 cannot be reclaimed though)
 
 1024..2047 RW: Reserved for integrated peripherals (e.g. built-in status display)
 
@@ -260,7 +267,7 @@ SPRITE FORMAT DRAFT 2
         0b 0000 00vp
         (p: 0 for above-all, 1 for below-text, v: show/hide)
     3 bytes
-        Pointer to raw pixmap data in Scratchpad Memory
+        Pointer to raw pixmap data in Core Memory
 
 MMIO
 
@@ -809,11 +816,11 @@ MMIO
 0 RW : Bank number for the first 512 kbytes
 1 RW : Bank number for the last 512 kbytes
 16..23 RW : DMA Control for Lane 1..8
-    Write 0x01: copy from Scratchpad to Peripheral
-    Write 0x02: copy from Peripleral to Scratchpad
-    * NOTE: after the transfer, the bank numbers will revert to the value that was befer the operation
+    Write 0x01: copy from Core to Peripheral
+    Write 0x02: copy from Peripheral to Core
+    * NOTE: after the transfer, the bank numbers will revert to the value that was before the operation
 24..31 RW : DMA Control reserved
-32..34 RW : DMA Lane 1 -- Addr on the Scratchpad Memory
+32..34 RW : DMA Lane 1 -- Addr on the Core Memory
 35..37 RW : DMA Lane 1 -- Addr on the Peripheral's Memory (addr can be across-the-bank)
 38..40 RW : DMA Lane 1 -- Transfer Length
 41..42 RW : DMA Lane 1 -- First/Last Bank Number
