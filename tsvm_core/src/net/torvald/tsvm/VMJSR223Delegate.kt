@@ -267,15 +267,18 @@ class VMJSR223Delegate(private val vm: VM) {
     }
 
     fun toObjectCode(ptr: Int): java.lang.String {
-        val payloadSize = peek(ptr+1).shl(16) or peek(ptr+2).shl(8) or peek(ptr+3)
+        val payloadSize = if (ptr >= 0)
+            peek(ptr+1).shl(16) or peek(ptr+2).shl(8) or peek(ptr+3)
+        else
+            peek(ptr-1).shl(16) or peek(ptr-2).shl(8) or peek(ptr-3)
 
-        val decrypted = decryptPayload(ptr, payloadSize)
+        val decrypted = decryptPayload(ptr, payloadSize, (ptr < 0))
         val image = CompressorDelegate.decomp(decrypted)
         return java.lang.String(image)
     }
 
 
-    private fun decryptPayload(ptr: Int, payloadSize: Int): ByteArray {
+    private fun decryptPayload(ptr: Int, payloadSize: Int, dec: Boolean): ByteArray {
         var key = "00"
         var keyBytes = byteArrayOf(0x00)
         var keyCursor = 0
@@ -313,7 +316,9 @@ class VMJSR223Delegate(private val vm: VM) {
         val encrypted = ByteArray(payloadSize)
 
         for (outcnt in 0 until payloadSize) {
-            encrypted[outcnt] = (peek(ptr + 4 + outcnt) xor keyBytes[keyCursor++].toUint()).toByte()
+            encrypted[outcnt] = ((
+                    if (!dec) peek(ptr + 4 + outcnt) else peek(ptr - 4 - outcnt))
+                    xor keyBytes[keyCursor++].toUint()).toByte()
             if (keyCursor >= keyBytes.size) {
                 getNewKeySeq()
             }
