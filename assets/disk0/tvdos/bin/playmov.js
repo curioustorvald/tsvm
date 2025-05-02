@@ -101,6 +101,7 @@ if (interactive) {
 let notifHideTimer = 0
 const NOTIF_SHOWUPTIME = 3000000000
 let [cy, cx] = con.getyx()
+let doFrameskip = true
 let errorlevel = 0
 try {
 let t1 = sys.nanoTime()
@@ -122,7 +123,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
             frameUnit += 1
         }
 
-        if (frameUnit > 1) frameUnit = 1 // comment to enable frameskip
+        if (!doFrameskip) frameUnit = 1
 
         if (frameUnit != 0) {
             // skip frames if necessary
@@ -214,6 +215,8 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                     }
                     // iPF1d
                     else if (packetType == 516) {
+                        doFrameskip = false // disable frameskip for delta-coding
+
                         let payloadLen = seqread.readInt()
 
                         if (framesRead >= FRAME_COUNT) {
