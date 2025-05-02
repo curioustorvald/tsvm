@@ -35,7 +35,7 @@ function prepare(fullPath) {
         return statusCode
     }
 
-    sys.poke(-4093 - port, 6);sys.sleep(0)
+    sys.poke(-4093 - port, 6);/*sys.sleep(0)*/
 
     for (let i = 0; i < 4096; i++) {
         fileHeader[i] = sys.peek(-4097 - port*4096 - i)
@@ -61,7 +61,7 @@ function readBytes(length, ptrToDecode) {
         if (readCount % 4096 == 0) {
 //            serial.println("READ from serial")
             // pull the actual message
-            if (readCount > 0) { sys.poke(-4093 - port, 6);sys.sleep(0) } // spinning is required as Graal run is desynced with the Java side
+            if (readCount > 0) { sys.poke(-4093 - port, 6);/*sys.sleep(0)*/ } // spinning is required as Graal run is desynced with the Java side
 
             let blockTransferStatus = ((sys.peek(-4085 - port*2) & 255) | ((sys.peek(-4086 - port*2) & 255) << 8))
             let thisBlockLen = blockTransferStatus & 4095
