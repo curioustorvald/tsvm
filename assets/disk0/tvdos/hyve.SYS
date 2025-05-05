@@ -61,6 +61,21 @@ function startNewInstance() {
     sys.sleep(1000)
 }
 
+const randomkeypusher = `
+while (1) {
+    sys.poke(-38, 65 + (Math.random()*26)|0)
+    sys.poke(-50, 1)
+    sys.sleep(10)
+    sys.poke(-50, 0)
+    sys.sleep(90)
+}
+`
+
+function startNewRandomKeyPusher() {
+    runner = parallel.attachProgram("TVDOS", parallel.spawnNewContext(), randomkeypusher)
+    parallel.launch(runner)
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -69,6 +84,7 @@ graphics.setBackground(34,51,68)
 println("== h y v e ============================================== Hypervisor for tsvm ==")
 
 startNewInstance()
+//startNewRandomKeyPusher()
 
 while (parallel.isRunning(runner)) {
     if (sys.peek(-49) >>> 7 == 1) {
