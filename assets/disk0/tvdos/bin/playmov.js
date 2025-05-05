@@ -92,7 +92,8 @@ function getRGBfromScr(x, y) {
     return [(rg >>> 4) / 15.0, (rg & 15) / 15.0, (ba >>> 4) / 15.0]
 }
 
-let oldBgcol = [0.0, 0.0, 0.0]
+const BIAS_LIGHTING_MIN = 1.0 / 16.0
+let oldBgcol = [BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN]
 let stopPlay = false
 if (interactive) {
     con.move(1,1)
@@ -197,9 +198,9 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                                     out[1] += rgb[1]
                                     out[2] += rgb[2]
                                 })
-                                out[0] = out[0] / samples.length / 2.0 // darken a bit
-                                out[1] = out[1] / samples.length / 2.0
-                                out[2] = out[2] / samples.length / 2.0
+                                out[0] = BIAS_LIGHTING_MIN + (out[0] / samples.length / 2.0) // darken a bit
+                                out[1] = BIAS_LIGHTING_MIN + (out[1] / samples.length / 2.0)
+                                out[2] = BIAS_LIGHTING_MIN + (out[2] / samples.length / 2.0)
 
                                 let bgr = (oldBgcol[0]*5 + out[0]) / 6.0
                                 let bgg = (oldBgcol[1]*5 + out[1]) / 6.0
@@ -255,9 +256,9 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                                     out[1] += rgb[1]
                                     out[2] += rgb[2]
                                 })
-                                out[0] = out[0] / samples.length / 2.0 // darken a bit
-                                out[1] = out[1] / samples.length / 2.0
-                                out[2] = out[2] / samples.length / 2.0
+                                out[0] = BIAS_LIGHTING_MIN + (out[0] / samples.length / 2.0) // darken a bit
+                                out[1] = BIAS_LIGHTING_MIN + (out[1] / samples.length / 2.0)
+                                out[2] = BIAS_LIGHTING_MIN + (out[2] / samples.length / 2.0)
 
                                 let bgr = (oldBgcol[0]*5 + out[0]) / 6.0
                                 let bgg = (oldBgcol[1]*5 + out[1]) / 6.0

@@ -1003,6 +1003,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             }
 
             override fun read(): Int {
+                vm.getIO().mmio_write(49L, 0)
                 var key: Byte
                 do {
                     Thread.sleep(4L) // if spinning rate is too fast, this function will fail.
@@ -1011,6 +1012,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 } while (key == (-1).toByte())
 
                 //println("[stdin] key = $key")
+                vm.getIO().mmio_write(49L, 1)
                 return key.toInt().and(255)
             }
 

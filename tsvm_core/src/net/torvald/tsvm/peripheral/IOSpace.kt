@@ -104,6 +104,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             39L -> rawInputFunctionLatched.toInt().toByte()
             in 40..47 -> keyEventBuffers[adi - 40]
             48L -> (vm.resetDown.toInt(7) or vm.sysrqDown.toInt(6) or vm.stopDown.toInt()).toByte()
+            49L -> keyPushed.toInt().toByte()
 
             in 64..67 -> vm.memsize.shr((adi - 64) * 8).toByte()
             68L -> (uptimeCounterLatched.toInt() or RTClatched.toInt(1)).toByte()
@@ -161,6 +162,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     }
 
     private val hyveArea = ByteArray(2048)
+    private var keyPushed = false
 
     override fun mmio_write(addr: Long, byte: Byte) {
         val adi = addr.toInt()
@@ -180,6 +182,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 
                 39L -> rawInputFunctionLatched = (byte.isNonZero())
                 in 40..47 -> keyEventBuffers[adi - 40] = byte
+                49L -> keyPushed = (bi != 0)
                 68L -> {
                     uptimeCounterLatched = byte.and(0b01).isNonZero()
                     RTClatched = byte.and(0b10).isNonZero()
@@ -341,10 +344,14 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     override fun keyTyped(p0: Char): Boolean {
         if (keyboardInputRequested && p0.toInt() > 0) {
             //println("[IO] key typed = ${p0.toInt()}")
+            keyPushed = true
             keyboardBuffer.appendHead(p0.toByte())
+            Thread.sleep(6L)
+            keyPushed = false
             return true
         }
         else {
+            keyPushed = false
             return false
         }
     }

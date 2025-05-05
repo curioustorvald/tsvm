@@ -1,11 +1,9 @@
 package net.torvald.tsvm
 
 import net.torvald.UnsafeHelper
-import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.peripheral.*
-import java.nio.charset.Charset
 
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
@@ -177,10 +175,24 @@ class VMJSR223Delegate(private val vm: VM) {
      * ^A-^Z: 1 through 26
      */
     fun readKey(): Int {
-        val inputStream = vm.getInputStream()
+        /*val inputStream = vm.getInputStream()
         var key: Int = inputStream.read()
         inputStream.close()
-        return key
+        return key*/
+
+        // impl that doesn't rely on InputStream
+        vm.getIO().let {
+            it.mmio_write(38, 1)
+
+            vm.isIdle.set(true)
+            while (it.mmio_read(49L) == 0.toByte()) {
+                Thread.sleep(6L)
+            }
+            vm.isIdle.set(false)
+
+            it.mmio_write(38, 0)
+            return it.mmio_read(37L)!!.toUint()
+        }
     }
 
     /**
@@ -188,11 +200,12 @@ class VMJSR223Delegate(private val vm: VM) {
      * characters (e.g. arrow keys) won't work.
      */
     fun read(): String {
-        val inputStream = vm.getInputStream()
+//        val inputStream = vm.getInputStream()
         val sb = StringBuilder()
         var key: Int
         do {
-            key = inputStream.read()
+//            key = inputStream.read()
+            key = readKey()
 
             if ((key == 8 && sb.isNotEmpty()) || key in 0x20..0x7E) {
                 this.print("${key.toChar()}")
@@ -205,7 +218,7 @@ class VMJSR223Delegate(private val vm: VM) {
         } while (key != 13 && key != 10)
         this.print("\n") // printout \n
 
-        inputStream.close()
+//        inputStream.close()
         return sb.toString()
     }
 
@@ -214,11 +227,12 @@ class VMJSR223Delegate(private val vm: VM) {
      * characters (e.g. arrow keys) won't work.
      */
     fun readNoEcho(): String {
-        val inputStream = vm.getInputStream()
+//        val inputStream = vm.getInputStream()
         val sb = StringBuilder()
         var key: Int
         do {
-            key = inputStream.read()
+//            key = inputStream.read()
+            key = readKey()
 
             when (key) {
                 8 -> if (sb.isNotEmpty()) sb.deleteCharAt(sb.lastIndex)
@@ -227,7 +241,7 @@ class VMJSR223Delegate(private val vm: VM) {
         } while (key != 13 && key != 10)
         this.println() // printout \n
 
-        inputStream.close()
+//        inputStream.close()
         return sb.toString()
     }
 

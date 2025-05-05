@@ -76,6 +76,7 @@ MMIO
         t: STOP button (should raise SIGTERM)
         r: RESET button (hypervisor should reset the system)
         q: SysRq button (hypervisor should respond to it)
+    49: set to 1 if a key has pushed into key buffer (or, if the system has a key press to pull) via MMIO 38; othewise 0
 
 64..67 RO: User area memory size in bytes
 68 WO: Counter latch
