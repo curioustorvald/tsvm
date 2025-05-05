@@ -10,6 +10,7 @@ const pcm = require("pcm")
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
+let videoRateBin = []
 
 con.clear();con.curs_set(0)
 graphics.clearPixels(255)
@@ -42,6 +43,20 @@ let mp2Initialised = false
 let width = seqread.readShort()
 let height = seqread.readShort()
 let fps = seqread.readShort(); if (fps == 0) fps = 9999
+
+function updateDataRateBin(rate) {
+    videoRateBin.push(rate)
+
+    if (videoRateBin.length > fps) {
+        videoRateBin.shift()
+    }
+}
+
+function getVideoRate(rate) {
+    let baseRate = videoRateBin.reduce((a, c) => a + c, 0)
+    let mult = fps / videoRateBin.length
+    return baseRate * mult
+}
 
 //fps = 9999
 
@@ -161,6 +176,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                     if (packetType == 4 || packetType == 5 || packetType == 260 || packetType == 261) {
                         let decodefun = (packetType > 255) ? graphics.decodeIpf2 : graphics.decodeIpf1
                         let payloadLen = seqread.readInt()
+                        updateDataRateBin(payloadLen)
 
                         if (framesRead >= FRAME_COUNT) {
                             break renderLoop
@@ -219,6 +235,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                         doFrameskip = false // disable frameskip for delta-coding
 
                         let payloadLen = seqread.readInt()
+                        updateDataRateBin(payloadLen)
 
                         if (framesRead >= FRAME_COUNT) {
                             break renderLoop
@@ -332,6 +349,11 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
         if (notifHideTimer > (NOTIF_SHOWUPTIME + FRAME_TIME)) {
             con.clear()
         }
+
+        con.move(32, 1)
+        graphics.setTextFore(161)
+        print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
+        con.move(1, 1)
     }
 
     t1 = t2
