@@ -100,6 +100,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
 
 
     private var lastTransmissionTime = 0L
+    private var delayAkku = 0.0
 
     /**
      * Calculates and applies appropriate delay based on data size and baud rate
@@ -109,25 +110,34 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         // Calculate delay in milliseconds
         // Baud rate is bits per second, and we assume 10 bits per byte (8 data bits + start/stop bits)
         val bitsTransmitted = byteCount * 10
-        val expectedTransmissionTimeMs = (bitsTransmitted * 1000L) / baudRate
+        val expectedTransmissionTimeNS = (bitsTransmitted * 1000_000_000L).toDouble() / baudRate
 
-        val currentTime = System.nanoTime() / 1000000L
+        val currentTime = System.nanoTime()
         val elapsedTime = if (lastTransmissionTime > 0) currentTime - lastTransmissionTime else 0
 
+        // Add to our accumulator
+        if (expectedTransmissionTimeNS - elapsedTime > 0)
+            delayAkku += expectedTransmissionTimeNS - elapsedTime
+
+
         // Only sleep if we need to slow down the transmission
-        if (elapsedTime < expectedTransmissionTimeMs) {
-            val sleepTime = expectedTransmissionTimeMs - elapsedTime
+        if (delayAkku >= 1000_000.0) {
+            val sleepTimeMS = (delayAkku / 1000000).toLong()
             try {
-                Thread.sleep(sleepTime)
-                println("Sleep $sleepTime ms for $byteCount bytes")
+                Thread.sleep(sleepTimeMS)
+                println("Sleep $sleepTimeMS ms for $byteCount bytes")
+                delayAkku -= sleepTimeMS * 1000000.0
             }
             catch (e: InterruptedException) {
                 // Handle interruption if needed
             }
         }
+        else {
+            println("Sleep skip for $byteCount bytes")
+        }
 
         // Update last transmission time
-        lastTransmissionTime = System.nanoTime() / 1000000L
+        lastTransmissionTime = System.nanoTime()
     }
 }
 
