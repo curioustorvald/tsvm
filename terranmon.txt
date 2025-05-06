@@ -196,7 +196,9 @@ VRAM Bank 0 (256 kB)
 
 Endianness: little
 
-From the start of the memory space:
+
+Memory Space
+
 250880 bytes
     Framebuffer
 3 bytes
@@ -675,6 +677,9 @@ Sound Adapter
 
 Endianness: little
 
+
+Memory Space
+
 0..114687 RW: Sample bin
 114688..131071 RW: Instrument bin (256 instruments, 64 bytes each)
 131072..196607 RW: Play data 1
@@ -833,3 +838,68 @@ MMIO
 92..103 RW : DMA Lane 6 Props
 104..115 RW : DMA Lane 7 Props
 116..127 RW : DMA Lane 8 Props
+
+--------------------------------------------------------------------------------
+
+High Speed Disk Peripheral Adapter (HSDPA)
+
+Endianness: Little
+
+MMIO
+
+0..2 RW: Block transfer status for Disk 1
+    0b nnnn nnnn, nnnn nnnn , a00z mmmm
+
+    n-read: size of the block from the other device, LSB (1048576-full block size is zero)
+    m-read: size of the block from the other device, MSB (1048576-full block size is zero)
+    a-read: if the other device hasNext (doYouHaveNext), false if device not present
+    z-read: set if the size is actually 0 instead of 1048576 (overrides n and m parameters)
+
+    n-write: size of the block I'm sending, LSB (1048576-full block size is zero)
+    m-write: size of the block I'm sending, MSB (1048576-full block size is zero)
+    a-write: if there's more to send (hasNext)
+    z-write: set if the size is actually 0 instead of 1048576 (overrides n and m parameters)
+3..5 RW: Block transfer status for Disk 2
+6..8 RW: Block transfer status for Disk 3
+9..11 RW: Block transfer status for Disk 4
+12..15 RW: Block transfer control for Disk 1 through 4
+    0b 0000 abcd
+
+    a: 1 for send, 0 for receive
+
+    b-write: 1 to start sending if a-bit is set; if a-bit is unset, make other device to start sending
+    b-read: if this bit is set, you're currently receiving something (aka busy)
+
+    c-write: I'm ready to receive
+    c-read: Are you ready to receive?
+
+    d-read: Are you there? (if the other device's recipient is myself)
+
+    NOTE: not ready AND not busy (bits b and d set when read) means the device is not connected to the port
+16..19 RW: 8-bit status code for the disk
+20 RW: Currently active disk (0: deselect all disk, 1: select disk #1, ...)
+
+    Selecting a disk will automatically unset and hold down "I'm ready to receive" flags of the other disks,
+    however, the target disk will NOT have its "I'm ready to receive" flag automatically set.
+
+-- SEQUENTIAL IO SUPPORT MODULE --
+
+NOTE: Sequential I/O will clobber the peripheral memory space.
+
+256..257 RW: Sequential I/O control flags
+
+258 RW: Opcode
+    0x00 - No operation
+    0x01 - Skip (arg 1) bytes
+    0x02 - Read (arg 1) bytes and store to core memory pointer (arg 2)
+    0x03 - Write (arg 1) bytes using data from the core memory from pointer (arg 2)
+    0xFF - Terminate sequential I/O session and free up the memory space
+259..261 RW: Argument #1
+262..264 RW: Argument #2
+265..267 RW: Argument #3
+268..270 RW: Argument #4
+
+
+Memory Space
+
+0..1048575 RW: Buffer for the block transfer lane

@@ -3,7 +3,7 @@ package net.torvald.tsvm.peripheral
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean) {
+abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean, val baudRate: Int = 20_000_000) {
 
     var recipient: BlockTransferInterface? = null; protected set
 
@@ -34,7 +34,9 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
             ready.setRelease(false)
 
             recipient?.let {
-                this.blockSize.set(startSendImpl(it))
+                val bytesSent = startSendImpl(it)
+                this.blockSize.set(bytesSent)
+                applyBaudRateDelay(bytesSent)
                 //println("[BlockTransferInterface.startSend()] recipients blocksize = ${this.blockSize}")
             }
 
@@ -60,8 +62,13 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
     fun writeout(inputData: ByteArray) {
         busy.setRelease(true)
         ready.setRelease(false)
-        blockSize.setRelease(minOf(inputData.size, BLOCK_SIZE))
+
+        val bytesReceived = minOf(inputData.size, BLOCK_SIZE)
+        blockSize.setRelease(bytesReceived)
         writeoutImpl(inputData)
+
+        applyBaudRateDelay(bytesReceived)
+
         busy.setRelease(false)
         ready.setRelease(true)
     }
@@ -89,6 +96,38 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         const val BAD_NEWS = 0x15.toByte()
         const val UNIT_SEP = 0x1F.toByte()
         const val END_OF_SEND_BLOCK = 0x17.toByte()
+    }
+
+
+    private var lastTransmissionTime = 0L
+
+    /**
+     * Calculates and applies appropriate delay based on data size and baud rate
+     * @param byteCount Number of bytes being transmitted
+     */
+    protected fun applyBaudRateDelay(byteCount: Int) {
+        // Calculate delay in milliseconds
+        // Baud rate is bits per second, and we assume 10 bits per byte (8 data bits + start/stop bits)
+        val bitsTransmitted = byteCount * 10
+        val expectedTransmissionTimeMs = (bitsTransmitted * 1000L) / baudRate
+
+        val currentTime = System.nanoTime() / 1000000L
+        val elapsedTime = if (lastTransmissionTime > 0) currentTime - lastTransmissionTime else 0
+
+        // Only sleep if we need to slow down the transmission
+        if (elapsedTime < expectedTransmissionTimeMs) {
+            val sleepTime = expectedTransmissionTimeMs - elapsedTime
+            try {
+                Thread.sleep(sleepTime)
+                println("Sleep $sleepTime ms for $byteCount bytes")
+            }
+            catch (e: InterruptedException) {
+                // Handle interruption if needed
+            }
+        }
+
+        // Update last transmission time
+        lastTransmissionTime = System.nanoTime() / 1000000L
     }
 }
 
