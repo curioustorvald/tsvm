@@ -1,5 +1,6 @@
 package net.torvald.tsvm.peripheral
 
+import net.torvald.tsvm.VM
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -67,6 +68,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         blockSize.setRelease(bytesReceived)
         writeoutImpl(inputData)
 
+        println("Contents: ${inputData.toString(VM.CHARSET)}")
         applyBaudRateDelay(bytesReceived)
 
         busy.setRelease(false)

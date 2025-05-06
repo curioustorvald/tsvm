@@ -108,6 +108,7 @@ function refreshFilePanelCache(side) {
     let filesCount = dirFileList[side].length
 
     for (let i = 0; i < filesCount; i++) {
+        let isDirectory = (i < ds.length)
         let file = dirFileList[side][i]
         let sizestr;
         if (!showDrives) {
@@ -136,6 +137,7 @@ function refreshFilePanelCache(side) {
 
         filePanelCache[side].push({
             file: file,
+            isDirectory: isDirectory,
             sizestr: sizestr,
             filename: filename,
             fileext: fileext
@@ -190,6 +192,7 @@ let filesPanelDraw = (wo) => {
         let listObj = filePanelCache[windowMode][i+s]
         if (listObj) {
             let file = listObj.file
+            let isDirectory = listObj.isDirectory
             let sizestr = listObj.sizestr
             let filename = listObj.filename//(showDrives && file) ? file.fullPath : (file) ? file.name : ''
             let fileext = listObj.fileext
@@ -202,7 +205,7 @@ let filesPanelDraw = (wo) => {
             // print filename
             con.color_pair(foreCol, backCol)
             con.move(wo.y + 2+i, wo.x + 1)
-            print(((file && file.isDirectory && !showDrives) ? '\\' : ' ') + filename)
+            print(((file && isDirectory && !showDrives) ? '\\' : ' ') + filename)
             print(' '.repeat(FILELIST_WIDTH - 2 - filename.length))
 
             // print |
@@ -212,7 +215,7 @@ let filesPanelDraw = (wo) => {
             // print filesize
             con.color_pair(foreCol, backCol)
             con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
-            if (file && file.isDirectory && !showDrives) {
+            if (file && isDirectory && !showDrives) {
                 print(' '.repeat(FILESIZE_WIDTH - sizestr.length))
                 print(sizestr); con.prnch(0x7F)
             }
@@ -395,7 +398,8 @@ let filenavOninput = (window, event) => {
         drawFilePanel()
     }
     else if (keyJustHit && keycode == 66) { // enter
-        let selectedFile = dirFileList[windowMode][cursor[windowMode]]
+        let selectedFileCache = filePanelCache[windowMode][cursor[windowMode]]
+        let selectedFile = selectedFileCache.file
 
         // serial.println(`selectedFile = ${selectedFile.fullPath}`)
 
@@ -405,15 +409,15 @@ let filenavOninput = (window, event) => {
             refreshFilePanelCache(windowMode)
             drawFilePanel()
         }
-        else if (selectedFile.isDirectory) {
+        else if (selectedFileCache.isDirectory) {
             // serial.println(`selectedFile.name = ${selectedFile.name}`)
-            path[windowMode].push(selectedFile.name)
+            path[windowMode].push(selectedFileCache.filename)
             cursor[windowMode] = 0; scroll[windowMode] = 0
             refreshFilePanelCache(windowMode)
             drawFilePanel()
         }
         else {
-            let fileext = selectedFile.name.substring(selectedFile.name.lastIndexOf(".") + 1).toLowerCase()
+            let fileext = selectedFileCache.filename.substring(selectedFileCache.filename.lastIndexOf(".") + 1).toLowerCase()
             let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
             let errorlevel = 0
 
