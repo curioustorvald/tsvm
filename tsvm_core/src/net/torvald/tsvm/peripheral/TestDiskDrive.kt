@@ -289,6 +289,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                     statusCode.set(STATE_CODE_NO_FILE_OPENED)
                     return
                 }
+//                println("[TestDiskDrive] file opened: ${file.path}")
                 try {
                     if (file.isDirectory) {
                         file.listFiles()!!.forEachIndexed { index, lsfile ->

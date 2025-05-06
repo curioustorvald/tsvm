@@ -68,7 +68,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
         blockSize.setRelease(bytesReceived)
         writeoutImpl(inputData)
 
-        println("Contents: ${inputData.toString(VM.CHARSET)}")
+//        println("Contents: ${inputData.toString(VM.CHARSET)}")
         applyBaudRateDelay(bytesReceived)
 
         busy.setRelease(false)
@@ -127,7 +127,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
             val sleepTimeMS = (delayAkku / 1000000).toLong()
             try {
                 Thread.sleep(sleepTimeMS)
-                println("Sleep $sleepTimeMS ms for $byteCount bytes")
+//                println("Sleep $sleepTimeMS ms for $byteCount bytes")
                 delayAkku -= sleepTimeMS * 1000000.0
             }
             catch (e: InterruptedException) {
@@ -135,7 +135,7 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
             }
         }
         else {
-            println("Sleep skip for $byteCount bytes")
+//            println("Sleep skip for $byteCount bytes")
         }
 
         // Update last transmission time

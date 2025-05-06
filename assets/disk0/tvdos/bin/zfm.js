@@ -73,12 +73,46 @@ function refreshFilePanelCache(side) {
     let pathStr = path[side].concat(['']).join("\\").replaceAll('\\\\', '\\')
     const showDrives = (pathStr.length == 0)
 
+
+
     filePanelCache[side] = []
 
-    let fileList = []
+    let ds = []
+    let fs = []
+
+    //serial.println(`pathStr=${pathStr}`)
     if (!showDrives) {
-        // serial.println(`pathStr=${pathStr}`)
-        fileList = files.open(pathStr).list()
+        let letter = pathStr[0]
+        let serialPath = pathStr.substring(3)
+        // remove trailing slashes
+        while (serialPath.endsWith("\\")) {
+            serialPath = serialPath.substring(0, serialPath.length - 1)
+        }
+
+        let port = _TVDOS.DRV.FS.SERIAL._toPorts(letter)
+        com.sendMessage(port[0], "DEVRST\x17")
+        com.sendMessage(port[0], "OPENR"+'"'+serialPath+'",'+port[1])
+        //serial.println("OPENR"+'"'+serialPath+'",'+port[1])
+        com.sendMessage(port[0], "LISTFILES")
+        let response = com.getStatusCode(port[0])
+        let rawStr = com.pullMessage(port[0]) // {\x11 | \x12} <name> [ \x1E {\x11 | \x12} <name> ] \x17
+
+        //serial.println(`rawStr=${rawStr}`)
+
+
+        rawStr.substring(0, rawStr.length).split('\x1E').forEach((s) => {
+            let fname = undefined
+            if (s[0] == '\x11') {
+                fname = s.substr(1)
+                //serial.println(`fname=(dir)${fname}`)
+                ds.push(files.open(`${pathStr}${fname}`))
+            }
+            else if (s[0] == '\x12') {
+                fname = s.substr(1)
+                //serial.println(`fname=(file)${fname}`)
+                fs.push(files.open(`${pathStr}${fname}`))
+            }
+        })
     }
     else {
         Object.entries(_TVDOS.DRIVES).map(it=>{
@@ -87,20 +121,12 @@ function refreshFilePanelCache(side) {
 
             if (dinfo.type == "STOR") {
                 let file = files.open(`${letter}:\\`)
-                fileList.push(file)
-                // serial.println(`fileList ${file.fullPath}`)
+                ds.push(file)
+                //serial.println(`fileList ${file.fullPath}`)
             }
         })
     }
 
-    let ds = []
-    let fs = []
-    fileList.forEach((file)=>{
-        if (file.isDirectory)
-            ds.push(file)
-        else
-            fs.push(file)
-    })
     ds.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
     fs.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
     dirFileList[side] = ds.concat(fs)
@@ -112,7 +138,7 @@ function refreshFilePanelCache(side) {
         let file = dirFileList[side][i]
         let sizestr;
         if (!showDrives) {
-            sizestr = (file) ? bytesToReadable(file.size) : ''
+            sizestr = (file) ? bytesToReadable(file.size) : ''  // FIXME file.size creates disk access
         }
         else if (file) {
             let port = _TVDOS.DRIVES[file.driveLetter]
@@ -151,7 +177,7 @@ let filesPanelDraw = (wo) => {
     let freeBytes = undefined
     let pathStr = path[windowMode].concat(['']).join("\\").replaceAll('\\\\', '\\')
 
-    // serial.println(`pathStr=${pathStr}`)
+    //serial.println(`pathStr=${pathStr}`)
 
     let port = _TVDOS.DRIVES[pathStr[0]]
 
@@ -401,7 +427,7 @@ let filenavOninput = (window, event) => {
         let selectedFileCache = filePanelCache[windowMode][cursor[windowMode]]
         let selectedFile = selectedFileCache.file
 
-        // serial.println(`selectedFile = ${selectedFile.fullPath}`)
+        //serial.println(`selectedFile = ${selectedFile.fullPath}`)
 
         if (selectedFile.fullPath[1] == ":" && selectedFile.fullPath[2] == "\\" && selectedFile.fullPath.length == 3) {
             path[windowMode].push(selectedFile.fullPath)
@@ -410,7 +436,7 @@ let filenavOninput = (window, event) => {
             drawFilePanel()
         }
         else if (selectedFileCache.isDirectory) {
-            // serial.println(`selectedFile.name = ${selectedFile.name}`)
+            //serial.println(`selectedFile.name = ${selectedFile.name}`)
             path[windowMode].push(selectedFileCache.filename)
             cursor[windowMode] = 0; scroll[windowMode] = 0
             refreshFilePanelCache(windowMode)
@@ -423,15 +449,15 @@ let filenavOninput = (window, event) => {
 
             con.curs_set(1);clearScr();con.move(1,1)
             try {
-//                    // serial.println(selectedFile.fullPath)
+                //serial.println(selectedFile.fullPath)
                 errorlevel = execfun(selectedFile.fullPath)
-//                    // serial.println("1 errorlevel = " + errorlevel)
+                //serial.println("1 errorlevel = " + errorlevel)
             }
             catch (e) {
                 // TODO popup error
                 println(e)
                 errorlevel = 1
-//                    // serial.println("2 errorlevel = " + errorlevel)
+                //serial.println("2 errorlevel = " + errorlevel)
             }
 
             if (errorlevel) {
