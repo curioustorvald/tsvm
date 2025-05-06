@@ -89,8 +89,8 @@ internal class UnsafePtr(pointer: Long, allocSize: Long, private val caller: Any
         //// You may break the glass and use this tool when some fucking incomprehensible bugs ("vittujen vitun bugit")
         //// appear (e.g. getting garbage values when it fucking shouldn't)
 
-        if (destroyed) { throw DanglingPointerException("The pointer is already destroyed ($this)") }
-        if (index !in 0 until size) throw AddressOverflowException("Index: $index; alloc size: $size; pointer: ${this}\n${Thread.currentThread().stackTrace.joinToString("\n", limit=10) { "    $it" }}")
+//        if (destroyed) { throw DanglingPointerException("The pointer is already destroyed ($this)") }
+//        if (index !in 0 until size) throw AddressOverflowException("Index: $index; alloc size: $size; pointer: ${this}\n${Thread.currentThread().stackTrace.joinToString("\n", limit=10) { "    $it" }}")
     }
 
     operator fun get(index: Long): Byte {

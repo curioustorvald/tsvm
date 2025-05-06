@@ -888,7 +888,7 @@ NOTE: Sequential I/O will clobber the peripheral memory space.
 
 256..257 RW: Sequential I/O control flags
 
-258 RW: Opcode
+258 RW: Opcode. Writing a value to this memory will execute the operation
     0x00 - No operation
     0x01 - Skip (arg 1) bytes
     0x02 - Read (arg 1) bytes and store to core memory pointer (arg 2)
