@@ -723,6 +723,133 @@ Object.freeze(_TVDOS.DRV.FS.DEVCON)
 
 ///////////////////////////////////////////////////////////////////////////////
 
+// byte-to-byte copy of the 512 KB of VRAM
+function mkdevvt(index) {
+
+// check if the device already exists
+if (_TVDOS.DRV.FS['DEV'+index] != undefined) return false
+
+let VDEV = {}
+let VMEM = new Int8Array(512 * 1024)
+
+VDEV.pread = (fd, ptr, count, offset) => {
+    for (let i = 0; i < (count || 0); i++) {
+        sys.poke(ptr + i, VMEM[i + (offset || 0)])
+    }
+}
+VDEV.bread = (fd) => {
+    return VMEM.slice()
+}
+VDEV.sread = (fd) => {
+    let r = ''
+    for (let i = 0; i < VMEM.length; i++) {
+        let c = VMEM[i]
+        r += String.fromCharCode((c < 0) ? 256 + c : c)
+    }
+    return r
+}
+
+
+VDEV.pwrite = (fd, ptr, count, offset) => {
+    for (let i = 0; i < (count || 0); i++) {
+        VMEM[i + (offset || 0)] = sys.peek(ptr + i)
+    }
+}
+VDEV.bwrite = (fd, bytes) {
+    if (bytes.length == VMEM.length && bytes instanceof Int8Array) {
+        VMEM = bytes.slice()
+    }
+    else {
+        for (let i = 0; i < bytes.length; i++) {
+            VMEM[i] = bytes[i]
+        }
+    }
+}
+VDEV.swrite = (fd, string) => {
+    for (let i = 0; i < string.length; i++) {
+        VMEM[i] = string.charCodeAt(i)
+    }
+}
+
+
+VDEV.flush = () => {}
+VDEV.close = () => {}
+VDEV.isDirectory = () => false
+VDEV.listFiles = () => undefined
+VDEV.touch = () => {}
+VDEV.mkDir = () => {}
+VDEV.mkFile = () => {}
+VDEV.remove = () => {}
+VDEV.exists = () => true
+
+_TVDOS.DRV.FS['DEVVT'+index] = VDEV
+
+Object.freeze(_TVDOS.DRV.FS['DEVVT'+index])
+
+return true
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+// physical video terminal
+_TVDOS.DRV.FS.DEVPT = {}
+
+_TVDOS.DRV.FS.DEVPT.pread = (fd, ptr, count, offset) => {
+    let mem = graphics.getGpuMemBase()
+    for (let i = 0; i < (count || 0); i++) {
+        sys.poke(ptr + i, sys.peek(mem - i))
+    }
+}
+_TVDOS.DRV.FS.DEVPT.bread = (fd) => {
+    let mem = graphics.getGpuMemBase()
+    let r = new Int8Array(512 * 1024)
+    for (let i = 0; i < r.length; i++) {
+        r[i] = sys.peek(mem - i)
+    }
+}
+_TVDOS.DRV.FS.DEVPT.sread = (fd) => {
+    let mem = graphics.getGpuMemBase()
+    let r = ''
+    for (let i = 0; i < 512 * 1024; i++) {
+        let c = sys.peek(mem - i)
+        r[i] = String.fromCharCode((c < 0) ? 256 + c : c)
+    }
+}
+
+
+_TVDOS.DRV.FS.DEVPT.pwrite = (fd, ptr, count, offset) => {
+    let mem = graphics.getGpuMemBase()
+    for (let i = 0; i < (count || 0); i++) {
+        sys.poke(mem - i, sys.peek(ptr + i))
+    }
+}
+_TVDOS.DRV.FS.DEVPT.bwrite = (fd, bytes) {
+    let mem = graphics.getGpuMemBase()
+    for (let i = 0; i < bytes.length; i++) {
+        sys.poke(mem - i, bytes[i])
+    }
+}
+_TVDOS.DRV.FS.DEVPT.swrite = (fd, string) => {
+    let mem = graphics.getGpuMemBase()
+    for (let i = 0; i < string.length; i++) {
+        sys.poke(mem - i, string.charCodeAt(i))
+    }
+}
+
+
+_TVDOS.DRV.FS.DEVPT.flush = () => {}
+_TVDOS.DRV.FS.DEVPT.close = () => {}
+_TVDOS.DRV.FS.DEVPT.isDirectory = () => false
+_TVDOS.DRV.FS.DEVPT.listFiles = () => undefined
+_TVDOS.DRV.FS.DEVPT.touch = () => {}
+_TVDOS.DRV.FS.DEVPT.mkDir = () => {}
+_TVDOS.DRV.FS.DEVPT.mkFile = () => {}
+_TVDOS.DRV.FS.DEVPT.remove = () => {}
+_TVDOS.DRV.FS.DEVPT.exists = () => true
+Object.freeze(_TVDOS.DRV.FS.DEVPT)
+
+///////////////////////////////////////////////////////////////////////////////
+
 _TVDOS.DRV.FS.DEVFBIPF = {}
 
 _TVDOS.DRV.FS.DEVFBIPF.pwrite = (fd, infilePtr, count, _2) => {
