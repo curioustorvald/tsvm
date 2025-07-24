@@ -143,14 +143,16 @@ class VMJSR223Delegate(private val vm: VM) {
     }
 
     fun print(s: Any) {
-        //System.out.print("[Nashorn] $s")
-        //System.out.print(s)
-        vm.getPrintStream().write("$s".toByteArray(VM.CHARSET))
+        //vm.getPrintStream().write("$s".toByteArray(VM.CHARSET))
+        val vtIndex = vm.getCurrentVT() // Get current VT from VM context
+        val outputStream = vm.getVTOutputStream(vtIndex)
+        outputStream.write("$s".toByteArray(VM.CHARSET))
     }
     fun println(s: Any = "") {
-        System.out.println("[Graal] $s")
-        //System.out.println(s)
-        vm.getPrintStream().write(("$s\n").toByteArray(VM.CHARSET))
+        //vm.getPrintStream().write(("$s\n").toByteArray(VM.CHARSET))
+        val vtIndex = vm.getCurrentVT() // Get current VT from VM context
+        val outputStream = vm.getVTOutputStream(vtIndex)
+        outputStream.write("$s\n".toByteArray(VM.CHARSET))
     }
 
     /**

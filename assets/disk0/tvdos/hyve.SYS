@@ -56,9 +56,31 @@ let runner = undefined
 
 function startNewInstance() {
     runner = parallel.attachProgram("TVDOS", parallel.spawnNewContext(), bios)
+
     serial.println("Starting new instance "+runner)
+
     parallel.launch(runner)
     sys.sleep(1000)
+}
+
+function startNewInstanceOnVT(vtIndex) {
+    if (isNaN(index) || index !== index) throw Error("VT index must be a numeric value")
+    if (index <= 0) throw Error(`VT index cannot be zero or negative (${vtIndex})`)
+
+    // Ensure VT exists
+    if (!_TVDOS.VT_CONTEXTS[vtIndex]) {
+        mkdevvt(vtIndex)
+    }
+
+    // Create context with VT binding
+    let contextInit = `_TVDOS.CURRENT_VT = ${vtIndex};${bios}`
+
+    runner = parallel.attachProgram(`TVDOS-VT${vtIndex}`, parallel.spawnNewContext(), contextInit)
+
+    serial.println(`Starting new instance ${runner} on VT${vtIndex}`)
+
+    parallel.launch(runner)
+    sys.sleep(50)
 }
 
 const randomkeypusher = `

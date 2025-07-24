@@ -456,7 +456,11 @@ con.move = function(y, x) {
     //print("\x1B["+(y|0)+";"+(x|0)+"H");
     // NOT using ANSI escape sequence as it conflicts with some multilingual drive which redefines PRINT function
     // and obviously this method is faster albeit less genuine :p
-    graphics.setCursorYX(y|0, x|0);
+
+    let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
+    let vt = _TVDOS.VT_CONTEXTS[activeVT]
+    
+    vt.setCursorYX(y|0, x|0)
 };
 con.addch = function(c) {
     graphics.putSymbol(c|0);
@@ -474,22 +478,25 @@ con.getmaxyx = function() {
     return graphics.getTermDimension(); // [rows, cols]
 };
 con.getyx = function() {
-    return graphics.getCursorYX();
+    let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
+    let vt = _TVDOS.VT_CONTEXTS[activeVT]
+
+    return vt.getCursorYX()
 };
 con.curs_up = function() {
-    let [y,x] = graphics.getCursorYX();
+    let [y,x] = con.getyx();
     con.move(y-1,x);
 };
 con.curs_down = function() {
-    let [y,x] = graphics.getCursorYX();
+    let [y,x] = con.getyx();
     con.move(y+1,x);
 };
 con.curs_left = function() {
-    let [y,x] = graphics.getCursorYX();
+    let [y,x] = con.getyx();
     con.move(y,x-1);
 };
 con.curs_right = function() {
-    let [y,x] = graphics.getCursorYX();
+    let [y,x] = con.getyx();
     con.move(y,x+1);
 };
 con.hitterminate = function() { // ^C

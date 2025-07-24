@@ -4,6 +4,7 @@ import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex
 import net.torvald.tsvm.peripheral.*
+import org.graalvm.polyglot.Context
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.Charset
@@ -66,6 +67,51 @@ class VM(
     var resetDown = false
     var stopDown = false
     var sysrqDown = false
+
+
+    private var currentContext: Context? = null
+
+    fun setCurrentJSContext(context: Context) {
+        currentContext = context
+    }
+
+    private fun getCurrentJSContext(): Context {
+        return currentContext ?: throw IllegalStateException("No JavaScript context available")
+    }
+
+
+
+    // VT tracking of the VM
+    private var currentVTIndex = 0 // default to physical terminal
+    private val vtOutputStream = mutableMapOf<Int, OutputStream>()
+    private val vtInputStream = mutableMapOf<Int, InputStream>()
+
+    fun getCurrentVT(): Int {
+        // try to read from JS context
+        try {
+            val context = getCurrentJSContext()
+            val currentVT = context.eval("js", "_TVDOS.CURRENT_VT || 0").asInt()
+            return currentVT
+        }
+        catch (e: Exception) {
+            return currentVTIndex
+        }
+    }
+
+    fun setCurrentVT(vtIndex: Int) {
+        currentVTIndex = vtIndex
+        // Also update JavaScript context if available
+        try {
+            val context = getCurrentJSContext()
+            context.eval("js", "_TVDOS.CURRENT_VT = $vtIndex")
+        }
+        catch (e: Exception) {
+            // Context not available, continue with local tracking
+        }
+    }
+
+
+
 
     var romMapping = 255
         internal set

@@ -723,11 +723,24 @@ Object.freeze(_TVDOS.DRV.FS.DEVCON)
 
 ///////////////////////////////////////////////////////////////////////////////
 
+let mkvtcontext = (index, VMEM) => {
+    return { // VT0 is reserved for symlink to physical terminal
+       isActive: (index === 0 || index === "0"),
+       buffer: (index === 0 || index === "0") ? undefined : VMEM
+       // TODO: getCursorYX, setCursorYX, setCursorX, setCursorY, getTextForeBack, setTextFore, setTextBack
+       // all read/write form the VMEM
+   }
+}
+
 // byte-to-byte copy of the 512 KB of VRAM
 function mkdevvt(index) {
 
+// VT0 is reserved for symlink to the physical terminal
+if (isNaN(index)) return false // check for non-numerics and undefined
+if (index !== index || index <= 0) return false // check for NaN, 0 and negative values
+
 // check if the device already exists
-if (_TVDOS.DRV.FS['DEV'+index] != undefined) return false
+if (_TVDOS.DRV.FS['DEVVT'+index] != undefined) return false
 
 let VDEV = {}
 let VMEM = new Int8Array(512 * 1024)
@@ -782,6 +795,7 @@ VDEV.mkFile = () => {}
 VDEV.remove = () => {}
 VDEV.exists = () => true
 
+_TVDOS.VT_CONTEXTS[index] = mkvtcontext(index, VMEM)
 _TVDOS.DRV.FS['DEVVT'+index] = VDEV
 
 Object.freeze(_TVDOS.DRV.FS['DEVVT'+index])
@@ -846,6 +860,9 @@ _TVDOS.DRV.FS.DEVPT.mkDir = () => {}
 _TVDOS.DRV.FS.DEVPT.mkFile = () => {}
 _TVDOS.DRV.FS.DEVPT.remove = () => {}
 _TVDOS.DRV.FS.DEVPT.exists = () => true
+
+mkvtcontext(0)
+
 Object.freeze(_TVDOS.DRV.FS.DEVPT)
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -80,6 +80,9 @@ object VMRunnerFactory {
 
                         val fr = this::class.java.classLoader.getResourceAsStream("net/torvald/tsvm/JS_INIT.js")
                         val prg = fr.readAllBytes().decodeToString()
+
+                        vm.setCurrentJSContext(context)
+
                         context.eval("js", sanitiseJS(prg))
                     }
 
