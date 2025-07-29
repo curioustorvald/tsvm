@@ -3,8 +3,10 @@ package net.torvald.tsvm
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toHex
+import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.*
 import org.graalvm.polyglot.Context
+import org.graalvm.polyglot.Value
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.Charset
@@ -83,8 +85,9 @@ class VM(
 
     // VT tracking of the VM
     private var currentVTIndex = 0 // default to physical terminal
-    private val vtOutputStream = mutableMapOf<Int, OutputStream>()
-    private val vtInputStream = mutableMapOf<Int, InputStream>()
+    private val vtOutputStreams = mutableMapOf<Int, OutputStream>()
+    private val vtInputStreams = mutableMapOf<Int, InputStream>()
+    private val vtTerminals = mutableMapOf<Int, VTTerminalAdapter>()
 
     fun getCurrentVT(): Int {
         // try to read from JS context
@@ -110,6 +113,196 @@ class VM(
         }
     }
 
+    private fun getVTTerminal(vtIndex: Int, buffer: Value): VTTerminalAdapter {
+        return vtTerminals.getOrPut(vtIndex) {
+            VTTerminalAdapter(vtIndex, buffer)
+        }
+    }
+
+    fun getVTOutputStream(vtIndex: Int): OutputStream {
+        return vtOutputStreams.getOrPut(vtIndex) {
+            if (vtIndex == 0) {
+                // VT0 is physical terminal - use existing terminal
+                getPrintStream()
+            } else {
+                // Create virtual terminal output stream
+                createVTOutputStream(vtIndex)
+            }
+        }
+    }
+
+    private fun createVTOutputStream(vtIndex: Int): OutputStream {
+        return object : OutputStream() {
+            override fun write(b: Int) {
+                // Write to virtual terminal buffer
+                writeToVTBuffer(vtIndex, byteArrayOf(b.toByte()))
+            }
+
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                // Write to virtual terminal buffer
+                writeToVTBuffer(vtIndex, b.sliceArray(off until off + len))
+            }
+        }
+    }
+
+
+
+    private val rawCursorPosLo = 252030L
+    private val rawCursorPosHi = rawCursorPosLo + 1
+    private val ptrTxtFore = rawCursorPosHi + 1
+    private val ptrTxtBack = ptrTxtFore + 2560
+    private val ptrTxt = ptrTxtBack + 2560
+
+    private fun writeToVTBuffer(vtIndex: Int, textToWrite: ByteArray) {
+        try {
+            // Access the JavaScript VT device driver
+            val context = getCurrentJSContext()
+
+            val VMEM: Value = context.eval("js", "return _TVDOS.VT_CONTEXTS[$vtIndex].buffer")
+
+
+
+            val rawCursorPos = VMEM.getArrayElement(rawCursorPosLo).asByte().toUint() or
+                                  VMEM.getArrayElement(rawCursorPosHi).asByte().toUint().shl(8) // Cursor position in: (y*80 + x)
+            val printOff = rawCursorPos
+
+            // mimic the behaviour of the GraphicsAdapter.getPrintStream.write(ByteArray)
+            this.isIdle.set(true)
+            Objects.checkFromIndexSize(printOff, textToWrite.size, textToWrite.size)
+
+            for (i in 0 until textToWrite.size) {
+                vtWriteOut(VMEM, textToWrite[i])
+            }
+            this.isIdle.set(false)
+        } catch (e: Exception) {
+            System.err.println("Failed to write to VT$vtIndex: ${e.message}")
+        }
+    }
+
+    private fun vtWriteOut(VMEM: Value, char: Byte) {
+        val terminal = getVTTerminal(getCurrentVT(), VMEM)
+        terminal.writeOut(char) // calls GlassTty.writeOut() which handles everything
+    }
+
+    private inner class VTTerminalAdapter(private val vtIndex: Int, private val VMEM: Value) : StandardTty(32, 80) {
+
+        private fun toTtyTextOffset(x: Int, y: Int): Int {
+            return TEXT_COLS * y + x
+        }
+
+        override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
+            val textOff = toTtyTextOffset(x, y)
+            VMEM.setArrayElement(ptrTxtFore + textOff, foreColour)
+            VMEM.setArrayElement(ptrTxtBack + textOff, backColour)
+            VMEM.setArrayElement(ptrTxt + textOff, text)
+        }
+
+        override fun eraseInDisp(arg: Int) {
+            when (arg) {
+                2 -> {
+                    val foreBits = ttyFore or ttyFore.shl(8) or ttyFore.shl(16) or ttyFore.shl(24)
+                    val backBits = ttyBack or ttyBack.shl(8) or ttyBack.shl(16) or ttyBack.shl(24)
+                    for (i in 0 until TEXT_COLS * TEXT_ROWS step 4) {
+                        VMEM.setArrayElement(ptrTxtFore + 1, foreBits)
+                        VMEM.setArrayElement(ptrTxtBack + 1, backBits)
+                        VMEM.setArrayElement(ptrTxt + 1, 0)
+                    }
+                    VMEM.setArrayElement(rawCursorPosLo, 0)
+                    VMEM.setArrayElement(rawCursorPosHi, 0)
+                }
+                else -> TODO()
+            }
+        }
+
+        override fun eraseInLine(arg: Int) {
+            when (arg) {
+                else -> TODO()
+            }
+        }
+
+        override fun scrollUp(arg: Int) {
+            TODO("Not yet implemented")
+        }
+
+        override fun scrollDown(arg: Int) {
+            TODO("Not yet implemented")
+        }
+
+        override fun getPrintStream(): OutputStream {
+            TODO("how???")
+        }
+
+        override fun getErrorStream(): OutputStream {
+            TODO("how???")
+        }
+
+        override fun getInputStream(): InputStream {
+            TODO("how???")
+        }
+
+        override fun putKey(key: Int) {
+            // VT has no keyboard attached
+        }
+
+        override fun takeKey(): Int {
+            // VT has no keyboard attached
+            return 0
+        }
+
+        override fun peek(addr: Long): Byte? {
+            if (addr < 0) return null
+            return VMEM.getArrayElement(addr % 524288).asByte()
+        }
+
+        override fun poke(addr: Long, byte: Byte) {
+            if (addr < 0) return
+            VMEM.setArrayElement(addr % 524288, byte)
+        }
+
+        override fun mmio_read(addr: Long): Byte? {
+            return null
+        }
+
+        override fun mmio_write(addr: Long, byte: Byte) {
+        }
+
+        override fun dispose() {
+        }
+
+        override fun getVM(): VM {
+            return this@VM
+        }
+
+        override fun getCursorPos(): Pair<Int, Int> {
+            val rawPos = VMEM.getArrayElement(rawCursorPosLo).asByte().toUint() or
+                    VMEM.getArrayElement(rawCursorPosHi).asByte().toUint().shl(8)
+            return (rawPos % 80) to (rawPos / 80)
+        }
+
+        override fun setCursorPos(x: Int, y: Int) {
+            val rawPos = (y * 80 + x).coerceIn(0, 2559)
+            VMEM.setArrayElement(rawCursorPosLo, (rawPos and 0xFF).toByte())
+            VMEM.setArrayElement(rawCursorPosHi, (rawPos shr 8).toByte())
+        }
+
+        override var rawCursorPos: Int
+            get() = TODO("Not yet implemented")
+            set(value) {}
+        override var blinkCursor: Boolean
+            get() = TODO("Not yet implemented")
+            set(value) {}
+        override var ttyFore: Int
+            get() = TODO("Not yet implemented")
+            set(value) {}
+        override var ttyBack: Int
+            get() = TODO("Not yet implemented")
+            set(value) {}
+        override var ttyRawMode: Boolean
+            get() = TODO("Not yet implemented")
+            set(value) {}
+
+
+    }
 
 
 

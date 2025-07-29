@@ -768,7 +768,7 @@ VDEV.pwrite = (fd, ptr, count, offset) => {
         VMEM[i + (offset || 0)] = sys.peek(ptr + i)
     }
 }
-VDEV.bwrite = (fd, bytes) {
+VDEV.bwrite = (fd, bytes) => {
     if (bytes.length == VMEM.length && bytes instanceof Int8Array) {
         VMEM = bytes.slice()
     }
@@ -837,7 +837,7 @@ _TVDOS.DRV.FS.DEVPT.pwrite = (fd, ptr, count, offset) => {
         sys.poke(mem - i, sys.peek(ptr + i))
     }
 }
-_TVDOS.DRV.FS.DEVPT.bwrite = (fd, bytes) {
+_TVDOS.DRV.FS.DEVPT.bwrite = (fd, bytes) => {
     let mem = graphics.getGpuMemBase()
     for (let i = 0; i < bytes.length; i++) {
         sys.poke(mem - i, bytes[i])
@@ -1386,6 +1386,24 @@ print = function(str) {
 Object.freeze(unicode);
 
 ///////////////////////////////////////////////////////////////////////////////
+
+// patch con to use VTs
+con.move = function(y, x) {
+    let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
+    let vt = _TVDOS.VT_CONTEXTS[activeVT]
+
+    vt.setCursorYX(y|0, x|0)
+};
+
+con.getyx = function() {
+    let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
+    let vt = _TVDOS.VT_CONTEXTS[activeVT]
+
+    return vt.getCursorYX()
+};
+
+///////////////////////////////////////////////////////////////////////////////
+
 let checkTerm = `if (sys.peek(-49)&1) throw new InterruptedException();`
 let injectIntChk = (s, n) => {
     // primitive way of injecting a code; will replace a JS string that matches the regex...

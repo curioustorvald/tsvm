@@ -456,11 +456,7 @@ con.move = function(y, x) {
     //print("\x1B["+(y|0)+";"+(x|0)+"H");
     // NOT using ANSI escape sequence as it conflicts with some multilingual drive which redefines PRINT function
     // and obviously this method is faster albeit less genuine :p
-
-    let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
-    let vt = _TVDOS.VT_CONTEXTS[activeVT]
-    
-    vt.setCursorYX(y|0, x|0)
+    graphics.setCursorYX(y|0, x|0);
 };
 con.addch = function(c) {
     graphics.putSymbol(c|0);
@@ -478,10 +474,7 @@ con.getmaxyx = function() {
     return graphics.getTermDimension(); // [rows, cols]
 };
 con.getyx = function() {
-    let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
-    let vt = _TVDOS.VT_CONTEXTS[activeVT]
-
-    return vt.getCursorYX()
+    return graphics.getCursorYX();
 };
 con.curs_up = function() {
     let [y,x] = con.getyx();
@@ -551,7 +544,6 @@ con.poll_keys = function() {
     sys.poke(-40, 1);
     return [-41,-42,-43,-44,-45,-46,-47,-48].map(it => sys.peek(it));
 };
-Object.freeze(con);
 // some utilities functions
 
 // TypedArray re-implementation

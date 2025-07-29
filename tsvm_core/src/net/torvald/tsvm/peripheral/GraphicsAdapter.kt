@@ -58,7 +58,7 @@ class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot,
  * NOTE: if TTY size is greater than 80*32, SEGFAULT will occur because text buffer is fixed in size
  */
 open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val config: AdapterConfig, val sgr: SuperGraphicsAddonConfig = SuperGraphicsAddonConfig()) :
-    GlassTty(config.textRows, config.textCols) {
+    StandardTty(config.textRows, config.textCols) {
 
     override val typestring = VM.PERITYPE_GPU_AND_TERM
 
@@ -690,6 +690,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     }
 
+    override fun resetTtyStatus() {
+        ttyFore = TTY_FORE_DEFAULT
+        ttyBack = TTY_BACK_DEFAULT
+    }
+
     /**
      * @param mode 0-Low, 1-High
      */
@@ -704,86 +709,6 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         pixmap.dispose()
     }
 
-
-    override fun resetTtyStatus() {
-        ttyFore = TTY_FORE_DEFAULT
-        ttyBack = TTY_BACK_DEFAULT
-    }
-
-    override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
-        val textOff = toTtyTextOffset(x, y)
-        textArea[memTextForeOffset + textOff] = foreColour
-        textArea[memTextBackOffset + textOff] = backColour
-        textArea[memTextOffset + textOff] = text
-        applyDelay()
-    }
-
-    override fun emitChar(code: Int) {
-        val (x, y) = getCursorPos()
-        putChar(x, y, code.toByte())
-        setCursorPos(x + 1, y)
-    }
-    override fun cursorUp(arg: Int) {
-        val (x, y) = getCursorPos()
-        setCursorPos(x, y - arg)
-    }
-
-    override fun cursorDown(arg: Int) {
-        val (x, y) = getCursorPos()
-        val newy = y + arg
-        setCursorPos(x, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
-    }
-
-    override fun cursorFwd(arg: Int) {
-        val (x, y) = getCursorPos()
-        setCursorPos(x + arg, y)
-    }
-
-    override fun cursorBack(arg: Int) {
-        val (x, y) = getCursorPos()
-        setCursorPos(x - arg, y)
-    }
-
-    override fun cursorNextLine(arg: Int) {
-        val (_, y) = getCursorPos()
-        val newy = y + arg
-        setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
-        if (newy >= TEXT_ROWS) {
-            scrollUp(newy - TEXT_ROWS + 1)
-        }
-    }
-
-    override fun cursorPrevLine(arg: Int) {
-        val (_, y) = getCursorPos()
-        setCursorPos(0, y - arg)
-    }
-
-    override fun cursorX(arg: Int) {
-        val (_, y) = getCursorPos()
-        setCursorPos(arg, y)
-    }
-
-    override fun eraseInDisp(arg: Int) {
-        when (arg) {
-            2 -> {
-                val foreBits = ttyFore or ttyFore.shl(8) or ttyFore.shl(16) or ttyFore.shl(24)
-                val backBits = ttyBack or ttyBack.shl(8) or ttyBack.shl(16) or ttyBack.shl(24)
-                for (i in 0 until TEXT_COLS * TEXT_ROWS step 4) {
-                    textArea.setIntFree(memTextForeOffset + i, foreBits)
-                    textArea.setIntFree(memTextBackOffset + i, backBits)
-                    textArea.setIntFree(memTextOffset + i, 0)
-                }
-                textArea.setShortFree(memTextCursorPosOffset, 0)
-            }
-            else -> TODO()
-        }
-    }
-
-    override fun eraseInLine(arg: Int) {
-        when (arg) {
-            else -> TODO()
-        }
-    }
 
     /** New lines are added at the bottom */
     override fun scrollUp(arg: Int) {
@@ -835,92 +760,34 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         }
     }
 
-    /*
-    Color table for default palette
-
-    Black   240
-    Red     211
-    Green   61
-    Yellow  230
-    Blue    49
-    Magenta 219
-    Cyan    114
-    White   254
-     */
-    private val sgrDefault8ColPal = intArrayOf(240,211,61,230,49,219,114,254)
-
-    override fun sgrOneArg(arg: Int) {
-
-        if (arg in 30..37) {
-            ttyFore = sgrDefault8ColPal[arg - 30]
-        }
-        else if (arg in 40..47) {
-            ttyBack = sgrDefault8ColPal[arg - 40]
-        }
-        else if (arg == 7) {
-            val t = ttyFore
-            ttyFore = ttyBack
-            ttyBack = t
-        }
-        else if (arg == 0) {
-            ttyFore = TTY_FORE_DEFAULT
-            ttyBack = TTY_BACK_DEFAULT
-            blinkCursor = true
-        }
-    }
-
-    override fun sgrTwoArg(arg1: Int, arg2: Int) {
-        TODO("Not yet implemented")
-    }
-
-    override fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int) {
-        if (arg1 == 38 && arg2 == 5) {
-            ttyFore = arg3
-        }
-        else if (arg1 == 48 && arg2 == 5) {
-            ttyBack = arg3
-        }
-    }
-
-    override fun privateSeqH(arg: Int) {
+    override fun eraseInDisp(arg: Int) {
         when (arg) {
-            25 -> blinkCursor = true
+            2 -> {
+                val foreBits = ttyFore or ttyFore.shl(8) or ttyFore.shl(16) or ttyFore.shl(24)
+                val backBits = ttyBack or ttyBack.shl(8) or ttyBack.shl(16) or ttyBack.shl(24)
+                for (i in 0 until TEXT_COLS * TEXT_ROWS step 4) {
+                    textArea.setIntFree(memTextForeOffset + i, foreBits)
+                    textArea.setIntFree(memTextBackOffset + i, backBits)
+                    textArea.setIntFree(memTextOffset + i, 0)
+                }
+                textArea.setShortFree(memTextCursorPosOffset, 0)
+            }
+            else -> TODO()
         }
     }
 
-    override fun privateSeqL(arg: Int) {
+    override fun eraseInLine(arg: Int) {
         when (arg) {
-            25 -> blinkCursor = false
+            else -> TODO()
         }
     }
 
-    /** The values are one-based
-     * @param arg1 y-position (row)
-     * @param arg2 x-position (column) */
-    override fun cursorXY(arg1: Int, arg2: Int) {
-        setCursorPos(arg2 - 1, arg1 - 1)
-    }
-
-    override fun ringBell() {
-
-    }
-
-    override fun insertTab() {
-        val (x, y) = getCursorPos()
-        setCursorPos((x / TAB_SIZE + 1) * TAB_SIZE, y)
-    }
-
-    override fun crlf() {
-        val (_, y) = getCursorPos()
-        val newy = y + 1 //+ halfrowMode.toInt()
-        setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
-        if (newy >= TEXT_ROWS) scrollUp(1)
-    }
-
-    override fun backspace() {
-        val (x, y) = getCursorPos()
-        setCursorPos(x - 1, y)
-        putChar(x - 1, y, 0x20.toByte())
+    override fun putChar(x: Int, y: Int, text: Byte, foreColour: Byte, backColour: Byte) {
+        val textOff = toTtyTextOffset(x, y)
+        textArea[memTextForeOffset + textOff] = foreColour
+        textArea[memTextBackOffset + textOff] = backColour
+        textArea[memTextOffset + textOff] = text
+        applyDelay()
     }
 
 
@@ -2340,4 +2207,144 @@ internal fun SpriteBatch.inUse(action: () -> Unit) {
     this.begin()
     action()
     this.end()
+}
+
+abstract class StandardTty(rows: Int, cols: Int) : GlassTty(rows, cols) {
+
+    override fun resetTtyStatus() {
+        ttyFore = 253
+        ttyBack = 255
+    }
+
+    override fun emitChar(code: Int) {
+        val (x, y) = getCursorPos()
+        putChar(x, y, code.toByte())
+        setCursorPos(x + 1, y)
+    }
+    override fun cursorUp(arg: Int) {
+        val (x, y) = getCursorPos()
+        setCursorPos(x, y - arg)
+    }
+
+    override fun cursorDown(arg: Int) {
+        val (x, y) = getCursorPos()
+        val newy = y + arg
+        setCursorPos(x, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
+    }
+
+    override fun cursorFwd(arg: Int) {
+        val (x, y) = getCursorPos()
+        setCursorPos(x + arg, y)
+    }
+
+    override fun cursorBack(arg: Int) {
+        val (x, y) = getCursorPos()
+        setCursorPos(x - arg, y)
+    }
+
+    override fun cursorNextLine(arg: Int) {
+        val (_, y) = getCursorPos()
+        val newy = y + arg
+        setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
+        if (newy >= TEXT_ROWS) {
+            scrollUp(newy - TEXT_ROWS + 1)
+        }
+    }
+
+    override fun cursorPrevLine(arg: Int) {
+        val (_, y) = getCursorPos()
+        setCursorPos(0, y - arg)
+    }
+
+    override fun cursorX(arg: Int) {
+        val (_, y) = getCursorPos()
+        setCursorPos(arg, y)
+    }
+
+    /*
+    Color table for default palette
+
+    Black   240
+    Red     211
+    Green   61
+    Yellow  230
+    Blue    49
+    Magenta 219
+    Cyan    114
+    White   254
+     */
+    private val sgrDefault8ColPal = intArrayOf(240,211,61,230,49,219,114,254)
+
+    override fun sgrOneArg(arg: Int) {
+        if (arg in 30..37) {
+            ttyFore = sgrDefault8ColPal[arg - 30]
+        }
+        else if (arg in 40..47) {
+            ttyBack = sgrDefault8ColPal[arg - 40]
+        }
+        else if (arg == 7) {
+            val t = ttyFore
+            ttyFore = ttyBack
+            ttyBack = t
+        }
+        else if (arg == 0) {
+            ttyFore = 253
+            ttyBack = 255
+            blinkCursor = true
+        }
+    }
+
+    override fun sgrTwoArg(arg1: Int, arg2: Int) {
+        TODO("Not yet implemented")
+    }
+
+    override fun sgrThreeArg(arg1: Int, arg2: Int, arg3: Int) {
+        if (arg1 == 38 && arg2 == 5) {
+            ttyFore = arg3
+        }
+        else if (arg1 == 48 && arg2 == 5) {
+            ttyBack = arg3
+        }
+    }
+
+    override fun privateSeqH(arg: Int) {
+        when (arg) {
+            25 -> blinkCursor = true
+        }
+    }
+
+    override fun privateSeqL(arg: Int) {
+        when (arg) {
+            25 -> blinkCursor = false
+        }
+    }
+
+    /** The values are one-based
+     * @param arg1 y-position (row)
+     * @param arg2 x-position (column) */
+    override fun cursorXY(arg1: Int, arg2: Int) {
+        setCursorPos(arg2 - 1, arg1 - 1)
+    }
+
+    override fun ringBell() {
+
+    }
+
+    override fun insertTab() {
+        val (x, y) = getCursorPos()
+        setCursorPos((x / 8 + 1) * 8, y) // tab size is 8
+    }
+
+    override fun crlf() {
+        val (_, y) = getCursorPos()
+        val newy = y + 1 //+ halfrowMode.toInt()
+        setCursorPos(0, if (newy >= TEXT_ROWS) TEXT_ROWS - 1 else newy)
+        if (newy >= TEXT_ROWS) scrollUp(1)
+    }
+
+    override fun backspace() {
+        val (x, y) = getCursorPos()
+        setCursorPos(x - 1, y)
+        putChar(x - 1, y, 0x20.toByte())
+    }
 }
