@@ -1388,7 +1388,7 @@ Object.freeze(unicode);
 ///////////////////////////////////////////////////////////////////////////////
 
 // patch con to use VTs
-con.move = function(y, x) {
+/*con.move = function(y, x) {
     let activeVT = _TVDOS.ACTIVE_VT || 0 // 0 is physical terminal
     let vt = _TVDOS.VT_CONTEXTS[activeVT]
 
@@ -1400,7 +1400,7 @@ con.getyx = function() {
     let vt = _TVDOS.VT_CONTEXTS[activeVT]
 
     return vt.getCursorYX()
-};
+};*/
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -1515,6 +1515,16 @@ var execApp = (cmdsrc, args, appname) => {
 
 
 ///////////////////////////////////////////////////////////////////////////////
+
+// Load HSDPA driver
+try {
+    let hsdpadrvFile = files.open("A:/tvdos/HSDPADRV.SYS")
+    if (hsdpadrvFile.exists) {
+        eval(hsdpadrvFile.sread())
+    }
+} catch (e) {
+    serial.println("Warning: Could not load HSDPA driver: " + e.message)
+}
 
 // Boot script
 serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);

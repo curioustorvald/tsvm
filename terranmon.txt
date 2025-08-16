@@ -842,6 +842,8 @@ MMIO
 
 High Speed Disk Peripheral Adapter (HSDPA)
 
+An interface card to read and write to a single large disk sequentially which has no filesystem on it.
+
 Endianness: Little
 
 MMIO
@@ -903,4 +905,7 @@ NOTE: Sequential I/O will clobber the peripheral memory space.
 Memory Space
 
 0..1048575 RW: Buffer for the block transfer lane
-                    note: length of a command cannot exceed 4096 bytes
+    IMPLEMENTATION RECOMMENDATION: split the memory space into two 512K blocks, and when the sequential
+    reading reaches the second space, prepare the next bytes in the first memory space, so that the read
+    cursor reaches 1048576, it wraps into 0 and continue reading the content of the disk as if nothing happend.
+

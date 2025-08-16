@@ -9,13 +9,13 @@ import net.torvald.tsvm.VM
  *
  * Created by minjaesong on 2025-05-06.
  */
-class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
+open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
 
     companion object {
         const val BUFFER_SIZE = 1048576 // 1MB buffer size
         const val MAX_DISKS = 4
 
-        // MMIO register offsets
+        // MMIO register offsets (relative to peripheral base)
         const val REG_DISK1_STATUS = 0
         const val REG_DISK2_STATUS = 3
         const val REG_DISK3_STATUS = 6
@@ -37,6 +37,7 @@ class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
         const val OPCODE_SKIP = 0x01
         const val OPCODE_READ = 0x02
         const val OPCODE_WRITE = 0x03
+        const val OPCODE_REWIND = 0xF0
         const val OPCODE_TERMINATE = 0xFF
     }
 
@@ -52,16 +53,25 @@ class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
 
     // Currently active disk (0-based index, -1 means no disk selected)
     private var activeDisk = -1
+    
+    // Sequential I/O state
+    protected var sequentialIOActive = false
+    protected var sequentialIOPosition = 0L
 
     override fun peek(addr: Long): Byte? {
-        return if (addr in 0L until BUFFER_SIZE)
+        // Memory Space area - for buffer access
+        return if (addr in 0L until BUFFER_SIZE) {
             buffer[addr.toInt()]
-        else null
+        } else {
+            null
+        }
     }
 
     override fun poke(addr: Long, byte: Byte) {
-        if (addr in 0L until BUFFER_SIZE)
+        // Memory Space area - for buffer access
+        if (addr in 0L until BUFFER_SIZE) {
             buffer[addr.toInt()] = byte
+        }
     }
 
     override fun dispose() {
@@ -96,7 +106,14 @@ class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
                 (activeDisk + 1).toByte() // 1-based in register
             }
             REG_SEQ_IO_CONTROL -> {
-                TODO()
+                // Return sequential I/O control flags
+                var flags = 0
+                if (sequentialIOActive) flags = flags or 0x01
+                flags.toByte()
+            }
+            REG_SEQ_IO_CONTROL + 1 -> {
+                // Second byte of control flags (currently unused)
+                0
             }
             REG_SEQ_IO_OPCODE -> {
                 opcodeBuf.toByte()
@@ -118,6 +135,7 @@ class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
      */
     override fun mmio_write(addr: Long, value: Byte) {
         val address = addr.toInt()
+        println("HSDPA: mmio_write(addr=$addr, value=0x${(value.toInt() and 0xFF).toString(16)})")
         when (address) {
             in REG_DISK1_STATUS..REG_DISK4_STATUS+2 -> {
                 val diskIndex = (address - REG_DISK1_STATUS) / 3
@@ -136,17 +154,34 @@ class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
                 setActiveDisk(value.toInt() - 1) // 1-based in register
             }
             REG_SEQ_IO_CONTROL -> {
-
+                // Set sequential I/O control flags
+                sequentialIOActive = (value.toInt() and 0x01) != 0
+            }
+            REG_SEQ_IO_CONTROL + 1 -> {
+                // Second byte of control flags (currently unused)
             }
             REG_SEQ_IO_OPCODE -> {
                 opcodeBuf = value.toUint()
+                println("HSDPA: Writing opcode 0x${value.toUint().toString(16)} to register")
                 handleSequentialIOOpcode(value.toUint())
             }
             in REG_SEQ_IO_ARG1..REG_SEQ_IO_ARG1+2 -> {
-                arg1 = arg1 or (value.toUint() shl (address - REG_SEQ_IO_ARG1) * 8)
+                val byteOffset = (address - REG_SEQ_IO_ARG1)
+                if (byteOffset == 0) {
+                    // Reset arg1 when writing to LSB
+                    arg1 = value.toUint()
+                } else {
+                    arg1 = arg1 or (value.toUint() shl (byteOffset * 8))
+                }
             }
             in REG_SEQ_IO_ARG2..REG_SEQ_IO_ARG2+2 -> {
-                arg2 = arg2 or (value.toUint() shl (address - REG_SEQ_IO_ARG2) * 8)
+                val byteOffset = (address - REG_SEQ_IO_ARG2)
+                if (byteOffset == 0) {
+                    // Reset arg2 when writing to LSB
+                    arg2 = value.toUint()
+                } else {
+                    arg2 = arg2 or (value.toUint() shl (byteOffset * 8))
+                }
             }
             else -> null
         }
@@ -317,28 +352,72 @@ class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa") {
      * Handles sequential I/O opcodes
      * @param opcode Opcode to handle
      */
-    private fun handleSequentialIOOpcode(opcode: Int) {
+    protected open fun handleSequentialIOOpcode(opcode: Int) {
+        println("HSDPA: handleSequentialIOOpcode(0x${opcode.toString(16)})")
         when (opcode) {
             OPCODE_NOP -> {
                 // No operation
+                println("HSDPA: NOP")
             }
             OPCODE_SKIP -> {
-                // Skip bytes
-                // Implementation depends on VM memory access
+                // Skip arg1 bytes in the active disk
+                println("HSDPA: SKIP $arg1 bytes, activeDisk=$activeDisk")
+                if (activeDisk in 0 until MAX_DISKS) {
+                    sequentialIOSkip(arg1)
+                }
             }
             OPCODE_READ -> {
-                // Read bytes and store to core memory
-                // Implementation depends on VM memory access
+                // Read arg1 bytes and store to core memory at pointer arg2
+                println("HSDPA: READ $arg1 bytes to pointer $arg2, activeDisk=$activeDisk")
+                println("HSDPA: arg1 = 0x${arg1.toString(16)}, arg2 = 0x${arg2.toString(16)}")
+                if (activeDisk in 0 until MAX_DISKS) {
+                    sequentialIORead(arg1, arg2)
+                }
             }
             OPCODE_WRITE -> {
-                // Write bytes from core memory
-                // Implementation depends on VM memory access
+                // Write arg1 bytes from core memory at pointer arg2
+                if (activeDisk in 0 until MAX_DISKS) {
+                    sequentialIOWrite(arg1, arg2)
+                }
+            }
+            OPCODE_REWIND -> {
+                // Rewind to starting point
+                println("HSDPA: REWIND to position 0")
+                sequentialIOPosition = 0L
             }
             OPCODE_TERMINATE -> {
                 // Terminate sequential I/O session
-                // Clear buffer or reset state as needed
+                sequentialIOActive = false
+                sequentialIOPosition = 0L
+                // Clear the buffer
+                buffer.fill(0)
             }
         }
+    }
+    
+    /**
+     * Skip bytes in sequential I/O mode
+     */
+    protected open fun sequentialIOSkip(bytes: Int) {
+        sequentialIOPosition += bytes
+    }
+    
+    /**
+     * Read bytes from disk to VM memory in sequential I/O mode
+     */
+    protected open fun sequentialIORead(bytes: Int, vmMemoryPointer: Int) {
+        // Default implementation - subclasses should override
+        // For now, just advance the position
+        sequentialIOPosition += bytes
+    }
+    
+    /**
+     * Write bytes from VM memory to disk in sequential I/O mode
+     */
+    protected open fun sequentialIOWrite(bytes: Int, vmMemoryPointer: Int) {
+        // Default implementation - subclasses should override
+        // For now, just advance the position
+        sequentialIOPosition += bytes
     }
 
     /**

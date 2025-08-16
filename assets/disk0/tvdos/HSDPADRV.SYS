@@ -1,0 +1,271 @@
+///////////////////////////////////////////////////////////////////////////////
+// High Speed Disk Peripheral Adapter (HSDPA) Driver for TVDOS
+// This driver treats each disk from HSDPA as a single large file
+// Created by Claude on 2025-08-16
+///////////////////////////////////////////////////////////////////////////////
+
+// Add TAPE device names to reserved names
+files.reservedNames.push("TAPE0", "TAPE1", "TAPE2", "TAPE3")
+
+// HSDPA peripheral addresses for slot 4
+// MMIO area (for registers): -524289 to -655360 (backwards!)
+// Memory Space area (for buffer): -4194305 to -5242880 (backwards!)
+const HSDPA_SLOT4_MMIO_START = -524289  // MMIO area start
+const HSDPA_REG_DISK1_STATUS = HSDPA_SLOT4_MMIO_START - 0
+const HSDPA_REG_DISK2_STATUS = HSDPA_SLOT4_MMIO_START - 3
+const HSDPA_REG_DISK3_STATUS = HSDPA_SLOT4_MMIO_START - 6
+const HSDPA_REG_DISK4_STATUS = HSDPA_SLOT4_MMIO_START - 9
+const HSDPA_REG_DISK_CONTROL = HSDPA_SLOT4_MMIO_START - 12
+const HSDPA_REG_ACTIVE_DISK = HSDPA_SLOT4_MMIO_START - 20
+const HSDPA_REG_SEQ_IO_CONTROL = HSDPA_SLOT4_MMIO_START - 256
+const HSDPA_REG_SEQ_IO_OPCODE = HSDPA_SLOT4_MMIO_START - 258
+const HSDPA_REG_SEQ_IO_ARG1 = HSDPA_SLOT4_MMIO_START - 259
+const HSDPA_REG_SEQ_IO_ARG2 = HSDPA_SLOT4_MMIO_START - 262
+
+// Sequential I/O opcodes
+const HSDPA_OPCODE_NOP = 0x00
+const HSDPA_OPCODE_SKIP = 0x01
+const HSDPA_OPCODE_READ = 0x02
+const HSDPA_OPCODE_WRITE = 0x03
+const HSDPA_OPCODE_REWIND = 0xF0
+const HSDPA_OPCODE_TERMINATE = 0xFF
+
+// Helper functions for HSDPA MMIO access
+const hsdpa = {}
+
+hsdpa.setActiveDisk = (diskNumber) => {
+    sys.poke(HSDPA_REG_ACTIVE_DISK, diskNumber) // 1-based
+}
+
+hsdpa.getActiveDisk = () => {
+    return sys.peek(HSDPA_REG_ACTIVE_DISK)
+}
+
+hsdpa.enableSequentialIO = () => {
+    sys.poke(HSDPA_REG_SEQ_IO_CONTROL, 0x01)
+}
+
+hsdpa.disableSequentialIO = () => {
+    sys.poke(HSDPA_REG_SEQ_IO_CONTROL, 0x00)
+}
+
+hsdpa.rewind = () => {
+    sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_REWIND)
+}
+
+hsdpa.skip = (bytes) => {
+    // Write arg1 (3 bytes, little endian) - using backwards addressing
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1, bytes & 0xFF)        // LSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 1, (bytes >> 8) & 0xFF)   // MSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 2, (bytes >> 16) & 0xFF)  // MSB2
+    // Execute skip operation
+    sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_SKIP)
+}
+
+hsdpa.readToMemory = (bytes, vmMemoryPointer) => {
+    serial.println(`HSDPA: readToMemory(${bytes}, ${vmMemoryPointer})`)
+    // Write arg1 (bytes to read) - using backwards addressing
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1, bytes & 0xFF)        // LSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 1, (bytes >> 8) & 0xFF)   // MSB  
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 2, (bytes >> 16) & 0xFF)  // MSB2
+    // Write arg2 (VM memory pointer) - using backwards addressing
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2, vmMemoryPointer & 0xFF)           // LSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 1, (vmMemoryPointer >> 8) & 0xFF)  // MSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 2, (vmMemoryPointer >> 16) & 0xFF) // MSB2
+    // Execute read operation
+    serial.println(`HSDPA: Executing read opcode...`)
+    sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_READ)
+    serial.println(`HSDPA: Read opcode executed`)
+}
+
+hsdpa.writeFromMemory = (bytes, vmMemoryPointer) => {
+    // Write arg1 (bytes to write) - using backwards addressing
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1, bytes & 0xFF)        // LSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 1, (bytes >> 8) & 0xFF)   // MSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 2, (bytes >> 16) & 0xFF)  // MSB2
+    // Write arg2 (VM memory pointer) - using backwards addressing
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2, vmMemoryPointer & 0xFF)           // LSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 1, (vmMemoryPointer >> 8) & 0xFF)  // MSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 2, (vmMemoryPointer >> 16) & 0xFF) // MSB2
+    // Execute write operation
+    sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_WRITE)
+}
+
+hsdpa.terminate = () => {
+    sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_TERMINATE)
+}
+
+// Helper to get disk number from device name (TAPE0 -> 1, TAPE1 -> 2, etc.)
+hsdpa.getHsdpaDiskNumber = (deviceName) => {
+    if (deviceName.startsWith("TAPE")) {
+        let diskIndex = parseInt(deviceName.substring(4))
+        return diskIndex + 1 // HSDPA uses 1-based disk numbers
+    }
+    return 0
+}
+
+// State tracking for open files
+hsdpa.openFiles = {}
+
+// Create TAPE device drivers
+for (let tapeIndex = 0; tapeIndex < 4; tapeIndex++) {
+    let deviceName = `DEVTAPE${tapeIndex}`
+    
+    _TVDOS.DRV.FS[deviceName] = {}
+    
+    let driver = _TVDOS.DRV.FS[deviceName]
+    
+    // Get file size - for HSDPA tapes, we don't know the size ahead of time
+    // So we return a very large number to indicate it's available
+    driver.getFileLen = (fd) => {
+        return 0x7FFFFFFF // Return max positive 32-bit integer
+    }
+    
+    // Sequential read from tape
+    driver.pread = (fd, ptr, count, offset) => {
+        let diskNumber = hsdpa.getHsdpaDiskNumber(fd._driverID.substring(3)) // Remove "DEV" prefix
+        
+        // Set active disk
+        hsdpa.setActiveDisk(diskNumber)
+        hsdpa.enableSequentialIO()
+        
+        try {
+            // If offset specified, rewind and skip to position
+            if (offset && offset > 0) {
+                hsdpa.rewind()
+                hsdpa.skip(offset)
+            }
+            
+            // Read data to VM memory
+            hsdpa.readToMemory(count, ptr)
+        } catch (e) {
+            console.error("HSDPA read error:", e)
+            // Fill with zeros on error
+            for (let i = 0; i < count; i++) {
+                sys.poke(ptr + i, 0)
+            }
+        }
+    }
+    
+    // Binary read - reads entire file into byte array
+    driver.bread = (fd) => {
+        let diskNumber = hsdpa.getHsdpaDiskNumber(fd._driverID.substring(3))
+        
+        // For simplicity, read a reasonable chunk size
+        let chunkSize = 65536 // 64KB
+        let tempPtr = sys.malloc(chunkSize)
+        
+        try {
+            hsdpa.setActiveDisk(diskNumber)
+            hsdpa.enableSequentialIO()
+            hsdpa.rewind()
+            hsdpa.readToMemory(chunkSize, tempPtr)
+            
+            // Copy to JavaScript array
+            let result = new Int8Array(chunkSize)
+            for (let i = 0; i < chunkSize; i++) {
+                result[i] = sys.peek(tempPtr + i)
+            }
+            
+            return result
+        } finally {
+            sys.free(tempPtr)
+        }
+    }
+    
+    // String read - reads file as string
+    driver.sread = (fd) => {
+        let bytes = driver.bread(fd)
+        let result = ""
+        for (let i = 0; i < bytes.length && bytes[i] !== 0; i++) {
+            result += String.fromCharCode(bytes[i] & 0xFF)
+        }
+        return result
+    }
+    
+    // Write operations (not supported for tape devices)
+    driver.pwrite = (fd, ptr, count, offset) => {
+        throw Error("Write operations not supported on HSDPA tape devices")
+    }
+    
+    driver.bwrite = (fd, bytes) => {
+        throw Error("Write operations not supported on HSDPA tape devices")
+    }
+    
+    driver.swrite = (fd, string) => {
+        throw Error("Write operations not supported on HSDPA tape devices")
+    }
+    
+    driver.pappend = (fd, ptr, count) => {
+        throw Error("Append operations not supported on HSDPA tape devices")
+    }
+    
+    driver.bappend = (fd, bytes) => {
+        throw Error("Append operations not supported on HSDPA tape devices")
+    }
+    
+    driver.sappend = (fd, string) => {
+        throw Error("Append operations not supported on HSDPA tape devices")
+    }
+    
+    // File operations
+    driver.flush = (fd) => {
+        // No-op for read-only tape
+    }
+    
+    driver.close = (fd) => {
+        let diskNumber = hsdpa.getHsdpaDiskNumber(fd._driverID.substring(3))
+        hsdpa.setActiveDisk(diskNumber)
+        hsdpa.terminate()
+        hsdpa.disableSequentialIO()
+        
+        // Remove from open files tracking
+        delete hsdpa.openFiles[fd._driverID]
+    }
+    
+    // Directory operations (tapes are single files, not directories)
+    driver.isDirectory = (fd) => {
+        return false
+    }
+    
+    driver.listFiles = (fd) => {
+        return undefined // Not a directory
+    }
+    
+    // File management operations (not supported)
+    driver.touch = (fd) => {
+        throw Error("Touch operation not supported on HSDPA tape devices")
+    }
+    
+    driver.mkDir = (fd) => {
+        throw Error("Directory creation not supported on HSDPA tape devices")
+    }
+    
+    driver.mkFile = (fd) => {
+        throw Error("File creation not supported on HSDPA tape devices")
+    }
+    
+    driver.remove = (fd) => {
+        throw Error("File removal not supported on HSDPA tape devices")
+    }
+    
+    // Check if tape exists (always true if disk is attached)
+    driver.exists = (fd) => {
+        let diskNumber = hsdpa.getHsdpaDiskNumber(fd._driverID.substring(3))
+        
+        // Try to set active disk and check if it responds
+        try {
+            hsdpa.setActiveDisk(diskNumber)
+            // If we can read the active disk register back, the disk exists
+            return hsdpa.getActiveDisk() === diskNumber
+        } catch (e) {
+            return false
+        }
+    }
+    
+    // Freeze the driver object
+    Object.freeze(driver)
+}
+
+// Print initialization message
+serial.println("HSDPA Driver loaded: TAPE0-TAPE3 devices available at $:/TAPE0/, $:/TAPE1/, $:/TAPE2/, $:/TAPE3/")

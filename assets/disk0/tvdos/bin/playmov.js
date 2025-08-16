@@ -17,24 +17,40 @@ graphics.clearPixels(255)
 graphics.clearPixels2(240)
 
 
-let seqread = require("seqread")
-seqread.prepare(fullFilePath.full)
+let seqreadserial = require("seqread")
+let seqreadtape = require("seqreadtape")
+let seqread = undefined
+let fullFilePathStr = fullFilePath.full
+
+// select seqread driver to use
+if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAPE')) {
+    seqread = seqreadtape
+    seqread.seek(0)
+}
+else {
+    seqread = seqreadserial
+}
+
+seqread.prepare(fullFilePathStr)
 
 
 
 let magic = seqread.readBytes(8)
 let magicMatching = true
 
+let actualMagic = []
+
 // check if magic number matches
 MAGIC.forEach((b,i) => {
     let testb = sys.peek(magic + i) & 255 // for some reason this must be located here
+    actualMagic.push(testb)
     if (testb != b) {
         magicMatching = false
     }
 })
 sys.free(magic)
 if (!magicMatching) {
-    println("Not a movie file (MAGIC mismatch)")
+    println("Not a movie file (MAGIC mismatch) -- got " + actualMagic.join())
     return 1
 }
 
