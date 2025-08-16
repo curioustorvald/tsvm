@@ -55,10 +55,11 @@ function hsdpaReadToMemory(bytes, vmMemoryPointer) {
     sys.poke(HSDPA_REG_SEQ_IO_ARG1, bytes & 0xFF)        // LSB
     sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 1, (bytes >> 8) & 0xFF)   // MSB
     sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 2, (bytes >> 16) & 0xFF)  // MSB2
-    // Write arg2 (VM memory pointer) - using backwards addressing
-    sys.poke(HSDPA_REG_SEQ_IO_ARG2, vmMemoryPointer & 0xFF)           // LSB
-    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 1, (vmMemoryPointer >> 8) & 0xFF)  // MSB
-    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 2, (vmMemoryPointer >> 16) & 0xFF) // MSB2
+    // Write arg2 (VM memory pointer) - handle negative numbers correctly
+    let ptr = vmMemoryPointer >>> 0  // Convert to unsigned 32-bit
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2, ptr & 0xFF)           // LSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 1, (ptr >> 8) & 0xFF)  // MSB
+    sys.poke(HSDPA_REG_SEQ_IO_ARG2 - 2, (ptr >> 16) & 0xFF) // MSB2
     // Execute read operation
     sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_READ)
 }
@@ -130,15 +131,7 @@ function readBytes(length, ptrToDecode) {
     let ptr = (ptrToDecode === undefined) ? sys.malloc(length) : ptrToDecode
     
     try {
-        // Skip to current read position if needed
-        if (readCount > 0) {
-            hsdpaRewind()
-            if (readCount > 0) {
-                hsdpaSkip(readCount)
-            }
-        }
-        
-        // Read directly using HSDPA - no 4096 byte limitation!
+        // Read directly using HSDPA - position is maintained automatically by HSDPA
         hsdpaReadToMemory(length, ptr)
         
         readCount += length
@@ -155,17 +148,16 @@ function readBytes(length, ptrToDecode) {
 
 function readInt() {
     let b = readBytes(4)
-    let i = (sys.peek(b) & 0xFF) | 
-            ((sys.peek(b+1) & 0xFF) << 8) | 
-            ((sys.peek(b+2) & 0xFF) << 16) | 
-            ((sys.peek(b+3) & 0xFF) << 24)
+    let i = (sys.peek(b)) | (sys.peek(b+1) << 8) | (sys.peek(b+2) << 16) | (sys.peek(b+3) << 24)
     sys.free(b)
     return i
 }
 
 function readShort() {
     let b = readBytes(2)
-    let i = (sys.peek(b) & 0xFF) | ((sys.peek(b+1) & 0xFF) << 8)
+    let byte0 = sys.peek(b) & 0xFF
+    let byte1 = sys.peek(b+1) & 0xFF
+    let i = byte0 | (byte1 << 8)
     sys.free(b)
     return i
 }

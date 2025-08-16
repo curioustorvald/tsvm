@@ -15,13 +15,13 @@ import java.io.RandomAccessFile
 class HostFileHSDPA : HSDPA {
     
     // Primary constructor for Java reflection compatibility
-    constructor(vm: VM, hostFilePaths: Array<String>, baudRate: java.lang.Long) : super(vm, baudRate.toLong()) {
-        initializeHostFiles(hostFilePaths.toList())
-    }
-    
-    // Secondary constructor for Kotlin usage
-    constructor(vm: VM, hostFilePaths: List<String> = emptyList(), baudRate: Long = 133_333_333L) : super(vm, baudRate) {
-        initializeHostFiles(hostFilePaths)
+    constructor(vm: VM,
+                hostFilePath0: String,
+                hostFilePath1: String,
+                hostFilePath2: String,
+                hostFilePath3: String,
+                baudRate: java.lang.Long) : super(vm, baudRate.toLong()) {
+        initializeHostFiles(listOf(hostFilePath0, hostFilePath1, hostFilePath2, hostFilePath3))
     }
 
     // Host files for each disk slot
@@ -113,66 +113,85 @@ class HostFileHSDPA : HSDPA {
         }
     }
     
-    override fun sequentialIORead(bytes: Int, vmMemoryPointer: Int) {
-        println("HostFileHSDPA: sequentialIORead($bytes, $vmMemoryPointer)")
+    override fun sequentialIORead(bytes: Int, vmMemoryPointer0: Int) {
         val activeDiskIndex = getActiveDiskIndex()
-        println("HostFileHSDPA: activeDiskIndex = $activeDiskIndex")
         if (activeDiskIndex < 0 || hostFiles[activeDiskIndex] == null) {
             // No file attached, just advance position
-            println("HostFileHSDPA: No file attached, advancing position")
             sequentialIOPosition += bytes
             return
         }
-        
+
+        // convert Uint24 to Int32
+        val vmMemoryPointer = if (vmMemoryPointer0 and 0x800000 != 0)
+            (0xFF000000.toInt() or vmMemoryPointer0)
+        else
+            vmMemoryPointer0
+
         try {
             val file = hostFiles[activeDiskIndex]!!
-            println("HostFileHSDPA: Seeking to position $sequentialIOPosition")
+            val readPosition = sequentialIOPosition
             file.seek(sequentialIOPosition)
             
             // Read data into a temporary buffer
             val readBuffer = ByteArray(bytes)
             val bytesRead = file.read(readBuffer)
-            println("HostFileHSDPA: Read $bytesRead bytes from file")
             
             if (bytesRead > 0) {
-                // Log first few bytes for debugging
-                val firstBytes = readBuffer.take(8).map { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }.joinToString(" ")
-                println("HostFileHSDPA: First bytes: $firstBytes")
-                
                 // Copy data to VM memory
-                for (i in 0 until bytesRead) {
-                    vm.poke(vmMemoryPointer + i.toLong(), readBuffer[i])
+                // Handle negative addresses (backwards addressing) vs positive addresses
+                if (vmMemoryPointer < 0) {
+                    // Negative addresses use backwards addressing  
+                    for (i in 0 until bytesRead) {
+                        vm.poke(vmMemoryPointer - i.toLong(), readBuffer[i])
+                    }
+                } else {
+                    // Positive addresses use forward addressing
+                    for (i in 0 until bytesRead) {
+                        vm.poke(vmMemoryPointer + i.toLong(), readBuffer[i])
+                    }
                 }
                 sequentialIOPosition += bytesRead
-                println("HostFileHSDPA: Copied $bytesRead bytes to VM memory at $vmMemoryPointer")
+                
             }
             
             // Fill remaining bytes with zeros if we read less than requested
             if (bytesRead < bytes) {
-                for (i in bytesRead until bytes) {
-                    vm.poke(vmMemoryPointer + i.toLong(), 0)
+                if (vmMemoryPointer < 0) {
+                    // Negative addresses use backwards addressing
+                    for (i in bytesRead until bytes) {
+                        vm.poke(vmMemoryPointer - i.toLong(), 0)
+                    }
+                } else {
+                    // Positive addresses use forward addressing
+                    for (i in bytesRead until bytes) {
+                        vm.poke(vmMemoryPointer + i.toLong(), 0)
+                    }
                 }
                 sequentialIOPosition += (bytes - bytesRead)
             }
             
         } catch (e: Exception) {
-            println("HSDPA: Error reading from file: ${e.message}")
             // Just advance position on error
             sequentialIOPosition += bytes
         }
     }
     
-    override fun sequentialIOWrite(bytes: Int, vmMemoryPointer: Int) {
+    override fun sequentialIOWrite(bytes: Int, vmMemoryPointer0: Int) {
         val activeDiskIndex = getActiveDiskIndex()
         if (activeDiskIndex < 0 || hostFiles[activeDiskIndex] == null) {
             // No file attached, just advance position
             sequentialIOPosition += bytes
             return
         }
-        
+
+        // convert Uint24 to Int32
+        val vmMemoryPointer = if (vmMemoryPointer0 and 0x800000 != 0)
+            (0xFF000000.toInt() or vmMemoryPointer0)
+        else
+            vmMemoryPointer0
+
         // For now, we only support read-only access to host files
         // In a full implementation, we would write to the file here
-        println("HSDPA: Write operation not supported in read-only mode")
         sequentialIOPosition += bytes
     }
     

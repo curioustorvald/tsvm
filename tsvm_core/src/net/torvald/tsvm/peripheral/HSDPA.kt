@@ -135,7 +135,6 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
      */
     override fun mmio_write(addr: Long, value: Byte) {
         val address = addr.toInt()
-        println("HSDPA: mmio_write(addr=$addr, value=0x${(value.toInt() and 0xFF).toString(16)})")
         when (address) {
             in REG_DISK1_STATUS..REG_DISK4_STATUS+2 -> {
                 val diskIndex = (address - REG_DISK1_STATUS) / 3
@@ -162,7 +161,6 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
             }
             REG_SEQ_IO_OPCODE -> {
                 opcodeBuf = value.toUint()
-                println("HSDPA: Writing opcode 0x${value.toUint().toString(16)} to register")
                 handleSequentialIOOpcode(value.toUint())
             }
             in REG_SEQ_IO_ARG1..REG_SEQ_IO_ARG1+2 -> {
@@ -353,23 +351,18 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
      * @param opcode Opcode to handle
      */
     protected open fun handleSequentialIOOpcode(opcode: Int) {
-        println("HSDPA: handleSequentialIOOpcode(0x${opcode.toString(16)})")
         when (opcode) {
             OPCODE_NOP -> {
                 // No operation
-                println("HSDPA: NOP")
             }
             OPCODE_SKIP -> {
                 // Skip arg1 bytes in the active disk
-                println("HSDPA: SKIP $arg1 bytes, activeDisk=$activeDisk")
                 if (activeDisk in 0 until MAX_DISKS) {
                     sequentialIOSkip(arg1)
                 }
             }
             OPCODE_READ -> {
                 // Read arg1 bytes and store to core memory at pointer arg2
-                println("HSDPA: READ $arg1 bytes to pointer $arg2, activeDisk=$activeDisk")
-                println("HSDPA: arg1 = 0x${arg1.toString(16)}, arg2 = 0x${arg2.toString(16)}")
                 if (activeDisk in 0 until MAX_DISKS) {
                     sequentialIORead(arg1, arg2)
                 }
@@ -382,7 +375,6 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
             }
             OPCODE_REWIND -> {
                 // Rewind to starting point
-                println("HSDPA: REWIND to position 0")
                 sequentialIOPosition = 0L
             }
             OPCODE_TERMINATE -> {

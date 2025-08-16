@@ -131,9 +131,11 @@ for (let tapeIndex = 0; tapeIndex < 4; tapeIndex++) {
         
         try {
             // If offset specified, rewind and skip to position
-            if (offset && offset > 0) {
+            if (offset !== undefined && offset >= 0) {
                 hsdpa.rewind()
-                hsdpa.skip(offset)
+                if (offset > 0) {
+                    hsdpa.skip(offset)
+                }
             }
             
             // Read data to VM memory
