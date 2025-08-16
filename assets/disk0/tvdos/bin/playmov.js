@@ -375,6 +375,9 @@ finally {
     let timeTook = (endTime - startTime) / 1000000000.0
 
     //println(`Actual FPS: ${framesRendered / timeTook}`)
+
+    audio.stop(0)
+    audio.purgeQueue(0)
 }
 
 return errorlevel

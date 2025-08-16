@@ -455,7 +455,6 @@ Packet Types -
 
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
-        128..135: Patch-encoded iPF Type 1..8
 
     - MP2 Format Details
     Rate | 2ch | 1ch
@@ -502,7 +501,7 @@ iPF Packet -
     uint32 SIZE OF COMPRESSED FRAMEDATA
     *      COMPRESSED FRAMEDATA // only the actual gzip (and no UNCOMPRESSED SIZE) of the "Blocks.gz" is stored
 
-Patch-encoded iPF Packet -
+TYPE 3 Packet (Patch-encoded iPF 1 Packet) -
     uint32 SIZE OF COMPRESSED PATCHES
     *      COMPRESSED PATCHES
 
