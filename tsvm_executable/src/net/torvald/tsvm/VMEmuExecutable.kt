@@ -572,8 +572,10 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             "roms":["./assets/bios/tsvmbios.bin"],
             "com1":{"cls":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/disk0/"]},
             "com2":{"cls":"net.torvald.tsvm.peripheral.HttpModem", "args":[1024, -1]},
-            "card3":{"cls":"net.torvald.tsvm.peripheral.AudioAdapter", "args":[]}
-            "card4":{"cls":"net.torvald.tsvm.peripheral.RamBank", "args":[256]}
+            "com3":{"cls":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/diskMediabin/"]},
+            "card2":{"cls":"net.torvald.tsvm.peripheral.AudioAdapter", "args":[]},
+            "card3":{"cls":"net.torvald.tsvm.peripheral.RamBank", "args":[256]},
+            "card4":{"cls":"net.torvald.tsvm.peripheral.HostFileHSDPA", "args":["","","","",133333333]}
         }
     """.trimIndent()
 

@@ -394,6 +394,10 @@ finally {
 
     audio.stop(0)
     audio.purgeQueue(0)
+
+    if (interactive) {
+        con.clear()
+    }
 }
 
 return errorlevel

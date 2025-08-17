@@ -77,6 +77,25 @@ class VMJSR223Delegate(private val vm: VM) {
 
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
     fun peek(addr: Int) = vm.peek(addr.toLong())!!.toInt().and(255)
+    
+    // Float memory access functions for TEV video decoder
+    fun poke_float(addr: Int, value: Double) {
+        val floatBits = value.toFloat().toBits()
+        vm.poke(addr.toLong() + 0, (floatBits and 0xFF).toByte())
+        vm.poke(addr.toLong() + 1, ((floatBits shr 8) and 0xFF).toByte())
+        vm.poke(addr.toLong() + 2, ((floatBits shr 16) and 0xFF).toByte())
+        vm.poke(addr.toLong() + 3, ((floatBits shr 24) and 0xFF).toByte())
+    }
+    
+    fun peek_float(addr: Int): Double {
+        val b0 = vm.peek(addr.toLong() + 0)!!.toInt().and(255)
+        val b1 = vm.peek(addr.toLong() + 1)!!.toInt().and(255)
+        val b2 = vm.peek(addr.toLong() + 2)!!.toInt().and(255)
+        val b3 = vm.peek(addr.toLong() + 3)!!.toInt().and(255)
+        val floatBits = b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24)
+        return Float.fromBits(floatBits).toDouble()
+    }
+    
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
     fun free(ptr: Int) = vm.free(ptr)
