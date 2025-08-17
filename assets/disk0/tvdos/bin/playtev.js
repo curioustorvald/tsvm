@@ -204,12 +204,56 @@ let stopPlay = false
 // Dequantize DCT coefficient
 function dequantizeCoeff(coeff, quant, isDC) {
     if (isDC) {
-        // DC coefficient represents the average pixel value
-        // It should be in range roughly -128 to +127 after dequantization
-        return coeff  // No multiplication needed for DC
+        // DC coefficient also needs dequantization
+        return coeff * quant
     } else {
         return coeff * quant
     }
+}
+
+// 8x8 Inverse DCT implementation
+function idct8x8(coeffs, quantTable) {
+    const N = 8
+    let block = new Array(64)
+    
+    // Dequantize coefficients
+    for (let i = 0; i < 64; i++) {
+        block[i] = dequantizeCoeff(coeffs[i], quantTable[i], i === 0)
+    }
+    
+    // IDCT constants
+    const cos = Math.cos
+    const sqrt2 = Math.sqrt(2)
+    const c = new Array(8)
+    c[0] = 1.0 / sqrt2
+    for (let i = 1; i < 8; i++) {
+        c[i] = 1.0
+    }
+    
+    let result = new Array(64)
+    
+    // 2D IDCT
+    for (let x = 0; x < N; x++) {
+        for (let y = 0; y < N; y++) {
+            let sum = 0.0
+            for (let u = 0; u < N; u++) {
+                for (let v = 0; v < N; v++) {
+                    let coeff = block[v * N + u]
+                    let cosU = cos((2 * x + 1) * u * Math.PI / (2 * N))
+                    let cosV = cos((2 * y + 1) * v * Math.PI / (2 * N))
+                    sum += c[u] * c[v] * coeff * cosU * cosV
+                }
+            }
+            result[y * N + x] = sum / 4.0
+        }
+    }
+    
+    // Convert to pixel values (0-255)
+    for (let i = 0; i < 64; i++) {
+        result[i] = Math.max(0, Math.min(255, Math.round(result[i] + 128)))
+    }
+    
+    return result
 }
 
 // Hardware-accelerated decoding uses graphics.tevIdct8x8() instead of pure JS
@@ -260,43 +304,43 @@ function decodeBlock(blockData, blockX, blockY, prevRG, prevBA, currRG, currBA, 
             }
         }
     } else {
-        // INTRA or INTER modes: simplified DC-only decoding for debugging
+        // INTRA or INTER modes: Full DCT decoding
         
-        // Extract DC coefficients and convert to colors
-        let rCoeff = blockData.dctCoeffs[0 * 64 + 0] // R DC
-        let gCoeff = blockData.dctCoeffs[1 * 64 + 0] // G DC  
-        let bCoeff = blockData.dctCoeffs[2 * 64 + 0] // B DC
+        // Extract DCT coefficients for each channel (R, G, B)
+        let rCoeffs = blockData.dctCoeffs.slice(0 * 64, 1 * 64)  // R channel
+        let gCoeffs = blockData.dctCoeffs.slice(1 * 64, 2 * 64)  // G channel  
+        let bCoeffs = blockData.dctCoeffs.slice(2 * 64, 3 * 64)  // B channel
         
-        // Dequantize DC coefficients
-        let rDC = dequantizeCoeff(rCoeff, quantTable[0], true)
-        let gDC = dequantizeCoeff(gCoeff, quantTable[0], true) 
-        let bDC = dequantizeCoeff(bCoeff, quantTable[0], true)
+        // Perform IDCT for each channel
+        let rBlock = idct8x8(rCoeffs, quantTable)
+        let gBlock = idct8x8(gCoeffs, quantTable)
+        let bBlock = idct8x8(bCoeffs, quantTable)
         
-        // Convert to RGB values (DC represents average)
-        let r = Math.max(0, Math.min(255, rDC + 128))
-        let g = Math.max(0, Math.min(255, gDC + 128))
-        let b = Math.max(0, Math.min(255, bDC + 128))
-        
-        // Convert to 4-bit values
-        let r4 = Math.max(0, Math.min(15, Math.round(r * 15 / 255)))
-        let g4 = Math.max(0, Math.min(15, Math.round(g * 15 / 255)))
-        let b4 = Math.max(0, Math.min(15, Math.round(b * 15 / 255)))
-        
-        let rgValue = (r4 << 4) | g4  // R in MSB, G in LSB
-        let baValue = (b4 << 4) | 15  // B in MSB, A=15 (opaque) in LSB
-
-        // Software decoding (for fallback only)
-
-        // Fill 8x8 block with solid color
+        // Fill 8x8 block with IDCT results
         for (let dy = 0; dy < BLOCK_SIZE; dy++) {
             for (let dx = 0; dx < BLOCK_SIZE; dx++) {
                 let x = startX + dx
                 let y = startY + dy
                 if (x < width && y < height) {
-                    let offset = y * width + x
-                    // Normal memory plane assignments
-                    sys.poke(currRG - offset, rgValue)  // Graphics memory uses negative addressing
-                    sys.poke(currBA - offset, baValue)
+                    let blockOffset = dy * BLOCK_SIZE + dx
+                    let imageOffset = y * width + x
+                    
+                    // Get RGB values from IDCT results
+                    let r = rBlock[blockOffset]
+                    let g = gBlock[blockOffset]
+                    let b = bBlock[blockOffset]
+                    
+                    // Convert to 4-bit values
+                    let r4 = Math.max(0, Math.min(15, Math.round(r * 15 / 255)))
+                    let g4 = Math.max(0, Math.min(15, Math.round(g * 15 / 255)))
+                    let b4 = Math.max(0, Math.min(15, Math.round(b * 15 / 255)))
+                    
+                    let rgValue = (r4 << 4) | g4  // R in MSB, G in LSB
+                    let baValue = (b4 << 4) | 15  // B in MSB, A=15 (opaque) in LSB
+                    
+                    // Write to graphics memory
+                    sys.poke(currRG - imageOffset, rgValue)  // Graphics memory uses negative addressing
+                    sys.poke(currBA - imageOffset, baValue)
                 }
             }
         }

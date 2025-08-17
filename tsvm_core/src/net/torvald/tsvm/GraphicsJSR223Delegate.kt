@@ -20,6 +20,47 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
     }
 
+    /**
+     * Perform IDCT on a single channel with integer coefficients
+     */
+    private fun performIDCT(coeffs: IntArray, quantTable: IntArray): IntArray {
+        // Use the same DCT basis as tevIdct8x8
+        val dctBasis = Array(8) { u ->
+            Array(8) { x ->
+                val cu = if (u == 0) 1.0 / kotlin.math.sqrt(2.0) else 1.0
+                cu * kotlin.math.cos((2.0 * x + 1.0) * u * kotlin.math.PI / 16.0) / 2.0
+            }
+        }
+        
+        val dctCoeffs = Array(8) { DoubleArray(8) }
+        val result = IntArray(64)
+        
+        // Convert integer coefficients to 2D array and dequantize
+        for (u in 0 until 8) {
+            for (v in 0 until 8) {
+                val idx = u * 8 + v
+                val coeff = coeffs[idx]
+                dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+            }
+        }
+        
+        // Apply 2D inverse DCT
+        for (x in 0 until 8) {
+            for (y in 0 until 8) {
+                var sum = 0.0
+                for (u in 0 until 8) {
+                    for (v in 0 until 8) {
+                        sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
+                    }
+                }
+                val pixel = kotlin.math.max(0.0, kotlin.math.min(255.0, sum + 128.0))
+                result[y * 8 + x] = pixel.toInt()
+            }
+        }
+        
+        return result
+    }
+
     fun getGpuMemBase(): Int {
         return -1 - (1048576 * (vm.findPeriIndexByType(VM.PERITYPE_GPU_AND_TERM) ?: 0))
     }
@@ -1331,68 +1372,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    /**
-     * Fast 8x8 inverse DCT optimized for video decompression
-     * @param dctPtr pointer to DCT coefficients (192 floats)
-     * @param blockPtr pointer to output RGB block (192 bytes)
-     */
-    fun tevIdct8x8(dctPtr: Int, blockPtr: Int) {
-        val gpu = getFirstGPU() ?: return
-        
-        val dctBasis = Array(8) { u ->
-            Array(8) { x ->
-                val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
-                cu * cos((2.0 * x + 1.0) * u * PI / 16.0) / 2.0
-            }
-        }
-        
-        val dctCoeffs = Array(3) { Array(8) { DoubleArray(8) } }
-        val block = Array(3) { Array(8) { DoubleArray(8) } }
-        
-        // Read DCT coefficients from memory
-        for (channel in 0..2) {
-            for (u in 0..7) {
-                for (v in 0..7) {
-                    val offset = (channel * 64 + u * 8 + v) * 4
-                    val b0 = vm.peek(dctPtr.toLong() + offset)!! and -1
-                    val b1 = vm.peek(dctPtr.toLong() + offset + 1)!! and -1
-                    val b2 = vm.peek(dctPtr.toLong() + offset + 2)!! and -1
-                    val b3 = vm.peek(dctPtr.toLong() + offset + 3)!! and -1
-                    val floatBits = b0.toUint() or (b1.toUint() shl 8) or (b2.toUint() shl 16) or (b3.toUint() shl 24)
-                    dctCoeffs[channel][u][v] = java.lang.Float.intBitsToFloat(floatBits).toDouble()
-                }
-            }
-        }
-        
-        // Apply 2D inverse DCT to each channel
-        for (channel in 0..2) {
-            for (x in 0..7) {
-                for (y in 0..7) {
-                    var sum = 0.0
-                    for (u in 0..7) {
-                        for (v in 0..7) {
-                            sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[channel][u][v]
-                        }
-                    }
-                    block[channel][y][x] = sum + 0.5 // Add back DC offset
-                }
-            }
-        }
-        
-        // Write RGB block to memory (clamped to 0-255)
-        for (y in 0..7) {
-            for (x in 0..7) {
-                val offset = (y * 8 + x) * 3
-                val r = (clamp(block[0][y][x] * 255.0, 0.0, 255.0)).toInt()
-                val g = (clamp(block[1][y][x] * 255.0, 0.0, 255.0)).toInt()
-                val b = (clamp(block[2][y][x] * 255.0, 0.0, 255.0)).toInt()
-                
-                vm.poke(blockPtr.toLong() + offset, r.toByte())
-                vm.poke(blockPtr.toLong() + offset + 1, g.toByte())
-                vm.poke(blockPtr.toLong() + offset + 2, b.toByte())
-            }
-        }
-    }
 
     /**
      * Motion compensation: copy 8x8 block with sub-pixel interpolation
@@ -1733,34 +1712,41 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                     }
                     
-                    else -> { // TEV_MODE_INTRA (0x01) or TEV_MODE_INTER (0x02) - DCT decode
-                        // Extract DC coefficients and dequantize
-                        val rDC = dctCoeffs[0 * 64 + 0] // R channel DC
-                        val gDC = dctCoeffs[1 * 64 + 0] // G channel DC  
-                        val bDC = dctCoeffs[2 * 64 + 0] // B channel DC
+                    else -> { // TEV_MODE_INTRA (0x01) or TEV_MODE_INTER (0x02) - Full DCT decode
+                        // Hardware-accelerated IDCT for all three channels
+                        val rCoeffs = dctCoeffs.sliceArray(0 * 64 until 1 * 64)  // R channel
+                        val gCoeffs = dctCoeffs.sliceArray(1 * 64 until 2 * 64)  // G channel
+                        val bCoeffs = dctCoeffs.sliceArray(2 * 64 until 3 * 64)  // B channel
                         
-                        // Convert DC to RGB (add 128 offset)
-                        val r = kotlin.math.max(0, kotlin.math.min(255, rDC + 128))
-                        val g = kotlin.math.max(0, kotlin.math.min(255, gDC + 128))
-                        val b = kotlin.math.max(0, kotlin.math.min(255, bDC + 128))
+                        // Perform hardware IDCT for each channel
+                        val rBlock = performIDCT(rCoeffs, quantTable)
+                        val gBlock = performIDCT(gCoeffs, quantTable)
+                        val bBlock = performIDCT(bCoeffs, quantTable)
                         
-                        // Convert to 4-bit 4096-color format
-                        val r4 = kotlin.math.max(0, kotlin.math.min(15, (r * 15 / 255)))
-                        val g4 = kotlin.math.max(0, kotlin.math.min(15, (g * 15 / 255)))
-                        val b4 = kotlin.math.max(0, kotlin.math.min(15, (b * 15 / 255)))
-                        
-                        val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB  
-                        val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
-                        
-                        // Fill 8x8 block
+                        // Fill 8x8 block with IDCT results
                         for (dy in 0 until 8) {
                             for (dx in 0 until 8) {
                                 val x = startX + dx
                                 val y = startY + dy
                                 if (x < width && y < height) {
-                                    val offset = y.toLong() * width + x
-                                    vm.poke(rgPlaneAddr + offset*thisAddrIncVec, rgValue.toByte())
-                                    vm.poke(baPlaneAddr + offset*thisAddrIncVec, baValue.toByte())
+                                    val blockOffset = dy * 8 + dx
+                                    val imageOffset = y.toLong() * width + x
+                                    
+                                    // Get RGB values from IDCT results
+                                    val r = rBlock[blockOffset]
+                                    val g = gBlock[blockOffset]
+                                    val b = bBlock[blockOffset]
+                                    
+                                    // Convert to 4-bit 4096-color format
+                                    val r4 = kotlin.math.max(0, kotlin.math.min(15, (r * 15 / 255)))
+                                    val g4 = kotlin.math.max(0, kotlin.math.min(15, (g * 15 / 255)))
+                                    val b4 = kotlin.math.max(0, kotlin.math.min(15, (b * 15 / 255)))
+                                    
+                                    val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB  
+                                    val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
+                                    
+                                    vm.poke(rgPlaneAddr + imageOffset*thisAddrIncVec, rgValue.toByte())
+                                    vm.poke(baPlaneAddr + imageOffset*thisAddrIncVec, baValue.toByte())
                                 }
                             }
                         }
