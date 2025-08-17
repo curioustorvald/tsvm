@@ -184,15 +184,14 @@ static void rgb_to_4096(uint8_t *rgb, uint8_t *rg, uint8_t *ba, int pixels) {
         uint8_t g = rgb[i * 3 + 1];
         uint8_t b = rgb[i * 3 + 2];
         
-        // For grayscale videos like Bad Apple, use luminance for all channels
-        uint8_t luma = (r * 299 + g * 587 + b * 114) / 1000;  // ITU-R BT.601 weights
+        // Convert RGB to 4-bit per channel for full color
+        uint8_t r4 = (r * 15 + 127) / 255;
+        uint8_t g4 = (g * 15 + 127) / 255;
+        uint8_t b4 = (b * 15 + 127) / 255;
         
-        // Convert to 4-bit per channel
-        uint8_t luma4 = (luma * 15 + 127) / 255;
-        
-        // Correct format: R,G in MSBs, B,A in MSBs - with alpha=15 for opaque
-        rg[i] = (luma4 << 4) | luma4;  // R in MSB, G in LSB  
-        ba[i] = (luma4 << 4) | 15;     // B in MSB, A=15 (opaque) in LSB
+        // Correct 4096-color format: R,G in MSBs, B,A in MSBs - with alpha=15 for opaque
+        rg[i] = (r4 << 4) | g4;       // R in MSB, G in LSB  
+        ba[i] = (b4 << 4) | 15;       // B in MSB, A=15 (opaque) in LSB
     }
 }
 
