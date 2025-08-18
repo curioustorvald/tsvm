@@ -178,24 +178,35 @@ let frameTime = 1.0 / fps
 // Ultra-fast approach: always render to display, use dedicated previous frame buffer
 const FRAME_PIXELS = width * height
 
-// Always render directly to display memory for immediate visibility
-const CURRENT_RG_ADDR = -1048577   // Main graphics RG plane (displayed)
-const CURRENT_BA_ADDR = -1310721   // Main graphics BA plane (displayed)
+// Frame buffer addresses for graphics display
+const DISPLAY_RG_ADDR = -1048577   // Main graphics RG plane (displayed)
+const DISPLAY_BA_ADDR = -1310721   // Main graphics BA plane (displayed)
 
-// Dedicated previous frame buffer for reference (peripheral slot 2)
-const PREV_RG_ADDR = sys.malloc(560*448) // Slot 2 RG plane
-const PREV_BA_ADDR = sys.malloc(560*448) // Slot 2 BA plane
+// RGB frame buffers (24-bit: R,G,B per pixel)
+const CURRENT_RGB_ADDR = sys.malloc(560*448*3) // Current frame RGB buffer
+const PREV_RGB_ADDR = sys.malloc(560*448*3)    // Previous frame RGB buffer
 
 // Working memory for blocks (minimal allocation)
 let rgbWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 3) // 192 bytes
 let dctWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 3 * 4) // 768 bytes (floats)
 
-// Initialize both frame buffers to black with alpha=15 (opaque)
+// Initialize RGB frame buffers to black (0,0,0)
 for (let i = 0; i < FRAME_PIXELS; i++) {
-    sys.poke(CURRENT_RG_ADDR - i, 0)
-    sys.poke(CURRENT_BA_ADDR - i, 15) // Alpha = 15 (opaque)
-    sys.poke(PREV_RG_ADDR + i, 0)
-    sys.poke(PREV_BA_ADDR + i, 15) // Alpha = 15 (opaque)
+    // Current frame RGB: black
+    sys.poke(CURRENT_RGB_ADDR + i*3, 0)     // R
+    sys.poke(CURRENT_RGB_ADDR + i*3 + 1, 0) // G  
+    sys.poke(CURRENT_RGB_ADDR + i*3 + 2, 0) // B
+    
+    // Previous frame RGB: black
+    sys.poke(PREV_RGB_ADDR + i*3, 0)        // R
+    sys.poke(PREV_RGB_ADDR + i*3 + 1, 0)    // G
+    sys.poke(PREV_RGB_ADDR + i*3 + 2, 0)    // B
+}
+
+// Initialize display framebuffer to black
+for (let i = 0; i < FRAME_PIXELS; i++) {
+    sys.poke(DISPLAY_RG_ADDR - i, 0)  // Black in RG plane
+    sys.poke(DISPLAY_BA_ADDR - i, 15) // Black with alpha=15 (opaque) in BA plane
 }
 
 let frameCount = 0
@@ -209,6 +220,27 @@ function dequantizeCoeff(coeff, quant, isDC) {
     } else {
         return coeff * quant
     }
+}
+
+// 4x4 Bayer dithering matrix
+const BAYER_MATRIX = [
+    [ 0, 8, 2,10],
+    [12, 4,14, 6],
+    [ 3,11, 1, 9],
+    [15, 7,13, 5]
+]
+
+// Apply Bayer dithering to reduce banding when quantizing to 4-bit
+function ditherValue(value, x, y) {
+    // Get the dither threshold for this pixel position
+    const threshold = BAYER_MATRIX[y & 3][x & 3]
+    
+    // Scale threshold from 0-15 to 0-15.9375 (16 steps over 16 values)
+    const scaledThreshold = threshold / 16.0
+    
+    // Add dither and quantize to 4-bit (0-15)
+    const dithered = value + scaledThreshold
+    return Math.max(0, Math.min(15, Math.floor(dithered * 15 / 255)))
 }
 
 // 8x8 Inverse DCT implementation
@@ -330,10 +362,10 @@ function decodeBlock(blockData, blockX, blockY, prevRG, prevBA, currRG, currBA, 
                     let g = gBlock[blockOffset]
                     let b = bBlock[blockOffset]
                     
-                    // Convert to 4-bit values
-                    let r4 = Math.max(0, Math.min(15, Math.round(r * 15 / 255)))
-                    let g4 = Math.max(0, Math.min(15, Math.round(g * 15 / 255)))
-                    let b4 = Math.max(0, Math.min(15, Math.round(b * 15 / 255)))
+                    // Apply Bayer dithering when converting to 4-bit values
+                    let r4 = ditherValue(r, x, y)
+                    let g4 = ditherValue(g, x, y)
+                    let b4 = ditherValue(b, x, y)
                     
                     let rgValue = (r4 << 4) | g4  // R in MSB, G in LSB
                     let baValue = (b4 << 4) | 15  // B in MSB, A=15 (opaque) in LSB
@@ -368,10 +400,9 @@ try {
             // Sync packet - frame complete
             frameCount++
 
-            // Copy current display frame to previous frame buffer for next frame reference
+            // Copy current RGB frame to previous frame buffer for next frame reference
             // This is the only copying we need, and it happens once per frame after display
-            sys.memcpy(CURRENT_RG_ADDR, PREV_RG_ADDR, FRAME_PIXELS)
-            sys.memcpy(CURRENT_BA_ADDR, PREV_BA_ADDR, FRAME_PIXELS)
+            sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
 
         } else if ((packetType & 0xFF) == TEV_PACKET_IFRAME || (packetType & 0xFF) == TEV_PACKET_PFRAME) {
             // Video frame packet
@@ -409,10 +440,14 @@ try {
             
             // Hardware decode complete
 
-            // Hardware-accelerated TEV decoding (blazing fast!)
+            // Hardware-accelerated TEV decoding to RGB buffers (blazing fast!)
             try {
-                graphics.tevDecode(blockDataPtr, CURRENT_RG_ADDR, CURRENT_BA_ADDR,
-                                 width, height, quality, PREV_RG_ADDR, PREV_BA_ADDR)
+                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR,
+                                 width, height, quality)
+                
+                // Upload RGB buffer to display framebuffer with dithering
+                graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,
+                                              width, height, frameCount)
             } catch (e) {
                 serial.println(`Frame ${frameCount}: Hardware decode failed: ${e}`)
             }
@@ -446,8 +481,8 @@ try {
     // Cleanup working memory (graphics memory is automatically managed)
     sys.free(rgbWorkspace)
     sys.free(dctWorkspace)
-    sys.free(PREV_RG_ADDR)
-    sys.free(PREV_BA_ADDR)
+    sys.free(CURRENT_RGB_ADDR)
+    sys.free(PREV_RGB_ADDR)
 
 
     audio.stop(0)

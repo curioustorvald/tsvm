@@ -6,8 +6,6 @@ import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
-import kotlin.experimental.and
-import kotlin.experimental.or
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.cos
@@ -21,9 +19,57 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
+     * Upload RGB frame buffer to graphics framebuffer with dithering
+     * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
+     * @param rgPlaneAddr Destination RG framebuffer 
+     * @param baPlaneAddr Destination BA framebuffer
+     * @param width Frame width
+     * @param height Frame height
+     */
+    fun uploadRGBToFramebuffer(rgbAddr: Long, rgPlaneAddr: Long, baPlaneAddr: Long, width: Int, height: Int, frameCounter: Int) {
+        val rgAddrIncVec = if (rgPlaneAddr >= 0) 1 else -1
+        val baAddrIncVec = if (baPlaneAddr >= 0) 1 else -1
+        val rgbAddrIncVec = if (rgbAddr >= 0) 1 else -1
+        
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixelOffset = y.toLong() * width + x
+                val rgbOffset = pixelOffset * 3 * rgbAddrIncVec
+                
+                // Read RGB values
+                val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
+                val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
+                val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
+                
+                // Apply Bayer dithering and convert to 4-bit
+                val r4 = ditherValue(r, x, y, frameCounter)
+                val g4 = ditherValue(g, x, y, frameCounter)
+                val b4 = ditherValue(b, x, y, frameCounter)
+                
+                // Pack into 4096-color format
+                val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB
+                val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
+                
+                // Write to framebuffer
+                vm.poke(rgPlaneAddr + pixelOffset * rgAddrIncVec, rgValue.toByte())
+                vm.poke(baPlaneAddr + pixelOffset * baAddrIncVec, baValue.toByte())
+            }
+        }
+    }
+
+    /**
+     * Apply Bayer dithering to reduce banding when quantizing to 4-bit
+     */
+    private fun ditherValue(value: Int, x: Int, y: Int, f: Int): Int {
+        val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
+        val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
+        return round(15f * q)
+    }
+
+    /**
      * Perform IDCT on a single channel with integer coefficients
      */
-    private fun performIDCT(coeffs: IntArray, quantTable: IntArray): IntArray {
+    private fun tevIdct8x8(coeffs: IntArray, quantTable: IntArray): IntArray {
         // Use the same DCT basis as tevIdct8x8
         val dctBasis = Array(8) { u ->
             Array(8) { x ->
@@ -845,8 +891,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Co (bytes 0–1): 4 nybbles
-        val coA = (a[0].toInt() and 0xFF) or ((a[1].toInt() and 0xFF) shl 8)
-        val coB = (b[0].toInt() and 0xFF) or ((b[1].toInt() and 0xFF) shl 8)
+        val coA = (a[0].toUint()) or ((a[1].toUint()) shl 8)
+        val coB = (b[0].toUint()) or ((b[1].toUint()) shl 8)
         for (i in 0 until 4) {
             val va = (coA shr (i * 4)) and 0xF
             val vb = (coB shr (i * 4)) and 0xF
@@ -855,8 +901,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Cg (bytes 2–3): 4 nybbles
-        val cgA = (a[2].toInt() and 0xFF) or ((a[3].toInt() and 0xFF) shl 8)
-        val cgB = (b[2].toInt() and 0xFF) or ((b[3].toInt() and 0xFF) shl 8)
+        val cgA = (a[2].toUint()) or ((a[3].toUint()) shl 8)
+        val cgB = (b[2].toUint()) or ((b[3].toUint()) shl 8)
         for (i in 0 until 4) {
             val va = (cgA shr (i * 4)) and 0xF
             val vb = (cgB shr (i * 4)) and 0xF
@@ -866,8 +912,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Y (bytes 4–9): 16 nybbles
         for (i in 4 until 10) {
-            val byteA = a[i].toInt() and 0xFF
-            val byteB = b[i].toInt() and 0xFF
+            val byteA = a[i].toUint()
+            val byteB = b[i].toUint()
 
             val yAHigh = (byteA shr 4) and 0xF
             val yALow = byteA and 0xF
@@ -1127,7 +1173,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         var ptr = ipf1DeltaPtr.toLong()
         var blockIndex = 0
 
-        fun readByte(): Int = vm.peek(ptr++)!!.toInt() and 0xFF
+        fun readByte(): Int = vm.peek(ptr++)!!.toUint()
         fun readShort(): Int {
             val low = readByte()
             val high = readByte()
@@ -1331,9 +1377,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         for (y in 0..7) {
             for (x in 0..7) {
                 val offset = (y * 8 + x) * 3
-                val r = vm.peek(blockPtr.toLong() + offset)!! and -1
-                val g = vm.peek(blockPtr.toLong() + offset + 1)!! and -1
-                val b = vm.peek(blockPtr.toLong() + offset + 2)!! and -1
+                val r = vm.peek(blockPtr.toLong() + offset)!!.toUint()
+                val g = vm.peek(blockPtr.toLong() + offset + 1)!!.toUint()
+                val b = vm.peek(blockPtr.toLong() + offset + 2)!!.toUint()
                 
                 // Convert to 0-1 range and center around 0
                 block[0][y][x] = (r / 255.0) - 0.5
@@ -1415,15 +1461,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val srcOffset10 = (iy + 1) * width + ix
                     val srcOffset11 = (iy + 1) * width + (ix + 1)
                     
-                    val rg00 = vm.peek(srcRG.toLong() + srcOffset00)!! and -1
-                    val rg01 = vm.peek(srcRG.toLong() + srcOffset01)!! and -1
-                    val rg10 = vm.peek(srcRG.toLong() + srcOffset10)!! and -1
-                    val rg11 = vm.peek(srcRG.toLong() + srcOffset11)!! and -1
+                    val rg00 = vm.peek(srcRG.toLong() + srcOffset00)!!.toUint()
+                    val rg01 = vm.peek(srcRG.toLong() + srcOffset01)!!.toUint()
+                    val rg10 = vm.peek(srcRG.toLong() + srcOffset10)!!.toUint()
+                    val rg11 = vm.peek(srcRG.toLong() + srcOffset11)!!.toUint()
                     
-                    val ba00 = vm.peek(srcBA.toLong() + srcOffset00)!! and -1
-                    val ba01 = vm.peek(srcBA.toLong() + srcOffset01)!! and -1
-                    val ba10 = vm.peek(srcBA.toLong() + srcOffset10)!! and -1
-                    val ba11 = vm.peek(srcBA.toLong() + srcOffset11)!! and -1
+                    val ba00 = vm.peek(srcBA.toLong() + srcOffset00)!!.toUint()
+                    val ba01 = vm.peek(srcBA.toLong() + srcOffset01)!!.toUint()
+                    val ba10 = vm.peek(srcBA.toLong() + srcOffset10)!!.toUint()
+                    val ba11 = vm.peek(srcBA.toLong() + srcOffset11)!!.toUint()
                     
                     // Bilinear interpolation
                     val rgTop = rg00 * (1 - fx) + rg01 * fx
@@ -1453,24 +1499,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param blockX block X coordinate (in 8-pixel units)
      * @param blockY block Y coordinate (in 8-pixel units)
      */
-    fun tevRgbTo4096(rgbPtr: Int, destRG: Int, destBA: Int, blockX: Int, blockY: Int) {
+    fun tevRgbTo4096(rgbPtr: Int, destRG: Int, destBA: Int, blockX: Int, blockY: Int, frameCounter: Int) {
         val gpu = getFirstGPU() ?: return
         val width = gpu.config.width
         
         for (y in 0..7) {
             for (x in 0..7) {
                 val rgbOffset = (y * 8 + x) * 3
-                val r = vm.peek(rgbPtr.toLong() + rgbOffset)!! and -1
-                val g = vm.peek(rgbPtr.toLong() + rgbOffset + 1)!! and -1
-                val b = vm.peek(rgbPtr.toLong() + rgbOffset + 2)!! and -1
-                
-                // Convert to 4-bit per channel (4096 colors)
-                val r4 = (r * 15 + 127) / 255
-                val g4 = (g * 15 + 127) / 255
-                val b4 = (b * 15 + 127) / 255
+                val r = vm.peek(rgbPtr.toLong() + rgbOffset)!!.toUint()
+                val g = vm.peek(rgbPtr.toLong() + rgbOffset + 1)!!.toUint()
+                val b = vm.peek(rgbPtr.toLong() + rgbOffset + 2)!!.toUint()
                 
                 val pixelX = blockX * 8 + x
                 val pixelY = blockY * 8 + y
+                
+                // Convert to 4-bit per channel with dithering (4096 colors)
+                val r4 = ditherValue(r, pixelX, pixelY, frameCounter)
+                val g4 = ditherValue(g, pixelX, pixelY, frameCounter)
+                val b4 = ditherValue(b, pixelX, pixelY, frameCounter)
                 val destOffset = pixelY * width + pixelX
                 
                 if (pixelX < width && pixelY < gpu.config.height) {
@@ -1523,10 +1569,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             val curOffset = (startY + dy) * width + (startX + dx)
                             val refOffset = (refStartY + dy) * width + (refStartX + dx)
                             
-                            val curRG = vm.peek(curRG.toLong() + curOffset)!! and -1
-                            val curBA = vm.peek(curBA.toLong() + curOffset)!! and -1
-                            val refRGVal = vm.peek(refRG.toLong() + refOffset)!! and -1
-                            val refBAVal = vm.peek(refBA.toLong() + refOffset)!! and -1
+                            val curRG = vm.peek(curRG.toLong() + curOffset)!!.toUint()
+                            val curBA = vm.peek(curBA.toLong() + curOffset)!!.toUint()
+                            val refRGVal = vm.peek(refRG.toLong() + refOffset)!!.toUint()
+                            val refBAVal = vm.peek(refBA.toLong() + refOffset)!!.toUint()
                             
                             sad += abs((curRG and -16) - (refRGVal and -16)) + // R
                                    abs((curRG and 0x0F) - (refRGVal and 0x0F)) + // G
@@ -1622,18 +1668,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * Decodes compressed TEV block data directly to framebuffer
      * 
      * @param blockDataPtr Pointer to decompressed TEV block data
-     * @param rgPlaneAddr Address of RG plane in memory (can target the graphics hardware)
-     * @param baPlaneAddr Address of BA plane in memory (can target the graphics hardware)
+     * @param currentRGBAddr Address of current frame RGB buffer (24-bit: R,G,B per pixel)
+     * @param prevRGBAddr Address of previous frame RGB buffer (for motion compensation)
      * @param width Frame width in pixels
      * @param height Frame height in pixels
-     * @param prevRGAddr Previous frame RG plane (for motion compensation)
-     * @param prevBAAddr Previous frame BA plane (for motion compensation)
+     * @param quality Quantization quality level (0-7)
+     * @param frameCounter Frame counter for temporal patterns
      */
-    fun tevDecode(blockDataPtr: Long, rgPlaneAddr: Long, baPlaneAddr: Long, 
-                  width: Int, height: Int, quality: Int, prevRGAddr: Long, prevBAAddr: Long) {
-
-        assert(rgPlaneAddr * baPlaneAddr >= 0) { "RG and BA plane must be on a same memory scope (got $rgPlaneAddr, $baPlaneAddr)" }
-        assert(prevRGAddr * prevBAAddr >= 0) { "Prev RG and BA plane must be on a same memory scope (got $prevRGAddr, $prevBAAddr)" }
+    fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
+                  width: Int, height: Int, quality: Int) {
 
         val blocksX = (width + 7) / 8
         val blocksY = (height + 7) / 8
@@ -1642,9 +1685,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         var readPtr = blockDataPtr
 
-        // decide increment "direction" by the sign of the pointer
-        val prevAddrIncVec = if (prevRGAddr >= 0) 1 else -1
-        val thisAddrIncVec = if (rgPlaneAddr >= 0) 1 else -1
+        // decide increment "direction" by the sign of the pointer  
+        val prevAddrIncVec = if (prevRGBAddr >= 0) 1 else -1
+        val thisAddrIncVec = if (currentRGBAddr >= 0) 1 else -1
 
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX) {
@@ -1652,40 +1695,46 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val startY = by * 8
                 
                 // Read TEV block header (7 bytes)
-                val mode = vm.peek(readPtr)!!.toInt() and 0xFF
-                val mvX = ((vm.peek(readPtr + 1)!!.toInt() and 0xFF) or 
-                          ((vm.peek(readPtr + 2)!!.toInt() and 0xFF) shl 8)).toShort().toInt()
-                val mvY = ((vm.peek(readPtr + 3)!!.toInt() and 0xFF) or 
-                          ((vm.peek(readPtr + 4)!!.toInt() and 0xFF) shl 8)).toShort().toInt()
+                val mode = vm.peek(readPtr)!!.toUint()
+                val mvX = ((vm.peek(readPtr + 1)!!.toUint()) or 
+                          ((vm.peek(readPtr + 2)!!.toUint()) shl 8)).toShort().toInt()
+                val mvY = ((vm.peek(readPtr + 3)!!.toUint()) or 
+                          ((vm.peek(readPtr + 4)!!.toUint()) shl 8)).toShort().toInt()
                 readPtr += 7 // Skip CBP field
                 
                 // Read DCT coefficients (3 channels × 64 coefficients × 2 bytes)
                 val dctCoeffs = IntArray(3 * 64)
                 for (i in 0 until 3 * 64) {
-                    val coeff = ((vm.peek(readPtr)!!.toInt() and 0xFF) or 
-                                ((vm.peek(readPtr + 1)!!.toInt() and 0xFF) shl 8)).toShort().toInt()
+                    val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
                     dctCoeffs[i] = coeff
                     readPtr += 2
                 }
                 
                 when (mode) {
-                    0x00 -> { // TEV_MODE_SKIP - copy from previous frame
+                    0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame
                         for (dy in 0 until 8) {
                             for (dx in 0 until 8) {
                                 val x = startX + dx
                                 val y = startY + dy
                                 if (x < width && y < height) {
-                                    val offset = y.toLong() * width + x
-                                    val prevRG = vm.peek(prevRGAddr + offset*prevAddrIncVec)!!.toInt() and 0xFF
-                                    val prevBA = vm.peek(prevBAAddr + offset*prevAddrIncVec)!!.toInt() and 0xFF
-                                    vm.poke(rgPlaneAddr + offset*thisAddrIncVec, prevRG.toByte())
-                                    vm.poke(baPlaneAddr + offset*thisAddrIncVec, prevBA.toByte())
+                                    val pixelOffset = y.toLong() * width + x
+                                    val rgbOffset = pixelOffset * 3
+                                    
+                                    // Copy RGB values from previous frame
+                                    val prevR = vm.peek(prevRGBAddr + rgbOffset*prevAddrIncVec)!!
+                                    val prevG = vm.peek(prevRGBAddr + (rgbOffset + 1)*prevAddrIncVec)!!
+                                    val prevB = vm.peek(prevRGBAddr + (rgbOffset + 2)*prevAddrIncVec)!!
+                                    
+                                    vm.poke(currentRGBAddr + rgbOffset*thisAddrIncVec, prevR)
+                                    vm.poke(currentRGBAddr + (rgbOffset + 1)*thisAddrIncVec, prevG)
+                                    vm.poke(currentRGBAddr + (rgbOffset + 2)*thisAddrIncVec, prevB)
                                 }
                             }
                         }
                     }
                     
-                    0x03 -> { // TEV_MODE_MOTION - motion compensation
+                    0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB
                         for (dy in 0 until 8) {
                             for (dx in 0 until 8) {
                                 val x = startX + dx
@@ -1694,18 +1743,26 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val refY = y + mvY
                                 
                                 if (x < width && y < height) {
-                                    val dstOffset = y.toLong() * width + x
+                                    val dstPixelOffset = y.toLong() * width + x
+                                    val dstRgbOffset = dstPixelOffset * 3
                                     
                                     if (refX in 0 until width && refY in 0 until height) {
-                                        val refOffset = refY.toLong() * width + refX
-                                        val refRG = vm.peek(prevRGAddr + refOffset*prevAddrIncVec)!!.toInt() and 0xFF
-                                        val refBA = vm.peek(prevBAAddr + refOffset*prevAddrIncVec)!!.toInt() and 0xFF
-                                        vm.poke(rgPlaneAddr + dstOffset*thisAddrIncVec, refRG.toByte())
-                                        vm.poke(baPlaneAddr + dstOffset*thisAddrIncVec, refBA.toByte())
+                                        val refPixelOffset = refY.toLong() * width + refX
+                                        val refRgbOffset = refPixelOffset * 3
+                                        
+                                        // Copy RGB from reference position
+                                        val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
+                                        val refG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!
+                                        val refB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!
+                                        
+                                        vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, refR)
+                                        vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, refG)
+                                        vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, refB)
                                     } else {
                                         // Out of bounds - use black
-                                        vm.poke(rgPlaneAddr + dstOffset*thisAddrIncVec, 0.toByte())
-                                        vm.poke(baPlaneAddr + dstOffset*thisAddrIncVec, 15.toByte()) // Alpha=15
+                                        vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
+                                        vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())  // G=0
+                                        vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, 0.toByte())  // B=0
                                     }
                                 }
                             }
@@ -1719,9 +1776,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         val bCoeffs = dctCoeffs.sliceArray(2 * 64 until 3 * 64)  // B channel
                         
                         // Perform hardware IDCT for each channel
-                        val rBlock = performIDCT(rCoeffs, quantTable)
-                        val gBlock = performIDCT(gCoeffs, quantTable)
-                        val bBlock = performIDCT(bCoeffs, quantTable)
+                        val rBlock = tevIdct8x8(rCoeffs, quantTable)
+                        val gBlock = tevIdct8x8(gCoeffs, quantTable)
+                        val bBlock = tevIdct8x8(bCoeffs, quantTable)
                         
                         // Fill 8x8 block with IDCT results
                         for (dy in 0 until 8) {
@@ -1736,17 +1793,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     val r = rBlock[blockOffset]
                                     val g = gBlock[blockOffset]
                                     val b = bBlock[blockOffset]
-                                    
-                                    // Convert to 4-bit 4096-color format
-                                    val r4 = kotlin.math.max(0, kotlin.math.min(15, (r * 15 / 255)))
-                                    val g4 = kotlin.math.max(0, kotlin.math.min(15, (g * 15 / 255)))
-                                    val b4 = kotlin.math.max(0, kotlin.math.min(15, (b * 15 / 255)))
-                                    
-                                    val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB  
-                                    val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
-                                    
-                                    vm.poke(rgPlaneAddr + imageOffset*thisAddrIncVec, rgValue.toByte())
-                                    vm.poke(baPlaneAddr + imageOffset*thisAddrIncVec, baValue.toByte())
+
+                                    // Store full 8-bit RGB values to RGB buffer  
+                                    val rgbOffset = imageOffset * 3
+                                    vm.poke(currentRGBAddr + rgbOffset*thisAddrIncVec, r.toByte())
+                                    vm.poke(currentRGBAddr + (rgbOffset + 1)*thisAddrIncVec, g.toByte())
+                                    vm.poke(currentRGBAddr + (rgbOffset + 2)*thisAddrIncVec, b.toByte())
                                 }
                             }
                         }

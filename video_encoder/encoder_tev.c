@@ -132,10 +132,8 @@ typedef struct {
     int output_to_stdout;
     int quality;  // 0-7, higher = better quality
     
-    // Frame buffers (4096-color format: R|G, B|A byte planes)
-    uint8_t *current_rg, *current_ba;
-    uint8_t *previous_rg, *previous_ba;
-    uint8_t *reference_rg, *reference_ba;
+    // Frame buffers (8-bit RGB format for encoding)
+    uint8_t *current_rgb, *previous_rgb, *reference_rgb;
     
     // Encoding workspace
     uint8_t *rgb_workspace;     // 8x8 RGB blocks (192 bytes)
@@ -178,21 +176,9 @@ static int16_t quantize_coeff(float coeff, uint8_t quant, int is_dc) {
 // Currently using simplified encoding logic
 
 // Convert RGB to 4096-color format
-static void rgb_to_4096(uint8_t *rgb, uint8_t *rg, uint8_t *ba, int pixels) {
-    for (int i = 0; i < pixels; i++) {
-        uint8_t r = rgb[i * 3];
-        uint8_t g = rgb[i * 3 + 1];
-        uint8_t b = rgb[i * 3 + 2];
-        
-        // Convert RGB to 4-bit per channel for full color
-        uint8_t r4 = (r * 15 + 127) / 255;
-        uint8_t g4 = (g * 15 + 127) / 255;
-        uint8_t b4 = (b * 15 + 127) / 255;
-        
-        // Correct 4096-color format: R,G in MSBs, B,A in MSBs - with alpha=15 for opaque
-        rg[i] = (r4 << 4) | g4;       // R in MSB, G in LSB  
-        ba[i] = (b4 << 4) | 15;       // B in MSB, A=15 (opaque) in LSB
-    }
+static void copy_rgb_frame(uint8_t *rgb_input, uint8_t *rgb_frame, int pixels) {
+    // Copy input RGB data to frame buffer (preserving full 8-bit precision)
+    memcpy(rgb_frame, rgb_input, pixels * 3);
 }
 
 // Simple motion estimation (full search)
@@ -224,15 +210,15 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
                         int cur_offset = (start_y + dy) * enc->width + (start_x + dx);
                         int ref_offset = (ref_y + dy) * enc->width + (ref_x + dx);
                         
-                        int cur_rg = enc->current_rg[cur_offset];
-                        int cur_ba = enc->current_ba[cur_offset];
-                        int ref_rg = enc->previous_rg[ref_offset];
-                        int ref_ba = enc->previous_ba[ref_offset];
+                        int cur_r = enc->current_rgb[cur_offset * 3];
+                        int cur_g = enc->current_rgb[cur_offset * 3 + 1];
+                        int cur_b = enc->current_rgb[cur_offset * 3 + 2];
+                        int ref_r = enc->previous_rgb[ref_offset * 3];
+                        int ref_g = enc->previous_rgb[ref_offset * 3 + 1];
+                        int ref_b = enc->previous_rgb[ref_offset * 3 + 2];
                         
-                        // SAD on 4-bit channels
-                        sad += abs((cur_rg >> 4) - (ref_rg >> 4)) +     // R
-                               abs((cur_rg & 0xF) - (ref_rg & 0xF)) +   // G
-                               abs((cur_ba >> 4) - (ref_ba >> 4));      // B
+                        // SAD on 8-bit RGB channels
+                        sad += abs(cur_r - ref_r) + abs(cur_g - ref_g) + abs(cur_b - ref_b);
                     }
                 }
                 
@@ -251,6 +237,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     int block_idx = block_y * ((enc->width + 7) / 8) + block_x;
     tev_block_t *block = &enc->block_data[block_idx];
     
+    int start_x = block_x * BLOCK_SIZE;
+    int start_y = block_y * BLOCK_SIZE;
+    
     // Extract 8x8 RGB block from current frame
     for (int y = 0; y < BLOCK_SIZE; y++) {
         for (int x = 0; x < BLOCK_SIZE; x++) {
@@ -260,13 +249,10 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             
             if (pixel_x < enc->width && pixel_y < enc->height) {
                 int frame_offset = pixel_y * enc->width + pixel_x;
-                uint8_t rg = enc->current_rg[frame_offset];
-                uint8_t ba = enc->current_ba[frame_offset];
-                
-                // Convert back to RGB for DCT
-                enc->rgb_workspace[offset] = ((rg >> 4) & 0xF) * 255 / 15;     // R
-                enc->rgb_workspace[offset + 1] = (rg & 0xF) * 255 / 15;        // G
-                enc->rgb_workspace[offset + 2] = ((ba >> 4) & 0xF) * 255 / 15; // B
+                // Copy RGB data directly (preserving full 8-bit precision)
+                enc->rgb_workspace[offset] = enc->current_rgb[frame_offset * 3];      // R
+                enc->rgb_workspace[offset + 1] = enc->current_rgb[frame_offset * 3 + 1]; // G  
+                enc->rgb_workspace[offset + 2] = enc->current_rgb[frame_offset * 3 + 2]; // B
             } else {
                 // Pad with black
                 enc->rgb_workspace[offset] = 0;
@@ -286,17 +272,24 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     } else {
         // Try different modes and pick the best
         
-        // Try SKIP mode
+        // Try SKIP mode - compare with previous frame
         int skip_sad = 0;
-        for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++) {
-            int cur_rg = enc->current_rg[i];
-            int cur_ba = enc->current_ba[i];
-            int prev_rg = enc->previous_rg[i];
-            int prev_ba = enc->previous_ba[i];
-            
-            skip_sad += abs((cur_rg >> 4) - (prev_rg >> 4)) +
-                       abs((cur_rg & 0xF) - (prev_rg & 0xF)) +
-                       abs((cur_ba >> 4) - (prev_ba >> 4));
+        for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+            for (int dx = 0; dx < BLOCK_SIZE; dx++) {
+                int pixel_x = start_x + dx;
+                int pixel_y = start_y + dy;
+                if (pixel_x < enc->width && pixel_y < enc->height) {
+                    int offset = pixel_y * enc->width + pixel_x;
+                    int cur_r = enc->current_rgb[offset * 3];
+                    int cur_g = enc->current_rgb[offset * 3 + 1];
+                    int cur_b = enc->current_rgb[offset * 3 + 2];
+                    int prev_r = enc->previous_rgb[offset * 3];
+                    int prev_g = enc->previous_rgb[offset * 3 + 1];
+                    int prev_b = enc->previous_rgb[offset * 3 + 2];
+                    
+                    skip_sad += abs(cur_r - prev_r) + abs(cur_g - prev_g) + abs(cur_b - prev_b);
+                }
+            }
         }
         
         if (skip_sad < 8) { // Much stricter threshold for SKIP
@@ -323,14 +316,14 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                     int cur_offset = cur_y * enc->width + cur_x;
                     int ref_offset = ref_y * enc->width + ref_x;
                     
-                    uint8_t cur_rg = enc->current_rg[cur_offset];
-                    uint8_t cur_ba = enc->current_ba[cur_offset];
-                    uint8_t ref_rg = enc->previous_rg[ref_offset];
-                    uint8_t ref_ba = enc->previous_ba[ref_offset];
+                    uint8_t cur_r = enc->current_rgb[cur_offset * 3];
+                    uint8_t cur_g = enc->current_rgb[cur_offset * 3 + 1];
+                    uint8_t cur_b = enc->current_rgb[cur_offset * 3 + 2];
+                    uint8_t ref_r = enc->previous_rgb[ref_offset * 3];
+                    uint8_t ref_g = enc->previous_rgb[ref_offset * 3 + 1];
+                    uint8_t ref_b = enc->previous_rgb[ref_offset * 3 + 2];
                     
-                    motion_sad += abs((cur_rg >> 4) - (ref_rg >> 4)) +
-                                 abs((cur_rg & 0xF) - (ref_rg & 0xF)) +
-                                 abs((cur_ba >> 4) - (ref_ba >> 4));
+                    motion_sad += abs(cur_r - ref_r) + abs(cur_g - ref_g) + abs(cur_b - ref_b);
                 } else {
                     motion_sad += 48; // Penalty for out-of-bounds reference
                 }
@@ -570,7 +563,7 @@ static int process_frame(tev_encoder_t *enc, int frame_num, FILE *output) {
     }
     
     // Convert to 4096-color format
-    rgb_to_4096(rgb_buffer, enc->current_rg, enc->current_ba, enc->width * enc->height);
+    copy_rgb_frame(rgb_buffer, enc->current_rgb, enc->width * enc->height);
     free(rgb_buffer);
     
     int is_keyframe = (frame_num == 1) || (frame_num % KEYFRAME_INTERVAL == 0);
@@ -631,12 +624,9 @@ static int process_frame(tev_encoder_t *enc, int frame_num, FILE *output) {
     enc->total_output_bytes += 2 + 4 + compressed_size + 2;
     
     // Swap frame buffers for next frame
-    uint8_t *temp_rg = enc->previous_rg;
-    uint8_t *temp_ba = enc->previous_ba;
-    enc->previous_rg = enc->current_rg;
-    enc->previous_ba = enc->current_ba;
-    enc->current_rg = temp_rg;
-    enc->current_ba = temp_ba;
+    uint8_t *temp_rgb = enc->previous_rgb;
+    enc->previous_rgb = enc->current_rgb;
+    enc->current_rgb = temp_rgb;
     
     fprintf(stderr, "\rFrame %d/%d [%c] - Skip:%d Intra:%d Inter:%d - Ratio:%.1f%%", 
             frame_num, enc->total_frames, is_keyframe ? 'I' : 'P',
@@ -665,12 +655,9 @@ static int allocate_buffers(tev_encoder_t *enc) {
     int pixels = enc->width * enc->height;
     int blocks = ((enc->width + 7) / 8) * ((enc->height + 7) / 8);
     
-    enc->current_rg = malloc(pixels);
-    enc->current_ba = malloc(pixels);
-    enc->previous_rg = malloc(pixels);
-    enc->previous_ba = malloc(pixels);
-    enc->reference_rg = malloc(pixels);
-    enc->reference_ba = malloc(pixels);
+    enc->current_rgb = malloc(pixels * 3);   // RGB: 3 bytes per pixel
+    enc->previous_rgb = malloc(pixels * 3);
+    enc->reference_rgb = malloc(pixels * 3);
     
     enc->rgb_workspace = malloc(BLOCK_SIZE * BLOCK_SIZE * 3);
     enc->dct_workspace = malloc(BLOCK_SIZE * BLOCK_SIZE * 3 * sizeof(float));
@@ -686,9 +673,8 @@ static int allocate_buffers(tev_encoder_t *enc) {
     int gzip_init_result = deflateInit2(&enc->gzip_stream, Z_DEFAULT_COMPRESSION, 
                                        Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 for gzip format
     
-    return (enc->current_rg && enc->current_ba && enc->previous_rg && enc->previous_ba &&
-            enc->reference_rg && enc->reference_ba && enc->rgb_workspace && 
-            enc->dct_workspace && enc->block_data && enc->compressed_buffer && 
+    return (enc->current_rgb && enc->previous_rgb && enc->reference_rgb && 
+            enc->rgb_workspace && enc->dct_workspace && enc->block_data && enc->compressed_buffer && 
             enc->mp2_buffer && gzip_init_result == Z_OK);
 }
 
@@ -702,12 +688,9 @@ static void cleanup_encoder(tev_encoder_t *enc) {
     
     free(enc->input_file);
     free(enc->output_file);
-    free(enc->current_rg);
-    free(enc->current_ba);
-    free(enc->previous_rg);
-    free(enc->previous_ba);
-    free(enc->reference_rg);
-    free(enc->reference_ba);
+    free(enc->current_rgb);
+    free(enc->previous_rgb);
+    free(enc->reference_rgb);
     free(enc->rgb_workspace);
     free(enc->dct_workspace);
     free(enc->block_data);
