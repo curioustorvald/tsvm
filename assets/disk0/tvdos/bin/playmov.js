@@ -16,19 +16,15 @@ con.clear();con.curs_set(0)
 graphics.clearPixels(255)
 graphics.clearPixels2(240)
 
-
-let seqreadserial = require("seqread")
-let seqreadtape = require("seqreadtape")
 let seqread = undefined
 let fullFilePathStr = fullFilePath.full
 
 // select seqread driver to use
 if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAPE')) {
-    seqread = seqreadtape
-    seqread.seek(0)
+    seqread = require("seqreadtape")
 }
 else {
-    seqread = seqreadserial
+    seqread = require("seqread")
 }
 
 seqread.prepare(fullFilePathStr)

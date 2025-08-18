@@ -8,9 +8,6 @@ import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.math.cos
-import kotlin.math.sqrt
-import kotlin.math.PI
 
 class GraphicsJSR223Delegate(private val vm: VM) {
 
@@ -550,8 +547,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val qeb = ob - nb
                 val qea = if (useAlpha) oa - na else 0f
 
-                val offsets = longArrayOf(k+1,
-                    k+width-1,k+width,k+width+1,
+                val offsets = longArrayOf(
+                    k + 1,
+                    k + width - 1, k + width, k + width + 1,
                 )
 
                 offsets.forEachIndexed { index, offset ->
@@ -621,7 +619,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return (round(f * 8) + 7).coerceIn(0..15)
     }
     
-    fun blockEncodeToYCoCg(blockX: Int, blockY: Int, srcPtr: Int, width: Int, channels: Int, hasAlpha: Boolean, pattern: Int): List<Any> {
+    fun blockEncodeToYCoCgFourBits(blockX: Int, blockY: Int, srcPtr: Int, width: Int, channels: Int, hasAlpha: Boolean, pattern: Int): List<Any> {
         val Ys = IntArray(16)
         val As = IntArray(16)
         val COs = FloatArray(16)
@@ -658,12 +656,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         return listOf(Ys, As, COs, CGs)
     }
+
     fun encodeIpf1(srcPtr: Int, destPtr: Int, width: Int, height: Int, channels: Int, hasAlpha: Boolean, pattern: Int) {
         var writeCount = 0L
         
         for (blockY in 0 until ceil(height / 4f)) {
         for (blockX in 0 until ceil(width / 4f)) {
-            val (_1, _2, _3, _4) = blockEncodeToYCoCg(blockX, blockY, srcPtr, width, channels, hasAlpha, pattern)
+            val (_1, _2, _3, _4) = blockEncodeToYCoCgFourBits(blockX, blockY, srcPtr, width, channels, hasAlpha, pattern)
             val Ys = _1 as IntArray; val As = _2 as IntArray; val COs = _3 as FloatArray; val CGs = _4 as FloatArray
             
             // subsample by averaging
@@ -846,7 +845,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         for (blockY in 0 until ceil(height / 4f)) {
         for (blockX in 0 until ceil(width / 4f)) {
-            val (_1, _2, _3, _4) = blockEncodeToYCoCg(blockX, blockY, srcPtr, width, channels, hasAlpha, pattern)
+            val (_1, _2, _3, _4) = blockEncodeToYCoCgFourBits(blockX, blockY, srcPtr, width, channels, hasAlpha, pattern)
             val Ys = _1 as IntArray; val As = _2 as IntArray; val COs = _3 as FloatArray; val CGs = _4 as FloatArray
 
             // subsample by averaging
@@ -1265,74 +1264,236 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // TEV (TSVM Enhanced Video) format support
     // Created by Claude on 2025-08-17
 
-    val QUANT_TABLES = arrayOf(
-    // Quality 0 (lowest)
-    intArrayOf(80, 60, 50, 80, 120, 200, 255, 255,
-    55, 60, 70, 95, 130, 255, 255, 255,
-    70, 65, 80, 120, 200, 255, 255, 255,
-    70, 85, 110, 145, 255, 255, 255, 255,
-    90, 110, 185, 255, 255, 255, 255, 255,
-    120, 175, 255, 255, 255, 255, 255, 255,
-    245, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255),
-    // Quality 1-6 (simplified)
-    intArrayOf(40, 30, 25, 40, 60, 100, 128, 150,
-    28, 30, 35, 48, 65, 128, 150, 180,
-    35, 33, 40, 60, 100, 128, 150, 180,
-    35, 43, 55, 73, 128, 150, 180, 200,
-    45, 55, 93, 128, 150, 180, 200, 220,
-    60, 88, 128, 150, 180, 200, 220, 240,
-    123, 128, 150, 180, 200, 220, 240, 250,
-    128, 150, 180, 200, 220, 240, 250, 255),
-    intArrayOf(20, 15, 13, 20, 30, 50, 64, 75,
-    14, 15, 18, 24, 33, 64, 75, 90,
-    18, 17, 20, 30, 50, 64, 75, 90,
-    18, 22, 28, 37, 64, 75, 90, 100,
-    23, 28, 47, 64, 75, 90, 100, 110,
-    30, 44, 64, 75, 90, 100, 110, 120,
-    62, 64, 75, 90, 100, 110, 120, 125,
-    64, 75, 90, 100, 110, 120, 125, 128),
-    intArrayOf(16, 12, 10, 16, 24, 40, 51, 60,
-    11, 12, 14, 19, 26, 51, 60, 72,
-    14, 13, 16, 24, 40, 51, 60, 72,
-    14, 17, 22, 29, 51, 60, 72, 80,
-    18, 22, 37, 51, 60, 72, 80, 88,
-    24, 35, 51, 60, 72, 80, 88, 96,
-    49, 51, 60, 72, 80, 88, 96, 100,
-    51, 60, 72, 80, 88, 96, 100, 102),
-    intArrayOf(12, 9, 8, 12, 18, 30, 38, 45,
-    8, 9, 11, 14, 20, 38, 45, 54,
-    11, 10, 12, 18, 30, 38, 45, 54,
-    11, 13, 17, 22, 38, 45, 54, 60,
-    14, 17, 28, 38, 45, 54, 60, 66,
-    18, 26, 38, 45, 54, 60, 66, 72,
-    37, 38, 45, 54, 60, 66, 72, 75,
-    38, 45, 54, 60, 66, 72, 75, 77),
-    intArrayOf(10, 7, 6, 10, 15, 25, 32, 38,
-    7, 7, 9, 12, 16, 32, 38, 45,
-    9, 8, 10, 15, 25, 32, 38, 45,
-    9, 11, 14, 18, 32, 38, 45, 50,
-    12, 14, 23, 32, 38, 45, 50, 55,
-    15, 22, 32, 38, 45, 50, 55, 60,
-    31, 32, 38, 45, 50, 55, 60, 63,
-    32, 38, 45, 50, 55, 60, 63, 65),
-    intArrayOf(8, 6, 5, 8, 12, 20, 26, 30,
-    6, 6, 7, 10, 13, 26, 30, 36,
-    7, 7, 8, 12, 20, 26, 30, 36,
-    7, 9, 11, 15, 26, 30, 36, 40,
-    10, 11, 19, 26, 30, 36, 40, 44,
-    12, 17, 26, 30, 36, 40, 44, 48,
-    25, 26, 30, 36, 40, 44, 48, 50,
-    26, 30, 36, 40, 44, 48, 50, 52),
-    // Quality 7 (highest)
-    intArrayOf(2, 1, 1, 2, 3, 5, 6, 7,
-    1, 1, 1, 2, 3, 6, 7, 9,
-    1, 1, 2, 3, 5, 6, 7, 9,
-    1, 2, 3, 4, 6, 7, 9, 10,
-    2, 3, 5, 6, 7, 9, 10, 11,
-    3, 4, 6, 7, 9, 10, 11, 12,
-    6, 6, 7, 9, 10, 11, 12, 13,
-    6, 7, 9, 10, 11, 12, 13, 13)
+    // Quality settings for quantization (Y channel) - 16x16 tables
+    var QUANT_TABLES_Y: Array<IntArray> = arrayOf( // Quality 0 (lowest) - 16x16 table
+        intArrayOf(
+            80, 60, 50, 80, 120, 200, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            55, 60, 70, 95, 130, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            70, 65, 80, 120, 200, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            70, 85, 110, 145, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            90, 110, 185, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            120, 175, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            245, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+        ),  // Quality 1
+        intArrayOf(
+            40, 30, 25, 40, 60, 100, 128, 150, 128, 150, 180, 200, 220, 240, 250, 255,
+            28, 30, 35, 48, 65, 128, 150, 180, 150, 180, 200, 220, 240, 250, 255, 255,
+            35, 33, 40, 60, 100, 128, 150, 180, 150, 180, 200, 220, 240, 250, 255, 255,
+            35, 43, 55, 73, 128, 150, 180, 200, 180, 200, 220, 240, 250, 255, 255, 255,
+            45, 55, 93, 128, 150, 180, 200, 220, 200, 220, 240, 250, 255, 255, 255, 255,
+            60, 88, 128, 150, 180, 200, 220, 240, 220, 240, 250, 255, 255, 255, 255, 255,
+            123, 128, 150, 180, 200, 220, 240, 250, 240, 250, 255, 255, 255, 255, 255, 255,
+            128, 150, 180, 200, 220, 240, 250, 255, 250, 255, 255, 255, 255, 255, 255, 255,
+            128, 150, 180, 200, 220, 240, 250, 255, 250, 255, 255, 255, 255, 255, 255, 255,
+            150, 180, 200, 220, 240, 250, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            180, 200, 220, 240, 250, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            200, 220, 240, 250, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            220, 240, 250, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            240, 250, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            250, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+        ),  // Quality 2
+        intArrayOf(
+            20, 15, 13, 20, 30, 50, 64, 75, 64, 75, 90, 100, 110, 120, 125, 128,
+            14, 15, 18, 24, 33, 64, 75, 90, 75, 90, 100, 110, 120, 125, 128, 140,
+            18, 17, 20, 30, 50, 64, 75, 90, 75, 90, 100, 110, 120, 125, 128, 140,
+            18, 22, 28, 37, 64, 75, 90, 100, 90, 100, 110, 120, 125, 128, 140, 150,
+            23, 28, 47, 64, 75, 90, 100, 110, 100, 110, 120, 125, 128, 140, 150, 160,
+            30, 44, 64, 75, 90, 100, 110, 120, 110, 120, 125, 128, 140, 150, 160, 170,
+            62, 64, 75, 90, 100, 110, 120, 125, 120, 125, 128, 140, 150, 160, 170, 180,
+            64, 75, 90, 100, 110, 120, 125, 128, 125, 128, 140, 150, 160, 170, 180, 190,
+            64, 75, 90, 100, 110, 120, 125, 128, 125, 128, 140, 150, 160, 170, 180, 190,
+            75, 90, 100, 110, 120, 125, 128, 140, 128, 140, 150, 160, 170, 180, 190, 200,
+            90, 100, 110, 120, 125, 128, 140, 150, 140, 150, 160, 170, 180, 190, 200, 210,
+            100, 110, 120, 125, 128, 140, 150, 160, 150, 160, 170, 180, 190, 200, 210, 220,
+            110, 120, 125, 128, 140, 150, 160, 170, 160, 170, 180, 190, 200, 210, 220, 230,
+            120, 125, 128, 140, 150, 160, 170, 180, 170, 180, 190, 200, 210, 220, 230, 240,
+            125, 128, 140, 150, 160, 170, 180, 190, 180, 190, 200, 210, 220, 230, 240, 250,
+            128, 140, 150, 160, 170, 180, 190, 200, 190, 200, 210, 220, 230, 240, 250, 255
+        ),  // Quality 3
+        intArrayOf(
+            16, 12, 10, 16, 24, 40, 51, 60, 51, 60, 72, 80, 88, 96, 100, 102,
+            11, 12, 14, 19, 26, 51, 60, 72, 60, 72, 80, 88, 96, 100, 102, 110,
+            14, 13, 16, 24, 40, 51, 60, 72, 60, 72, 80, 88, 96, 100, 102, 110,
+            14, 17, 22, 29, 51, 60, 72, 80, 72, 80, 88, 96, 100, 102, 110, 120,
+            18, 22, 37, 51, 60, 72, 80, 88, 80, 88, 96, 100, 102, 110, 120, 130,
+            24, 35, 51, 60, 72, 80, 88, 96, 88, 96, 100, 102, 110, 120, 130, 140,
+            49, 51, 60, 72, 80, 88, 96, 100, 96, 100, 102, 110, 120, 130, 140, 150,
+            51, 60, 72, 80, 88, 96, 100, 102, 100, 102, 110, 120, 130, 140, 150, 160,
+            51, 60, 72, 80, 88, 96, 100, 102, 100, 102, 110, 120, 130, 140, 150, 160,
+            60, 72, 80, 88, 96, 100, 102, 110, 102, 110, 120, 130, 140, 150, 160, 170,
+            72, 80, 88, 96, 100, 102, 110, 120, 110, 120, 130, 140, 150, 160, 170, 180,
+            80, 88, 96, 100, 102, 110, 120, 130, 120, 130, 140, 150, 160, 170, 180, 190,
+            88, 96, 100, 102, 110, 120, 130, 140, 130, 140, 150, 160, 170, 180, 190, 200,
+            96, 100, 102, 110, 120, 130, 140, 150, 140, 150, 160, 170, 180, 190, 200, 210,
+            100, 102, 110, 120, 130, 140, 150, 160, 150, 160, 170, 180, 190, 200, 210, 220,
+            102, 110, 120, 130, 140, 150, 160, 170, 160, 170, 180, 190, 200, 210, 220, 230
+        ),  // Quality 4
+        intArrayOf(
+            12, 9, 8, 12, 18, 30, 38, 45, 38, 45, 54, 60, 66, 72, 75, 77,
+            8, 9, 11, 14, 20, 38, 45, 54, 45, 54, 60, 66, 72, 75, 77, 85,
+            11, 10, 12, 18, 30, 38, 45, 54, 45, 54, 60, 66, 72, 75, 77, 85,
+            11, 13, 17, 22, 38, 45, 54, 60, 54, 60, 66, 72, 75, 77, 85, 95,
+            14, 17, 28, 38, 45, 54, 60, 66, 60, 66, 72, 75, 77, 85, 95, 105,
+            18, 26, 38, 45, 54, 60, 66, 72, 66, 72, 75, 77, 85, 95, 105, 115,
+            37, 38, 45, 54, 60, 66, 72, 75, 72, 75, 77, 85, 95, 105, 115, 125,
+            38, 45, 54, 60, 66, 72, 75, 77, 75, 77, 85, 95, 105, 115, 125, 135,
+            38, 45, 54, 60, 66, 72, 75, 77, 75, 77, 85, 95, 105, 115, 125, 135,
+            45, 54, 60, 66, 72, 75, 77, 85, 77, 85, 95, 105, 115, 125, 135, 145,
+            54, 60, 66, 72, 75, 77, 85, 95, 85, 95, 105, 115, 125, 135, 145, 155,
+            60, 66, 72, 75, 77, 85, 95, 105, 95, 105, 115, 125, 135, 145, 155, 165,
+            66, 72, 75, 77, 85, 95, 105, 115, 105, 115, 125, 135, 145, 155, 165, 175,
+            72, 75, 77, 85, 95, 105, 115, 125, 115, 125, 135, 145, 155, 165, 175, 185,
+            75, 77, 85, 95, 105, 115, 125, 135, 125, 135, 145, 155, 165, 175, 185, 195,
+            77, 85, 95, 105, 115, 125, 135, 145, 135, 145, 155, 165, 175, 185, 195, 205
+        ),  // Quality 5
+        intArrayOf(
+            10, 7, 6, 10, 15, 25, 32, 38, 32, 38, 45, 50, 55, 60, 63, 65,
+            7, 7, 9, 12, 16, 32, 38, 45, 38, 45, 50, 55, 60, 63, 65, 70,
+            9, 8, 10, 15, 25, 32, 38, 45, 38, 45, 50, 55, 60, 63, 65, 70,
+            9, 11, 14, 18, 32, 38, 45, 50, 45, 50, 55, 60, 63, 65, 70, 75,
+            12, 14, 23, 32, 38, 45, 50, 55, 50, 55, 60, 63, 65, 70, 75, 80,
+            15, 22, 32, 38, 45, 50, 55, 60, 55, 60, 63, 65, 70, 75, 80, 85,
+            31, 32, 38, 45, 50, 55, 60, 63, 60, 63, 65, 70, 75, 80, 85, 90,
+            32, 38, 45, 50, 55, 60, 63, 65, 63, 65, 70, 75, 80, 85, 90, 95,
+            32, 38, 45, 50, 55, 60, 63, 65, 63, 65, 70, 75, 80, 85, 90, 95,
+            38, 45, 50, 55, 60, 63, 65, 70, 65, 70, 75, 80, 85, 90, 95, 100,
+            45, 50, 55, 60, 63, 65, 70, 75, 70, 75, 80, 85, 90, 95, 100, 105,
+            50, 55, 60, 63, 65, 70, 75, 80, 75, 80, 85, 90, 95, 100, 105, 110,
+            55, 60, 63, 65, 70, 75, 80, 85, 80, 85, 90, 95, 100, 105, 110, 115,
+            60, 63, 65, 70, 75, 80, 85, 90, 85, 90, 95, 100, 105, 110, 115, 120,
+            63, 65, 70, 75, 80, 85, 90, 95, 90, 95, 100, 105, 110, 115, 120, 125,
+            65, 70, 75, 80, 85, 90, 95, 100, 95, 100, 105, 110, 115, 120, 125, 130
+        ),  // Quality 6
+        intArrayOf(
+            8, 6, 5, 8, 12, 20, 26, 30, 26, 30, 36, 40, 44, 48, 50, 52,
+            6, 6, 7, 10, 13, 26, 30, 36, 30, 36, 40, 44, 48, 50, 52, 56,
+            7, 7, 8, 12, 20, 26, 30, 36, 30, 36, 40, 44, 48, 50, 52, 56,
+            7, 9, 11, 15, 26, 30, 36, 40, 36, 40, 44, 48, 50, 52, 56, 60,
+            10, 11, 19, 26, 30, 36, 40, 44, 40, 44, 48, 50, 52, 56, 60, 64,
+            12, 17, 26, 30, 36, 40, 44, 48, 44, 48, 50, 52, 56, 60, 64, 68,
+            25, 26, 30, 36, 40, 44, 48, 50, 48, 50, 52, 56, 60, 64, 68, 72,
+            26, 30, 36, 40, 44, 48, 50, 52, 50, 52, 56, 60, 64, 68, 72, 76,
+            26, 30, 36, 40, 44, 48, 50, 52, 50, 52, 56, 60, 64, 68, 72, 76,
+            30, 36, 40, 44, 48, 50, 52, 56, 52, 56, 60, 64, 68, 72, 76, 80,
+            36, 40, 44, 48, 50, 52, 56, 60, 56, 60, 64, 68, 72, 76, 80, 84,
+            40, 44, 48, 50, 52, 56, 60, 64, 60, 64, 68, 72, 76, 80, 84, 88,
+            44, 48, 50, 52, 56, 60, 64, 68, 64, 68, 72, 76, 80, 84, 88, 92,
+            48, 50, 52, 56, 60, 64, 68, 72, 68, 72, 76, 80, 84, 88, 92, 96,
+            50, 52, 56, 60, 64, 68, 72, 76, 72, 76, 80, 84, 88, 92, 96, 100,
+            52, 56, 60, 64, 68, 72, 76, 80, 76, 80, 84, 88, 92, 96, 100, 104
+        ),  // Quality 7 (highest)
+        intArrayOf(
+            2, 1, 1, 2, 3, 5, 6, 7, 6, 7, 8, 9, 10, 11, 12, 13,
+            1, 1, 1, 2, 3, 6, 7, 9, 7, 9, 10, 11, 12, 13, 14, 15,
+            1, 1, 2, 3, 5, 6, 7, 9, 7, 9, 10, 11, 12, 13, 14, 15,
+            1, 2, 3, 4, 6, 7, 9, 10, 9, 10, 11, 12, 13, 14, 15, 16,
+            2, 3, 5, 6, 7, 9, 10, 11, 10, 11, 12, 13, 14, 15, 16, 17,
+            3, 4, 6, 7, 9, 10, 11, 12, 11, 12, 13, 14, 15, 16, 17, 18,
+            6, 6, 7, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 18, 19,
+            6, 7, 9, 10, 11, 12, 13, 14, 13, 14, 15, 16, 17, 18, 19, 20,
+            6, 7, 9, 10, 11, 12, 13, 14, 13, 14, 15, 16, 17, 18, 19, 20,
+            7, 9, 10, 11, 12, 13, 14, 15, 14, 15, 16, 17, 18, 19, 20, 21,
+            9, 10, 11, 12, 13, 14, 15, 16, 15, 16, 17, 18, 19, 20, 21, 22,
+            10, 11, 12, 13, 14, 15, 16, 17, 16, 17, 18, 19, 20, 21, 22, 23,
+            11, 12, 13, 14, 15, 16, 17, 18, 17, 18, 19, 20, 21, 22, 23, 24,
+            12, 13, 14, 15, 16, 17, 18, 19, 18, 19, 20, 21, 22, 23, 24, 25,
+            13, 14, 15, 16, 17, 18, 19, 20, 19, 20, 21, 22, 23, 24, 25, 26,
+            14, 15, 16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 26, 27
+        )
+    )
+
+    // Quality settings for quantization (Chroma channels - 8x8)
+    var QUANT_TABLES_C: Array<IntArray> = arrayOf( // Quality 0 (lowest)
+        intArrayOf(
+            120, 90, 75, 120, 180, 255, 255, 255,
+            83, 90, 105, 143, 195, 255, 255, 255,
+            105, 98, 120, 180, 255, 255, 255, 255,
+            105, 128, 165, 218, 255, 255, 255, 255,
+            135, 165, 255, 255, 255, 255, 255, 255,
+            180, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255
+        ),  // Quality 1
+        intArrayOf(
+            60, 45, 38, 60, 90, 150, 192, 225,
+            42, 45, 53, 72, 98, 192, 225, 255,
+            53, 49, 60, 90, 150, 192, 225, 255,
+            53, 64, 83, 109, 192, 225, 255, 255,
+            68, 83, 139, 192, 225, 255, 255, 255,
+            90, 132, 192, 225, 255, 255, 255, 255,
+            185, 192, 225, 255, 255, 255, 255, 255,
+            192, 225, 255, 255, 255, 255, 255, 255
+        ),  // Quality 2
+        intArrayOf(
+            30, 23, 19, 30, 45, 75, 96, 113,
+            21, 23, 27, 36, 49, 96, 113, 135,
+            27, 25, 30, 45, 75, 96, 113, 135,
+            27, 32, 42, 55, 96, 113, 135, 150,
+            34, 42, 70, 96, 113, 135, 150, 165,
+            45, 66, 96, 113, 135, 150, 165, 180,
+            93, 96, 113, 135, 150, 165, 180, 188,
+            96, 113, 135, 150, 165, 180, 188, 192
+        ),  // Quality 3
+        intArrayOf(
+            24, 18, 15, 24, 36, 60, 77, 90,
+            17, 18, 21, 29, 39, 77, 90, 108,
+            21, 20, 24, 36, 60, 77, 90, 108,
+            21, 26, 33, 44, 77, 90, 108, 120,
+            27, 33, 56, 77, 90, 108, 120, 132,
+            36, 53, 77, 90, 108, 120, 132, 144,
+            74, 77, 90, 108, 120, 132, 144, 150,
+            77, 90, 108, 120, 132, 144, 150, 154
+        ),  // Quality 4
+        intArrayOf(
+            18, 14, 12, 18, 27, 45, 57, 68,
+            13, 14, 16, 22, 30, 57, 68, 81,
+            16, 15, 18, 27, 45, 57, 68, 81,
+            16, 20, 25, 33, 57, 68, 81, 90,
+            20, 25, 42, 57, 68, 81, 90, 99,
+            27, 39, 57, 68, 81, 90, 99, 108,
+            56, 57, 68, 81, 90, 99, 108, 113,
+            57, 68, 81, 90, 99, 108, 113, 116
+        ),  // Quality 5
+        intArrayOf(
+            15, 11, 9, 15, 23, 38, 48, 57,
+            11, 11, 13, 18, 24, 48, 57, 68,
+            13, 12, 15, 23, 38, 48, 57, 68,
+            13, 16, 21, 28, 48, 57, 68, 75,
+            17, 21, 35, 48, 57, 68, 75, 83,
+            23, 33, 48, 57, 68, 75, 83, 90,
+            46, 48, 57, 68, 75, 83, 90, 94,
+            48, 57, 68, 75, 83, 90, 94, 96
+        ),  // Quality 6
+        intArrayOf(
+            12, 9, 8, 12, 18, 30, 39, 45,
+            9, 9, 11, 14, 20, 39, 45, 54,
+            11, 10, 12, 18, 30, 39, 45, 54,
+            11, 13, 17, 22, 39, 45, 54, 60,
+            14, 17, 28, 39, 45, 54, 60, 66,
+            18, 26, 39, 45, 54, 60, 66, 72,
+            38, 39, 45, 54, 60, 66, 72, 75,
+            39, 45, 54, 60, 66, 72, 75, 77
+        ),  // Quality 7 (highest)
+        intArrayOf(
+            3, 2, 2, 3, 5, 8, 9, 11,
+            2, 2, 2, 3, 5, 9, 11, 14,
+            2, 2, 3, 5, 8, 9, 11, 14,
+            2, 3, 5, 6, 9, 11, 14, 15,
+            3, 5, 8, 9, 11, 14, 15, 17,
+            5, 6, 9, 11, 14, 15, 17, 18,
+            9, 9, 11, 14, 15, 17, 18, 20,
+            9, 11, 14, 15, 17, 18, 20, 20
+        )
     )
 
     /**
@@ -1424,8 +1585,77 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
+    // 16x16 IDCT for Y channel (YCoCg-R format)
+    private fun tevIdct16x16(coeffs: IntArray, quantTable: IntArray): IntArray {
+        val dctBasis = Array(16) { u ->
+            Array(16) { x ->
+                val cu = if (u == 0) 1.0 / kotlin.math.sqrt(2.0) else 1.0
+                cu * kotlin.math.cos((2.0 * x + 1.0) * u * kotlin.math.PI / 32.0) / 4.0
+            }
+        }
+        
+        val dctCoeffs = Array(16) { DoubleArray(16) }
+        val result = IntArray(256)  // 16x16 = 256
+        
+        // Convert integer coefficients to 2D array and dequantize
+        for (u in 0 until 16) {
+            for (v in 0 until 16) {
+                val idx = u * 16 + v
+                val coeff = coeffs[idx]
+                dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+            }
+        }
+        
+        // Apply 2D inverse DCT
+        for (x in 0 until 16) {
+            for (y in 0 until 16) {
+                var sum = 0.0
+                for (u in 0 until 16) {
+                    for (v in 0 until 16) {
+                        sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
+                    }
+                }
+                val pixel = kotlin.math.max(0.0, kotlin.math.min(255.0, sum + 128.0))
+                result[y * 16 + x] = pixel.toInt()
+            }
+        }
+        
+        return result
+    }
+
+    // YCoCg-R to RGB conversion with 4:2:0 chroma upsampling
+    fun tevYcocgToRGB(yBlock: IntArray, coBlock: IntArray, cgBlock: IntArray): IntArray {
+        val rgbData = IntArray(16 * 16 * 3)  // R,G,B for 16x16 pixels
+        
+        for (py in 0 until 16) {
+            for (px in 0 until 16) {
+                val yIdx = py * 16 + px
+                val y = yBlock[yIdx]
+                
+                // Get chroma values from subsampled 8x8 blocks (nearest neighbor upsampling)
+                val coIdx = (py / 2) * 8 + (px / 2)
+                val co = coBlock[coIdx]
+                val cg = cgBlock[coIdx]
+                
+                // YCoCg-R inverse transform
+                val tmp = y - (cg shr 1)
+                val g = cg + tmp
+                val b = tmp - (co shr 1)
+                val r = b + co
+                
+                // Clamp and store RGB
+                val baseIdx = (py * 16 + px) * 3
+                rgbData[baseIdx] = kotlin.math.max(0, kotlin.math.min(255, r))     // R
+                rgbData[baseIdx + 1] = kotlin.math.max(0, kotlin.math.min(255, g)) // G
+                rgbData[baseIdx + 2] = kotlin.math.max(0, kotlin.math.min(255, b)) // B
+            }
+        }
+        
+        return rgbData
+    }
+
     /**
-     * Hardware-accelerated TEV frame decoder
+     * Hardware-accelerated TEV frame decoder for YCoCg-R 4:2:0 format
      * Decodes compressed TEV block data directly to framebuffer
      * 
      * @param blockDataPtr Pointer to decompressed TEV block data
@@ -1439,10 +1669,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, quality: Int) {
 
-        val blocksX = (width + 7) / 8
-        val blocksY = (height + 7) / 8
+        val blocksX = (width + 15) / 16  // 16x16 blocks now
+        val blocksY = (height + 15) / 16
         
-        val quantTable = QUANT_TABLES[quality]
+        val quantTableY = QUANT_TABLES_Y[quality]
+        val quantTableC = QUANT_TABLES_C[quality]
         
         var readPtr = blockDataPtr
 
@@ -1452,8 +1683,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX) {
-                val startX = bx * 8
-                val startY = by * 8
+                val startX = bx * 16
+                val startY = by * 16
                 
                 // Read TEV block header (7 bytes)
                 val mode = vm.peek(readPtr)!!.toUint()
@@ -1463,19 +1694,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                           ((vm.peek(readPtr + 4)!!.toUint()) shl 8)).toShort().toInt()
                 readPtr += 7 // Skip CBP field
                 
-                // Read DCT coefficients (3 channels × 64 coefficients × 2 bytes)
-                val dctCoeffs = IntArray(3 * 64)
-                for (i in 0 until 3 * 64) {
-                    val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                    dctCoeffs[i] = coeff
-                    readPtr += 2
-                }
-                
                 when (mode) {
                     0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame
-                        for (dy in 0 until 8) {
-                            for (dx in 0 until 8) {
+                        for (dy in 0 until 16) {
+                            for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
                                 if (x < width && y < height) {
@@ -1496,8 +1718,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                     
                     0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB
-                        for (dy in 0 until 8) {
-                            for (dx in 0 until 8) {
+                        for (dy in 0 until 16) {
+                            for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
                                 val refX = x + mvX
@@ -1530,36 +1752,57 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                     }
                     
-                    else -> { // TEV_MODE_INTRA (0x01) or TEV_MODE_INTER (0x02) - Full DCT decode
-                        // Hardware-accelerated IDCT for all three channels
-                        val rCoeffs = dctCoeffs.sliceArray(0 * 64 until 1 * 64)  // R channel
-                        val gCoeffs = dctCoeffs.sliceArray(1 * 64 until 2 * 64)  // G channel
-                        val bCoeffs = dctCoeffs.sliceArray(2 * 64 until 3 * 64)  // B channel
+                    else -> { // TEV_MODE_INTRA (0x01) or TEV_MODE_INTER (0x02) - Full YCoCg-R DCT decode
+                        // Read DCT coefficients: Y (16x16=256), Co (8x8=64), Cg (8x8=64)
+                        val yCoeffs = IntArray(256)
+                        val coCoeffs = IntArray(64)
+                        val cgCoeffs = IntArray(64)
+                        
+                        // Read Y coefficients (16x16 = 256 coefficients × 2 bytes)
+                        for (i in 0 until 256) {
+                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
+                            yCoeffs[i] = coeff
+                            readPtr += 2
+                        }
+                        
+                        // Read Co coefficients (8x8 = 64 coefficients × 2 bytes)
+                        for (i in 0 until 64) {
+                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
+                            coCoeffs[i] = coeff
+                            readPtr += 2
+                        }
+                        
+                        // Read Cg coefficients (8x8 = 64 coefficients × 2 bytes)  
+                        for (i in 0 until 64) {
+                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
+                            cgCoeffs[i] = coeff
+                            readPtr += 2
+                        }
                         
                         // Perform hardware IDCT for each channel
-                        val rBlock = tevIdct8x8(rCoeffs, quantTable)
-                        val gBlock = tevIdct8x8(gCoeffs, quantTable)
-                        val bBlock = tevIdct8x8(bCoeffs, quantTable)
+                        val yBlock = tevIdct16x16(yCoeffs, quantTableY)
+                        val coBlock = tevIdct8x8(coCoeffs, quantTableC)
+                        val cgBlock = tevIdct8x8(cgCoeffs, quantTableC)
                         
-                        // Fill 8x8 block with IDCT results
-                        for (dy in 0 until 8) {
-                            for (dx in 0 until 8) {
+                        // Convert YCoCg-R to RGB
+                        val rgbData = tevYcocgToRGB(yBlock, coBlock, cgBlock)
+                        
+                        // Store RGB data to frame buffer
+                        for (dy in 0 until 16) {
+                            for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
                                 if (x < width && y < height) {
-                                    val blockOffset = dy * 8 + dx
+                                    val rgbIdx = (dy * 16 + dx) * 3
                                     val imageOffset = y.toLong() * width + x
+                                    val bufferOffset = imageOffset * 3
                                     
-                                    // Get RGB values from IDCT results
-                                    val r = rBlock[blockOffset]
-                                    val g = gBlock[blockOffset]
-                                    val b = bBlock[blockOffset]
-
-                                    // Store full 8-bit RGB values to RGB buffer  
-                                    val rgbOffset = imageOffset * 3
-                                    vm.poke(currentRGBAddr + rgbOffset*thisAddrIncVec, r.toByte())
-                                    vm.poke(currentRGBAddr + (rgbOffset + 1)*thisAddrIncVec, g.toByte())
-                                    vm.poke(currentRGBAddr + (rgbOffset + 2)*thisAddrIncVec, b.toByte())
+                                    vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, rgbData[rgbIdx].toByte())
+                                    vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, rgbData[rgbIdx + 1].toByte()) 
+                                    vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, rgbData[rgbIdx + 2].toByte())
                                 }
                             }
                         }
@@ -1567,5 +1810,73 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
+    }
+
+    // YCoCg-R transform for 16x16 Y blocks and 8x8 chroma blocks (4:2:0 subsampling)
+    fun blockEncodeToYCoCgR16x16(blockX: Int, blockY: Int, srcPtr: Int, width: Int, height: Int): List<IntArray> {
+        val yBlock = IntArray(16 * 16)  // 16x16 Y
+        val coBlock = IntArray(8 * 8)   // 8x8 Co (subsampled)
+        val cgBlock = IntArray(8 * 8)   // 8x8 Cg (subsampled)
+        val incVec = if (srcPtr >= 0) 1L else -1L
+        
+        // Process 16x16 Y block
+        for (py in 0 until 16) {
+            for (px in 0 until 16) {
+                val ox = blockX * 16 + px
+                val oy = blockY * 16 + py
+                if (ox < width && oy < height) {
+                    val offset = 3 * (oy * width + ox)
+                    val r = vm.peek(srcPtr + offset * incVec)!!.toUint()
+                    val g = vm.peek(srcPtr + (offset + 1) * incVec)!!.toUint() 
+                    val b = vm.peek(srcPtr + (offset + 2) * incVec)!!.toUint()
+                    
+                    // YCoCg-R transform
+                    val co = r - b
+                    val tmp = b + (co shr 1)
+                    val cg = g - tmp
+                    val y = tmp + (cg shr 1)
+                    
+                    yBlock[py * 16 + px] = y
+                }
+            }
+        }
+        
+        // Process 8x8 Co/Cg blocks with 4:2:0 subsampling (average 2x2 pixels)
+        for (py in 0 until 8) {
+            for (px in 0 until 8) {
+                var coSum = 0
+                var cgSum = 0
+                var count = 0
+                
+                // Average 2x2 block of pixels for chroma subsampling
+                for (dy in 0 until 2) {
+                    for (dx in 0 until 2) {
+                        val ox = blockX * 16 + px * 2 + dx
+                        val oy = blockY * 16 + py * 2 + dy
+                        if (ox < width && oy < height) {
+                            val offset = 3 * (oy * width + ox)
+                            val r = vm.peek(srcPtr + offset * incVec)!!.toUint()
+                            val g = vm.peek(srcPtr + (offset + 1) * incVec)!!.toUint()
+                            val b = vm.peek(srcPtr + (offset + 2) * incVec)!!.toUint()
+                            
+                            val co = r - b
+                            val tmp = b + (co shr 1)
+                            val cg = g - tmp
+                            
+                            coSum += co
+                            cgSum += cg
+                            count++
+                        }
+                    }
+                }
+                
+                if (count > 0) {
+                    coBlock[py * 8 + px] = coSum / count
+                    cgBlock[py * 8 + px] = cgSum / count
+                }
+            }
+        }
+        
+        return listOf(yBlock, coBlock, cgBlock)
     }
 }

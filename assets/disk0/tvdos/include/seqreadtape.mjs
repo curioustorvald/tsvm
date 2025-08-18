@@ -251,5 +251,6 @@ exports = {
     getCurrentTapeDevice,
     isReady,
     // Enhanced functions
-    seek
+    seek,
+    rewind
 }
