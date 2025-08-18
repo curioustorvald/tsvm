@@ -18,95 +18,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
     }
 
-    /**
-     * Upload RGB frame buffer to graphics framebuffer with dithering
-     * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
-     * @param rgPlaneAddr Destination RG framebuffer 
-     * @param baPlaneAddr Destination BA framebuffer
-     * @param width Frame width
-     * @param height Frame height
-     */
-    fun uploadRGBToFramebuffer(rgbAddr: Long, rgPlaneAddr: Long, baPlaneAddr: Long, width: Int, height: Int, frameCounter: Int) {
-        val rgAddrIncVec = if (rgPlaneAddr >= 0) 1 else -1
-        val baAddrIncVec = if (baPlaneAddr >= 0) 1 else -1
-        val rgbAddrIncVec = if (rgbAddr >= 0) 1 else -1
-        
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val pixelOffset = y.toLong() * width + x
-                val rgbOffset = pixelOffset * 3 * rgbAddrIncVec
-                
-                // Read RGB values
-                val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
-                val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
-                val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
-                
-                // Apply Bayer dithering and convert to 4-bit
-                val r4 = ditherValue(r, x, y, frameCounter)
-                val g4 = ditherValue(g, x, y, frameCounter)
-                val b4 = ditherValue(b, x, y, frameCounter)
-                
-                // Pack into 4096-color format
-                val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB
-                val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
-                
-                // Write to framebuffer
-                vm.poke(rgPlaneAddr + pixelOffset * rgAddrIncVec, rgValue.toByte())
-                vm.poke(baPlaneAddr + pixelOffset * baAddrIncVec, baValue.toByte())
-            }
-        }
-    }
-
-    /**
-     * Apply Bayer dithering to reduce banding when quantizing to 4-bit
-     */
-    private fun ditherValue(value: Int, x: Int, y: Int, f: Int): Int {
-        val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
-        val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
-        return round(15f * q)
-    }
-
-    /**
-     * Perform IDCT on a single channel with integer coefficients
-     */
-    private fun tevIdct8x8(coeffs: IntArray, quantTable: IntArray): IntArray {
-        // Use the same DCT basis as tevIdct8x8
-        val dctBasis = Array(8) { u ->
-            Array(8) { x ->
-                val cu = if (u == 0) 1.0 / kotlin.math.sqrt(2.0) else 1.0
-                cu * kotlin.math.cos((2.0 * x + 1.0) * u * kotlin.math.PI / 16.0) / 2.0
-            }
-        }
-        
-        val dctCoeffs = Array(8) { DoubleArray(8) }
-        val result = IntArray(64)
-        
-        // Convert integer coefficients to 2D array and dequantize
-        for (u in 0 until 8) {
-            for (v in 0 until 8) {
-                val idx = u * 8 + v
-                val coeff = coeffs[idx]
-                dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
-            }
-        }
-        
-        // Apply 2D inverse DCT
-        for (x in 0 until 8) {
-            for (y in 0 until 8) {
-                var sum = 0.0
-                for (u in 0 until 8) {
-                    for (v in 0 until 8) {
-                        sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
-                    }
-                }
-                val pixel = kotlin.math.max(0.0, kotlin.math.min(255.0, sum + 128.0))
-                result[y * 8 + x] = pixel.toInt()
-            }
-        }
-        
-        return result
-    }
-
     fun getGpuMemBase(): Int {
         return -1 - (1048576 * (vm.findPeriIndexByType(VM.PERITYPE_GPU_AND_TERM) ?: 0))
     }
@@ -1354,245 +1265,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // TEV (TSVM Enhanced Video) format support
     // Created by Claude on 2025-08-17
 
-    /**
-     * Fast 8x8 DCT transform optimized for video compression
-     * @param blockPtr pointer to 64 RGB values (192 bytes: R,G,B,R,G,B...)
-     * @param dctPtr pointer to output DCT coefficients (192 floats: 64*3 channels)
-     */
-    fun tevDct8x8(blockPtr: Int, dctPtr: Int) {
-        val gpu = getFirstGPU() ?: return
-        
-        // DCT-II basis functions pre-computed for 8x8 blocks
-        val dctBasis = Array(8) { u ->
-            Array(8) { x ->
-                val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
-                cu * cos((2.0 * x + 1.0) * u * PI / 16.0) / 2.0
-            }
-        }
-        
-        val block = Array(3) { Array(8) { DoubleArray(8) } } // R,G,B channels
-        val dctCoeffs = Array(3) { Array(8) { DoubleArray(8) } }
-        
-        // Read RGB block from memory
-        for (y in 0..7) {
-            for (x in 0..7) {
-                val offset = (y * 8 + x) * 3
-                val r = vm.peek(blockPtr.toLong() + offset)!!.toUint()
-                val g = vm.peek(blockPtr.toLong() + offset + 1)!!.toUint()
-                val b = vm.peek(blockPtr.toLong() + offset + 2)!!.toUint()
-                
-                // Convert to 0-1 range and center around 0
-                block[0][y][x] = (r / 255.0) - 0.5
-                block[1][y][x] = (g / 255.0) - 0.5
-                block[2][y][x] = (b / 255.0) - 0.5
-            }
-        }
-        
-        // Apply 2D DCT to each channel
-        for (channel in 0..2) {
-            for (u in 0..7) {
-                for (v in 0..7) {
-                    var sum = 0.0
-                    for (x in 0..7) {
-                        for (y in 0..7) {
-                            sum += dctBasis[u][x] * dctBasis[v][y] * block[channel][y][x]
-                        }
-                    }
-                    dctCoeffs[channel][u][v] = sum
-                }
-            }
-        }
-        
-        // Write DCT coefficients to memory (as IEEE 754 floats)
-        for (channel in 0..2) {
-            for (u in 0..7) {
-                for (v in 0..7) {
-                    val offset = (channel * 64 + u * 8 + v) * 4
-                    val floatBits = java.lang.Float.floatToIntBits(dctCoeffs[channel][u][v].toFloat())
-                    vm.poke(dctPtr.toLong() + offset, (floatBits and 0xFF).toByte())
-                    vm.poke(dctPtr.toLong() + offset + 1, ((floatBits shr 8) and 0xFF).toByte())
-                    vm.poke(dctPtr.toLong() + offset + 2, ((floatBits shr 16) and 0xFF).toByte())
-                    vm.poke(dctPtr.toLong() + offset + 3, ((floatBits shr 24) and 0xFF).toByte())
-                }
-            }
-        }
-    }
-
-
-    /**
-     * Motion compensation: copy 8x8 block with sub-pixel interpolation
-     * @param srcRG source R|G framebuffer address  
-     * @param srcBA source B|A framebuffer address
-     * @param destRG destination R|G framebuffer address
-     * @param destBA destination B|A framebuffer address
-     * @param srcX source X coordinate (in pixels)
-     * @param srcY source Y coordinate (in pixels)
-     * @param destX destination X coordinate (in pixels)
-     * @param destY destination Y coordinate (in pixels)
-     * @param mvX motion vector X (in 1/4 pixel units)
-     * @param mvY motion vector Y (in 1/4 pixel units)
-     */
-    fun tevMotionCopy8x8(srcRG: Int, srcBA: Int, destRG: Int, destBA: Int, 
-                        srcX: Int, srcY: Int, destX: Int, destY: Int, mvX: Int, mvY: Int) {
-        val gpu = getFirstGPU() ?: return
-        val width = gpu.config.width
-        val height = gpu.config.height
-        
-        // Calculate actual source position with motion vector
-        val actualSrcX = srcX + mvX / 4.0
-        val actualSrcY = srcY + mvY / 4.0
-        
-        // For sub-pixel precision, use bilinear interpolation
-        for (dy in 0..7) {
-            for (dx in 0..7) {
-                val sx = actualSrcX + dx
-                val sy = actualSrcY + dy
-                
-                if (sx >= 0 && sy >= 0 && sx < width - 1 && sy < height - 1) {
-                    // Integer and fractional parts
-                    val ix = sx.toInt()
-                    val iy = sy.toInt() 
-                    val fx = sx - ix
-                    val fy = sy - iy
-                    
-                    // Read 2x2 neighborhood for interpolation
-                    val srcOffset00 = iy * width + ix
-                    val srcOffset01 = iy * width + (ix + 1)
-                    val srcOffset10 = (iy + 1) * width + ix
-                    val srcOffset11 = (iy + 1) * width + (ix + 1)
-                    
-                    val rg00 = vm.peek(srcRG.toLong() + srcOffset00)!!.toUint()
-                    val rg01 = vm.peek(srcRG.toLong() + srcOffset01)!!.toUint()
-                    val rg10 = vm.peek(srcRG.toLong() + srcOffset10)!!.toUint()
-                    val rg11 = vm.peek(srcRG.toLong() + srcOffset11)!!.toUint()
-                    
-                    val ba00 = vm.peek(srcBA.toLong() + srcOffset00)!!.toUint()
-                    val ba01 = vm.peek(srcBA.toLong() + srcOffset01)!!.toUint()
-                    val ba10 = vm.peek(srcBA.toLong() + srcOffset10)!!.toUint()
-                    val ba11 = vm.peek(srcBA.toLong() + srcOffset11)!!.toUint()
-                    
-                    // Bilinear interpolation
-                    val rgTop = rg00 * (1 - fx) + rg01 * fx
-                    val rgBot = rg10 * (1 - fx) + rg11 * fx
-                    val rgFinal = (rgTop * (1 - fy) + rgBot * fy).toInt()
-                    
-                    val baTop = ba00 * (1 - fx) + ba01 * fx
-                    val baBot = ba10 * (1 - fx) + ba11 * fx
-                    val baFinal = (baTop * (1 - fy) + baBot * fy).toInt()
-                    
-                    // Write to destination
-                    val destOffset = (destY + dy) * width + (destX + dx)
-                    if (destX + dx < width && destY + dy < height) {
-                        vm.poke(destRG.toLong() + destOffset, rgFinal.toByte())
-                        vm.poke(destBA.toLong() + destOffset, baFinal.toByte())
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Convert 8x8 RGB block to 4096-color format (4:4:4 RGB)
-     * @param rgbPtr pointer to RGB block (192 bytes)
-     * @param destRG destination R|G framebuffer
-     * @param destBA destination B|A framebuffer  
-     * @param blockX block X coordinate (in 8-pixel units)
-     * @param blockY block Y coordinate (in 8-pixel units)
-     */
-    fun tevRgbTo4096(rgbPtr: Int, destRG: Int, destBA: Int, blockX: Int, blockY: Int, frameCounter: Int) {
-        val gpu = getFirstGPU() ?: return
-        val width = gpu.config.width
-        
-        for (y in 0..7) {
-            for (x in 0..7) {
-                val rgbOffset = (y * 8 + x) * 3
-                val r = vm.peek(rgbPtr.toLong() + rgbOffset)!!.toUint()
-                val g = vm.peek(rgbPtr.toLong() + rgbOffset + 1)!!.toUint()
-                val b = vm.peek(rgbPtr.toLong() + rgbOffset + 2)!!.toUint()
-                
-                val pixelX = blockX * 8 + x
-                val pixelY = blockY * 8 + y
-                
-                // Convert to 4-bit per channel with dithering (4096 colors)
-                val r4 = ditherValue(r, pixelX, pixelY, frameCounter)
-                val g4 = ditherValue(g, pixelX, pixelY, frameCounter)
-                val b4 = ditherValue(b, pixelX, pixelY, frameCounter)
-                val destOffset = pixelY * width + pixelX
-                
-                if (pixelX < width && pixelY < gpu.config.height) {
-                    vm.poke(destRG.toLong() + destOffset, ((r4 shl 4) or g4).toByte())
-                    vm.poke(destBA.toLong() + destOffset, ((b4 shl 4) or 15).toByte()) // Alpha = 15 (opaque)
-                }
-            }
-        }
-    }
-
-    /**
-     * Motion estimation: find best motion vector for 8x8 block
-     * @param refRG reference frame R|G data
-     * @param refBA reference frame B|A data
-     * @param curRG current frame R|G data
-     * @param curBA current frame B|A data
-     * @param blockX block X coordinate
-     * @param blockY block Y coordinate
-     * @param searchRange search range in pixels
-     * @return packed motion vector (X in low 16 bits, Y in high 16 bits)
-     */
-    fun tevMotionEstimate8x8(refRG: Int, refBA: Int, curRG: Int, curBA: Int,
-                           blockX: Int, blockY: Int, searchRange: Int): Int {
-        val gpu = getFirstGPU() ?: return 0
-        val width = gpu.config.width
-        val height = gpu.config.height
-        
-        var bestMVX = 0
-        var bestMVY = 0
-        var bestSAD = Int.MAX_VALUE
-        
-        val startX = blockX * 8
-        val startY = blockY * 8
-        
-        // Search in the specified range
-        for (mvY in -searchRange..searchRange) {
-            for (mvX in -searchRange..searchRange) {
-                val refStartX = startX + mvX
-                val refStartY = startY + mvY
-                
-                // Check bounds
-                if (refStartX >= 0 && refStartY >= 0 && 
-                    refStartX + 8 <= width && refStartY + 8 <= height) {
-                    
-                    var sad = 0
-                    
-                    // Calculate Sum of Absolute Differences
-                    for (dy in 0..7) {
-                        for (dx in 0..7) {
-                            val curOffset = (startY + dy) * width + (startX + dx)
-                            val refOffset = (refStartY + dy) * width + (refStartX + dx)
-                            
-                            val curRG = vm.peek(curRG.toLong() + curOffset)!!.toUint()
-                            val curBA = vm.peek(curBA.toLong() + curOffset)!!.toUint()
-                            val refRGVal = vm.peek(refRG.toLong() + refOffset)!!.toUint()
-                            val refBAVal = vm.peek(refBA.toLong() + refOffset)!!.toUint()
-                            
-                            sad += abs((curRG and -16) - (refRGVal and -16)) + // R
-                                   abs((curRG and 0x0F) - (refRGVal and 0x0F)) + // G
-                                   abs((curBA and -16) - (refBAVal and -16))   // B
-                        }
-                    }
-                    
-                    if (sad < bestSAD) {
-                        bestSAD = sad
-                        bestMVX = mvX
-                        bestMVY = mvY
-                    }
-                }
-            }
-        }
-        
-        // Pack motion vector (16-bit X, 16-bit Y)
-        return (bestMVY shl 16) or (bestMVX and 0xFFFF)
-    }
-
     val QUANT_TABLES = arrayOf(
     // Quality 0 (lowest)
     intArrayOf(80, 60, 50, 80, 120, 200, 255, 255,
@@ -1662,6 +1334,95 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     6, 6, 7, 9, 10, 11, 12, 13,
     6, 7, 9, 10, 11, 12, 13, 13)
     )
+
+    /**
+     * Upload RGB frame buffer to graphics framebuffer with dithering
+     * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
+     * @param rgPlaneAddr Destination RG framebuffer
+     * @param baPlaneAddr Destination BA framebuffer
+     * @param width Frame width
+     * @param height Frame height
+     */
+    fun uploadRGBToFramebuffer(rgbAddr: Long, rgPlaneAddr: Long, baPlaneAddr: Long, width: Int, height: Int, frameCounter: Int) {
+        val rgAddrIncVec = if (rgPlaneAddr >= 0) 1 else -1
+        val baAddrIncVec = if (baPlaneAddr >= 0) 1 else -1
+        val rgbAddrIncVec = if (rgbAddr >= 0) 1 else -1
+
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val pixelOffset = y.toLong() * width + x
+                val rgbOffset = pixelOffset * 3 * rgbAddrIncVec
+
+                // Read RGB values
+                val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
+                val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
+                val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
+
+                // Apply Bayer dithering and convert to 4-bit
+                val r4 = ditherValue(r, x, y, frameCounter)
+                val g4 = ditherValue(g, x, y, frameCounter)
+                val b4 = ditherValue(b, x, y, frameCounter)
+
+                // Pack into 4096-color format
+                val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB
+                val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
+
+                // Write to framebuffer
+                vm.poke(rgPlaneAddr + pixelOffset * rgAddrIncVec, rgValue.toByte())
+                vm.poke(baPlaneAddr + pixelOffset * baAddrIncVec, baValue.toByte())
+            }
+        }
+    }
+
+    /**
+     * Apply Bayer dithering to reduce banding when quantizing to 4-bit
+     */
+    private fun ditherValue(value: Int, x: Int, y: Int, f: Int): Int {
+        val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
+        val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
+        return round(15f * q)
+    }
+
+    /**
+     * Perform IDCT on a single channel with integer coefficients
+     */
+    private fun tevIdct8x8(coeffs: IntArray, quantTable: IntArray): IntArray {
+        // Use the same DCT basis as tevIdct8x8
+        val dctBasis = Array(8) { u ->
+            Array(8) { x ->
+                val cu = if (u == 0) 1.0 / kotlin.math.sqrt(2.0) else 1.0
+                cu * kotlin.math.cos((2.0 * x + 1.0) * u * kotlin.math.PI / 16.0) / 2.0
+            }
+        }
+
+        val dctCoeffs = Array(8) { DoubleArray(8) }
+        val result = IntArray(64)
+
+        // Convert integer coefficients to 2D array and dequantize
+        for (u in 0 until 8) {
+            for (v in 0 until 8) {
+                val idx = u * 8 + v
+                val coeff = coeffs[idx]
+                dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+            }
+        }
+
+        // Apply 2D inverse DCT
+        for (x in 0 until 8) {
+            for (y in 0 until 8) {
+                var sum = 0.0
+                for (u in 0 until 8) {
+                    for (v in 0 until 8) {
+                        sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
+                    }
+                }
+                val pixel = kotlin.math.max(0.0, kotlin.math.min(255.0, sum + 128.0))
+                result[y * 8 + x] = pixel.toInt()
+            }
+        }
+
+        return result
+    }
 
     /**
      * Hardware-accelerated TEV frame decoder

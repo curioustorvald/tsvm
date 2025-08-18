@@ -467,10 +467,13 @@ try {
 
         // Simple progress display
         if (interactive) {
-            con.move(32, 1)
+            con.move(31, 1)
             graphics.setTextFore(161)
             print(`Frame: ${frameCount}/${totalFrames} (${Math.round(frameCount * 100 / totalFrames)}%)`)
-            //serial.println(`Frame: ${frameCount}/${totalFrames} (${Math.round(frameCount * 100 / totalFrames)}%)`)
+            con.move(32, 1)
+            graphics.setTextFore(161)
+            print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
+            con.move(1, 1)
         }
     }
 
