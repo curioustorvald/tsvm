@@ -7,7 +7,9 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class GraphicsJSR223Delegate(private val vm: VM) {
 
@@ -1548,19 +1550,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return round(15f * q)
     }
 
+    val dctBasis8 = Array(8) { u ->
+        FloatArray(8) { x ->
+            val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
+            (0.5 * cu * cos((2.0 * x + 1.0) * u * PI / 16.0)).toFloat()
+        }
+    }
+
     /**
      * Perform IDCT on a single channel with integer coefficients
      */
     private fun tevIdct8x8(coeffs: IntArray, quantTable: IntArray): IntArray {
-        // Use the same DCT basis as tevIdct8x8
-        val dctBasis = Array(8) { u ->
-            Array(8) { x ->
-                val cu = if (u == 0) 1.0 / kotlin.math.sqrt(2.0) else 1.0
-                cu * kotlin.math.cos((2.0 * x + 1.0) * u * kotlin.math.PI / 16.0) / 2.0
-            }
-        }
-
-        val dctCoeffs = Array(8) { DoubleArray(8) }
+        val dctCoeffs = Array(8) { FloatArray(8) }
         val result = IntArray(64)
 
         // Convert integer coefficients to 2D array and dequantize
@@ -1570,10 +1571,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val coeff = coeffs[idx]
                 if (idx == 0) {
                     // DC coefficient for chroma: lossless quantization (no scaling)
-                    dctCoeffs[u][v] = coeff.toDouble()
+                    dctCoeffs[u][v] = coeff.toFloat()
                 } else {
                     // AC coefficients: use quantization table
-                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toFloat()
                 }
             }
         }
@@ -1581,14 +1582,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Apply 2D inverse DCT
         for (x in 0 until 8) {
             for (y in 0 until 8) {
-                var sum = 0.0
+                var sum = 0f
                 for (u in 0 until 8) {
                     for (v in 0 until 8) {
-                        sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
+                        sum += dctBasis8[u][x] * dctBasis8[v][y] * dctCoeffs[u][v]
                     }
                 }
-                // Co/Cg values don't need +128 offset (they're already centered around 0)
-                val pixel = kotlin.math.max(-255.0, kotlin.math.min(255.0, sum))
+                // Chroma residuals should be in reasonable range (±128 max)
+                val pixel = sum.coerceIn(-127f, 128f)
                 result[y * 8 + x] = pixel.toInt()
             }
         }
@@ -1596,16 +1597,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
+    val dctBasis16 = Array(16) { u ->
+        FloatArray(16) { x ->
+            val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
+            (0.25 * cu * cos((2.0 * x + 1.0) * u * PI / 32.0)).toFloat()
+        }
+    }
+    
     // 16x16 IDCT for Y channel (YCoCg-R format)
     private fun tevIdct16x16(coeffs: IntArray, quantTable: IntArray): IntArray {
-        val dctBasis = Array(16) { u ->
-            Array(16) { x ->
-                val cu = if (u == 0) 1.0 / kotlin.math.sqrt(2.0) else 1.0
-                cu * kotlin.math.cos((2.0 * x + 1.0) * u * kotlin.math.PI / 32.0) / 4.0
-            }
-        }
-        
-        val dctCoeffs = Array(16) { DoubleArray(16) }
+        val dctCoeffs = Array(16) { FloatArray(16) }
         val result = IntArray(256)  // 16x16 = 256
         
         // Convert integer coefficients to 2D array and dequantize
@@ -1615,10 +1616,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val coeff = coeffs[idx]
                 if (idx == 0) {
                     // DC coefficient for luma: lossless quantization (no scaling)
-                    dctCoeffs[u][v] = coeff.toDouble()
+                    dctCoeffs[u][v] = coeff.toFloat()
                 } else {
                     // AC coefficients: use quantization table
-                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toFloat()
                 }
             }
         }
@@ -1626,13 +1627,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Apply 2D inverse DCT
         for (x in 0 until 16) {
             for (y in 0 until 16) {
-                var sum = 0.0
+                var sum = 0f
                 for (u in 0 until 16) {
                     for (v in 0 until 16) {
-                        sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
+                        sum += dctBasis16[u][x] * dctBasis16[v][y] * dctCoeffs[u][v]
                     }
                 }
-                val pixel = kotlin.math.max(0.0, kotlin.math.min(255.0, sum + 128.0))
+                val pixel = (sum + 128).coerceIn(0f, 255f)
                 result[y * 16 + x] = pixel.toInt()
             }
         }
@@ -1654,21 +1655,49 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val co = coBlock[coIdx]
                 val cg = cgBlock[coIdx]
                 
-                // YCoCg-R inverse transform (using safe integer arithmetic)
-                val tmp = y - (cg / 2)  // Use division instead of shift to avoid overflow
+                // YCoCg-R inverse transform (per YCoCg-R spec with truncated division)
+                val tmp = y - (cg / 2)
                 val g = cg + tmp
-                val b = tmp - (co / 2)  // Use division instead of shift to avoid overflow  
+                val b = tmp - (co / 2)
                 val r = b + co
                 
                 // Clamp and store RGB
                 val baseIdx = (py * 16 + px) * 3
-                rgbData[baseIdx] = kotlin.math.max(0, kotlin.math.min(255, r))     // R
-                rgbData[baseIdx + 1] = kotlin.math.max(0, kotlin.math.min(255, g)) // G
-                rgbData[baseIdx + 2] = kotlin.math.max(0, kotlin.math.min(255, b)) // B
+                rgbData[baseIdx] = r.coerceIn(0, 255)     // R
+                rgbData[baseIdx + 1] = g.coerceIn(0, 255) // G
+                rgbData[baseIdx + 2] = b.coerceIn(0, 255) // B
             }
         }
         
         return rgbData
+    }
+    
+    // RGB to YCoCg-R conversion for INTER mode residual calculation
+    fun tevRGBToYcocg(rgbBlock: IntArray): IntArray {
+        val ycocgData = IntArray(16 * 16 * 3)  // Y,Co,Cg for 16x16 pixels
+        
+        for (py in 0 until 16) {
+            for (px in 0 until 16) {
+                val baseIdx = (py * 16 + px) * 3
+                val r = rgbBlock[baseIdx]
+                val g = rgbBlock[baseIdx + 1] 
+                val b = rgbBlock[baseIdx + 2]
+                
+                // YCoCg-R forward transform
+                val co = r - b
+                val tmp = b + (co / 2)
+                val cg = g - tmp
+                val y = tmp + (cg / 2)
+                
+                // Store YCoCg values
+                val yIdx = py * 16 + px
+                ycocgData[yIdx * 3] = y.coerceIn(0, 255)        // Y
+                ycocgData[yIdx * 3 + 1] = co.coerceIn(-128, 127) // Co 
+                ycocgData[yIdx * 3 + 2] = cg.coerceIn(-128, 127) // Cg
+            }
+        }
+        
+        return ycocgData
     }
 
     /**
@@ -1775,7 +1804,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         readPtr += 768
                     }
                     
-                    else -> { // TEV_MODE_INTRA (0x01) or TEV_MODE_INTER (0x02) - Full YCoCg-R DCT decode
+                    0x01 -> { // TEV_MODE_INTRA - Full YCoCg-R DCT decode (no motion compensation)
                         // Read DCT coefficients: Y (16x16=256), Co (8x8=64), Cg (8x8=64)
                         val yCoeffs = IntArray(256)
                         val coCoeffs = IntArray(64)
@@ -1813,7 +1842,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         // Convert YCoCg-R to RGB
                         val rgbData = tevYcocgToRGB(yBlock, coBlock, cgBlock)
                         
-                        // Store RGB data to frame buffer
+                        // Store RGB data to frame buffer (complete replacement)
                         for (dy in 0 until 16) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
@@ -1826,6 +1855,187 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, rgbData[rgbIdx].toByte())
                                     vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, rgbData[rgbIdx + 1].toByte()) 
                                     vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, rgbData[rgbIdx + 2].toByte())
+                                }
+                            }
+                        }
+                    }
+                    
+                    0x02 -> { // TEV_MODE_INTER - Motion compensation + residual DCT
+                        // Step 1: Read residual DCT coefficients
+                        val yCoeffs = IntArray(256)
+                        val coCoeffs = IntArray(64)
+                        val cgCoeffs = IntArray(64)
+                        
+                        // Read Y coefficients (16x16 = 256 coefficients × 2 bytes)
+                        for (i in 0 until 256) {
+                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
+                            yCoeffs[i] = coeff
+                            readPtr += 2
+                        }
+                        
+                        // Read Co coefficients (8x8 = 64 coefficients × 2 bytes)
+                        for (i in 0 until 64) {
+                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
+                            coCoeffs[i] = coeff
+                            readPtr += 2
+                        }
+                        
+                        // Read Cg coefficients (8x8 = 64 coefficients × 2 bytes)  
+                        for (i in 0 until 64) {
+                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
+                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
+                            cgCoeffs[i] = coeff
+                            readPtr += 2
+                        }
+                        
+                        // Step 2: Decode residual DCT
+                        val yResidual = tevIdct16x16(yCoeffs, quantTableY)
+                        val coResidual = tevIdct8x8(coCoeffs, quantTableC)
+                        val cgResidual = tevIdct8x8(cgCoeffs, quantTableC)
+                        
+                        // Step 3: Build motion-compensated YCoCg-R block and add residuals
+                        val finalY = IntArray(256)
+                        val finalCo = IntArray(64)
+                        val finalCg = IntArray(64)
+                        
+                        // Process Y residuals (16x16)  
+                        for (dy in 0 until 16) {
+                            for (dx in 0 until 16) {
+                                val x = startX + dx
+                                val y = startY + dy
+                                val refX = x + mvX
+                                val refY = y + mvY
+                                val pixelIdx = dy * 16 + dx
+                                
+                                if (x < width && y < height) {
+                                    var mcY: Int
+                                    
+                                    if (refX in 0 until width && refY in 0 until height) {
+                                        // Get motion-compensated RGB from previous frame
+                                        val refPixelOffset = refY.toLong() * width + refX
+                                        val refRgbOffset = refPixelOffset * 3
+                                        
+                                        val mcR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!.toUint().toInt()
+                                        val mcG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!.toUint().toInt()
+                                        val mcB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!.toUint().toInt()
+                                        
+                                        // Convert motion-compensated RGB to Y only
+                                        val co = mcR - mcB
+                                        val tmp = mcB + (co / 2)
+                                        val cg = mcG - tmp
+                                        val yVal = tmp + (cg / 2)
+                                        
+                                        mcY = yVal
+                                    } else {
+                                        // Out of bounds reference - use neutral values
+                                        mcY = 128
+                                    }
+                                    
+                                    // Add Y residual
+                                    finalY[pixelIdx] = (mcY + yResidual[pixelIdx]).coerceIn(0, 255)
+                                }
+                            }
+                        }
+                        
+                        // Process chroma residuals separately (8x8 subsampled)
+                        for (cy in 0 until 8) {
+                            for (cx in 0 until 8) {
+                                // Chroma coordinates are at 2x2 block centers in subsampled space
+                                val x = startX + cx * 2
+                                val y = startY + cy * 2
+                                
+                                // Apply motion vector to chroma block center
+                                val refX = x + mvX
+                                val refY = y + mvY
+                                val chromaIdx = cy * 8 + cx
+                                
+                                if (x < width && y < height) {
+                                    var mcCo: Int
+                                    var mcCg: Int
+                                    
+                                    // Sample 2x2 block from motion-compensated position for chroma
+                                    if (refX >= 0 && refY >= 0 && refX < width - 1 && refY < height - 1) {
+                                        var coSum = 0
+                                        var cgSum = 0
+                                        var count = 0
+                                        
+                                        // Sample 2x2 block for chroma subsampling (like encoder)
+                                        for (dy in 0 until 2) {
+                                            for (dx in 0 until 2) {
+                                                val sampleX = refX + dx
+                                                val sampleY = refY + dy
+                                                if (sampleX < width && sampleY < height) {
+                                                    val refPixelOffset = sampleY.toLong() * width + sampleX
+                                                    val refRgbOffset = refPixelOffset * 3
+                                                    
+                                                    val mcR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!.toUint().toInt()
+                                                    val mcG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!.toUint().toInt()
+                                                    val mcB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!.toUint().toInt()
+                                                    
+                                                    val co = mcR - mcB
+                                                    val tmp = mcB + (co / 2)
+                                                    val cg = mcG - tmp
+                                                    
+                                                    coSum += co
+                                                    cgSum += cg
+                                                    count++
+                                                }
+                                            }
+                                        }
+                                        
+                                        mcCo = if (count > 0) coSum / count else 0
+                                        mcCg = if (count > 0) cgSum / count else 0
+                                    } else {
+                                        // Out of bounds reference - use neutral chroma values
+                                        mcCo = 0
+                                        mcCg = 0
+                                    }
+                                    
+                                    // Add chroma residuals - no clamping to see if that's the issue
+                                    finalCo[chromaIdx] = mcCo + coResidual[chromaIdx]
+                                    finalCg[chromaIdx] = mcCg + cgResidual[chromaIdx]
+                                }
+                            }
+                        }
+                        
+                        // Step 4: Convert final YCoCg-R to RGB
+                        val finalRgb = tevYcocgToRGB(finalY, finalCo, finalCg)
+                        
+                        // Step 5: Store final RGB data to frame buffer
+                        for (dy in 0 until 16) {
+                            for (dx in 0 until 16) {
+                                val x = startX + dx
+                                val y = startY + dy
+                                if (x < width && y < height) {
+                                    val rgbIdx = (dy * 16 + dx) * 3
+                                    val imageOffset = y.toLong() * width + x
+                                    val bufferOffset = imageOffset * 3
+                                    
+                                    vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, finalRgb[rgbIdx].toByte())
+                                    vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, finalRgb[rgbIdx + 1].toByte()) 
+                                    vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, finalRgb[rgbIdx + 2].toByte())
+                                }
+                            }
+                        }
+                    }
+                    
+                    else -> {
+                        // Unknown block mode - skip DCT coefficients and use black
+                        readPtr += 768 // Skip Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                        
+                        for (dy in 0 until 16) {
+                            for (dx in 0 until 16) {
+                                val x = startX + dx
+                                val y = startY + dy
+                                if (x < width && y < height) {
+                                    val imageOffset = y.toLong() * width + x
+                                    val bufferOffset = imageOffset * 3
+                                    
+                                    vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, 0.toByte())      // R=0
+                                    vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, 0.toByte()) // G=0
+                                    vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, 0.toByte()) // B=0
                                 }
                             }
                         }
@@ -1855,9 +2065,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     
                     // YCoCg-R transform
                     val co = r - b
-                    val tmp = b + (co shr 1)
+                    val tmp = b + (co / 2)
                     val cg = g - tmp
-                    val y = tmp + (cg shr 1)
+                    val y = tmp + (cg / 2)
                     
                     yBlock[py * 16 + px] = y
                 }
@@ -1883,7 +2093,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             val b = vm.peek(srcPtr + (offset + 2) * incVec)!!.toUint()
                             
                             val co = r - b
-                            val tmp = b + (co shr 1)
+                            val tmp = b + (co / 2)
                             val cg = g - tmp
                             
                             coSum += co

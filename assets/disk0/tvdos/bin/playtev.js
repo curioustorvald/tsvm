@@ -24,80 +24,6 @@ const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
 
-// Quantization tables for Y channel (16x16 - just use first 8 quality levels)
-const QUANT_TABLES_Y = [
-    // Quality 0 (lowest) - 8x8 pattern repeated to 16x16
-    (() => {
-        const base = [80, 60, 50, 80, 120, 200, 255, 255,
-                     55, 60, 70, 95, 130, 255, 255, 255,
-                     70, 65, 80, 120, 200, 255, 255, 255,
-                     70, 85, 110, 145, 255, 255, 255, 255,
-                     90, 110, 185, 255, 255, 255, 255, 255,
-                     120, 175, 255, 255, 255, 255, 255, 255,
-                     245, 255, 255, 255, 255, 255, 255, 255,
-                     255, 255, 255, 255, 255, 255, 255, 255]
-        const extended = []
-        for (let y = 0; y < 16; y++) {
-            for (let x = 0; x < 16; x++) {
-                extended.push(base[(y % 8) * 8 + (x % 8)])
-            }
-        }
-        return extended
-    })(),
-    [40, 30, 25, 40, 60, 100, 128, 150, 28, 30, 35, 48, 65, 128, 150, 180], // Quality 1 (simplified)
-    [20, 15, 13, 20, 30, 50, 64, 75, 14, 15, 18, 24, 33, 64, 75, 90],       // Quality 2
-    [16, 12, 10, 16, 24, 40, 51, 60, 11, 12, 14, 19, 26, 51, 60, 72],       // Quality 3
-    [12, 9, 8, 12, 18, 30, 38, 45, 8, 9, 11, 14, 20, 38, 45, 54],           // Quality 4
-    [10, 7, 6, 10, 15, 25, 32, 38, 7, 7, 9, 12, 16, 32, 38, 45],            // Quality 5
-    [8, 6, 5, 8, 12, 20, 26, 30, 6, 6, 7, 10, 13, 26, 30, 36],             // Quality 6
-    // Quality 7 (highest)
-    (() => {
-        const base = [2, 1, 1, 2, 3, 5, 6, 7,
-                     1, 1, 1, 2, 3, 6, 7, 9,
-                     1, 1, 2, 3, 5, 6, 7, 9,
-                     1, 2, 3, 4, 6, 7, 9, 10,
-                     2, 3, 5, 6, 7, 9, 10, 11,
-                     3, 4, 6, 7, 9, 10, 11, 12,
-                     6, 6, 7, 9, 10, 11, 12, 13,
-                     6, 7, 9, 10, 11, 12, 13, 13]
-        const extended = []
-        for (let y = 0; y < 16; y++) {
-            for (let x = 0; x < 16; x++) {
-                extended.push(base[(y % 8) * 8 + (x % 8)])
-            }
-        }
-        return extended
-    })()
-]
-
-// Quantization tables for chroma channels (8x8)
-const QUANT_TABLES_C = [
-    // Quality 0 (lowest)
-    [120, 90, 75, 120, 180, 255, 255, 255,
-     83, 90, 105, 143, 195, 255, 255, 255,
-     105, 98, 120, 180, 255, 255, 255, 255,
-     105, 128, 165, 218, 255, 255, 255, 255,
-     135, 165, 278, 255, 255, 255, 255, 255,
-     180, 263, 255, 255, 255, 255, 255, 255,
-     255, 255, 255, 255, 255, 255, 255, 255,
-     255, 255, 255, 255, 255, 255, 255, 255],
-    [60, 45, 38, 60, 90, 150, 192, 225],       // Quality 1 (simplified)
-    [30, 23, 19, 30, 45, 75, 96, 113],         // Quality 2
-    [24, 18, 15, 24, 36, 60, 77, 90],          // Quality 3
-    [18, 14, 12, 18, 27, 45, 57, 68],          // Quality 4
-    [15, 11, 9, 15, 23, 38, 48, 57],           // Quality 5
-    [12, 9, 8, 12, 18, 30, 39, 45],            // Quality 6
-    // Quality 7 (highest)
-    [3, 2, 2, 3, 5, 8, 9, 11,
-     2, 2, 2, 3, 5, 9, 11, 14,
-     2, 2, 3, 5, 8, 9, 11, 14,
-     2, 3, 5, 6, 9, 11, 14, 15,
-     3, 5, 8, 9, 11, 14, 15, 17,
-     5, 6, 9, 11, 14, 15, 17, 18,
-     9, 9, 11, 14, 15, 17, 18, 20,
-     9, 11, 14, 15, 17, 18, 20, 20]
-]
-
 let videoRateBin = []
 let errorlevel = 0
 let notifHideTimer = 0
@@ -198,23 +124,12 @@ let ycocgWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 3) // Y+Co+Cg workspac
 let dctWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 4) // DCT coefficients (floats)
 
 // Initialize RGB frame buffers to black (0,0,0)
-for (let i = 0; i < FRAME_PIXELS; i++) {
-    // Current frame RGB: black
-    sys.poke(CURRENT_RGB_ADDR + i*3, 0)     // R
-    sys.poke(CURRENT_RGB_ADDR + i*3 + 1, 0) // G  
-    sys.poke(CURRENT_RGB_ADDR + i*3 + 2, 0) // B
-    
-    // Previous frame RGB: black
-    sys.poke(PREV_RGB_ADDR + i*3, 0)        // R
-    sys.poke(PREV_RGB_ADDR + i*3 + 1, 0)    // G
-    sys.poke(PREV_RGB_ADDR + i*3 + 2, 0)    // B
-}
+sys.memset(CURRENT_RGB_ADDR, 0, FRAME_PIXELS * 3)
+sys.memset(PREV_RGB_ADDR, 0, FRAME_PIXELS * 3)
 
 // Initialize display framebuffer to black
-for (let i = 0; i < FRAME_PIXELS; i++) {
-    sys.poke(DISPLAY_RG_ADDR - i, 0)  // Black in RG plane
-    sys.poke(DISPLAY_BA_ADDR - i, 15) // Black with alpha=15 (opaque) in BA plane
-}
+sys.memset(DISPLAY_RG_ADDR, 0, FRAME_PIXELS) // Black in RG plane
+sys.memset(DISPLAY_BA_ADDR, 15, FRAME_PIXELS) // Black with alpha=15 (opaque) in BA plane
 
 let frameCount = 0
 let stopPlay = false

@@ -28,6 +28,11 @@
 #define TEV_PACKET_AUDIO_MP2   0x20  // MP2 audio
 #define TEV_PACKET_SYNC        0xFF  // Sync packet
 
+// Utility macros
+static inline int CLAMP(int x, int min, int max) {
+    return x < min ? min : (x > max ? max : x);
+}
+
 // Quality settings for quantization (Y channel) - 16x16 tables
 static const uint8_t QUANT_TABLES_Y[8][256] = {
     // Quality 0 (lowest) - 16x16 table
@@ -310,30 +315,30 @@ typedef struct {
     int blocks_skip, blocks_intra, blocks_inter, blocks_motion;
 } tev_encoder_t;
 
-// RGB to YCoCg-R transform
+// RGB to YCoCg-R transform (per YCoCg-R specification with truncated division)
 static void rgb_to_ycocgr(uint8_t r, uint8_t g, uint8_t b, int *y, int *co, int *cg) {
     *co = (int)r - (int)b;
-    int tmp = (int)b + ((*co) >> 1);
+    int tmp = (int)b + ((*co) / 2);
     *cg = (int)g - tmp;
-    *y = tmp + ((*cg) >> 1);
+    *y = tmp + ((*cg) / 2);
     
-    // Clamp to valid ranges (YCoCg-R should be roughly -255 to +255)
-    *y = (*y < 0) ? 0 : ((*y > 255) ? 255 : *y);
-    *co = (*co < -255) ? -255 : ((*co > 255) ? 255 : *co);
-    *cg = (*cg < -255) ? -255 : ((*cg > 255) ? 255 : *cg);
+    // Clamp to valid ranges (YCoCg-R should be roughly -128 to +127)
+    *y = CLAMP(*y, 0, 255);
+    *co = CLAMP(*co, -128, 127);
+    *cg = CLAMP(*cg, -128, 127);
 }
 
-// YCoCg-R to RGB transform (for verification)
+// YCoCg-R to RGB transform (for verification - per YCoCg-R specification)
 static void ycocgr_to_rgb(int y, int co, int cg, uint8_t *r, uint8_t *g, uint8_t *b) {
-    int tmp = y - (cg >> 1);
+    int tmp = y - (cg / 2);
     *g = cg + tmp;
-    *b = tmp - (co >> 1);
+    *b = tmp - (co / 2);
     *r = *b + co;
     
     // Clamp values
-    *r = (*r < 0) ? 0 : ((*r > 255) ? 255 : *r);
-    *g = (*g < 0) ? 0 : ((*g > 255) ? 255 : *g);
-    *b = (*b < 0) ? 0 : ((*b > 255) ? 255 : *b);
+    *r = CLAMP(*r, 0, 255);
+    *g = CLAMP(*g, 0, 255);
+    *b = CLAMP(*b, 0, 255);
 }
 
 // 16x16 2D DCT
@@ -507,6 +512,117 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
     }
 }
 
+// Convert RGB block to YCoCg-R with 4:2:0 chroma subsampling
+static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block, 
+                                       uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
+    // Convert 16x16 RGB to Y (full resolution)
+    for (int py = 0; py < 16; py++) {
+        for (int px = 0; px < 16; px++) {
+            int rgb_idx = (py * 16 + px) * 3;
+            int r = rgb_block[rgb_idx];
+            int g = rgb_block[rgb_idx + 1];
+            int b = rgb_block[rgb_idx + 2];
+            
+            // YCoCg-R transform (per specification with truncated division)
+            int co = r - b;
+            int tmp = b + (co / 2);
+            int cg = g - tmp;
+            int y = tmp + (cg / 2);
+            
+            y_block[py * 16 + px] = CLAMP(y, 0, 255);
+        }
+    }
+    
+    // Convert to Co and Cg with 4:2:0 subsampling (8x8)
+    for (int cy = 0; cy < 8; cy++) {
+        for (int cx = 0; cx < 8; cx++) {
+            // Sample 2x2 block from RGB and average for chroma
+            int sum_co = 0, sum_cg = 0;
+            
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    int py = cy * 2 + dy;
+                    int px = cx * 2 + dx;
+                    int rgb_idx = (py * 16 + px) * 3;
+                    
+                    int r = rgb_block[rgb_idx];
+                    int g = rgb_block[rgb_idx + 1];
+                    int b = rgb_block[rgb_idx + 2];
+                    
+                    int co = r - b;
+                    int tmp = b + (co / 2);
+                    int cg = g - tmp;
+                    
+                    sum_co += co;
+                    sum_cg += cg;
+                }
+            }
+            
+            // Average and store subsampled chroma
+            co_block[cy * 8 + cx] = CLAMP(sum_co / 4, -128, 127);
+            cg_block[cy * 8 + cx] = CLAMP(sum_cg / 4, -128, 127);
+        }
+    }
+}
+
+// Extract motion-compensated YCoCg-R block from reference frame
+static void extract_motion_compensated_block(const uint8_t *rgb_data, int width, int height,
+                                           int block_x, int block_y, int mv_x, int mv_y,
+                                           uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
+    // Extract 16x16 RGB block with motion compensation
+    uint8_t rgb_block[16 * 16 * 3];
+    
+    for (int dy = 0; dy < 16; dy++) {
+        for (int dx = 0; dx < 16; dx++) {
+            int cur_x = block_x + dx;
+            int cur_y = block_y + dy;
+            int ref_x = cur_x + mv_x;
+            int ref_y = cur_y + mv_y;
+            
+            int rgb_idx = (dy * 16 + dx) * 3;
+            
+            if (ref_x >= 0 && ref_y >= 0 && ref_x < width && ref_y < height) {
+                // Copy RGB from reference position
+                int ref_offset = (ref_y * width + ref_x) * 3;
+                rgb_block[rgb_idx] = rgb_data[ref_offset];         // R
+                rgb_block[rgb_idx + 1] = rgb_data[ref_offset + 1]; // G
+                rgb_block[rgb_idx + 2] = rgb_data[ref_offset + 2]; // B
+            } else {
+                // Out of bounds - use black
+                rgb_block[rgb_idx] = 0;     // R
+                rgb_block[rgb_idx + 1] = 0; // G
+                rgb_block[rgb_idx + 2] = 0; // B
+            }
+        }
+    }
+    
+    // Convert RGB block to YCoCg-R
+    convert_rgb_to_ycocgr_block(rgb_block, y_block, co_block, cg_block);
+}
+
+// Compute motion-compensated residual for INTER mode
+static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y, int mv_x, int mv_y) {
+    int start_x = block_x * 16;
+    int start_y = block_y * 16;
+    
+    // Extract motion-compensated reference block from previous frame
+    uint8_t ref_y[256];
+    int8_t ref_co[64], ref_cg[64];
+    extract_motion_compensated_block(enc->previous_rgb, enc->width, enc->height,
+                                   start_x, start_y, mv_x, mv_y, 
+                                   ref_y, ref_co, ref_cg);
+    
+    // Compute residuals: current - motion_compensated_reference
+    for (int i = 0; i < 256; i++) {
+        enc->y_workspace[i] = (int)enc->y_workspace[i] - (int)ref_y[i];
+    }
+    
+    for (int i = 0; i < 64; i++) {
+        enc->co_workspace[i] = (int)enc->co_workspace[i] - (int)ref_co[i];
+        enc->cg_workspace[i] = (int)enc->cg_workspace[i] - (int)ref_cg[i];
+    }
+}
+
 // Encode a 16x16 block
 static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_keyframe) {
     tev_block_t *block = &enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
@@ -608,8 +724,15 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
             enc->blocks_motion++;
             return; // Skip DCT encoding, just store motion vector
+        } else if (motion_sad < skip_sad && (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
+            // Use inter mode with residual DCT - motion compensation + residual
+            block->mode = TEV_MODE_INTER;
+            enc->blocks_inter++;
+            
+            // Compute motion-compensated residual for DCT encoding
+            compute_motion_residual(enc, block_x, block_y, block->mv_x, block->mv_y);
         } else {
-            // Use intra mode for now (inter mode with residual DCT not implemented)
+            // No good motion prediction - use intra mode
             block->mode = TEV_MODE_INTRA;
             block->mv_x = 0;
             block->mv_y = 0;
@@ -695,13 +818,13 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     
     if (gzip_init_result != Z_OK) {
         fprintf(stderr, "Failed to initialize gzip compression\n");
-        return -1;
+        return 0;
     }
     
     // Initialize previous frame to black
     memset(enc->previous_rgb, 0, pixels * 3);
     
-    return 0;
+    return 1;
 }
 
 // Free encoder resources
@@ -772,13 +895,13 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     
     if (deflateReset(&enc->gzip_stream) != Z_OK) {
         fprintf(stderr, "Gzip deflateReset failed\n");
-        return -1;
+        return 0;
     }
     
     int result = deflate(&enc->gzip_stream, Z_FINISH);
     if (result != Z_STREAM_END) {
         fprintf(stderr, "Gzip compression failed: %d\n", result);
-        return -1;
+        return 0;
     }
     
     size_t compressed_size = enc->gzip_stream.total_out;
@@ -792,16 +915,13 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     fwrite(enc->compressed_buffer, 1, compressed_size, output);
     
     enc->total_output_bytes += 5 + compressed_size;
-    
-    // Copy current frame to previous for next iteration
-    //memcpy(enc->previous_rgb, enc->current_rgb, enc->width * enc->height * 3);
 
     // Swap frame buffers for next frame
     uint8_t *temp_rgb = enc->previous_rgb;
     enc->previous_rgb = enc->current_rgb;
     enc->current_rgb = temp_rgb;
 
-    return 0;
+    return 1;
 }
 
 // Execute command and capture output
@@ -1099,7 +1219,7 @@ int main(int argc, char *argv[]) {
     }
     
     // Allocate buffers
-    if (alloc_encoder_buffers(enc) < 0) {
+    if (!alloc_encoder_buffers(enc)) {
         fprintf(stderr, "Failed to allocate encoder buffers\n");
         cleanup_encoder(enc);
         return 1;
@@ -1194,7 +1314,7 @@ int main(int argc, char *argv[]) {
         }
         
         // Encode frame
-        if (encode_frame(enc, output, frame_count) < 0) {
+        if (!encode_frame(enc, output, frame_count)) {
             fprintf(stderr, "Failed to encode frame %d\n", frame_count);
             break;
         }
