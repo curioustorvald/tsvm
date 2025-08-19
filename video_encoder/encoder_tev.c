@@ -233,15 +233,15 @@ static const uint8_t QUANT_TABLES_C[8][64] = {
      18, 26, 39, 45, 54, 60, 66, 72,
      38, 39, 45, 54, 60, 66, 72, 75,
      39, 45, 54, 60, 66, 72, 75, 77},
-    // Quality 7 (highest)
-    {3, 2, 2, 3, 5, 8, 9, 11,
-     2, 2, 2, 3, 5, 9, 11, 14,
-     2, 2, 3, 5, 8, 9, 11, 14,
-     2, 3, 5, 6, 9, 11, 14, 15,
-     3, 5, 8, 9, 11, 14, 15, 17,
-     5, 6, 9, 11, 14, 15, 17, 18,
-     9, 9, 11, 14, 15, 17, 18, 20,
-     9, 11, 14, 15, 17, 18, 20, 20}
+    // Quality 7 (highest) - much finer quantization for better quality
+    {1, 1, 1, 1, 1, 2, 2, 3,
+     1, 1, 1, 1, 2, 2, 3, 4,
+     1, 1, 1, 2, 2, 3, 4, 5,
+     1, 1, 2, 2, 3, 4, 5, 6,
+     1, 2, 2, 3, 4, 5, 6, 7,
+     2, 2, 3, 4, 5, 6, 7, 8,
+     2, 3, 4, 5, 6, 7, 8, 9,
+     3, 4, 5, 6, 7, 8, 9, 10}
 };
 
 // Audio constants (reuse MP2 from existing system)
@@ -273,11 +273,13 @@ typedef struct {
     int width;
     int height;
     int fps;
+    int output_fps;  // User-specified output FPS (for frame rate conversion)
     int total_frames;
     double duration;
     int has_audio;
     int output_to_stdout;
     int quality;  // 0-7, higher = better quality
+    int verbose;
     
     // Frame buffers (8-bit RGB format for encoding)
     uint8_t *current_rgb, *previous_rgb, *reference_rgb;
@@ -310,10 +312,15 @@ typedef struct {
 
 // RGB to YCoCg-R transform
 static void rgb_to_ycocgr(uint8_t r, uint8_t g, uint8_t b, int *y, int *co, int *cg) {
-    *co = r - b;
-    int tmp = b + ((*co) >> 1);
-    *cg = g - tmp;
+    *co = (int)r - (int)b;
+    int tmp = (int)b + ((*co) >> 1);
+    *cg = (int)g - tmp;
     *y = tmp + ((*cg) >> 1);
+    
+    // Clamp to valid ranges (YCoCg-R should be roughly -255 to +255)
+    *y = (*y < 0) ? 0 : ((*y > 255) ? 255 : *y);
+    *co = (*co < -255) ? -255 : ((*co > 255) ? 255 : *co);
+    *cg = (*cg < -255) ? -255 : ((*cg > 255) ? 255 : *cg);
 }
 
 // YCoCg-R to RGB transform (for verification)
@@ -372,10 +379,15 @@ static void dct_8x8(float *input, float *output) {
 }
 
 // Quantize DCT coefficient using quality table
-static int16_t quantize_coeff(float coeff, uint8_t quant, int is_dc) {
+static int16_t quantize_coeff(float coeff, uint8_t quant, int is_dc, int is_chroma) {
     if (is_dc) {
-        // DC coefficient uses fixed quantizer
-        return (int16_t)roundf(coeff / 8.0f);
+        if (is_chroma) {
+            // Chroma DC: range -255 to +255, use lossless quantization for testing
+            return (int16_t)roundf(coeff);
+        } else {
+            // Luma DC: range -128 to +127, use lossless quantization for testing
+            return (int16_t)roundf(coeff);
+        }
     } else {
         // AC coefficients use quality table
         return (int16_t)roundf(coeff / quant);
@@ -437,6 +449,7 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
             }
             
             if (count > 0) {
+                // Center chroma around 0 for DCT (Co/Cg range is -255 to +255, so don't add offset)
                 co_block[py * 8 + px] = (float)(co_sum / count);
                 cg_block[py * 8 + px] = (float)(cg_sum / count);
             }
@@ -504,45 +517,130 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                         enc->y_workspace, enc->co_workspace, enc->cg_workspace);
     
     if (is_keyframe) {
-        // Intra coding
+        // Intra coding for keyframes
         block->mode = TEV_MODE_INTRA;
         block->mv_x = block->mv_y = 0;
         enc->blocks_intra++;
     } else {
+        // Implement proper mode decision for P-frames
+        int start_x = block_x * 16;
+        int start_y = block_y * 16;
+        
+        // Calculate SAD for skip mode (no motion compensation)
+        int skip_sad = 0;
+        for (int dy = 0; dy < 16; dy++) {
+            for (int dx = 0; dx < 16; dx++) {
+                int x = start_x + dx;
+                int y = start_y + dy;
+                if (x < enc->width && y < enc->height) {
+                    int cur_offset = (y * enc->width + x) * 3;
+                    
+                    // Compare current with previous frame (simple luma difference)
+                    int cur_luma = (enc->current_rgb[cur_offset] + 
+                                   enc->current_rgb[cur_offset + 1] + 
+                                   enc->current_rgb[cur_offset + 2]) / 3;
+                    int prev_luma = (enc->previous_rgb[cur_offset] + 
+                                    enc->previous_rgb[cur_offset + 1] + 
+                                    enc->previous_rgb[cur_offset + 2]) / 3;
+                    
+                    skip_sad += abs(cur_luma - prev_luma);
+                }
+            }
+        }
+        
         // Try motion estimation
         estimate_motion(enc, block_x, block_y, &block->mv_x, &block->mv_y);
         
-        // For simplicity, always use INTRA mode for now
-        // TODO: Implement proper mode decision
-        block->mode = TEV_MODE_INTRA;
-        block->mv_x = block->mv_y = 0;
-        enc->blocks_intra++;
+        // Calculate motion compensation SAD
+        int motion_sad = INT_MAX;
+        if (abs(block->mv_x) > 0 || abs(block->mv_y) > 0) {
+            motion_sad = 0;
+            for (int dy = 0; dy < 16; dy++) {
+                for (int dx = 0; dx < 16; dx++) {
+                    int cur_x = start_x + dx;
+                    int cur_y = start_y + dy;
+                    int ref_x = cur_x + block->mv_x;
+                    int ref_y = cur_y + block->mv_y;
+                    
+                    if (cur_x < enc->width && cur_y < enc->height &&
+                        ref_x >= 0 && ref_y >= 0 && 
+                        ref_x < enc->width && ref_y < enc->height) {
+                        
+                        int cur_offset = (cur_y * enc->width + cur_x) * 3;
+                        int ref_offset = (ref_y * enc->width + ref_x) * 3;
+                        
+                        int cur_luma = (enc->current_rgb[cur_offset] + 
+                                       enc->current_rgb[cur_offset + 1] + 
+                                       enc->current_rgb[cur_offset + 2]) / 3;
+                        int ref_luma = (enc->previous_rgb[ref_offset] + 
+                                       enc->previous_rgb[ref_offset + 1] + 
+                                       enc->previous_rgb[ref_offset + 2]) / 3;
+                        
+                        motion_sad += abs(cur_luma - ref_luma);
+                    } else {
+                        motion_sad += 128; // Penalty for out-of-bounds
+                    }
+                }
+            }
+        }
+        
+        // Mode decision with strict thresholds for quality
+        if (skip_sad <= 64) {
+            // Very small difference - skip block (copy from previous frame)
+            block->mode = TEV_MODE_SKIP;
+            block->mv_x = 0;
+            block->mv_y = 0;
+            block->cbp = 0x00;  // No coefficients present
+            // Zero out DCT coefficients for consistent format
+            memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
+            memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
+            memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
+            enc->blocks_skip++;
+            return; // Skip DCT encoding entirely
+        } else if (motion_sad < skip_sad && motion_sad <= 128 && 
+                   (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
+            // Good motion prediction - use motion-only mode
+            block->mode = TEV_MODE_MOTION;
+            block->cbp = 0x00;  // No coefficients present
+            // Zero out DCT coefficients for consistent format  
+            memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
+            memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
+            memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
+            enc->blocks_motion++;
+            return; // Skip DCT encoding, just store motion vector
+        } else {
+            // Use intra mode for now (inter mode with residual DCT not implemented)
+            block->mode = TEV_MODE_INTRA;
+            block->mv_x = 0;
+            block->mv_y = 0;
+            enc->blocks_intra++;
+        }
     }
     
     // Apply DCT transform
     dct_16x16(enc->y_workspace, enc->dct_workspace);
     
-    // Quantize Y coefficients
+    // Quantize Y coefficients (luma)
     const uint8_t *y_quant = QUANT_TABLES_Y[enc->quality];
     for (int i = 0; i < 256; i++) {
-        block->y_coeffs[i] = quantize_coeff(enc->dct_workspace[i], y_quant[i], i == 0);
+        block->y_coeffs[i] = quantize_coeff(enc->dct_workspace[i], y_quant[i], i == 0, 0);
     }
     
     // Apply DCT transform to chroma
     dct_8x8(enc->co_workspace, enc->dct_workspace);
     
-    // Quantize Co coefficients  
+    // Quantize Co coefficients (chroma)
     const uint8_t *c_quant = QUANT_TABLES_C[enc->quality];
     for (int i = 0; i < 64; i++) {
-        block->co_coeffs[i] = quantize_coeff(enc->dct_workspace[i], c_quant[i], i == 0);
+        block->co_coeffs[i] = quantize_coeff(enc->dct_workspace[i], c_quant[i], i == 0, 1);
     }
     
     // Apply DCT transform to Cg
     dct_8x8(enc->cg_workspace, enc->dct_workspace);
     
-    // Quantize Cg coefficients
+    // Quantize Cg coefficients (chroma)
     for (int i = 0; i < 64; i++) {
-        block->cg_coeffs[i] = quantize_coeff(enc->dct_workspace[i], c_quant[i], i == 0);
+        block->cg_coeffs[i] = quantize_coeff(enc->dct_workspace[i], c_quant[i], i == 0, 1);
     }
     
     // Set CBP (simplified - always encode all channels)
@@ -696,23 +794,197 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     enc->total_output_bytes += 5 + compressed_size;
     
     // Copy current frame to previous for next iteration
-    memcpy(enc->previous_rgb, enc->current_rgb, enc->width * enc->height * 3);
-    
+    //memcpy(enc->previous_rgb, enc->current_rgb, enc->width * enc->height * 3);
+
+    // Swap frame buffers for next frame
+    uint8_t *temp_rgb = enc->previous_rgb;
+    enc->previous_rgb = enc->current_rgb;
+    enc->current_rgb = temp_rgb;
+
     return 0;
+}
+
+// Execute command and capture output
+static char *execute_command(const char *command) {
+    FILE *pipe = popen(command, "r");
+    if (!pipe) return NULL;
+    
+    char *result = malloc(4096);
+    size_t len = fread(result, 1, 4095, pipe);
+    result[len] = '\0';
+    
+    pclose(pipe);
+    return result;
+}
+
+// Get video metadata using ffprobe
+static int get_video_metadata(tev_encoder_t *enc) {
+    char command[1024];
+    char *output;
+    
+    // Get frame count
+    snprintf(command, sizeof(command), 
+        "ffprobe -v quiet -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 \"%s\"", 
+        enc->input_file);
+    output = execute_command(command);
+    if (!output) {
+        fprintf(stderr, "Failed to get frame count\n");
+        return 0;
+    }
+    enc->total_frames = atoi(output);
+    free(output);
+    
+    // Get original frame rate (will be converted if user specified different FPS)
+    snprintf(command, sizeof(command),
+        "ffprobe -v quiet -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 \"%s\"",
+        enc->input_file);
+    output = execute_command(command);
+    if (!output) {
+        fprintf(stderr, "Failed to get frame rate\n");
+        return 0;
+    }
+    
+    int num, den;
+    if (sscanf(output, "%d/%d", &num, &den) == 2) {
+        enc->fps = (den > 0) ? (num / den) : 30;
+    } else {
+        enc->fps = (int)round(atof(output));
+    }
+    free(output);
+    
+    // If user specified output FPS, calculate new total frames for conversion
+    if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
+        // Calculate duration and new frame count
+        snprintf(command, sizeof(command),
+            "ffprobe -v quiet -show_entries format=duration -of csv=p=0 \"%s\"",
+            enc->input_file);
+        output = execute_command(command);
+        if (output) {
+            enc->duration = atof(output);
+            free(output);
+            // Update total frames for new frame rate
+            enc->total_frames = (int)(enc->duration * enc->output_fps);
+            if (enc->verbose) {
+                printf("Frame rate conversion: %d fps -> %d fps\n", enc->fps, enc->output_fps);
+                printf("Original frames: %d, Output frames: %d\n", 
+                       (int)(enc->duration * enc->fps), enc->total_frames);
+            }
+            enc->fps = enc->output_fps;  // Use output FPS for encoding
+        }
+    }
+    
+    // Check for audio stream
+    snprintf(command, sizeof(command),
+        "ffprobe -v quiet -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 \"%s\" 2>/dev/null",
+        enc->input_file);
+    output = execute_command(command);
+    enc->has_audio = (output && strstr(output, "audio"));
+    if (output) free(output);
+    
+    if (enc->verbose) {
+        fprintf(stderr, "Video metadata:\n");
+        fprintf(stderr, "  Frames: %d\n", enc->total_frames);
+        fprintf(stderr, "  FPS: %d\n", enc->fps);
+        fprintf(stderr, "  Audio: %s\n", enc->has_audio ? "Yes" : "No");
+        fprintf(stderr, "  Resolution: %dx%d\n", enc->width, enc->height);
+    }
+    
+    return (enc->total_frames > 0 && enc->fps > 0);
+}
+
+// Start FFmpeg process for video conversion with frame rate support
+static int start_video_conversion(tev_encoder_t *enc) {
+    char command[2048];
+    
+    // Build FFmpeg command with potential frame rate conversion
+    if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
+        // Frame rate conversion requested
+        snprintf(command, sizeof(command),
+            "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+            "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,fps=%d\" "
+            "-y - 2>&1",
+            enc->input_file, enc->width, enc->height, enc->width, enc->height, enc->output_fps);
+    } else {
+        // No frame rate conversion
+        snprintf(command, sizeof(command),
+            "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+            "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
+            "-y -",
+            enc->input_file, enc->width, enc->height, enc->width, enc->height);
+    }
+    
+    if (enc->verbose) {
+        printf("FFmpeg command: %s\n", command);
+    }
+    
+    enc->ffmpeg_video_pipe = popen(command, "r");
+    if (!enc->ffmpeg_video_pipe) {
+        fprintf(stderr, "Failed to start FFmpeg process\n");
+        return 0;
+    }
+    
+    return 1;
+}
+
+// Start audio conversion
+static int start_audio_conversion(tev_encoder_t *enc) {
+    if (!enc->has_audio) return 1;
+    
+    char command[2048];
+    snprintf(command, sizeof(command),
+        "ffmpeg -i \"%s\" -acodec libtwolame -psymodel 4 -b:a 192k -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+        enc->input_file, MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
+    
+    int result = system(command);
+    if (result == 0) {
+        enc->mp2_file = fopen(TEMP_AUDIO_FILE, "rb");
+        if (enc->mp2_file) {
+            fseek(enc->mp2_file, 0, SEEK_END);
+            enc->audio_remaining = ftell(enc->mp2_file);
+            fseek(enc->mp2_file, 0, SEEK_SET);
+        }
+    }
+    
+    return (result == 0);
 }
 
 // Show usage information
 static void show_usage(const char *program_name) {
-    printf("Usage: %s [options] -i input.mp4 -o output.tev\n", program_name);
+    printf("TEV YCoCg-R 4:2:0 Video Encoder\n");
+    printf("Usage: %s [options] -i input.mp4 -o output.tev\n\n", program_name);
     printf("Options:\n");
     printf("  -i, --input FILE     Input video file\n");
     printf("  -o, --output FILE    Output TEV file (use '-' for stdout)\n");
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
-    printf("  -f, --fps N          Frames per second (default: 15)\n");
+    printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
     printf("  -q, --quality N      Quality level 0-7 (default: 4)\n");
     printf("  -v, --verbose        Verbose output\n");
-    printf("  --help               Show this help\n");
+    printf("  -t, --test           Test mode: generate solid color frames\n");
+    printf("  --help               Show this help\n\n");
+    printf("Features:\n");
+    printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
+    printf("  - 16x16 Y blocks with 8x8 chroma for optimal DCT efficiency\n");
+    printf("  - Frame rate conversion with FFmpeg temporal filtering\n");
+    printf("  - Hardware-accelerated decoding functions\n\n");
+    printf("Examples:\n");
+    printf("  %s -i input.mp4 -o output.tev\n", program_name);
+    printf("  %s -i input.avi -f 15 -q 7 -o output.tev  # Convert 25fps to 15fps\n", program_name);
+    printf("  %s --test -o test.tev  # Generate solid color test frames\n", program_name);
+}
+
+
+// Cleanup encoder resources
+static void cleanup_encoder(tev_encoder_t *enc) {
+    if (!enc) return;
+    
+    if (enc->ffmpeg_video_pipe) pclose(enc->ffmpeg_video_pipe);
+    if (enc->mp2_file) {
+        fclose(enc->mp2_file);
+        unlink(TEMP_AUDIO_FILE); // Remove temporary audio file
+    }
+    
+    free_encoder(enc);
 }
 
 // Main function
@@ -726,8 +998,11 @@ int main(int argc, char *argv[]) {
     // Set defaults
     enc->width = DEFAULT_WIDTH;
     enc->height = DEFAULT_HEIGHT;
-    enc->fps = 15;
+    enc->fps = 0;  // Will be detected from input
+    enc->output_fps = 0;  // No frame rate conversion by default
     enc->quality = 4;
+    enc->verbose = 0;
+    int test_mode = 0;
     
     static struct option long_options[] = {
         {"input", required_argument, 0, 'i'},
@@ -737,6 +1012,7 @@ int main(int argc, char *argv[]) {
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
+        {"test", no_argument, 0, 't'},
         {"help", no_argument, 0, 0},
         {0, 0, 0, 0}
     };
@@ -744,13 +1020,13 @@ int main(int argc, char *argv[]) {
     int option_index = 0;
     int c;
     
-    while ((c = getopt_long(argc, argv, "i:o:w:h:f:q:v", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:w:h:f:q:vt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
-                enc->input_file = optarg;
+                enc->input_file = strdup(optarg);
                 break;
             case 'o':
-                enc->output_file = optarg;
+                enc->output_file = strdup(optarg);
                 enc->output_to_stdout = (strcmp(optarg, "-") == 0);
                 break;
             case 'w':
@@ -760,7 +1036,12 @@ int main(int argc, char *argv[]) {
                 enc->height = atoi(optarg);
                 break;
             case 'f':
-                enc->fps = atoi(optarg);
+                enc->output_fps = atoi(optarg);
+                if (enc->output_fps <= 0) {
+                    fprintf(stderr, "Invalid FPS: %d\n", enc->output_fps);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
                 break;
             case 'q':
                 enc->quality = atoi(optarg);
@@ -768,87 +1049,192 @@ int main(int argc, char *argv[]) {
                 if (enc->quality > 7) enc->quality = 7;
                 break;
             case 'v':
-                // Verbose flag (not implemented)
+                enc->verbose = 1;
+                break;
+            case 't':
+                test_mode = 1;
                 break;
             case 0:
                 if (strcmp(long_options[option_index].name, "help") == 0) {
                     show_usage(argv[0]);
-                    free_encoder(enc);
+                    cleanup_encoder(enc);
                     return 0;
                 }
                 break;
             default:
                 show_usage(argv[0]);
-                free_encoder(enc);
+                cleanup_encoder(enc);
                 return 1;
         }
     }
     
-    if (!enc->input_file || !enc->output_file) {
-        fprintf(stderr, "Input and output files are required\n");
+    if (!test_mode && (!enc->input_file || !enc->output_file)) {
+        fprintf(stderr, "Input and output files are required (unless using --test mode)\n");
         show_usage(argv[0]);
-        free_encoder(enc);
+        cleanup_encoder(enc);
         return 1;
     }
     
-    // Calculate total frames (simplified - assume 1 second for now)
-    enc->total_frames = enc->fps;
+    if (!enc->output_file) {
+        fprintf(stderr, "Output file is required\n");
+        show_usage(argv[0]);
+        cleanup_encoder(enc);
+        return 1;
+    }
+    
+    // Handle test mode or real video
+    if (test_mode) {
+        // Test mode: generate solid color frames
+        enc->fps = 5;  // 5 test frames
+        enc->total_frames = 5;
+        enc->has_audio = 0;
+        printf("Test mode: Generating 5 solid color frames (black, white, red, green, blue)\n");
+    } else {
+        // Get video metadata and start FFmpeg processes
+        if (!get_video_metadata(enc)) {
+            fprintf(stderr, "Failed to get video metadata\n");
+            cleanup_encoder(enc);
+            return 1;
+        }
+    }
     
     // Allocate buffers
     if (alloc_encoder_buffers(enc) < 0) {
         fprintf(stderr, "Failed to allocate encoder buffers\n");
-        free_encoder(enc);
+        cleanup_encoder(enc);
         return 1;
+    }
+    
+    // Start FFmpeg processes (only for real video mode)
+    if (!test_mode) {
+        // Start FFmpeg video conversion
+        if (!start_video_conversion(enc)) {
+            fprintf(stderr, "Failed to start video conversion\n");
+            cleanup_encoder(enc);
+            return 1;
+        }
+        
+        // Start audio conversion (if audio present)
+        if (!start_audio_conversion(enc)) {
+            fprintf(stderr, "Warning: Audio conversion failed\n");
+            enc->has_audio = 0;
+        }
     }
     
     // Open output
     FILE *output = enc->output_to_stdout ? stdout : fopen(enc->output_file, "wb");
     if (!output) {
         perror("Failed to open output file");
-        free_encoder(enc);
+        cleanup_encoder(enc);
         return 1;
     }
     
     // Write TEV header
     write_tev_header(output, enc);
+    gettimeofday(&enc->start_time, NULL);
     
-    // For this simplified version, create a test pattern
-    printf("Encoding test pattern with YCoCg-R 4:2:0 format...\n");
+    printf("Encoding video with YCoCg-R 4:2:0 format...\n");
+    if (enc->output_fps > 0) {
+        printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
+    }
     
-    for (int frame = 0; frame < enc->total_frames; frame++) {
-        // Generate test pattern (gradient)
-        for (int y = 0; y < enc->height; y++) {
-            for (int x = 0; x < enc->width; x++) {
-                int offset = (y * enc->width + x) * 3;
-                enc->current_rgb[offset] = (x * 255) / enc->width;     // R gradient
-                enc->current_rgb[offset + 1] = (y * 255) / enc->height; // G gradient
-                enc->current_rgb[offset + 2] = ((x + y) * 255) / (enc->width + enc->height); // B gradient
+    // Process frames
+    int frame_count = 0;
+    while (frame_count < enc->total_frames) {
+        if (test_mode) {
+            // Generate test frame with solid colors
+            size_t rgb_size = enc->width * enc->height * 3;
+            uint8_t test_r = 0, test_g = 0, test_b = 0;
+            const char* color_name = "unknown";
+            
+            switch (frame_count) {
+                case 0: test_r = 0; test_g = 0; test_b = 0; color_name = "black"; break;     // Black
+                case 1: test_r = 255; test_g = 255; test_b = 255; color_name = "white"; break; // White  
+                case 2: test_r = 255; test_g = 0; test_b = 0; color_name = "red"; break;       // Red
+                case 3: test_r = 0; test_g = 255; test_b = 0; color_name = "green"; break;     // Green
+                case 4: test_r = 0; test_g = 0; test_b = 255; color_name = "blue"; break;      // Blue
+            }
+            
+            // Fill entire frame with solid color
+            for (size_t i = 0; i < rgb_size; i += 3) {
+                enc->current_rgb[i] = test_r;
+                enc->current_rgb[i + 1] = test_g;
+                enc->current_rgb[i + 2] = test_b;
+            }
+            
+            printf("Frame %d: %s (%d,%d,%d)\n", frame_count, color_name, test_r, test_g, test_b);
+            
+            // Test YCoCg-R conversion
+            int y_test, co_test, cg_test;
+            rgb_to_ycocgr(test_r, test_g, test_b, &y_test, &co_test, &cg_test);
+            printf("  YCoCg-R: Y=%d Co=%d Cg=%d\n", y_test, co_test, cg_test);
+            
+            // Test reverse conversion
+            uint8_t r_rev, g_rev, b_rev;
+            ycocgr_to_rgb(y_test, co_test, cg_test, &r_rev, &g_rev, &b_rev);
+            printf("  Reverse: R=%d G=%d B=%d\n", r_rev, g_rev, b_rev);
+            
+        } else {
+            // Read RGB data directly from FFmpeg pipe
+            size_t rgb_size = enc->width * enc->height * 3;
+            size_t bytes_read = fread(enc->current_rgb, 1, rgb_size, enc->ffmpeg_video_pipe);
+            
+            if (bytes_read != rgb_size) {
+                if (enc->verbose) {
+                    printf("Frame %d: Expected %zu bytes, got %zu bytes\n", frame_count, rgb_size, bytes_read);
+                    if (feof(enc->ffmpeg_video_pipe)) {
+                        printf("FFmpeg pipe reached end of file\n");
+                    }
+                    if (ferror(enc->ffmpeg_video_pipe)) {
+                        printf("FFmpeg pipe error occurred\n");
+                    }
+                }
+                break; // End of video or error
             }
         }
         
         // Encode frame
-        if (encode_frame(enc, output, frame) < 0) {
-            fprintf(stderr, "Failed to encode frame %d\n", frame);
+        if (encode_frame(enc, output, frame_count) < 0) {
+            fprintf(stderr, "Failed to encode frame %d\n", frame_count);
             break;
         }
-        
-        printf("Encoded frame %d/%d\n", frame + 1, enc->total_frames);
+
+        // Write a sync packet
+        uint8_t sync_packet = TEV_PACKET_SYNC;
+        fwrite(&sync_packet, 1, 1, output);
+
+        frame_count++;
+        if (enc->verbose || frame_count % 30 == 0) {
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            double elapsed = (now.tv_sec - enc->start_time.tv_sec) + 
+                           (now.tv_usec - enc->start_time.tv_usec) / 1000000.0;
+            double fps = frame_count / elapsed;
+            printf("Encoded frame %d/%d (%.1f fps)\n", frame_count, enc->total_frames, fps);
+        }
     }
     
-    // Write sync packet
+    // Write final sync packet
     uint8_t sync_packet = TEV_PACKET_SYNC;
-    uint32_t sync_size = 0;
     fwrite(&sync_packet, 1, 1, output);
-    fwrite(&sync_size, 4, 1, output);
-    
+
     if (!enc->output_to_stdout) {
         fclose(output);
     }
     
-    printf("Encoding complete. Output size: %zu bytes\n", enc->total_output_bytes);
-    printf("Block statistics: INTRA=%d, INTER=%d, MOTION=%d, SKIP=%d\n",
+    // Final statistics
+    struct timeval end_time;
+    gettimeofday(&end_time, NULL);
+    double total_time = (end_time.tv_sec - enc->start_time.tv_sec) + 
+                       (end_time.tv_usec - enc->start_time.tv_usec) / 1000000.0;
+    
+    printf("\nEncoding complete!\n");
+    printf("  Frames encoded: %d\n", frame_count);
+    printf("  Output size: %zu bytes\n", enc->total_output_bytes);
+    printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
+    printf("  Block statistics: INTRA=%d, INTER=%d, MOTION=%d, SKIP=%d\n",
            enc->blocks_intra, enc->blocks_inter, enc->blocks_motion, enc->blocks_skip);
     
-    free_encoder(enc);
+    cleanup_encoder(enc);
     return 0;
 }

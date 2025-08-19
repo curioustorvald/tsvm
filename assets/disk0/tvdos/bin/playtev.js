@@ -186,8 +186,12 @@ const DISPLAY_RG_ADDR = -1048577   // Main graphics RG plane (displayed)
 const DISPLAY_BA_ADDR = -1310721   // Main graphics BA plane (displayed)
 
 // RGB frame buffers (24-bit: R,G,B per pixel)
-const CURRENT_RGB_ADDR = sys.malloc(560*448*3) // Current frame RGB buffer
-const PREV_RGB_ADDR = sys.malloc(560*448*3)    // Previous frame RGB buffer
+const FRAME_SIZE = 560*448*3  // Total frame size = 752,640 bytes
+
+// Allocate frame buffers - malloc works correctly, addresses are start addresses
+const CURRENT_RGB_ADDR = sys.malloc(FRAME_SIZE)
+const PREV_RGB_ADDR = sys.malloc(FRAME_SIZE)
+
 
 // Working memory for blocks (minimal allocation)
 let ycocgWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 3) // Y+Co+Cg workspace
@@ -252,21 +256,19 @@ try {
         let packetType = seqread.readOneByte()
 
         if (packetType == 0xFF) { // Sync packet
-            // Read length (should be 0)
-            let syncLen = seqread.readInt()
-            
             // Sync packet - frame complete
             frameCount++
 
             // Copy current RGB frame to previous frame buffer for next frame reference
             // This is the only copying we need, and it happens once per frame after display
-            sys.memcpy(PREV_RGB_ADDR, CURRENT_RGB_ADDR, FRAME_PIXELS * 3)
+            sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
 
         } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
             // Video frame packet
             let payloadLen = seqread.readInt()
             let compressedPtr = seqread.readBytes(payloadLen)
             updateDataRateBin(payloadLen)
+            
             
             // Basic sanity check on compressed data
             if (payloadLen <= 0 || payloadLen > 1000000) {
@@ -297,9 +299,9 @@ try {
             
             // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers
             try {
-                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR,
-                                 width, height, quality)
-                
+                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality)
+//                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, 0) // force quality 0 for testing
+
                 // Upload RGB buffer to display framebuffer with dithering
                 graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,
                                               width, height, frameCount)
@@ -339,8 +341,8 @@ try {
     // Cleanup working memory (graphics memory is automatically managed)
     sys.free(ycocgWorkspace)
     sys.free(dctWorkspace)
-    sys.free(CURRENT_RGB_ADDR)
-    sys.free(PREV_RGB_ADDR)
+    if (CURRENT_RGB_ADDR > 0) sys.free(CURRENT_RGB_ADDR)
+    if (PREV_RGB_ADDR > 0) sys.free(PREV_RGB_ADDR)
 
     audio.stop(0)
     audio.purgeQueue(0)

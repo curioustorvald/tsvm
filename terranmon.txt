@@ -698,17 +698,17 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     byte[5] Reserved
 
 ## Packet Types
-    0x10, 0x00: I-frame (intra-coded frame)
-    0x11, 0x00: P-frame (predicted frame) 
-    0x20, 0x00: MP2 audio packet
-    0xFF, 0xFF: sync packet
+    0x10: I-frame (intra-coded frame)
+    0x11: P-frame (predicted frame)
+    0x20: MP2 audio packet
+    0xFF: sync packet
 
 ## Video Packet Structure
-    uint16 Packet Type
+    uint8  Packet Type
     uint32 Compressed Size
-    *      Zstd-compressed Block Data
+    *      Gzip-compressed Block Data
 
-## Block Data (per 8x8 block)
+## Block Data (per 8x8/16x16 block)
     uint8  Mode: encoding mode
            0x00 = SKIP (copy from previous frame)
            0x01 = INTRA (DCT-coded, no prediction)
@@ -731,15 +731,13 @@ of 8, while AC coefficients are quantized according to quality tables.
 - Uses Sum of Absolute Differences (SAD) for motion estimation
 - Bilinear interpolation for sub-pixel motion vectors
 
-## Color Space
-TEV operates in native 4096-color mode (4:4:4 RGB, 4 bits per channel).
-No color space conversion required - direct compatibility with graphics mode 2.
+## Colour Space
+TEV operates in 8-Bit colour mode, colour space conversion required
 
 ## Compression Features
-- 8x8 DCT blocks (vs 4x4 in iPF)
+- 16x16 DCT blocks (vs 4x4 in iPF)
 - Temporal prediction with motion compensation
 - Rate-distortion optimized mode selection
-- Zstd compression with video-optimized settings
 - Hardware-accelerated encoding/decoding functions
 
 ## Performance Comparison

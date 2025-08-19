@@ -1485,14 +1485,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             39, 45, 54, 60, 66, 72, 75, 77
         ),  // Quality 7 (highest)
         intArrayOf(
-            3, 2, 2, 3, 5, 8, 9, 11,
-            2, 2, 2, 3, 5, 9, 11, 14,
-            2, 2, 3, 5, 8, 9, 11, 14,
-            2, 3, 5, 6, 9, 11, 14, 15,
-            3, 5, 8, 9, 11, 14, 15, 17,
-            5, 6, 9, 11, 14, 15, 17, 18,
-            9, 9, 11, 14, 15, 17, 18, 20,
-            9, 11, 14, 15, 17, 18, 20, 20
+            1, 1, 1, 1, 1, 2, 2, 3,
+            1, 1, 1, 1, 2, 2, 3, 4,
+            1, 1, 1, 2, 2, 3, 4, 5,
+            1, 1, 2, 2, 3, 4, 5, 6,
+            1, 2, 2, 3, 4, 5, 6, 7,
+            2, 2, 3, 4, 5, 6, 7, 8,
+            2, 3, 4, 5, 6, 7, 8, 9,
+            3, 4, 5, 6, 7, 8, 9, 10
         )
     )
 
@@ -1539,6 +1539,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * Apply Bayer dithering to reduce banding when quantizing to 4-bit
      */
     private fun ditherValue(value: Int, x: Int, y: Int, f: Int): Int {
+        // Preserve pure values (0 and 255) exactly to maintain color primaries
+        if (value == 0) return 0
+        if (value == 255) return 15
+        
         val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
         val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
         return round(15f * q)
@@ -1564,7 +1568,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (v in 0 until 8) {
                 val idx = u * 8 + v
                 val coeff = coeffs[idx]
-                dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+                if (idx == 0) {
+                    // DC coefficient for chroma: lossless quantization (no scaling)
+                    dctCoeffs[u][v] = coeff.toDouble()
+                } else {
+                    // AC coefficients: use quantization table
+                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+                }
             }
         }
 
@@ -1577,7 +1587,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         sum += dctBasis[u][x] * dctBasis[v][y] * dctCoeffs[u][v]
                     }
                 }
-                val pixel = kotlin.math.max(0.0, kotlin.math.min(255.0, sum + 128.0))
+                // Co/Cg values don't need +128 offset (they're already centered around 0)
+                val pixel = kotlin.math.max(-255.0, kotlin.math.min(255.0, sum))
                 result[y * 8 + x] = pixel.toInt()
             }
         }
@@ -1602,7 +1613,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (v in 0 until 16) {
                 val idx = u * 16 + v
                 val coeff = coeffs[idx]
-                dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+                if (idx == 0) {
+                    // DC coefficient for luma: lossless quantization (no scaling)
+                    dctCoeffs[u][v] = coeff.toDouble()
+                } else {
+                    // AC coefficients: use quantization table
+                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toDouble()
+                }
             }
         }
         
@@ -1637,10 +1654,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val co = coBlock[coIdx]
                 val cg = cgBlock[coIdx]
                 
-                // YCoCg-R inverse transform
-                val tmp = y - (cg shr 1)
+                // YCoCg-R inverse transform (using safe integer arithmetic)
+                val tmp = y - (cg / 2)  // Use division instead of shift to avoid overflow
                 val g = cg + tmp
-                val b = tmp - (co shr 1)
+                val b = tmp - (co / 2)  // Use division instead of shift to avoid overflow  
                 val r = b + co
                 
                 // Clamp and store RGB
@@ -1681,6 +1698,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val prevAddrIncVec = if (prevRGBAddr >= 0) 1 else -1
         val thisAddrIncVec = if (currentRGBAddr >= 0) 1 else -1
 
+
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX) {
                 val startX = bx * 16
@@ -1693,6 +1711,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val mvY = ((vm.peek(readPtr + 3)!!.toUint()) or 
                           ((vm.peek(readPtr + 4)!!.toUint()) shl 8)).toShort().toInt()
                 readPtr += 7 // Skip CBP field
+                
                 
                 when (mode) {
                     0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame
@@ -1715,6 +1734,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 }
                             }
                         }
+                        // Skip DCT coefficients for fixed-size block format: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                        readPtr += 768
                     }
                     
                     0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB
@@ -1750,6 +1771,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 }
                             }
                         }
+                        // Skip DCT coefficients for fixed-size block format: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                        readPtr += 768
                     }
                     
                     else -> { // TEV_MODE_INTRA (0x01) or TEV_MODE_INTER (0x02) - Full YCoCg-R DCT decode
