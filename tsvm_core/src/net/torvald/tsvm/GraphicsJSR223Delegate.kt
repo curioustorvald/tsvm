@@ -1933,8 +1933,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         mcY = 128
                                     }
                                     
-                                    // Add Y residual
-                                    finalY[pixelIdx] = (mcY + yResidual[pixelIdx]).coerceIn(0, 255)
+                                    // Add Y residual (subtract 128 bias added by IDCT)
+                                    val residual = yResidual[pixelIdx] - 128
+                                    finalY[pixelIdx] = (mcY + residual).coerceIn(0, 255)
                                 }
                             }
                         }

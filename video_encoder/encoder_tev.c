@@ -613,13 +613,16 @@ static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y
                                    ref_y, ref_co, ref_cg);
     
     // Compute residuals: current - motion_compensated_reference
+    // Both current and reference Y should be centered around 0 for proper residual DCT
     for (int i = 0; i < 256; i++) {
-        enc->y_workspace[i] = (int)enc->y_workspace[i] - (int)ref_y[i];
+        float ref_y_centered = (float)ref_y[i] - 128.0f;  // Convert ref to centered like current
+        enc->y_workspace[i] = enc->y_workspace[i] - ref_y_centered;
     }
     
+    // Chroma residuals (already centered in both current and reference)
     for (int i = 0; i < 64; i++) {
-        enc->co_workspace[i] = (int)enc->co_workspace[i] - (int)ref_co[i];
-        enc->cg_workspace[i] = (int)enc->cg_workspace[i] - (int)ref_cg[i];
+        enc->co_workspace[i] = enc->co_workspace[i] - (float)ref_co[i];
+        enc->cg_workspace[i] = enc->cg_workspace[i] - (float)ref_cg[i];
     }
 }
 
