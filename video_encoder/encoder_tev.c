@@ -367,7 +367,43 @@ static void init_dct_tables(void) {
     tables_initialized = 1;
 }
 
-// Optimized 16x16 2D DCT
+// 16x16 2D DCT
+// Fast separable 16x16 DCT - 8x performance improvement
+static float temp_dct_16[256]; // Reusable temporary buffer
+
+static void dct_16x16_fast(float *input, float *output) {
+    init_dct_tables(); // Ensure tables are initialized
+
+    // First pass: Process rows (16 1D DCTs)
+    for (int row = 0; row < 16; row++) {
+        for (int u = 0; u < 16; u++) {
+            float sum = 0.0f;
+            float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
+            
+            for (int x = 0; x < 16; x++) {
+                sum += input[row * 16 + x] * dct_table_16[u][x];
+            }
+            
+            temp_dct_16[row * 16 + u] = 0.5f * cu * sum;
+        }
+    }
+    
+    // Second pass: Process columns (16 1D DCTs)
+    for (int col = 0; col < 16; col++) {
+        for (int v = 0; v < 16; v++) {
+            float sum = 0.0f;
+            float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
+            
+            for (int y = 0; y < 16; y++) {
+                sum += temp_dct_16[y * 16 + col] * dct_table_16[v][y];
+            }
+            
+            output[v * 16 + col] = 0.5f * cv * sum;
+        }
+    }
+}
+
+// Legacy O(n^4) version for reference/fallback
 static void dct_16x16(float *input, float *output) {
     init_dct_tables(); // Ensure tables are initialized
 
@@ -390,7 +426,42 @@ static void dct_16x16(float *input, float *output) {
     }
 }
 
-// Optimized 8x8 2D DCT (for chroma)
+// Fast separable 8x8 DCT - 4x performance improvement  
+static float temp_dct_8[64]; // Reusable temporary buffer
+
+static void dct_8x8_fast(float *input, float *output) {
+    init_dct_tables(); // Ensure tables are initialized
+
+    // First pass: Process rows (8 1D DCTs)
+    for (int row = 0; row < 8; row++) {
+        for (int u = 0; u < 8; u++) {
+            float sum = 0.0f;
+            float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
+            
+            for (int x = 0; x < 8; x++) {
+                sum += input[row * 8 + x] * dct_table_8[u][x];
+            }
+            
+            temp_dct_8[row * 8 + u] = 0.5f * cu * sum;
+        }
+    }
+    
+    // Second pass: Process columns (8 1D DCTs)
+    for (int col = 0; col < 8; col++) {
+        for (int v = 0; v < 8; v++) {
+            float sum = 0.0f;
+            float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
+            
+            for (int y = 0; y < 8; y++) {
+                sum += temp_dct_8[y * 8 + col] * dct_table_8[v][y];
+            }
+            
+            output[v * 8 + col] = 0.5f * cv * sum;
+        }
+    }
+}
+
+// Legacy 8x8 2D DCT (for chroma) - O(n^4) version
 static void dct_8x8(float *input, float *output) {
     init_dct_tables(); // Ensure tables are initialized
 
@@ -807,8 +878,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         }
     }
     
-    // Apply DCT transform
-    dct_16x16(enc->y_workspace, enc->dct_workspace);
+    // Apply fast DCT transform - 8x performance improvement
+    dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
     
     // Quantize Y coefficients (luma)
     const uint8_t *y_quant = QUANT_TABLES_Y[enc->quality];
@@ -816,8 +887,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         block->y_coeffs[i] = quantize_coeff(enc->dct_workspace[i], y_quant[i], i == 0, 0);
     }
     
-    // Apply DCT transform to chroma
-    dct_8x8(enc->co_workspace, enc->dct_workspace);
+    // Apply fast DCT transform to chroma - 4x performance improvement
+    dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
     
     // Quantize Co coefficients (chroma)
     const uint8_t *c_quant = QUANT_TABLES_C[enc->quality];
@@ -825,8 +896,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         block->co_coeffs[i] = quantize_coeff(enc->dct_workspace[i], c_quant[i], i == 0, 1);
     }
     
-    // Apply DCT transform to Cg
-    dct_8x8(enc->cg_workspace, enc->dct_workspace);
+    // Apply fast DCT transform to Cg - 4x performance improvement  
+    dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
     
     // Quantize Cg coefficients (chroma)
     for (int i = 0; i < 64; i++) {
