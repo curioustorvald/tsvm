@@ -1,6 +1,7 @@
 // Created by Claude on 2025-08-18.
 // TSVM Enhanced Video (TEV) Format Decoder - YCoCg-R 4:2:0 Version
 // Usage: playtev moviefile.tev [options]
+// Options: -i (interactive), -debug-mv (show motion vector debug visualization)
 
 const WIDTH = 560
 const HEIGHT = 448
@@ -21,6 +22,7 @@ const TEV_PACKET_AUDIO_MP2 = 0x20
 const TEV_PACKET_SYNC = 0xFF
 
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
+const debugMotionVectors = exec_args[2] && exec_args[2].toLowerCase() == "-debug-mv"
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
 
@@ -102,8 +104,7 @@ function getVideoRate(rate) {
     return baseRate * mult
 }
 
-let frameTime = 1.0 / fps
-
+let FRAME_TIME = 1.0 / fps
 // Ultra-fast approach: always render to display, use dedicated previous frame buffer
 const FRAME_PIXELS = width * height
 
@@ -133,6 +134,7 @@ sys.memset(DISPLAY_BA_ADDR, 15, FRAME_PIXELS) // Black with alpha=15 (opaque) in
 
 let frameCount = 0
 let stopPlay = false
+let akku = FRAME_TIME
 
 // 4x4 Bayer dithering matrix
 const BAYER_MATRIX = [
@@ -141,6 +143,7 @@ const BAYER_MATRIX = [
     [ 3,11, 1, 9],
     [15, 7,13, 5]
 ]
+
 
 // Apply Bayer dithering to reduce banding when quantizing to 4-bit
 function ditherValue(value, x, y) {
@@ -157,7 +160,11 @@ function ditherValue(value, x, y) {
 
 // Main decoding loop - simplified for performance
 try {
+    let t1 = sys.nanoTime()
     while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && frameCount < totalFrames) {
+
+        if (akku >= FRAME_TIME) {
+
         // Handle interactive controls
         if (interactive) {
             sys.poke(-40, 1)
@@ -175,7 +182,7 @@ try {
             frameCount++
 
             // Copy current RGB frame to previous frame buffer for next frame reference
-            // This is the only copying we need, and it happens once per frame after display
+            // memcpy(source, destination, length) - so CURRENT (source) -> PREV (destination)
             sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
 
         } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
@@ -214,8 +221,7 @@ try {
             
             // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers
             try {
-                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality)
-//                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, 0) // force quality 0 for testing
+                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors)
 
                 // Upload RGB buffer to display framebuffer with dithering
                 graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,
@@ -236,6 +242,12 @@ try {
             println(`Unknown packet type: 0x${packetType.toString(16)}`)
             break
         }
+        }
+
+        sys.sleep(1)
+
+        let t2 = sys.nanoTime()
+        akku += (t2 - t1) / 1000000000.0
 
         // Simple progress display
         if (interactive) {
@@ -247,6 +259,8 @@ try {
             print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
             con.move(1, 1)
         }
+
+        t1 = t2
     }
 
 } catch (e) {

@@ -254,8 +254,8 @@ static const uint8_t QUANT_TABLES_C[8][64] = {
 #define MP2_DEFAULT_PACKET_SIZE 0x240
 
 // Encoding parameters
-#define MAX_MOTION_SEARCH 16
-#define KEYFRAME_INTERVAL 30
+#define MAX_MOTION_SEARCH 32
+#define KEYFRAME_INTERVAL 120
 #define BLOCK_SIZE 16  // 16x16 blocks now
 
 // Default values
@@ -322,10 +322,10 @@ static void rgb_to_ycocgr(uint8_t r, uint8_t g, uint8_t b, int *y, int *co, int 
     *cg = (int)g - tmp;
     *y = tmp + ((*cg) / 2);
     
-    // Clamp to valid ranges (YCoCg-R should be roughly -128 to +127)
+    // Clamp to valid ranges (YCoCg-R should be roughly -256 to +255)
     *y = CLAMP(*y, 0, 255);
-    *co = CLAMP(*co, -128, 127);
-    *cg = CLAMP(*cg, -128, 127);
+    *co = CLAMP(*co, -256, 255);
+    *cg = CLAMP(*cg, -256, 255);
 }
 
 // YCoCg-R to RGB transform (for verification - per YCoCg-R specification)
@@ -341,40 +341,70 @@ static void ycocgr_to_rgb(int y, int co, int cg, uint8_t *r, uint8_t *g, uint8_t
     *b = CLAMP(*b, 0, 255);
 }
 
-// 16x16 2D DCT
+// Pre-calculated cosine tables
+static float dct_table_16[16][16]; // For 16x16 DCT
+static float dct_table_8[8][8];    // For 8x8 DCT
+static int tables_initialized = 0;
+
+// Initialize the pre-calculated tables
+static void init_dct_tables(void) {
+    if (tables_initialized) return;
+
+    // Pre-calculate cosine values for 16x16 DCT
+    for (int u = 0; u < 16; u++) {
+        for (int x = 0; x < 16; x++) {
+            dct_table_16[u][x] = cosf((2.0f * x + 1.0f) * u * M_PI / 32.0f);
+        }
+    }
+
+    // Pre-calculate cosine values for 8x8 DCT
+    for (int u = 0; u < 8; u++) {
+        for (int x = 0; x < 8; x++) {
+            dct_table_8[u][x] = cosf((2.0f * x + 1.0f) * u * M_PI / 16.0f);
+        }
+    }
+
+    tables_initialized = 1;
+}
+
+// Optimized 16x16 2D DCT
 static void dct_16x16(float *input, float *output) {
+    init_dct_tables(); // Ensure tables are initialized
+
     for (int u = 0; u < 16; u++) {
         for (int v = 0; v < 16; v++) {
             float sum = 0.0f;
             float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
             float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            
+
             for (int x = 0; x < 16; x++) {
                 for (int y = 0; y < 16; y++) {
                     sum += input[y * 16 + x] *
-                           cosf((2.0f * x + 1.0f) * u * M_PI / 32.0f) *
-                           cosf((2.0f * y + 1.0f) * v * M_PI / 32.0f);
+                           dct_table_16[u][x] *
+                           dct_table_16[v][y];
                 }
             }
-            
+
             output[u * 16 + v] = 0.25f * cu * cv * sum;
         }
     }
 }
 
-// 8x8 2D DCT (for chroma)
+// Optimized 8x8 2D DCT (for chroma)
 static void dct_8x8(float *input, float *output) {
+    init_dct_tables(); // Ensure tables are initialized
+
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) {
             float sum = 0.0f;
             float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
             float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            
+
             for (int x = 0; x < 8; x++) {
                 for (int y = 0; y < 8; y++) {
                     sum += input[y * 8 + x] *
-                           cosf((2.0f * x + 1.0f) * u * M_PI / 16.0f) *
-                           cosf((2.0f * y + 1.0f) * v * M_PI / 16.0f);
+                           dct_table_8[u][x] *
+                           dct_table_8[v][y];
                 }
             }
             
@@ -387,7 +417,7 @@ static void dct_8x8(float *input, float *output) {
 static int16_t quantize_coeff(float coeff, uint8_t quant, int is_dc, int is_chroma) {
     if (is_dc) {
         if (is_chroma) {
-            // Chroma DC: range -255 to +255, use lossless quantization for testing
+            // Chroma DC: range -256 to +255, use lossless quantization for testing
             return (int16_t)roundf(coeff);
         } else {
             // Luma DC: range -128 to +127, use lossless quantization for testing
@@ -475,8 +505,8 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
     // Search in range [-16, +16] pixels
     for (int mv_y = -MAX_MOTION_SEARCH; mv_y <= MAX_MOTION_SEARCH; mv_y++) {
         for (int mv_x = -MAX_MOTION_SEARCH; mv_x <= MAX_MOTION_SEARCH; mv_x++) {
-            int ref_x = start_x + mv_x;
-            int ref_y = start_y + mv_y;
+            int ref_x = start_x - mv_x;  // Motion estimation: where did current block come FROM?
+            int ref_y = start_y - mv_y;
             
             // Check bounds
             if (ref_x < 0 || ref_y < 0 || 
@@ -559,8 +589,8 @@ static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
             }
             
             // Average and store subsampled chroma
-            co_block[cy * 8 + cx] = CLAMP(sum_co / 4, -128, 127);
-            cg_block[cy * 8 + cx] = CLAMP(sum_cg / 4, -128, 127);
+            co_block[cy * 8 + cx] = CLAMP(sum_co / 4, -256, 255);
+            cg_block[cy * 8 + cx] = CLAMP(sum_cg / 4, -256, 255);
         }
     }
 }
@@ -576,7 +606,7 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
         for (int dx = 0; dx < 16; dx++) {
             int cur_x = block_x + dx;
             int cur_y = block_y + dy;
-            int ref_x = cur_x + mv_x;
+            int ref_x = cur_x + mv_x;  // Revert to original motion compensation
             int ref_y = cur_y + mv_y;
             
             int rgb_idx = (dy * 16 + dx) * 3;
@@ -613,9 +643,9 @@ static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y
                                    ref_y, ref_co, ref_cg);
     
     // Compute residuals: current - motion_compensated_reference
-    // Both current and reference Y should be centered around 0 for proper residual DCT
+    // Current is already centered (-128 to +127), reference is 0-255, so subtract and center reference
     for (int i = 0; i < 256; i++) {
-        float ref_y_centered = (float)ref_y[i] - 128.0f;  // Convert ref to centered like current
+        float ref_y_centered = (float)ref_y[i] - 128.0f;  // Center reference to match current
         enc->y_workspace[i] = enc->y_workspace[i] - ref_y_centered;
     }
     
@@ -654,13 +684,13 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                 if (x < enc->width && y < enc->height) {
                     int cur_offset = (y * enc->width + x) * 3;
                     
-                    // Compare current with previous frame (simple luma difference)
+                    // Compare current with previous frame (using YCoCg-R Luma calculation)
                     int cur_luma = (enc->current_rgb[cur_offset] + 
-                                   enc->current_rgb[cur_offset + 1] + 
-                                   enc->current_rgb[cur_offset + 2]) / 3;
+                                   2 * enc->current_rgb[cur_offset + 1] +
+                                   enc->current_rgb[cur_offset + 2]) / 4;
                     int prev_luma = (enc->previous_rgb[cur_offset] + 
-                                    enc->previous_rgb[cur_offset + 1] + 
-                                    enc->previous_rgb[cur_offset + 2]) / 3;
+                                    2 * enc->previous_rgb[cur_offset + 1] +
+                                    enc->previous_rgb[cur_offset + 2]) / 4;
                     
                     skip_sad += abs(cur_luma - prev_luma);
                 }
@@ -687,13 +717,14 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                         
                         int cur_offset = (cur_y * enc->width + cur_x) * 3;
                         int ref_offset = (ref_y * enc->width + ref_x) * 3;
-                        
+
+                        // use YCoCg-R Luma calculation
                         int cur_luma = (enc->current_rgb[cur_offset] + 
-                                       enc->current_rgb[cur_offset + 1] + 
-                                       enc->current_rgb[cur_offset + 2]) / 3;
+                                       2 * enc->current_rgb[cur_offset + 1] +
+                                       enc->current_rgb[cur_offset + 2]) / 4;
                         int ref_luma = (enc->previous_rgb[ref_offset] + 
-                                       enc->previous_rgb[ref_offset + 1] + 
-                                       enc->previous_rgb[ref_offset + 2]) / 3;
+                                       2 * enc->previous_rgb[ref_offset + 1] +
+                                       enc->previous_rgb[ref_offset + 2]) / 4;
                         
                         motion_sad += abs(cur_luma - ref_luma);
                     } else {
@@ -716,7 +747,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
             enc->blocks_skip++;
             return; // Skip DCT encoding entirely
-        } else if (motion_sad < skip_sad && motion_sad <= 128 && 
+        } else if (motion_sad < skip_sad && motion_sad <= 1024 && 
                    (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
             // Good motion prediction - use motion-only mode
             block->mode = TEV_MODE_MOTION;
@@ -728,12 +759,29 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             enc->blocks_motion++;
             return; // Skip DCT encoding, just store motion vector
         } else if (motion_sad < skip_sad && (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
-            // Use inter mode with residual DCT - motion compensation + residual
-            block->mode = TEV_MODE_INTER;
-            enc->blocks_inter++;
+            // Motion compensation with threshold
+            if (motion_sad <= 1024) {
+                block->mode = TEV_MODE_MOTION;
+                block->cbp = 0x00;  // No coefficients present
+                memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
+                memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
+                memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
+                enc->blocks_motion++;
+                return; // Skip DCT encoding, just store motion vector
+            }
             
-            // Compute motion-compensated residual for DCT encoding
-            compute_motion_residual(enc, block_x, block_y, block->mv_x, block->mv_y);
+            // Use INTER mode with motion vector and residuals
+            if (abs(block->mv_x) <= 24 && abs(block->mv_y) <= 24) {
+                block->mode = TEV_MODE_INTER;
+                enc->blocks_inter++;
+            } else {
+                // Motion vector too large, fall back to INTRA
+                block->mode = TEV_MODE_INTRA;
+                block->mv_x = 0;
+                block->mv_y = 0;
+                enc->blocks_intra++;
+                return;
+            }
         } else {
             // No good motion prediction - use intra mode
             block->mode = TEV_MODE_INTRA;
@@ -780,7 +828,9 @@ static tev_encoder_t* init_encoder(void) {
     
     enc->quality = 4;  // Default quality
     enc->mp2_packet_size = MP2_DEFAULT_PACKET_SIZE;
-    
+
+    init_dct_tables();
+
     return enc;
 }
 
@@ -1208,10 +1258,10 @@ int main(int argc, char *argv[]) {
     // Handle test mode or real video
     if (test_mode) {
         // Test mode: generate solid color frames
-        enc->fps = 5;  // 5 test frames
-        enc->total_frames = 5;
+        enc->fps = 1;
+        enc->total_frames = 15;
         enc->has_audio = 0;
-        printf("Test mode: Generating 5 solid color frames (black, white, red, green, blue)\n");
+        printf("Test mode: Generating 15 solid color frames\n");
     } else {
         // Get video metadata and start FFmpeg processes
         if (!get_video_metadata(enc)) {
@@ -1271,11 +1321,21 @@ int main(int argc, char *argv[]) {
             const char* color_name = "unknown";
             
             switch (frame_count) {
-                case 0: test_r = 0; test_g = 0; test_b = 0; color_name = "black"; break;     // Black
-                case 1: test_r = 255; test_g = 255; test_b = 255; color_name = "white"; break; // White  
-                case 2: test_r = 255; test_g = 0; test_b = 0; color_name = "red"; break;       // Red
-                case 3: test_r = 0; test_g = 255; test_b = 0; color_name = "green"; break;     // Green
-                case 4: test_r = 0; test_g = 0; test_b = 255; color_name = "blue"; break;      // Blue
+                case 0: test_r = 0; test_g = 0; test_b = 0; color_name = "black"; break;
+                case 1: test_r = 127; test_g = 127; test_b = 127; color_name = "grey"; break;
+                case 2: test_r = 255; test_g = 255; test_b = 255; color_name = "white"; break;
+                case 3: test_r = 127; test_g = 0; test_b = 0; color_name = "half red"; break;
+                case 4: test_r = 127; test_g = 127; test_b = 0; color_name = "half yellow"; break;
+                case 5: test_r = 0; test_g = 127; test_b = 0; color_name = "half green"; break;
+                case 6: test_r = 0; test_g = 127; test_b = 127; color_name = "half cyan"; break;
+                case 7: test_r = 0; test_g = 0; test_b = 127; color_name = "half blue"; break;
+                case 8: test_r = 127; test_g = 0; test_b = 127; color_name = "half magenta"; break;
+                case 9: test_r = 255; test_g = 0; test_b = 0; color_name = "red"; break;
+                case 10: test_r = 255; test_g = 255; test_b = 0; color_name = "yellow"; break;
+                case 11: test_r = 0; test_g = 255; test_b = 0; color_name = "green"; break;
+                case 12: test_r = 0; test_g = 255; test_b = 255; color_name = "cyan"; break;
+                case 13: test_r = 0; test_g = 0; test_b = 255; color_name = "blue"; break;
+                case 14: test_r = 255; test_g = 0; test_b = 255; color_name = "magenta"; break;
             }
             
             // Fill entire frame with solid color

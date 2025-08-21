@@ -1588,8 +1588,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         sum += dctBasis8[u][x] * dctBasis8[v][y] * dctCoeffs[u][v]
                     }
                 }
-                // Chroma residuals should be in reasonable range (±128 max)
-                val pixel = sum.coerceIn(-127f, 128f)
+                // Chroma residuals should be in reasonable range (±255 max)
+                val pixel = sum.coerceIn(-256f, 255f)
                 result[y * 8 + x] = pixel.toInt()
             }
         }
@@ -1692,8 +1692,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 // Store YCoCg values
                 val yIdx = py * 16 + px
                 ycocgData[yIdx * 3] = y.coerceIn(0, 255)        // Y
-                ycocgData[yIdx * 3 + 1] = co.coerceIn(-128, 127) // Co 
-                ycocgData[yIdx * 3 + 2] = cg.coerceIn(-128, 127) // Cg
+                ycocgData[yIdx * 3 + 1] = co.coerceIn(-256, 255) // Co
+                ycocgData[yIdx * 3 + 2] = cg.coerceIn(-256, 255) // Cg
             }
         }
         
@@ -1713,7 +1713,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param frameCounter Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, quality: Int) {
+                  width: Int, height: Int, quality: Int, debugMotionVectors: Boolean = false) {
 
         val blocksX = (width + 15) / 16  // 16x16 blocks now
         val blocksY = (height + 15) / 16
@@ -1771,26 +1771,46 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         for (dy in 0 until 16) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
-                                val y = startY + dy
-                                val refX = x + mvX
+                                val y = startY + dy  
+                                val refX = x + mvX  // Test: revert to original motion compensation
                                 val refY = y + mvY
                                 
                                 if (x < width && y < height) {
                                     val dstPixelOffset = y.toLong() * width + x
                                     val dstRgbOffset = dstPixelOffset * 3
                                     
-                                    if (refX in 0 until width && refY in 0 until height) {
+                                    if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
                                         val refPixelOffset = refY.toLong() * width + refX
                                         val refRgbOffset = refPixelOffset * 3
                                         
-                                        // Copy RGB from reference position
-                                        val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
-                                        val refG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!
-                                        val refB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!
-                                        
-                                        vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, refR)
-                                        vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, refG)
-                                        vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, refB)
+                                        // Additional safety: ensure RGB offset is within valid range
+                                        val maxValidOffset = (width * height - 1) * 3L + 2
+                                        if (refRgbOffset >= 0 && refRgbOffset <= maxValidOffset) {
+                                            // Copy RGB from reference position
+                                            val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
+                                            val refG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!
+                                            val refB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!
+                                            
+
+                                            if (debugMotionVectors) {
+                                                // Debug: Color INTER blocks by motion vector magnitude
+                                                val mvMagnitude = kotlin.math.sqrt((mvX * mvX + mvY * mvY).toDouble()).toInt()
+                                                val intensity = (mvMagnitude * 8).coerceIn(0, 255) // Scale for visibility
+
+                                                vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, intensity.toByte())        // R = MV magnitude
+                                                vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())         // G = 0
+                                                vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, (255-intensity).toByte()) // B = inverse
+                                            } else {
+                                                vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, refR)
+                                                vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, refG)
+                                                vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, refB)
+                                            }
+                                        } else {
+                                            // Invalid RGB offset - use black
+                                            vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
+                                            vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())  // G=0
+                                            vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, 0.toByte())  // B=0
+                                        }
                                     } else {
                                         // Out of bounds - use black
                                         vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
@@ -1905,14 +1925,22 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                val refX = x + mvX
+                                val refX = x + mvX  // Revert to original motion compensation
                                 val refY = y + mvY
+                                
+                                // DEBUG: Log motion compensation coordinates for red trails
+                                if (x == 168 && y == 236) {
+                                    println("INTER MV DEBUG (red): x=$x y=$y refX=$refX refY=$refY mvX=$mvX mvY=$mvY")
+                                }
+                                if (x == 342 && y == 232) {
+                                    println("INTER MV DEBUG (magenta): x=$x y=$y refX=$refX refY=$refY mvX=$mvX mvY=$mvY")
+                                }
                                 val pixelIdx = dy * 16 + dx
                                 
                                 if (x < width && y < height) {
                                     var mcY: Int
                                     
-                                    if (refX in 0 until width && refY in 0 until height) {
+                                    if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
                                         // Get motion-compensated RGB from previous frame
                                         val refPixelOffset = refY.toLong() * width + refX
                                         val refRgbOffset = refPixelOffset * 3
@@ -1921,20 +1949,21 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         val mcG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!.toUint().toInt()
                                         val mcB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!.toUint().toInt()
                                         
+                                        
                                         // Convert motion-compensated RGB to Y only
                                         val co = mcR - mcB
                                         val tmp = mcB + (co / 2)
                                         val cg = mcG - tmp
                                         val yVal = tmp + (cg / 2)
                                         
-                                        mcY = yVal
+                                        mcY = yVal  // Keep full 0-255 range for prediction
                                     } else {
-                                        // Out of bounds reference - use neutral values
+                                        // Out of bounds reference - use neutral gray (128)
                                         mcY = 128
                                     }
                                     
-                                    // Add Y residual (subtract 128 bias added by IDCT)
-                                    val residual = yResidual[pixelIdx] - 128
+                                    // Add Y residual: prediction + (IDCT_output - 128 - encoder's_+128_bias)
+                                    val residual = yResidual[pixelIdx] - 128 - 128  // Remove both IDCT bias and encoder's +128
                                     finalY[pixelIdx] = (mcY + residual).coerceIn(0, 255)
                                 }
                             }
@@ -1947,7 +1976,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val x = startX + cx * 2
                                 val y = startY + cy * 2
                                 
-                                // Apply motion vector to chroma block center
+                                // Apply motion vector to chroma block center 
                                 val refX = x + mvX
                                 val refY = y + mvY
                                 val chromaIdx = cy * 8 + cx
@@ -1994,9 +2023,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         mcCg = 0
                                     }
                                     
-                                    // Add chroma residuals - no clamping to see if that's the issue
-                                    finalCo[chromaIdx] = mcCo + coResidual[chromaIdx]
-                                    finalCg[chromaIdx] = mcCg + cgResidual[chromaIdx]
+                                    // Add chroma residuals with clamping to prevent overflow artifacts
+                                    finalCo[chromaIdx] = (mcCo + coResidual[chromaIdx]).coerceIn(-256, 255)
+                                    finalCg[chromaIdx] = (mcCg + cgResidual[chromaIdx]).coerceIn(-256, 255)
                                 }
                             }
                         }
@@ -2010,13 +2039,27 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val x = startX + dx
                                 val y = startY + dy
                                 if (x < width && y < height) {
-                                    val rgbIdx = (dy * 16 + dx) * 3
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
                                     
-                                    vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, finalRgb[rgbIdx].toByte())
-                                    vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, finalRgb[rgbIdx + 1].toByte()) 
-                                    vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, finalRgb[rgbIdx + 2].toByte())
+                                    if (debugMotionVectors) {
+                                        // Debug: Color INTER blocks by motion vector magnitude
+                                        val mvMagnitude = kotlin.math.sqrt((mvX * mvX + mvY * mvY).toDouble()).toInt()
+                                        val intensity = (mvMagnitude * 8).coerceIn(0, 255) // Scale for visibility
+                                        
+                                        vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, intensity.toByte())        // R = MV magnitude
+                                        vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, 0.toByte())         // G = 0
+                                        vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, (255-intensity).toByte()) // B = inverse
+                                    } else {
+                                        val rgbIdx = (dy * 16 + dx) * 3
+                                        val finalR = finalRgb[rgbIdx]
+                                        val finalG = finalRgb[rgbIdx + 1]  
+                                        val finalB = finalRgb[rgbIdx + 2]
+                                        
+                                        vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, finalR.toByte())
+                                        vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, finalG.toByte()) 
+                                        vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, finalB.toByte())
+                                    }
                                 }
                             }
                         }
