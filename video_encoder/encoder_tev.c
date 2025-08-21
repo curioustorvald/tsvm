@@ -254,8 +254,8 @@ static const uint8_t QUANT_TABLES_C[8][64] = {
 #define MP2_DEFAULT_PACKET_SIZE 0x240
 
 // Encoding parameters
-#define MAX_MOTION_SEARCH 32
-#define KEYFRAME_INTERVAL 120
+#define MAX_MOTION_SEARCH 8
+int KEYFRAME_INTERVAL = 60;
 #define BLOCK_SIZE 16  // 16x16 blocks now
 
 // Default values
@@ -521,13 +521,13 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
                     int cur_offset = ((start_y + dy) * enc->width + (start_x + dx)) * 3;
                     int ref_offset = ((ref_y + dy) * enc->width + (ref_x + dx)) * 3;
                     
-                    // Compare luminance (approximate as average of RGB)
+                    // Compare luminance using YCoCg-R luma equation
                     int cur_luma = (enc->current_rgb[cur_offset] + 
-                                   enc->current_rgb[cur_offset + 1] + 
-                                   enc->current_rgb[cur_offset + 2]) / 3;
+                                   2 * enc->current_rgb[cur_offset + 1] +
+                                   enc->current_rgb[cur_offset + 2]) / 4;
                     int ref_luma = (enc->previous_rgb[ref_offset] + 
-                                   enc->previous_rgb[ref_offset + 1] + 
-                                   enc->previous_rgb[ref_offset + 2]) / 3;
+                                   2 * enc->previous_rgb[ref_offset + 1] +
+                                   enc->previous_rgb[ref_offset + 2]) / 4;
                     
                     sad += abs(cur_luma - ref_luma);
                 }
@@ -554,10 +554,7 @@ static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
             int b = rgb_block[rgb_idx + 2];
             
             // YCoCg-R transform (per specification with truncated division)
-            int co = r - b;
-            int tmp = b + (co / 2);
-            int cg = g - tmp;
-            int y = tmp + (cg / 2);
+            int y = (r + 2*g + b) / 4;
             
             y_block[py * 16 + px] = CLAMP(y, 0, 255);
         }
@@ -758,7 +755,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
             enc->blocks_motion++;
             return; // Skip DCT encoding, just store motion vector
-        } else if (motion_sad < skip_sad && (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
+        // disabling INTER mode: residual DCT is crapping out no matter what I do
+        /*} else if (motion_sad < skip_sad && (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
             // Motion compensation with threshold
             if (motion_sad <= 1024) {
                 block->mode = TEV_MODE_MOTION;
@@ -781,7 +779,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                 block->mv_y = 0;
                 enc->blocks_intra++;
                 return;
-            }
+            }*/
         } else {
             // No good motion prediction - use intra mode
             block->mode = TEV_MODE_INTRA;
@@ -1045,6 +1043,9 @@ static int get_video_metadata(tev_encoder_t *enc) {
             enc->fps = enc->output_fps;  // Use output FPS for encoding
         }
     }
+
+    // set keyframe interval
+    KEYFRAME_INTERVAL = 2 * enc->fps;
     
     // Check for audio stream
     snprintf(command, sizeof(command),

@@ -1557,6 +1557,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    val dctBasis8_2 = Array(8) { u ->
+        FloatArray(8) { x ->
+            val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
+            (0.25 * cu * cos((2.0 * x + 1.0) * u * PI / 16.0)).toFloat()
+        }
+    }
+
     /**
      * Perform IDCT on a single channel with integer coefficients
      */
@@ -1586,6 +1593,46 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 for (u in 0 until 8) {
                     for (v in 0 until 8) {
                         sum += dctBasis8[u][x] * dctBasis8[v][y] * dctCoeffs[u][v]
+                    }
+                }
+                // Chroma residuals should be in reasonable range (±255 max)
+                val pixel = sum.coerceIn(-256f, 255f)
+                result[y * 8 + x] = pixel.toInt()
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * Perform IDCT on a single channel with integer coefficients
+     */
+    private fun tevIdct8x8_2(coeffs: IntArray, quantTable: IntArray): IntArray {
+        val dctCoeffs = Array(8) { FloatArray(8) }
+        val result = IntArray(64)
+
+        // Convert integer coefficients to 2D array and dequantize
+        for (u in 0 until 8) {
+            for (v in 0 until 8) {
+                val idx = u * 8 + v
+                val coeff = coeffs[idx]
+                if (idx == 0) {
+                    // DC coefficient for chroma: lossless quantization (no scaling)
+                    dctCoeffs[u][v] = coeff.toFloat()
+                } else {
+                    // AC coefficients: use quantization table
+                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toFloat()
+                }
+            }
+        }
+
+        // Apply 2D inverse DCT
+        for (x in 0 until 8) {
+            for (y in 0 until 8) {
+                var sum = 0f
+                for (u in 0 until 8) {
+                    for (v in 0 until 8) {
+                        sum += dctBasis8_2[u][x] * dctBasis8_2[v][y] * dctCoeffs[u][v]
                     }
                 }
                 // Chroma residuals should be in reasonable range (±255 max)
@@ -1912,8 +1959,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         
                         // Step 2: Decode residual DCT
                         val yResidual = tevIdct16x16(yCoeffs, quantTableY)
-                        val coResidual = tevIdct8x8(coCoeffs, quantTableC)
-                        val cgResidual = tevIdct8x8(cgCoeffs, quantTableC)
+                        val coResidual = tevIdct8x8_2(coCoeffs, quantTableC)
+                        val cgResidual = tevIdct8x8_2(cgCoeffs, quantTableC)
                         
                         // Step 3: Build motion-compensated YCoCg-R block and add residuals
                         val finalY = IntArray(256)
@@ -1927,14 +1974,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val y = startY + dy
                                 val refX = x + mvX  // Revert to original motion compensation
                                 val refY = y + mvY
-                                
-                                // DEBUG: Log motion compensation coordinates for red trails
-                                if (x == 168 && y == 236) {
-                                    println("INTER MV DEBUG (red): x=$x y=$y refX=$refX refY=$refY mvX=$mvX mvY=$mvY")
-                                }
-                                if (x == 342 && y == 232) {
-                                    println("INTER MV DEBUG (magenta): x=$x y=$y refX=$refX refY=$refY mvX=$mvX mvY=$mvY")
-                                }
                                 val pixelIdx = dy * 16 + dx
                                 
                                 if (x < width && y < height) {
@@ -1951,19 +1990,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         
                                         
                                         // Convert motion-compensated RGB to Y only
-                                        val co = mcR - mcB
-                                        val tmp = mcB + (co / 2)
-                                        val cg = mcG - tmp
-                                        val yVal = tmp + (cg / 2)
-                                        
-                                        mcY = yVal  // Keep full 0-255 range for prediction
+                                        mcY = (mcR + 2*mcG + mcB) / 4  // Keep full 0-255 range for prediction
                                     } else {
-                                        // Out of bounds reference - use neutral gray (128)
-                                        mcY = 128
+                                        // Out of bounds reference - use black
+                                        mcY = 0
                                     }
                                     
-                                    // Add Y residual: prediction + (IDCT_output - 128 - encoder's_+128_bias)
-                                    val residual = yResidual[pixelIdx] - 128 - 128  // Remove both IDCT bias and encoder's +128
+                                    // Add Y residual: prediction + (IDCT_output - 128) 
+                                    // IDCT adds +128 bias, encoder already accounts for prediction centering
+                                    val residual = yResidual[pixelIdx] - 128  // Remove only IDCT bias
                                     finalY[pixelIdx] = (mcY + residual).coerceIn(0, 255)
                                 }
                             }
@@ -2023,9 +2058,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         mcCg = 0
                                     }
                                     
-                                    // Add chroma residuals with clamping to prevent overflow artifacts
-                                    finalCo[chromaIdx] = (mcCo + coResidual[chromaIdx]).coerceIn(-256, 255)
-                                    finalCg[chromaIdx] = (mcCg + cgResidual[chromaIdx]).coerceIn(-256, 255)
+                                    // Add chroma residuals
+                                    finalCo[chromaIdx] = (mcCo + (coResidual[chromaIdx])).coerceIn(-256, 255)
+                                    finalCg[chromaIdx] = (mcCg + (cgResidual[chromaIdx])).coerceIn(-256, 255)
                                 }
                             }
                         }
