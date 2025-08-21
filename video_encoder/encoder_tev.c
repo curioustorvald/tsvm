@@ -407,7 +407,7 @@ static void dct_8x8(float *input, float *output) {
                            dct_table_8[v][y];
                 }
             }
-            
+
             output[u * 8 + v] = 0.25f * cu * cv * sum;
         }
     }
@@ -502,42 +502,60 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
     int start_x = block_x * 16;
     int start_y = block_y * 16;
     
-    // Search in range [-16, +16] pixels
-    for (int mv_y = -MAX_MOTION_SEARCH; mv_y <= MAX_MOTION_SEARCH; mv_y++) {
-        for (int mv_x = -MAX_MOTION_SEARCH; mv_x <= MAX_MOTION_SEARCH; mv_x++) {
-            int ref_x = start_x - mv_x;  // Motion estimation: where did current block come FROM?
-            int ref_y = start_y - mv_y;
-            
+    // Diamond search pattern (much faster than full search)
+    static const int diamond_x[] = {0, -1, 1, 0, 0, -2, 2, 0, 0};
+    static const int diamond_y[] = {0, 0, 0, -1, 1, 0, 0, -2, 2};
+
+    int center_x = 0, center_y = 0;
+    int step_size = 4;  // Start with larger steps
+
+    while (step_size >= 1) {
+        int improved = 0;
+
+        for (int i = 0; i < 9; i++) {
+            int mv_x = center_x + diamond_x[i] * step_size;
+            int mv_y = center_y + diamond_y[i] * step_size;
+
             // Check bounds
-            if (ref_x < 0 || ref_y < 0 || 
+            if (mv_x < -MAX_MOTION_SEARCH || mv_x > MAX_MOTION_SEARCH ||
+                mv_y < -MAX_MOTION_SEARCH || mv_y > MAX_MOTION_SEARCH) {
+                continue;
+            }
+
+            int ref_x = start_x - mv_x;
+            int ref_y = start_y - mv_y;
+
+            if (ref_x < 0 || ref_y < 0 ||
                 ref_x + 16 > enc->width || ref_y + 16 > enc->height) {
                 continue;
             }
-            
-            // Calculate SAD for 16x16 block
+
+            // Fast SAD using integer luma approximation
             int sad = 0;
-            for (int dy = 0; dy < 16; dy++) {
-                for (int dx = 0; dx < 16; dx++) {
-                    int cur_offset = ((start_y + dy) * enc->width + (start_x + dx)) * 3;
-                    int ref_offset = ((ref_y + dy) * enc->width + (ref_x + dx)) * 3;
-                    
-                    // Compare luminance using YCoCg-R luma equation
-                    int cur_luma = (enc->current_rgb[cur_offset] + 
-                                   2 * enc->current_rgb[cur_offset + 1] +
-                                   enc->current_rgb[cur_offset + 2]) / 4;
-                    int ref_luma = (enc->previous_rgb[ref_offset] + 
-                                   2 * enc->previous_rgb[ref_offset + 1] +
-                                   enc->previous_rgb[ref_offset + 2]) / 4;
-                    
+            for (int dy = 0; dy < 16; dy += 2) {  // Sample every 2nd row for speed
+                uint8_t *cur_row = &enc->current_rgb[((start_y + dy) * enc->width + start_x) * 3];
+                uint8_t *ref_row = &enc->previous_rgb[((ref_y + dy) * enc->width + ref_x) * 3];
+
+                for (int dx = 0; dx < 16; dx += 2) {  // Sample every 2nd pixel
+                    // Fast luma approximation: (R + 2*G + B) >> 2
+                    int cur_luma = (cur_row[dx*3] + (cur_row[dx*3+1] << 1) + cur_row[dx*3+2]) >> 2;
+                    int ref_luma = (ref_row[dx*3] + (ref_row[dx*3+1] << 1) + ref_row[dx*3+2]) >> 2;
                     sad += abs(cur_luma - ref_luma);
                 }
             }
-            
+
             if (sad < best_sad) {
                 best_sad = sad;
                 *best_mv_x = mv_x;
                 *best_mv_y = mv_y;
+                center_x = mv_x;
+                center_y = mv_y;
+                improved = 1;
             }
+        }
+
+        if (!improved) {
+            step_size >>= 1;  // Reduce step size
         }
     }
 }
