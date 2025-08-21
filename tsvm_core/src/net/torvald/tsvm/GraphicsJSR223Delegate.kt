@@ -12,6 +12,13 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 class GraphicsJSR223Delegate(private val vm: VM) {
+    
+    // Reusable working arrays to reduce allocation overhead
+    private val idctTempBuffer = FloatArray(64)
+    private val idct16TempBuffer = FloatArray(256) // For 16x16 IDCT
+    private val idct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
+    private val ycocgWorkArray = IntArray(256)
+    private val rgbWorkArray = IntArray(256 * 3)
 
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
@@ -1557,92 +1564,45 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    val dctBasis8_2 = Array(8) { u ->
-        FloatArray(8) { x ->
-            val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
-            (0.25 * cu * cos((2.0 * x + 1.0) * u * PI / 16.0)).toFloat()
-        }
-    }
-
-    /**
-     * Perform IDCT on a single channel with integer coefficients
-     */
-    private fun tevIdct8x8(coeffs: IntArray, quantTable: IntArray): IntArray {
-        val dctCoeffs = Array(8) { FloatArray(8) }
+    private fun tevIdct8x8_fast(coeffs: IntArray, quantTable: IntArray, isChromaResidual: Boolean = false): IntArray {
         val result = IntArray(64)
-
-        // Convert integer coefficients to 2D array and dequantize
+        // Reuse preallocated temp buffer to reduce GC pressure
+        
+        // Direct IDCT implementation matching original loop structure
+        // Process coefficients and dequantize
         for (u in 0 until 8) {
             for (v in 0 until 8) {
                 val idx = u * 8 + v
-                val coeff = coeffs[idx]
-                if (idx == 0) {
-                    // DC coefficient for chroma: lossless quantization (no scaling)
-                    dctCoeffs[u][v] = coeff.toFloat()
+                val coeff = if (isChromaResidual && idx == 0) {
+                    coeffs[idx].toFloat() // DC lossless for chroma residual
                 } else {
-                    // AC coefficients: use quantization table
-                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toFloat()
+                    coeffs[idx] * quantTable[idx].toFloat()
                 }
+                idctTempBuffer[idx] = coeff
             }
         }
-
-        // Apply 2D inverse DCT
+        
+        // Apply 2D inverse DCT with original loop structure: for x, for y
         for (x in 0 until 8) {
             for (y in 0 until 8) {
                 var sum = 0f
                 for (u in 0 until 8) {
                     for (v in 0 until 8) {
-                        sum += dctBasis8[u][x] * dctBasis8[v][y] * dctCoeffs[u][v]
+                        sum += dctBasis8[u][x] * dctBasis8[v][y] * idctTempBuffer[u * 8 + v]
                     }
                 }
-                // Chroma residuals should be in reasonable range (±255 max)
-                val pixel = sum.coerceIn(-256f, 255f)
-                result[y * 8 + x] = pixel.toInt()
-            }
-        }
-
-        return result
-    }
-
-    /**
-     * Perform IDCT on a single channel with integer coefficients
-     */
-    private fun tevIdct8x8_2(coeffs: IntArray, quantTable: IntArray): IntArray {
-        val dctCoeffs = Array(8) { FloatArray(8) }
-        val result = IntArray(64)
-
-        // Convert integer coefficients to 2D array and dequantize
-        for (u in 0 until 8) {
-            for (v in 0 until 8) {
-                val idx = u * 8 + v
-                val coeff = coeffs[idx]
-                if (idx == 0) {
-                    // DC coefficient for chroma: lossless quantization (no scaling)
-                    dctCoeffs[u][v] = coeff.toFloat()
+                val pixel = if (isChromaResidual) {
+                    sum.coerceIn(-256f, 255f)
                 } else {
-                    // AC coefficients: use quantization table
-                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toFloat()
+                    (sum + 128f).coerceIn(0f, 255f)
                 }
-            }
-        }
-
-        // Apply 2D inverse DCT
-        for (x in 0 until 8) {
-            for (y in 0 until 8) {
-                var sum = 0f
-                for (u in 0 until 8) {
-                    for (v in 0 until 8) {
-                        sum += dctBasis8_2[u][x] * dctBasis8_2[v][y] * dctCoeffs[u][v]
-                    }
-                }
-                // Chroma residuals should be in reasonable range (±255 max)
-                val pixel = sum.coerceIn(-256f, 255f)
                 result[y * 8 + x] = pixel.toInt()
             }
         }
-
+        
         return result
     }
+
 
     val dctBasis16 = Array(16) { u ->
         FloatArray(16) { x ->
@@ -1652,6 +1612,41 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
     
     // 16x16 IDCT for Y channel (YCoCg-R format)
+    private fun tevIdct16x16_fast(coeffs: IntArray, quantTable: IntArray): IntArray {
+        val result = IntArray(256) // 16x16 = 256
+        
+        // Process coefficients and dequantize using preallocated buffer
+        for (u in 0 until 16) {
+            for (v in 0 until 16) {
+                val idx = u * 16 + v
+                val coeff = if (idx == 0) {
+                    coeffs[idx].toFloat() // DC lossless for luma
+                } else {
+                    coeffs[idx] * quantTable[idx].toFloat()
+                }
+                idct16TempBuffer[idx] = coeff
+            }
+        }
+        
+        // Apply 2D inverse DCT with original loop structure: for x, for y (like original)
+        // NOTE: Uses direct O(n⁴) method to ensure correct indexing. Separable version
+        // could be 8x faster but requires careful coordinate transformation.
+        for (x in 0 until 16) {
+            for (y in 0 until 16) {
+                var sum = 0f
+                for (u in 0 until 16) {
+                    for (v in 0 until 16) {
+                        sum += dctBasis16[u][x] * dctBasis16[v][y] * idct16TempBuffer[u * 16 + v]
+                    }
+                }
+                val pixel = (sum + 128f).coerceIn(0f, 255f)
+                result[y * 16 + x] = pixel.toInt()
+            }
+        }
+        
+        return result
+    }
+    
     private fun tevIdct16x16(coeffs: IntArray, quantTable: IntArray): IntArray {
         val dctCoeffs = Array(16) { FloatArray(16) }
         val result = IntArray(256)  // 16x16 = 256
@@ -1901,10 +1896,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             readPtr += 2
                         }
                         
-                        // Perform hardware IDCT for each channel
-                        val yBlock = tevIdct16x16(yCoeffs, quantTableY)
-                        val coBlock = tevIdct8x8(coCoeffs, quantTableC)
-                        val cgBlock = tevIdct8x8(cgCoeffs, quantTableC)
+                        // Perform hardware IDCT for each channel using fast algorithm
+                        val yBlock = tevIdct16x16_fast(yCoeffs, quantTableY)
+                        val coBlock = tevIdct8x8_fast(coCoeffs, quantTableC, true)
+                        val cgBlock = tevIdct8x8_fast(cgCoeffs, quantTableC, true)
                         
                         // Convert YCoCg-R to RGB
                         val rgbData = tevYcocgToRGB(yBlock, coBlock, cgBlock)
@@ -1958,9 +1953,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         
                         // Step 2: Decode residual DCT
-                        val yResidual = tevIdct16x16(yCoeffs, quantTableY)
-                        val coResidual = tevIdct8x8_2(coCoeffs, quantTableC)
-                        val cgResidual = tevIdct8x8_2(cgCoeffs, quantTableC)
+                        val yResidual = tevIdct16x16_fast(yCoeffs, quantTableY)
+                        val coResidual = tevIdct8x8_fast(coCoeffs, quantTableC, true)
+                        val cgResidual = tevIdct8x8_fast(cgCoeffs, quantTableC, true)
                         
                         // Step 3: Build motion-compensated YCoCg-R block and add residuals
                         val finalY = IntArray(256)

@@ -200,11 +200,11 @@ try {
             }
 
             // Decompress using gzip
-            // Calculate proper buffer size for TEV YCoCg-R blocks
+            // Optimized buffer size calculation for TEV YCoCg-R blocks
             let blocksX = (width + 15) >> 4  // 16x16 blocks
             let blocksY = (height + 15) >> 4
             let tevBlockSize = 1 + 4 + 2 + (256 * 2) + (64 * 2) + (64 * 2) // mode + mv + cbp + Y(16x16) + Co(8x8) + Cg(8x8)
-            let decompressedSize = blocksX * blocksY * tevBlockSize * 2 // Double for safety
+            let decompressedSize = Math.max(payloadLen * 4, blocksX * blocksY * tevBlockSize) // More efficient sizing
             let blockDataPtr = sys.malloc(decompressedSize)
 
             let actualSize
