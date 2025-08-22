@@ -376,8 +376,11 @@ typedef struct {
     // Audio handling
     FILE *mp2_file;
     int mp2_packet_size;
+    int mp2_rate_index;
     size_t audio_remaining;
     uint8_t *mp2_buffer;
+    int audio_frames_in_buffer;
+    int target_audio_buffer_size;
     
     // Compression context
     z_stream gzip_stream;
@@ -993,7 +996,10 @@ static tev_encoder_t* init_encoder(void) {
     if (!enc) return NULL;
     
     enc->quality = 4;  // Default quality
-    enc->mp2_packet_size = MP2_DEFAULT_PACKET_SIZE;
+    enc->mp2_packet_size = 0; // Will be detected from MP2 header
+    enc->mp2_rate_index = 0;
+    enc->audio_frames_in_buffer = 0;
+    enc->target_audio_buffer_size = 4;
 
     init_dct_tables();
 
@@ -1106,24 +1112,37 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     // Compress block data using gzip (compatible with TSVM decoder)
     size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
     
-    // Reset compression stream
-    enc->gzip_stream.next_in = (Bytef*)enc->block_data;
-    enc->gzip_stream.avail_in = block_data_size;
-    enc->gzip_stream.next_out = (Bytef*)enc->compressed_buffer;
-    enc->gzip_stream.avail_out = block_data_size * 2;
+    // Initialize fresh gzip stream for each frame (since Z_FINISH terminates the stream)
+    z_stream frame_stream;
+    frame_stream.zalloc = Z_NULL;
+    frame_stream.zfree = Z_NULL;
+    frame_stream.opaque = Z_NULL;
     
-    if (deflateReset(&enc->gzip_stream) != Z_OK) {
-        fprintf(stderr, "Gzip deflateReset failed\n");
+    int init_result = deflateInit2(&frame_stream, Z_DEFAULT_COMPRESSION, 
+                                   Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 for gzip format
+    
+    if (init_result != Z_OK) {
+        fprintf(stderr, "Failed to initialize gzip compression for frame\n");
         return 0;
     }
     
-    int result = deflate(&enc->gzip_stream, Z_FINISH);
+    // Set up compression stream
+    frame_stream.next_in = (Bytef*)enc->block_data;
+    frame_stream.avail_in = block_data_size;
+    frame_stream.next_out = (Bytef*)enc->compressed_buffer;
+    frame_stream.avail_out = block_data_size * 2;
+    
+    int result = deflate(&frame_stream, Z_FINISH);
     if (result != Z_STREAM_END) {
         fprintf(stderr, "Gzip compression failed: %d\n", result);
+        deflateEnd(&frame_stream);
         return 0;
     }
     
-    size_t compressed_size = enc->gzip_stream.total_out;
+    size_t compressed_size = frame_stream.total_out;
+    
+    // Clean up frame stream
+    deflateEnd(&frame_stream);
     
     // Write frame packet header
     uint8_t packet_type = is_keyframe ? TEV_PACKET_IFRAME : TEV_PACKET_PFRAME;
@@ -1185,7 +1204,7 @@ static int get_video_metadata(tev_encoder_t *enc) {
     
     int num, den;
     if (sscanf(output, "%d/%d", &num, &den) == 2) {
-        enc->fps = (den > 0) ? (num / den) : 30;
+        enc->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
     } else {
         enc->fps = (int)round(atof(output));
     }
@@ -1242,14 +1261,14 @@ static int start_video_conversion(tev_encoder_t *enc) {
     if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
         // Frame rate conversion requested
         snprintf(command, sizeof(command),
-            "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+            "ffmpeg -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 "
             "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,fps=%d\" "
             "-y - 2>&1",
             enc->input_file, enc->width, enc->height, enc->width, enc->height, enc->output_fps);
     } else {
         // No frame rate conversion
         snprintf(command, sizeof(command),
-            "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+            "ffmpeg -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 "
             "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
             "-y -",
             enc->input_file, enc->width, enc->height, enc->width, enc->height);
@@ -1274,7 +1293,7 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     
     char command[2048];
     snprintf(command, sizeof(command),
-        "ffmpeg -i \"%s\" -acodec libtwolame -psymodel 4 -b:a 192k -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+        "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a 192k -ar %d -ac 2 -y \"%s\" 2>/dev/null",
         enc->input_file, MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
     
     int result = system(command);
@@ -1288,6 +1307,106 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     }
     
     return (result == 0);
+}
+
+// Get MP2 packet size and rate index from header
+static int get_mp2_packet_size(uint8_t *header) {
+    int bitrate_index = (header[2] >> 4) & 0x0F;
+    int bitrates[] = {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
+    if (bitrate_index >= 15) return MP2_DEFAULT_PACKET_SIZE;
+    
+    int bitrate = bitrates[bitrate_index];
+    int padding_bit = (header[2] >> 1) & 0x01;
+    if (bitrate <= 0) return MP2_DEFAULT_PACKET_SIZE;
+    
+    int frame_size = (144 * bitrate * 1000) / MP2_SAMPLE_RATE + padding_bit;
+    return frame_size;
+}
+
+static int mp2_packet_size_to_rate_index(int packet_size, int is_mono) {
+    // Map packet sizes to rate indices for TEV format
+    const int mp2_frame_sizes[] = {144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728};
+    for (int i = 0; i < 14; i++) {
+        if (packet_size <= mp2_frame_sizes[i]) {
+            return i;
+        }
+    }
+    return 13; // Default to highest rate
+}
+
+// Process audio for current frame
+static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
+    if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
+        return 1;
+    }
+    
+    // Initialize packet size on first frame
+    if (enc->mp2_packet_size == 0) {
+        uint8_t header[4];
+        if (fread(header, 1, 4, enc->mp2_file) != 4) return 1;
+        fseek(enc->mp2_file, 0, SEEK_SET);
+        
+        enc->mp2_packet_size = get_mp2_packet_size(header);
+        int is_mono = (header[3] >> 6) == 3;
+        enc->mp2_rate_index = mp2_packet_size_to_rate_index(enc->mp2_packet_size, is_mono);
+        enc->target_audio_buffer_size = 4; // 4 audio packets in buffer
+    }
+    
+    // Calculate how much audio time each frame represents (in seconds)
+    double frame_audio_time = 1.0 / enc->fps;
+    
+    // Calculate how much audio time each MP2 packet represents
+    // MP2 frame contains 1152 samples at 32kHz = 0.036 seconds
+    double packet_audio_time = 1152.0 / MP2_SAMPLE_RATE;
+    
+    // Estimate how many packets we consume per video frame
+    double packets_per_frame = frame_audio_time / packet_audio_time;
+    
+    // Only insert audio when buffer would go below 2 frames
+    // Initialize with 2 packets on first frame to prime the buffer
+    int packets_to_insert = 0;
+    if (frame_num == 0) {
+        packets_to_insert = 2;
+        enc->audio_frames_in_buffer = 2;
+    } else {
+        // Simulate buffer consumption (packets consumed per frame)
+        enc->audio_frames_in_buffer -= (int)ceil(packets_per_frame);
+        
+        // Only insert packets when buffer gets low (≤ 2 frames)
+        if (enc->audio_frames_in_buffer <= 2) {
+            packets_to_insert = enc->target_audio_buffer_size - enc->audio_frames_in_buffer;
+            packets_to_insert = (packets_to_insert > 0) ? packets_to_insert : 1;
+        }
+    }
+    
+    // Insert the calculated number of audio packets
+    for (int q = 0; q < packets_to_insert; q++) {
+        size_t bytes_to_read = enc->mp2_packet_size;
+        if (bytes_to_read > enc->audio_remaining) {
+            bytes_to_read = enc->audio_remaining;
+        }
+        
+        size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
+        if (bytes_read == 0) break;
+        
+        // Write TEV MP2 audio packet
+        uint8_t audio_packet_type = TEV_PACKET_AUDIO_MP2;
+        uint32_t audio_len = (uint32_t)bytes_read;
+        fwrite(&audio_packet_type, 1, 1, output);
+        fwrite(&audio_len, 4, 1, output);
+        fwrite(enc->mp2_buffer, 1, bytes_read, output);
+        
+        // Track audio bytes written
+        enc->total_output_bytes += 1 + 4 + bytes_read;
+        enc->audio_remaining -= bytes_read;
+        enc->audio_frames_in_buffer++;
+        
+        if (enc->verbose) {
+            printf("Audio packet %d: %zu bytes\n", q, bytes_read);
+        }
+    }
+    
+    return 1;
 }
 
 // Show usage information
@@ -1328,6 +1447,8 @@ static void cleanup_encoder(tev_encoder_t *enc) {
     
     free_encoder(enc);
 }
+
+int sync_packet_count = 0;
 
 // Main function
 int main(int argc, char *argv[]) {
@@ -1544,16 +1665,23 @@ int main(int argc, char *argv[]) {
                 break; // End of video or error
             }
         }
-        
+
+        // Process audio for this frame
+        process_audio(enc, frame_count, output);
+
         // Encode frame
         if (!encode_frame(enc, output, frame_count)) {
             fprintf(stderr, "Failed to encode frame %d\n", frame_count);
             break;
         }
+        else {
+            // Write a sync packet only after a video is been coded
+            uint8_t sync_packet = TEV_PACKET_SYNC;
+            fwrite(&sync_packet, 1, 1, output);
+            sync_packet_count++;
+        }
 
-        // Write a sync packet
-        uint8_t sync_packet = TEV_PACKET_SYNC;
-        fwrite(&sync_packet, 1, 1, output);
+
 
         frame_count++;
         if (enc->verbose || frame_count % 30 == 0) {
@@ -1569,6 +1697,7 @@ int main(int argc, char *argv[]) {
     // Write final sync packet
     uint8_t sync_packet = TEV_PACKET_SYNC;
     fwrite(&sync_packet, 1, 1, output);
+    sync_packet_count++;
 
     if (!enc->output_to_stdout) {
         fclose(output);
@@ -1582,6 +1711,8 @@ int main(int argc, char *argv[]) {
     
     printf("\nEncoding complete!\n");
     printf("  Frames encoded: %d\n", frame_count);
+    printf("  - sync packets: %d\n", sync_packet_count);
+    printf("  Framerate: %d\n", enc->fps);
     printf("  Output size: %zu bytes\n", enc->total_output_bytes);
     printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
     printf("  Block statistics: INTRA=%d, INTER=%d, MOTION=%d, SKIP=%d\n",

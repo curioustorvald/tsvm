@@ -8,6 +8,9 @@ const HEIGHT = 448
 const BLOCK_SIZE = 16  // 16x16 blocks for YCoCg-R
 const TEV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x45, 0x56] // "\x1FTSVM TEV"
 const TEV_VERSION = 2  // YCoCg-R version
+const SND_BASE_ADDR = audio.getBaseAddr()
+const pcm = require("pcm")
+const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
 
 // Block encoding modes
 const TEV_MODE_SKIP = 0x00
@@ -57,6 +60,12 @@ con.curs_set(0)
 graphics.setGraphicsMode(4) // 4096-color mode  
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
+
+// Initialize audio
+audio.resetParams(0)
+audio.purgeQueue(0)
+audio.setPcmMode(0)
+audio.setMasterVolume(0, 255)
 
 // Check magic number
 let magic = seqread.readBytes(8)
@@ -135,6 +144,9 @@ sys.memset(DISPLAY_BA_ADDR, 15, FRAME_PIXELS) // Black with alpha=15 (opaque) in
 let frameCount = 0
 let stopPlay = false
 let akku = FRAME_TIME
+let akku2 = 0.0
+let mp2Initialised = false
+let audioFired = false
 
 // 4x4 Bayer dithering matrix
 const BAYER_MATRIX = [
@@ -158,12 +170,12 @@ function ditherValue(value, x, y) {
     return Math.max(0, Math.min(15, Math.floor(dithered * 15 / 255)))
 }
 
+let blockDataPtr = sys.malloc(560 * 448 * 3)
+
 // Main decoding loop - simplified for performance
 try {
     let t1 = sys.nanoTime()
     while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && frameCount < totalFrames) {
-
-        if (akku >= FRAME_TIME) {
 
         // Handle interactive controls
         if (interactive) {
@@ -173,87 +185,100 @@ try {
                 break
             }
         }
-            
-        // Read packet (1 byte: type)
-        let packetType = seqread.readOneByte()
 
-        if (packetType == 0xFF) { // Sync packet
-            // Sync packet - frame complete
-            frameCount++
+        if (akku >= FRAME_TIME) {
+            // Read packet (1 byte: type)
+            let packetType = seqread.readOneByte()
 
-            // Copy current RGB frame to previous frame buffer for next frame reference
-            // memcpy(source, destination, length) - so CURRENT (source) -> PREV (destination)
-            sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
+            if (packetType == 0xFF) { // Sync packet
+                akku -= FRAME_TIME
 
-        } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
-            // Video frame packet
-            let payloadLen = seqread.readInt()
-            let compressedPtr = seqread.readBytes(payloadLen)
-            updateDataRateBin(payloadLen)
-            
-            
-            // Basic sanity check on compressed data
-            if (payloadLen <= 0 || payloadLen > 1000000) {
-                serial.println(`Frame ${frameCount}: Invalid payload length: ${payloadLen}`)
+                // Sync packet - frame complete
+                frameCount++
+
+                // Copy current RGB frame to previous frame buffer for next frame reference
+                // memcpy(source, destination, length) - so CURRENT (source) -> PREV (destination)
+                sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
+
+            } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
+                // Video frame packet
+                let payloadLen = seqread.readInt()
+                let compressedPtr = seqread.readBytes(payloadLen)
+                updateDataRateBin(payloadLen)
+
+
+                // Basic sanity check on compressed data
+                if (payloadLen <= 0 || payloadLen > 1000000) {
+                    serial.println(`Frame ${frameCount}: Invalid payload length: ${payloadLen}`)
+                    sys.free(compressedPtr)
+                    continue
+                }
+
+                // Decompress using gzip
+                // Optimized buffer size calculation for TEV YCoCg-R blocks
+                let blocksX = (width + 15) >> 4  // 16x16 blocks
+                let blocksY = (height + 15) >> 4
+                let tevBlockSize = 1 + 4 + 2 + (256 * 2) + (64 * 2) + (64 * 2) // mode + mv + cbp + Y(16x16) + Co(8x8) + Cg(8x8)
+                let decompressedSize = Math.max(payloadLen * 4, blocksX * blocksY * tevBlockSize) // More efficient sizing
+
+                let actualSize
+                try {
+                    // Use gzip decompression (only compression format supported in TSVM JS)
+                    actualSize = gzip.decompFromTo(compressedPtr, payloadLen, blockDataPtr)
+                } catch (e) {
+                    // Decompression failed - skip this frame
+                    serial.println(`Frame ${frameCount}: Gzip decompression failed, skipping (compressed size: ${payloadLen}, error: ${e})`)
+                    sys.free(compressedPtr)
+                    continue
+                }
+
+                // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers
+                try {
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors)
+
+                    // Upload RGB buffer to display framebuffer with dithering
+                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,
+                                                  width, height, frameCount)
+
+                    // Defer audio playback until a first frame is sent
+                    if (!audioFired) {
+                        audio.play(0)
+                        audioFired = true
+                    }
+                } catch (e) {
+                    serial.println(`Frame ${frameCount}: Hardware YCoCg-R decode failed: ${e}`)
+                }
+
                 sys.free(compressedPtr)
-                continue
+
+            } else if (packetType == TEV_PACKET_AUDIO_MP2) {
+                // MP2 Audio packet
+                let audioLen = seqread.readInt()
+
+                if (!mp2Initialised) {
+                    mp2Initialised = true
+                    audio.mp2Init()
+                }
+
+                seqread.readBytes(audioLen, SND_BASE_ADDR - 2368)
+                audio.mp2Decode()
+                audio.mp2UploadDecoded(0)
+
+            } else {
+                println(`Unknown packet type: 0x${packetType.toString(16)}`)
+                break
             }
-
-            // Decompress using gzip
-            // Optimized buffer size calculation for TEV YCoCg-R blocks
-            let blocksX = (width + 15) >> 4  // 16x16 blocks
-            let blocksY = (height + 15) >> 4
-            let tevBlockSize = 1 + 4 + 2 + (256 * 2) + (64 * 2) + (64 * 2) // mode + mv + cbp + Y(16x16) + Co(8x8) + Cg(8x8)
-            let decompressedSize = Math.max(payloadLen * 4, blocksX * blocksY * tevBlockSize) // More efficient sizing
-            let blockDataPtr = sys.malloc(decompressedSize)
-
-            let actualSize
-            try {
-                // Use gzip decompression (only compression format supported in TSVM JS)
-                actualSize = gzip.decompFromTo(compressedPtr, payloadLen, blockDataPtr)
-            } catch (e) {
-                // Decompression failed - skip this frame
-                serial.println(`Frame ${frameCount}: Gzip decompression failed, skipping (compressed size: ${payloadLen}, error: ${e})`)
-                sys.free(blockDataPtr)
-                sys.free(compressedPtr)
-                continue
-            }
-            
-            // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers
-            try {
-                graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors)
-
-                // Upload RGB buffer to display framebuffer with dithering
-                graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,
-                                              width, height, frameCount)
-            } catch (e) {
-                serial.println(`Frame ${frameCount}: Hardware YCoCg-R decode failed: ${e}`)
-            }
-
-            sys.free(blockDataPtr)
-            sys.free(compressedPtr)
-
-        } else if (packetType == TEV_PACKET_AUDIO_MP2) {
-            // Audio packet - skip for now
-            let audioLen = seqread.readInt()
-            seqread.skip(audioLen)
-
-        } else {
-            println(`Unknown packet type: 0x${packetType.toString(16)}`)
-            break
         }
-        }
-
-        sys.sleep(1)
 
         let t2 = sys.nanoTime()
         akku += (t2 - t1) / 1000000000.0
+        akku2 += (t2 - t1) / 1000000000.0
 
         // Simple progress display
         if (interactive) {
             con.move(31, 1)
             graphics.setTextFore(161)
-            print(`Frame: ${frameCount}/${totalFrames} (${Math.round(frameCount * 100 / totalFrames)}%) YCoCg-R`)
+            print(`Frame: ${frameCount}/${totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
             con.move(32, 1)
             graphics.setTextFore(161)
             print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
@@ -262,14 +287,16 @@ try {
 
         t1 = t2
     }
-
-} catch (e) {
+}
+catch (e) {
     printerrln(`TEV YCoCg-R decode error: ${e}`)
     errorlevel = 1
-} finally {
+}
+finally {
     // Cleanup working memory (graphics memory is automatically managed)
     sys.free(ycocgWorkspace)
     sys.free(dctWorkspace)
+    sys.free(blockDataPtr)
     if (CURRENT_RGB_ADDR > 0) sys.free(CURRENT_RGB_ADDR)
     if (PREV_RGB_ADDR > 0) sys.free(PREV_RGB_ADDR)
 
