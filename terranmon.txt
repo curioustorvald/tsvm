@@ -688,7 +688,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 
 ## Header (24 bytes)
     uint8  Magic[8]: "\x1FTSVM TEV"
-    uint8  Version: 1
+    uint8  Version: 2
     uint8  Flags: bit 0 = has audio
     uint16 Width: video width in pixels
     uint16 Height: video height in pixels  
@@ -708,16 +708,19 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     uint32 Compressed Size
     *      Gzip-compressed Block Data
 
-## Block Data (per 8x8/16x16 block)
+## Block Data (per 16x16 block)
     uint8  Mode: encoding mode
            0x00 = SKIP (copy from previous frame)
            0x01 = INTRA (DCT-coded, no prediction)
-           0x02 = INTER (DCT-coded with motion compensation)
+           0x02 = INTER (DCT-coded with motion compensation) -- currently unused due to bugs
            0x03 = MOTION (motion vector only)
-    int16  Motion Vector X (1/4 pixel precision)
-    int16  Motion Vector Y (1/4 pixel precision)  
+    int16  Motion Vector X ("capable of" 1/4 pixel precision, integer precision for now)
+    int16  Motion Vector Y ("capable of" 1/4 pixel precision, integer precision for now)
     uint16 Coded Block Pattern (which 8x8 have non-zero coeffs)
-    int16  DCT Coefficients[3][64]: quantized R,G,B transform coefficients
+    int16[256]  DCT Coefficients Y
+    int16[64]  DCT Coefficients Co (subsampled by two)
+    int16[64]  DCT Coefficients Cg (subsampled by two, aggressively quantised)
+        For SKIP and MOTION mode, DCT coefficients are filled with zero
 
 ## DCT Quantization
 TEV uses 8 quality levels (0=lowest, 7=highest) with progressive quantization
@@ -725,9 +728,9 @@ tables optimized for perceptual quality. DC coefficients use fixed quantizer
 of 8, while AC coefficients are quantized according to quality tables.
 
 ## Motion Compensation
-- Search range: ±16 pixels
-- Sub-pixel precision: 1/4 pixel 
-- Block size: 8x8 pixels
+- Search range: ±8 pixels
+- Sub-pixel precision: 1/4 pixel (again, integer precision for now)
+- Block size: 16x16 pixels
 - Uses Sum of Absolute Differences (SAD) for motion estimation
 - Bilinear interpolation for sub-pixel motion vectors
 
