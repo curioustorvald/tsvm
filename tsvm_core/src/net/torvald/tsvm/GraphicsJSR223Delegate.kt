@@ -1270,9 +1270,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // TEV (TSVM Enhanced Video) format support
     // Created by Claude on 2025-08-17
-    private val QUANT_MULT_Y  = intArrayOf(40, 20, 10, 8, 6, 5, 4, 1)
-    private val QUANT_MULT_CO = intArrayOf(40, 20, 10, 8, 6, 5, 4, 1)
-    private val QUANT_MULT_CG = intArrayOf(80, 40, 20, 16, 12, 10, 8, 2)
+    private val QUANT_MULT_Y  = intArrayOf(40, 10, 6, 4, 1)
+    private val QUANT_MULT_CO = intArrayOf(40, 10, 6, 4, 1)
+    private val QUANT_MULT_CG = intArrayOf(106, 22, 10, 5, 1) // CO[i] * sqrt(7 - 2i)
 
     // Quality settings for quantization (Y channel) - 16x16 tables
     val QUANT_TABLE_Y: IntArray = intArrayOf(

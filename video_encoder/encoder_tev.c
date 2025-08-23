@@ -15,6 +15,9 @@
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
 #define TEV_VERSION 2  // Updated for YCoCg-R 4:2:0
+// version 1: 8x8 RGB
+// version 2: 16x16 Y, 8x8 Co/Cg, asymetric quantisation (current winner)
+// version 3: version 2 + internal 6-bit processing (discarded due to higher noise floor)
 
 // Block encoding modes (16x16 blocks)
 #define TEV_MODE_SKIP      0x00  // Skip block (copy from reference)
@@ -33,9 +36,11 @@ static inline int CLAMP(int x, int min, int max) {
     return x < min ? min : (x > max ? max : x);
 }
 
-static const int QUANT_MULT_Y[8] = {40, 20, 10, 8, 6, 5, 4, 1};
-static const int QUANT_MULT_CO[8] = {40, 20, 10, 8, 6, 5, 4, 1};
-static const int QUANT_MULT_CG[8] = {80, 40, 20, 16, 12, 10, 8, 2};
+static const int MP2_RATE_TABLE[5] = {64, 112, 160, 224, 384};
+static const int QUANT_MULT_Y[5] = {40, 10, 6, 4, 1};
+static const int QUANT_MULT_CO[5] = {40, 10, 6, 4, 1};
+static const int QUANT_MULT_CG[5] = {106, 22, 10, 5, 1}; // CO[i] * sqrt(7 - 2i)
+// only leave (4, 6, 7)
 
 // Quality settings for quantization (Y channel) - 16x16 tables
 static const uint32_t QUANT_TABLE_Y[256] =
@@ -103,7 +108,7 @@ typedef struct {
     double duration;
     int has_audio;
     int output_to_stdout;
-    int quality;  // 0-7, higher = better quality
+    int quality;  // 0-4, higher = better quality
     int verbose;
     
     // Frame buffers (8-bit RGB format for encoding)
@@ -308,7 +313,7 @@ static void dct_8x8(float *input, float *output) {
 }
 
 // Quantize DCT coefficient using quality table
-static int16_t quantize_coeff(float coeff, uint8_t quant, int is_dc, int is_chroma) {
+static int16_t quantize_coeff(float coeff, uint32_t quant, int is_dc, int is_chroma) {
     if (is_dc) {
         if (is_chroma) {
             // Chroma DC: range -256 to +255, use lossless quantization for testing
@@ -739,12 +744,18 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 static tev_encoder_t* init_encoder(void) {
     tev_encoder_t *enc = calloc(1, sizeof(tev_encoder_t));
     if (!enc) return NULL;
-    
-    enc->quality = 4;  // Default quality
+
+    // set defaults
+    enc->quality = 2;  // Default quality
     enc->mp2_packet_size = 0; // Will be detected from MP2 header
     enc->mp2_rate_index = 0;
     enc->audio_frames_in_buffer = 0;
     enc->target_audio_buffer_size = 4;
+    enc->width = DEFAULT_WIDTH;
+    enc->height = DEFAULT_HEIGHT;
+    enc->fps = 0;  // Will be detected from input
+    enc->output_fps = 0;  // No frame rate conversion by default
+    enc->verbose = 0;
 
     init_dct_tables();
 
@@ -1038,8 +1049,8 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     
     char command[2048];
     snprintf(command, sizeof(command),
-        "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a 192k -ar %d -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
+        "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+        enc->input_file, MP2_RATE_TABLE[enc->quality], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
     
     int result = system(command);
     if (result == 0) {
@@ -1164,7 +1175,7 @@ static void show_usage(const char *program_name) {
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N      Quality level 0-7 (default: 4)\n");
+    printf("  -q, --quality N      Quality level 0-4 (default: 2)\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -t, --test           Test mode: generate solid color frames\n");
     printf("  --help               Show this help\n\n");
@@ -1172,7 +1183,6 @@ static void show_usage(const char *program_name) {
     printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
     printf("  - 16x16 Y blocks with 8x8 chroma for optimal DCT efficiency\n");
     printf("  - Frame rate conversion with FFmpeg temporal filtering\n");
-    printf("  - Hardware-accelerated decoding functions\n\n");
     printf("Examples:\n");
     printf("  %s -i input.mp4 -o output.tev\n", program_name);
     printf("  %s -i input.avi -f 15 -q 7 -o output.tev  # Convert 25fps to 15fps\n", program_name);
@@ -1202,14 +1212,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to initialize encoder\n");
         return 1;
     }
-    
-    // Set defaults
-    enc->width = DEFAULT_WIDTH;
-    enc->height = DEFAULT_HEIGHT;
-    enc->fps = 0;  // Will be detected from input
-    enc->output_fps = 0;  // No frame rate conversion by default
-    enc->quality = 4;
-    enc->verbose = 0;
+
     int test_mode = 0;
     
     static struct option long_options[] = {
@@ -1221,7 +1224,7 @@ int main(int argc, char *argv[]) {
         {"quality", required_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
-        {"help", no_argument, 0, 0},
+        {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
     
