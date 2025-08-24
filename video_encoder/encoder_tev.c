@@ -1281,14 +1281,14 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
 // Show usage information
 static void show_usage(const char *program_name) {
     printf("TEV YCoCg-R 4:2:0 Video Encoder with Bitrate Control\n");
-    printf("Usage: %s [options] -i input.mp4 -o output.tev\n\n", program_name);
+    printf("Usage: %s [options] -i input.mp4 -o output.mv2\n\n", program_name);
     printf("Options:\n");
     printf("  -i, --input FILE     Input video file\n");
-    printf("  -o, --output FILE    Output TEV file (use '-' for stdout)\n");
+    printf("  -o, --output FILE    Output video file (use '-' for stdout)\n");
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio quality in bitrate mode)\n");
+    printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio rate in bitrate mode)\n");
     printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -t, --test           Test mode: generate solid colour frames\n");
@@ -1296,7 +1296,7 @@ static void show_usage(const char *program_name) {
     printf("Rate Control Modes:\n");
     printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
     printf("  Bitrate mode (-b N):    Dynamic quantisation targeting N kbps average\n\n");
-    printf("Audio rate by quality:\n");
+    printf("Audio Rate by Quality:\n");
     printf("  ");
     for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
         printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
@@ -1306,12 +1306,13 @@ static void show_usage(const char *program_name) {
     printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
     printf("  - 16x16 Y blocks with 8x8 chroma for optimal DCT efficiency\n");
     printf("  - Frame rate conversion with FFmpeg temporal filtering\n");
-    printf("  - Adaptive bitrate control with complexity-based adjustment\n");
+//    printf("  - Adaptive bitrate control with complexity-based adjustment\n");
     printf("Examples:\n");
-    printf("  %s -i input.mp4 -o output.tev                   # Quality mode (q=2)\n", program_name);
-    printf("  %s -i input.mp4 -b 800 -o output.tev            # 800 kbps bitrate target\n", program_name);
-    printf("  %s -i input.avi -f 15 -b 500 -o output.tev      # 15fps @ 500 kbps\n", program_name);
-    printf("  %s --test -b 1000 -o test.tev                   # Test with 1000 kbps target\n", program_name);
+    printf("  %s -i input.mp4 -o output.mv2                 # Use default setting (q=2)\n", program_name);
+    printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # 15fps @ q=3\n", program_name);
+//    printf("  %s -i input.mp4 -b 800 -o output.mv2          # 800 kbps bitrate target\n", program_name);
+//    printf("  %s -i input.avi -f 15 -b 500 -o output.mv2    # 15fps @ 500 kbps\n", program_name);
+//    printf("  %s --test -b 1000 -o test.mv2                 # Test with 1000 kbps target\n", program_name);
 }
 
 
