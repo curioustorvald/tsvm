@@ -201,8 +201,20 @@ try {
                 sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
 
             } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
-                // Video frame packet
+                // Video frame packet (always includes rate control factor)
                 let payloadLen = seqread.readInt()
+                
+                // Always read rate control factor (4 bytes, little-endian float)
+                let rateFactorBytes = seqread.readBytes(4)
+                let view = new DataView(new ArrayBuffer(4))
+                for (let i = 0; i < 4; i++) {
+                    view.setUint8(i, sys.peek(rateFactorBytes + i))
+                }
+                let rateControlFactor = view.getFloat32(0, true) // true = little-endian
+                //serial.println(`rateControlFactor = ${rateControlFactor}`)
+                sys.free(rateFactorBytes)
+                payloadLen -= 4 // Subtract rate factor size from payload
+                
                 let compressedPtr = seqread.readBytes(payloadLen)
                 updateDataRateBin(payloadLen)
 
@@ -232,9 +244,9 @@ try {
                     continue
                 }
 
-                // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers
+                // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers (with rate control factor)
                 try {
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors)
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors, rateControlFactor)
 
                     // Upload RGB buffer to display framebuffer with dithering
                     graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,

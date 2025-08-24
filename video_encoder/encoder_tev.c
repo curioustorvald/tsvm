@@ -16,7 +16,7 @@
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
 #define TEV_VERSION 2  // Updated for YCoCg-R 4:2:0
 // version 1: 8x8 RGB
-// version 2: 16x16 Y, 8x8 Co/Cg, asymetric quantisation (current winner)
+// version 2: 16x16 Y, 8x8 Co/Cg, asymetric quantisation, optional quantiser multiplier for rate control multiplier (1.0 when unused) {current winner}
 // version 3: version 2 + internal 6-bit processing (discarded due to higher noise floor)
 
 // Block encoding modes (16x16 blocks)
@@ -35,6 +35,9 @@
 static inline int CLAMP(int x, int min, int max) {
     return x < min ? min : (x > max ? max : x);
 }
+static inline float FCLAMP(float x, float min, float max) {
+    return x < min ? min : (x > max ? max : x);
+}
 
 static const int MP2_RATE_TABLE[5] = {64, 112, 160, 224, 384};
 static const int QUANT_MULT_Y[5] = {40, 10, 6, 4, 1};
@@ -42,7 +45,7 @@ static const int QUANT_MULT_CO[5] = {40, 10, 6, 4, 1};
 static const int QUANT_MULT_CG[5] = {106, 22, 10, 5, 1}; // CO[i] * sqrt(7 - 2i)
 // only leave (4, 6, 7)
 
-// Quality settings for quantization (Y channel) - 16x16 tables
+// Quality settings for quantisation (Y channel) - 16x16 tables
 static const uint32_t QUANT_TABLE_Y[256] =
     // Quality 7 (highest)
     {2, 1, 1, 2, 3, 5, 6, 7, 6, 7, 8, 9, 10, 11, 12, 13,
@@ -62,7 +65,7 @@ static const uint32_t QUANT_TABLE_Y[256] =
      13, 14, 15, 16, 17, 18, 19, 20, 19, 20, 21, 22, 23, 24, 25, 26,
      14, 15, 16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 26, 27};
 
-// Quality settings for quantization (Co channel - 8x8)
+// Quality settings for quantisation (Co channel - 8x8)
 static const uint32_t QUANT_TABLE_C[64] =
     {2, 3, 4, 6, 8, 12, 16, 20,
      3, 4, 6, 8, 12, 16, 20, 24,
@@ -92,9 +95,9 @@ typedef struct __attribute__((packed)) {
     uint8_t mode;           // Block encoding mode
     int16_t mv_x, mv_y;     // Motion vector (1/4 pixel precision)
     uint16_t cbp;           // Coded block pattern (which channels have non-zero coeffs)
-    int16_t y_coeffs[256];  // Quantized Y DCT coefficients (16x16)
-    int16_t co_coeffs[64];  // Quantized Co DCT coefficients (8x8)
-    int16_t cg_coeffs[64];  // Quantized Cg DCT coefficients (8x8)
+    int16_t y_coeffs[256];  // quantised Y DCT coefficients (16x16)
+    int16_t co_coeffs[64];  // quantised Co DCT coefficients (8x8)
+    int16_t cg_coeffs[64];  // quantised Cg DCT coefficients (8x8)
 } tev_block_t;
 
 typedef struct {
@@ -110,16 +113,21 @@ typedef struct {
     int output_to_stdout;
     int quality;  // 0-4, higher = better quality
     int verbose;
-    
+
+    // Bitrate control
+    int target_bitrate_kbps;  // Target bitrate in kbps (0 = quality mode)
+    int bitrate_mode;         // 0 = quality, 1 = bitrate, 2 = hybrid
+    float rate_control_factor; // Dynamic adjustment factor
+
     // Frame buffers (8-bit RGB format for encoding)
     uint8_t *current_rgb, *previous_rgb, *reference_rgb;
-    
+
     // YCoCg workspace
     float *y_workspace, *co_workspace, *cg_workspace;
     float *dct_workspace;       // DCT coefficients
     tev_block_t *block_data;    // Encoded block data
     uint8_t *compressed_buffer; // Zstd output
-    
+
     // Audio handling
     FILE *mp2_file;
     int mp2_packet_size;
@@ -128,19 +136,26 @@ typedef struct {
     uint8_t *mp2_buffer;
     int audio_frames_in_buffer;
     int target_audio_buffer_size;
-    
+
     // Compression context
     z_stream gzip_stream;
-    
+
     // FFmpeg processes
     FILE *ffmpeg_video_pipe;
-    
+
     // Progress tracking
     struct timeval start_time;
     size_t total_output_bytes;
-    
+
     // Statistics
     int blocks_skip, blocks_intra, blocks_inter, blocks_motion;
+
+    // Rate control statistics
+    size_t frame_bits_accumulator;
+    size_t target_bits_per_frame;
+    float complexity_history[60];  // Rolling window for complexity
+    int complexity_history_index;
+    float average_complexity;
 } tev_encoder_t;
 
 // RGB to YCoCg-R transform (per YCoCg-R specification with truncated division)
@@ -149,7 +164,7 @@ static void rgb_to_ycocgr(uint8_t r, uint8_t g, uint8_t b, int *y, int *co, int 
     int tmp = (int)b + ((*co) / 2);
     *cg = (int)g - tmp;
     *y = tmp + ((*cg) / 2);
-    
+
     // Clamp to valid ranges (YCoCg-R should be roughly -256 to +255)
     *y = CLAMP(*y, 0, 255);
     *co = CLAMP(*co, -256, 255);
@@ -162,7 +177,7 @@ static void ycocgr_to_rgb(int y, int co, int cg, uint8_t *r, uint8_t *g, uint8_t
     *g = cg + tmp;
     *b = tmp - (co / 2);
     *r = *b + co;
-    
+
     // Clamp values
     *r = CLAMP(*r, 0, 255);
     *g = CLAMP(*g, 0, 255);
@@ -207,25 +222,25 @@ static void dct_16x16_fast(float *input, float *output) {
         for (int u = 0; u < 16; u++) {
             float sum = 0.0f;
             float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            
+
             for (int x = 0; x < 16; x++) {
                 sum += input[row * 16 + x] * dct_table_16[u][x];
             }
-            
+
             temp_dct_16[row * 16 + u] = 0.5f * cu * sum;
         }
     }
-    
+
     // Second pass: Process columns (16 1D DCTs)
     for (int col = 0; col < 16; col++) {
         for (int v = 0; v < 16; v++) {
             float sum = 0.0f;
             float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            
+
             for (int y = 0; y < 16; y++) {
                 sum += temp_dct_16[y * 16 + col] * dct_table_16[v][y];
             }
-            
+
             output[v * 16 + col] = 0.5f * cv * sum;
         }
     }
@@ -254,7 +269,7 @@ static void dct_16x16(float *input, float *output) {
     }
 }
 
-// Fast separable 8x8 DCT - 4x performance improvement  
+// Fast separable 8x8 DCT - 4x performance improvement
 static float temp_dct_8[64]; // Reusable temporary buffer
 
 static void dct_8x8_fast(float *input, float *output) {
@@ -265,25 +280,25 @@ static void dct_8x8_fast(float *input, float *output) {
         for (int u = 0; u < 8; u++) {
             float sum = 0.0f;
             float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            
+
             for (int x = 0; x < 8; x++) {
                 sum += input[row * 8 + x] * dct_table_8[u][x];
             }
-            
+
             temp_dct_8[row * 8 + u] = 0.5f * cu * sum;
         }
     }
-    
+
     // Second pass: Process columns (8 1D DCTs)
     for (int col = 0; col < 8; col++) {
         for (int v = 0; v < 8; v++) {
             float sum = 0.0f;
             float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            
+
             for (int y = 0; y < 8; y++) {
                 sum += temp_dct_8[y * 8 + col] * dct_table_8[v][y];
             }
-            
+
             output[v * 8 + col] = 0.5f * cv * sum;
         }
     }
@@ -312,19 +327,21 @@ static void dct_8x8(float *input, float *output) {
     }
 }
 
-// Quantize DCT coefficient using quality table
-static int16_t quantize_coeff(float coeff, uint32_t quant, int is_dc, int is_chroma) {
+// quantise DCT coefficient using quality table with rate control
+static int16_t quantise_coeff(float coeff, uint32_t quant, int is_dc, int is_chroma, float rate_factor) {
     if (is_dc) {
         if (is_chroma) {
-            // Chroma DC: range -256 to +255, use lossless quantization for testing
+            // Chroma DC: range -256 to +255, use lossless quantisation for testing
             return (int16_t)roundf(coeff);
         } else {
-            // Luma DC: range -128 to +127, use lossless quantization for testing
+            // Luma DC: range -128 to +127, use lossless quantisation for testing
             return (int16_t)roundf(coeff);
         }
     } else {
-        // AC coefficients use quality table
-        return (int16_t)roundf(coeff / quant);
+        // AC coefficients use quality table with rate control adjustment
+        float adjusted_quant = quant * rate_factor;
+        adjusted_quant = fmaxf(adjusted_quant, 1.0f); // Prevent division by zero
+        return (int16_t)roundf(coeff / adjusted_quant);
     }
 }
 
@@ -334,54 +351,54 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                                 float *y_block, float *co_block, float *cg_block) {
     int start_x = block_x * 16;
     int start_y = block_y * 16;
-    
+
     // Extract 16x16 Y block
     for (int py = 0; py < 16; py++) {
         for (int px = 0; px < 16; px++) {
             int x = start_x + px;
             int y = start_y + py;
-            
+
             if (x < width && y < height) {
                 int offset = (y * width + x) * 3;
                 uint8_t r = rgb_frame[offset];
                 uint8_t g = rgb_frame[offset + 1];
                 uint8_t b = rgb_frame[offset + 2];
-                
+
                 int y_val, co_val, cg_val;
                 rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
-                
+
                 y_block[py * 16 + px] = (float)y_val - 128.0f;  // Center around 0
             }
         }
     }
-    
+
     // Extract 8x8 chroma blocks with 4:2:0 subsampling (average 2x2 pixels)
     for (int py = 0; py < 8; py++) {
         for (int px = 0; px < 8; px++) {
             int co_sum = 0, cg_sum = 0, count = 0;
-            
+
             // Average 2x2 block of pixels
             for (int dy = 0; dy < 2; dy++) {
                 for (int dx = 0; dx < 2; dx++) {
                     int x = start_x + px * 2 + dx;
                     int y = start_y + py * 2 + dy;
-                    
+
                     if (x < width && y < height) {
                         int offset = (y * width + x) * 3;
                         uint8_t r = rgb_frame[offset];
                         uint8_t g = rgb_frame[offset + 1];
                         uint8_t b = rgb_frame[offset + 2];
-                        
+
                         int y_val, co_val, cg_val;
                         rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
-                        
+
                         co_sum += co_val;
                         cg_sum += cg_val;
                         count++;
                     }
                 }
             }
-            
+
             if (count > 0) {
                 // Center chroma around 0 for DCT (Co/Cg range is -255 to +255, so don't add offset)
                 co_block[py * 8 + px] = (float)(co_sum / count);
@@ -392,15 +409,15 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
 }
 
 // Simple motion estimation (full search) for 16x16 blocks
-static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y, 
+static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
                            int16_t *best_mv_x, int16_t *best_mv_y) {
     int best_sad = INT_MAX;
     *best_mv_x = 0;
     *best_mv_y = 0;
-    
+
     int start_x = block_x * 16;
     int start_y = block_y * 16;
-    
+
     // Diamond search pattern (much faster than full search)
     static const int diamond_x[] = {0, -1, 1, 0, 0, -2, 2, 0, 0};
     static const int diamond_y[] = {0, 0, 0, -1, 1, 0, 0, -2, 2};
@@ -460,7 +477,7 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
 }
 
 // Convert RGB block to YCoCg-R with 4:2:0 chroma subsampling
-static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block, 
+static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
                                        uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
     // Convert 16x16 RGB to Y (full resolution)
     for (int py = 0; py < 16; py++) {
@@ -469,39 +486,39 @@ static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
             int r = rgb_block[rgb_idx];
             int g = rgb_block[rgb_idx + 1];
             int b = rgb_block[rgb_idx + 2];
-            
+
             // YCoCg-R transform (per specification with truncated division)
             int y = (r + 2*g + b) / 4;
-            
+
             y_block[py * 16 + px] = CLAMP(y, 0, 255);
         }
     }
-    
+
     // Convert to Co and Cg with 4:2:0 subsampling (8x8)
     for (int cy = 0; cy < 8; cy++) {
         for (int cx = 0; cx < 8; cx++) {
             // Sample 2x2 block from RGB and average for chroma
             int sum_co = 0, sum_cg = 0;
-            
+
             for (int dy = 0; dy < 2; dy++) {
                 for (int dx = 0; dx < 2; dx++) {
                     int py = cy * 2 + dy;
                     int px = cx * 2 + dx;
                     int rgb_idx = (py * 16 + px) * 3;
-                    
+
                     int r = rgb_block[rgb_idx];
                     int g = rgb_block[rgb_idx + 1];
                     int b = rgb_block[rgb_idx + 2];
-                    
+
                     int co = r - b;
                     int tmp = b + (co / 2);
                     int cg = g - tmp;
-                    
+
                     sum_co += co;
                     sum_cg += cg;
                 }
             }
-            
+
             // Average and store subsampled chroma
             co_block[cy * 8 + cx] = CLAMP(sum_co / 4, -256, 255);
             cg_block[cy * 8 + cx] = CLAMP(sum_cg / 4, -256, 255);
@@ -515,16 +532,16 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
                                            uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
     // Extract 16x16 RGB block with motion compensation
     uint8_t rgb_block[16 * 16 * 3];
-    
+
     for (int dy = 0; dy < 16; dy++) {
         for (int dx = 0; dx < 16; dx++) {
             int cur_x = block_x + dx;
             int cur_y = block_y + dy;
             int ref_x = cur_x + mv_x;  // Revert to original motion compensation
             int ref_y = cur_y + mv_y;
-            
+
             int rgb_idx = (dy * 16 + dx) * 3;
-            
+
             if (ref_x >= 0 && ref_y >= 0 && ref_x < width && ref_y < height) {
                 // Copy RGB from reference position
                 int ref_offset = (ref_y * width + ref_x) * 3;
@@ -539,7 +556,7 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
             }
         }
     }
-    
+
     // Convert RGB block to YCoCg-R
     convert_rgb_to_ycocgr_block(rgb_block, y_block, co_block, cg_block);
 }
@@ -548,21 +565,21 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
 static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y, int mv_x, int mv_y) {
     int start_x = block_x * 16;
     int start_y = block_y * 16;
-    
+
     // Extract motion-compensated reference block from previous frame
     uint8_t ref_y[256];
     int8_t ref_co[64], ref_cg[64];
     extract_motion_compensated_block(enc->previous_rgb, enc->width, enc->height,
-                                   start_x, start_y, mv_x, mv_y, 
+                                   start_x, start_y, mv_x, mv_y,
                                    ref_y, ref_co, ref_cg);
-    
+
     // Compute residuals: current - motion_compensated_reference
     // Current is already centered (-128 to +127), reference is 0-255, so subtract and center reference
     for (int i = 0; i < 256; i++) {
         float ref_y_centered = (float)ref_y[i] - 128.0f;  // Center reference to match current
         enc->y_workspace[i] = enc->y_workspace[i] - ref_y_centered;
     }
-    
+
     // Chroma residuals (already centered in both current and reference)
     for (int i = 0; i < 64; i++) {
         enc->co_workspace[i] = enc->co_workspace[i] - (float)ref_co[i];
@@ -570,15 +587,66 @@ static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y
     }
 }
 
+// Calculate block complexity for rate control
+static float calculate_block_complexity(float *workspace, int size) {
+    float complexity = 0.0f;
+    for (int i = 1; i < size; i++) { // Skip DC component
+        complexity += fabsf(workspace[i]);
+    }
+    return complexity;
+}
+
+const float EPSILON = 1.0f / 16777216.0f;
+const float RATE_CONTROL_CLAMP_MAX = 64.0f;
+const float RATE_CONTROL_CLAMP_MIN = 1.0f / RATE_CONTROL_CLAMP_MAX;
+
+// Update rate control factor based on target bitrate
+static void update_rate_control(tev_encoder_t *enc, float frame_complexity, size_t frame_bits) {
+    if (enc->bitrate_mode == 0) {
+        // Quality mode - no rate control
+        enc->rate_control_factor = 1.0f;
+        return;
+    }
+
+    // Update complexity history
+    enc->complexity_history[enc->complexity_history_index] = frame_complexity;
+    enc->complexity_history_index = (enc->complexity_history_index + 1) % 60;
+
+    // Calculate rolling average complexity
+    float sum = 0.0f;
+    int count = 0;
+    for (int i = 0; i < 60; i++) {
+        if (enc->complexity_history[i] > 0.0f) {
+            sum += enc->complexity_history[i];
+            count++;
+        }
+    }
+    enc->average_complexity = (count > 0) ? sum / count : frame_complexity;
+
+    // Calculate rate adjustment
+    if (enc->target_bits_per_frame > 0 && frame_bits > 0) {
+        float bitrate_ratio = (float)enc->target_bits_per_frame / frame_bits;
+        float complexity_ratio = frame_complexity / fmaxf(enc->average_complexity, 1.0f);
+
+        // Adaptive adjustment with damping
+        float adjustment = 1.0f / (bitrate_ratio * complexity_ratio);
+        enc->rate_control_factor = adjustment;
+        enc->rate_control_factor = 0.8f * enc->rate_control_factor + 0.2f * adjustment;
+
+        // Clamp to reasonable range
+        enc->rate_control_factor = FCLAMP(enc->rate_control_factor, RATE_CONTROL_CLAMP_MIN, RATE_CONTROL_CLAMP_MAX);
+    }
+}
+
 // Encode a 16x16 block
 static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_keyframe) {
     tev_block_t *block = &enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
-    
+
     // Extract YCoCg-R block
     extract_ycocgr_block(enc->current_rgb, enc->width, enc->height,
                         block_x, block_y,
                         enc->y_workspace, enc->co_workspace, enc->cg_workspace);
-    
+
     if (is_keyframe) {
         // Intra coding for keyframes
         block->mode = TEV_MODE_INTRA;
@@ -588,7 +656,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         // Implement proper mode decision for P-frames
         int start_x = block_x * 16;
         int start_y = block_y * 16;
-        
+
         // Calculate SAD for skip mode (no motion compensation)
         int skip_sad = 0;
         for (int dy = 0; dy < 16; dy++) {
@@ -597,23 +665,23 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                 int y = start_y + dy;
                 if (x < enc->width && y < enc->height) {
                     int cur_offset = (y * enc->width + x) * 3;
-                    
+
                     // Compare current with previous frame (using YCoCg-R Luma calculation)
-                    int cur_luma = (enc->current_rgb[cur_offset] + 
+                    int cur_luma = (enc->current_rgb[cur_offset] +
                                    2 * enc->current_rgb[cur_offset + 1] +
                                    enc->current_rgb[cur_offset + 2]) / 4;
-                    int prev_luma = (enc->previous_rgb[cur_offset] + 
+                    int prev_luma = (enc->previous_rgb[cur_offset] +
                                     2 * enc->previous_rgb[cur_offset + 1] +
                                     enc->previous_rgb[cur_offset + 2]) / 4;
-                    
+
                     skip_sad += abs(cur_luma - prev_luma);
                 }
             }
         }
-        
+
         // Try motion estimation
         estimate_motion(enc, block_x, block_y, &block->mv_x, &block->mv_y);
-        
+
         // Calculate motion compensation SAD
         int motion_sad = INT_MAX;
         if (abs(block->mv_x) > 0 || abs(block->mv_y) > 0) {
@@ -624,22 +692,22 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                     int cur_y = start_y + dy;
                     int ref_x = cur_x + block->mv_x;
                     int ref_y = cur_y + block->mv_y;
-                    
+
                     if (cur_x < enc->width && cur_y < enc->height &&
-                        ref_x >= 0 && ref_y >= 0 && 
+                        ref_x >= 0 && ref_y >= 0 &&
                         ref_x < enc->width && ref_y < enc->height) {
-                        
+
                         int cur_offset = (cur_y * enc->width + cur_x) * 3;
                         int ref_offset = (ref_y * enc->width + ref_x) * 3;
 
                         // use YCoCg-R Luma calculation
-                        int cur_luma = (enc->current_rgb[cur_offset] + 
+                        int cur_luma = (enc->current_rgb[cur_offset] +
                                        2 * enc->current_rgb[cur_offset + 1] +
                                        enc->current_rgb[cur_offset + 2]) / 4;
-                        int ref_luma = (enc->previous_rgb[ref_offset] + 
+                        int ref_luma = (enc->previous_rgb[ref_offset] +
                                        2 * enc->previous_rgb[ref_offset + 1] +
                                        enc->previous_rgb[ref_offset + 2]) / 4;
-                        
+
                         motion_sad += abs(cur_luma - ref_luma);
                     } else {
                         motion_sad += 128; // Penalty for out-of-bounds
@@ -647,7 +715,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                 }
             }
         }
-        
+
         // Mode decision with strict thresholds for quality
         if (skip_sad <= 64) {
             // Very small difference - skip block (copy from previous frame)
@@ -661,12 +729,12 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
             enc->blocks_skip++;
             return; // Skip DCT encoding entirely
-        } else if (motion_sad < skip_sad && motion_sad <= 1024 && 
+        } else if (motion_sad < skip_sad && motion_sad <= 1024 &&
                    (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
             // Good motion prediction - use motion-only mode
             block->mode = TEV_MODE_MOTION;
             block->cbp = 0x00;  // No coefficients present
-            // Zero out DCT coefficients for consistent format  
+            // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
             memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
             memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
@@ -684,7 +752,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                 enc->blocks_motion++;
                 return; // Skip DCT encoding, just store motion vector
             }
-            
+
             // Use INTER mode with motion vector and residuals
             if (abs(block->mv_x) <= 24 && abs(block->mv_y) <= 24) {
                 block->mode = TEV_MODE_INTER;
@@ -705,37 +773,37 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             enc->blocks_intra++;
         }
     }
-    
+
     // Apply fast DCT transform
     dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
-    
-    // Quantize Y coefficients (luma)
+
+    // quantise Y coefficients (luma)
     const uint32_t *y_quant = QUANT_TABLE_Y;
     const uint32_t qmult_y = QUANT_MULT_Y[enc->quality];
     for (int i = 0; i < 256; i++) {
-        block->y_coeffs[i] = quantize_coeff(enc->dct_workspace[i], y_quant[i] * qmult_y, i == 0, 0);
+        block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], y_quant[i] * qmult_y, i == 0, 0, enc->rate_control_factor);
     }
-    
+
     // Apply fast DCT transform to chroma
     dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
-    
-    // Quantize Co coefficients (chroma - orange-blue)
+
+    // quantise Co coefficients (chroma - orange-blue)
     const uint32_t *co_quant = QUANT_TABLE_C;
     const uint32_t qmult_co = QUANT_MULT_CO[enc->quality];
     for (int i = 0; i < 64; i++) {
-        block->co_coeffs[i] = quantize_coeff(enc->dct_workspace[i], co_quant[i] * qmult_co, i == 0, 1);
+        block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], co_quant[i] * qmult_co, i == 0, 1, enc->rate_control_factor);
     }
-    
+
     // Apply fast DCT transform to Cg
     dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
-    
-    // Quantize Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q)
+
+    // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q)
     const uint32_t *cg_quant = QUANT_TABLE_C;
     const uint32_t qmult_cg = QUANT_MULT_CG[enc->quality];
     for (int i = 0; i < 64; i++) {
-        block->cg_coeffs[i] = quantize_coeff(enc->dct_workspace[i], cg_quant[i] * qmult_cg, i == 0, 1);
+        block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], cg_quant[i] * qmult_cg, i == 0, 1, enc->rate_control_factor);
     }
-    
+
     // Set CBP (simplified - always encode all channels)
     block->cbp = 0x07;  // Y, Co, Cg all present
 }
@@ -757,6 +825,16 @@ static tev_encoder_t* init_encoder(void) {
     enc->output_fps = 0;  // No frame rate conversion by default
     enc->verbose = 0;
 
+    // Rate control defaults
+    enc->target_bitrate_kbps = 0;    // 0 = quality mode
+    enc->bitrate_mode = 0;           // Quality mode by default
+    enc->rate_control_factor = 1.0f; // No adjustment initially
+    enc->frame_bits_accumulator = 0;
+    enc->target_bits_per_frame = 0;
+    enc->complexity_history_index = 0;
+    enc->average_complexity = 0.0f;
+    memset(enc->complexity_history, 0, sizeof(enc->complexity_history));
+
     init_dct_tables();
 
     return enc;
@@ -768,52 +846,52 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     int blocks_x = (enc->width + 15) / 16;
     int blocks_y = (enc->height + 15) / 16;
     int total_blocks = blocks_x * blocks_y;
-    
+
     enc->current_rgb = malloc(pixels * 3);
     enc->previous_rgb = malloc(pixels * 3);
     enc->reference_rgb = malloc(pixels * 3);
-    
+
     enc->y_workspace = malloc(16 * 16 * sizeof(float));
     enc->co_workspace = malloc(8 * 8 * sizeof(float));
     enc->cg_workspace = malloc(8 * 8 * sizeof(float));
     enc->dct_workspace = malloc(16 * 16 * sizeof(float));
-    
+
     enc->block_data = malloc(total_blocks * sizeof(tev_block_t));
     enc->compressed_buffer = malloc(total_blocks * sizeof(tev_block_t) * 2);
     enc->mp2_buffer = malloc(MP2_DEFAULT_PACKET_SIZE);
-    
+
     if (!enc->current_rgb || !enc->previous_rgb || !enc->reference_rgb ||
         !enc->y_workspace || !enc->co_workspace || !enc->cg_workspace ||
-        !enc->dct_workspace || !enc->block_data || 
+        !enc->dct_workspace || !enc->block_data ||
         !enc->compressed_buffer || !enc->mp2_buffer) {
         return -1;
     }
-    
+
     // Initialize gzip compression stream
     enc->gzip_stream.zalloc = Z_NULL;
     enc->gzip_stream.zfree = Z_NULL;
     enc->gzip_stream.opaque = Z_NULL;
-    
-    int gzip_init_result = deflateInit2(&enc->gzip_stream, Z_DEFAULT_COMPRESSION, 
+
+    int gzip_init_result = deflateInit2(&enc->gzip_stream, Z_DEFAULT_COMPRESSION,
                                        Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 for gzip format
-    
+
     if (gzip_init_result != Z_OK) {
         fprintf(stderr, "Failed to initialize gzip compression\n");
         return 0;
     }
-    
+
     // Initialize previous frame to black
     memset(enc->previous_rgb, 0, pixels * 3);
-    
+
     return 1;
 }
 
 // Free encoder resources
 static void free_encoder(tev_encoder_t *enc) {
     if (!enc) return;
-    
+
     deflateEnd(&enc->gzip_stream);
-    
+
     free(enc->current_rgb);
     free(enc->previous_rgb);
     free(enc->reference_rgb);
@@ -833,7 +911,7 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     fwrite(TEV_MAGIC, 1, 8, output);
     uint8_t version = TEV_VERSION;
     fwrite(&version, 1, 1, output);
-    
+
     // Video parameters
     uint16_t width = enc->width;
     uint16_t height = enc->height;
@@ -841,14 +919,14 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     uint32_t total_frames = enc->total_frames;
     uint8_t quality = enc->quality;
     uint8_t has_audio = enc->has_audio;
-    
+
     fwrite(&width, 2, 1, output);
     fwrite(&height, 2, 1, output);
     fwrite(&fps, 1, 1, output);
     fwrite(&total_frames, 4, 1, output);
     fwrite(&quality, 1, 1, output);
     fwrite(&has_audio, 1, 1, output);
-    
+
     return 0;
 }
 
@@ -857,58 +935,84 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     int is_keyframe = (frame_num % KEYFRAME_INTERVAL) == 0;
     int blocks_x = (enc->width + 15) / 16;
     int blocks_y = (enc->height + 15) / 16;
-    
+
+    // Track frame complexity for rate control
+    float frame_complexity = 0.0f;
+    size_t frame_start_bits = enc->total_output_bytes * 8;
+
     // Encode all blocks
     for (int by = 0; by < blocks_y; by++) {
         for (int bx = 0; bx < blocks_x; bx++) {
             encode_block(enc, bx, by, is_keyframe);
+
+            // Calculate complexity for rate control (if enabled)
+            if (enc->bitrate_mode > 0) {
+                tev_block_t *block = &enc->block_data[by * blocks_x + bx];
+                if (block->mode == TEV_MODE_INTRA || block->mode == TEV_MODE_INTER) {
+                    // Sum absolute values of quantised coefficients as complexity metric
+                    for (int i = 1; i < 256; i++) frame_complexity += abs(block->y_coeffs[i]);
+                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->co_coeffs[i]);
+                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->cg_coeffs[i]);
+                }
+            }
         }
     }
-    
+
     // Compress block data using gzip (compatible with TSVM decoder)
     size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
-    
+
     // Initialize fresh gzip stream for each frame (since Z_FINISH terminates the stream)
     z_stream frame_stream;
     frame_stream.zalloc = Z_NULL;
     frame_stream.zfree = Z_NULL;
     frame_stream.opaque = Z_NULL;
-    
-    int init_result = deflateInit2(&frame_stream, Z_DEFAULT_COMPRESSION, 
+
+    int init_result = deflateInit2(&frame_stream, Z_DEFAULT_COMPRESSION,
                                    Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 for gzip format
-    
+
     if (init_result != Z_OK) {
         fprintf(stderr, "Failed to initialize gzip compression for frame\n");
         return 0;
     }
-    
+
     // Set up compression stream
     frame_stream.next_in = (Bytef*)enc->block_data;
     frame_stream.avail_in = block_data_size;
     frame_stream.next_out = (Bytef*)enc->compressed_buffer;
     frame_stream.avail_out = block_data_size * 2;
-    
+
     int result = deflate(&frame_stream, Z_FINISH);
     if (result != Z_STREAM_END) {
         fprintf(stderr, "Gzip compression failed: %d\n", result);
         deflateEnd(&frame_stream);
         return 0;
     }
-    
+
     size_t compressed_size = frame_stream.total_out;
-    
+
     // Clean up frame stream
     deflateEnd(&frame_stream);
-    
-    // Write frame packet header
+
+    // Write frame packet header (always include rate control factor)
     uint8_t packet_type = is_keyframe ? TEV_PACKET_IFRAME : TEV_PACKET_PFRAME;
-    uint32_t payload_size = compressed_size;
-    
+    uint32_t payload_size = compressed_size + 4; // +4 bytes for rate control factor (always)
+
     fwrite(&packet_type, 1, 1, output);
     fwrite(&payload_size, 4, 1, output);
+    fwrite(&enc->rate_control_factor, 4, 1, output); // Always store rate control factor
     fwrite(enc->compressed_buffer, 1, compressed_size, output);
-    
-    enc->total_output_bytes += 5 + compressed_size;
+
+    if (enc->verbose) {
+        printf("rateControlFactor=%.6f\n", enc->rate_control_factor);
+    }
+
+    enc->total_output_bytes += 5 + 4 + compressed_size; // packet + size + rate_factor + data
+
+    // Update rate control for next frame
+    if (enc->bitrate_mode > 0) {
+        size_t frame_bits = (enc->total_output_bytes * 8) - frame_start_bits;
+        update_rate_control(enc, frame_complexity, frame_bits);
+    }
 
     // Swap frame buffers for next frame
     uint8_t *temp_rgb = enc->previous_rgb;
@@ -922,11 +1026,11 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
 static char *execute_command(const char *command) {
     FILE *pipe = popen(command, "r");
     if (!pipe) return NULL;
-    
+
     char *result = malloc(4096);
     size_t len = fread(result, 1, 4095, pipe);
     result[len] = '\0';
-    
+
     pclose(pipe);
     return result;
 }
@@ -935,10 +1039,10 @@ static char *execute_command(const char *command) {
 static int get_video_metadata(tev_encoder_t *enc) {
     char command[1024];
     char *output;
-    
+
     // Get frame count
-    snprintf(command, sizeof(command), 
-        "ffprobe -v quiet -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 \"%s\"", 
+    snprintf(command, sizeof(command),
+        "ffprobe -v quiet -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 \"%s\"",
         enc->input_file);
     output = execute_command(command);
     if (!output) {
@@ -947,7 +1051,7 @@ static int get_video_metadata(tev_encoder_t *enc) {
     }
     enc->total_frames = atoi(output);
     free(output);
-    
+
     // Get original frame rate (will be converted if user specified different FPS)
     snprintf(command, sizeof(command),
         "ffprobe -v quiet -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 \"%s\"",
@@ -957,7 +1061,7 @@ static int get_video_metadata(tev_encoder_t *enc) {
         fprintf(stderr, "Failed to get frame rate\n");
         return 0;
     }
-    
+
     int num, den;
     if (sscanf(output, "%d/%d", &num, &den) == 2) {
         enc->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
@@ -965,7 +1069,7 @@ static int get_video_metadata(tev_encoder_t *enc) {
         enc->fps = (int)round(atof(output));
     }
     free(output);
-    
+
     // If user specified output FPS, calculate new total frames for conversion
     if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
         // Calculate duration and new frame count
@@ -980,7 +1084,7 @@ static int get_video_metadata(tev_encoder_t *enc) {
             enc->total_frames = (int)(enc->duration * enc->output_fps);
             if (enc->verbose) {
                 printf("Frame rate conversion: %d fps -> %d fps\n", enc->fps, enc->output_fps);
-                printf("Original frames: %d, Output frames: %d\n", 
+                printf("Original frames: %d, Output frames: %d\n",
                        (int)(enc->duration * enc->fps), enc->total_frames);
             }
             enc->fps = enc->output_fps;  // Use output FPS for encoding
@@ -989,7 +1093,16 @@ static int get_video_metadata(tev_encoder_t *enc) {
 
     // set keyframe interval
     KEYFRAME_INTERVAL = 2 * enc->fps;
-    
+
+    // Calculate target bits per frame for bitrate mode
+    if (enc->target_bitrate_kbps > 0) {
+        enc->target_bits_per_frame = (enc->target_bitrate_kbps * 1000) / enc->fps;
+        if (enc->verbose) {
+            printf("Target bitrate: %d kbps (%zu bits per frame)\n",
+                   enc->target_bitrate_kbps, enc->target_bits_per_frame);
+        }
+    }
+
     // Check for audio stream
     snprintf(command, sizeof(command),
         "ffprobe -v quiet -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 \"%s\" 2>/dev/null",
@@ -997,7 +1110,7 @@ static int get_video_metadata(tev_encoder_t *enc) {
     output = execute_command(command);
     enc->has_audio = (output && strstr(output, "audio"));
     if (output) free(output);
-    
+
     if (enc->verbose) {
         fprintf(stderr, "Video metadata:\n");
         fprintf(stderr, "  Frames: %d\n", enc->total_frames);
@@ -1005,14 +1118,14 @@ static int get_video_metadata(tev_encoder_t *enc) {
         fprintf(stderr, "  Audio: %s\n", enc->has_audio ? "Yes" : "No");
         fprintf(stderr, "  Resolution: %dx%d\n", enc->width, enc->height);
     }
-    
+
     return (enc->total_frames > 0 && enc->fps > 0);
 }
 
 // Start FFmpeg process for video conversion with frame rate support
 static int start_video_conversion(tev_encoder_t *enc) {
     char command[2048];
-    
+
     // Build FFmpeg command with potential frame rate conversion
     if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
         // Frame rate conversion requested
@@ -1029,29 +1142,29 @@ static int start_video_conversion(tev_encoder_t *enc) {
             "-y -",
             enc->input_file, enc->width, enc->height, enc->width, enc->height);
     }
-    
+
     if (enc->verbose) {
         printf("FFmpeg command: %s\n", command);
     }
-    
+
     enc->ffmpeg_video_pipe = popen(command, "r");
     if (!enc->ffmpeg_video_pipe) {
         fprintf(stderr, "Failed to start FFmpeg process\n");
         return 0;
     }
-    
+
     return 1;
 }
 
 // Start audio conversion
 static int start_audio_conversion(tev_encoder_t *enc) {
     if (!enc->has_audio) return 1;
-    
+
     char command[2048];
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
         enc->input_file, MP2_RATE_TABLE[enc->quality], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
-    
+
     int result = system(command);
     if (result == 0) {
         enc->mp2_file = fopen(TEMP_AUDIO_FILE, "rb");
@@ -1061,7 +1174,7 @@ static int start_audio_conversion(tev_encoder_t *enc) {
             fseek(enc->mp2_file, 0, SEEK_SET);
         }
     }
-    
+
     return (result == 0);
 }
 
@@ -1070,11 +1183,11 @@ static int get_mp2_packet_size(uint8_t *header) {
     int bitrate_index = (header[2] >> 4) & 0x0F;
     int bitrates[] = {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
     if (bitrate_index >= 15) return MP2_DEFAULT_PACKET_SIZE;
-    
+
     int bitrate = bitrates[bitrate_index];
     int padding_bit = (header[2] >> 1) & 0x01;
     if (bitrate <= 0) return MP2_DEFAULT_PACKET_SIZE;
-    
+
     int frame_size = (144 * bitrate * 1000) / MP2_SAMPLE_RATE + padding_bit;
     return frame_size;
 }
@@ -1095,29 +1208,29 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
         return 1;
     }
-    
+
     // Initialize packet size on first frame
     if (enc->mp2_packet_size == 0) {
         uint8_t header[4];
         if (fread(header, 1, 4, enc->mp2_file) != 4) return 1;
         fseek(enc->mp2_file, 0, SEEK_SET);
-        
+
         enc->mp2_packet_size = get_mp2_packet_size(header);
         int is_mono = (header[3] >> 6) == 3;
         enc->mp2_rate_index = mp2_packet_size_to_rate_index(enc->mp2_packet_size, is_mono);
         enc->target_audio_buffer_size = 4; // 4 audio packets in buffer
     }
-    
+
     // Calculate how much audio time each frame represents (in seconds)
     double frame_audio_time = 1.0 / enc->fps;
-    
+
     // Calculate how much audio time each MP2 packet represents
     // MP2 frame contains 1152 samples at 32kHz = 0.036 seconds
     double packet_audio_time = 1152.0 / MP2_SAMPLE_RATE;
-    
+
     // Estimate how many packets we consume per video frame
     double packets_per_frame = frame_audio_time / packet_audio_time;
-    
+
     // Only insert audio when buffer would go below 2 frames
     // Initialize with 2 packets on first frame to prime the buffer
     int packets_to_insert = 0;
@@ -1127,47 +1240,47 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
     } else {
         // Simulate buffer consumption (packets consumed per frame)
         enc->audio_frames_in_buffer -= (int)ceil(packets_per_frame);
-        
+
         // Only insert packets when buffer gets low (≤ 2 frames)
         if (enc->audio_frames_in_buffer <= 2) {
             packets_to_insert = enc->target_audio_buffer_size - enc->audio_frames_in_buffer;
             packets_to_insert = (packets_to_insert > 0) ? packets_to_insert : 1;
         }
     }
-    
+
     // Insert the calculated number of audio packets
     for (int q = 0; q < packets_to_insert; q++) {
         size_t bytes_to_read = enc->mp2_packet_size;
         if (bytes_to_read > enc->audio_remaining) {
             bytes_to_read = enc->audio_remaining;
         }
-        
+
         size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
         if (bytes_read == 0) break;
-        
+
         // Write TEV MP2 audio packet
         uint8_t audio_packet_type = TEV_PACKET_AUDIO_MP2;
         uint32_t audio_len = (uint32_t)bytes_read;
         fwrite(&audio_packet_type, 1, 1, output);
         fwrite(&audio_len, 4, 1, output);
         fwrite(enc->mp2_buffer, 1, bytes_read, output);
-        
+
         // Track audio bytes written
         enc->total_output_bytes += 1 + 4 + bytes_read;
         enc->audio_remaining -= bytes_read;
         enc->audio_frames_in_buffer++;
-        
+
         if (enc->verbose) {
             printf("Audio packet %d: %zu bytes\n", q, bytes_read);
         }
     }
-    
+
     return 1;
 }
 
 // Show usage information
 static void show_usage(const char *program_name) {
-    printf("TEV YCoCg-R 4:2:0 Video Encoder\n");
+    printf("TEV YCoCg-R 4:2:0 Video Encoder with Bitrate Control\n");
     printf("Usage: %s [options] -i input.mp4 -o output.tev\n\n", program_name);
     printf("Options:\n");
     printf("  -i, --input FILE     Input video file\n");
@@ -1175,31 +1288,43 @@ static void show_usage(const char *program_name) {
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N      Quality level 0-4 (default: 2)\n");
+    printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio quality in bitrate mode)\n");
+    printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
     printf("  -v, --verbose        Verbose output\n");
-    printf("  -t, --test           Test mode: generate solid color frames\n");
+    printf("  -t, --test           Test mode: generate solid colour frames\n");
     printf("  --help               Show this help\n\n");
+    printf("Rate Control Modes:\n");
+    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
+    printf("  Bitrate mode (-b N):    Dynamic quantisation targeting N kbps average\n\n");
+    printf("Audio rate by quality:\n");
+    printf("  ");
+    for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
+        printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
+    }
+    printf("\n\n");
     printf("Features:\n");
     printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
     printf("  - 16x16 Y blocks with 8x8 chroma for optimal DCT efficiency\n");
     printf("  - Frame rate conversion with FFmpeg temporal filtering\n");
+    printf("  - Adaptive bitrate control with complexity-based adjustment\n");
     printf("Examples:\n");
-    printf("  %s -i input.mp4 -o output.tev\n", program_name);
-    printf("  %s -i input.avi -f 15 -q 7 -o output.tev  # Convert 25fps to 15fps\n", program_name);
-    printf("  %s --test -o test.tev  # Generate solid color test frames\n", program_name);
+    printf("  %s -i input.mp4 -o output.tev                   # Quality mode (q=2)\n", program_name);
+    printf("  %s -i input.mp4 -b 800 -o output.tev            # 800 kbps bitrate target\n", program_name);
+    printf("  %s -i input.avi -f 15 -b 500 -o output.tev      # 15fps @ 500 kbps\n", program_name);
+    printf("  %s --test -b 1000 -o test.tev                   # Test with 1000 kbps target\n", program_name);
 }
 
 
 // Cleanup encoder resources
 static void cleanup_encoder(tev_encoder_t *enc) {
     if (!enc) return;
-    
+
     if (enc->ffmpeg_video_pipe) pclose(enc->ffmpeg_video_pipe);
     if (enc->mp2_file) {
         fclose(enc->mp2_file);
         unlink(TEMP_AUDIO_FILE); // Remove temporary audio file
     }
-    
+
     free_encoder(enc);
 }
 
@@ -1214,7 +1339,7 @@ int main(int argc, char *argv[]) {
     }
 
     int test_mode = 0;
-    
+
     static struct option long_options[] = {
         {"input", required_argument, 0, 'i'},
         {"output", required_argument, 0, 'o'},
@@ -1222,16 +1347,17 @@ int main(int argc, char *argv[]) {
         {"height", required_argument, 0, 'h'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
+        {"bitrate", required_argument, 0, 'b'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
-    
+
     int option_index = 0;
     int c;
-    
-    while ((c = getopt_long(argc, argv, "i:o:w:h:f:q:vt", long_options, &option_index)) != -1) {
+
+    while ((c = getopt_long(argc, argv, "i:o:w:h:f:q:b:vt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -1255,9 +1381,13 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'q':
-                enc->quality = atoi(optarg);
-                if (enc->quality < 0) enc->quality = 0;
-                if (enc->quality > 7) enc->quality = 7;
+                enc->quality = CLAMP(atoi(optarg), 0, 4);
+                break;
+            case 'b':
+                enc->target_bitrate_kbps = atoi(optarg);
+                if (enc->target_bitrate_kbps > 0) {
+                    enc->bitrate_mode = 1; // Enable bitrate control
+                }
                 break;
             case 'v':
                 enc->verbose = 1;
@@ -1278,28 +1408,28 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
     }
-    
+
     if (!test_mode && (!enc->input_file || !enc->output_file)) {
         fprintf(stderr, "Input and output files are required (unless using --test mode)\n");
         show_usage(argv[0]);
         cleanup_encoder(enc);
         return 1;
     }
-    
+
     if (!enc->output_file) {
         fprintf(stderr, "Output file is required\n");
         show_usage(argv[0]);
         cleanup_encoder(enc);
         return 1;
     }
-    
+
     // Handle test mode or real video
     if (test_mode) {
-        // Test mode: generate solid color frames
+        // Test mode: generate solid colour frames
         enc->fps = 1;
         enc->total_frames = 15;
         enc->has_audio = 0;
-        printf("Test mode: Generating 15 solid color frames\n");
+        printf("Test mode: Generating 15 solid colour frames\n");
     } else {
         // Get video metadata and start FFmpeg processes
         if (!get_video_metadata(enc)) {
@@ -1308,14 +1438,14 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
-    
+
     // Allocate buffers
     if (!alloc_encoder_buffers(enc)) {
         fprintf(stderr, "Failed to allocate encoder buffers\n");
         cleanup_encoder(enc);
         return 1;
     }
-    
+
     // Start FFmpeg processes (only for real video mode)
     if (!test_mode) {
         // Start FFmpeg video conversion
@@ -1324,14 +1454,14 @@ int main(int argc, char *argv[]) {
             cleanup_encoder(enc);
             return 1;
         }
-        
+
         // Start audio conversion (if audio present)
         if (!start_audio_conversion(enc)) {
             fprintf(stderr, "Warning: Audio conversion failed\n");
             enc->has_audio = 0;
         }
     }
-    
+
     // Open output
     FILE *output = enc->output_to_stdout ? stdout : fopen(enc->output_file, "wb");
     if (!output) {
@@ -1339,51 +1469,56 @@ int main(int argc, char *argv[]) {
         cleanup_encoder(enc);
         return 1;
     }
-    
+
     // Write TEV header
     write_tev_header(output, enc);
     gettimeofday(&enc->start_time, NULL);
-    
+
     printf("Encoding video with YCoCg-R 4:2:0 format...\n");
     if (enc->output_fps > 0) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
-    
+    if (enc->bitrate_mode > 0) {
+        printf("Bitrate control enabled: targeting %d kbps\n", enc->target_bitrate_kbps);
+    } else {
+        printf("Quality mode: q=%d\n", enc->quality);
+    }
+
     // Process frames
     int frame_count = 0;
     while (frame_count < enc->total_frames) {
         if (test_mode) {
-            // Generate test frame with solid colors
+            // Generate test frame with solid colours
             size_t rgb_size = enc->width * enc->height * 3;
             uint8_t test_r = 0, test_g = 0, test_b = 0;
-            const char* color_name = "unknown";
-            
+            const char* colour_name = "unknown";
+
             switch (frame_count) {
-                case 0: test_r = 0; test_g = 0; test_b = 0; color_name = "black"; break;
-                case 1: test_r = 127; test_g = 127; test_b = 127; color_name = "grey"; break;
-                case 2: test_r = 255; test_g = 255; test_b = 255; color_name = "white"; break;
-                case 3: test_r = 127; test_g = 0; test_b = 0; color_name = "half red"; break;
-                case 4: test_r = 127; test_g = 127; test_b = 0; color_name = "half yellow"; break;
-                case 5: test_r = 0; test_g = 127; test_b = 0; color_name = "half green"; break;
-                case 6: test_r = 0; test_g = 127; test_b = 127; color_name = "half cyan"; break;
-                case 7: test_r = 0; test_g = 0; test_b = 127; color_name = "half blue"; break;
-                case 8: test_r = 127; test_g = 0; test_b = 127; color_name = "half magenta"; break;
-                case 9: test_r = 255; test_g = 0; test_b = 0; color_name = "red"; break;
-                case 10: test_r = 255; test_g = 255; test_b = 0; color_name = "yellow"; break;
-                case 11: test_r = 0; test_g = 255; test_b = 0; color_name = "green"; break;
-                case 12: test_r = 0; test_g = 255; test_b = 255; color_name = "cyan"; break;
-                case 13: test_r = 0; test_g = 0; test_b = 255; color_name = "blue"; break;
-                case 14: test_r = 255; test_g = 0; test_b = 255; color_name = "magenta"; break;
+                case 0: test_r = 0; test_g = 0; test_b = 0; colour_name = "black"; break;
+                case 1: test_r = 127; test_g = 127; test_b = 127; colour_name = "grey"; break;
+                case 2: test_r = 255; test_g = 255; test_b = 255; colour_name = "white"; break;
+                case 3: test_r = 127; test_g = 0; test_b = 0; colour_name = "half red"; break;
+                case 4: test_r = 127; test_g = 127; test_b = 0; colour_name = "half yellow"; break;
+                case 5: test_r = 0; test_g = 127; test_b = 0; colour_name = "half green"; break;
+                case 6: test_r = 0; test_g = 127; test_b = 127; colour_name = "half cyan"; break;
+                case 7: test_r = 0; test_g = 0; test_b = 127; colour_name = "half blue"; break;
+                case 8: test_r = 127; test_g = 0; test_b = 127; colour_name = "half magenta"; break;
+                case 9: test_r = 255; test_g = 0; test_b = 0; colour_name = "red"; break;
+                case 10: test_r = 255; test_g = 255; test_b = 0; colour_name = "yellow"; break;
+                case 11: test_r = 0; test_g = 255; test_b = 0; colour_name = "green"; break;
+                case 12: test_r = 0; test_g = 255; test_b = 255; colour_name = "cyan"; break;
+                case 13: test_r = 0; test_g = 0; test_b = 255; colour_name = "blue"; break;
+                case 14: test_r = 255; test_g = 0; test_b = 255; colour_name = "magenta"; break;
             }
-            
-            // Fill entire frame with solid color
+
+            // Fill entire frame with solid colour
             for (size_t i = 0; i < rgb_size; i += 3) {
                 enc->current_rgb[i] = test_r;
                 enc->current_rgb[i + 1] = test_g;
                 enc->current_rgb[i + 2] = test_b;
             }
-            
-            printf("Frame %d: %s (%d,%d,%d)\n", frame_count, color_name, test_r, test_g, test_b);
+
+            printf("Frame %d: %s (%d,%d,%d)\n", frame_count, colour_name, test_r, test_g, test_b);
             
             // Test YCoCg-R conversion
             int y_test, co_test, cg_test;
@@ -1462,9 +1597,23 @@ int main(int argc, char *argv[]) {
     printf("  - sync packets: %d\n", sync_packet_count);
     printf("  Framerate: %d\n", enc->fps);
     printf("  Output size: %zu bytes\n", enc->total_output_bytes);
+    
+    // Calculate achieved bitrate
+    double achieved_bitrate_kbps = (enc->total_output_bytes * 8.0) / 1000.0 / total_time;
+    printf("  Achieved bitrate: %.1f kbps", achieved_bitrate_kbps);
+    if (enc->bitrate_mode > 0) {
+        printf(" (target: %d kbps, %.1f%%)", enc->target_bitrate_kbps, 
+               (achieved_bitrate_kbps / enc->target_bitrate_kbps) * 100.0);
+    }
+    printf("\n");
+    
     printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
     printf("  Block statistics: INTRA=%d, INTER=%d, MOTION=%d, SKIP=%d\n",
            enc->blocks_intra, enc->blocks_inter, enc->blocks_motion, enc->blocks_skip);
+    
+    if (enc->bitrate_mode > 0) {
+        printf("  Rate control factor: %.3f\n", enc->rate_control_factor);
+    }
     
     cleanup_encoder(enc);
     return 0;

@@ -678,6 +678,12 @@ Created by Claude on 2025-08-17
 TEV is a modern video codec optimized for TSVM's 4096-color hardware, featuring
 DCT-based compression, motion compensation, and efficient temporal coding.
 
+## Version History
+- Version 2.0: YCoCg-R 4:2:0 with 16x16/8x8 DCT blocks
+- Version 2.1: Added Rate Control Factor to all video packets (breaking change)
+  * Enables bitrate-constrained encoding alongside quality modes
+  * All video frames now include 4-byte rate control factor after payload size
+
 # File Structure
 \x1F T S V M T E V
 [HEADER]
@@ -694,7 +700,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     uint16 Height: video height in pixels  
     uint16 FPS: frames per second
     uint32 Total Frames: number of video frames
-    uint8  Quality: quantization quality (0-7, higher = better)
+    uint8  Quality: quantization quality (0-4, higher = better)
     byte[5] Reserved
 
 ## Packet Types
@@ -705,7 +711,8 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 
 ## Video Packet Structure
     uint8  Packet Type
-    uint32 Compressed Size
+    uint32 Compressed Size (includes rate control factor size)
+    float  Rate Control Factor (4 bytes, little-endian)
     *      Gzip-compressed Block Data
 
 ## Block Data (per 16x16 block)
@@ -722,10 +729,18 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     int16[64]  DCT Coefficients Cg (subsampled by two, aggressively quantised)
         For SKIP and MOTION mode, DCT coefficients are filled with zero
 
-## DCT Quantization
+## DCT Quantization and Rate Control
 TEV uses 8 quality levels (0=lowest, 7=highest) with progressive quantization
 tables optimized for perceptual quality. DC coefficients use fixed quantizer
 of 8, while AC coefficients are quantized according to quality tables.
+
+### Rate Control Factor
+Each video frame includes a Rate Control Factor that modifies quantization:
+- Quality mode: Factor = 1.0 (fixed quantization based on quality level)
+- Bitrate mode: Factor varies per frame based on content complexity and target bitrate
+- Encoder: quantized_coeff = dct_coeff / (base_quant * rate_factor)  
+- Decoder: dequantized_coeff = quantized_coeff * (base_quant / rate_factor)
+- Optimization: When factor ≈ 1.0 (0.999-1.001), decoder uses original tables
 
 ## Motion Compensation
 - Search range: ±8 pixels

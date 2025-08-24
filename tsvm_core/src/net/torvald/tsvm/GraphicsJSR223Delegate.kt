@@ -1567,7 +1567,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param frameCounter Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, quality: Int, debugMotionVectors: Boolean = false) {
+                  width: Int, height: Int, quality: Int, debugMotionVectors: Boolean = false, 
+                  rateControlFactor: Float = 1.0f) {
 
         val blocksX = (width + 15) / 16  // 16x16 blocks now
         val blocksY = (height + 15) / 16
@@ -1576,9 +1577,22 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val quantCOmult = QUANT_MULT_CO[quality]
         val quantCGmult = QUANT_MULT_CG[quality]
 
-        val quantTableY = QUANT_TABLE_Y.map { it * quantYmult }.toIntArray()
-        val quantTableCo = QUANT_TABLE_C.map { it * quantCOmult }.toIntArray()
-        val quantTableCg = QUANT_TABLE_C.map { it * quantCGmult }.toIntArray()
+        // Apply rate control factor to quantization tables (if not ~1.0, skip optimization)
+        val quantTableY = if (rateControlFactor in 0.999f..1.001f) {
+            QUANT_TABLE_Y.map { it * quantYmult }.toIntArray()
+        } else {
+            QUANT_TABLE_Y.map { (it * quantYmult * rateControlFactor).toInt() }.toIntArray()
+        }
+        val quantTableCo = if (rateControlFactor in 0.999f..1.001f) {
+            QUANT_TABLE_C.map { it * quantCOmult }.toIntArray()
+        } else {
+            QUANT_TABLE_C.map { (it * quantCOmult * rateControlFactor).toInt() }.toIntArray()
+        }
+        val quantTableCg = if (rateControlFactor in 0.999f..1.001f) {
+            QUANT_TABLE_C.map { it * quantCGmult }.toIntArray()
+        } else {
+            QUANT_TABLE_C.map { (it * quantCGmult * rateControlFactor).toInt() }.toIntArray()
+        }
         
         var readPtr = blockDataPtr
 
