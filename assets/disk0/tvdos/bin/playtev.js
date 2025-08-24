@@ -148,6 +148,9 @@ let akku2 = 0.0
 let mp2Initialised = false
 let audioFired = false
 
+const BIAS_LIGHTING_MIN = 1.0 / 16.0
+let oldBgcol = [BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN]
+
 // 4x4 Bayer dithering matrix
 const BAYER_MATRIX = [
     [ 0, 8, 2,10],
@@ -168,6 +171,44 @@ function ditherValue(value, x, y) {
     // Add dither and quantize to 4-bit (0-15)
     const dithered = value + scaledThreshold
     return Math.max(0, Math.min(15, Math.floor(dithered * 15 / 255)))
+}
+
+function getRGBfromScr(x, y) {
+    let offset = y * WIDTH + x
+    let rg = sys.peek(-1048577 - offset)
+    let ba = sys.peek(-1310721 - offset)
+
+    return [(rg >>> 4) / 15.0, (rg & 15) / 15.0, (ba >>> 4) / 15.0]
+}
+
+function setBiasLighting() {
+    let samples = []
+    for (let x = 8; x < 560; x+=32) {
+        samples.push(getRGBfromScr(x, 3))
+        samples.push(getRGBfromScr(x, 445))
+    }
+    for (let y = 29; y < 448; y+=26) {
+        samples.push(getRGBfromScr(8, y))
+        samples.push(getRGBfromScr(552, y))
+    }
+
+    let out = [0.0, 0.0, 0.0]
+    samples.forEach(rgb=>{
+        out[0] += rgb[0]
+        out[1] += rgb[1]
+        out[2] += rgb[2]
+    })
+    out[0] = BIAS_LIGHTING_MIN + (out[0] / samples.length / 2.0) // darken a bit
+    out[1] = BIAS_LIGHTING_MIN + (out[1] / samples.length / 2.0)
+    out[2] = BIAS_LIGHTING_MIN + (out[2] / samples.length / 2.0)
+
+    let bgr = (oldBgcol[0]*5 + out[0]) / 6.0
+    let bgg = (oldBgcol[1]*5 + out[1]) / 6.0
+    let bgb = (oldBgcol[2]*5 + out[2]) / 6.0
+
+    oldBgcol = [bgr, bgg, bgb]
+
+    graphics.setBackground(Math.round(bgr * 255), Math.round(bgg * 255), Math.round(bgb * 255))
 }
 
 let blockDataPtr = sys.malloc(560 * 448 * 3)
@@ -262,6 +303,8 @@ try {
                 }
 
                 sys.free(compressedPtr)
+
+                setBiasLighting()
 
             } else if (packetType == TEV_PACKET_AUDIO_MP2) {
                 // MP2 Audio packet
