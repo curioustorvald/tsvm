@@ -134,7 +134,7 @@ typedef struct {
     int mp2_rate_index;
     size_t audio_remaining;
     uint8_t *mp2_buffer;
-    int audio_frames_in_buffer;
+    double audio_frames_in_buffer;
     int target_audio_buffer_size;
 
     // Compression context
@@ -1295,20 +1295,39 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
     // Estimate how many packets we consume per video frame
     double packets_per_frame = frame_audio_time / packet_audio_time;
 
-    // Only insert audio when buffer would go below 2 frames
-    // Initialize with 2 packets on first frame to prime the buffer
+    // Audio buffering strategy: maintain target buffer level
     int packets_to_insert = 0;
     if (frame_num == 0) {
-        packets_to_insert = 2;
-        enc->audio_frames_in_buffer = 2;
+        // Prime buffer to target level initially
+        packets_to_insert = enc->target_audio_buffer_size;
+        enc->audio_frames_in_buffer = 0; // count starts from 0
+        if (enc->verbose) {
+            printf("Frame %d: Priming audio buffer with %d packets\n", frame_num, packets_to_insert);
+        }
     } else {
-        // Simulate buffer consumption (packets consumed per frame)
-        enc->audio_frames_in_buffer -= (int)ceil(packets_per_frame);
+        // Simulate buffer consumption (fractional consumption per frame)
+        double old_buffer = enc->audio_frames_in_buffer;
+        enc->audio_frames_in_buffer -= packets_per_frame;
 
-        // Only insert packets when buffer gets low (≤ 2 frames)
-        if (enc->audio_frames_in_buffer <= 2) {
-            packets_to_insert = enc->target_audio_buffer_size - enc->audio_frames_in_buffer;
-            packets_to_insert = (packets_to_insert > 0) ? packets_to_insert : 1;
+        // Calculate how many packets we need to maintain target buffer level
+        // Only insert when buffer drops below target, and only insert enough to restore target
+        double target_level = (double)enc->target_audio_buffer_size;
+        if (enc->audio_frames_in_buffer < target_level) {
+            double deficit = target_level - enc->audio_frames_in_buffer;
+            // Insert packets to cover the deficit, but at least maintain minimum flow
+            packets_to_insert = (int)ceil(deficit);
+            // Cap at reasonable maximum to prevent excessive insertion
+            if (packets_to_insert > enc->target_audio_buffer_size) {
+                packets_to_insert = enc->target_audio_buffer_size;
+            }
+            
+            if (enc->verbose) {
+                printf("Frame %d: Buffer low (%.2f->%.2f), deficit %.2f, inserting %d packets\n", 
+                       frame_num, old_buffer, enc->audio_frames_in_buffer, deficit, packets_to_insert);
+            }
+        } else if (enc->verbose && old_buffer != enc->audio_frames_in_buffer) {
+            printf("Frame %d: Buffer sufficient (%.2f->%.2f), no packets\n", 
+                   frame_num, old_buffer, enc->audio_frames_in_buffer);
         }
     }
 
@@ -1334,8 +1353,13 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
         enc->audio_remaining -= bytes_read;
         enc->audio_frames_in_buffer++;
 
+        if (frame_num == 0) {
+            enc->audio_frames_in_buffer = enc->target_audio_buffer_size / 2; // trick the buffer simulator so that it doesn't count the frame 0 priming
+        }
+
         if (enc->verbose) {
-            printf("Audio packet %d: %zu bytes\n", q, bytes_read);
+            printf("Audio packet %d: %zu bytes (buffer: %.2f packets)\n", 
+                   q, bytes_read, enc->audio_frames_in_buffer);
         }
     }
 
