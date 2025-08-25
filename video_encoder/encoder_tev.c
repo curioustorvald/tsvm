@@ -29,6 +29,7 @@
 #define TEV_PACKET_IFRAME      0x10  // Intra frame (keyframe)
 #define TEV_PACKET_PFRAME      0x11  // Predicted frame  
 #define TEV_PACKET_AUDIO_MP2   0x20  // MP2 audio
+#define TEV_PACKET_SUBTITLE    0x30  // Subtitle packet
 #define TEV_PACKET_SYNC        0xFF  // Sync packet
 
 // Utility macros
@@ -100,9 +101,18 @@ typedef struct __attribute__((packed)) {
     int16_t cg_coeffs[64];  // quantised Cg DCT coefficients (8x8)
 } tev_block_t;
 
+// Subtitle entry structure
+typedef struct subtitle_entry {
+    int start_frame;
+    int end_frame;
+    char *text;
+    struct subtitle_entry *next;
+} subtitle_entry_t;
+
 typedef struct {
     char *input_file;
     char *output_file;
+    char *subtitle_file;  // SubRip (.srt) file path
     int width;
     int height;
     int fps;
@@ -110,6 +120,7 @@ typedef struct {
     int total_frames;
     double duration;
     int has_audio;
+    int has_subtitles;
     int output_to_stdout;
     int quality;  // 0-4, higher = better quality
     int verbose;
@@ -156,6 +167,10 @@ typedef struct {
     float complexity_history[60];  // Rolling window for complexity
     int complexity_history_index;
     float average_complexity;
+
+    // Subtitle handling
+    subtitle_entry_t *subtitle_list;
+    subtitle_entry_t *current_subtitle;
 } tev_encoder_t;
 
 // RGB to YCoCg-R transform (per YCoCg-R specification with truncated division)
@@ -820,6 +835,223 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     block->cbp = 0x07;  // Y, Co, Cg all present
 }
 
+// Convert SubRip time format (HH:MM:SS,mmm) to frame number
+static int srt_time_to_frame(const char *time_str, int fps) {
+    int hours, minutes, seconds, milliseconds;
+    if (sscanf(time_str, "%d:%d:%d,%d", &hours, &minutes, &seconds, &milliseconds) != 4) {
+        return -1;
+    }
+    
+    double total_seconds = hours * 3600.0 + minutes * 60.0 + seconds + milliseconds / 1000.0;
+    return (int)(total_seconds * fps + 0.5);  // Round to nearest frame
+}
+
+// Parse SubRip subtitle file
+static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        fprintf(stderr, "Failed to open subtitle file: %s\n", filename);
+        return NULL;
+    }
+    
+    subtitle_entry_t *head = NULL;
+    subtitle_entry_t *tail = NULL;
+    char line[1024];
+    int state = 0;  // 0=index, 1=time, 2=text, 3=blank
+    
+    subtitle_entry_t *current_entry = NULL;
+    char *text_buffer = NULL;
+    size_t text_buffer_size = 0;
+    
+    while (fgets(line, sizeof(line), file)) {
+        // Remove trailing newline
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') {
+            line[len-1] = '\0';
+            len--;
+        }
+        if (len > 0 && line[len-1] == '\r') {
+            line[len-1] = '\0';
+            len--;
+        }
+        
+        if (state == 0) {  // Expecting subtitle index
+            if (strlen(line) == 0) continue;  // Skip empty lines
+            // Create new subtitle entry
+            current_entry = calloc(1, sizeof(subtitle_entry_t));
+            if (!current_entry) break;
+            state = 1;
+        } else if (state == 1) {  // Expecting time range
+            char start_time[32], end_time[32];
+            if (sscanf(line, "%31s --> %31s", start_time, end_time) == 2) {
+                current_entry->start_frame = srt_time_to_frame(start_time, fps);
+                current_entry->end_frame = srt_time_to_frame(end_time, fps);
+                
+                if (current_entry->start_frame < 0 || current_entry->end_frame < 0) {
+                    free(current_entry);
+                    current_entry = NULL;
+                    state = 3;  // Skip to next blank line
+                    continue;
+                }
+                
+                // Initialize text buffer
+                text_buffer_size = 256;
+                text_buffer = malloc(text_buffer_size);
+                if (!text_buffer) {
+                    free(current_entry);
+                    current_entry = NULL;
+                    fprintf(stderr, "Memory allocation failed while parsing subtitles\n");
+                    break;
+                }
+                text_buffer[0] = '\0';
+                state = 2;
+            } else {
+                free(current_entry);
+                current_entry = NULL;
+                state = 3;  // Skip malformed entry
+            }
+        } else if (state == 2) {  // Collecting subtitle text
+            if (strlen(line) == 0) {
+                // End of subtitle text
+                current_entry->text = strdup(text_buffer);
+                free(text_buffer);
+                text_buffer = NULL;
+                
+                // Add to list
+                if (!head) {
+                    head = current_entry;
+                    tail = current_entry;
+                } else {
+                    tail->next = current_entry;
+                    tail = current_entry;
+                }
+                current_entry = NULL;
+                state = 0;
+            } else {
+                // Append text line
+                size_t current_len = strlen(text_buffer);
+                size_t line_len = strlen(line);
+                size_t needed = current_len + line_len + 2;  // +2 for newline and null
+                
+                if (needed > text_buffer_size) {
+                    text_buffer_size = needed + 256;
+                    char *new_buffer = realloc(text_buffer, text_buffer_size);
+                    if (!new_buffer) {
+                        free(text_buffer);
+                        free(current_entry);
+                        current_entry = NULL;
+                        fprintf(stderr, "Memory allocation failed while parsing subtitles\n");
+                        break;
+                    }
+                    text_buffer = new_buffer;
+                }
+                
+                if (current_len > 0) {
+                    strcat(text_buffer, "\n");
+                }
+                strcat(text_buffer, line);
+            }
+        } else if (state == 3) {  // Skip to next blank line
+            if (strlen(line) == 0) {
+                state = 0;
+            }
+        }
+    }
+    
+    // Handle final subtitle if file doesn't end with blank line
+    if (current_entry && text_buffer) {
+        current_entry->text = strdup(text_buffer);
+        free(text_buffer);
+        
+        if (!head) {
+            head = current_entry;
+        } else {
+            tail->next = current_entry;
+        }
+    }
+    
+    fclose(file);
+    return head;
+}
+
+// Free subtitle list
+static void free_subtitle_list(subtitle_entry_t *list) {
+    while (list) {
+        subtitle_entry_t *next = list->next;
+        free(list->text);
+        free(list);
+        list = next;
+    }
+}
+
+// Write subtitle packet to output
+static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text) {
+    // Calculate packet size
+    size_t text_len = text ? strlen(text) : 0;
+    size_t packet_size = 3 + 1 + text_len + 1;  // index (3 bytes) + opcode + text + null terminator
+    
+    // Write packet type and size
+    uint8_t packet_type = TEV_PACKET_SUBTITLE;
+    fwrite(&packet_type, 1, 1, output);
+    fwrite(&packet_size, 4, 1, output);
+    
+    // Write subtitle packet data
+    uint8_t index_bytes[3];
+    index_bytes[0] = index & 0xFF;
+    index_bytes[1] = (index >> 8) & 0xFF;
+    index_bytes[2] = (index >> 16) & 0xFF;
+    fwrite(index_bytes, 1, 3, output);
+    
+    fwrite(&opcode, 1, 1, output);
+    
+    if (text && text_len > 0) {
+        fwrite(text, 1, text_len, output);
+    }
+    
+    // Write null terminator
+    uint8_t null_term = 0x00;
+    fwrite(&null_term, 1, 1, output);
+    
+    return packet_size + 5;  // packet_size + packet_type + size field
+}
+
+// Process subtitles for the current frame
+static int process_subtitles(tev_encoder_t *enc, int frame_num, FILE *output) {
+    if (!enc->has_subtitles) return 0;
+
+    int bytes_written = 0;
+    
+    // Check if any subtitles need to be shown at this frame
+    subtitle_entry_t *sub = enc->current_subtitle;
+    while (sub && sub->start_frame <= frame_num) {
+        if (sub->start_frame == frame_num) {
+            // Show subtitle
+            bytes_written += write_subtitle_packet(output, 0, 0x01, sub->text);
+            if (enc->verbose) {
+                printf("Frame %d: Showing subtitle: %.50s%s\n", 
+                       frame_num, sub->text, strlen(sub->text) > 50 ? "..." : "");
+            }
+        }
+        
+        if (sub->end_frame == frame_num) {
+            // Hide subtitle
+            bytes_written += write_subtitle_packet(output, 0, 0x02, NULL);
+            if (enc->verbose) {
+                printf("Frame %d: Hiding subtitle\n", frame_num);
+            }
+        }
+        
+        // Move to next subtitle if we're past the end of current one
+        if (sub->end_frame <= frame_num) {
+            enc->current_subtitle = sub->next;
+        }
+        
+        sub = sub->next;
+    }
+    
+    return bytes_written;
+}
+
 // Initialize encoder
 static tev_encoder_t* init_encoder(void) {
     tev_encoder_t *enc = calloc(1, sizeof(tev_encoder_t));
@@ -836,6 +1068,10 @@ static tev_encoder_t* init_encoder(void) {
     enc->fps = 0;  // Will be detected from input
     enc->output_fps = 0;  // No frame rate conversion by default
     enc->verbose = 0;
+    enc->subtitle_file = NULL;
+    enc->has_subtitles = 0;
+    enc->subtitle_list = NULL;
+    enc->current_subtitle = NULL;
 
     // Rate control defaults
     enc->target_bitrate_kbps = 0;    // 0 = quality mode
@@ -1092,6 +1328,11 @@ static char *execute_command(const char *command) {
     if (!pipe) return NULL;
 
     char *result = malloc(4096);
+    if (!result) {
+        pclose(pipe);
+        return NULL;
+    }
+    
     size_t len = fread(result, 1, 4095, pipe);
     result[len] = '\0';
 
@@ -1197,7 +1438,7 @@ static int start_video_conversion(tev_encoder_t *enc) {
             "ffmpeg -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 "
             "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
             "-y - 2>&1",
-            enc->input_file, enc->width, enc->height, enc->width, enc->height, enc->output_fps);
+            enc->input_file, enc->output_fps, enc->width, enc->height, enc->width, enc->height);
     } else {
         // No frame rate conversion
         snprintf(command, sizeof(command),
@@ -1373,6 +1614,7 @@ static void show_usage(const char *program_name) {
     printf("Options:\n");
     printf("  -i, --input FILE     Input video file\n");
     printf("  -o, --output FILE    Output video file (use '-' for stdout)\n");
+    printf("  -s, --subtitles FILE SubRip (.srt) subtitle file\n");
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
@@ -1398,6 +1640,7 @@ static void show_usage(const char *program_name) {
     printf("Examples:\n");
     printf("  %s -i input.mp4 -o output.mv2                 # Use default setting (q=2)\n", program_name);
     printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # 15fps @ q=3\n", program_name);
+    printf("  %s -i input.mp4 -s input.srt -o output.mv2    # With SubRip subtitles\n", program_name);
 //    printf("  %s -i input.mp4 -b 800 -o output.mv2          # 800 kbps bitrate target\n", program_name);
 //    printf("  %s -i input.avi -f 15 -b 500 -o output.mv2    # 15fps @ 500 kbps\n", program_name);
 //    printf("  %s --test -b 1000 -o test.mv2                 # Test with 1000 kbps target\n", program_name);
@@ -1413,6 +1656,11 @@ static void cleanup_encoder(tev_encoder_t *enc) {
         fclose(enc->mp2_file);
         unlink(TEMP_AUDIO_FILE); // Remove temporary audio file
     }
+
+    free(enc->input_file);
+    free(enc->output_file);
+    free(enc->subtitle_file);
+    free_subtitle_list(enc->subtitle_list);
 
     free_encoder(enc);
 }
@@ -1432,6 +1680,7 @@ int main(int argc, char *argv[]) {
     static struct option long_options[] = {
         {"input", required_argument, 0, 'i'},
         {"output", required_argument, 0, 'o'},
+        {"subtitles", required_argument, 0, 's'},
         {"width", required_argument, 0, 'w'},
         {"height", required_argument, 0, 'h'},
         {"fps", required_argument, 0, 'f'},
@@ -1446,7 +1695,7 @@ int main(int argc, char *argv[]) {
     int option_index = 0;
     int c;
 
-    while ((c = getopt_long(argc, argv, "i:o:w:h:f:q:b:vt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:w:h:f:q:b:vt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -1454,6 +1703,9 @@ int main(int argc, char *argv[]) {
             case 'o':
                 enc->output_file = strdup(optarg);
                 enc->output_to_stdout = (strcmp(optarg, "-") == 0);
+                break;
+            case 's':
+                enc->subtitle_file = strdup(optarg);
                 break;
             case 'w':
                 enc->width = atoi(optarg);
@@ -1525,6 +1777,21 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Failed to get video metadata\n");
             cleanup_encoder(enc);
             return 1;
+        }
+    }
+
+    // Load subtitle file if specified
+    if (enc->subtitle_file) {
+        enc->subtitle_list = parse_srt_file(enc->subtitle_file, enc->fps);
+        if (enc->subtitle_list) {
+            enc->has_subtitles = 1;
+            enc->current_subtitle = enc->subtitle_list;
+            if (enc->verbose) {
+                printf("Loaded subtitles from: %s\n", enc->subtitle_file);
+            }
+        } else {
+            fprintf(stderr, "Failed to parse subtitle file: %s\n", enc->subtitle_file);
+            // Continue without subtitles
         }
     }
 
@@ -1640,6 +1907,9 @@ int main(int argc, char *argv[]) {
 
         // Process audio for this frame
         process_audio(enc, frame_count, output);
+
+        // Process subtitles for this frame
+        process_subtitles(enc, frame_count, output);
 
         // Encode frame
         if (!encode_frame(enc, output, frame_count)) {

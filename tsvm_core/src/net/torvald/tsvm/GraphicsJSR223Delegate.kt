@@ -17,6 +17,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val idctTempBuffer = FloatArray(64)
     private val idct16TempBuffer = FloatArray(256) // For 16x16 IDCT
     private val idct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
+    
 
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
@@ -482,6 +483,33 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             3,11,1,9,
         )
     ).map{ it.map { (it.toFloat() + 0.5f) / 16f }.toFloatArray() }
+
+    private val bayerKernels2 = arrayOf(
+        intArrayOf(
+            0,8,2,10,
+            12,4,14,6,
+            3,11,1,9,
+            15,7,13,5,
+        ),
+        intArrayOf(
+            8,2,10,0,
+            4,14,6,12,
+            11,1,9,3,
+            7,13,5,15,
+        ),
+        intArrayOf(
+            7,13,5,15,
+            8,2,10,0,
+            4,14,6,12,
+            11,1,9,3,
+        ),
+        intArrayOf(
+            15,7,13,5,
+            0,8,2,10,
+            12,4,14,6,
+            3,11,1,9,
+        )
+    )
 
     /**
      * This method always assume that you're using the default palette
@@ -1307,22 +1335,35 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     /**
      * Upload RGB frame buffer to graphics framebuffer with dithering
      * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
-     * @param rgPlaneAddr Destination RG framebuffer
-     * @param baPlaneAddr Destination BA framebuffer
      * @param width Frame width
      * @param height Frame height
      */
-    fun uploadRGBToFramebuffer(rgbAddr: Long, rgPlaneAddr: Long, baPlaneAddr: Long, width: Int, height: Int, frameCounter: Int) {
-        val rgAddrIncVec = if (rgPlaneAddr >= 0) 1 else -1
-        val baAddrIncVec = if (baPlaneAddr >= 0) 1 else -1
+    fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCounter: Int) {
+        val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
+
         val rgbAddrIncVec = if (rgbAddr >= 0) 1 else -1
 
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val pixelOffset = y.toLong() * width + x
-                val rgbOffset = pixelOffset * 3 * rgbAddrIncVec
+        val totalPixels = width * height
+        
+        // Process in 8KB chunks to balance memory usage and performance
+        val chunkSize = 8192
+        val rgChunk = ByteArray(chunkSize)
+        val baChunk = ByteArray(chunkSize)
+        
+        var pixelsProcessed = 0
+        
+        while (pixelsProcessed < totalPixels) {
+            val pixelsInChunk = kotlin.math.min(chunkSize, totalPixels - pixelsProcessed)
+            
+            // Batch process chunk of pixels
+            for (i in 0 until pixelsInChunk) {
+                val pixelIndex = pixelsProcessed + i
+                val y = pixelIndex / width
+                val x = pixelIndex % width
+                
+                val rgbOffset = (pixelIndex.toLong() * 3) * rgbAddrIncVec
 
-                // Read RGB values
+                // Read RGB values (3 peek operations per pixel - still the bottleneck)
                 val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
                 val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
                 val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
@@ -1332,14 +1373,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val g4 = ditherValue(g, x, y, frameCounter)
                 val b4 = ditherValue(b, x, y, frameCounter)
 
-                // Pack into 4096-color format
-                val rgValue = (r4 shl 4) or g4      // R in MSB, G in LSB
-                val baValue = (b4 shl 4) or 15      // B in MSB, A=15 (opaque) in LSB
-
-                // Write to framebuffer
-                vm.poke(rgPlaneAddr + pixelOffset * rgAddrIncVec, rgValue.toByte())
-                vm.poke(baPlaneAddr + pixelOffset * baAddrIncVec, baValue.toByte())
+                // Pack and store in chunk buffers
+                rgChunk[i] = ((r4 shl 4) or g4).toByte()
+                baChunk[i] = ((b4 shl 4) or 15).toByte()
             }
+            
+            // Batch write entire chunk to framebuffer
+            val pixelOffset = (pixelsProcessed).toLong()
+
+            gpu.let {
+                UnsafeHelper.memcpyRaw(
+                    rgChunk, UnsafeHelper.getArrayOffset(rgChunk),
+                    null, it.framebuffer.ptr + pixelOffset, pixelsInChunk.toLong())
+                UnsafeHelper.memcpyRaw(
+                    baChunk, UnsafeHelper.getArrayOffset(baChunk),
+                    null, it.framebuffer2!!.ptr + pixelOffset, pixelsInChunk.toLong())
+            }
+
+            pixelsProcessed += pixelsInChunk
         }
     }
 
@@ -1355,6 +1406,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
         return round(15f * q)
     }
+
 
     val dctBasis8 = Array(8) { u ->
         FloatArray(8) { x ->

@@ -707,6 +707,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (predicted frame)
     0x20: MP2 audio packet
+    0x30: Subtitle in "Simple" format
     0xFF: sync packet
 
 ## Video Packet Structure
@@ -766,6 +767,22 @@ to larger block sizes and hardware acceleration.
 ## Audio Support
 Reuses existing MP2 audio infrastructure from TSVM MOV format for seamless
 compatibility with existing audio processing pipeline.
+
+## Simple Subtitle Format
+SSF is a simple subtitle that is intended to use text buffer to display texts.
+The format is designed to be compatible with SubRip and SAMI (without markups).
+
+### SSF Packet Structure
+    uint24 index (used to specify target subtitle object)
+    uint8 opcode
+          0x00 = <argument terminator>, is NOP when used here
+          0x01 = show (arguments: UTF-8 text)
+          0x02 = hide (arguments: none)
+          0x10 = move to different nonant (arguments: 0x00-bottom centre; 0x01-bottom left; 0x02-centre left; 0x03-top left; 0x04-top centre; 0x05-top right; 0x06-centre right; 0x07-bottom right; 0x08-centre
+          0x30 = upload to low font rom (arguments: uint16 payload length, var bytes)
+          0x31 = upload to high font rom (arguments: uint16 payload length, var bytes)
+            note: changing the font rom will change the appearance of the every subtitle currently being displayed
+    *    arguments separated AND terminated by 0x00
 
 --------------------------------------------------------------------------------
 

@@ -67,6 +67,203 @@ audio.purgeQueue(0)
 audio.setPcmMode(0)
 audio.setMasterVolume(0, 255)
 
+// Subtitle display functions
+function clearSubtitleArea() {
+    // Clear the subtitle area at the bottom of the screen
+    // Text mode is 80x32, so clear the bottom few lines
+    let oldFgColor = con.get_color_fore()
+    let oldBgColor = con.get_color_back()
+
+    con.color_pair(255, 255)  // transparent to clear
+
+    // Clear bottom 4 lines for subtitles
+    for (let row = 29; row <= 32; row++) {
+        con.move(row, 1)
+        for (let col = 1; col <= 80; col++) {
+            print(" ")
+        }
+    }
+
+    con.color_pair(oldFgColor, oldBgColor)
+}
+
+function displaySubtitle(text, position = 0) {
+    if (!text || text.length === 0) {
+        clearSubtitleArea()
+        return
+    }
+
+    // Set subtitle colors: yellow (230) on black (0)
+    let oldFgColor = con.get_color_fore()
+    let oldBgColor = con.get_color_back()
+    con.color_pair_pair(230, 0)
+
+    // Split text into lines
+    let lines = text.split('\n')
+
+    // Calculate position based on subtitle position setting
+    let startRow, startCol
+
+    switch (position) {
+        case 0: // bottom center
+            startRow = 32 - lines.length + 1
+            break
+        case 1: // bottom left
+            startRow = 32 - lines.length + 1
+            break
+        case 2: // center left
+            startRow = 16 - Math.floor(lines.length / 2)
+            break
+        case 3: // top left
+            startRow = 2
+            break
+        case 4: // top center
+            startRow = 2
+            break
+        case 5: // top right
+            startRow = 2
+            break
+        case 6: // center right
+            startRow = 16 - Math.floor(lines.length / 2)
+            break
+        case 7: // bottom right
+            startRow = 32 - lines.length + 1
+            break
+        default:
+            startRow = 32 - lines.length + 1  // Default to bottom center
+    }
+
+    // Display each line
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim()
+        if (line.length === 0) continue
+
+        let row = startRow + i
+        if (row < 1) row = 1
+        if (row > 32) row = 32
+
+        // Calculate column based on alignment
+        switch (position) {
+            case 0: // bottom center
+            case 4: // top center
+                startCol = Math.max(1, Math.floor((80 - line.length) / 2) + 1)
+                break
+            case 1: // bottom left
+            case 2: // center left
+            case 3: // top left
+                startCol = 2
+                break
+            case 5: // top right
+            case 6: // center right
+            case 7: // bottom right
+                startCol = Math.max(1, 80 - line.length)
+                break
+            default:
+                startCol = Math.max(1, Math.floor((80 - line.length) / 2) + 1)
+        }
+
+        con.move(row, startCol)
+        print(line)  // Unicode-capable print function
+    }
+
+    con.color_pair(oldFgColor, oldBgColor)
+}
+
+function processSubtitlePacket(packetSize) {
+    // Read subtitle packet data according to SSF format
+    // uint24 index + uint8 opcode + variable arguments
+
+    let index = 0
+    // Read 24-bit index (little-endian)
+    let indexByte0 = seqread.readOneByte()
+    let indexByte1 = seqread.readOneByte()
+    let indexByte2 = seqread.readOneByte()
+    index = indexByte0 | (indexByte1 << 8) | (indexByte2 << 16)
+
+    let opcode = seqread.readOneByte()
+    let remainingBytes = packetSize - 4  // Subtract 3 bytes for index + 1 byte for opcode
+
+    switch (opcode) {
+        case SSF_OP_SHOW: {
+            // Read UTF-8 text until null terminator
+            if (remainingBytes > 1) {
+                let textBytes = seqread.readBytes(remainingBytes)
+                let textStr = ""
+
+                // Convert bytes to string, stopping at null terminator
+                for (let i = 0; i < remainingBytes - 1; i++) {  // -1 for null terminator
+                    let byte = sys.peek(textBytes + i)
+                    if (byte === 0) break
+                    textStr += String.fromCharCode(byte)
+                }
+
+                sys.free(textBytes)
+                subtitleText = textStr
+                subtitleVisible = true
+                displaySubtitle(subtitleText, subtitlePosition)
+            }
+            break
+        }
+
+        case SSF_OP_HIDE: {
+            subtitleVisible = false
+            subtitleText = ""
+            clearSubtitleArea()
+            break
+        }
+
+        case SSF_OP_MOVE: {
+            if (remainingBytes >= 2) {  // Need at least 1 byte for position + 1 null terminator
+                let newPosition = seqread.readOneByte()
+                seqread.readOneByte()  // Read null terminator
+
+                if (newPosition >= 0 && newPosition <= 7) {
+                    subtitlePosition = newPosition
+
+                    // Re-display current subtitle at new position if visible
+                    if (subtitleVisible && subtitleText.length > 0) {
+                        clearSubtitleArea()
+                        displaySubtitle(subtitleText, subtitlePosition)
+                    }
+                }
+            }
+            break
+        }
+
+        case SSF_OP_UPLOAD_LOW_FONT:
+        case SSF_OP_UPLOAD_HIGH_FONT: {
+            // Font upload - read payload length and font data
+            if (remainingBytes >= 3) {  // uint16 length + at least 1 byte data
+                let payloadLen = seqread.readShort()
+                if (remainingBytes >= payloadLen + 2) {
+                    let fontData = seqread.readBytes(payloadLen)
+
+                    // upload font data
+                    for (let i = 0; i < Math.min(payloadLen, 1920); i++) sys.poke(-1300607 - i, sys.peek(fontData + i))
+                    sys.poke(-1299460, (opcode == SSF_OP_UPLOAD_LOW_FONT) ? 18 : 19)
+
+                    sys.free(fontData)
+                }
+            }
+            break
+        }
+
+        case SSF_OP_NOP:
+        default: {
+            // Skip remaining bytes
+            if (remainingBytes > 0) {
+                let skipBytes = seqread.readBytes(remainingBytes)
+                sys.free(skipBytes)
+            }
+
+            if (interactive && opcode !== SSF_OP_NOP) {
+                serial.println(`[SUBTITLE UNKNOWN] Index: ${index}, Opcode: 0x${opcode.toString(16).padStart(2, '0')}`)
+            }
+            break
+        }
+    }
+}
+
 // Check magic number
 let magic = seqread.readBytes(8)
 let magicMatching = true
@@ -124,18 +321,17 @@ const DISPLAY_BA_ADDR = -1310721   // Main graphics BA plane (displayed)
 // RGB frame buffers (24-bit: R,G,B per pixel)
 const FRAME_SIZE = 560*448*3  // Total frame size = 752,640 bytes
 
-// Allocate frame buffers - malloc works correctly, addresses are start addresses
-const CURRENT_RGB_ADDR = sys.malloc(FRAME_SIZE)
-const PREV_RGB_ADDR = sys.malloc(FRAME_SIZE)
+// Ping-pong frame buffers to eliminate memcpy overhead
+const RGB_BUFFER_A = sys.malloc(FRAME_SIZE)
+const RGB_BUFFER_B = sys.malloc(FRAME_SIZE)
 
-
-// Working memory for blocks (minimal allocation)
-let ycocgWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 3) // Y+Co+Cg workspace
-let dctWorkspace = sys.malloc(BLOCK_SIZE * BLOCK_SIZE * 4) // DCT coefficients (floats)
+// Ping-pong buffer pointers (swap instead of copy)
+let CURRENT_RGB_ADDR = RGB_BUFFER_A
+let PREV_RGB_ADDR = RGB_BUFFER_B
 
 // Initialize RGB frame buffers to black (0,0,0)
-sys.memset(CURRENT_RGB_ADDR, 0, FRAME_PIXELS * 3)
-sys.memset(PREV_RGB_ADDR, 0, FRAME_PIXELS * 3)
+sys.memset(RGB_BUFFER_A, 0, FRAME_PIXELS * 3)
+sys.memset(RGB_BUFFER_B, 0, FRAME_PIXELS * 3)
 
 // Initialize display framebuffer to black
 sys.memset(DISPLAY_RG_ADDR, 0, FRAME_PIXELS) // Black in RG plane
@@ -148,30 +344,14 @@ let akku2 = 0.0
 let mp2Initialised = false
 let audioFired = false
 
+// Performance tracking variables
+let decompressTime = 0
+let decodeTime = 0  
+let uploadTime = 0
+let biasTime = 0
+
 const BIAS_LIGHTING_MIN = 1.0 / 16.0
 let oldBgcol = [BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN]
-
-// 4x4 Bayer dithering matrix
-const BAYER_MATRIX = [
-    [ 0, 8, 2,10],
-    [12, 4,14, 6],
-    [ 3,11, 1, 9],
-    [15, 7,13, 5]
-]
-
-
-// Apply Bayer dithering to reduce banding when quantizing to 4-bit
-function ditherValue(value, x, y) {
-    // Get the dither threshold for this pixel position
-    const threshold = BAYER_MATRIX[y & 3][x & 3]
-    
-    // Scale threshold from 0-15 to 0-15.9375 (16 steps over 16 values)
-    const scaledThreshold = threshold / 16.0
-    
-    // Add dither and quantize to 4-bit (0-15)
-    const dithered = value + scaledThreshold
-    return Math.max(0, Math.min(15, Math.floor(dithered * 15 / 255)))
-}
 
 function getRGBfromScr(x, y) {
     let offset = y * WIDTH + x
@@ -237,9 +417,10 @@ try {
                 // Sync packet - frame complete
                 frameCount++
 
-                // Copy current RGB frame to previous frame buffer for next frame reference
-                // memcpy(source, destination, length) - so CURRENT (source) -> PREV (destination)
-                sys.memcpy(CURRENT_RGB_ADDR, PREV_RGB_ADDR, FRAME_PIXELS * 3)
+                // Swap ping-pong buffers instead of expensive memcpy (752KB copy eliminated!)
+                let temp = CURRENT_RGB_ADDR
+                CURRENT_RGB_ADDR = PREV_RGB_ADDR
+                PREV_RGB_ADDR = temp
 
             } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
                 // Video frame packet (always includes rate control factor)
@@ -275,11 +456,14 @@ try {
                 let decompressedSize = Math.max(payloadLen * 4, blocksX * blocksY * tevBlockSize) // More efficient sizing
 
                 let actualSize
+                let decompressStart = sys.nanoTime()
                 try {
                     // Use gzip decompression (only compression format supported in TSVM JS)
                     actualSize = gzip.decompFromTo(compressedPtr, payloadLen, blockDataPtr)
+                    decompressTime = (sys.nanoTime() - decompressStart) / 1000000.0  // Convert to milliseconds
                 } catch (e) {
                     // Decompression failed - skip this frame
+                    decompressTime = (sys.nanoTime() - decompressStart) / 1000000.0  // Still measure time
                     serial.println(`Frame ${frameCount}: Gzip decompression failed, skipping (compressed size: ${payloadLen}, error: ${e})`)
                     sys.free(compressedPtr)
                     continue
@@ -287,11 +471,15 @@ try {
 
                 // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers (with rate control factor)
                 try {
+                    let decodeStart = sys.nanoTime()
                     graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors, rateControlFactor)
+                    decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering
-                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, DISPLAY_RG_ADDR, DISPLAY_BA_ADDR,
-                                                  width, height, frameCount)
+                    let uploadStart = sys.nanoTime()
+                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, width, height, frameCount)
+                    uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0  // Convert to milliseconds
+                    
 
                     // Defer audio playback until a first frame is sent
                     if (!audioFired) {
@@ -304,7 +492,15 @@ try {
 
                 sys.free(compressedPtr)
 
+                let biasStart = sys.nanoTime()
                 setBiasLighting()
+                biasTime = (sys.nanoTime() - biasStart) / 1000000.0  // Convert to milliseconds
+                
+                // Log performance data every 60 frames (and also frame 0 for debugging)
+                if (frameCount % 60 == 0 || frameCount == 0) {
+                    let totalTime = decompressTime + decodeTime + uploadTime + biasTime
+                    serial.println(`Frame ${frameCount}: Decompress=${decompressTime.toFixed(1)}ms, Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms`)
+                }
 
             } else if (packetType == TEV_PACKET_AUDIO_MP2) {
                 // MP2 Audio packet
@@ -319,6 +515,10 @@ try {
                 audio.mp2Decode()
                 audio.mp2UploadDecoded(0)
 
+            } else if (packetType == TEV_PACKET_SUBTITLE) {
+                // Subtitle packet - NEW!
+                let packetSize = seqread.readInt()
+                processSubtitlePacket(packetSize)
             } else {
                 println(`Unknown packet type: 0x${packetType.toString(16)}`)
                 break
@@ -349,11 +549,9 @@ catch (e) {
 }
 finally {
     // Cleanup working memory (graphics memory is automatically managed)
-    sys.free(ycocgWorkspace)
-    sys.free(dctWorkspace)
     sys.free(blockDataPtr)
-    if (CURRENT_RGB_ADDR > 0) sys.free(CURRENT_RGB_ADDR)
-    if (PREV_RGB_ADDR > 0) sys.free(PREV_RGB_ADDR)
+    if (RGB_BUFFER_A > 0) sys.free(RGB_BUFFER_A)
+    if (RGB_BUFFER_B > 0) sys.free(RGB_BUFFER_B)
 
     audio.stop(0)
     audio.purgeQueue(0)
