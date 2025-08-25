@@ -39,7 +39,7 @@ static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
 }
 
-static const int MP2_RATE_TABLE[5] = {64, 112, 160, 224, 384};
+static const int MP2_RATE_TABLE[5] = {80, 128, 192, 224, 384};
 static const int QUANT_MULT_Y[5] = {40, 10, 6, 4, 1};
 static const int QUANT_MULT_CO[5] = {40, 10, 6, 4, 1};
 static const int QUANT_MULT_CG[5] = {106, 22, 10, 5, 1}; // CO[i] * sqrt(7 - 2i)
