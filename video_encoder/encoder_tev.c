@@ -659,6 +659,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
         // Calculate SAD for skip mode (no motion compensation)
         int skip_sad = 0;
+        int skip_color_diff = 0;
         for (int dy = 0; dy < 16; dy++) {
             for (int dx = 0; dx < 16; dx++) {
                 int x = start_x + dx;
@@ -675,6 +676,16 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                                     enc->previous_rgb[cur_offset + 2]) / 4;
 
                     skip_sad += abs(cur_luma - prev_luma);
+                    
+                    // Also check for color differences to prevent SKIP on color changes
+                    int cur_r = enc->current_rgb[cur_offset];
+                    int cur_g = enc->current_rgb[cur_offset + 1];
+                    int cur_b = enc->current_rgb[cur_offset + 2];
+                    int prev_r = enc->previous_rgb[cur_offset];
+                    int prev_g = enc->previous_rgb[cur_offset + 1];
+                    int prev_b = enc->previous_rgb[cur_offset + 2];
+                    
+                    skip_color_diff += abs(cur_r - prev_r) + abs(cur_g - prev_g) + abs(cur_b - prev_b);
                 }
             }
         }
@@ -717,7 +728,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         }
 
         // Mode decision with strict thresholds for quality
-        if (skip_sad <= 64) {
+        // Require both low luma difference AND low color difference for SKIP
+        if (skip_sad <= 64 && skip_color_diff <= 192) {
             // Very small difference - skip block (copy from previous frame)
             block->mode = TEV_MODE_SKIP;
             block->mv_x = 0;
@@ -930,9 +942,61 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     return 0;
 }
 
+// Detect scene changes by analyzing frame differences
+static int detect_scene_change(tev_encoder_t *enc) {
+    if (!enc->previous_rgb || !enc->current_rgb) {
+        return 0; // No previous frame to compare
+    }
+    
+    long long total_diff = 0;
+    int changed_pixels = 0;
+    
+    // Sample every 4th pixel for performance (still gives good detection)
+    for (int y = 0; y < enc->height; y += 2) {
+        for (int x = 0; x < enc->width; x += 2) {
+            int offset = (y * enc->width + x) * 3;
+            
+            // Calculate color difference
+            int r_diff = abs(enc->current_rgb[offset] - enc->previous_rgb[offset]);
+            int g_diff = abs(enc->current_rgb[offset + 1] - enc->previous_rgb[offset + 1]);
+            int b_diff = abs(enc->current_rgb[offset + 2] - enc->previous_rgb[offset + 2]);
+            
+            int pixel_diff = r_diff + g_diff + b_diff;
+            total_diff += pixel_diff;
+            
+            // Count significantly changed pixels (threshold of 30 per channel average)
+            if (pixel_diff > 90) {
+                changed_pixels++;
+            }
+        }
+    }
+    
+    // Calculate metrics for scene change detection
+    int sampled_pixels = (enc->height / 2) * (enc->width / 2);
+    double avg_diff = (double)total_diff / sampled_pixels;
+    double changed_ratio = (double)changed_pixels / sampled_pixels;
+    
+    // Scene change thresholds:
+    // - High average difference (> 40) OR
+    // - Large percentage of changed pixels (> 30%)
+    return (avg_diff > 40.0) || (changed_ratio > 0.30);
+}
+
 // Encode and write a frame
 static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
-    int is_keyframe = (frame_num % KEYFRAME_INTERVAL) == 0;
+    // Check for scene change or time-based keyframe
+    int is_scene_change = detect_scene_change(enc);
+    int is_time_keyframe = (frame_num % KEYFRAME_INTERVAL) == 0;
+    int is_keyframe = is_time_keyframe || is_scene_change;
+    
+    // Verbose output for keyframe decisions
+    if (enc->verbose && is_keyframe) {
+        if (is_scene_change && !is_time_keyframe) {
+            printf("Frame %d: Scene change detected, inserting keyframe\n", frame_num);
+        } else if (is_time_keyframe) {
+            printf("Frame %d: Time-based keyframe (interval: %d)\n", frame_num, KEYFRAME_INTERVAL);
+        }
+    }
     int blocks_x = (enc->width + 15) / 16;
     int blocks_y = (enc->height + 15) / 16;
 
@@ -1131,7 +1195,7 @@ static int start_video_conversion(tev_encoder_t *enc) {
         // Frame rate conversion requested
         snprintf(command, sizeof(command),
             "ffmpeg -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-            "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,fps=%d\" "
+            "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
             "-y - 2>&1",
             enc->input_file, enc->width, enc->height, enc->width, enc->height, enc->output_fps);
     } else {
