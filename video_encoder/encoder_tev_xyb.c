@@ -232,18 +232,32 @@ static void rgb_to_xyb(uint8_t r, uint8_t g, uint8_t b, int *y, int *x, int *xyb
     double y_val = (lgamma + mgamma) / 2.0;
     double b_val = sgamma;
     
-    // Quantize to integer ranges suitable for TEV
-    *y = CLAMP((int)(y_val * 255.0 + 128.0), 0, 255);      // Y: 0-255 (like YCoCg Y)
-    *x = CLAMP((int)(x_val * 255.0), -128, 127);            // X: -128 to +127 (like Co)
-    *xyb_b = CLAMP((int)(b_val * 255.0), -128, 127);        // B: -128 to +127 (like Cg, aggressively quantized)
+    // Optimal range-based quantization for XYB values (improved precision)
+    // X: actual range -0.016 to +0.030, map to full 0-255 precision
+    const double X_MIN = -0.016, X_MAX = 0.030;
+    *x = CLAMP((int)(((x_val - X_MIN) / (X_MAX - X_MIN)) * 255.0), 0, 255);
+    // Y: range 0 to 0.85, map to 0 to 255 (improved scale)
+    const double Y_MAX = 0.85;
+    *y = CLAMP((int)((y_val / Y_MAX) * 255.0), 0, 255);
+    // B: range 0 to 0.85, map to -128 to +127 (improved precision with +1 offset for yellow-green)
+    const double B_MAX = 0.85;
+    *xyb_b = CLAMP((int)(((b_val / B_MAX) * 255.0) - 128.0 + 1.0), -128, 127);
 }
 
 // XYB to RGB transform (for verification)
 static void xyb_to_rgb(int y, int x, int xyb_b, uint8_t *r, uint8_t *g, uint8_t *b) {
-    // Dequantize from integer ranges
-    double y_val = (y - 128.0) / 255.0;
-    double x_val = x / 255.0;
-    double b_val = xyb_b / 255.0;
+    // Optimal range-based dequantization (exact inverse of improved quantization)
+    const double X_MIN = -0.016, X_MAX = 0.030;
+    double x_val = (x / 255.0) * (X_MAX - X_MIN) + X_MIN;  // X: inverse of range mapping
+    const double Y_MAX = 0.85;
+    double y_val = (y / 255.0) * Y_MAX;                    // Y: inverse of improved scale
+    const double B_MAX = 0.85;
+    double b_val = (((xyb_b - 1.0) + 128.0) / 255.0) * B_MAX;      // B: inverse of ((val/B_MAX*255)-128+1)
+    
+    // Debug print for red color
+    if (x == 127 && y == 147 && xyb_b == 28) {
+        printf("DEBUG: Red conversion - Dequantized XYB: X=%.6f Y=%.6f B=%.6f\n", x_val, y_val, b_val);
+    }
     
     // XYB to LMS gamma
     double lgamma = x_val + y_val;

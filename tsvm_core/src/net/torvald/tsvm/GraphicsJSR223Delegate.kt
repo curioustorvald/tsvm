@@ -1656,10 +1656,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val x = xBlock[xbIdx]
                 val b = bBlock[xbIdx]
                 
-                // Dequantize from integer ranges
-                val yVal = (y - 128.0) / 255.0
-                val xVal = x / 255.0
-                val bVal = b / 255.0
+                // Optimal range-based dequantization (exact inverse of improved quantization)
+                val X_MIN = -0.016; val X_MAX = 0.030
+                val xVal = (x / 255.0) * (X_MAX - X_MIN) + X_MIN  // X: inverse of range mapping
+                val Y_MAX = 0.85
+                val yVal = (y / 255.0) * Y_MAX                    // Y: inverse of improved scale
+                val B_MAX = 0.85
+                val bVal = (((b - 1.0) + 128.0) / 255.0) * B_MAX          // B: inverse of ((val/B_MAX*255)-128+1)
                 
                 // XYB to LMS gamma
                 val lgamma = xVal + yVal
@@ -1723,10 +1726,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val yVal = (lgamma + mgamma) / 2.0
                 val bVal = sgamma
                 
-                // Quantize to integer ranges suitable for TEV
-                val yQuant = (yVal * 255.0 + 128.0).toInt().coerceIn(0, 255)      // Y: 0-255 (like YCoCg Y)
-                val xQuant = (xVal * 255.0).toInt().coerceIn(-128, 127)            // X: -128 to +127 (like Co)
-                val bQuant = (bVal * 255.0).toInt().coerceIn(-128, 127)            // B: -128 to +127 (like Cg, aggressively quantized)
+                // Optimal range-based quantization for XYB values (improved precision)
+                // X: actual range -0.016 to +0.030, map to full 0-255 precision
+                val X_MIN = -0.016; val X_MAX = 0.030
+                val xQuant = (((xVal - X_MIN) / (X_MAX - X_MIN)) * 255.0).toInt().coerceIn(0, 255)
+                // Y: range 0 to 0.85, map to 0 to 255 (improved scale)
+                val Y_MAX = 0.85
+                val yQuant = ((yVal / Y_MAX) * 255.0).toInt().coerceIn(0, 255)
+                // B: range 0 to 0.85, map to -128 to +127 (improved precision with +1 offset for yellow-green)
+                val B_MAX = 0.85
+                val bQuant = (((bVal / B_MAX) * 255.0) - 128.0 + 1.0).toInt().coerceIn(-128, 127)
                 
                 // Store XYB values
                 val yIdx = py * 16 + px

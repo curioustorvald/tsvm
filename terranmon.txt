@@ -684,7 +684,6 @@ DCT-based compression, motion compensation, and efficient temporal coding.
   * Enables bitrate-constrained encoding alongside quality modes
   * All video frames now include 4-byte rate control factor after payload size
 - Version 3.0: Additional support of XYB Colour space
-  * Increased encoding efficiency, decreased decoding performance
 
 # File Structure
 \x1F T S V M T E V

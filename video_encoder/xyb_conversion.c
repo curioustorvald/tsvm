@@ -12,7 +12,7 @@
 
 // XYB conversion constants from JPEG XL specification
 static const double XYB_BIAS = 0.00379307325527544933;
-static const double CBRT_BIAS = 0.01558; // cbrt(XYB_BIAS)
+static const double CBRT_BIAS = 0.155954200549248620; // cbrt(XYB_BIAS)
 
 // RGB to LMS mixing coefficients
 static const double RGB_TO_LMS[3][3] = {
