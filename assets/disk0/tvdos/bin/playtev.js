@@ -7,7 +7,8 @@ const WIDTH = 560
 const HEIGHT = 448
 const BLOCK_SIZE = 16  // 16x16 blocks for YCoCg-R
 const TEV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x45, 0x56] // "\x1FTSVM TEV"
-const TEV_VERSION = 2  // YCoCg-R version
+const TEV_VERSION_YCOCG = 2  // YCoCg-R version
+const TEV_VERSION_XYB = 3    // XYB version
 const SND_BASE_ADDR = audio.getBaseAddr()
 const pcm = require("pcm")
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
@@ -34,11 +35,6 @@ let errorlevel = 0
 let notifHideTimer = 0
 const NOTIF_SHOWUPTIME = 3000000000
 let [cy, cx] = con.getyx()
-
-if (interactive) {
-    con.move(1,1)
-    println("Push and hold Backspace to exit")
-}
 
 let seqreadserial = require("seqread")
 let seqreadtape = require("seqreadtape")
@@ -285,9 +281,15 @@ if (!magicMatching) {
 
 // Read header
 let version = seqread.readOneByte()
-if (version !== TEV_VERSION) {
-    println(`Unsupported TEV version: ${version} (expected ${TEV_VERSION})`)
+if (version !== TEV_VERSION_YCOCG && version !== TEV_VERSION_XYB) {
+    println(`Unsupported TEV version: ${version} (expected ${TEV_VERSION_YCOCG} for YCoCg-R or ${TEV_VERSION_XYB} for XYB)`)
     return 1
+}
+
+let colorSpace = (version === TEV_VERSION_XYB) ? "XYB" : "YCoCg-R"
+if (interactive) {
+    con.move(1,1)
+    println(`Push and hold Backspace to exit | TEV Format ${version} (${colorSpace})`)
 }
 
 let width = seqread.readShort()
@@ -352,6 +354,8 @@ let biasTime = 0
 
 const BIAS_LIGHTING_MIN = 1.0 / 16.0
 let oldBgcol = [BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN]
+
+let notifHidden = false
 
 function getRGBfromScr(x, y) {
     let offset = y * WIDTH + x
@@ -425,18 +429,6 @@ try {
             } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
                 // Video frame packet (always includes rate control factor)
                 let payloadLen = seqread.readInt()
-                
-                // Always read rate control factor (4 bytes, little-endian float)
-                let rateFactorBytes = seqread.readBytes(4)
-                let view = new DataView(new ArrayBuffer(4))
-                for (let i = 0; i < 4; i++) {
-                    view.setUint8(i, sys.peek(rateFactorBytes + i))
-                }
-                let rateControlFactor = view.getFloat32(0, true) // true = little-endian
-                //serial.println(`rateControlFactor = ${rateControlFactor}`)
-                sys.free(rateFactorBytes)
-                payloadLen -= 4 // Subtract rate factor size from payload
-                
                 let compressedPtr = seqread.readBytes(payloadLen)
                 updateDataRateBin(payloadLen)
 
@@ -469,10 +461,10 @@ try {
                     continue
                 }
 
-                // Hardware-accelerated TEV YCoCg-R decoding to RGB buffers (with rate control factor)
+                // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     let decodeStart = sys.nanoTime()
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors, rateControlFactor)
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors, version)
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering
@@ -487,7 +479,7 @@ try {
                         audioFired = true
                     }
                 } catch (e) {
-                    serial.println(`Frame ${frameCount}: Hardware YCoCg-R decode failed: ${e}`)
+                    serial.println(`Frame ${frameCount}: Hardware ${colorSpace} decode failed: ${e}`)
                 }
 
                 sys.free(compressedPtr)
@@ -531,6 +523,12 @@ try {
 
         // Simple progress display
         if (interactive) {
+            notifHideTimer += (t2 - t1)
+            if (!notifHidden && notifHideTimer > (NOTIF_SHOWUPTIME + FRAME_TIME)) {
+                con.clear()
+                notifHidden = true
+            }
+
             con.move(31, 1)
             graphics.setTextFore(161)
             print(`Frame: ${frameCount}/${totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
@@ -544,7 +542,7 @@ try {
     }
 }
 catch (e) {
-    printerrln(`TEV YCoCg-R decode error: ${e}`)
+    printerrln(`TEV ${colorSpace} decode error: ${e}`)
     errorlevel = 1
 }
 finally {

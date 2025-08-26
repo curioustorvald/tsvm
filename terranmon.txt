@@ -683,6 +683,8 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 - Version 2.1: Added Rate Control Factor to all video packets (breaking change)
   * Enables bitrate-constrained encoding alongside quality modes
   * All video frames now include 4-byte rate control factor after payload size
+- Version 3.0: Additional support of XYB Colour space
+  * Increased encoding efficiency, decreased decoding performance
 
 # File Structure
 \x1F T S V M T E V
@@ -692,16 +694,15 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 [PACKET 2]
 ...
 
-## Header (24 bytes)
+## Header (20 bytes)
     uint8  Magic[8]: "\x1FTSVM TEV"
-    uint8  Version: 2
-    uint8  Flags: bit 0 = has audio
+    uint8  Version: 2 or 3
     uint16 Width: video width in pixels
-    uint16 Height: video height in pixels  
-    uint16 FPS: frames per second
+    uint16 Height: video height in pixels
+    uint8 FPS: frames per second
     uint32 Total Frames: number of video frames
     uint8  Quality: quantization quality (0-4, higher = better)
-    byte[5] Reserved
+    uint8  Flags: bit 0 = has audio
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
@@ -713,7 +714,6 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 ## Video Packet Structure
     uint8  Packet Type
     uint32 Compressed Size (includes rate control factor size)
-    float  Rate Control Factor (4 bytes, little-endian)
     *      Gzip-compressed Block Data
 
 ## Block Data (per 16x16 block)
@@ -724,6 +724,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
            0x03 = MOTION (motion vector only)
     int16  Motion Vector X ("capable of" 1/4 pixel precision, integer precision for now)
     int16  Motion Vector Y ("capable of" 1/4 pixel precision, integer precision for now)
+    float32  Rate Control Factor (4 bytes, little-endian)
     uint16 Coded Block Pattern (which 8x8 have non-zero coeffs)
     int16[256]  DCT Coefficients Y
     int16[64]  DCT Coefficients Co (subsampled by two)
@@ -731,7 +732,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
         For SKIP and MOTION mode, DCT coefficients are filled with zero
 
 ## DCT Quantization and Rate Control
-TEV uses 8 quality levels (0=lowest, 7=highest) with progressive quantization
+TEV uses 5 quality levels (0=lowest, 4=highest) with progressive quantization
 tables optimized for perceptual quality. DC coefficients use fixed quantizer
 of 8, while AC coefficients are quantized according to quality tables.
 

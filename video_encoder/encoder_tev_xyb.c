@@ -1,5 +1,5 @@
 // Created by Claude on 2025-08-18.
-// TEV (TSVM Enhanced Video) Encoder - YCoCg-R 4:2:0 16x16 Block Version
+// TEV (TSVM Enhanced Video) Encoder - XYB 4:2:0 16x16 Block Version
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -14,10 +14,10 @@
 
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
-#define TEV_VERSION 2  // Updated for YCoCg-R 4:2:0
+#define TEV_VERSION 3  // Updated for XYB 4:2:0
 // version 1: 8x8 RGB
-// version 2: 16x16 Y, 8x8 Co/Cg, asymetric quantisation, optional quantiser multiplier for rate control multiplier (1.0 when unused) {current winner}
-// version 3: version 2 + internal 6-bit processing (discarded due to higher noise floor)
+// version 2: 16x16 Y, 8x8 Co/Cg, asymetric quantisation, optional quantiser multiplier for rate control multiplier (1.0 when unused)
+// version 3: 16x16 Y, 8x8 X/B (XYB color space), perceptually optimized quantisation
 
 // Block encoding modes (16x16 blocks)
 #define TEV_MODE_SKIP      0x00  // Skip block (copy from reference)
@@ -42,8 +42,8 @@ static inline float FCLAMP(float x, float min, float max) {
 
 static const int MP2_RATE_TABLE[5] = {80, 128, 192, 224, 384};
 static const int QUANT_MULT_Y[5] = {40, 10, 6, 4, 1};
-static const int QUANT_MULT_CO[5] = {40, 10, 6, 4, 1};
-static const int QUANT_MULT_CG[5] = {106, 22, 10, 5, 1}; // CO[i] * sqrt(7 - 2i)
+static const int QUANT_MULT_X[5] = {40, 10, 6, 4, 1};
+static const int QUANT_MULT_B[5] = {106, 22, 10, 5, 1}; // X[i] * sqrt(7 - 2i) - B channel aggressively quantized
 // only leave (4, 6, 7)
 
 // Quality settings for quantisation (Y channel) - 16x16 tables
@@ -66,7 +66,7 @@ static const uint32_t QUANT_TABLE_Y[256] =
      13, 14, 15, 16, 17, 18, 19, 20, 19, 20, 21, 22, 23, 24, 25, 26,
      14, 15, 16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 26, 27};
 
-// Quality settings for quantisation (Co channel - 8x8)
+// Quality settings for quantisation (X channel - 8x8)
 static const uint32_t QUANT_TABLE_C[64] =
     {2, 3, 4, 6, 8, 12, 16, 20,
      3, 4, 6, 8, 12, 16, 20, 24,
@@ -98,8 +98,8 @@ typedef struct __attribute__((packed)) {
     float rate_control_factor; // Rate control factor (4 bytes, little-endian)
     uint16_t cbp;           // Coded block pattern (which channels have non-zero coeffs)
     int16_t y_coeffs[256];  // quantised Y DCT coefficients (16x16)
-    int16_t co_coeffs[64];  // quantised Co DCT coefficients (8x8)
-    int16_t cg_coeffs[64];  // quantised Cg DCT coefficients (8x8)
+    int16_t x_coeffs[64];   // quantised X DCT coefficients (8x8)
+    int16_t b_coeffs[64];   // quantised B DCT coefficients (8x8)
 } tev_block_t;
 
 // Subtitle entry structure
@@ -134,8 +134,8 @@ typedef struct {
     // Frame buffers (8-bit RGB format for encoding)
     uint8_t *current_rgb, *previous_rgb, *reference_rgb;
 
-    // YCoCg workspace
-    float *y_workspace, *co_workspace, *cg_workspace;
+    // XYB workspace
+    float *y_workspace, *x_workspace, *b_workspace;
     float *dct_workspace;       // DCT coefficients
     tev_block_t *block_data;    // Encoded block data
     uint8_t *compressed_buffer; // Zstd output
@@ -174,30 +174,101 @@ typedef struct {
     subtitle_entry_t *current_subtitle;
 } tev_encoder_t;
 
-// RGB to YCoCg-R transform (per YCoCg-R specification with truncated division)
-static void rgb_to_ycocgr(uint8_t r, uint8_t g, uint8_t b, int *y, int *co, int *cg) {
-    *co = (int)r - (int)b;
-    int tmp = (int)b + ((*co) / 2);
-    *cg = (int)g - tmp;
-    *y = tmp + ((*cg) / 2);
+// XYB conversion constants from JPEG XL specification
+static const double XYB_BIAS = 0.00379307325527544933;
+static const double CBRT_BIAS = 0.155954200549248620; // cbrt(XYB_BIAS)
 
-    // Clamp to valid ranges (YCoCg-R should be roughly -256 to +255)
-    *y = CLAMP(*y, 0, 255);
-    *co = CLAMP(*co, -256, 255);
-    *cg = CLAMP(*cg, -256, 255);
+// RGB to LMS mixing coefficients
+static const double RGB_TO_LMS[3][3] = {
+    {0.3, 0.622, 0.078},                           // L coefficients
+    {0.23, 0.692, 0.078},                          // M coefficients  
+    {0.24342268924547819, 0.20476744424496821, 0.55180986650955360}  // S coefficients
+};
+
+// LMS to RGB inverse matrix
+static const double LMS_TO_RGB[3][3] = {
+    {11.0315669046, -9.8669439081, -0.1646229965},
+    {-3.2541473811, 4.4187703776, -0.1646229965},
+    {-3.6588512867, 2.7129230459, 1.9459282408}
+};
+
+// sRGB linearization (0..1 range)
+static inline double srgb_linearize(double val) {
+    if (val > 0.04045) {
+        return pow((val + 0.055) / 1.055, 2.4);
+    } else {
+        return val / 12.92;
+    }
 }
 
-// YCoCg-R to RGB transform (for verification - per YCoCg-R specification)
-static void ycocgr_to_rgb(int y, int co, int cg, uint8_t *r, uint8_t *g, uint8_t *b) {
-    int tmp = y - (cg / 2);
-    *g = cg + tmp;
-    *b = tmp - (co / 2);
-    *r = *b + co;
+// sRGB unlinearization (0..1 range) 
+static inline double srgb_unlinearize(double val) {
+    if (val > 0.0031308) {
+        return 1.055 * pow(val, 1.0 / 2.4) - 0.055;
+    } else {
+        return val * 12.92;
+    }
+}
 
-    // Clamp values
-    *r = CLAMP(*r, 0, 255);
-    *g = CLAMP(*g, 0, 255);
-    *b = CLAMP(*b, 0, 255);
+// RGB to XYB transform (JPEG XL specification with sRGB linearization)
+static void rgb_to_xyb(uint8_t r, uint8_t g, uint8_t b, int *y, int *x, int *xyb_b) {
+    // Convert RGB to 0-1 range and linearize sRGB
+    double r_norm = srgb_linearize(r / 255.0);
+    double g_norm = srgb_linearize(g / 255.0);
+    double b_norm = srgb_linearize(b / 255.0);
+    
+    // RGB to LMS mixing with bias
+    double lmix = RGB_TO_LMS[0][0] * r_norm + RGB_TO_LMS[0][1] * g_norm + RGB_TO_LMS[0][2] * b_norm + XYB_BIAS;
+    double mmix = RGB_TO_LMS[1][0] * r_norm + RGB_TO_LMS[1][1] * g_norm + RGB_TO_LMS[1][2] * b_norm + XYB_BIAS;
+    double smix = RGB_TO_LMS[2][0] * r_norm + RGB_TO_LMS[2][1] * g_norm + RGB_TO_LMS[2][2] * b_norm + XYB_BIAS;
+    
+    // Apply gamma correction (cube root)
+    double lgamma = cbrt(lmix) - CBRT_BIAS;
+    double mgamma = cbrt(mmix) - CBRT_BIAS;
+    double sgamma = cbrt(smix) - CBRT_BIAS;
+    
+    // LMS to XYB transformation
+    double x_val = (lgamma - mgamma) / 2.0;
+    double y_val = (lgamma + mgamma) / 2.0;
+    double b_val = sgamma;
+    
+    // Quantize to integer ranges suitable for TEV
+    *y = CLAMP((int)(y_val * 255.0 + 128.0), 0, 255);      // Y: 0-255 (like YCoCg Y)
+    *x = CLAMP((int)(x_val * 255.0), -128, 127);            // X: -128 to +127 (like Co)
+    *xyb_b = CLAMP((int)(b_val * 255.0), -128, 127);        // B: -128 to +127 (like Cg, aggressively quantized)
+}
+
+// XYB to RGB transform (for verification)
+static void xyb_to_rgb(int y, int x, int xyb_b, uint8_t *r, uint8_t *g, uint8_t *b) {
+    // Dequantize from integer ranges
+    double y_val = (y - 128.0) / 255.0;
+    double x_val = x / 255.0;
+    double b_val = xyb_b / 255.0;
+    
+    // XYB to LMS gamma
+    double lgamma = x_val + y_val;
+    double mgamma = y_val - x_val;
+    double sgamma = b_val;
+    
+    // Remove gamma correction
+    double lmix = pow(lgamma + CBRT_BIAS, 3.0) - XYB_BIAS;
+    double mmix = pow(mgamma + CBRT_BIAS, 3.0) - XYB_BIAS;
+    double smix = pow(sgamma + CBRT_BIAS, 3.0) - XYB_BIAS;
+    
+    // LMS to linear RGB using inverse matrix
+    double r_linear = LMS_TO_RGB[0][0] * lmix + LMS_TO_RGB[0][1] * mmix + LMS_TO_RGB[0][2] * smix;
+    double g_linear = LMS_TO_RGB[1][0] * lmix + LMS_TO_RGB[1][1] * mmix + LMS_TO_RGB[1][2] * smix;
+    double b_linear = LMS_TO_RGB[2][0] * lmix + LMS_TO_RGB[2][1] * mmix + LMS_TO_RGB[2][2] * smix;
+    
+    // Clamp linear RGB to valid range
+    r_linear = FCLAMP(r_linear, 0.0, 1.0);
+    g_linear = FCLAMP(g_linear, 0.0, 1.0);
+    b_linear = FCLAMP(b_linear, 0.0, 1.0);
+    
+    // Convert back to sRGB gamma and 0-255 range
+    *r = CLAMP((int)(srgb_unlinearize(r_linear) * 255.0 + 0.5), 0, 255);
+    *g = CLAMP((int)(srgb_unlinearize(g_linear) * 255.0 + 0.5), 0, 255);
+    *b = CLAMP((int)(srgb_unlinearize(b_linear) * 255.0 + 0.5), 0, 255);
 }
 
 // Pre-calculated cosine tables
@@ -361,10 +432,10 @@ static int16_t quantise_coeff(float coeff, uint32_t quant, int is_dc, int is_chr
     }
 }
 
-// Extract 16x16 block from RGB frame and convert to YCoCg-R
-static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
-                                int block_x, int block_y,
-                                float *y_block, float *co_block, float *cg_block) {
+// Extract 16x16 block from RGB frame and convert to XYB
+static void extract_xyb_block(uint8_t *rgb_frame, int width, int height,
+                             int block_x, int block_y,
+                             float *y_block, float *x_block, float *b_block) {
     int start_x = block_x * 16;
     int start_y = block_y * 16;
 
@@ -378,10 +449,10 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                 int offset = (y * width + x) * 3;
                 uint8_t r = rgb_frame[offset];
                 uint8_t g = rgb_frame[offset + 1];
-                uint8_t b = rgb_frame[offset + 2];
+                uint8_t b_val = rgb_frame[offset + 2];
 
-                int y_val, co_val, cg_val;
-                rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
+                int y_val, x_val, b_val_xyb;
+                rgb_to_xyb(r, g, b_val, &y_val, &x_val, &b_val_xyb);
 
                 y_block[py * 16 + px] = (float)y_val - 128.0f;  // Center around 0
             }
@@ -391,7 +462,7 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
     // Extract 8x8 chroma blocks with 4:2:0 subsampling (average 2x2 pixels)
     for (int py = 0; py < 8; py++) {
         for (int px = 0; px < 8; px++) {
-            int co_sum = 0, cg_sum = 0, count = 0;
+            int x_sum = 0, b_sum = 0, count = 0;
 
             // Average 2x2 block of pixels
             for (int dy = 0; dy < 2; dy++) {
@@ -403,22 +474,22 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                         int offset = (y * width + x) * 3;
                         uint8_t r = rgb_frame[offset];
                         uint8_t g = rgb_frame[offset + 1];
-                        uint8_t b = rgb_frame[offset + 2];
+                        uint8_t b_val = rgb_frame[offset + 2];
 
-                        int y_val, co_val, cg_val;
-                        rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
+                        int y_val, x_val, b_val_xyb;
+                        rgb_to_xyb(r, g, b_val, &y_val, &x_val, &b_val_xyb);
 
-                        co_sum += co_val;
-                        cg_sum += cg_val;
+                        x_sum += x_val;
+                        b_sum += b_val_xyb;
                         count++;
                     }
                 }
             }
 
             if (count > 0) {
-                // Center chroma around 0 for DCT (Co/Cg range is -255 to +255, so don't add offset)
-                co_block[py * 8 + px] = (float)(co_sum / count);
-                cg_block[py * 8 + px] = (float)(cg_sum / count);
+                // Center chroma around 0 for DCT (X/B range is -128 to +127)
+                x_block[py * 8 + px] = (float)(x_sum / count);
+                b_block[py * 8 + px] = (float)(b_sum / count);
             }
         }
     }
@@ -493,7 +564,7 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
 }
 
 // Convert RGB block to YCoCg-R with 4:2:0 chroma subsampling
-static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
+static void convert_rgb_to_xyb_block(const uint8_t *rgb_block,
                                        uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
     // Convert 16x16 RGB to Y (full resolution)
     for (int py = 0; py < 16; py++) {
@@ -574,7 +645,7 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
     }
 
     // Convert RGB block to YCoCg-R
-    convert_rgb_to_ycocgr_block(rgb_block, y_block, co_block, cg_block);
+    convert_rgb_to_xyb_block(rgb_block, y_block, co_block, cg_block);
 }
 
 // Compute motion-compensated residual for INTER mode
@@ -598,8 +669,8 @@ static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y
 
     // Chroma residuals (already centered in both current and reference)
     for (int i = 0; i < 64; i++) {
-        enc->co_workspace[i] = enc->co_workspace[i] - (float)ref_co[i];
-        enc->cg_workspace[i] = enc->cg_workspace[i] - (float)ref_cg[i];
+        enc->x_workspace[i] = enc->x_workspace[i] - (float)ref_co[i];
+        enc->b_workspace[i] = enc->b_workspace[i] - (float)ref_cg[i];
     }
 }
 
@@ -659,9 +730,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     tev_block_t *block = &enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
 
     // Extract YCoCg-R block
-    extract_ycocgr_block(enc->current_rgb, enc->width, enc->height,
+    extract_xyb_block(enc->current_rgb, enc->width, enc->height,
                         block_x, block_y,
-                        enc->y_workspace, enc->co_workspace, enc->cg_workspace);
+                        enc->y_workspace, enc->x_workspace, enc->b_workspace);
 
     if (is_keyframe) {
         // Intra coding for keyframes
@@ -755,8 +826,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
-            memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
-            memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
+            memset(block->x_coeffs, 0, sizeof(block->x_coeffs));
+            memset(block->b_coeffs, 0, sizeof(block->b_coeffs));
             enc->blocks_skip++;
             return; // Skip DCT encoding entirely
         } else if (motion_sad < skip_sad && motion_sad <= 1024 &&
@@ -767,8 +838,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
-            memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
-            memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
+            memset(block->x_coeffs, 0, sizeof(block->x_coeffs));
+            memset(block->b_coeffs, 0, sizeof(block->b_coeffs));
             enc->blocks_motion++;
             return; // Skip DCT encoding, just store motion vector
         // disabling INTER mode: residual DCT is crapping out no matter what I do
@@ -776,11 +847,10 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             // Motion compensation with threshold
             if (motion_sad <= 1024) {
                 block->mode = TEV_MODE_MOTION;
-                block->rate_control_factor = enc->rate_control_factor;
                 block->cbp = 0x00;  // No coefficients present
                 memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
-                memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
-                memset(block->cg_coeffs, 0, sizeof(block->cg_coeffs));
+                memset(block->x_coeffs, 0, sizeof(block->x_coeffs));
+                memset(block->b_coeffs, 0, sizeof(block->b_coeffs));
                 enc->blocks_motion++;
                 return; // Skip DCT encoding, just store motion vector
             }
@@ -820,23 +890,23 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     }
 
     // Apply fast DCT transform to chroma
-    dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
+    dct_8x8_fast(enc->x_workspace, enc->dct_workspace);
 
     // quantise Co coefficients (chroma - orange-blue)
     const uint32_t *co_quant = QUANT_TABLE_C;
-    const uint32_t qmult_co = QUANT_MULT_CO[enc->quality];
+    const uint32_t qmult_co = QUANT_MULT_X[enc->quality];
     for (int i = 0; i < 64; i++) {
-        block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], co_quant[i] * qmult_co, i == 0, 1, enc->rate_control_factor);
+        block->x_coeffs[i] = quantise_coeff(enc->dct_workspace[i], co_quant[i] * qmult_co, i == 0, 1, enc->rate_control_factor);
     }
 
     // Apply fast DCT transform to Cg
-    dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
+    dct_8x8_fast(enc->b_workspace, enc->dct_workspace);
 
     // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q)
     const uint32_t *cg_quant = QUANT_TABLE_C;
-    const uint32_t qmult_cg = QUANT_MULT_CG[enc->quality];
+    const uint32_t qmult_cg = QUANT_MULT_B[enc->quality];
     for (int i = 0; i < 64; i++) {
-        block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], cg_quant[i] * qmult_cg, i == 0, 1, enc->rate_control_factor);
+        block->b_coeffs[i] = quantise_coeff(enc->dct_workspace[i], cg_quant[i] * qmult_cg, i == 0, 1, enc->rate_control_factor);
     }
 
     // Set CBP (simplified - always encode all channels)
@@ -1108,8 +1178,8 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     enc->reference_rgb = malloc(pixels * 3);
 
     enc->y_workspace = malloc(16 * 16 * sizeof(float));
-    enc->co_workspace = malloc(8 * 8 * sizeof(float));
-    enc->cg_workspace = malloc(8 * 8 * sizeof(float));
+    enc->x_workspace = malloc(8 * 8 * sizeof(float));
+    enc->b_workspace = malloc(8 * 8 * sizeof(float));
     enc->dct_workspace = malloc(16 * 16 * sizeof(float));
 
     enc->block_data = malloc(total_blocks * sizeof(tev_block_t));
@@ -1117,7 +1187,7 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     enc->mp2_buffer = malloc(MP2_DEFAULT_PACKET_SIZE);
 
     if (!enc->current_rgb || !enc->previous_rgb || !enc->reference_rgb ||
-        !enc->y_workspace || !enc->co_workspace || !enc->cg_workspace ||
+        !enc->y_workspace || !enc->x_workspace || !enc->b_workspace ||
         !enc->dct_workspace || !enc->block_data ||
         !enc->compressed_buffer || !enc->mp2_buffer) {
         return -1;
@@ -1152,8 +1222,8 @@ static void free_encoder(tev_encoder_t *enc) {
     free(enc->previous_rgb);
     free(enc->reference_rgb);
     free(enc->y_workspace);
-    free(enc->co_workspace);
-    free(enc->cg_workspace);
+    free(enc->x_workspace);
+    free(enc->b_workspace);
     free(enc->dct_workspace);
     free(enc->block_data);
     free(enc->compressed_buffer);
@@ -1259,8 +1329,8 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
                 if (block->mode == TEV_MODE_INTRA || block->mode == TEV_MODE_INTER) {
                     // Sum absolute values of quantised coefficients as complexity metric
                     for (int i = 1; i < 256; i++) frame_complexity += abs(block->y_coeffs[i]);
-                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->co_coeffs[i]);
-                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->cg_coeffs[i]);
+                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->x_coeffs[i]);
+                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->b_coeffs[i]);
                 }
             }
         }
@@ -1884,13 +1954,13 @@ int main(int argc, char *argv[]) {
             printf("Frame %d: %s (%d,%d,%d)\n", frame_count, colour_name, test_r, test_g, test_b);
             
             // Test YCoCg-R conversion
-            int y_test, co_test, cg_test;
-            rgb_to_ycocgr(test_r, test_g, test_b, &y_test, &co_test, &cg_test);
-            printf("  YCoCg-R: Y=%d Co=%d Cg=%d\n", y_test, co_test, cg_test);
+            int y_test, x_test, b_test;
+            rgb_to_xyb(test_r, test_g, test_b, &y_test, &x_test, &b_test);
+            printf("  XYB: Y=%d X=%d B=%d\n", y_test, x_test, b_test);
             
             // Test reverse conversion
             uint8_t r_rev, g_rev, b_rev;
-            ycocgr_to_rgb(y_test, co_test, cg_test, &r_rev, &g_rev, &b_rev);
+            xyb_to_rgb(y_test, x_test, b_test, &r_rev, &g_rev, &b_rev);
             printf("  Reverse: R=%d G=%d B=%d\n", r_rev, g_rev, b_rev);
             
         } else {

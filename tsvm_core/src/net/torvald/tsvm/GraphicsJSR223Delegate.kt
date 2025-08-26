@@ -2,14 +2,15 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.graphics.Pixmap
 import com.badlogic.gdx.math.MathUtils.*
+import com.badlogic.gdx.math.MathUtils.PI
+import com.badlogic.gdx.math.MathUtils.ceil
+import com.badlogic.gdx.math.MathUtils.floor
+import com.badlogic.gdx.math.MathUtils.round
 import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.fmod
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.roundToInt
-import kotlin.math.sqrt
+import kotlin.math.*
 
 class GraphicsJSR223Delegate(private val vm: VM) {
     
@@ -1605,6 +1606,138 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         return ycocgData
     }
+    
+    // XYB conversion constants from JPEG XL specification
+    private val XYB_BIAS = 0.00379307325527544933
+    private val CBRT_BIAS = 0.155954200549248620 // cbrt(XYB_BIAS)
+    
+    // RGB to LMS mixing coefficients  
+    private val RGB_TO_LMS = arrayOf(
+        doubleArrayOf(0.3, 0.622, 0.078),                           // L coefficients
+        doubleArrayOf(0.23, 0.692, 0.078),                          // M coefficients  
+        doubleArrayOf(0.24342268924547819, 0.20476744424496821, 0.55180986650955360)  // S coefficients
+    )
+    
+    // LMS to RGB inverse matrix
+    private val LMS_TO_RGB = arrayOf(
+        doubleArrayOf(11.0315669046, -9.8669439081, -0.1646229965),
+        doubleArrayOf(-3.2541473811, 4.4187703776, -0.1646229965),
+        doubleArrayOf(-3.6588512867, 2.7129230459, 1.9459282408)
+    )
+    
+    // sRGB linearization functions
+    private fun srgbLinearise(value: Double): Double {
+        return if (value > 0.04045) {
+            Math.pow((value + 0.055) / 1.055, 2.4)
+        } else {
+            value / 12.92
+        }
+    }
+    
+    private fun srgbUnlinearise(value: Double): Double {
+        return if (value > 0.0031308) {
+            1.055 * Math.pow(value, 1.0 / 2.4) - 0.055
+        } else {
+            value * 12.92
+        }
+    }
+    
+    // XYB to RGB conversion for hardware decoding
+    fun tevXybToRGB(yBlock: IntArray, xBlock: IntArray, bBlock: IntArray): IntArray {
+        val rgbData = IntArray(16 * 16 * 3)  // R,G,B for 16x16 pixels
+        
+        for (py in 0 until 16) {
+            for (px in 0 until 16) {
+                val yIdx = py * 16 + px
+                val y = yBlock[yIdx]
+                
+                // Get chroma values from subsampled 8x8 blocks (nearest neighbor upsampling)
+                val xbIdx = (py / 2) * 8 + (px / 2)
+                val x = xBlock[xbIdx]
+                val b = bBlock[xbIdx]
+                
+                // Dequantize from integer ranges
+                val yVal = (y - 128.0) / 255.0
+                val xVal = x / 255.0
+                val bVal = b / 255.0
+                
+                // XYB to LMS gamma
+                val lgamma = xVal + yVal
+                val mgamma = yVal - xVal
+                val sgamma = bVal
+                
+                // Remove gamma correction
+                val lmix = (lgamma + CBRT_BIAS).pow(3.0) - XYB_BIAS
+                val mmix = (mgamma + CBRT_BIAS).pow(3.0) - XYB_BIAS
+                val smix = (sgamma + CBRT_BIAS).pow(3.0) - XYB_BIAS
+                
+                // LMS to linear RGB using inverse matrix
+                val rLinear = (LMS_TO_RGB[0][0] * lmix + LMS_TO_RGB[0][1] * mmix + LMS_TO_RGB[0][2] * smix).coerceIn(0.0, 1.0)
+                val gLinear = (LMS_TO_RGB[1][0] * lmix + LMS_TO_RGB[1][1] * mmix + LMS_TO_RGB[1][2] * smix).coerceIn(0.0, 1.0)
+                val bLinear = (LMS_TO_RGB[2][0] * lmix + LMS_TO_RGB[2][1] * mmix + LMS_TO_RGB[2][2] * smix).coerceIn(0.0, 1.0)
+                
+                // Convert back to sRGB gamma and 0-255 range
+                val r = (srgbUnlinearise(rLinear) * 255.0 + 0.5).toInt().coerceIn(0, 255)
+                val g = (srgbUnlinearise(gLinear) * 255.0 + 0.5).toInt().coerceIn(0, 255)
+                val bRgb = (srgbUnlinearise(bLinear) * 255.0 + 0.5).toInt().coerceIn(0, 255)
+                
+                // Store RGB
+                val baseIdx = (py * 16 + px) * 3
+                rgbData[baseIdx] = r     // R
+                rgbData[baseIdx + 1] = g // G
+                rgbData[baseIdx + 2] = bRgb // B
+            }
+        }
+        
+        return rgbData
+    }
+    
+    // RGB to XYB conversion for INTER mode residual calculation
+    fun tevRGBToXyb(rgbBlock: IntArray): IntArray {
+        val xybData = IntArray(16 * 16 * 3)  // Y,X,B for 16x16 pixels
+        
+        for (py in 0 until 16) {
+            for (px in 0 until 16) {
+                val baseIdx = (py * 16 + px) * 3
+                val r = rgbBlock[baseIdx]
+                val g = rgbBlock[baseIdx + 1]
+                val b = rgbBlock[baseIdx + 2]
+                
+                // Convert RGB to 0-1 range and linearise sRGB
+                val rNorm = srgbLinearise(r / 255.0)
+                val gNorm = srgbLinearise(g / 255.0)
+                val bNorm = srgbLinearise(b / 255.0)
+                
+                // RGB to LMS mixing with bias
+                val lmix = RGB_TO_LMS[0][0] * rNorm + RGB_TO_LMS[0][1] * gNorm + RGB_TO_LMS[0][2] * bNorm + XYB_BIAS
+                val mmix = RGB_TO_LMS[1][0] * rNorm + RGB_TO_LMS[1][1] * gNorm + RGB_TO_LMS[1][2] * bNorm + XYB_BIAS
+                val smix = RGB_TO_LMS[2][0] * rNorm + RGB_TO_LMS[2][1] * gNorm + RGB_TO_LMS[2][2] * bNorm + XYB_BIAS
+                
+                // Apply gamma correction (cube root)
+                val lgamma = lmix.pow(1.0 / 3.0) - CBRT_BIAS
+                val mgamma = mmix.pow(1.0 / 3.0) - CBRT_BIAS
+                val sgamma = smix.pow(1.0 / 3.0) - CBRT_BIAS
+                
+                // LMS to XYB transformation
+                val xVal = (lgamma - mgamma) / 2.0
+                val yVal = (lgamma + mgamma) / 2.0
+                val bVal = sgamma
+                
+                // Quantize to integer ranges suitable for TEV
+                val yQuant = (yVal * 255.0 + 128.0).toInt().coerceIn(0, 255)      // Y: 0-255 (like YCoCg Y)
+                val xQuant = (xVal * 255.0).toInt().coerceIn(-128, 127)            // X: -128 to +127 (like Co)
+                val bQuant = (bVal * 255.0).toInt().coerceIn(-128, 127)            // B: -128 to +127 (like Cg, aggressively quantized)
+                
+                // Store XYB values
+                val yIdx = py * 16 + px
+                xybData[yIdx * 3] = yQuant     // Y
+                xybData[yIdx * 3 + 1] = xQuant // X
+                xybData[yIdx * 3 + 2] = bQuant // B
+            }
+        }
+        
+        return xybData
+    }
 
     /**
      * Hardware-accelerated TEV frame decoder for YCoCg-R 4:2:0 format
@@ -1620,7 +1753,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, quality: Int, debugMotionVectors: Boolean = false, 
-                  rateControlFactor: Float = 1.0f) {
+                  tevVersion: Int = 2) {
 
         val blocksX = (width + 15) / 16  // 16x16 blocks now
         val blocksY = (height + 15) / 16
@@ -1630,21 +1763,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val quantCGmult = QUANT_MULT_CG[quality]
 
         // Apply rate control factor to quantization tables (if not ~1.0, skip optimization)
-        val quantTableY = if (rateControlFactor in 0.999f..1.001f) {
-            QUANT_TABLE_Y.map { it * quantYmult }.toIntArray()
-        } else {
-            QUANT_TABLE_Y.map { (it * quantYmult * rateControlFactor).toInt() }.toIntArray()
-        }
-        val quantTableCo = if (rateControlFactor in 0.999f..1.001f) {
-            QUANT_TABLE_C.map { it * quantCOmult }.toIntArray()
-        } else {
-            QUANT_TABLE_C.map { (it * quantCOmult * rateControlFactor).toInt() }.toIntArray()
-        }
-        val quantTableCg = if (rateControlFactor in 0.999f..1.001f) {
-            QUANT_TABLE_C.map { it * quantCGmult }.toIntArray()
-        } else {
-            QUANT_TABLE_C.map { (it * quantCGmult * rateControlFactor).toInt() }.toIntArray()
-        }
+        val quantTableY = QUANT_TABLE_Y.map { it * quantYmult }.toIntArray()
+        val quantTableCo = QUANT_TABLE_C.map { it * quantCOmult }.toIntArray()
+        val quantTableCg = QUANT_TABLE_C.map { it * quantCGmult }.toIntArray()
         
         var readPtr = blockDataPtr
 
@@ -1664,7 +1785,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                           ((vm.peek(readPtr + 2)!!.toUint()) shl 8)).toShort().toInt()
                 val mvY = ((vm.peek(readPtr + 3)!!.toUint()) or 
                           ((vm.peek(readPtr + 4)!!.toUint()) shl 8)).toShort().toInt()
-                readPtr += 7 // Skip CBP field
+                val rateControlFactor = Float.fromBits((vm.peek(readPtr + 5)!!.toUint()) or
+                        ((vm.peek(readPtr + 6)!!.toUint()) shl 8) or
+                        ((vm.peek(readPtr + 7)!!.toUint()) shl 16) or
+                        ((vm.peek(readPtr + 8)!!.toUint()) shl 24))
+                readPtr += 11 // Skip CBP field
                 
                 
                 when (mode) {
@@ -1784,8 +1909,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         val coBlock = tevIdct8x8_fast(coCoeffs, quantTableCo, true)
                         val cgBlock = tevIdct8x8_fast(cgCoeffs, quantTableCg, true)
                         
-                        // Convert YCoCg-R to RGB
-                        val rgbData = tevYcocgToRGB(yBlock, coBlock, cgBlock)
+                        // Convert to RGB (YCoCg-R for v2, XYB for v3)
+                        val rgbData = if (tevVersion == 3) {
+                            tevXybToRGB(yBlock, coBlock, cgBlock)  // XYB format (v3)
+                        } else {
+                            tevYcocgToRGB(yBlock, coBlock, cgBlock)  // YCoCg-R format (v2)
+                        }
                         
                         // Store RGB data to frame buffer (complete replacement)
                         for (dy in 0 until 16) {
@@ -1943,8 +2072,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             }
                         }
                         
-                        // Step 4: Convert final YCoCg-R to RGB
-                        val finalRgb = tevYcocgToRGB(finalY, finalCo, finalCg)
+                        // Step 4: Convert final data to RGB (YCoCg-R for v2, XYB for v3)
+                        val finalRgb = if (tevVersion == 3) {
+                            tevXybToRGB(finalY, finalCo, finalCg)  // XYB format (v3)
+                        } else {
+                            tevYcocgToRGB(finalY, finalCo, finalCg)  // YCoCg-R format (v2)
+                        }
                         
                         // Step 5: Store final RGB data to frame buffer
                         for (dy in 0 until 16) {
@@ -2002,71 +2135,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    // YCoCg-R transform for 16x16 Y blocks and 8x8 chroma blocks (4:2:0 subsampling)
-    fun blockEncodeToYCoCgR16x16(blockX: Int, blockY: Int, srcPtr: Int, width: Int, height: Int): List<IntArray> {
-        val yBlock = IntArray(16 * 16)  // 16x16 Y
-        val coBlock = IntArray(8 * 8)   // 8x8 Co (subsampled)
-        val cgBlock = IntArray(8 * 8)   // 8x8 Cg (subsampled)
-        val incVec = if (srcPtr >= 0) 1L else -1L
-        
-        // Process 16x16 Y block
-        for (py in 0 until 16) {
-            for (px in 0 until 16) {
-                val ox = blockX * 16 + px
-                val oy = blockY * 16 + py
-                if (ox < width && oy < height) {
-                    val offset = 3 * (oy * width + ox)
-                    val r = vm.peek(srcPtr + offset * incVec)!!.toUint()
-                    val g = vm.peek(srcPtr + (offset + 1) * incVec)!!.toUint() 
-                    val b = vm.peek(srcPtr + (offset + 2) * incVec)!!.toUint()
-                    
-                    // YCoCg-R transform
-                    val co = r - b
-                    val tmp = b + (co / 2)
-                    val cg = g - tmp
-                    val y = tmp + (cg / 2)
-                    
-                    yBlock[py * 16 + px] = y
-                }
-            }
-        }
-        
-        // Process 8x8 Co/Cg blocks with 4:2:0 subsampling (average 2x2 pixels)
-        for (py in 0 until 8) {
-            for (px in 0 until 8) {
-                var coSum = 0
-                var cgSum = 0
-                var count = 0
-                
-                // Average 2x2 block of pixels for chroma subsampling
-                for (dy in 0 until 2) {
-                    for (dx in 0 until 2) {
-                        val ox = blockX * 16 + px * 2 + dx
-                        val oy = blockY * 16 + py * 2 + dy
-                        if (ox < width && oy < height) {
-                            val offset = 3 * (oy * width + ox)
-                            val r = vm.peek(srcPtr + offset * incVec)!!.toUint()
-                            val g = vm.peek(srcPtr + (offset + 1) * incVec)!!.toUint()
-                            val b = vm.peek(srcPtr + (offset + 2) * incVec)!!.toUint()
-                            
-                            val co = r - b
-                            val tmp = b + (co / 2)
-                            val cg = g - tmp
-                            
-                            coSum += co
-                            cgSum += cg
-                            count++
-                        }
-                    }
-                }
-                
-                if (count > 0) {
-                    coBlock[py * 8 + px] = coSum / count
-                    cgBlock[py * 8 + px] = cgSum / count
-                }
-            }
-        }
-        
-        return listOf(yBlock, coBlock, cgBlock)
-    }
+
+
 }
