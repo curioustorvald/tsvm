@@ -1512,42 +1512,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         return result
     }
-    
-    private fun tevIdct16x16(coeffs: IntArray, quantTable: IntArray): IntArray {
-        val dctCoeffs = Array(16) { FloatArray(16) }
-        val result = IntArray(256)  // 16x16 = 256
-        
-        // Convert integer coefficients to 2D array and dequantize
-        for (u in 0 until 16) {
-            for (v in 0 until 16) {
-                val idx = u * 16 + v
-                val coeff = coeffs[idx]
-                if (idx == 0) {
-                    // DC coefficient for luma: lossless quantization (no scaling)
-                    dctCoeffs[u][v] = coeff.toFloat()
-                } else {
-                    // AC coefficients: use quantization table
-                    dctCoeffs[u][v] = (coeff * quantTable[idx]).toFloat()
-                }
-            }
-        }
-        
-        // Apply 2D inverse DCT
-        for (x in 0 until 16) {
-            for (y in 0 until 16) {
-                var sum = 0f
-                for (u in 0 until 16) {
-                    for (v in 0 until 16) {
-                        sum += dctBasis16[u][x] * dctBasis16[v][y] * dctCoeffs[u][v]
-                    }
-                }
-                val pixel = (sum + 128).coerceIn(0f, 255f)
-                result[y * 16 + x] = pixel.toInt()
-            }
-        }
-        
-        return result
-    }
 
     // YCoCg-R to RGB conversion with 4:2:0 chroma upsampling
     fun tevYcocgToRGB(yBlock: IntArray, coBlock: IntArray, cgBlock: IntArray): IntArray {

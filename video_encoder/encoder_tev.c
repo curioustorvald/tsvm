@@ -48,8 +48,8 @@ static const int MP2_RATE_TABLE[] = {64, 96, 128, 192, 256};
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 //  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
 // 10  25  45  65  85  ChatGPT-5 (without data analysis)
-static const int QUALITY_Y[] =  {8, 24, 48, 70, 88};
-static const int QUALITY_CO[] = {8, 24, 48, 70, 88};
+static const int QUALITY_Y[] =  {5, 18, 45, 65, 85};
+static const int QUALITY_CO[] = {5, 18, 45, 65, 85};
 
 static float jpeg_quality_to_mult(int q) {
     return ((q < 50) ? 5000.f / q : 200.f - 2*q) / 100.f;
@@ -356,7 +356,7 @@ static void dct_8x8(float *input, float *output) {
 }
 
 // quantise DCT coefficient using quality table with rate control
-static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma, float rate_factor) {
+static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma) {
     if (is_dc) {
         if (is_chroma) {
             // Chroma DC: range -256 to +255, use lossless quantisation for testing
@@ -366,10 +366,9 @@ static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma
             return (int16_t)roundf(coeff);
         }
     } else {
-        // AC coefficients use quality table with rate control adjustment
-        float adjusted_quant = quant * rate_factor;
-        adjusted_quant = fmaxf(adjusted_quant, 1.0f); // Prevent division by zero
-        return (int16_t)roundf(coeff / adjusted_quant);
+        // AC coefficients use quality table (rate control factor applied to quant table before calling)
+        float safe_quant = fmaxf(quant, 1.0f); // Prevent division by zero
+        return (int16_t)roundf(coeff / safe_quant);
     }
 }
 
@@ -434,6 +433,53 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
             }
         }
     }
+}
+
+// Calculate block complexity based on spatial activity
+static float calculate_block_complexity(const float *y_block) {
+    float complexity = 0.0f;
+    
+    // Method 1: Sum of absolute differences with neighbors (spatial activity)
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            float pixel = y_block[y * 16 + x];
+            
+            // Compare with right neighbor
+            if (x < 15) {
+                complexity += fabsf(pixel - y_block[y * 16 + (x + 1)]);
+            }
+            
+            // Compare with bottom neighbor
+            if (y < 15) {
+                complexity += fabsf(pixel - y_block[(y + 1) * 16 + x]);
+            }
+        }
+    }
+    
+    // Method 2: Add variance contribution
+    float mean = 0.0f;
+    for (int i = 0; i < 256; i++) {
+        mean += y_block[i];
+    }
+    mean /= 256.0f;
+    
+    float variance = 0.0f;
+    for (int i = 0; i < 256; i++) {
+        float diff = y_block[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= 256.0f;
+    
+    // Combine spatial activity and variance
+    return complexity + sqrtf(variance) * 10.0f;
+}
+
+// Map complexity to rate control factor (pure per-block, no global factor)
+static float complexity_to_rate_factor(float complexity) {
+    const float P = 18.f;
+    const float e = -0.5f;
+    float factor = P * powf(FCLAMP(complexity, 1.f, 16777216.f), e);
+    return FCLAMP(factor, 0.5f, P); // the "auto quality" thing can be excessively permissive
 }
 
 // Simple motion estimation (full search) for 16x16 blocks
@@ -616,55 +662,7 @@ static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y
 }
 
 // Calculate block complexity for rate control
-static float calculate_block_complexity(float *workspace, int size) {
-    float complexity = 0.0f;
-    for (int i = 1; i < size; i++) { // Skip DC component
-        complexity += fabsf(workspace[i]);
-    }
-    return complexity;
-}
 
-const float EPSILON = 1.0f / 16777216.0f;
-const float RATE_CONTROL_CLAMP_MAX = 64.0f;
-const float RATE_CONTROL_CLAMP_MIN = 1.0f / RATE_CONTROL_CLAMP_MAX;
-
-// Update rate control factor based on target bitrate
-static void update_rate_control(tev_encoder_t *enc, float frame_complexity, size_t frame_bits) {
-    if (enc->bitrate_mode == 0) {
-        // Quality mode - no rate control
-        enc->rate_control_factor = 1.0f;
-        return;
-    }
-
-    // Update complexity history
-    enc->complexity_history[enc->complexity_history_index] = frame_complexity;
-    enc->complexity_history_index = (enc->complexity_history_index + 1) % 60;
-
-    // Calculate rolling average complexity
-    float sum = 0.0f;
-    int count = 0;
-    for (int i = 0; i < 60; i++) {
-        if (enc->complexity_history[i] > 0.0f) {
-            sum += enc->complexity_history[i];
-            count++;
-        }
-    }
-    enc->average_complexity = (count > 0) ? sum / count : frame_complexity;
-
-    // Calculate rate adjustment
-    if (enc->target_bits_per_frame > 0 && frame_bits > 0) {
-        float bitrate_ratio = (float)enc->target_bits_per_frame / frame_bits;
-        float complexity_ratio = frame_complexity / fmaxf(enc->average_complexity, 1.0f);
-
-        // Adaptive adjustment with damping
-        float adjustment = 1.0f / (bitrate_ratio * complexity_ratio);
-        enc->rate_control_factor = adjustment;
-        enc->rate_control_factor = 0.8f * enc->rate_control_factor + 0.2f * adjustment;
-
-        // Clamp to reasonable range
-        enc->rate_control_factor = FCLAMP(enc->rate_control_factor, RATE_CONTROL_CLAMP_MIN, RATE_CONTROL_CLAMP_MAX);
-    }
-}
 
 // Encode a 16x16 block
 static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_keyframe) {
@@ -763,7 +761,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             block->mode = TEV_MODE_SKIP;
             block->mv_x = 0;
             block->mv_y = 0;
-            block->rate_control_factor = enc->rate_control_factor;
+            // Even skip blocks benefit from complexity analysis for consistency
+            float block_complexity = calculate_block_complexity(enc->y_workspace);
+            block->rate_control_factor = complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
@@ -775,7 +775,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                    (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
             // Good motion prediction - use motion-only mode
             block->mode = TEV_MODE_MOTION;
-            block->rate_control_factor = enc->rate_control_factor;
+            // Analyze complexity for motion blocks too
+            float block_complexity = calculate_block_complexity(enc->y_workspace);
+            block->rate_control_factor = complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
@@ -814,41 +816,50 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         } else {
             // No good motion prediction - use intra mode
             block->mode = TEV_MODE_INTRA;
-            block->rate_control_factor = enc->rate_control_factor;
             block->mv_x = 0;
             block->mv_y = 0;
             enc->blocks_intra++;
         }
     }
 
+    // Calculate block complexity BEFORE DCT transform for adaptive rate control
+    float block_complexity = calculate_block_complexity(enc->y_workspace);
+    block->rate_control_factor = complexity_to_rate_factor(block_complexity);
+
     // Apply fast DCT transform
     dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
 
-    // quantise Y coefficients (luma)
+    // quantise Y coefficients (luma) using per-block rate control
     const uint32_t *y_quant = QUANT_TABLE_Y;
     const float qmult_y = jpeg_quality_to_mult(enc->qualityY);
     for (int i = 0; i < 256; i++) {
-        block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(y_quant[i] * qmult_y, 1.f, 255.f), i == 0, 0, enc->rate_control_factor);
+        // Apply rate control factor to quantization table (like decoder does)
+        float effective_quant = y_quant[i] * qmult_y * block->rate_control_factor;
+        block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 0);
     }
 
     // Apply fast DCT transform to chroma
     dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
 
-    // quantise Co coefficients (chroma - orange-blue)
+    // quantise Co coefficients (chroma - orange-blue) using per-block rate control
     const uint32_t *co_quant = QUANT_TABLE_C;
     const float qmult_co = jpeg_quality_to_mult(enc->qualityCo);
     for (int i = 0; i < 64; i++) {
-        block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(co_quant[i] * qmult_co, 1.f, 255.f), i == 0, 1, enc->rate_control_factor);
+        // Apply rate control factor to quantization table (like decoder does)
+        float effective_quant = co_quant[i] * qmult_co * block->rate_control_factor;
+        block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
     }
 
     // Apply fast DCT transform to Cg
     dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
 
-    // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q)
+    // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q) using per-block rate control
     const uint32_t *cg_quant = QUANT_TABLE_C;
     const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg);
     for (int i = 0; i < 64; i++) {
-        block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(cg_quant[i] * qmult_cg, 1.f, 255.f), i == 0, 1, enc->rate_control_factor);
+        // Apply rate control factor to quantization table (like decoder does)
+        float effective_quant = cg_quant[i] * qmult_cg * block->rate_control_factor;
+        block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
     }
 
     // Set CBP (simplified - always encode all channels)
@@ -1099,7 +1110,7 @@ static tev_encoder_t* init_encoder(void) {
     // Rate control defaults
     enc->target_bitrate_kbps = 0;    // 0 = quality mode
     enc->bitrate_mode = 0;           // Quality mode by default
-    enc->rate_control_factor = 1.0f; // No adjustment initially
+    // No global rate control factor needed - per-block complexity-based control only
     enc->frame_bits_accumulator = 0;
     enc->target_bits_per_frame = 0;
     enc->complexity_history_index = 0;
@@ -1331,16 +1342,12 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     fwrite(enc->compressed_buffer, 1, compressed_size, output);
 
     if (enc->verbose) {
-        printf("rateControlFactor=%.6f\n", enc->rate_control_factor);
+        printf("perBlockComplexityBasedRateControl=enabled\n");
     }
 
     enc->total_output_bytes += 5 + compressed_size; // packet + size + data (rate_factor now per-block)
 
-    // Update rate control for next frame
-    if (enc->bitrate_mode > 0) {
-        size_t frame_bits = (enc->total_output_bytes * 8) - frame_start_bits;
-        update_rate_control(enc, frame_complexity, frame_bits);
-    }
+    // No global rate control needed - per-block complexity-based control only
 
     // Swap frame buffers for next frame
     uint8_t *temp_rgb = enc->previous_rgb;
@@ -1648,13 +1655,13 @@ static void show_usage(const char *program_name) {
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
     printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio rate in bitrate mode and quantiser mode)\n");
     printf("  -Q, --quantiser N    Quantiser level 0-100 (100: lossless, 0: potato)\n");
-    printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
+//    printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -t, --test           Test mode: generate solid colour frames\n");
     printf("  --help               Show this help\n\n");
-    printf("Rate Control Modes:\n");
-    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
-    printf("  Bitrate mode (-b N):    Dynamic quantisation targeting N kbps average\n\n");
+//    printf("Rate Control Modes:\n");
+//    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
+//    printf("  Bitrate mode (-b N):    Dynamic quantisation targeting N kbps average\n\n");
     printf("Audio Rate by Quality:\n");
     printf("  ");
     for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
@@ -1670,7 +1677,7 @@ static void show_usage(const char *program_name) {
     printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
     printf("  - 16x16 Y blocks with 8x8 chroma for optimal DCT efficiency\n");
     printf("  - Frame rate conversion with FFmpeg temporal filtering\n");
-//    printf("  - Adaptive bitrate control with complexity-based adjustment\n");
+    printf("  - Adaptive quality control with complexity-based adjustment\n");
     printf("Examples:\n");
     printf("  %s -i input.mp4 -o output.mv2                 # Use default setting (q=2)\n", program_name);
     printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # 15fps @ q=3\n", program_name);
@@ -2016,7 +2023,7 @@ int main(int argc, char *argv[]) {
            enc->blocks_intra, enc->blocks_inter, enc->blocks_motion, enc->blocks_skip);
     
     if (enc->bitrate_mode > 0) {
-        printf("  Rate control factor: %.3f\n", enc->rate_control_factor);
+        printf("  Per-block complexity-based rate control: enabled\n");
     }
     
     cleanup_encoder(enc);
