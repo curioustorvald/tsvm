@@ -1299,39 +1299,40 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // TEV (TSVM Enhanced Video) format support
     // Created by Claude on 2025-08-17
-    private val QUANT_MULT_Y  = intArrayOf(40, 10, 6, 4, 1)
-    private val QUANT_MULT_CO = intArrayOf(40, 10, 6, 4, 1)
-    private val QUANT_MULT_CG = intArrayOf(106, 22, 10, 5, 1) // CO[i] * sqrt(7 - 2i)
+
+    fun jpeg_quality_to_mult(q: Int): Float {
+        return (if ((q < 50)) 5000f / q else 200f - 2 * q) / 100f
+    }
 
     // Quality settings for quantization (Y channel) - 16x16 tables
     val QUANT_TABLE_Y: IntArray = intArrayOf(
-        2, 1, 1, 2, 3, 5, 6, 7, 6, 7, 8, 9, 10, 11, 12, 13,
-        1, 1, 1, 2, 3, 6, 7, 9, 7, 9, 10, 11, 12, 13, 14, 15,
-        1, 1, 2, 3, 5, 6, 7, 9, 7, 9, 10, 11, 12, 13, 14, 15,
-        1, 2, 3, 4, 6, 7, 9, 10, 9, 10, 11, 12, 13, 14, 15, 16,
-        2, 3, 5, 6, 7, 9, 10, 11, 10, 11, 12, 13, 14, 15, 16, 17,
-        3, 4, 6, 7, 9, 10, 11, 12, 11, 12, 13, 14, 15, 16, 17, 18,
-        6, 6, 7, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 18, 19,
-        6, 7, 9, 10, 11, 12, 13, 14, 13, 14, 15, 16, 17, 18, 19, 20,
-        6, 7, 9, 10, 11, 12, 13, 14, 13, 14, 15, 16, 17, 18, 19, 20,
-        7, 9, 10, 11, 12, 13, 14, 15, 14, 15, 16, 17, 18, 19, 20, 21,
-        9, 10, 11, 12, 13, 14, 15, 16, 15, 16, 17, 18, 19, 20, 21, 22,
-        10, 11, 12, 13, 14, 15, 16, 17, 16, 17, 18, 19, 20, 21, 22, 23,
-        11, 12, 13, 14, 15, 16, 17, 18, 17, 18, 19, 20, 21, 22, 23, 24,
-        12, 13, 14, 15, 16, 17, 18, 19, 18, 19, 20, 21, 22, 23, 24, 25,
-        13, 14, 15, 16, 17, 18, 19, 20, 19, 20, 21, 22, 23, 24, 25, 26,
-        14, 15, 16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 26, 27)
+        16, 14, 12, 11, 11, 13, 16, 20, 24, 30, 39, 48, 54, 61, 67, 73,
+        14, 13, 12, 12, 12, 15, 18, 21, 25, 33, 46, 57, 61, 65, 67, 70,
+        13, 12, 12, 13, 14, 17, 19, 23, 27, 36, 53, 66, 68, 69, 68, 67,
+        13, 13, 13, 14, 15, 18, 22, 26, 32, 41, 56, 67, 71, 74, 70, 67,
+        14, 14, 14, 15, 17, 20, 24, 30, 38, 47, 58, 68, 74, 79, 73, 67,
+        15, 15, 15, 17, 19, 22, 27, 34, 44, 55, 68, 79, 83, 85, 78, 70,
+        15, 16, 17, 20, 22, 26, 30, 38, 49, 63, 81, 94, 93, 91, 83, 74,
+        16, 18, 20, 24, 28, 33, 38, 47, 57, 73, 93, 108, 105, 101, 91, 81,
+        19, 21, 23, 29, 35, 43, 52, 60, 68, 83, 105, 121, 118, 115, 102, 89,
+        21, 24, 27, 35, 43, 53, 62, 70, 78, 91, 113, 128, 127, 125, 112, 99,
+        25, 30, 34, 43, 53, 61, 68, 76, 85, 97, 114, 127, 130, 132, 120, 108,
+        31, 38, 44, 54, 64, 71, 76, 84, 94, 105, 118, 129, 135, 138, 127, 116,
+        45, 52, 60, 69, 78, 84, 90, 97, 107, 118, 130, 139, 142, 143, 133, 122,
+        59, 68, 76, 84, 91, 97, 102, 110, 120, 129, 139, 147, 147, 146, 137, 127,
+        73, 82, 92, 98, 103, 107, 110, 117, 126, 132, 134, 136, 138, 138, 133, 127,
+        86, 98, 109, 112, 114, 116, 118, 124, 133, 135, 129, 125, 128, 130, 128, 127)
 
     // Quality settings for quantization (Co channel - orange-blue, 8x8)
     val QUANT_TABLE_C: IntArray =  intArrayOf(
-        2, 3, 4, 6, 8, 12, 16, 20,
-        3, 4, 6, 8, 12, 16, 20, 24,
-        4, 6, 8, 12, 16, 20, 24, 28,
-        6, 8, 12, 16, 20, 24, 28, 32,
-        8, 12, 16, 20, 24, 28, 32, 36,
-        12, 16, 20, 24, 28, 32, 36, 40,
-        16, 20, 24, 28, 32, 36, 40, 44,
-        20, 24, 28, 32, 36, 40, 44, 48)
+        17, 18, 24, 47, 99, 99, 99, 99,
+        18, 21, 26, 66, 99, 99, 99, 99,
+        24, 26, 56, 99, 99, 99, 99, 99,
+        47, 66, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99,
+        99, 99, 99, 99, 99, 99, 99, 99)
 
     /**
      * Upload RGB frame buffer to graphics framebuffer with dithering
@@ -1416,7 +1417,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tevIdct8x8_fast(coeffs: IntArray, quantTable: IntArray, isChromaResidual: Boolean = false): IntArray {
+    private fun tevIdct8x8_fast(coeffs: IntArray, quantTable: FloatArray, isChromaResidual: Boolean = false, mult: Float = 1f): IntArray {
         val result = IntArray(64)
         // Reuse preallocated temp buffer to reduce GC pressure
 
@@ -1430,7 +1431,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val coeff = if (isChromaResidual && coeffIdx == 0) {
                         coeffs[coeffIdx].toFloat() // DC lossless for chroma residual
                     } else {
-                        coeffs[coeffIdx] * quantTable[coeffIdx].toFloat()
+                        coeffs[coeffIdx] * quantTable[coeffIdx] * mult
                     }
                     sum += dctBasis8[u][col] * coeff
                 }
@@ -1468,7 +1469,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
     
     // 16x16 IDCT for Y channel (YCoCg-R format)
-    private fun tevIdct16x16_fast(coeffs: IntArray, quantTable: IntArray): IntArray {
+    private fun tevIdct16x16_fast(coeffs: IntArray, quantTable: FloatArray, mult: Float = 1.0f): IntArray {
         val result = IntArray(256) // 16x16 = 256
         
         // Process coefficients and dequantize using preallocated buffer
@@ -1478,7 +1479,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val coeff = if (idx == 0) {
                     coeffs[idx].toFloat() // DC lossless for luma
                 } else {
-                    coeffs[idx] * quantTable[idx].toFloat()
+                    coeffs[idx] * quantTable[idx] * mult
                 }
                 idct16TempBuffer[idx] = coeff
             }
@@ -1662,7 +1663,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val Y_MAX = 0.85
                 val yVal = (y / 255.0) * Y_MAX                    // Y: inverse of improved scale
                 val B_MAX = 0.85
-                val bVal = (((b - 1.0) + 128.0) / 255.0) * B_MAX          // B: inverse of ((val/B_MAX*255)-128+1)
+                val bVal = ((b + 128.0) / 255.0) * B_MAX          // B: inverse of ((val/B_MAX*255)-128)
                 
                 // XYB to LMS gamma
                 val lgamma = xVal + yVal
@@ -1733,9 +1734,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 // Y: range 0 to 0.85, map to 0 to 255 (improved scale)
                 val Y_MAX = 0.85
                 val yQuant = ((yVal / Y_MAX) * 255.0).toInt().coerceIn(0, 255)
-                // B: range 0 to 0.85, map to -128 to +127 (improved precision with +1 offset for yellow-green)
+                // B: range 0 to 0.85, map to -128 to +127 (optimized precision)
                 val B_MAX = 0.85
-                val bQuant = (((bVal / B_MAX) * 255.0) - 128.0 + 1.0).toInt().coerceIn(-128, 127)
+                val bQuant = (((bVal / B_MAX) * 255.0) - 128.0).toInt().coerceIn(-128, 127)
                 
                 // Store XYB values
                 val yIdx = py * 16 + px
@@ -1761,21 +1762,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param frameCounter Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, quality: Int, debugMotionVectors: Boolean = false, 
+                  width: Int, height: Int, qualityIndices: IntArray, debugMotionVectors: Boolean = false,
                   tevVersion: Int = 2) {
 
         val blocksX = (width + 15) / 16  // 16x16 blocks now
         val blocksY = (height + 15) / 16
 
-        val quantYmult = QUANT_MULT_Y[quality]
-        val quantCOmult = QUANT_MULT_CO[quality]
-        val quantCGmult = QUANT_MULT_CG[quality]
+        val quantYmult = jpeg_quality_to_mult(qualityIndices[0])
+        val quantCOmult = jpeg_quality_to_mult(qualityIndices[1])
+        val quantCGmult = jpeg_quality_to_mult(qualityIndices[2])
+        val quantBmult = quantCGmult
 
         // Apply rate control factor to quantization tables (if not ~1.0, skip optimization)
-        val quantTableY = QUANT_TABLE_Y.map { it * quantYmult }.toIntArray()
-        val quantTableCo = QUANT_TABLE_C.map { it * quantCOmult }.toIntArray()
-        val quantTableCg = QUANT_TABLE_C.map { it * quantCGmult }.toIntArray()
-        
+        val quantTableY = QUANT_TABLE_Y.map { (it * quantYmult).coerceIn(1f, 255f) }.toFloatArray()
+        val quantTableCo = QUANT_TABLE_C.map { (it * quantCOmult).coerceIn(1f, 255f) }.toFloatArray()
+        val quantTableCg = QUANT_TABLE_C.map { (it * quantCGmult).coerceIn(1f, 255f) }.toFloatArray()
+        val quantTableB = QUANT_TABLE_C.map { it * quantBmult.toFloat() }.toFloatArray()
+
         var readPtr = blockDataPtr
 
         // decide increment "direction" by the sign of the pointer  
@@ -1914,9 +1917,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         
                         // Perform hardware IDCT for each channel using fast algorithm
-                        val yBlock = tevIdct16x16_fast(yCoeffs, quantTableY)
-                        val coBlock = tevIdct8x8_fast(coCoeffs, quantTableCo, true)
-                        val cgBlock = tevIdct8x8_fast(cgCoeffs, quantTableCg, true)
+                        val yBlock = tevIdct16x16_fast(yCoeffs, quantTableY, rateControlFactor)
+                        val coBlock = tevIdct8x8_fast(coCoeffs, quantTableCo, true, rateControlFactor)
+                        val cgBlock = tevIdct8x8_fast(cgCoeffs, if (tevVersion == 3) quantTableB else quantTableCg, true, rateControlFactor)
                         
                         // Convert to RGB (YCoCg-R for v2, XYB for v3)
                         val rgbData = if (tevVersion == 3) {
@@ -1974,9 +1977,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         
                         // Step 2: Decode residual DCT
-                        val yResidual = tevIdct16x16_fast(yCoeffs, quantTableY)
-                        val coResidual = tevIdct8x8_fast(coCoeffs, quantTableCo, true)
-                        val cgResidual = tevIdct8x8_fast(cgCoeffs, quantTableCg, true)
+                        val yResidual = tevIdct16x16_fast(yCoeffs, quantTableY, rateControlFactor)
+                        val coResidual = tevIdct8x8_fast(coCoeffs, quantTableCo, true, rateControlFactor)
+                        val cgResidual = tevIdct8x8_fast(cgCoeffs, if (tevVersion == 3) quantTableB else quantTableCg, true, rateControlFactor)
                         
                         // Step 3: Build motion-compensated YCoCg-R block and add residuals
                         val finalY = IntArray(256)

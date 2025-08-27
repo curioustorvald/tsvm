@@ -39,43 +39,52 @@ static inline int CLAMP(int x, int min, int max) {
 static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
 }
+// Which preset should I be using?
+// from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
+// 56  96 128 192 256  Claude Opus 4.1 (with data analysis)
+// 64  96 128 192 256  ChatGPT-5 (without data analysis)
+static const int MP2_RATE_TABLE[] = {64, 96, 128, 192, 256};
+// Which preset should I be using?
+// from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
+//  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
+// 10  25  45  65  85  ChatGPT-5 (without data analysis)
+static const int QUALITY_Y[] =  {8, 24, 48, 70, 88};
+static const int QUALITY_CO[] = {8, 24, 48, 70, 88};
 
-static const int MP2_RATE_TABLE[5] = {80, 128, 192, 224, 384};
-static const int QUANT_MULT_Y[5] = {40, 10, 6, 4, 1};
-static const int QUANT_MULT_CO[5] = {40, 10, 6, 4, 1};
-static const int QUANT_MULT_CG[5] = {106, 22, 10, 5, 1}; // CO[i] * sqrt(7 - 2i)
-// only leave (4, 6, 7)
+static float jpeg_quality_to_mult(int q) {
+    return ((q < 50) ? 5000.f / q : 200.f - 2*q) / 100.f;
+}
 
 // Quality settings for quantisation (Y channel) - 16x16 tables
 static const uint32_t QUANT_TABLE_Y[256] =
-    // Quality 7 (highest)
-    {2, 1, 1, 2, 3, 5, 6, 7, 6, 7, 8, 9, 10, 11, 12, 13,
-     1, 1, 1, 2, 3, 6, 7, 9, 7, 9, 10, 11, 12, 13, 14, 15,
-     1, 1, 2, 3, 5, 6, 7, 9, 7, 9, 10, 11, 12, 13, 14, 15,
-     1, 2, 3, 4, 6, 7, 9, 10, 9, 10, 11, 12, 13, 14, 15, 16,
-     2, 3, 5, 6, 7, 9, 10, 11, 10, 11, 12, 13, 14, 15, 16, 17,
-     3, 4, 6, 7, 9, 10, 11, 12, 11, 12, 13, 14, 15, 16, 17, 18,
-     6, 6, 7, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 18, 19,
-     6, 7, 9, 10, 11, 12, 13, 14, 13, 14, 15, 16, 17, 18, 19, 20,
-     6, 7, 9, 10, 11, 12, 13, 14, 13, 14, 15, 16, 17, 18, 19, 20,
-     7, 9, 10, 11, 12, 13, 14, 15, 14, 15, 16, 17, 18, 19, 20, 21,
-     9, 10, 11, 12, 13, 14, 15, 16, 15, 16, 17, 18, 19, 20, 21, 22,
-     10, 11, 12, 13, 14, 15, 16, 17, 16, 17, 18, 19, 20, 21, 22, 23,
-     11, 12, 13, 14, 15, 16, 17, 18, 17, 18, 19, 20, 21, 22, 23, 24,
-     12, 13, 14, 15, 16, 17, 18, 19, 18, 19, 20, 21, 22, 23, 24, 25,
-     13, 14, 15, 16, 17, 18, 19, 20, 19, 20, 21, 22, 23, 24, 25, 26,
-     14, 15, 16, 17, 18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 26, 27};
+    // Quality 50
+    {16, 14, 12, 11, 11, 13, 16, 20, 24, 30, 39, 48, 54, 61, 67, 73,
+     14, 13, 12, 12, 12, 15, 18, 21, 25, 33, 46, 57, 61, 65, 67, 70,
+     13, 12, 12, 13, 14, 17, 19, 23, 27, 36, 53, 66, 68, 69, 68, 67,
+     13, 13, 13, 14, 15, 18, 22, 26, 32, 41, 56, 67, 71, 74, 70, 67,
+     14, 14, 14, 15, 17, 20, 24, 30, 38, 47, 58, 68, 74, 79, 73, 67,
+     15, 15, 15, 17, 19, 22, 27, 34, 44, 55, 68, 79, 83, 85, 78, 70,
+     15, 16, 17, 20, 22, 26, 30, 38, 49, 63, 81, 94, 93, 91, 83, 74,
+     16, 18, 20, 24, 28, 33, 38, 47, 57, 73, 93, 108, 105, 101, 91, 81,
+     19, 21, 23, 29, 35, 43, 52, 60, 68, 83, 105, 121, 118, 115, 102, 89,
+     21, 24, 27, 35, 43, 53, 62, 70, 78, 91, 113, 128, 127, 125, 112, 99,
+     25, 30, 34, 43, 53, 61, 68, 76, 85, 97, 114, 127, 130, 132, 120, 108,
+     31, 38, 44, 54, 64, 71, 76, 84, 94, 105, 118, 129, 135, 138, 127, 116,
+     45, 52, 60, 69, 78, 84, 90, 97, 107, 118, 130, 139, 142, 143, 133, 122,
+     59, 68, 76, 84, 91, 97, 102, 110, 120, 129, 139, 147, 147, 146, 137, 127,
+     73, 82, 92, 98, 103, 107, 110, 117, 126, 132, 134, 136, 138, 138, 133, 127,
+     86, 98, 109, 112, 114, 116, 118, 124, 133, 135, 129, 125, 128, 130, 128, 127};
 
-// Quality settings for quantisation (Co channel - 8x8)
+// Quality settings for quantisation (X channel - 8x8)
 static const uint32_t QUANT_TABLE_C[64] =
-    {2, 3, 4, 6, 8, 12, 16, 20,
-     3, 4, 6, 8, 12, 16, 20, 24,
-     4, 6, 8, 12, 16, 20, 24, 28,
-     6, 8, 12, 16, 20, 24, 28, 32,
-     8, 12, 16, 20, 24, 28, 32, 36,
-     12, 16, 20, 24, 28, 32, 36, 40,
-     16, 20, 24, 28, 32, 36, 40, 44,
-     20, 24, 28, 32, 36, 40, 44, 48};
+    {17, 18, 24, 47, 99, 99, 99, 99,
+     18, 21, 26, 66, 99, 99, 99, 99,
+     24, 26, 56, 99, 99, 99, 99, 99,
+     47, 66, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99,
+     99, 99, 99, 99, 99, 99, 99, 99};
 
 
 // Audio constants (reuse MP2 from existing system)
@@ -123,7 +132,10 @@ typedef struct {
     int has_audio;
     int has_subtitles;
     int output_to_stdout;
-    int quality;  // 0-4, higher = better quality
+    int qualityIndex; // -q option
+    int qualityY;
+    int qualityCo;
+    int qualityCg;
     int verbose;
 
     // Bitrate control
@@ -344,7 +356,7 @@ static void dct_8x8(float *input, float *output) {
 }
 
 // quantise DCT coefficient using quality table with rate control
-static int16_t quantise_coeff(float coeff, uint32_t quant, int is_dc, int is_chroma, float rate_factor) {
+static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma, float rate_factor) {
     if (is_dc) {
         if (is_chroma) {
             // Chroma DC: range -256 to +255, use lossless quantisation for testing
@@ -814,9 +826,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // quantise Y coefficients (luma)
     const uint32_t *y_quant = QUANT_TABLE_Y;
-    const uint32_t qmult_y = QUANT_MULT_Y[enc->quality];
+    const float qmult_y = jpeg_quality_to_mult(enc->qualityY);
     for (int i = 0; i < 256; i++) {
-        block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], y_quant[i] * qmult_y, i == 0, 0, enc->rate_control_factor);
+        block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(y_quant[i] * qmult_y, 1.f, 255.f), i == 0, 0, enc->rate_control_factor);
     }
 
     // Apply fast DCT transform to chroma
@@ -824,9 +836,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // quantise Co coefficients (chroma - orange-blue)
     const uint32_t *co_quant = QUANT_TABLE_C;
-    const uint32_t qmult_co = QUANT_MULT_CO[enc->quality];
+    const float qmult_co = jpeg_quality_to_mult(enc->qualityCo);
     for (int i = 0; i < 64; i++) {
-        block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], co_quant[i] * qmult_co, i == 0, 1, enc->rate_control_factor);
+        block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(co_quant[i] * qmult_co, 1.f, 255.f), i == 0, 1, enc->rate_control_factor);
     }
 
     // Apply fast DCT transform to Cg
@@ -834,9 +846,9 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q)
     const uint32_t *cg_quant = QUANT_TABLE_C;
-    const uint32_t qmult_cg = QUANT_MULT_CG[enc->quality];
+    const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg);
     for (int i = 0; i < 64; i++) {
-        block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], cg_quant[i] * qmult_cg, i == 0, 1, enc->rate_control_factor);
+        block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(cg_quant[i] * qmult_cg, 1.f, 255.f), i == 0, 1, enc->rate_control_factor);
     }
 
     // Set CBP (simplified - always encode all channels)
@@ -1066,7 +1078,10 @@ static tev_encoder_t* init_encoder(void) {
     if (!enc) return NULL;
 
     // set defaults
-    enc->quality = 2;  // Default quality
+    enc->qualityIndex = 2; // Default quality
+    enc->qualityY = QUALITY_Y[enc->qualityIndex];
+    enc->qualityCo = QUALITY_CO[enc->qualityIndex];
+    enc->qualityCg = enc->qualityCo / 2;
     enc->mp2_packet_size = 0; // Will be detected from MP2 header
     enc->mp2_rate_index = 0;
     enc->audio_frames_in_buffer = 0;
@@ -1173,15 +1188,21 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     uint16_t height = enc->height;
     uint8_t fps = enc->fps;
     uint32_t total_frames = enc->total_frames;
-    uint8_t quality = enc->quality;
-    uint8_t has_audio = enc->has_audio;
+    uint8_t qualityY = enc->qualityY;
+    uint8_t qualityCo = enc->qualityCo;
+    uint8_t qualityCg = enc->qualityCg;
+    uint8_t flags = (enc->has_audio) | (enc->has_subtitles << 1);
+    uint16_t unused = 0;
 
     fwrite(&width, 2, 1, output);
     fwrite(&height, 2, 1, output);
     fwrite(&fps, 1, 1, output);
     fwrite(&total_frames, 4, 1, output);
-    fwrite(&quality, 1, 1, output);
-    fwrite(&has_audio, 1, 1, output);
+    fwrite(&qualityY, 1, 1, output);
+    fwrite(&qualityCo, 1, 1, output);
+    fwrite(&qualityCg, 1, 1, output);
+    fwrite(&flags, 1, 1, output);
+    fwrite(&unused, 2, 1, output);
 
     return 0;
 }
@@ -1475,7 +1496,7 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     char command[2048];
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, MP2_RATE_TABLE[enc->quality], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
+        enc->input_file, MP2_RATE_TABLE[enc->qualityIndex], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
 
     int result = system(command);
     if (result == 0) {
@@ -1625,7 +1646,8 @@ static void show_usage(const char *program_name) {
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio rate in bitrate mode)\n");
+    printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio rate in bitrate mode and quantiser mode)\n");
+    printf("  -Q, --quantiser N    Quantiser level 0-100 (100: lossless, 0: potato)\n");
     printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -t, --test           Test mode: generate solid colour frames\n");
@@ -1637,6 +1659,11 @@ static void show_usage(const char *program_name) {
     printf("  ");
     for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
         printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
+    }
+    printf("\nQuantiser Value by Quality:\n");
+    printf("  ");
+    for (int i = 0; i < sizeof(QUALITY_Y) / sizeof(int); i++) {
+        printf("%d: -Q %d  \t", i, QUALITY_Y[i]);
     }
     printf("\n\n");
     printf("Features:\n");
@@ -1692,6 +1719,8 @@ int main(int argc, char *argv[]) {
         {"height", required_argument, 0, 'h'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
+        {"quantiser", required_argument, 0, 'Q'},
+        {"quantizer", required_argument, 0, 'Q'},
         {"bitrate", required_argument, 0, 'b'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
@@ -1702,7 +1731,7 @@ int main(int argc, char *argv[]) {
     int option_index = 0;
     int c;
 
-    while ((c = getopt_long(argc, argv, "i:o:s:w:h:f:q:b:vt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:w:h:f:q:b:Q:vt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -1729,7 +1758,10 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'q':
-                enc->quality = CLAMP(atoi(optarg), 0, 4);
+                enc->qualityIndex = CLAMP(atoi(optarg), 0, 4);
+                enc->qualityY = QUALITY_Y[enc->qualityIndex];
+                enc->qualityCo = QUALITY_CO[enc->qualityIndex];
+                enc->qualityCg = enc->qualityCo / 2;
                 break;
             case 'b':
                 enc->target_bitrate_kbps = atoi(optarg);
@@ -1749,6 +1781,11 @@ int main(int argc, char *argv[]) {
                     cleanup_encoder(enc);
                     return 0;
                 }
+                break;
+            case 'Q':
+                enc->qualityY = CLAMP(atoi(optarg), 0, 100);
+                enc->qualityCo = enc->qualityY;
+                enc->qualityCg = enc->qualityCo / 2;
                 break;
             default:
                 show_usage(argv[0]);
@@ -1844,7 +1881,8 @@ int main(int argc, char *argv[]) {
     if (enc->bitrate_mode > 0) {
         printf("Bitrate control enabled: targeting %d kbps\n", enc->target_bitrate_kbps);
     } else {
-        printf("Quality mode: q=%d\n", enc->quality);
+        printf("Quality mode: q=%d\n", enc->qualityIndex);
+        printf("Quantiser levels: %d, %d, %d\n", enc->qualityY, enc->qualityCo, enc->qualityCg);
     }
 
     // Process frames

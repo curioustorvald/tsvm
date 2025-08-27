@@ -693,15 +693,20 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 [PACKET 2]
 ...
 
-## Header (20 bytes)
+## Header (24 bytes)
     uint8  Magic[8]: "\x1FTSVM TEV"
     uint8  Version: 2 or 3
     uint16 Width: video width in pixels
     uint16 Height: video height in pixels
     uint8 FPS: frames per second
     uint32 Total Frames: number of video frames
-    uint8  Quality: quantization quality (0-4, higher = better)
-    uint8  Flags: bit 0 = has audio
+    uint8  Quality Index for Y channel (0-99; 100 denotes all quantiser is 1)
+    uint8  Quality Index for Co channel (0-99; 100 denotes all quantiser is 1)
+    uint8  Quality Index for Cg channel (0-99; 100 denotes all quantiser is 1)
+    uint8  Flags
+            bit 0 = has audio
+            bit 1 = has subtitle
+    unit16 Reserved, fill with zero
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
@@ -712,7 +717,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 
 ## Video Packet Structure
     uint8  Packet Type
-    uint32 Compressed Size (includes rate control factor size)
+    uint32 Compressed Size
     *      Gzip-compressed Block Data
 
 ## Block Data (per 16x16 block)

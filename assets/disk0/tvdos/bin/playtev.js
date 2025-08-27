@@ -296,8 +296,16 @@ let width = seqread.readShort()
 let height = seqread.readShort()
 let fps = seqread.readOneByte()
 let totalFrames = seqread.readInt()
-let quality = seqread.readOneByte()
-let hasAudio = seqread.readOneByte()
+let qualityY = seqread.readOneByte()
+let qualityCo = seqread.readOneByte()
+let qualityCg = seqread.readOneByte()
+let flags = seqread.readOneByte()
+let hasAudio = flags & 1
+let hasSubtitle = flags & 2
+let unused1 = seqread.readOneByte()
+let unused2 = seqread.readOneByte()
+
+serial.println(`TEV Format ${version} (${colorSpace}); Q: ${qualityY} ${qualityCo} ${qualityCg}`)
 
 function updateDataRateBin(rate) {
     videoRateBin.push(rate)
@@ -464,7 +472,7 @@ try {
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     let decodeStart = sys.nanoTime()
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, quality, debugMotionVectors, version)
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], debugMotionVectors, version)
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering
