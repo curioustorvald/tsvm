@@ -1397,90 +1397,73 @@ static char *execute_command(const char *command) {
 }
 
 // Get video metadata using ffprobe
-static int get_video_metadata(tev_encoder_t *enc) {
+static int get_video_metadata(tev_encoder_t *config) {
     char command[1024];
     char *output;
 
-    // Get frame count
+    // Get all metadata in a single ffprobe call
     snprintf(command, sizeof(command),
-        "ffprobe -v quiet -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 \"%s\"",
-        enc->input_file);
-    output = execute_command(command);
-    if (!output) {
-        fprintf(stderr, "Failed to get frame count\n");
-        return 0;
-    }
-    enc->total_frames = atoi(output);
-    free(output);
+        "ffprobe -v quiet -count_frames "
+        "-show_entries stream=nb_read_frames,r_frame_rate:format=duration "
+        "-select_streams v:0 -of csv=p=0 \"%s\" 2>/dev/null; "
+        "ffprobe -v quiet -select_streams a:0 -show_entries stream=index -of csv=p=0 \"%s\" 2>/dev/null",
+        config->input_file, config->input_file);
 
-    // Get original frame rate (will be converted if user specified different FPS)
-    snprintf(command, sizeof(command),
-        "ffprobe -v quiet -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 \"%s\"",
-        enc->input_file);
     output = execute_command(command);
     if (!output) {
-        fprintf(stderr, "Failed to get frame rate\n");
+        fprintf(stderr, "Failed to get video metadata\n");
         return 0;
     }
 
-    int num, den;
-    if (sscanf(output, "%d/%d", &num, &den) == 2) {
-        enc->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
-    } else {
-        enc->fps = (int)round(atof(output));
+    // Parse the combined output
+    char *line = strtok(output, "\n");
+    int line_num = 0;
+
+    while (line && line_num < 2) {
+        switch (line_num) {
+            case 0: // Line format: "framerate,framecount" (e.g., "24000/1001,4423")
+                {
+                    char *comma = strchr(line, ',');
+                    if (comma) {
+                        *comma = '\0'; // Split at comma
+                        // Parse frame rate (first part)
+                        int num, den;
+                        if (sscanf(line, "%d/%d", &num, &den) == 2) {
+                            config->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
+                        } else {
+                            config->fps = (int)round(atof(line));
+                        }
+                        // Parse frame count (second part)
+                        config->total_frames = atoi(comma + 1);
+                    }
+                }
+                break;
+            case 1: // duration in seconds
+                config->duration = atof(line);
+                break;
+        }
+        line = strtok(NULL, "\n");
+        line_num++;
     }
+
+    // Check for audio stream (will be on line 3 if present)
+    config->has_audio = (line && strlen(line) > 0 && atoi(line) >= 0);
+
     free(output);
 
-    // If user specified output FPS, calculate new total frames for conversion
-    if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
-        // Calculate duration and new frame count
-        snprintf(command, sizeof(command),
-            "ffprobe -v quiet -show_entries format=duration -of csv=p=0 \"%s\"",
-            enc->input_file);
-        output = execute_command(command);
-        if (output) {
-            enc->duration = atof(output);
-            free(output);
-            // Update total frames for new frame rate
-            enc->total_frames = (int)(enc->duration * enc->output_fps);
-            if (enc->verbose) {
-                printf("Frame rate conversion: %d fps -> %d fps\n", enc->fps, enc->output_fps);
-                printf("Original frames: %d, Output frames: %d\n",
-                       (int)(enc->duration * enc->fps), enc->total_frames);
-            }
-            enc->fps = enc->output_fps;  // Use output FPS for encoding
-        }
+    // Validate frame count using duration if needed
+    if (config->total_frames <= 0 && config->duration > 0) {
+        config->total_frames = (int)(config->duration * config->fps);
     }
 
-    // set keyframe interval
-    KEYFRAME_INTERVAL = 2 * enc->fps;
+    fprintf(stderr, "Video metadata:\n");
+    fprintf(stderr, "  Frames: %d\n", config->total_frames);
+    fprintf(stderr, "  FPS: %d\n", config->fps);
+    fprintf(stderr, "  Duration: %.2fs\n", config->duration);
+    fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
+    fprintf(stderr, "  Resolution: %dx%d\n", config->width, config->height);
 
-    // Calculate target bits per frame for bitrate mode
-    if (enc->target_bitrate_kbps > 0) {
-        enc->target_bits_per_frame = (enc->target_bitrate_kbps * 1000) / enc->fps;
-        if (enc->verbose) {
-            printf("Target bitrate: %d kbps (%zu bits per frame)\n",
-                   enc->target_bitrate_kbps, enc->target_bits_per_frame);
-        }
-    }
-
-    // Check for audio stream
-    snprintf(command, sizeof(command),
-        "ffprobe -v quiet -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 \"%s\" 2>/dev/null",
-        enc->input_file);
-    output = execute_command(command);
-    enc->has_audio = (output && strstr(output, "audio"));
-    if (output) free(output);
-
-    if (enc->verbose) {
-        fprintf(stderr, "Video metadata:\n");
-        fprintf(stderr, "  Frames: %d\n", enc->total_frames);
-        fprintf(stderr, "  FPS: %d\n", enc->fps);
-        fprintf(stderr, "  Audio: %s\n", enc->has_audio ? "Yes" : "No");
-        fprintf(stderr, "  Resolution: %dx%d\n", enc->width, enc->height);
-    }
-
-    return (enc->total_frames > 0 && enc->fps > 0);
+    return (config->total_frames > 0 && config->fps > 0);
 }
 
 // Start FFmpeg process for video conversion with frame rate support
@@ -1857,6 +1840,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Load subtitle file if specified
+    printf("Loading subtitles...\n");
     if (enc->subtitle_file) {
         enc->subtitle_list = parse_srt_file(enc->subtitle_file, enc->fps);
         if (enc->subtitle_list) {
