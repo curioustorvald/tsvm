@@ -50,6 +50,7 @@ static const int MP2_RATE_TABLE[] = {80, 128, 192, 256, 384};
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 //  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
 // 10  25  45  65  85  ChatGPT-5 (without data analysis)
+// 10  30  50  70  90  ChatGPT-5 (with data analysis)
 static const int QUALITY_Y[] =  {5, 18, 42, 63, 80};
 static const int QUALITY_CO[] = {5, 18, 42, 63, 80};
 

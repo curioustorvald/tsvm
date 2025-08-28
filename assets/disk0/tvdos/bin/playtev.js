@@ -133,7 +133,12 @@ function displayFormattedLine(line) {
     
     let i = 0
     let inBoldOrItalic = false
-    
+
+    // insert initial padding block
+    con.color_pair(0, 255)
+    con.prnch(0xDE)
+    con.color_pair(231, 0)
+
     while (i < line.length) {
         if (i < line.length - 2 && line[i] === '<') {
             // Check for opening tags
@@ -159,6 +164,11 @@ function displayFormattedLine(line) {
             i++
         }
     }
+
+    // insert final padding block
+    con.color_pair(0, 255)
+    con.prnch(0xDD)
+    con.color_pair(231, 0)
 }
 
 function displaySubtitle(text, position = 0) {
@@ -214,24 +224,23 @@ function displaySubtitle(text, position = 0) {
             case 1: // bottom left
             case 2: // center left
             case 3: // top left
-                startCol = 2
+                startCol = 1
                 break
             case 5: // top right
             case 6: // center right
             case 7: // bottom right
-                startCol = Math.max(1, 78 - getVisualLength(line))
+                startCol = Math.max(1, 78 - getVisualLength(line) - 2)
                 break
             case 0: // bottom center
             case 4: // top center
             case 8: // dead center
             default:
-                startCol = Math.max(1, Math.floor((80 - longestLineLength) / 2) + 1)
+                startCol = Math.max(1, Math.floor((80 - longestLineLength - 2) / 2) + 1)
                 break
         }
 
         con.move(row, startCol)
-        // TODO insert half-width pillars to cap the subtitle blocks
-        
+
         // Parse and display line with formatting tag support
         displayFormattedLine(line)
     }
@@ -609,7 +618,8 @@ try {
         if (interactive) {
             notifHideTimer += (t2 - t1)
             if (!notifHidden && notifHideTimer > (NOTIF_SHOWUPTIME + FRAME_TIME)) {
-                con.clear()
+                con.move(1, 1)
+                print(' '.repeat(79))
                 notifHidden = true
             }
 
