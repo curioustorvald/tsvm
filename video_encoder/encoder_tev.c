@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <getopt.h>
 #include <sys/time.h>
+#include <time.h>
 
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
@@ -99,7 +100,27 @@ int KEYFRAME_INTERVAL = 60;
 // Default values
 #define DEFAULT_WIDTH 560
 #define DEFAULT_HEIGHT 448
-#define TEMP_AUDIO_FILE "/tmp/tev_temp_audio.mp2"
+
+static void generate_random_filename(char *filename) {
+    srand(time(NULL));
+
+    const char charset[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const int charset_size = sizeof(charset) - 1;
+
+    // Start with the prefix
+    strcpy(filename, "/tmp/");
+
+    // Generate 32 random characters
+    for (int i = 0; i < 32; i++) {
+        filename[5 + i] = charset[rand() % charset_size];
+    }
+
+    // Add the .mp2 extension
+    strcpy(filename + 37, ".mp2");
+    filename[41] = '\0';  // Null terminate
+}
+
+char TEMP_AUDIO_FILE[42];// "/tmp/tev_temp_audio.mp2"
 
 typedef struct __attribute__((packed)) {
     uint8_t mode;           // Block encoding mode
@@ -150,7 +171,7 @@ typedef struct {
     float *y_workspace, *co_workspace, *cg_workspace;
     float *dct_workspace;       // DCT coefficients
     tev_block_t *block_data;    // Encoded block data
-    uint8_t *compressed_buffer; // Zstd output
+    uint8_t *compressed_buffer; // Gzip output
 
     // Audio handling
     FILE *mp2_file;
@@ -1710,9 +1731,12 @@ int sync_packet_count = 0;
 
 // Main function
 int main(int argc, char *argv[]) {
+    generate_random_filename(TEMP_AUDIO_FILE);
+
+    printf("Initialising encoder...\n");
     tev_encoder_t *enc = init_encoder();
     if (!enc) {
-        fprintf(stderr, "Failed to initialize encoder\n");
+        fprintf(stderr, "Failed to initialise encoder\n");
         return 1;
     }
 
@@ -1824,6 +1848,7 @@ int main(int argc, char *argv[]) {
         printf("Test mode: Generating 15 solid colour frames\n");
     } else {
         // Get video metadata and start FFmpeg processes
+        printf("Retrieving video metadata...\n");
         if (!get_video_metadata(enc)) {
             fprintf(stderr, "Failed to get video metadata\n");
             cleanup_encoder(enc);

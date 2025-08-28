@@ -1452,7 +1452,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 } else {
                     (sum + 128f).coerceIn(0f, 255f)
                 }
-                // Fix indexing: col=x, row=y, so result[y * 8 + x]
                 result[row * 8 + col] = pixel.toInt()
             }
         }
@@ -1505,7 +1504,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     sum += dctBasis16[v][row] * idct16SeparableBuffer[v * 16 + col]
                 }
                 val pixel = (sum + 128f).coerceIn(0f, 255f)
-                // This indexing causes 90° rotation: row/col vs y/x mismatch
                 result[row * 16 + col] = pixel.toInt()
             }
         }
