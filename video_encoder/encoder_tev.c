@@ -44,7 +44,7 @@ static inline float FCLAMP(float x, float min, float max) {
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 // 56  96 128 192 256  Claude Opus 4.1 (with data analysis)
 // 64  96 128 192 256  ChatGPT-5 (without data analysis)
-static const int MP2_RATE_TABLE[] = {64, 96, 128, 192, 256};
+static const int MP2_RATE_TABLE[] = {80, 128, 192, 256, 384};
 // Which preset should I be using?
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 //  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
