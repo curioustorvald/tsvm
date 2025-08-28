@@ -23,7 +23,21 @@ const TEV_MODE_MOTION = 0x03
 const TEV_PACKET_IFRAME = 0x10
 const TEV_PACKET_PFRAME = 0x11
 const TEV_PACKET_AUDIO_MP2 = 0x20
+const TEV_PACKET_SUBTITLE = 0x30
 const TEV_PACKET_SYNC = 0xFF
+
+// Subtitle opcodes (SSF format)
+const SSF_OP_NOP = 0x00
+const SSF_OP_SHOW = 0x01
+const SSF_OP_HIDE = 0x02
+const SSF_OP_MOVE = 0x10
+const SSF_OP_UPLOAD_LOW_FONT = 0x30
+const SSF_OP_UPLOAD_HIGH_FONT = 0x31
+
+// Subtitle state
+let subtitleVisible = false
+let subtitleText = ""
+let subtitlePosition = 0  // 0=bottom center (default)
 
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const debugMotionVectors = exec_args[2] && exec_args[2].toLowerCase() == "-debug-mv"
@@ -89,44 +103,36 @@ function displaySubtitle(text, position = 0) {
         return
     }
 
-    // Set subtitle colors: yellow (230) on black (0)
+    // Set subtitle colors: yellow (231) on black (0)
     let oldFgColor = con.get_color_fore()
     let oldBgColor = con.get_color_back()
-    con.color_pair_pair(230, 0)
+    con.color_pair(231, 0)
 
     // Split text into lines
     let lines = text.split('\n')
 
     // Calculate position based on subtitle position setting
     let startRow, startCol
+    let longestLineLength = lines.map(s => s.length).sort().last()
 
     switch (position) {
-        case 0: // bottom center
-            startRow = 32 - lines.length + 1
-            break
-        case 1: // bottom left
-            startRow = 32 - lines.length + 1
-            break
         case 2: // center left
+        case 6: // center right
+        case 8: // dead center
             startRow = 16 - Math.floor(lines.length / 2)
             break
         case 3: // top left
-            startRow = 2
-            break
         case 4: // top center
-            startRow = 2
-            break
         case 5: // top right
             startRow = 2
             break
-        case 6: // center right
-            startRow = 16 - Math.floor(lines.length / 2)
-            break
+        case 0: // bottom center
+        case 1: // bottom left
         case 7: // bottom right
-            startRow = 32 - lines.length + 1
-            break
         default:
-            startRow = 32 - lines.length + 1  // Default to bottom center
+            startRow = 32 - lines.length
+            startRow = 32 - lines.length
+            startRow = 32 - lines.length  // Default to bottom center
     }
 
     // Display each line
@@ -140,10 +146,6 @@ function displaySubtitle(text, position = 0) {
 
         // Calculate column based on alignment
         switch (position) {
-            case 0: // bottom center
-            case 4: // top center
-                startCol = Math.max(1, Math.floor((80 - line.length) / 2) + 1)
-                break
             case 1: // bottom left
             case 2: // center left
             case 3: // top left
@@ -152,13 +154,18 @@ function displaySubtitle(text, position = 0) {
             case 5: // top right
             case 6: // center right
             case 7: // bottom right
-                startCol = Math.max(1, 80 - line.length)
+                startCol = Math.max(1, 78 - line.length)
                 break
+            case 0: // bottom center
+            case 4: // top center
+            case 8: // dead center
             default:
-                startCol = Math.max(1, Math.floor((80 - line.length) / 2) + 1)
+                startCol = Math.max(1, Math.floor((80 - longestLineLength) / 2) + 1)
+                break
         }
 
         con.move(row, startCol)
+        // TODO insert half-width pillars to cap the subtitle blocks
         print(line)  // Unicode-capable print function
     }
 
@@ -516,9 +523,11 @@ try {
                 audio.mp2UploadDecoded(0)
 
             } else if (packetType == TEV_PACKET_SUBTITLE) {
-                // Subtitle packet - NEW!
+                // Subtitle packet
                 let packetSize = seqread.readInt()
                 processSubtitlePacket(packetSize)
+            } else if (packetType == 0x00) {
+                // Silently discard, faulty subtitle creation can cause this as 0x00 is used as an argument terminator
             } else {
                 println(`Unknown packet type: 0x${packetType.toString(16)}`)
                 break
@@ -537,13 +546,15 @@ try {
                 notifHidden = true
             }
 
-            con.move(31, 1)
-            graphics.setTextFore(161)
-            print(`Frame: ${frameCount}/${totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
-            con.move(32, 1)
-            graphics.setTextFore(161)
-            print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
-            con.move(1, 1)
+            if (!hasSubtitle) {
+                con.move(31, 1)
+                graphics.setTextFore(161)
+                print(`Frame: ${frameCount}/${totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                con.move(32, 1)
+                graphics.setTextFore(161)
+                print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
+                con.move(1, 1)
+            }
         }
 
         t1 = t2
