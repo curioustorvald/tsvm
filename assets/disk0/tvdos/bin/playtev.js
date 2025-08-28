@@ -97,6 +97,70 @@ function clearSubtitleArea() {
     con.color_pair(oldFgColor, oldBgColor)
 }
 
+function getVisualLength(line) {
+    // Calculate the visual length of a line excluding formatting tags
+    let visualLength = 0
+    let i = 0
+    
+    while (i < line.length) {
+        if (i < line.length - 2 && line[i] === '<') {
+            // Check for formatting tags and skip them
+            if (line.substring(i, i + 3).toLowerCase() === '<b>' || 
+                line.substring(i, i + 3).toLowerCase() === '<i>') {
+                i += 3  // Skip tag
+            } else if (i < line.length - 3 && 
+                      (line.substring(i, i + 4).toLowerCase() === '</b>' ||
+                       line.substring(i, i + 4).toLowerCase() === '</i>')) {
+                i += 4  // Skip closing tag
+            } else {
+                // Not a formatting tag, count the character
+                visualLength++
+                i++
+            }
+        } else {
+            // Regular character, count it
+            visualLength++
+            i++
+        }
+    }
+    
+    return visualLength
+}
+
+function displayFormattedLine(line) {
+    // Parse line and handle <b> and <i> tags with color changes
+    // Default subtitle color: yellow (231), formatted text: white (254)
+    
+    let i = 0
+    let inBoldOrItalic = false
+    
+    while (i < line.length) {
+        if (i < line.length - 2 && line[i] === '<') {
+            // Check for opening tags
+            if (line.substring(i, i + 3).toLowerCase() === '<b>' || 
+                line.substring(i, i + 3).toLowerCase() === '<i>') {
+                con.color_pair(254, 0)  // Switch to white for formatted text
+                inBoldOrItalic = true
+                i += 3
+            } else if (i < line.length - 3 && 
+                      (line.substring(i, i + 4).toLowerCase() === '</b>' ||
+                       line.substring(i, i + 4).toLowerCase() === '</i>')) {
+                con.color_pair(231, 0)  // Switch back to yellow for normal text
+                inBoldOrItalic = false
+                i += 4
+            } else {
+                // Not a formatting tag, print the character
+                print(line[i])
+                i++
+            }
+        } else {
+            // Regular character, print it
+            print(line[i])
+            i++
+        }
+    }
+}
+
 function displaySubtitle(text, position = 0) {
     if (!text || text.length === 0) {
         clearSubtitleArea()
@@ -113,7 +177,8 @@ function displaySubtitle(text, position = 0) {
 
     // Calculate position based on subtitle position setting
     let startRow, startCol
-    let longestLineLength = lines.map(s => s.length).sort().last()
+    // Calculate visual length without formatting tags for positioning
+    let longestLineLength = lines.map(s => getVisualLength(s)).sort().last()
 
     switch (position) {
         case 2: // center left
@@ -154,7 +219,7 @@ function displaySubtitle(text, position = 0) {
             case 5: // top right
             case 6: // center right
             case 7: // bottom right
-                startCol = Math.max(1, 78 - line.length)
+                startCol = Math.max(1, 78 - getVisualLength(line))
                 break
             case 0: // bottom center
             case 4: // top center
@@ -166,7 +231,9 @@ function displaySubtitle(text, position = 0) {
 
         con.move(row, startCol)
         // TODO insert half-width pillars to cap the subtitle blocks
-        print(line)  // Unicode-capable print function
+        
+        // Parse and display line with formatting tag support
+        displayFormattedLine(line)
     }
 
     con.color_pair(oldFgColor, oldBgColor)

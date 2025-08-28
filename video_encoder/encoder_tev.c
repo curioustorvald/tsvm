@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <getopt.h>
+#include <ctype.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -898,6 +899,12 @@ static int srt_time_to_frame(const char *time_str, int fps) {
     return (int)(total_seconds * fps + 0.5);  // Round to nearest frame
 }
 
+// Convert SAMI milliseconds to frame number
+static int sami_ms_to_frame(int milliseconds, int fps) {
+    double seconds = milliseconds / 1000.0;
+    return (int)(seconds * fps + 0.5);  // Round to nearest frame
+}
+
 // Parse SubRip subtitle file
 static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
     FILE *file = fopen(filename, "r");
@@ -1024,6 +1031,335 @@ static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
     
     fclose(file);
     return head;
+}
+
+// Strip HTML tags from text but preserve <b> and <i> formatting tags
+static char* strip_html_tags(const char *html) {
+    if (!html) return NULL;
+    
+    size_t len = strlen(html);
+    char *result = malloc(len + 1);
+    if (!result) return NULL;
+    
+    int in_tag = 0;
+    int out_pos = 0;
+    int i = 0;
+    
+    while (i < len) {
+        if (html[i] == '<') {
+            // Check if this is a formatting tag we want to preserve
+            int preserve_tag = 0;
+            
+            // Check for <b>, </b>, <i>, </i> tags
+            if (i + 1 < len) {
+                if ((i + 2 < len && strncasecmp(&html[i], "<b>", 3) == 0) ||
+                    (i + 3 < len && strncasecmp(&html[i], "</b>", 4) == 0) ||
+                    (i + 2 < len && strncasecmp(&html[i], "<i>", 3) == 0) ||
+                    (i + 3 < len && strncasecmp(&html[i], "</i>", 4) == 0)) {
+                    preserve_tag = 1;
+                }
+            }
+            
+            if (preserve_tag) {
+                // Copy the entire tag
+                while (i < len && html[i] != '>') {
+                    result[out_pos++] = html[i++];
+                }
+                if (i < len) {
+                    result[out_pos++] = html[i++]; // Copy the '>'
+                }
+            } else {
+                // Skip non-formatting tags
+                in_tag = 1;
+                i++;
+            }
+        } else if (html[i] == '>') {
+            in_tag = 0;
+            i++;
+        } else if (!in_tag) {
+            result[out_pos++] = html[i++];
+        } else {
+            i++;
+        }
+    }
+    
+    result[out_pos] = '\0';
+    return result;
+}
+
+// Parse SAMI subtitle file
+static subtitle_entry_t* parse_smi_file(const char *filename, int fps) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        fprintf(stderr, "Failed to open subtitle file: %s\n", filename);
+        return NULL;
+    }
+    
+    subtitle_entry_t *head = NULL;
+    subtitle_entry_t *tail = NULL;
+    char line[2048];
+    char *content = NULL;
+    size_t content_size = 0;
+    size_t content_pos = 0;
+    
+    // Read entire file into memory for easier parsing
+    while (fgets(line, sizeof(line), file)) {
+        size_t line_len = strlen(line);
+        
+        // Expand content buffer if needed
+        if (content_pos + line_len + 1 > content_size) {
+            content_size = content_size ? content_size * 2 : 8192;
+            char *new_content = realloc(content, content_size);
+            if (!new_content) {
+                free(content);
+                fclose(file);
+                fprintf(stderr, "Memory allocation failed while parsing SAMI file\n");
+                return NULL;
+            }
+            content = new_content;
+        }
+        
+        strcpy(content + content_pos, line);
+        content_pos += line_len;
+    }
+    fclose(file);
+    
+    if (!content) return NULL;
+    
+    // Convert to lowercase for case-insensitive parsing
+    char *content_lower = malloc(strlen(content) + 1);
+    if (!content_lower) {
+        free(content);
+        return NULL;
+    }
+    
+    for (int i = 0; content[i]; i++) {
+        content_lower[i] = tolower(content[i]);
+    }
+    content_lower[strlen(content)] = '\0';
+    
+    // Find BODY section
+    char *body_start = strstr(content_lower, "<body");
+    if (!body_start) {
+        fprintf(stderr, "No BODY section found in SAMI file\n");
+        free(content);
+        free(content_lower);
+        return NULL;
+    }
+    
+    // Skip to actual body content
+    body_start = strchr(body_start, '>');
+    if (!body_start) {
+        free(content);
+        free(content_lower);
+        return NULL;
+    }
+    body_start++;
+    
+    // Calculate offset in original content
+    size_t body_offset = body_start - content_lower;
+    char *body_content = content + body_offset;
+    
+    // Parse SYNC tags
+    char *pos = content_lower + body_offset;
+    char *original_pos = body_content;
+    
+    while ((pos = strstr(pos, "<sync")) != NULL) {
+        // Find start time
+        char *start_attr = strstr(pos, "start");
+        if (!start_attr || start_attr > strstr(pos, ">")) {
+            pos++;
+            continue;
+        }
+        
+        // Parse start time
+        start_attr = strchr(start_attr, '=');
+        if (!start_attr) {
+            pos++;
+            continue;
+        }
+        start_attr++;
+        
+        // Skip whitespace and quotes
+        while (*start_attr && (*start_attr == ' ' || *start_attr == '"' || *start_attr == '\'')) {
+            start_attr++;
+        }
+        
+        int start_ms = atoi(start_attr);
+        if (start_ms < 0) {
+            pos++;
+            continue;
+        }
+        
+        // Find end of sync tag
+        char *sync_end = strchr(pos, '>');
+        if (!sync_end) {
+            pos++;
+            continue;
+        }
+        sync_end++;
+        
+        // Find next sync tag or end of body
+        char *next_sync = strstr(sync_end, "<sync");
+        char *body_end = strstr(sync_end, "</body>");
+        char *text_end = next_sync;
+        
+        if (body_end && (!next_sync || body_end < next_sync)) {
+            text_end = body_end;
+        }
+        
+        if (!text_end) {
+            // Use end of content
+            text_end = content_lower + strlen(content_lower);
+        }
+        
+        // Extract subtitle text
+        size_t text_len = text_end - sync_end;
+        if (text_len > 0) {
+            // Get text from original content (not lowercase version)
+            size_t sync_offset = sync_end - content_lower;
+            char *subtitle_text = malloc(text_len + 1);
+            if (!subtitle_text) break;
+            
+            strncpy(subtitle_text, content + sync_offset, text_len);
+            subtitle_text[text_len] = '\0';
+            
+            // Strip HTML tags and clean up text
+            char *clean_text = strip_html_tags(subtitle_text);
+            free(subtitle_text);
+            
+            if (clean_text && strlen(clean_text) > 0) {
+                // Remove leading/trailing whitespace
+                char *start = clean_text;
+                while (*start && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+                    start++;
+                }
+                
+                char *end = start + strlen(start) - 1;
+                while (end > start && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
+                    *end = '\0';
+                    end--;
+                }
+                
+                if (strlen(start) > 0) {
+                    // Create subtitle entry
+                    subtitle_entry_t *entry = calloc(1, sizeof(subtitle_entry_t));
+                    if (entry) {
+                        entry->start_frame = sami_ms_to_frame(start_ms, fps);
+                        entry->text = strdup(start);
+                        
+                        // Set end frame to next subtitle start or a default duration
+                        if (next_sync) {
+                            // Parse next sync start time
+                            char *next_start = strstr(next_sync, "start");
+                            if (next_start) {
+                                next_start = strchr(next_start, '=');
+                                if (next_start) {
+                                    next_start++;
+                                    while (*next_start && (*next_start == ' ' || *next_start == '"' || *next_start == '\'')) {
+                                        next_start++;
+                                    }
+                                    int next_ms = atoi(next_start);
+                                    if (next_ms > start_ms) {
+                                        entry->end_frame = sami_ms_to_frame(next_ms, fps);
+                                    } else {
+                                        entry->end_frame = entry->start_frame + fps * 3;  // 3 second default
+                                    }
+                                }
+                            }
+                        } else {
+                            entry->end_frame = entry->start_frame + fps * 3;  // 3 second default
+                        }
+                        
+                        // Add to list
+                        if (!head) {
+                            head = entry;
+                            tail = entry;
+                        } else {
+                            tail->next = entry;
+                            tail = entry;
+                        }
+                    }
+                }
+            }
+            
+            free(clean_text);
+        }
+        
+        pos = sync_end;
+    }
+    
+    free(content);
+    free(content_lower);
+    return head;
+}
+
+// Detect subtitle file format based on extension and content
+static int detect_subtitle_format(const char *filename) {
+    // Check file extension first
+    const char *ext = strrchr(filename, '.');
+    if (ext) {
+        ext++; // Skip the dot
+        if (strcasecmp(ext, "smi") == 0 || strcasecmp(ext, "sami") == 0) {
+            return 1; // SAMI format
+        }
+        if (strcasecmp(ext, "srt") == 0) {
+            return 0; // SubRip format
+        }
+    }
+    
+    // If extension is unclear, try to detect from content
+    FILE *file = fopen(filename, "r");
+    if (!file) return 0; // Default to SRT
+    
+    char line[1024];
+    int has_sami_tags = 0;
+    int has_srt_format = 0;
+    int lines_checked = 0;
+    
+    while (fgets(line, sizeof(line), file) && lines_checked < 20) {
+        // Convert to lowercase for checking
+        char *lower_line = malloc(strlen(line) + 1);
+        if (lower_line) {
+            for (int i = 0; line[i]; i++) {
+                lower_line[i] = tolower(line[i]);
+            }
+            lower_line[strlen(line)] = '\0';
+            
+            // Check for SAMI indicators
+            if (strstr(lower_line, "<sami>") || strstr(lower_line, "<sync") || 
+                strstr(lower_line, "<body>") || strstr(lower_line, "start=")) {
+                has_sami_tags = 1;
+                free(lower_line);
+                break;
+            }
+            
+            // Check for SRT indicators (time format)
+            if (strstr(lower_line, "-->")) {
+                has_srt_format = 1;
+            }
+            
+            free(lower_line);
+        }
+        lines_checked++;
+    }
+    
+    fclose(file);
+    
+    // Return format based on detection
+    if (has_sami_tags) return 1; // SAMI
+    return 0; // Default to SRT
+}
+
+// Parse subtitle file (auto-detect format)
+static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps) {
+    int format = detect_subtitle_format(filename);
+    
+    if (format == 1) {
+        return parse_smi_file(filename, fps);
+    } else {
+        return parse_srt_file(filename, fps);
+    }
 }
 
 // Free subtitle list
@@ -1653,7 +1989,7 @@ static void show_usage(const char *program_name) {
     printf("Options:\n");
     printf("  -i, --input FILE     Input video file\n");
     printf("  -o, --output FILE    Output video file (use '-' for stdout)\n");
-    printf("  -s, --subtitles FILE SubRip (.srt) subtitle file\n");
+    printf("  -s, --subtitles FILE SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
     printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
     printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
@@ -1686,6 +2022,7 @@ static void show_usage(const char *program_name) {
     printf("  %s -i input.mp4 -o output.mv2                 # Use default setting (q=2)\n", program_name);
     printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # 15fps @ q=3\n", program_name);
     printf("  %s -i input.mp4 -s input.srt -o output.mv2    # With SubRip subtitles\n", program_name);
+    printf("  %s -i input.mp4 -s input.smi -o output.mv2    # With SAMI subtitles\n", program_name);
 //    printf("  %s -i input.mp4 -b 800 -o output.mv2          # 800 kbps bitrate target\n", program_name);
 //    printf("  %s -i input.avi -f 15 -b 500 -o output.mv2    # 15fps @ 500 kbps\n", program_name);
 //    printf("  %s --test -b 1000 -o test.mv2                 # Test with 1000 kbps target\n", program_name);
@@ -1842,15 +2179,18 @@ int main(int argc, char *argv[]) {
     // Load subtitle file if specified
     printf("Loading subtitles...\n");
     if (enc->subtitle_file) {
-        enc->subtitle_list = parse_srt_file(enc->subtitle_file, enc->fps);
+        int format = detect_subtitle_format(enc->subtitle_file);
+        const char *format_name = (format == 1) ? "SAMI" : "SubRip";
+        
+        enc->subtitle_list = parse_subtitle_file(enc->subtitle_file, enc->fps);
         if (enc->subtitle_list) {
             enc->has_subtitles = 1;
             enc->current_subtitle = enc->subtitle_list;
             if (enc->verbose) {
-                printf("Loaded subtitles from: %s\n", enc->subtitle_file);
+                printf("Loaded %s subtitles from: %s\n", format_name, enc->subtitle_file);
             }
         } else {
-            fprintf(stderr, "Failed to parse subtitle file: %s\n", enc->subtitle_file);
+            fprintf(stderr, "Failed to parse %s subtitle file: %s\n", format_name, enc->subtitle_file);
             // Continue without subtitles
         }
     }
