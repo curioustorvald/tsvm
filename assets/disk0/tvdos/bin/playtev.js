@@ -30,9 +30,9 @@ const TEV_PACKET_SYNC = 0xFF
 const SSF_OP_NOP = 0x00
 const SSF_OP_SHOW = 0x01
 const SSF_OP_HIDE = 0x02
-const SSF_OP_MOVE = 0x10
-const SSF_OP_UPLOAD_LOW_FONT = 0x30
-const SSF_OP_UPLOAD_HIGH_FONT = 0x31
+const SSF_OP_MOVE = 0x03
+const SSF_OP_UPLOAD_LOW_FONT = 0x80
+const SSF_OP_UPLOAD_HIGH_FONT = 0x81
 
 // Subtitle state
 let subtitleVisible = false

@@ -783,9 +783,10 @@ The format is designed to be compatible with SubRip and SAMI (without markups).
           0x00 = <argument terminator>, is NOP when used here
           0x01 = show (arguments: UTF-8 text)
           0x02 = hide (arguments: none)
-          0x10 = move to different nonant (arguments: 0x00-bottom centre; 0x01-bottom left; 0x02-centre left; 0x03-top left; 0x04-top centre; 0x05-top right; 0x06-centre right; 0x07-bottom right; 0x08-centre
-          0x30 = upload to low font rom (arguments: uint16 payload length, var bytes)
-          0x31 = upload to high font rom (arguments: uint16 payload length, var bytes)
+          0x03 = move to different nonant (arguments: 0x00-bottom centre; 0x01-bottom left; 0x02-centre left; 0x03-top left; 0x04-top centre; 0x05-top right; 0x06-centre right; 0x07-bottom right; 0x08-centre
+          0x10..0x2F = show in alternative languages (arguments: char[5] language code, UTF-8 text)
+          0x80 = upload to low font rom (arguments: uint16 payload length, var bytes)
+          0x81 = upload to high font rom (arguments: uint16 payload length, var bytes)
             note: changing the font rom will change the appearance of the every subtitle currently being displayed
     *    arguments separated AND terminated by 0x00
 
