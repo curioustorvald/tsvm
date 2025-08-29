@@ -499,10 +499,10 @@ static float calculate_block_complexity(const float *y_block) {
 
 // Map complexity to rate control factor (pure per-block, no global factor)
 static float complexity_to_rate_factor(float complexity) {
-    const float P = 18.f;
+    const float P = 10.f;
     const float e = -0.5f;
     float factor = P * powf(FCLAMP(complexity, 1.f, 16777216.f), e);
-    return FCLAMP(factor, 0.5f, P); // the "auto quality" thing can be excessively permissive
+    return FCLAMP(factor, 1.f / 2.f, 2.f); // the "auto quality" thing can be excessively permissive
 }
 
 // Simple motion estimation (full search) for 16x16 blocks
