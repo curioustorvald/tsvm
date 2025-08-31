@@ -45,7 +45,7 @@ static inline float FCLAMP(float x, float min, float max) {
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 // 56  96 128 192 256  Claude Opus 4.1 (with data analysis)
 // 64  96 128 192 256  ChatGPT-5 (without data analysis)
-static const int MP2_RATE_TABLE[] = {80, 128, 192, 256, 384};
+static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384};
 // Which preset should I be using?
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 //  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
@@ -54,12 +54,21 @@ static const int MP2_RATE_TABLE[] = {80, 128, 192, 256, 384};
 static const int QUALITY_Y[] =  {5, 18, 42, 63, 80};
 static const int QUALITY_CO[] = {5, 18, 42, 63, 80};
 
+// Encoding parameters
+#define MAX_MOTION_SEARCH 16
+int KEYFRAME_INTERVAL = 60;
+#define BLOCK_SIZE 16  // 16x16 blocks now
+#define BLOCK_SIZE_SQR 256
+#define BLOCK_SIZE_SQRF 256.f
+#define HALF_BLOCK_SIZE 8
+#define HALF_BLOCK_SIZE_SQR 64
+
 static float jpeg_quality_to_mult(int q) {
     return ((q < 50) ? 5000.f / q : 200.f - 2*q) / 100.f;
 }
 
 // Quality settings for quantisation (Y channel) - 16x16 tables
-static const uint32_t QUANT_TABLE_Y[256] =
+static const uint32_t QUANT_TABLE_Y[BLOCK_SIZE_SQR] =
     // Quality 50
     {16, 14, 12, 11, 11, 13, 16, 20, 24, 30, 39, 48, 54, 61, 67, 73,
      14, 13, 12, 12, 12, 15, 18, 21, 25, 33, 46, 57, 61, 65, 67, 70,
@@ -79,7 +88,7 @@ static const uint32_t QUANT_TABLE_Y[256] =
      86, 98, 109, 112, 114, 116, 118, 124, 133, 135, 129, 125, 128, 130, 128, 127};
 
 // Quality settings for quantisation (X channel - 8x8)
-static const uint32_t QUANT_TABLE_C[64] =
+static const uint32_t QUANT_TABLE_C[HALF_BLOCK_SIZE_SQR] =
     {17, 18, 24, 47, 99, 99, 99, 99,
      18, 21, 26, 66, 99, 99, 99, 99,
      24, 26, 56, 99, 99, 99, 99, 99,
@@ -93,11 +102,6 @@ static const uint32_t QUANT_TABLE_C[64] =
 // Audio constants (reuse MP2 from existing system)
 #define MP2_SAMPLE_RATE 32000
 #define MP2_DEFAULT_PACKET_SIZE 0x240
-
-// Encoding parameters
-#define MAX_MOTION_SEARCH 8
-int KEYFRAME_INTERVAL = 60;
-#define BLOCK_SIZE 16  // 16x16 blocks now
 
 // Default values
 #define DEFAULT_WIDTH 560
@@ -129,9 +133,9 @@ typedef struct __attribute__((packed)) {
     int16_t mv_x, mv_y;     // Motion vector (1/4 pixel precision)
     float rate_control_factor; // Rate control factor (4 bytes, little-endian)
     uint16_t cbp;           // Coded block pattern (which channels have non-zero coeffs)
-    int16_t y_coeffs[256];  // quantised Y DCT coefficients (16x16)
-    int16_t co_coeffs[64];  // quantised Co DCT coefficients (8x8)
-    int16_t cg_coeffs[64];  // quantised Cg DCT coefficients (8x8)
+    int16_t y_coeffs[BLOCK_SIZE_SQR];  // quantised Y DCT coefficients (16x16)
+    int16_t co_coeffs[HALF_BLOCK_SIZE_SQR];  // quantised Co DCT coefficients (8x8)
+    int16_t cg_coeffs[HALF_BLOCK_SIZE_SQR];  // quantised Cg DCT coefficients (8x8)
 } tev_block_t;
 
 // Subtitle entry structure
@@ -263,7 +267,7 @@ static void init_dct_tables(void) {
 
 // 16x16 2D DCT
 // Fast separable 16x16 DCT - 8x performance improvement
-static float temp_dct_16[256]; // Reusable temporary buffer
+static float temp_dct_16[BLOCK_SIZE_SQR]; // Reusable temporary buffer
 
 static void dct_16x16_fast(float *input, float *output) {
     init_dct_tables(); // Ensure tables are initialized
@@ -321,7 +325,7 @@ static void dct_16x16(float *input, float *output) {
 }
 
 // Fast separable 8x8 DCT - 4x performance improvement
-static float temp_dct_8[64]; // Reusable temporary buffer
+static float temp_dct_8[HALF_BLOCK_SIZE_SQR]; // Reusable temporary buffer
 
 static void dct_8x8_fast(float *input, float *output) {
     init_dct_tables(); // Ensure tables are initialized
@@ -399,12 +403,12 @@ static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma
 static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                                 int block_x, int block_y,
                                 float *y_block, float *co_block, float *cg_block) {
-    int start_x = block_x * 16;
-    int start_y = block_y * 16;
+    int start_x = block_x * BLOCK_SIZE;
+    int start_y = block_y * BLOCK_SIZE;
 
     // Extract 16x16 Y block
-    for (int py = 0; py < 16; py++) {
-        for (int px = 0; px < 16; px++) {
+    for (int py = 0; py < BLOCK_SIZE; py++) {
+        for (int px = 0; px < BLOCK_SIZE; px++) {
             int x = start_x + px;
             int y = start_y + py;
 
@@ -417,14 +421,14 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                 int y_val, co_val, cg_val;
                 rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
 
-                y_block[py * 16 + px] = (float)y_val - 128.0f;  // Center around 0
+                y_block[py * BLOCK_SIZE + px] = (float)y_val - 128.0f;  // Center around 0
             }
         }
     }
 
     // Extract 8x8 chroma blocks with 4:2:0 subsampling (average 2x2 pixels)
-    for (int py = 0; py < 8; py++) {
-        for (int px = 0; px < 8; px++) {
+    for (int py = 0; py < HALF_BLOCK_SIZE; py++) {
+        for (int px = 0; px < HALF_BLOCK_SIZE; px++) {
             int co_sum = 0, cg_sum = 0, count = 0;
 
             // Average 2x2 block of pixels
@@ -451,8 +455,8 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
 
             if (count > 0) {
                 // Center chroma around 0 for DCT (Co/Cg range is -255 to +255, so don't add offset)
-                co_block[py * 8 + px] = (float)(co_sum / count);
-                cg_block[py * 8 + px] = (float)(cg_sum / count);
+                co_block[py * HALF_BLOCK_SIZE + px] = (float)(co_sum / count);
+                cg_block[py * HALF_BLOCK_SIZE + px] = (float)(cg_sum / count);
             }
         }
     }
@@ -463,35 +467,35 @@ static float calculate_block_complexity(const float *y_block) {
     float complexity = 0.0f;
     
     // Method 1: Sum of absolute differences with neighbors (spatial activity)
-    for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
-            float pixel = y_block[y * 16 + x];
+    for (int y = 0; y < BLOCK_SIZE; y++) {
+        for (int x = 0; x < BLOCK_SIZE; x++) {
+            float pixel = y_block[y * BLOCK_SIZE + x];
             
             // Compare with right neighbor
-            if (x < 15) {
-                complexity += fabsf(pixel - y_block[y * 16 + (x + 1)]);
+            if (x < BLOCK_SIZE - 1) {
+                complexity += fabsf(pixel - y_block[y * BLOCK_SIZE + (x + 1)]);
             }
             
             // Compare with bottom neighbor
-            if (y < 15) {
-                complexity += fabsf(pixel - y_block[(y + 1) * 16 + x]);
+            if (y < BLOCK_SIZE - 1) {
+                complexity += fabsf(pixel - y_block[(y + 1) * BLOCK_SIZE + x]);
             }
         }
     }
     
     // Method 2: Add variance contribution
     float mean = 0.0f;
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
         mean += y_block[i];
     }
-    mean /= 256.0f;
+    mean /= BLOCK_SIZE_SQRF;
     
     float variance = 0.0f;
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
         float diff = y_block[i] - mean;
         variance += diff * diff;
     }
-    variance /= 256.0f;
+    variance /= BLOCK_SIZE_SQRF;
     
     // Combine spatial activity and variance
     return complexity + sqrtf(variance) * 10.0f;
@@ -512,8 +516,8 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
     *best_mv_x = 0;
     *best_mv_y = 0;
 
-    int start_x = block_x * 16;
-    int start_y = block_y * 16;
+    int start_x = block_x * BLOCK_SIZE;
+    int start_y = block_y * BLOCK_SIZE;
 
     // Diamond search pattern (much faster than full search)
     static const int diamond_x[] = {0, -1, 1, 0, 0, -2, 2, 0, 0};
@@ -539,17 +543,17 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
             int ref_y = start_y - mv_y;
 
             if (ref_x < 0 || ref_y < 0 ||
-                ref_x + 16 > enc->width || ref_y + 16 > enc->height) {
+                ref_x + BLOCK_SIZE > enc->width || ref_y + BLOCK_SIZE > enc->height) {
                 continue;
             }
 
             // Fast SAD using integer luma approximation
             int sad = 0;
-            for (int dy = 0; dy < 16; dy += 2) {  // Sample every 2nd row for speed
+            for (int dy = 0; dy < BLOCK_SIZE; dy += 2) {  // Sample every 2nd row for speed
                 uint8_t *cur_row = &enc->current_rgb[((start_y + dy) * enc->width + start_x) * 3];
                 uint8_t *ref_row = &enc->previous_rgb[((ref_y + dy) * enc->width + ref_x) * 3];
 
-                for (int dx = 0; dx < 16; dx += 2) {  // Sample every 2nd pixel
+                for (int dx = 0; dx < BLOCK_SIZE; dx += 2) {  // Sample every 2nd pixel
                     // Fast luma approximation: (R + 2*G + B) >> 2
                     int cur_luma = (cur_row[dx*3] + (cur_row[dx*3+1] << 1) + cur_row[dx*3+2]) >> 2;
                     int ref_luma = (ref_row[dx*3] + (ref_row[dx*3+1] << 1) + ref_row[dx*3+2]) >> 2;
@@ -577,9 +581,9 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
 static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
                                        uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
     // Convert 16x16 RGB to Y (full resolution)
-    for (int py = 0; py < 16; py++) {
-        for (int px = 0; px < 16; px++) {
-            int rgb_idx = (py * 16 + px) * 3;
+    for (int py = 0; py < BLOCK_SIZE; py++) {
+        for (int px = 0; px < BLOCK_SIZE; px++) {
+            int rgb_idx = (py * BLOCK_SIZE + px) * 3;
             int r = rgb_block[rgb_idx];
             int g = rgb_block[rgb_idx + 1];
             int b = rgb_block[rgb_idx + 2];
@@ -592,8 +596,8 @@ static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
     }
 
     // Convert to Co and Cg with 4:2:0 subsampling (8x8)
-    for (int cy = 0; cy < 8; cy++) {
-        for (int cx = 0; cx < 8; cx++) {
+    for (int cy = 0; cy < HALF_BLOCK_SIZE; cy++) {
+        for (int cx = 0; cx < HALF_BLOCK_SIZE; cx++) {
             // Sample 2x2 block from RGB and average for chroma
             int sum_co = 0, sum_cg = 0;
 
@@ -617,8 +621,8 @@ static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
             }
 
             // Average and store subsampled chroma
-            co_block[cy * 8 + cx] = CLAMP(sum_co / 4, -256, 255);
-            cg_block[cy * 8 + cx] = CLAMP(sum_cg / 4, -256, 255);
+            co_block[cy * HALF_BLOCK_SIZE + cx] = CLAMP(sum_co / 4, -256, 255);
+            cg_block[cy * HALF_BLOCK_SIZE + cx] = CLAMP(sum_cg / 4, -256, 255);
         }
     }
 }
@@ -628,16 +632,16 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
                                            int block_x, int block_y, int mv_x, int mv_y,
                                            uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
     // Extract 16x16 RGB block with motion compensation
-    uint8_t rgb_block[16 * 16 * 3];
+    uint8_t rgb_block[BLOCK_SIZE * BLOCK_SIZE * 3];
 
-    for (int dy = 0; dy < 16; dy++) {
-        for (int dx = 0; dx < 16; dx++) {
+    for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+        for (int dx = 0; dx < BLOCK_SIZE; dx++) {
             int cur_x = block_x + dx;
             int cur_y = block_y + dy;
             int ref_x = cur_x + mv_x;  // Revert to original motion compensation
             int ref_y = cur_y + mv_y;
 
-            int rgb_idx = (dy * 16 + dx) * 3;
+            int rgb_idx = (dy * BLOCK_SIZE + dx) * 3;
 
             if (ref_x >= 0 && ref_y >= 0 && ref_x < width && ref_y < height) {
                 // Copy RGB from reference position
@@ -660,25 +664,25 @@ static void extract_motion_compensated_block(const uint8_t *rgb_data, int width,
 
 // Compute motion-compensated residual for INTER mode
 static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y, int mv_x, int mv_y) {
-    int start_x = block_x * 16;
-    int start_y = block_y * 16;
+    int start_x = block_x * BLOCK_SIZE;
+    int start_y = block_y * BLOCK_SIZE;
 
     // Extract motion-compensated reference block from previous frame
-    uint8_t ref_y[256];
-    int8_t ref_co[64], ref_cg[64];
+    uint8_t ref_y[BLOCK_SIZE_SQR];
+    int8_t ref_co[HALF_BLOCK_SIZE_SQR], ref_cg[HALF_BLOCK_SIZE_SQR];
     extract_motion_compensated_block(enc->previous_rgb, enc->width, enc->height,
                                    start_x, start_y, mv_x, mv_y,
                                    ref_y, ref_co, ref_cg);
 
     // Compute residuals: current - motion_compensated_reference
     // Current is already centered (-128 to +127), reference is 0-255, so subtract and center reference
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
         float ref_y_centered = (float)ref_y[i] - 128.0f;  // Center reference to match current
         enc->y_workspace[i] = enc->y_workspace[i] - ref_y_centered;
     }
 
     // Chroma residuals (already centered in both current and reference)
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         enc->co_workspace[i] = enc->co_workspace[i] - (float)ref_co[i];
         enc->cg_workspace[i] = enc->cg_workspace[i] - (float)ref_cg[i];
     }
@@ -704,14 +708,14 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         enc->blocks_intra++;
     } else {
         // Implement proper mode decision for P-frames
-        int start_x = block_x * 16;
-        int start_y = block_y * 16;
+        int start_x = block_x * BLOCK_SIZE;
+        int start_y = block_y * BLOCK_SIZE;
 
         // Calculate SAD for skip mode (no motion compensation)
         int skip_sad = 0;
         int skip_color_diff = 0;
-        for (int dy = 0; dy < 16; dy++) {
-            for (int dx = 0; dx < 16; dx++) {
+        for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+            for (int dx = 0; dx < BLOCK_SIZE; dx++) {
                 int x = start_x + dx;
                 int y = start_y + dy;
                 if (x < enc->width && y < enc->height) {
@@ -747,8 +751,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         int motion_sad = INT_MAX;
         if (abs(block->mv_x) > 0 || abs(block->mv_y) > 0) {
             motion_sad = 0;
-            for (int dy = 0; dy < 16; dy++) {
-                for (int dx = 0; dx < 16; dx++) {
+            for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+                for (int dx = 0; dx < BLOCK_SIZE; dx++) {
                     int cur_x = start_x + dx;
                     int cur_y = start_y + dy;
                     int ref_x = cur_x + block->mv_x;
@@ -809,7 +813,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             enc->blocks_motion++;
             return; // Skip DCT encoding, just store motion vector
         // disabling INTER mode: residual DCT is crapping out no matter what I do
-        /*} else if (motion_sad < skip_sad && (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
+        } /*else if (motion_sad < skip_sad && (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
             // Motion compensation with threshold
             if (motion_sad <= 1024) {
                 block->mode = TEV_MODE_MOTION;
@@ -823,20 +827,17 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             }
 
             // Use INTER mode with motion vector and residuals
-            if (abs(block->mv_x) <= 24 && abs(block->mv_y) <= 24) {
+            if (abs(block->mv_x) < BLOCK_SIZE && abs(block->mv_y) < BLOCK_SIZE) {
                 block->mode = TEV_MODE_INTER;
-                block->rate_control_factor = enc->rate_control_factor;
                 enc->blocks_inter++;
             } else {
                 // Motion vector too large, fall back to INTRA
                 block->mode = TEV_MODE_INTRA;
-                block->rate_control_factor = enc->rate_control_factor;
                 block->mv_x = 0;
                 block->mv_y = 0;
                 enc->blocks_intra++;
-                return;
-            }*/
-        } else {
+            }
+        }*/ else {
             // No good motion prediction - use intra mode
             block->mode = TEV_MODE_INTRA;
             block->mv_x = 0;
@@ -855,7 +856,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     // quantise Y coefficients (luma) using per-block rate control
     const uint32_t *y_quant = QUANT_TABLE_Y;
     const float qmult_y = jpeg_quality_to_mult(enc->qualityY);
-    for (int i = 0; i < 256; i++) {
+    for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
         float effective_quant = y_quant[i] * qmult_y * block->rate_control_factor;
         block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 0);
@@ -867,7 +868,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     // quantise Co coefficients (chroma - orange-blue) using per-block rate control
     const uint32_t *co_quant = QUANT_TABLE_C;
     const float qmult_co = jpeg_quality_to_mult(enc->qualityCo);
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
         float effective_quant = co_quant[i] * qmult_co * block->rate_control_factor;
         block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
@@ -879,7 +880,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q) using per-block rate control
     const uint32_t *cg_quant = QUANT_TABLE_C;
     const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg);
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
         float effective_quant = cg_quant[i] * qmult_cg * block->rate_control_factor;
         block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
@@ -1648,9 +1649,9 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
                 tev_block_t *block = &enc->block_data[by * blocks_x + bx];
                 if (block->mode == TEV_MODE_INTRA || block->mode == TEV_MODE_INTER) {
                     // Sum absolute values of quantised coefficients as complexity metric
-                    for (int i = 1; i < 256; i++) frame_complexity += abs(block->y_coeffs[i]);
-                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->co_coeffs[i]);
-                    for (int i = 1; i < 64; i++) frame_complexity += abs(block->cg_coeffs[i]);
+                    for (int i = 1; i < BLOCK_SIZE_SQR; i++) frame_complexity += abs(block->y_coeffs[i]);
+                    for (int i = 1; i < HALF_BLOCK_SIZE_SQR; i++) frame_complexity += abs(block->co_coeffs[i]);
+                    for (int i = 1; i < HALF_BLOCK_SIZE_SQR; i++) frame_complexity += abs(block->cg_coeffs[i]);
                 }
             }
         }
