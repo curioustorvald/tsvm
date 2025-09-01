@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
-#include <zlib.h>
+#include <zstd.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <getopt.h>
@@ -62,6 +62,8 @@ int KEYFRAME_INTERVAL = 60;
 #define BLOCK_SIZE_SQRF 256.f
 #define HALF_BLOCK_SIZE 8
 #define HALF_BLOCK_SIZE_SQR 64
+
+#define ZSTD_COMPRESSON_LEVEL 15
 
 static float jpeg_quality_to_mult(int q) {
     return ((q < 50) ? 5000.f / q : 200.f - 2*q) / 100.f;
@@ -177,7 +179,7 @@ typedef struct {
     float *y_workspace, *co_workspace, *cg_workspace;
     float *dct_workspace;       // DCT coefficients
     tev_block_t *block_data;    // Encoded block data
-    uint8_t *compressed_buffer; // Gzip output
+    uint8_t *compressed_buffer; // Zstd output
 
     // Audio handling
     FILE *mp2_file;
@@ -189,7 +191,7 @@ typedef struct {
     int target_audio_buffer_size;
 
     // Compression context
-    z_stream gzip_stream;
+    ZSTD_CCtx *zstd_context;
 
     // FFmpeg processes
     FILE *ffmpeg_video_pipe;
@@ -1508,18 +1510,17 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
         return -1;
     }
 
-    // Initialize gzip compression stream
-    enc->gzip_stream.zalloc = Z_NULL;
-    enc->gzip_stream.zfree = Z_NULL;
-    enc->gzip_stream.opaque = Z_NULL;
-
-    int gzip_init_result = deflateInit2(&enc->gzip_stream, Z_DEFAULT_COMPRESSION,
-                                       Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 for gzip format
-
-    if (gzip_init_result != Z_OK) {
-        fprintf(stderr, "Failed to initialize gzip compression\n");
+    // Initialize Zstd compression context
+    enc->zstd_context = ZSTD_createCCtx();
+    if (!enc->zstd_context) {
+        fprintf(stderr, "Failed to initialize Zstd compression\n");
         return 0;
     }
+    
+    // Set reasonable compression level and memory limits
+    ZSTD_CCtx_setParameter(enc->zstd_context, ZSTD_c_compressionLevel, ZSTD_COMPRESSON_LEVEL);
+    ZSTD_CCtx_setParameter(enc->zstd_context, ZSTD_c_windowLog, 24); // 16MB window (should be plenty to hold an entire frame; interframe compression is unavailable)
+    ZSTD_CCtx_setParameter(enc->zstd_context, ZSTD_c_hashLog, 16);
 
     // Initialize previous frame to black
     memset(enc->previous_rgb, 0, pixels * 3);
@@ -1531,7 +1532,7 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
 static void free_encoder(tev_encoder_t *enc) {
     if (!enc) return;
 
-    deflateEnd(&enc->gzip_stream);
+    ZSTD_freeCCtx(enc->zstd_context);
 
     free(enc->current_rgb);
     free(enc->previous_rgb);
@@ -1657,40 +1658,19 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
         }
     }
 
-    // Compress block data using gzip (compatible with TSVM decoder)
+    // Compress block data using Zstd (compatible with TSVM decoder)
     size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
 
-    // Initialize fresh gzip stream for each frame (since Z_FINISH terminates the stream)
-    z_stream frame_stream;
-    frame_stream.zalloc = Z_NULL;
-    frame_stream.zfree = Z_NULL;
-    frame_stream.opaque = Z_NULL;
-
-    int init_result = deflateInit2(&frame_stream, Z_DEFAULT_COMPRESSION,
-                                   Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 for gzip format
-
-    if (init_result != Z_OK) {
-        fprintf(stderr, "Failed to initialize gzip compression for frame\n");
+    // Compress using Zstd with controlled memory usage
+    size_t compressed_size = ZSTD_compressCCtx(enc->zstd_context,
+                                             enc->compressed_buffer, block_data_size * 2,
+                                             enc->block_data, block_data_size,
+                                             ZSTD_COMPRESSON_LEVEL);
+    
+    if (ZSTD_isError(compressed_size)) {
+        fprintf(stderr, "Zstd compression failed: %s\n", ZSTD_getErrorName(compressed_size));
         return 0;
     }
-
-    // Set up compression stream
-    frame_stream.next_in = (Bytef*)enc->block_data;
-    frame_stream.avail_in = block_data_size;
-    frame_stream.next_out = (Bytef*)enc->compressed_buffer;
-    frame_stream.avail_out = block_data_size * 2;
-
-    int result = deflate(&frame_stream, Z_FINISH);
-    if (result != Z_STREAM_END) {
-        fprintf(stderr, "Gzip compression failed: %d\n", result);
-        deflateEnd(&frame_stream);
-        return 0;
-    }
-
-    size_t compressed_size = frame_stream.total_out;
-
-    // Clean up frame stream
-    deflateEnd(&frame_stream);
 
     // Write frame packet header (rate control factor now per-block)
     uint8_t packet_type = is_keyframe ? TEV_PACKET_IFRAME : TEV_PACKET_PFRAME;

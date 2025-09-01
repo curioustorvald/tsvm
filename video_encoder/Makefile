@@ -3,11 +3,11 @@
 
 CC = gcc
 CFLAGS = -std=c99 -Wall -Wextra -O2 -D_GNU_SOURCE
-LIBS = -lm -lz
+LIBS = -lm -lzstd
 
 # Source files and targets
-SOURCES = encoder_tev.c encoder_tev_xyb.c
-TARGETS = encoder_tev encoder_tev_xyb
+SOURCES = encoder_tev.c
+TARGETS = encoder_tev
 
 # Build all encoders
 all: $(TARGETS)
@@ -15,11 +15,6 @@ all: $(TARGETS)
 # Build main encoder
 encoder_tev: encoder_tev.c
 	rm -f encoder_tev
-	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
-
-# Build XYB encoder
-encoder_tev_xyb: encoder_tev_xyb.c
-	rm -f encoder_tev_xyb
 	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
 
 # Default target
@@ -40,8 +35,8 @@ install: $(TARGETS)
 # Check for required dependencies
 check-deps:
 	@echo "Checking dependencies..."
-	@echo "libzstd no longer required - using gzip compression instead"
-	@pkg-config --exists zlib || (echo "Error: zlib-dev not found. Install with: sudo apt install zlib1g-dev" && exit 1)
+	@echo "Using Zstd compression for better efficiency"
+	@pkg-config --exists libzstd || (echo "Error: libzstd-dev not found. Install with: sudo apt install libzstd-dev" && exit 1)
 	@echo "All dependencies found."
 
 # Help
