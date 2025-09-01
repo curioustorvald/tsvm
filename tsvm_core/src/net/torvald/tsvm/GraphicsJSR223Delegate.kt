@@ -1417,7 +1417,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tevIdct8x8_fast(coeffs: IntArray, quantTable: FloatArray, isChromaResidual: Boolean = false, mult: Float = 1f): IntArray {
+    private fun tevIdct8x8_fast(coeffs: ShortArray, quantTable: FloatArray, isChromaResidual: Boolean = false, mult: Float = 1f): IntArray {
         val result = IntArray(64)
         // Reuse preallocated temp buffer to reduce GC pressure
 
@@ -1468,7 +1468,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
     
     // 16x16 IDCT for Y channel (YCoCg-R format)
-    private fun tevIdct16x16_fast(coeffs: IntArray, quantTable: FloatArray, mult: Float = 1.0f): IntArray {
+    private fun tevIdct16x16_fast(coeffs: ShortArray, quantTable: FloatArray, mult: Float = 1.0f): IntArray {
         val result = IntArray(256) // 16x16 = 256
         
         // Process coefficients and dequantize using preallocated buffer
@@ -1767,23 +1767,38 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 
                 
                 when (mode) {
-                    0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame
-                        for (dy in 0 until 16) {
-                            for (dx in 0 until 16) {
-                                val x = startX + dx
-                                val y = startY + dy
-                                if (x < width && y < height) {
-                                    val pixelOffset = y.toLong() * width + x
-                                    val rgbOffset = pixelOffset * 3
-                                    
-                                    // Copy RGB values from previous frame
-                                    val prevR = vm.peek(prevRGBAddr + rgbOffset*prevAddrIncVec)!!
-                                    val prevG = vm.peek(prevRGBAddr + (rgbOffset + 1)*prevAddrIncVec)!!
-                                    val prevB = vm.peek(prevRGBAddr + (rgbOffset + 2)*prevAddrIncVec)!!
-                                    
-                                    vm.poke(currentRGBAddr + rgbOffset*thisAddrIncVec, prevR)
-                                    vm.poke(currentRGBAddr + (rgbOffset + 1)*thisAddrIncVec, prevG)
-                                    vm.poke(currentRGBAddr + (rgbOffset + 2)*thisAddrIncVec, prevB)
+                    0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame (optimized with memcpy)
+                        // Check if we can copy the entire block at once (no clipping)
+                        if (startX + 16 <= width && startY + 16 <= height) {
+                            // Optimized case: copy entire 16x16 block with row-by-row memcpy
+                            for (dy in 0 until 16) {
+                                val srcRowOffset = ((startY + dy).toLong() * width + startX) * 3
+                                val dstRowOffset = srcRowOffset
+                                vm.memcpy(
+                                    (prevRGBAddr + srcRowOffset*prevAddrIncVec).toInt(),
+                                    (currentRGBAddr + dstRowOffset*thisAddrIncVec).toInt(),
+                                    48  // 16 pixels × 3 bytes = 48 bytes per row
+                                )
+                            }
+                        } else {
+                            // Fallback to pixel-by-pixel for boundary blocks
+                            for (dy in 0 until 16) {
+                                for (dx in 0 until 16) {
+                                    val x = startX + dx
+                                    val y = startY + dy
+                                    if (x < width && y < height) {
+                                        val pixelOffset = y.toLong() * width + x
+                                        val rgbOffset = pixelOffset * 3
+                                        
+                                        // Copy RGB values from previous frame
+                                        val prevR = vm.peek(prevRGBAddr + rgbOffset*prevAddrIncVec)!!
+                                        val prevG = vm.peek(prevRGBAddr + (rgbOffset + 1)*prevAddrIncVec)!!
+                                        val prevB = vm.peek(prevRGBAddr + (rgbOffset + 2)*prevAddrIncVec)!!
+                                        
+                                        vm.poke(currentRGBAddr + rgbOffset*thisAddrIncVec, prevR)
+                                        vm.poke(currentRGBAddr + (rgbOffset + 1)*thisAddrIncVec, prevG)
+                                        vm.poke(currentRGBAddr + (rgbOffset + 2)*thisAddrIncVec, prevB)
+                                    }
                                 }
                             }
                         }
@@ -1791,55 +1806,90 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         readPtr += 768
                     }
                     
-                    0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB
-                        for (dy in 0 until 16) {
-                            for (dx in 0 until 16) {
-                                val x = startX + dx
-                                val y = startY + dy  
-                                val refX = x + mvX  // Test: revert to original motion compensation
-                                val refY = y + mvY
-                                
-                                if (x < width && y < height) {
-                                    val dstPixelOffset = y.toLong() * width + x
-                                    val dstRgbOffset = dstPixelOffset * 3
+                    0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB (optimized with memcpy)
+                        if (debugMotionVectors) {
+                            // Debug mode: use original pixel-by-pixel for motion vector visualization
+                            for (dy in 0 until 16) {
+                                for (dx in 0 until 16) {
+                                    val x = startX + dx
+                                    val y = startY + dy  
+                                    val refX = x + mvX
+                                    val refY = y + mvY
                                     
-                                    if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
-                                        val refPixelOffset = refY.toLong() * width + refX
-                                        val refRgbOffset = refPixelOffset * 3
+                                    if (x < width && y < height) {
+                                        val dstPixelOffset = y.toLong() * width + x
+                                        val dstRgbOffset = dstPixelOffset * 3
                                         
-                                        // Additional safety: ensure RGB offset is within valid range
-                                        val maxValidOffset = (width * height - 1) * 3L + 2
-                                        if (refRgbOffset >= 0 && refRgbOffset <= maxValidOffset) {
-                                            // Copy RGB from reference position
-                                            val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
-                                            val refG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!
-                                            val refB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!
+                                        // Debug: Color INTER blocks by motion vector magnitude
+                                        val mvMagnitude = kotlin.math.sqrt((mvX * mvX + mvY * mvY).toDouble()).toInt()
+                                        val intensity = (mvMagnitude * 8).coerceIn(0, 255) // Scale for visibility
+
+                                        vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, intensity.toByte())        // R = MV magnitude
+                                        vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())         // G = 0
+                                        vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, (255-intensity).toByte()) // B = inverse
+                                    }
+                                }
+                            }
+                        } else {
+                            // Optimized motion compensation
+                            val refStartX = startX + mvX
+                            val refStartY = startY + mvY
+                            
+                            // Check if entire 16x16 block can be copied with memcpy (no bounds issues)
+                            if (startX + 16 <= width && startY + 16 <= height &&
+                                refStartX >= 0 && refStartY >= 0 && refStartX + 16 <= width && refStartY + 16 <= height) {
+                                
+                                // Optimized case: copy entire 16x16 block with row-by-row memcpy
+                                for (dy in 0 until 16) {
+                                    val srcRowOffset = ((refStartY + dy).toLong() * width + refStartX) * 3
+                                    val dstRowOffset = ((startY + dy).toLong() * width + startX) * 3
+                                    vm.memcpy(
+                                        (prevRGBAddr + srcRowOffset*prevAddrIncVec).toInt(),
+                                        (currentRGBAddr + dstRowOffset*thisAddrIncVec).toInt(),
+                                        48  // 16 pixels × 3 bytes = 48 bytes per row
+                                    )
+                                }
+                            } else {
+                                // Fallback to pixel-by-pixel for boundary/out-of-bounds cases
+                                for (dy in 0 until 16) {
+                                    for (dx in 0 until 16) {
+                                        val x = startX + dx
+                                        val y = startY + dy  
+                                        val refX = x + mvX
+                                        val refY = y + mvY
+                                        
+                                        if (x < width && y < height) {
+                                            val dstPixelOffset = y.toLong() * width + x
+                                            val dstRgbOffset = dstPixelOffset * 3
                                             
-
-                                            if (debugMotionVectors) {
-                                                // Debug: Color INTER blocks by motion vector magnitude
-                                                val mvMagnitude = kotlin.math.sqrt((mvX * mvX + mvY * mvY).toDouble()).toInt()
-                                                val intensity = (mvMagnitude * 8).coerceIn(0, 255) // Scale for visibility
-
-                                                vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, intensity.toByte())        // R = MV magnitude
-                                                vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())         // G = 0
-                                                vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, (255-intensity).toByte()) // B = inverse
+                                            if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
+                                                val refPixelOffset = refY.toLong() * width + refX
+                                                val refRgbOffset = refPixelOffset * 3
+                                                
+                                                // Additional safety: ensure RGB offset is within valid range
+                                                val maxValidOffset = (width * height - 1) * 3L + 2
+                                                if (refRgbOffset >= 0 && refRgbOffset <= maxValidOffset) {
+                                                    // Copy RGB from reference position
+                                                    val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
+                                                    val refG = vm.peek(prevRGBAddr + (refRgbOffset + 1)*prevAddrIncVec)!!
+                                                    val refB = vm.peek(prevRGBAddr + (refRgbOffset + 2)*prevAddrIncVec)!!
+                                                    
+                                                    vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, refR)
+                                                    vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, refG)
+                                                    vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, refB)
+                                                } else {
+                                                    // Invalid RGB offset - use black
+                                                    vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
+                                                    vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())  // G=0
+                                                    vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, 0.toByte())  // B=0
+                                                }
                                             } else {
-                                                vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, refR)
-                                                vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, refG)
-                                                vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, refB)
+                                                // Out of bounds - use black
+                                                vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
+                                                vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())  // G=0
+                                                vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, 0.toByte())  // B=0
                                             }
-                                        } else {
-                                            // Invalid RGB offset - use black
-                                            vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
-                                            vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())  // G=0
-                                            vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, 0.toByte())  // B=0
                                         }
-                                    } else {
-                                        // Out of bounds - use black
-                                        vm.poke(currentRGBAddr + dstRgbOffset*thisAddrIncVec, 0.toByte())        // R=0
-                                        vm.poke(currentRGBAddr + (dstRgbOffset + 1)*thisAddrIncVec, 0.toByte())  // G=0
-                                        vm.poke(currentRGBAddr + (dstRgbOffset + 2)*thisAddrIncVec, 0.toByte())  // B=0
                                     }
                                 }
                             }
@@ -1850,38 +1900,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     
                     0x01 -> { // TEV_MODE_INTRA - Full YCoCg-R DCT decode (no motion compensation)
                         // Read DCT coefficients: Y (16x16=256), Co (8x8=64), Cg (8x8=64)
-                        val yCoeffs = IntArray(256)
-                        val coCoeffs = IntArray(64)
-                        val cgCoeffs = IntArray(64)
-                        
-                        // Read Y coefficients (16x16 = 256 coefficients × 2 bytes)
-                        for (i in 0 until 256) {
-                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                            yCoeffs[i] = coeff
-                            readPtr += 2
-                        }
-                        
-                        // Read Co coefficients (8x8 = 64 coefficients × 2 bytes)
-                        for (i in 0 until 64) {
-                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                            coCoeffs[i] = coeff
-                            readPtr += 2
-                        }
-                        
-                        // Read Cg coefficients (8x8 = 64 coefficients × 2 bytes)  
-                        for (i in 0 until 64) {
-                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                            cgCoeffs[i] = coeff
-                            readPtr += 2
-                        }
+
+                        // Optimized bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                        val coeffShortArray = ShortArray(384) // Total coefficients: 256 + 64 + 64 = 384 shorts
+                        vm.bulkPeekShort(readPtr.toInt(), coeffShortArray, 768)
+                        readPtr += 768
                         
                         // Perform hardware IDCT for each channel using fast algorithm
-                        val yBlock = tevIdct16x16_fast(yCoeffs, quantTableY, rateControlFactor)
-                        val coBlock = tevIdct8x8_fast(coCoeffs, quantTableCo, true, rateControlFactor)
-                        val cgBlock = tevIdct8x8_fast(cgCoeffs, if (tevVersion == 3) quantTableB else quantTableCg, true, rateControlFactor)
+                        val yBlock = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), quantTableY, rateControlFactor)
+                        val coBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), quantTableCo, true, rateControlFactor)
+                        val cgBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), if (tevVersion == 3) quantTableB else quantTableCg, true, rateControlFactor)
                         
                         // Convert to RGB (YCoCg-R for v2, XYB for v3)
                         val rgbData = if (tevVersion == 3) {
@@ -1910,39 +1938,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     
                     0x02 -> { // TEV_MODE_INTER - Motion compensation + residual DCT
                         // Step 1: Read residual DCT coefficients
-                        val yCoeffs = IntArray(256)
-                        val coCoeffs = IntArray(64)
-                        val cgCoeffs = IntArray(64)
                         
-                        // Read Y coefficients (16x16 = 256 coefficients × 2 bytes)
-                        for (i in 0 until 256) {
-                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                            yCoeffs[i] = coeff
-                            readPtr += 2
-                        }
-                        
-                        // Read Co coefficients (8x8 = 64 coefficients × 2 bytes)
-                        for (i in 0 until 64) {
-                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                            coCoeffs[i] = coeff
-                            readPtr += 2
-                        }
-                        
-                        // Read Cg coefficients (8x8 = 64 coefficients × 2 bytes)  
-                        for (i in 0 until 64) {
-                            val coeff = ((vm.peek(readPtr)!!.toUint()) or 
-                                        ((vm.peek(readPtr + 1)!!.toUint()) shl 8)).toShort().toInt()
-                            cgCoeffs[i] = coeff
-                            readPtr += 2
-                        }
+                        // Optimized bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                        val coeffShortArray = ShortArray(384) // Total coefficients: 256 + 64 + 64 = 384 shorts
+                        vm.bulkPeekShort(readPtr.toInt(), coeffShortArray, 768)
+                        readPtr += 768
                         
                         // Step 2: Decode residual DCT
-                        val yResidual = tevIdct16x16_fast(yCoeffs, quantTableY, rateControlFactor)
-                        val coResidual = tevIdct8x8_fast(coCoeffs, quantTableCo, true, rateControlFactor)
-                        val cgResidual = tevIdct8x8_fast(cgCoeffs, if (tevVersion == 3) quantTableB else quantTableCg, true, rateControlFactor)
-                        
+                        val yResidual = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), quantTableY, rateControlFactor)
+                        val coResidual = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), quantTableCo, true, rateControlFactor)
+                        val cgResidual = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), if (tevVersion == 3) quantTableB else quantTableCg, true, rateControlFactor)
+
                         // Step 3: Build motion-compensated YCoCg-R block and add residuals
                         val finalY = IntArray(256)
                         val finalCo = IntArray(64)

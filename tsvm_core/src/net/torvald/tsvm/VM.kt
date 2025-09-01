@@ -541,6 +541,21 @@ class VM(
         }
     }
 
+    fun bulkPeekShort(from: Int, to: ShortArray, sizeInBytes: Int) {
+        if (from !in 0..8*1024*1024) throw IllegalArgumentException()
+        UnsafeHelper.memcpyRaw(null, usermem.ptr + from, to, UnsafeHelper.getArrayOffset(to), sizeInBytes.toLong())
+    }
+
+    fun bulkPeekInt(from: Int, to: IntArray, sizeInBytes: Int) {
+        if (from !in 0..8*1024*1024) throw IllegalArgumentException()
+        UnsafeHelper.memcpyRaw(null, usermem.ptr + from, to, UnsafeHelper.getArrayOffset(to), sizeInBytes.toLong())
+    }
+
+    fun bulkPeekFloat(from: Int, to: FloatArray, sizeInBytes: Int) {
+        if (from !in 0..8*1024*1024) throw IllegalArgumentException()
+        UnsafeHelper.memcpyRaw(null, usermem.ptr + from, to, UnsafeHelper.getArrayOffset(to), sizeInBytes.toLong())
+    }
+
     private fun relPtrInDev(from: Long, len: Long, start: Int, end: Int) =
         (from in start..end && (from + len) in start..end)
 
