@@ -1532,18 +1532,21 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
 static void free_encoder(tev_encoder_t *enc) {
     if (!enc) return;
 
-    ZSTD_freeCCtx(enc->zstd_context);
+    if (enc->zstd_context) {
+        ZSTD_freeCCtx(enc->zstd_context);
+        enc->zstd_context = NULL;
+    }
 
-    free(enc->current_rgb);
-    free(enc->previous_rgb);
-    free(enc->reference_rgb);
-    free(enc->y_workspace);
-    free(enc->co_workspace);
-    free(enc->cg_workspace);
-    free(enc->dct_workspace);
-    free(enc->block_data);
-    free(enc->compressed_buffer);
-    free(enc->mp2_buffer);
+    if (enc->current_rgb) { free(enc->current_rgb); enc->current_rgb = NULL; }
+    if (enc->previous_rgb) { free(enc->previous_rgb); enc->previous_rgb = NULL; }
+    if (enc->reference_rgb) { free(enc->reference_rgb); enc->reference_rgb = NULL; }
+    if (enc->y_workspace) { free(enc->y_workspace); enc->y_workspace = NULL; }
+    if (enc->co_workspace) { free(enc->co_workspace); enc->co_workspace = NULL; }
+    if (enc->cg_workspace) { free(enc->cg_workspace); enc->cg_workspace = NULL; }
+    if (enc->dct_workspace) { free(enc->dct_workspace); enc->dct_workspace = NULL; }
+    if (enc->block_data) { free(enc->block_data); enc->block_data = NULL; }
+    if (enc->compressed_buffer) { free(enc->compressed_buffer); enc->compressed_buffer = NULL; }
+    if (enc->mp2_buffer) { free(enc->mp2_buffer); enc->mp2_buffer = NULL; }
     free(enc);
 }
 
@@ -2015,15 +2018,19 @@ static void show_usage(const char *program_name) {
 static void cleanup_encoder(tev_encoder_t *enc) {
     if (!enc) return;
 
-    if (enc->ffmpeg_video_pipe) pclose(enc->ffmpeg_video_pipe);
+    if (enc->ffmpeg_video_pipe) { 
+        pclose(enc->ffmpeg_video_pipe); 
+        enc->ffmpeg_video_pipe = NULL;
+    }
     if (enc->mp2_file) {
         fclose(enc->mp2_file);
+        enc->mp2_file = NULL;
         unlink(TEMP_AUDIO_FILE); // Remove temporary audio file
     }
 
-    free(enc->input_file);
-    free(enc->output_file);
-    free(enc->subtitle_file);
+    if (enc->input_file) { free(enc->input_file); enc->input_file = NULL; }
+    if (enc->output_file) { free(enc->output_file); enc->output_file = NULL; }
+    if (enc->subtitle_file) { free(enc->subtitle_file); enc->subtitle_file = NULL; }
     free_subtitle_list(enc->subtitle_list);
 
     free_encoder(enc);
