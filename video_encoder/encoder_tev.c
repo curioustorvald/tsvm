@@ -161,6 +161,7 @@ typedef struct {
     int has_audio;
     int has_subtitles;
     int output_to_stdout;
+    int progressive_mode;  // 0 = interlaced (default), 1 = progressive
     int qualityIndex; // -q option
     int qualityY;
     int qualityCo;
@@ -174,6 +175,7 @@ typedef struct {
 
     // Frame buffers (8-bit RGB format for encoding)
     uint8_t *current_rgb, *previous_rgb, *reference_rgb;
+    uint8_t *previous_even_field;  // Previous even field buffer for interlaced scene change detection
 
     // YCoCg workspace
     float *y_workspace, *co_workspace, *cg_workspace;
@@ -303,29 +305,6 @@ static void dct_16x16_fast(float *input, float *output) {
     }
 }
 
-// Legacy O(n^4) version for reference/fallback
-static void dct_16x16(float *input, float *output) {
-    init_dct_tables(); // Ensure tables are initialized
-
-    for (int u = 0; u < 16; u++) {
-        for (int v = 0; v < 16; v++) {
-            float sum = 0.0f;
-            float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-
-            for (int x = 0; x < 16; x++) {
-                for (int y = 0; y < 16; y++) {
-                    sum += input[y * 16 + x] *
-                           dct_table_16[u][x] *
-                           dct_table_16[v][y];
-                }
-            }
-
-            output[u * 16 + v] = 0.25f * cu * cv * sum;
-        }
-    }
-}
-
 // Fast separable 8x8 DCT - 4x performance improvement
 static float temp_dct_8[HALF_BLOCK_SIZE_SQR]; // Reusable temporary buffer
 
@@ -357,29 +336,6 @@ static void dct_8x8_fast(float *input, float *output) {
             }
 
             output[v * 8 + col] = 0.5f * cv * sum;
-        }
-    }
-}
-
-// Legacy 8x8 2D DCT (for chroma) - O(n^4) version
-static void dct_8x8(float *input, float *output) {
-    init_dct_tables(); // Ensure tables are initialized
-
-    for (int u = 0; u < 8; u++) {
-        for (int v = 0; v < 8; v++) {
-            float sum = 0.0f;
-            float cu = (u == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-            float cv = (v == 0) ? 1.0f / sqrtf(2.0f) : 1.0f;
-
-            for (int x = 0; x < 8; x++) {
-                for (int y = 0; y < 8; y++) {
-                    sum += input[y * 8 + x] *
-                           dct_table_8[u][x] *
-                           dct_table_8[v][y];
-                }
-            }
-
-            output[u * 8 + v] = 0.25f * cu * cv * sum;
         }
     }
 }
@@ -1485,14 +1441,19 @@ static tev_encoder_t* init_encoder(void) {
 
 // Allocate encoder buffers
 static int alloc_encoder_buffers(tev_encoder_t *enc) {
-    int pixels = enc->width * enc->height;
+    // In interlaced mode, FFmpeg separatefields outputs field frames at half height
+    // In progressive mode, we work with full height frames  
+    int encoding_pixels = enc->width * enc->height;
+    
     int blocks_x = (enc->width + 15) / 16;
     int blocks_y = (enc->height + 15) / 16;
     int total_blocks = blocks_x * blocks_y;
 
-    enc->current_rgb = malloc(pixels * 3);
-    enc->previous_rgb = malloc(pixels * 3);
-    enc->reference_rgb = malloc(pixels * 3);
+    // Allocate buffers for encoding (FFmpeg provides frames at the correct resolution)
+    enc->current_rgb = malloc(encoding_pixels * 3);   // Current frame buffer from FFmpeg
+    enc->previous_rgb = malloc(encoding_pixels * 3);  // Previous frame buffer for motion estimation  
+    enc->reference_rgb = malloc(encoding_pixels * 3); // Reference frame buffer
+    enc->previous_even_field = malloc(encoding_pixels * 3);  // Previous even field for interlaced scene change
 
     enc->y_workspace = malloc(16 * 16 * sizeof(float));
     enc->co_workspace = malloc(8 * 8 * sizeof(float));
@@ -1504,6 +1465,7 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     enc->mp2_buffer = malloc(MP2_DEFAULT_PACKET_SIZE);
 
     if (!enc->current_rgb || !enc->previous_rgb || !enc->reference_rgb ||
+        !enc->previous_even_field ||
         !enc->y_workspace || !enc->co_workspace || !enc->cg_workspace ||
         !enc->dct_workspace || !enc->block_data ||
         !enc->compressed_buffer || !enc->mp2_buffer) {
@@ -1523,7 +1485,8 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     ZSTD_CCtx_setParameter(enc->zstd_context, ZSTD_c_hashLog, 16);
 
     // Initialize previous frame to black
-    memset(enc->previous_rgb, 0, pixels * 3);
+    memset(enc->previous_rgb, 0, encoding_pixels * 3);
+    memset(enc->previous_even_field, 0, encoding_pixels * 3);
 
     return 1;
 }
@@ -1540,6 +1503,7 @@ static void free_encoder(tev_encoder_t *enc) {
     if (enc->current_rgb) { free(enc->current_rgb); enc->current_rgb = NULL; }
     if (enc->previous_rgb) { free(enc->previous_rgb); enc->previous_rgb = NULL; }
     if (enc->reference_rgb) { free(enc->reference_rgb); enc->reference_rgb = NULL; }
+    if (enc->previous_even_field) { free(enc->previous_even_field); enc->previous_even_field = NULL; }
     if (enc->y_workspace) { free(enc->y_workspace); enc->y_workspace = NULL; }
     if (enc->co_workspace) { free(enc->co_workspace); enc->co_workspace = NULL; }
     if (enc->cg_workspace) { free(enc->cg_workspace); enc->cg_workspace = NULL; }
@@ -1551,6 +1515,7 @@ static void free_encoder(tev_encoder_t *enc) {
 }
 
 // Write TEV header
+
 static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     // Magic + version
     fwrite(TEV_MAGIC, 1, 8, output);
@@ -1559,14 +1524,15 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
 
     // Video parameters
     uint16_t width = enc->width;
-    uint16_t height = enc->height;
+    uint16_t height = enc->progressive_mode ? enc->height : enc->height * 2;
     uint8_t fps = enc->fps;
     uint32_t total_frames = enc->total_frames;
     uint8_t qualityY = enc->qualityY;
     uint8_t qualityCo = enc->qualityCo;
     uint8_t qualityCg = enc->qualityCg;
     uint8_t flags = (enc->has_audio) | (enc->has_subtitles << 1);
-    uint16_t unused = 0;
+    uint8_t video_flags = enc->progressive_mode ? 0 : 1; // bit 0 = is_interlaced (inverted from progressive)
+    uint8_t reserved = 0;
 
     fwrite(&width, 2, 1, output);
     fwrite(&height, 2, 1, output);
@@ -1576,29 +1542,46 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     fwrite(&qualityCo, 1, 1, output);
     fwrite(&qualityCg, 1, 1, output);
     fwrite(&flags, 1, 1, output);
-    fwrite(&unused, 2, 1, output);
+    fwrite(&video_flags, 1, 1, output);
+    fwrite(&reserved, 1, 1, output);
 
     return 0;
 }
 
 // Detect scene changes by analyzing frame differences
-static int detect_scene_change(tev_encoder_t *enc) {
-    if (!enc->previous_rgb || !enc->current_rgb) {
-        return 0; // No previous frame to compare
+static int detect_scene_change(tev_encoder_t *enc, int field_parity) {
+    if (!enc->current_rgb) {
+        return 0; // No current frame to compare
+    }
+    
+    // In interlaced mode, use previous even field for comparison
+    uint8_t *comparison_buffer = enc->previous_rgb;
+    if (!enc->progressive_mode && field_parity == 0) {
+        // Interlaced even field: compare to previous even field
+        if (!enc->previous_even_field) {
+            return 0; // No previous even field to compare
+        }
+        comparison_buffer = enc->previous_even_field;
+    } else {
+        // Progressive mode: use regular previous_rgb
+        if (!enc->previous_rgb) {
+            return 0; // No previous frame to compare
+        }
+        comparison_buffer = enc->previous_rgb;
     }
     
     long long total_diff = 0;
     int changed_pixels = 0;
-    
+
     // Sample every 4th pixel for performance (still gives good detection)
     for (int y = 0; y < enc->height; y += 2) {
         for (int x = 0; x < enc->width; x += 2) {
             int offset = (y * enc->width + x) * 3;
             
             // Calculate color difference
-            int r_diff = abs(enc->current_rgb[offset] - enc->previous_rgb[offset]);
-            int g_diff = abs(enc->current_rgb[offset + 1] - enc->previous_rgb[offset + 1]);
-            int b_diff = abs(enc->current_rgb[offset + 2] - enc->previous_rgb[offset + 2]);
+            int r_diff = abs(enc->current_rgb[offset] - comparison_buffer[offset]);
+            int g_diff = abs(enc->current_rgb[offset + 1] - comparison_buffer[offset + 1]);
+            int b_diff = abs(enc->current_rgb[offset + 2] - comparison_buffer[offset + 2]);
             
             int pixel_diff = r_diff + g_diff + b_diff;
             total_diff += pixel_diff;
@@ -1614,17 +1597,26 @@ static int detect_scene_change(tev_encoder_t *enc) {
     int sampled_pixels = (enc->height / 2) * (enc->width / 2);
     double avg_diff = (double)total_diff / sampled_pixels;
     double changed_ratio = (double)changed_pixels / sampled_pixels;
+
+    if (enc->verbose) {
+        printf("Scene change detection: avg_diff=%.2f\tchanged_ratio=%.4f\n", avg_diff, changed_ratio);
+    }
+
+    // Scene change thresholds - adjust for interlaced mode
+    // Interlaced fields have more natural differences due to temporal field separation
+    double threshold = 0.30;
     
-    // Scene change thresholds:
-    // - High average difference (> 40) OR
-    // - Large percentage of changed pixels (> 30%)
-    return (avg_diff > 40.0) || (changed_ratio > 0.30);
+    return changed_ratio > threshold;
 }
 
 // Encode and write a frame
-static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
-    // Check for scene change or time-based keyframe
-    int is_scene_change = detect_scene_change(enc);
+static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num, int field_parity) {
+    // In interlaced mode, only do scene change detection for even fields (field_parity = 0)
+    // to avoid false scene changes between fields of the same frame
+    int is_scene_change = 0;
+    if (enc->progressive_mode || field_parity == 0) {
+        is_scene_change = detect_scene_change(enc, field_parity);
+    }
     int is_time_keyframe = (frame_num % KEYFRAME_INTERVAL) == 0;
     int is_keyframe = is_time_keyframe || is_scene_change;
     
@@ -1692,6 +1684,13 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num) {
     // No global rate control needed - per-block complexity-based control only
 
     // Swap frame buffers for next frame
+    if (!enc->progressive_mode && field_parity == 0) {
+        // Interlaced even field: save to previous_even_field for scene change detection
+        size_t field_size = enc->width * enc->height * 3;
+        memcpy(enc->previous_even_field, enc->current_rgb, field_size);
+    }
+    
+    // Normal buffer swap for motion estimation
     uint8_t *temp_rgb = enc->previous_rgb;
     enc->previous_rgb = enc->current_rgb;
     enc->current_rgb = temp_rgb;
@@ -1782,7 +1781,8 @@ static int get_video_metadata(tev_encoder_t *config) {
     fprintf(stderr, "  FPS: %d\n", config->fps);
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
-    fprintf(stderr, "  Resolution: %dx%d\n", config->width, config->height);
+    fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height, 
+            config->progressive_mode ? "progressive" : "interlaced");
 
     return (config->total_frames > 0 && config->fps > 0);
 }
@@ -1792,20 +1792,39 @@ static int start_video_conversion(tev_encoder_t *enc) {
     char command[2048];
 
     // Build FFmpeg command with potential frame rate conversion
-    if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
-        // Frame rate conversion requested
-        snprintf(command, sizeof(command),
-            "ffmpeg -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-            "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
-            "-y - 2>&1",
-            enc->input_file, enc->output_fps, enc->width, enc->height, enc->width, enc->height);
+    if (enc->progressive_mode) {
+        if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
+            // Frame rate conversion requested
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
+                "-y - 2>&1",
+                enc->input_file, enc->output_fps, enc->width, enc->height, enc->width, enc->height);
+        } else {
+            // No frame rate conversion
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
+                "-y -",
+                enc->input_file, enc->width, enc->height, enc->width, enc->height);
+        }
+    // let FFmpeg handle the interlacing
     } else {
-        // No frame rate conversion
-        snprintf(command, sizeof(command),
-            "ffmpeg -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-            "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
-            "-y -",
-            enc->input_file, enc->width, enc->height, enc->width, enc->height);
+        if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
+            // Frame rate conversion requested
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top,separatefields\" "
+                "-y - 2>&1",
+                enc->input_file, enc->output_fps, enc->width, enc->height * 2, enc->width, enc->height * 2);
+        } else {
+            // No frame rate conversion
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top,separatefields\" "
+                "-y -",
+                enc->input_file, enc->width, enc->height * 2, enc->width, enc->height * 2);
+        }
     }
 
     if (enc->verbose) {
@@ -1981,6 +2000,7 @@ static void show_usage(const char *program_name) {
     printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio rate in bitrate mode and quantiser mode)\n");
     printf("  -Q, --quantiser N    Quantiser level 0-100 (100: lossless, 0: potato)\n");
 //    printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
+    printf("  -p, --progressive    Use progressive scan (default: interlaced)\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -t, --test           Test mode: generate solid colour frames\n");
     printf("  --help               Show this help\n\n");
@@ -2062,6 +2082,7 @@ int main(int argc, char *argv[]) {
         {"quantiser", required_argument, 0, 'Q'},
         {"quantizer", required_argument, 0, 'Q'},
         {"bitrate", required_argument, 0, 'b'},
+        {"progressive", no_argument, 0, 'p'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"help", no_argument, 0, '?'},
@@ -2071,7 +2092,7 @@ int main(int argc, char *argv[]) {
     int option_index = 0;
     int c;
 
-    while ((c = getopt_long(argc, argv, "i:o:s:w:h:f:q:b:Q:vt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:w:h:f:q:b:Q:pvt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -2109,6 +2130,9 @@ int main(int argc, char *argv[]) {
                     enc->bitrate_mode = 1; // Enable bitrate control
                 }
                 break;
+            case 'p':
+                enc->progressive_mode = 1;
+                break;
             case 'v':
                 enc->verbose = 1;
                 break;
@@ -2132,6 +2156,11 @@ int main(int argc, char *argv[]) {
                 cleanup_encoder(enc);
                 return 1;
         }
+    }
+
+    // halve the internal representation of frame height
+    if (!enc->progressive_mode) {
+        enc->height /= 2;
     }
 
     if (!test_mode && (!enc->input_file || !enc->output_file)) {
@@ -2278,7 +2307,9 @@ int main(int argc, char *argv[]) {
             
         } else {
             // Read RGB data directly from FFmpeg pipe
-            size_t rgb_size = enc->width * enc->height * 3;
+            // height-halving is already done on the encoder initialisation
+            int frame_height = enc->height;
+            size_t rgb_size = enc->width * frame_height * 3;
             size_t bytes_read = fread(enc->current_rgb, 1, rgb_size, enc->ffmpeg_video_pipe);
             
             if (bytes_read != rgb_size) {
@@ -2293,6 +2324,10 @@ int main(int argc, char *argv[]) {
                 }
                 break; // End of video or error
             }
+            
+            // In interlaced mode, FFmpeg separatefields filter already provides field-separated frames
+            // Each frame from FFmpeg is now a single field at half height
+            // Frame parity: even frames (0,2,4...) = bottom fields, odd frames (1,3,5...) = top fields
         }
 
         // Process audio for this frame
@@ -2302,7 +2337,9 @@ int main(int argc, char *argv[]) {
         process_subtitles(enc, frame_count, output);
 
         // Encode frame
-        if (!encode_frame(enc, output, frame_count)) {
+        // Pass field parity for interlaced mode, -1 for progressive mode
+        int frame_field_parity = enc->progressive_mode ? -1 : (frame_count % 2);
+        if (!encode_frame(enc, output, frame_count, frame_field_parity)) {
             fprintf(stderr, "Failed to encode frame %d\n", frame_count);
             break;
         }

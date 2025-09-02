@@ -1512,24 +1512,96 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // YCoCg-R to RGB conversion with 4:2:0 chroma upsampling
+    // Pre-allocated arrays for chroma component caching (reused across blocks)
+    private val cgHalfCache = IntArray(64) // 8x8 cache for cg/2 values
+    private val coHalfCache = IntArray(64) // 8x8 cache for co/2 values
+    
+    // Temporary buffer for interlaced field processing
+    private val interlacedFieldBuffer = IntArray(560 * 224 * 3) // Half-height RGB buffer
+    
+    /**
+     * YADIF (Yet Another Deinterlacing Filter) implementation
+     * Converts interlaced field to progressive frame with temporal/spatial interpolation
+     */
+    fun yadifDeinterlace(fieldRGBAddr: Long, outputRGBAddr: Long, width: Int, height: Int, 
+                        prevFieldAddr: Long, nextFieldAddr: Long, fieldParity: Int, 
+                        fieldIncVec: Int, outputIncVec: Int) {
+        val fieldHeight = height / 2
+        
+        for (y in 0 until fieldHeight) {
+            for (x in 0 until width) {
+                val fieldOffset = (y * width + x) * 3
+                val outputOffset = ((y * 2 + fieldParity) * width + x) * 3
+                
+                // Copy current field lines directly (no interpolation needed)
+                for (c in 0..2) {
+                    val pixelValue = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!
+                    vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, pixelValue)
+                }
+                
+                // Interpolate missing lines using Yadif algorithm
+                if (y > 0 && y < fieldHeight - 1) {
+                    val interpOutputOffset = ((y * 2 + 1 - fieldParity) * width + x) * 3
+                    
+                    for (c in 0..2) {
+                        // Get spatial neighbors
+                        val above = vm.peek(fieldRGBAddr + (fieldOffset - width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
+                        val below = vm.peek(fieldRGBAddr + (fieldOffset + width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
+                        val current = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!.toInt() and 0xFF
+                        
+                        // Simple spatial interpolation (can be enhanced with temporal prediction)
+                        val spatialInterp = (above + below) / 2
+                        
+                        // Apply edge-directed interpolation bias
+                        val edgeBias = if (kotlin.math.abs(above - below) < 32) {
+                            (current + spatialInterp) / 2  // Low edge activity: blend with current
+                        } else {
+                            spatialInterp  // High edge activity: use spatial only
+                        }
+                        
+                        vm.poke(outputRGBAddr + (interpOutputOffset + c) * outputIncVec, 
+                               edgeBias.coerceIn(0, 255).toByte())
+                    }
+                }
+            }
+        }
+        
+        // Handle edge cases: first and last interpolated lines use simple spatial interpolation
+        for (x in 0 until width) {
+            val interpY = if (fieldParity == 0) 1 else 0
+            val outputOffset = (interpY * width + x) * 3
+            val referenceOffset = ((interpY + 1) * width + x) * 3
+            
+            for (c in 0..2) {
+                val refPixel = vm.peek(outputRGBAddr + (referenceOffset + c) * outputIncVec)!!
+                vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, refPixel)
+            }
+        }
+    }
+    
     fun tevYcocgToRGB(yBlock: IntArray, coBlock: IntArray, cgBlock: IntArray): IntArray {
         val rgbData = IntArray(16 * 16 * 3)  // R,G,B for 16x16 pixels
         
+        // Pre-compute chroma division components for 8x8 chroma block (each reused 4x in 4:2:0)
+        for (i in 0 until 64) {
+            cgHalfCache[i] = cgBlock[i] / 2
+            coHalfCache[i] = coBlock[i] / 2
+        }
+        
+        // Process 16x16 luma with cached chroma components  
         for (py in 0 until 16) {
             for (px in 0 until 16) {
                 val yIdx = py * 16 + px
                 val y = yBlock[yIdx]
                 
-                // Get chroma values from subsampled 8x8 blocks (nearest neighbor upsampling)
+                // Get pre-computed chroma components (4:2:0 upsampling)
                 val coIdx = (py / 2) * 8 + (px / 2)
-                val co = coBlock[coIdx]
-                val cg = cgBlock[coIdx]
                 
-                // YCoCg-R inverse transform (per YCoCg-R spec with truncated division)
-                val tmp = y - (cg / 2)
-                val g = cg + tmp
-                val b = tmp - (co / 2)
-                val r = b + co
+                // YCoCg-R inverse transform using cached division results
+                val tmp = y - cgHalfCache[coIdx]
+                val g = cgBlock[coIdx] + tmp
+                val b = tmp - coHalfCache[coIdx]
+                val r = b + coBlock[coIdx]
                 
                 // Clamp and store RGB
                 val baseIdx = (py * 16 + px) * 3
@@ -1725,10 +1797,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qualityIndices: IntArray, debugMotionVectors: Boolean = false,
-                  tevVersion: Int = 2) {
+                  tevVersion: Int = 2, isInterlaced: Boolean = false) {
 
+        // height doesn't change when interlaced, because that's the encoder's output
+
+        // For interlaced mode, decode to half-height field first
+        val decodingHeight = if (isInterlaced) height / 2 else height
         val blocksX = (width + 15) / 16  // 16x16 blocks now
-        val blocksY = (height + 15) / 16
+        val blocksY = (decodingHeight + 15) / 16
 
         val quantYmult = jpeg_quality_to_mult(qualityIndices[0])
         val quantCOmult = jpeg_quality_to_mult(qualityIndices[1])
@@ -1769,7 +1845,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 when (mode) {
                     0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame (optimized with memcpy)
                         // Check if we can copy the entire block at once (no clipping)
-                        if (startX + 16 <= width && startY + 16 <= height) {
+                        if (startX + 16 <= width && startY + 16 <= decodingHeight) {
                             // Optimized case: copy entire 16x16 block with row-by-row memcpy
                             for (dy in 0 until 16) {
                                 val srcRowOffset = ((startY + dy).toLong() * width + startX) * 3
@@ -1786,7 +1862,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 for (dx in 0 until 16) {
                                     val x = startX + dx
                                     val y = startY + dy
-                                    if (x < width && y < height) {
+                                    if (x < width && y < decodingHeight) {
                                         val pixelOffset = y.toLong() * width + x
                                         val rgbOffset = pixelOffset * 3
                                         
@@ -1816,7 +1892,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     val refX = x + mvX
                                     val refY = y + mvY
                                     
-                                    if (x < width && y < height) {
+                                    if (x < width && y < decodingHeight) {
                                         val dstPixelOffset = y.toLong() * width + x
                                         val dstRgbOffset = dstPixelOffset * 3
                                         
@@ -1836,7 +1912,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             val refStartY = startY + mvY
                             
                             // Check if entire 16x16 block can be copied with memcpy (no bounds issues)
-                            if (startX + 16 <= width && startY + 16 <= height &&
+                            if (startX + 16 <= width && startY + 16 <= decodingHeight &&
                                 refStartX >= 0 && refStartY >= 0 && refStartX + 16 <= width && refStartY + 16 <= height) {
                                 
                                 // Optimized case: copy entire 16x16 block with row-by-row memcpy
@@ -1858,16 +1934,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         val refX = x + mvX
                                         val refY = y + mvY
                                         
-                                        if (x < width && y < height) {
+                                        if (x < width && y < decodingHeight) {
                                             val dstPixelOffset = y.toLong() * width + x
                                             val dstRgbOffset = dstPixelOffset * 3
                                             
-                                            if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
+                                            if (refX >= 0 && refY >= 0 && refX < width && refY < decodingHeight) {
                                                 val refPixelOffset = refY.toLong() * width + refX
                                                 val refRgbOffset = refPixelOffset * 3
                                                 
                                                 // Additional safety: ensure RGB offset is within valid range
-                                                val maxValidOffset = (width * height - 1) * 3L + 2
+                                                val maxValidOffset = (width * decodingHeight - 1) * 3L + 2
                                                 if (refRgbOffset >= 0 && refRgbOffset <= maxValidOffset) {
                                                     // Copy RGB from reference position
                                                     val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
@@ -1923,7 +1999,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                if (x < width && y < height) {
+                                if (x < width && y < decodingHeight) {
                                     val rgbIdx = (dy * 16 + dx) * 3
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
@@ -1963,10 +2039,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val refY = y + mvY
                                 val pixelIdx = dy * 16 + dx
                                 
-                                if (x < width && y < height) {
+                                if (x < width && y < decodingHeight) {
                                     var mcY: Int
                                     
-                                    if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
+                                    if (refX >= 0 && refY >= 0 && refX < width && refY < decodingHeight) {
                                         // Get motion-compensated RGB from previous frame
                                         val refPixelOffset = refY.toLong() * width + refX
                                         val refRgbOffset = refPixelOffset * 3
@@ -2003,12 +2079,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val refY = y + mvY
                                 val chromaIdx = cy * 8 + cx
                                 
-                                if (x < width && y < height) {
+                                if (x < width && y < decodingHeight) {
                                     var mcCo: Int
                                     var mcCg: Int
                                     
                                     // Sample 2x2 block from motion-compensated position for chroma
-                                    if (refX >= 0 && refY >= 0 && refX < width - 1 && refY < height - 1) {
+                                    if (refX >= 0 && refY >= 0 && refX < width - 1 && refY < decodingHeight - 1) {
                                         var coSum = 0
                                         var cgSum = 0
                                         var count = 0
@@ -2018,7 +2094,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                             for (dx in 0 until 2) {
                                                 val sampleX = refX + dx
                                                 val sampleY = refY + dy
-                                                if (sampleX < width && sampleY < height) {
+                                                if (sampleX < width && sampleY < decodingHeight) {
                                                     val refPixelOffset = sampleY.toLong() * width + sampleX
                                                     val refRgbOffset = refPixelOffset * 3
                                                     
@@ -2064,7 +2140,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                if (x < width && y < height) {
+                                if (x < width && y < decodingHeight) {
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
                                     
@@ -2099,7 +2175,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                if (x < width && y < height) {
+                                if (x < width && y < decodingHeight) {
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
                                     
@@ -2113,6 +2189,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
+        
+        // Apply Yadif deinterlacing if this is an interlaced frame
+        /*if (isInterlaced) {
+            // Decode produced a field at half-height, now deinterlace to full progressive frame
+            val tempFieldBuffer = vm.malloc(width * decodingHeight * 3)
+            
+            // Copy the decoded field to temporary buffer
+            vm.memcpy(currentRGBAddr.toInt(), tempFieldBuffer.toInt(), width * decodingHeight * 3)
+            
+            // Apply Yadif deinterlacing: field -> progressive frame
+            yadifDeinterlace(
+                tempFieldBuffer.toLong(), currentRGBAddr, width, height,
+                prevRGBAddr, prevRGBAddr, // TODO: Implement proper temporal prediction
+                0, // Field parity (0=even field first)
+                thisAddrIncVec, thisAddrIncVec
+            )
+            
+            vm.free(tempFieldBuffer.toInt())
+        }*/
     }
 
 

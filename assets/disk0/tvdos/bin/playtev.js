@@ -383,12 +383,30 @@ let qualityY = seqread.readOneByte()
 let qualityCo = seqread.readOneByte()
 let qualityCg = seqread.readOneByte()
 let flags = seqread.readOneByte()
-let hasAudio = flags & 1
-let hasSubtitle = flags & 2
-let unused1 = seqread.readOneByte()
+let hasAudio = !!(flags & 1)
+let hasSubtitle = !!(flags & 2)
+let videoFlags = seqread.readOneByte()
+let isInterlaced = !!(videoFlags & 1)
 let unused2 = seqread.readOneByte()
 
-serial.println(`TEV Format ${version} (${colorSpace}); Q: ${qualityY} ${qualityCo} ${qualityCg}`)
+
+serial.println(`Video metadata:`)
+serial.println(`  Frames: ${totalFrames}`)
+serial.println(`  FPS: ${fps}`)
+serial.println(`  Duration: ${totalFrames / fps}`)
+serial.println(`  Audio: ${hasAudio ? "Yes" : "No"}`)
+serial.println(`  Resolution: ${width}x${height}, ${isInterlaced ? "interlaced" : "progressive"}`)
+
+
+// DEBUG interlace raw output
+if (isInterlaced) {
+    height = height >> 1
+    isInterlaced = false
+}
+// END OF DEBUG
+
+
+serial.println(`TEV Format ${version} (${colorSpace}); Q: ${qualityY} ${qualityCo} ${qualityCg}; Interlaced: ${isInterlaced ? 'Yes' : 'No'}`)
 
 function updateDataRateBin(rate) {
     videoRateBin.push(rate)
@@ -555,7 +573,7 @@ try {
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     let decodeStart = sys.nanoTime()
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], debugMotionVectors, version)
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], debugMotionVectors, version, isInterlaced)
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering

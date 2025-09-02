@@ -703,10 +703,12 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     uint8  Quality Index for Y channel (0-99; 100 denotes all quantiser is 1)
     uint8  Quality Index for Co channel (0-99; 100 denotes all quantiser is 1)
     uint8  Quality Index for Cg channel (0-99; 100 denotes all quantiser is 1)
-    uint8  Flags
-            bit 0 = has audio
-            bit 1 = has subtitle
-    unit16 Reserved, fill with zero
+    uint8  Extra Feature Flags
+            - bit 0 = has audio
+            - bit 1 = has subtitle
+    uint8  Video Flags
+            - bit 0 = is interlaced (should be default for most non-archival TEV videos)
+    uint8  Reserved, fill with zero
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
@@ -718,7 +720,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 ## Video Packet Structure
     uint8  Packet Type
     uint32 Compressed Size
-    *      Gzip-compressed Block Data
+    *      Zstd-compressed Block Data
 
 ## Block Data (per 16x16 block)
     uint8  Mode: encoding mode
