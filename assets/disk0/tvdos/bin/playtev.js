@@ -436,6 +436,11 @@ const FRAME_SIZE = 560*448*3  // Total frame size = 752,640 bytes
 const RGB_BUFFER_A = sys.malloc(FRAME_SIZE)
 const RGB_BUFFER_B = sys.malloc(FRAME_SIZE)
 
+// Static Yadif deinterlacing buffers (half-height field buffers for interlaced mode)
+const FIELD_SIZE = 560 * 224 * 3  // Half-height field buffer size
+const TEMP_FIELD_BUFFER = sys.malloc(FIELD_SIZE)
+const PREV_FIELD_BUFFER = sys.malloc(FIELD_SIZE)
+
 // Ping-pong buffer pointers (swap instead of copy)
 let CURRENT_RGB_ADDR = RGB_BUFFER_A
 let PREV_RGB_ADDR = RGB_BUFFER_B
@@ -443,6 +448,10 @@ let PREV_RGB_ADDR = RGB_BUFFER_B
 // Initialize RGB frame buffers to black (0,0,0)
 sys.memset(RGB_BUFFER_A, 0, FRAME_PIXELS * 3)
 sys.memset(RGB_BUFFER_B, 0, FRAME_PIXELS * 3)
+
+// Initialize Yadif field buffers to black
+sys.memset(TEMP_FIELD_BUFFER, 0, FIELD_SIZE)
+sys.memset(PREV_FIELD_BUFFER, 0, FIELD_SIZE)
 
 // Initialize display framebuffer to black
 sys.memset(DISPLAY_RG_ADDR, 0, FRAME_PIXELS) // Black in RG plane
@@ -504,7 +513,7 @@ function setBiasLighting() {
     graphics.setBackground(Math.round(bgr * 255), Math.round(bgg * 255), Math.round(bgb * 255))
 }
 
-let blockDataPtr = sys.malloc(560 * 448 * 3)
+let blockDataPtr = sys.malloc(FRAME_SIZE)
 
 // Main decoding loop - simplified for performance
 try {
@@ -573,7 +582,7 @@ try {
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     let decodeStart = sys.nanoTime()
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version, isInterlaced)
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version, isInterlaced, TEMP_FIELD_BUFFER, PREV_FIELD_BUFFER)
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering
@@ -661,9 +670,11 @@ catch (e) {
 }
 finally {
     // Cleanup working memory (graphics memory is automatically managed)
-    sys.free(blockDataPtr)
+    if (blockDataPtr > 0) sys.free(blockDataPtr)
     if (RGB_BUFFER_A > 0) sys.free(RGB_BUFFER_A)
     if (RGB_BUFFER_B > 0) sys.free(RGB_BUFFER_B)
+    if (TEMP_FIELD_BUFFER > 0) sys.free(TEMP_FIELD_BUFFER)
+    if (PREV_FIELD_BUFFER > 0) sys.free(PREV_FIELD_BUFFER)
 
     audio.stop(0)
     audio.purgeQueue(0)

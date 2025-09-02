@@ -35,6 +35,7 @@ const COL_HL_EXT = {
     "ipf2": 191,
     "txt": 223,
     "md": 223,
+    "log": 223
 }
 
 const EXEC_FUNS = {
@@ -49,7 +50,9 @@ const EXEC_FUNS = {
     "ipf1": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
     "ipf2": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
     "bas": (f) => _G.shell.execute(`basic "${f}"`),
-    "txt": (f) => _G.shell.execute(`less "${f}"`)
+    "txt": (f) => _G.shell.execute(`less "${f}"`),
+    "md": (f) => _G.shell.execute(`less "${f}"`),
+    "log": (f) => _G.shell.execute(`less "${f}"`)
 }
 
 let windowMode = 0 // 0 == left, 1 == right

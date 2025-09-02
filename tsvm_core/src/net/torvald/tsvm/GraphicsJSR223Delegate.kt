@@ -485,33 +485,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         )
     ).map{ it.map { (it.toFloat() + 0.5f) / 16f }.toFloatArray() }
 
-    private val bayerKernels2 = arrayOf(
-        intArrayOf(
-            0,8,2,10,
-            12,4,14,6,
-            3,11,1,9,
-            15,7,13,5,
-        ),
-        intArrayOf(
-            8,2,10,0,
-            4,14,6,12,
-            11,1,9,3,
-            7,13,5,15,
-        ),
-        intArrayOf(
-            7,13,5,15,
-            8,2,10,0,
-            4,14,6,12,
-            11,1,9,3,
-        ),
-        intArrayOf(
-            15,7,13,5,
-            0,8,2,10,
-            12,4,14,6,
-            3,11,1,9,
-        )
-    )
-
     /**
      * This method always assume that you're using the default palette
      *
@@ -1520,6 +1493,27 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val interlacedFieldBuffer = IntArray(560 * 224 * 3) // Half-height RGB buffer
     
     /**
+     * Extract a specific field (even or odd lines) from a progressive frame
+     * Used for temporal prediction in Yadif deinterlacing
+     */
+    private fun extractFieldFromProgressive(progressiveAddr: Long, fieldAddr: Long, width: Int, height: Int, 
+                                           fieldParity: Int, addrIncVec: Int) {
+        val fieldHeight = height / 2
+        for (y in 0 until fieldHeight) {
+            val progressiveY = y * 2 + fieldParity // Extract even (0) or odd (1) lines
+            val progressiveOffset = (progressiveY * width) * 3
+            val fieldOffset = (y * width) * 3
+            
+            for (x in 0 until width) {
+                for (c in 0..2) {
+                    val pixel = vm.peek(progressiveAddr + (progressiveOffset + x * 3 + c) * addrIncVec)!!
+                    vm.poke(fieldAddr + (fieldOffset + x * 3 + c) * addrIncVec, pixel)
+                }
+            }
+        }
+    }
+    
+    /**
      * YADIF (Yet Another Deinterlacing Filter) implementation
      * Converts interlaced field to progressive frame with temporal/spatial interpolation
      */
@@ -1550,18 +1544,49 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         val below = vm.peek(fieldRGBAddr + (fieldOffset + width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
                         val current = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!.toInt() and 0xFF
                         
-                        // Simple spatial interpolation (can be enhanced with temporal prediction)
+                        // Spatial interpolation
                         val spatialInterp = (above + below) / 2
                         
-                        // Apply edge-directed interpolation bias
-                        val edgeBias = if (kotlin.math.abs(above - below) < 32) {
-                            (current + spatialInterp) / 2  // Low edge activity: blend with current
+                        // Temporal prediction using previous and next fields
+                        var temporalPred = spatialInterp
+                        if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
+                            // Get temporal neighbors from same spatial position
+                            val prevPixel = (vm.peek(prevFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
+                            val nextPixel = (vm.peek(nextFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
+                            
+                            // Simple temporal interpolation
+                            val tempInterp = (prevPixel + nextPixel) / 2
+                            
+                            // Yadif edge-directed temporal-spatial decision
+                            val spatialDiff = kotlin.math.abs(above - below)
+                            val temporalDiff = kotlin.math.abs(prevPixel - nextPixel)
+                            
+                            // Choose between spatial and temporal prediction based on local characteristics
+                            temporalPred = when {
+                                spatialDiff < 32 && temporalDiff < 32 -> {
+                                    // Low spatial and temporal variation: blend all
+                                    (spatialInterp + tempInterp + current) / 3
+                                }
+                                spatialDiff < temporalDiff -> {
+                                    // Prefer spatial interpolation
+                                    (spatialInterp * 3 + tempInterp) / 4
+                                }
+                                else -> {
+                                    // Prefer temporal interpolation  
+                                    (tempInterp * 3 + spatialInterp) / 4
+                                }
+                            }
+                        }
+                        
+                        // Final edge-directed filtering
+                        val finalValue = if (kotlin.math.abs(above - below) < 16) {
+                            (current + temporalPred) / 2  // Very low edge activity: blend with current
                         } else {
-                            spatialInterp  // High edge activity: use spatial only
+                            temporalPred  // Higher edge activity: use prediction
                         }
                         
                         vm.poke(outputRGBAddr + (interpOutputOffset + c) * outputIncVec, 
-                               edgeBias.coerceIn(0, 255).toByte())
+                               finalValue.coerceIn(0, 255).toByte())
                     }
                 }
             }
@@ -1798,7 +1823,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qualityIndices: IntArray, frameCounter: Int,
-                  debugMotionVectors: Boolean = false, tevVersion: Int = 2, isInterlaced: Boolean = false) {
+                  debugMotionVectors: Boolean = false, tevVersion: Int = 2, isInterlaced: Boolean = false,
+                  tempFieldBuffer: Long = 0L, prevFieldBuffer: Long = 0L) {
 
         // height doesn't change when interlaced, because that's the encoder's output
 
@@ -2193,21 +2219,32 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         // Apply Yadif deinterlacing if this is an interlaced frame
         if (isInterlaced) {
-            // Decode produced a field at half-height, now deinterlace to full progressive frame
-            val tempFieldBuffer = vm.malloc(width * decodingHeight * 3)
+            // Use static buffers provided by playtev.js for better performance
+//            require(tempFieldBuffer != 0L) { "tempFieldBuffer must be provided for interlaced decoding" }
+//            require(prevFieldBuffer != 0L) { "prevFieldBuffer must be provided for interlaced decoding" }
             
             // Copy the decoded field to temporary buffer
             vm.memcpy(currentRGBAddr.toInt(), tempFieldBuffer.toInt(), width * decodingHeight * 3)
             
             // Apply Yadif deinterlacing: field -> progressive frame
+            // For temporal prediction, we need proper field management
+            val fieldParity = frameCounter % 2
+            val prevFieldAddr = if (prevRGBAddr != 0L) {
+                // Extract the corresponding field from the previous progressive frame
+                // Even field lines: y = 0, 2, 4, 6...  
+                // Odd field lines:  y = 1, 3, 5, 7...
+                extractFieldFromProgressive(prevRGBAddr, prevFieldBuffer, width, height, fieldParity, thisAddrIncVec)
+                prevFieldBuffer
+            } else {
+                0L
+            }
+            
             yadifDeinterlace(
-                tempFieldBuffer.toLong(), currentRGBAddr, width, height,
-                prevRGBAddr, prevRGBAddr, // TODO: Implement proper temporal prediction
-                frameCounter % 2, // Field parity (0=even field first)
+                tempFieldBuffer, currentRGBAddr, width, height,
+                prevFieldAddr, 0L, // Use previous field, no next field available
+                fieldParity, 
                 thisAddrIncVec, thisAddrIncVec
             )
-            
-            vm.free(tempFieldBuffer.toInt())
         }
     }
 

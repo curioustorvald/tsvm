@@ -1814,14 +1814,14 @@ static int start_video_conversion(tev_encoder_t *enc) {
             // Frame rate conversion requested
             snprintf(command, sizeof(command),
                 "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-                "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top,separatefields\" "
+                "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top:cvlpf,separatefields\" "
                 "-y - 2>&1",
                 enc->input_file, enc->output_fps, enc->width, enc->height * 2, enc->width, enc->height * 2);
         } else {
             // No frame rate conversion
             snprintf(command, sizeof(command),
                 "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-                "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top,separatefields\" "
+                "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top:cvlpf,separatefields\" "
                 "-y -",
                 enc->input_file, enc->width, enc->height * 2, enc->width, enc->height * 2);
         }
