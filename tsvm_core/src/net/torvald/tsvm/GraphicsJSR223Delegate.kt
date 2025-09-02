@@ -1498,18 +1498,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     private fun extractFieldFromProgressive(progressiveAddr: Long, fieldAddr: Long, width: Int, height: Int, 
                                            fieldParity: Int, addrIncVec: Int) {
+        assert(addrIncVec == 1)
+
         val fieldHeight = height / 2
         for (y in 0 until fieldHeight) {
             val progressiveY = y * 2 + fieldParity // Extract even (0) or odd (1) lines
             val progressiveOffset = (progressiveY * width) * 3
             val fieldOffset = (y * width) * 3
-            
-            for (x in 0 until width) {
-                for (c in 0..2) {
-                    val pixel = vm.peek(progressiveAddr + (progressiveOffset + x * 3 + c) * addrIncVec)!!
-                    vm.poke(fieldAddr + (fieldOffset + x * 3 + c) * addrIncVec, pixel)
-                }
-            }
+
+            vm.memcpy(progressiveAddr.toInt() + progressiveOffset, fieldAddr.toInt() + fieldOffset, width * 3)
         }
     }
     
@@ -1528,79 +1525,106 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val fieldOffset = (y * width + x) * 3
                 val outputOffset = ((y * 2 + fieldParity) * width + x) * 3
                 
-                // Copy current field lines directly (no interpolation needed)
-                for (c in 0..2) {
-                    val pixelValue = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!
-                    vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, pixelValue)
-                }
-                
+                // Copy current field lines directly (no interpolation needed) with loop unrolling
+                vm.poke(outputRGBAddr + (outputOffset + 0) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 0) * fieldIncVec)!!)
+                vm.poke(outputRGBAddr + (outputOffset + 1) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 1) * fieldIncVec)!!)
+                vm.poke(outputRGBAddr + (outputOffset + 2) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 2) * fieldIncVec)!!)
+
                 // Interpolate missing lines using Yadif algorithm
+                // Even field (0,2,4...) interpolates odd lines (1,3,5...)
+                // Odd field (1,3,5...) interpolates even lines (2,4,6...) - skip line 0!
                 if (y > 0 && y < fieldHeight - 1) {
-                    val interpOutputOffset = ((y * 2 + 1 - fieldParity) * width + x) * 3
+                    val interpLine = if (fieldParity == 0) {
+                        y * 2 + 1  // Even field: interpolate odd progressive lines (1,3,5...)
+                    } else {
+                        y * 2 + 2  // Odd field: interpolate even progressive lines (2,4,6...)
+                    }
+                    // Skip interpolation if the line would be out of bounds
+                    if (interpLine < height) {
+                        val interpOutputOffset = (interpLine * width + x) * 3
                     
-                    for (c in 0..2) {
-                        // Get spatial neighbors
-                        val above = vm.peek(fieldRGBAddr + (fieldOffset - width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
-                        val below = vm.peek(fieldRGBAddr + (fieldOffset + width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
-                        val current = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!.toInt() and 0xFF
-                        
-                        // Spatial interpolation
-                        val spatialInterp = (above + below) / 2
-                        
-                        // Temporal prediction using previous and next fields
-                        var temporalPred = spatialInterp
-                        if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
-                            // Get temporal neighbors from same spatial position
-                            val prevPixel = (vm.peek(prevFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
-                            val nextPixel = (vm.peek(nextFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
-                            
-                            // Simple temporal interpolation
-                            val tempInterp = (prevPixel + nextPixel) / 2
-                            
-                            // Yadif edge-directed temporal-spatial decision
-                            val spatialDiff = kotlin.math.abs(above - below)
-                            val temporalDiff = kotlin.math.abs(prevPixel - nextPixel)
-                            
-                            // Choose between spatial and temporal prediction based on local characteristics
-                            temporalPred = when {
-                                spatialDiff < 32 && temporalDiff < 32 -> {
-                                    // Low spatial and temporal variation: blend all
-                                    (spatialInterp + tempInterp + current) / 3
-                                }
-                                spatialDiff < temporalDiff -> {
-                                    // Prefer spatial interpolation
-                                    (spatialInterp * 3 + tempInterp) / 4
-                                }
-                                else -> {
-                                    // Prefer temporal interpolation  
-                                    (tempInterp * 3 + spatialInterp) / 4
+                        for (c in 0..2) {
+                            // Get spatial neighbors
+                            val above = vm.peek(fieldRGBAddr + (fieldOffset - width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
+                            val below = vm.peek(fieldRGBAddr + (fieldOffset + width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
+                            val current = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!.toInt() and 0xFF
+
+                            // Spatial interpolation
+                            val spatialInterp = (above + below) / 2
+
+                            // Temporal prediction using previous and next fields
+                            var temporalPred = spatialInterp
+                            if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
+                                // Get temporal neighbors from same spatial position
+                                val prevPixel = (vm.peek(prevFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
+                                val nextPixel = (vm.peek(nextFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
+
+                                // Simple temporal interpolation
+                                val tempInterp = (prevPixel + nextPixel) / 2
+
+                                // Yadif edge-directed temporal-spatial decision
+                                val spatialDiff = kotlin.math.abs(above - below)
+                                val temporalDiff = kotlin.math.abs(prevPixel - nextPixel)
+
+                                // Choose between spatial and temporal prediction based on local characteristics
+                                temporalPred = when {
+                                    spatialDiff < 32 && temporalDiff < 32 -> {
+                                        // Low spatial and temporal variation: blend all
+                                        (spatialInterp + tempInterp + current) / 3
+                                    }
+                                    spatialDiff < temporalDiff -> {
+                                        // Prefer spatial interpolation
+                                        (spatialInterp * 3 + tempInterp) / 4
+                                    }
+                                    else -> {
+                                        // Prefer temporal interpolation
+                                        (tempInterp * 3 + spatialInterp) / 4
+                                    }
                                 }
                             }
+
+                            // Final edge-directed filtering
+                            val finalValue = if (kotlin.math.abs(above - below) < 16) {
+                                (current + temporalPred) / 2  // Very low edge activity: blend with current
+                            } else {
+                                temporalPred  // Higher edge activity: use prediction
+                            }
+
+                            vm.poke(outputRGBAddr + (interpOutputOffset + c) * outputIncVec,
+                                   finalValue.coerceIn(0, 255).toByte())
                         }
-                        
-                        // Final edge-directed filtering
-                        val finalValue = if (kotlin.math.abs(above - below) < 16) {
-                            (current + temporalPred) / 2  // Very low edge activity: blend with current
-                        } else {
-                            temporalPred  // Higher edge activity: use prediction
-                        }
-                        
-                        vm.poke(outputRGBAddr + (interpOutputOffset + c) * outputIncVec, 
-                               finalValue.coerceIn(0, 255).toByte())
                     }
                 }
             }
         }
-        
-        // Handle edge cases: first and last interpolated lines use simple spatial interpolation
-        for (x in 0 until width) {
-            val interpY = if (fieldParity == 0) 1 else 0
-            val outputOffset = (interpY * width + x) * 3
-            val referenceOffset = ((interpY + 1) * width + x) * 3
-            
-            for (c in 0..2) {
-                val refPixel = vm.peek(outputRGBAddr + (referenceOffset + c) * outputIncVec)!!
-                vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, refPixel)
+
+        // Handle edge cases: interpolate first missing line for each field
+        // Even field: interpolate line 1 (first odd line)
+        // Odd field: interpolate line 0 using simple duplication (since no spatial neighbors exist)
+        if (fieldParity == 0) {
+            // Even field: interpolate line 1 using line 0 and 2
+            for (x in 0 until width) {
+                val outputOffset = (1 * width + x) * 3
+                val ref0Offset = (0 * width + x) * 3  // Line 0 
+                val ref2Offset = (2 * width + x) * 3  // Line 2
+                
+                for (c in 0..2) {
+                    val pixel0 = vm.peek(outputRGBAddr + (ref0Offset + c) * outputIncVec)!!.toInt() and 0xFF
+                    val pixel2 = vm.peek(outputRGBAddr + (ref2Offset + c) * outputIncVec)!!.toInt() and 0xFF
+                    val interpValue = (pixel0 + pixel2) / 2
+                    vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, interpValue.toByte())
+                }
+            }
+        } else {
+            // Odd field: interpolate line 0 by duplicating line 1
+            for (x in 0 until width) {
+                val outputOffset = (0 * width + x) * 3
+                val ref1Offset = (1 * width + x) * 3  // Line 1 (first odd line)
+                
+                for (c in 0..2) {
+                    val refPixel = vm.peek(outputRGBAddr + (ref1Offset + c) * outputIncVec)!!
+                    vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, refPixel)
+                }
             }
         }
     }
@@ -1829,9 +1853,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // height doesn't change when interlaced, because that's the encoder's output
 
         // For interlaced mode, decode to half-height field first
-        val decodingHeight = if (isInterlaced) height / 2 else height
         val blocksX = (width + 15) / 16  // 16x16 blocks now
-        val blocksY = (decodingHeight + 15) / 16
+        val blocksY = (height + 15) / 16
 
         val quantYmult = jpeg_quality_to_mult(qualityIndices[0])
         val quantCOmult = jpeg_quality_to_mult(qualityIndices[1])
@@ -1872,7 +1895,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 when (mode) {
                     0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame (optimized with memcpy)
                         // Check if we can copy the entire block at once (no clipping)
-                        if (startX + 16 <= width && startY + 16 <= decodingHeight) {
+                        if (startX + 16 <= width && startY + 16 <= height) {
                             // Optimized case: copy entire 16x16 block with row-by-row memcpy
                             for (dy in 0 until 16) {
                                 val srcRowOffset = ((startY + dy).toLong() * width + startX) * 3
@@ -1889,7 +1912,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 for (dx in 0 until 16) {
                                     val x = startX + dx
                                     val y = startY + dy
-                                    if (x < width && y < decodingHeight) {
+                                    if (x < width && y < height) {
                                         val pixelOffset = y.toLong() * width + x
                                         val rgbOffset = pixelOffset * 3
                                         
@@ -1919,7 +1942,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     val refX = x + mvX
                                     val refY = y + mvY
                                     
-                                    if (x < width && y < decodingHeight) {
+                                    if (x < width && y < height) {
                                         val dstPixelOffset = y.toLong() * width + x
                                         val dstRgbOffset = dstPixelOffset * 3
                                         
@@ -1939,7 +1962,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             val refStartY = startY + mvY
                             
                             // Check if entire 16x16 block can be copied with memcpy (no bounds issues)
-                            if (startX + 16 <= width && startY + 16 <= decodingHeight &&
+                            if (startX + 16 <= width && startY + 16 <= height &&
                                 refStartX >= 0 && refStartY >= 0 && refStartX + 16 <= width && refStartY + 16 <= height) {
                                 
                                 // Optimized case: copy entire 16x16 block with row-by-row memcpy
@@ -1961,16 +1984,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                         val refX = x + mvX
                                         val refY = y + mvY
                                         
-                                        if (x < width && y < decodingHeight) {
+                                        if (x < width && y < height) {
                                             val dstPixelOffset = y.toLong() * width + x
                                             val dstRgbOffset = dstPixelOffset * 3
                                             
-                                            if (refX >= 0 && refY >= 0 && refX < width && refY < decodingHeight) {
+                                            if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
                                                 val refPixelOffset = refY.toLong() * width + refX
                                                 val refRgbOffset = refPixelOffset * 3
                                                 
                                                 // Additional safety: ensure RGB offset is within valid range
-                                                val maxValidOffset = (width * decodingHeight - 1) * 3L + 2
+                                                val maxValidOffset = (width * height - 1) * 3L + 2
                                                 if (refRgbOffset >= 0 && refRgbOffset <= maxValidOffset) {
                                                     // Copy RGB from reference position
                                                     val refR = vm.peek(prevRGBAddr + refRgbOffset*prevAddrIncVec)!!
@@ -2026,7 +2049,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                if (x < width && y < decodingHeight) {
+                                if (x < width && y < height) {
                                     val rgbIdx = (dy * 16 + dx) * 3
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
@@ -2066,10 +2089,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val refY = y + mvY
                                 val pixelIdx = dy * 16 + dx
                                 
-                                if (x < width && y < decodingHeight) {
+                                if (x < width && y < height) {
                                     var mcY: Int
                                     
-                                    if (refX >= 0 && refY >= 0 && refX < width && refY < decodingHeight) {
+                                    if (refX >= 0 && refY >= 0 && refX < width && refY < height) {
                                         // Get motion-compensated RGB from previous frame
                                         val refPixelOffset = refY.toLong() * width + refX
                                         val refRgbOffset = refPixelOffset * 3
@@ -2106,12 +2129,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 val refY = y + mvY
                                 val chromaIdx = cy * 8 + cx
                                 
-                                if (x < width && y < decodingHeight) {
+                                if (x < width && y < height) {
                                     var mcCo: Int
                                     var mcCg: Int
                                     
                                     // Sample 2x2 block from motion-compensated position for chroma
-                                    if (refX >= 0 && refY >= 0 && refX < width - 1 && refY < decodingHeight - 1) {
+                                    if (refX >= 0 && refY >= 0 && refX < width - 1 && refY < height - 1) {
                                         var coSum = 0
                                         var cgSum = 0
                                         var count = 0
@@ -2121,7 +2144,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                             for (dx in 0 until 2) {
                                                 val sampleX = refX + dx
                                                 val sampleY = refY + dy
-                                                if (sampleX < width && sampleY < decodingHeight) {
+                                                if (sampleX < width && sampleY < height) {
                                                     val refPixelOffset = sampleY.toLong() * width + sampleX
                                                     val refRgbOffset = refPixelOffset * 3
                                                     
@@ -2167,7 +2190,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                if (x < width && y < decodingHeight) {
+                                if (x < width && y < height) {
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
                                     
@@ -2202,7 +2225,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             for (dx in 0 until 16) {
                                 val x = startX + dx
                                 val y = startY + dy
-                                if (x < width && y < decodingHeight) {
+                                if (x < width && y < height) {
                                     val imageOffset = y.toLong() * width + x
                                     val bufferOffset = imageOffset * 3
                                     
@@ -2224,8 +2247,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 //            require(prevFieldBuffer != 0L) { "prevFieldBuffer must be provided for interlaced decoding" }
             
             // Copy the decoded field to temporary buffer
-            vm.memcpy(currentRGBAddr.toInt(), tempFieldBuffer.toInt(), width * decodingHeight * 3)
-            
+            vm.memcpy(currentRGBAddr.toInt(), tempFieldBuffer.toInt(), width * height * 3)
+
             // Apply Yadif deinterlacing: field -> progressive frame
             // For temporal prediction, we need proper field management
             val fieldParity = frameCounter % 2
@@ -2233,14 +2256,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 // Extract the corresponding field from the previous progressive frame
                 // Even field lines: y = 0, 2, 4, 6...  
                 // Odd field lines:  y = 1, 3, 5, 7...
-                extractFieldFromProgressive(prevRGBAddr, prevFieldBuffer, width, height, fieldParity, thisAddrIncVec)
+                extractFieldFromProgressive(prevRGBAddr, prevFieldBuffer, width, height * 2, fieldParity, thisAddrIncVec)
                 prevFieldBuffer
             } else {
                 0L
             }
             
             yadifDeinterlace(
-                tempFieldBuffer, currentRGBAddr, width, height,
+                tempFieldBuffer, currentRGBAddr, width, height * 2,
                 prevFieldAddr, 0L, // Use previous field, no next field available
                 fieldParity, 
                 thisAddrIncVec, thisAddrIncVec

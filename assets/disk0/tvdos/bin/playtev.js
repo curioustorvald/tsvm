@@ -582,7 +582,8 @@ try {
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     let decodeStart = sys.nanoTime()
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version, isInterlaced, TEMP_FIELD_BUFFER, PREV_FIELD_BUFFER)
+                    let decodingHeight = isInterlaced ? (height / 2)|0 : height
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version, isInterlaced, TEMP_FIELD_BUFFER, PREV_FIELD_BUFFER)
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering

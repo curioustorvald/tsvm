@@ -98,13 +98,7 @@ class VMJSR223Delegate(private val vm: VM) {
     
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
-    fun memset(dest: Int, ch: Int, count: Int): Int {
-        val incVec = if (dest >= 0) 1 else -1
-        for (i in 0 until count) {
-            poke(dest + count*incVec, ch)
-        }
-        return dest
-    }
+    fun memset(dest: Int, ch: Int, count: Int) = vm.memset(dest, ch, count)
     fun free(ptr: Int) = vm.free(ptr)
     fun forceAlloc(ptr: Int, size: Int) = vm.forceAlloc(ptr, size)
     fun memcpy(from: Int, to: Int, len: Int) {

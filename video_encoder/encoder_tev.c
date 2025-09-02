@@ -1812,6 +1812,11 @@ static int start_video_conversion(tev_encoder_t *enc) {
     } else {
         if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
             // Frame rate conversion requested
+            // filtergraph path:
+            // 1. FPS conversion
+            // 2. scale and crop to requested size
+            // 3. tinterlace weave-overwrites even and odd fields together to produce intermediate video at half framerate, full height (we're losing half the information here -- and that's on purpose)
+            // 4. separatefields separates weave-overwritten frame as two consecutive frames, at half height. Since the frame rate is halved in Step 3. and being doubled here, the final framerate is identical to given framerate
             snprintf(command, sizeof(command),
                 "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
                 "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top:cvlpf,separatefields\" "
@@ -1819,6 +1824,10 @@ static int start_video_conversion(tev_encoder_t *enc) {
                 enc->input_file, enc->output_fps, enc->width, enc->height * 2, enc->width, enc->height * 2);
         } else {
             // No frame rate conversion
+            // filtergraph path:
+            // 1. scale and crop to requested size
+            // 2. tinterlace weave-overwrites even and odd fields together to produce intermediate video at half framerate, full height (we're losing half the information here -- and that's on purpose)
+            // 3. separatefields separates weave-overwritten frame as two consecutive frames, at half height. Since the frame rate is halved in Step 2. and being doubled here, the final framerate is identical to the original framerate
             snprintf(command, sizeof(command),
                 "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
                 "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top:cvlpf,separatefields\" "

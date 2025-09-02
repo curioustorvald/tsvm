@@ -541,6 +541,14 @@ class VM(
         }
     }
 
+    fun memset(dest: Int, ch: Int, count: Int): Int {
+        val incVec = if (dest >= 0) 1L else -1L
+        for (i in 0 until count) {
+            poke(dest + count*incVec, ch.toByte())
+        }
+        return dest
+    }
+
     fun bulkPeekShort(from: Int, to: ShortArray, sizeInBytes: Int) {
         if (from !in 0..8*1024*1024) throw IllegalArgumentException()
         UnsafeHelper.memcpyRaw(null, usermem.ptr + from, to, UnsafeHelper.getArrayOffset(to), sizeInBytes.toLong())
