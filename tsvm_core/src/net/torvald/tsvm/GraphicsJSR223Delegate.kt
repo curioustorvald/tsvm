@@ -1526,6 +1526,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     fun yadifDeinterlace(fieldRGBAddr: Long, outputRGBAddr: Long, width: Int, height: Int, 
                         prevFieldAddr: Long, nextFieldAddr: Long, fieldParity: Int, 
                         fieldIncVec: Int, outputIncVec: Int) {
+
         val fieldHeight = height / 2
         
         for (y in 0 until fieldHeight) {
@@ -1796,8 +1797,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param frameCounter Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qualityIndices: IntArray, debugMotionVectors: Boolean = false,
-                  tevVersion: Int = 2, isInterlaced: Boolean = false) {
+                  width: Int, height: Int, qualityIndices: IntArray, frameCounter: Int,
+                  debugMotionVectors: Boolean = false, tevVersion: Int = 2, isInterlaced: Boolean = false) {
 
         // height doesn't change when interlaced, because that's the encoder's output
 
@@ -2191,7 +2192,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         
         // Apply Yadif deinterlacing if this is an interlaced frame
-        /*if (isInterlaced) {
+        if (isInterlaced) {
             // Decode produced a field at half-height, now deinterlace to full progressive frame
             val tempFieldBuffer = vm.malloc(width * decodingHeight * 3)
             
@@ -2202,12 +2203,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             yadifDeinterlace(
                 tempFieldBuffer.toLong(), currentRGBAddr, width, height,
                 prevRGBAddr, prevRGBAddr, // TODO: Implement proper temporal prediction
-                0, // Field parity (0=even field first)
+                frameCounter % 2, // Field parity (0=even field first)
                 thisAddrIncVec, thisAddrIncVec
             )
             
             vm.free(tempFieldBuffer.toInt())
-        }*/
+        }
     }
 
 

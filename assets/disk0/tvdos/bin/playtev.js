@@ -399,10 +399,10 @@ serial.println(`  Resolution: ${width}x${height}, ${isInterlaced ? "interlaced" 
 
 
 // DEBUG interlace raw output
-if (isInterlaced) {
-    height = height >> 1
-    isInterlaced = false
-}
+//if (isInterlaced) {
+//    height = height >> 1
+//    isInterlaced = false
+//}
 // END OF DEBUG
 
 
@@ -573,7 +573,7 @@ try {
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     let decodeStart = sys.nanoTime()
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], debugMotionVectors, version, isInterlaced)
+                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, height, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version, isInterlaced)
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering
