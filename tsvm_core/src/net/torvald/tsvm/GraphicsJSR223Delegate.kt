@@ -1618,15 +1618,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // cover up top two and bottom two lines with current border colour
-        val lines = arrayOf(0, 1, height - 2, height - 1)
-        for (x in 0 until width) {
-            for (y in lines) {
-                val dest = (y * width + x) * 3
-                vm.poke(outputRGBAddr + dest + 0, vm.peek(-1299457)!!)
-                vm.poke(outputRGBAddr + dest + 1, vm.peek(-1299458)!!)
-                vm.poke(outputRGBAddr + dest + 2, vm.peek(-1299459)!!)
-            }
-        }
+        val destT = 0
+        val destB = (height - 2) * width * 3
+        val col = (vm.peek(-1299457)!!.toUint() shl 16) or (vm.peek(-1299458)!!.toUint() shl 8) or vm.peek(-1299459)!!.toUint()
+        vm.memsetI24(outputRGBAddr.toInt() + destT, col, width * 6)
+        vm.memsetI24(outputRGBAddr.toInt() + destB, col, width * 6)
     }
     
     fun tevYcocgToRGB(yBlock: IntArray, coBlock: IntArray, cgBlock: IntArray): IntArray {
