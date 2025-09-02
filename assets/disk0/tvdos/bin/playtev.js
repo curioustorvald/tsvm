@@ -438,8 +438,9 @@ const RGB_BUFFER_B = sys.malloc(FRAME_SIZE)
 
 // Static Yadif deinterlacing buffers (half-height field buffers for interlaced mode)
 const FIELD_SIZE = 560 * 224 * 3  // Half-height field buffer size
-const TEMP_FIELD_BUFFER = sys.malloc(FIELD_SIZE)
-const PREV_FIELD_BUFFER = sys.malloc(FIELD_SIZE)
+const CURR_FIELD_BUFFER = isInterlaced ? sys.malloc(FIELD_SIZE) : 0
+const PREV_FIELD_BUFFER = isInterlaced ? sys.malloc(FIELD_SIZE) : 0
+const NEXT_FIELD_BUFFER = isInterlaced ? sys.malloc(FIELD_SIZE) : 0  // For temporal prediction
 
 // Ping-pong buffer pointers (swap instead of copy)
 let CURRENT_RGB_ADDR = RGB_BUFFER_A
@@ -450,8 +451,9 @@ sys.memset(RGB_BUFFER_A, 0, FRAME_PIXELS * 3)
 sys.memset(RGB_BUFFER_B, 0, FRAME_PIXELS * 3)
 
 // Initialize Yadif field buffers to black
-sys.memset(TEMP_FIELD_BUFFER, 0, FIELD_SIZE)
+sys.memset(CURR_FIELD_BUFFER, 0, FIELD_SIZE)
 sys.memset(PREV_FIELD_BUFFER, 0, FIELD_SIZE)
+sys.memset(NEXT_FIELD_BUFFER, 0, FIELD_SIZE)
 
 // Initialize display framebuffer to black
 sys.memset(DISPLAY_RG_ADDR, 0, FRAME_PIXELS) // Black in RG plane
@@ -461,6 +463,12 @@ let frameCount = 0
 let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
+
+// Frame buffering for temporal prediction (interlaced mode only)
+let bufferedFrames = []       // Queue of decoded frames for temporal prediction
+let frameBuffer1 = null       // Current frame data  
+let frameBuffer2 = null       // Previous frame data
+let frameDisplayDelay = 1     // Display frames 1 frame delayed for temporal prediction
 let mp2Initialised = false
 let audioFired = false
 
@@ -514,6 +522,20 @@ function setBiasLighting() {
 }
 
 let blockDataPtr = sys.malloc(FRAME_SIZE)
+
+// Streaming frame buffer rotation for temporal prediction
+// Buffers rotate: NEXT -> CURRENT -> PREV each frame
+let currentFieldAddr = CURR_FIELD_BUFFER  // Currently being decoded  
+let prevFieldAddr = PREV_FIELD_BUFFER     // Previous field for temporal prediction
+let nextFieldAddr = NEXT_FIELD_BUFFER     // Next field for temporal prediction
+
+function rotateFieldBuffers() {
+    // Rotate buffers: NEXT -> CURRENT -> PREV
+    let temp = prevFieldAddr
+    prevFieldAddr = currentFieldAddr  
+    currentFieldAddr = nextFieldAddr
+    nextFieldAddr = temp
+}
 
 // Main decoding loop - simplified for performance
 try {
@@ -583,7 +605,20 @@ try {
                 try {
                     let decodeStart = sys.nanoTime()
                     let decodingHeight = isInterlaced ? (height / 2)|0 : height
-                    graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version, isInterlaced, TEMP_FIELD_BUFFER, PREV_FIELD_BUFFER)
+                    
+                    if (isInterlaced) {
+                        // For interlaced: decode current frame into currentFieldAddr
+                        // For display: use prevFieldAddr as current, currentFieldAddr as next
+                        graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version)
+                        graphics.tevDeinterlace(frameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR)
+
+                        // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV  
+                        rotateFieldBuffers()
+                    } else {
+                        // Progressive or first frame: normal decoding without temporal prediction
+                        graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version)
+                    }
+                    
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
 
                     // Upload RGB buffer to display framebuffer with dithering
@@ -593,9 +628,19 @@ try {
                     
 
                     // Defer audio playback until a first frame is sent
-                    if (!audioFired) {
-                        audio.play(0)
-                        audioFired = true
+                    if (isInterlaced) {
+                        // fire audio after frame 1
+                        if (!audioFired && frameCount > 0) {
+                            audio.play(0)
+                            audioFired = true
+                        }
+                    }
+                    else {
+                        // fire audio after frame 0
+                        if (!audioFired) {
+                            audio.play(0)
+                            audioFired = true
+                        }
                     }
                 } catch (e) {
                     serial.println(`Frame ${frameCount}: Hardware ${colorSpace} decode failed: ${e}`)
@@ -674,8 +719,9 @@ finally {
     if (blockDataPtr > 0) sys.free(blockDataPtr)
     if (RGB_BUFFER_A > 0) sys.free(RGB_BUFFER_A)
     if (RGB_BUFFER_B > 0) sys.free(RGB_BUFFER_B)
-    if (TEMP_FIELD_BUFFER > 0) sys.free(TEMP_FIELD_BUFFER)
+    if (CURR_FIELD_BUFFER > 0) sys.free(CURR_FIELD_BUFFER)
     if (PREV_FIELD_BUFFER > 0) sys.free(PREV_FIELD_BUFFER)
+    if (NEXT_FIELD_BUFFER > 0) sys.free(NEXT_FIELD_BUFFER)
 
     audio.stop(0)
     audio.purgeQueue(0)

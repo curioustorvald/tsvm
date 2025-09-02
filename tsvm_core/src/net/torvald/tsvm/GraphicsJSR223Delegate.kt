@@ -1522,6 +1522,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         for (y in 0 until fieldHeight) {
             for (x in 0 until width) {
+                // fieldRGBAddr now contains sequential field data from extractFieldFromProgressive
                 val fieldOffset = (y * width + x) * 3
                 val outputOffset = ((y * 2 + fieldParity) * width + x) * 3
                 
@@ -1534,20 +1535,37 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 // Even field (0,2,4...) interpolates odd lines (1,3,5...)
                 // Odd field (1,3,5...) interpolates even lines (2,4,6...) - skip line 0!
                 if (y > 0 && y < fieldHeight - 1) {
-                    val interpLine = if (fieldParity == 0) {
-                        y * 2 + 1  // Even field: interpolate odd progressive lines (1,3,5...)
-                    } else {
-                        y * 2 + 2  // Odd field: interpolate even progressive lines (2,4,6...)
-                    }
+                    // Even field: interpolate odd progressive lines (1,3,5...)
+                    // Odd field: interpolate even progressive lines (2,4,6...)
+                    val interpLine = y * 2 + (1 - fieldParity)
+
                     // Skip interpolation if the line would be out of bounds
                     if (interpLine < height) {
                         val interpOutputOffset = (interpLine * width + x) * 3
                     
                         for (c in 0..2) {
-                            // Get spatial neighbors
-                            val above = vm.peek(fieldRGBAddr + (fieldOffset - width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
-                            val below = vm.peek(fieldRGBAddr + (fieldOffset + width * 3 + c) * fieldIncVec)!!.toInt() and 0xFF
-                            val current = vm.peek(fieldRGBAddr + (fieldOffset + c) * fieldIncVec)!!.toInt() and 0xFF
+                            // Get spatial neighbors from sequential field data
+                            val fieldStride = width * 3
+                            val aboveOffset = fieldOffset - fieldStride + c
+                            val belowOffset = fieldOffset + fieldStride + c
+                            val currentOffset = fieldOffset + c
+                            
+                            // Ensure we don't read out of bounds
+                            val above = if (y > 0) {
+                                vm.peek(fieldRGBAddr + aboveOffset * fieldIncVec)!!.toInt() and 0xFF
+                            } else {
+                                // Use current pixel for top edge
+                                vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
+                            }
+                            
+                            val below = if (y < fieldHeight - 1) {
+                                vm.peek(fieldRGBAddr + belowOffset * fieldIncVec)!!.toInt() and 0xFF
+                            } else {
+                                // Use current pixel for bottom edge  
+                                vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
+                            }
+                            
+                            val current = vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
 
                             // Spatial interpolation
                             val spatialInterp = (above + below) / 2
@@ -1556,8 +1574,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             var temporalPred = spatialInterp
                             if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
                                 // Get temporal neighbors from same spatial position
-                                val prevPixel = (vm.peek(prevFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
-                                val nextPixel = (vm.peek(nextFieldAddr + (fieldOffset + c) * fieldIncVec)?.toInt() ?: current) and 0xFF
+                                val tempFieldOffset = (y * width + x) * 3 + c  // Compact field addressing
+                                val prevPixel = (vm.peek(prevFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
+                                val nextPixel = (vm.peek(nextFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
 
                                 // Simple temporal interpolation
                                 val tempInterp = (prevPixel + nextPixel) / 2
@@ -1598,33 +1617,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
 
-        // Handle edge cases: interpolate first missing line for each field
-        // Even field: interpolate line 1 (first odd line)
-        // Odd field: interpolate line 0 using simple duplication (since no spatial neighbors exist)
-        if (fieldParity == 0) {
-            // Even field: interpolate line 1 using line 0 and 2
-            for (x in 0 until width) {
-                val outputOffset = (1 * width + x) * 3
-                val ref0Offset = (0 * width + x) * 3  // Line 0 
-                val ref2Offset = (2 * width + x) * 3  // Line 2
-                
-                for (c in 0..2) {
-                    val pixel0 = vm.peek(outputRGBAddr + (ref0Offset + c) * outputIncVec)!!.toInt() and 0xFF
-                    val pixel2 = vm.peek(outputRGBAddr + (ref2Offset + c) * outputIncVec)!!.toInt() and 0xFF
-                    val interpValue = (pixel0 + pixel2) / 2
-                    vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, interpValue.toByte())
-                }
-            }
-        } else {
-            // Odd field: interpolate line 0 by duplicating line 1
-            for (x in 0 until width) {
-                val outputOffset = (0 * width + x) * 3
-                val ref1Offset = (1 * width + x) * 3  // Line 1 (first odd line)
-                
-                for (c in 0..2) {
-                    val refPixel = vm.peek(outputRGBAddr + (ref1Offset + c) * outputIncVec)!!
-                    vm.poke(outputRGBAddr + (outputOffset + c) * outputIncVec, refPixel)
-                }
+        // cover up top two and bottom two lines with current border colour
+        val lines = arrayOf(0, 1, height - 2, height - 1)
+        for (x in 0 until width) {
+            for (y in lines) {
+                val dest = (y * width + x) * 3
+                vm.poke(outputRGBAddr + dest + 0, vm.peek(-1299457)!!)
+                vm.poke(outputRGBAddr + dest + 1, vm.peek(-1299458)!!)
+                vm.poke(outputRGBAddr + dest + 2, vm.peek(-1299459)!!)
             }
         }
     }
@@ -1847,8 +1847,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qualityIndices: IntArray, frameCounter: Int,
-                  debugMotionVectors: Boolean = false, tevVersion: Int = 2, isInterlaced: Boolean = false,
-                  tempFieldBuffer: Long = 0L, prevFieldBuffer: Long = 0L) {
+                  debugMotionVectors: Boolean = false, tevVersion: Int = 2) {
 
         // height doesn't change when interlaced, because that's the encoder's output
 
@@ -2239,36 +2238,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
-        
-        // Apply Yadif deinterlacing if this is an interlaced frame
-        if (isInterlaced) {
-            // Use static buffers provided by playtev.js for better performance
-//            require(tempFieldBuffer != 0L) { "tempFieldBuffer must be provided for interlaced decoding" }
-//            require(prevFieldBuffer != 0L) { "prevFieldBuffer must be provided for interlaced decoding" }
-            
-            // Copy the decoded field to temporary buffer
-            vm.memcpy(currentRGBAddr.toInt(), tempFieldBuffer.toInt(), width * height * 3)
+    }
 
-            // Apply Yadif deinterlacing: field -> progressive frame
-            // For temporal prediction, we need proper field management
-            val fieldParity = frameCounter % 2
-            val prevFieldAddr = if (prevRGBAddr != 0L) {
-                // Extract the corresponding field from the previous progressive frame
-                // Even field lines: y = 0, 2, 4, 6...  
-                // Odd field lines:  y = 1, 3, 5, 7...
-                extractFieldFromProgressive(prevRGBAddr, prevFieldBuffer, width, height * 2, fieldParity, thisAddrIncVec)
-                prevFieldBuffer
-            } else {
-                0L
-            }
-            
-            yadifDeinterlace(
-                tempFieldBuffer, currentRGBAddr, width, height * 2,
-                prevFieldAddr, 0L, // Use previous field, no next field available
-                fieldParity, 
-                thisAddrIncVec, thisAddrIncVec
-            )
-        }
+    fun tevDeinterlace(frameCounter: Int, width: Int, height: Int, prevField: Long, currentField: Long, nextField: Long, outputRGB: Long) {
+        // Apply Yadif deinterlacing: field -> progressive frame
+        val fieldParity = (frameCounter + 1) % 2
+
+        yadifDeinterlace(
+            currentField, outputRGB, width, height * 2,
+            prevField, nextField, // Now we have next field for temporal prediction!
+            fieldParity,
+            1, 1
+        )
+
     }
 
 
