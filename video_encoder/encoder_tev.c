@@ -162,6 +162,7 @@ typedef struct {
     int has_subtitles;
     int output_to_stdout;
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
+    int is_ntsc_framerate; // 1 if framerate denominator is 1001, 0 otherwise
     int qualityIndex; // -q option
     int qualityY;
     int qualityCo;
@@ -1418,6 +1419,7 @@ static tev_encoder_t* init_encoder(void) {
     enc->height = DEFAULT_HEIGHT;
     enc->fps = 0;  // Will be detected from input
     enc->output_fps = 0;  // No frame rate conversion by default
+    enc->is_ntsc_framerate = 0;  // Will be detected from input
     enc->verbose = 0;
     enc->subtitle_file = NULL;
     enc->has_subtitles = 0;
@@ -1531,7 +1533,7 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     uint8_t qualityCo = enc->qualityCo;
     uint8_t qualityCg = enc->qualityCg;
     uint8_t flags = (enc->has_audio) | (enc->has_subtitles << 1);
-    uint8_t video_flags = enc->progressive_mode ? 0 : 1; // bit 0 = is_interlaced (inverted from progressive)
+    uint8_t video_flags = (enc->progressive_mode ? 0 : 1) | (enc->is_ntsc_framerate ? 2 : 0); // bit 0 = is_interlaced, bit 1 = is_ntsc_framerate
     uint8_t reserved = 0;
 
     fwrite(&width, 2, 1, output);
@@ -1741,7 +1743,7 @@ static int get_video_metadata(tev_encoder_t *config) {
 
     while (line && line_num < 2) {
         switch (line_num) {
-            case 0: // Line format: "framerate,framecount" (e.g., "24000/1001,4423")
+            case 0: // Line format: "framerate,framecount" (e.g., "30000/1001,4423")
                 {
                     char *comma = strchr(line, ',');
                     if (comma) {
@@ -1750,8 +1752,10 @@ static int get_video_metadata(tev_encoder_t *config) {
                         int num, den;
                         if (sscanf(line, "%d/%d", &num, &den) == 2) {
                             config->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
+                            config->is_ntsc_framerate = (den == 1001) ? 1 : 0;
                         } else {
                             config->fps = (int)round(atof(line));
+                            config->is_ntsc_framerate = 0;
                         }
                         // Parse frame count (second part)
                         config->total_frames = atoi(comma + 1);
@@ -1778,7 +1782,11 @@ static int get_video_metadata(tev_encoder_t *config) {
 
     fprintf(stderr, "Video metadata:\n");
     fprintf(stderr, "  Frames: %d\n", config->total_frames);
-    fprintf(stderr, "  FPS: %d\n", config->fps);
+    if (config->is_ntsc_framerate) {
+        fprintf(stderr, "  FPS: %.2f\n", config->fps * 1000.f / 1001.f);
+    } else {
+        fprintf(stderr, "  FPS: %d\n", config->fps);
+    }
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
     fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height, 

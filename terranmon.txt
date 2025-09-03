@@ -708,6 +708,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
             - bit 1 = has subtitle
     uint8  Video Flags
             - bit 0 = is interlaced (should be default for most non-archival TEV videos)
+            - bit 1 = is NTSC framerate (repeat every 1000th frame)
     uint8  Reserved, fill with zero
 
 ## Packet Types

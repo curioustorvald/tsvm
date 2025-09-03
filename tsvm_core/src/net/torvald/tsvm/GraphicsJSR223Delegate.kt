@@ -1625,6 +1625,123 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         vm.memsetI24(outputRGBAddr.toInt() + destB, col, width * 6)
     }
     
+    /**
+     * BWDIF (Bob Weaver Deinterlacing with Interpolation and Filtering) implementation
+     * Advanced motion-adaptive deinterlacing with better temporal prediction than YADIF
+     */
+    fun bwdifDeinterlace(fieldRGBAddr: Long, outputRGBAddr: Long, width: Int, height: Int, 
+                        prevFieldAddr: Long, nextFieldAddr: Long, fieldParity: Int, 
+                        fieldIncVec: Int, outputIncVec: Int) {
+
+        val fieldHeight = height / 2
+        
+        for (y in 0 until fieldHeight) {
+            for (x in 0 until width) {
+                val fieldOffset = (y * width + x) * 3
+                val outputOffset = ((y * 2 + fieldParity) * width + x) * 3
+                
+                // Copy current field lines directly (no interpolation needed) with loop unrolling
+                vm.poke(outputRGBAddr + (outputOffset + 0) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 0) * fieldIncVec)!!)
+                vm.poke(outputRGBAddr + (outputOffset + 1) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 1) * fieldIncVec)!!)
+                vm.poke(outputRGBAddr + (outputOffset + 2) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 2) * fieldIncVec)!!)
+
+                // Interpolate missing lines using BWDIF algorithm
+                if (y > 0 && y < fieldHeight - 1) {
+                    val interpLine = if (fieldParity == 0) {
+                        y * 2 + 1  // Even field: interpolate odd progressive lines (1,3,5...)
+                    } else {
+                        y * 2 + 2  // Odd field: interpolate even progressive lines (2,4,6...)
+                    }
+                    
+                    if (interpLine < height) {
+                        val interpOutputOffset = (interpLine * width + x) * 3
+                    
+                        for (c in 0..2) {
+                            // Get spatial neighbors from sequential field data
+                            val fieldStride = width * 3
+                            val aboveOffset = fieldOffset - fieldStride + c
+                            val belowOffset = fieldOffset + fieldStride + c
+                            val currentOffset = fieldOffset + c
+                            
+                            // Ensure we don't read out of bounds
+                            val above = if (y > 0) {
+                                vm.peek(fieldRGBAddr + aboveOffset * fieldIncVec)!!.toInt() and 0xFF
+                            } else {
+                                vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
+                            }
+                            
+                            val below = if (y < fieldHeight - 1) {
+                                vm.peek(fieldRGBAddr + belowOffset * fieldIncVec)!!.toInt() and 0xFF
+                            } else {
+                                vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
+                            }
+                            
+                            val current = vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
+
+                            // BWDIF temporal prediction - more sophisticated than YADIF
+                            var interpolatedValue = (above + below) / 2  // Default spatial interpolation
+                            
+                            if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
+                                // Get temporal neighbors
+                                val tempFieldOffset = (y * width + x) * 3 + c
+                                val prevPixel = (vm.peek(prevFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
+                                val nextPixel = (vm.peek(nextFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
+                                
+                                // BWDIF-inspired temporal differences (adapted for 3-frame window)
+                                // Note: True BWDIF uses 5 frames, we adapt to 3-frame constraint
+                                
+                                // Get spatial neighbors from previous and next fields for temporal comparison
+                                // Use same addressing pattern as working YADIF implementation
+                                val prevAboveOffset = if (y > 0) ((y-1) * width + x) * 3 + c else tempFieldOffset
+                                val prevBelowOffset = if (y < fieldHeight - 1) ((y+1) * width + x) * 3 + c else tempFieldOffset
+                                val nextAboveOffset = if (y > 0) ((y-1) * width + x) * 3 + c else tempFieldOffset
+                                val nextBelowOffset = if (y < fieldHeight - 1) ((y+1) * width + x) * 3 + c else tempFieldOffset
+                                
+                                val prevAbove = (vm.peek(prevFieldAddr + prevAboveOffset * fieldIncVec)?.toInt() ?: above) and 0xFF
+                                val prevBelow = (vm.peek(prevFieldAddr + prevBelowOffset * fieldIncVec)?.toInt() ?: below) and 0xFF
+                                val nextAbove = (vm.peek(nextFieldAddr + nextAboveOffset * fieldIncVec)?.toInt() ?: above) and 0xFF  
+                                val nextBelow = (vm.peek(nextFieldAddr + nextBelowOffset * fieldIncVec)?.toInt() ?: below) and 0xFF
+                                
+                                // BWDIF temporal differences adapted to 3-frame window
+                                val temporalDiff0 = kotlin.math.abs(prevPixel - nextPixel)  // Main temporal difference
+                                val temporalDiff1 = (kotlin.math.abs(prevAbove - above) + kotlin.math.abs(prevBelow - below)) / 2  // Previous frame spatial consistency
+                                val temporalDiff2 = (kotlin.math.abs(nextAbove - above) + kotlin.math.abs(nextBelow - below)) / 2  // Next frame spatial consistency
+                                val maxTemporalDiff = kotlin.math.max(kotlin.math.max(temporalDiff0 / 2, temporalDiff1), temporalDiff2)
+                                
+                                val spatialDiff = kotlin.math.abs(above - below)
+                                
+                                if (maxTemporalDiff > 16) {  // Conservative threshold 
+                                    val temporalInterp = (prevPixel + nextPixel) / 2
+                                    val spatialInterp = (above + below) / 2
+                                    
+                                    // BWDIF-style decision making
+                                    interpolatedValue = if (spatialDiff < maxTemporalDiff) {
+                                        temporalInterp  // Trust temporal when spatial is stable
+                                    } else {
+                                        spatialInterp   // Trust spatial when temporal is unreliable
+                                    }
+                                } else {
+                                    // Low temporal variation: use spatial like YADIF
+                                    interpolatedValue = (above + below) / 2
+                                }
+                            }
+
+                            vm.poke(outputRGBAddr + (interpOutputOffset + c) * outputIncVec,
+                                   interpolatedValue.coerceIn(0, 255).toByte())
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Cover up border lines like YADIF
+        val destT = 0
+        val destB = (height - 2) * width * 3
+        val col = (vm.peek(-1299457)!!.toUint() shl 16) or (vm.peek(-1299458)!!.toUint() shl 8) or vm.peek(-1299459)!!.toUint()
+        vm.memsetI24(outputRGBAddr.toInt() + destT, col, width * 6)
+        vm.memsetI24(outputRGBAddr.toInt() + destB, col, width * 6)
+    }
+    
     fun tevYcocgToRGB(yBlock: IntArray, coBlock: IntArray, cgBlock: IntArray): IntArray {
         val rgbData = IntArray(16 * 16 * 3)  // R,G,B for 16x16 pixels
         
@@ -2236,17 +2353,37 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    fun tevDeinterlace(frameCounter: Int, width: Int, height: Int, prevField: Long, currentField: Long, nextField: Long, outputRGB: Long) {
-        // Apply Yadif deinterlacing: field -> progressive frame
+    fun tevDeinterlace(frameCounter: Int, width: Int, height: Int, prevField: Long, currentField: Long, nextField: Long, outputRGB: Long, algorithm: String = "yadif") {
+        // Apply selected deinterlacing algorithm: field -> progressive frame
         val fieldParity = (frameCounter + 1) % 2
 
-        yadifDeinterlace(
-            currentField, outputRGB, width, height * 2,
-            prevField, nextField, // Now we have next field for temporal prediction!
-            fieldParity,
-            1, 1
-        )
-
+        when (algorithm.lowercase()) {
+            "bwdif" -> {
+                bwdifDeinterlace(
+                    currentField, outputRGB, width, height * 2,
+                    prevField, nextField,
+                    fieldParity,
+                    1, 1
+                )
+            }
+            "yadif", "" -> {
+                yadifDeinterlace(
+                    currentField, outputRGB, width, height * 2,
+                    prevField, nextField,
+                    fieldParity,
+                    1, 1
+                )
+            }
+            else -> {
+                // Default to YADIF for unknown algorithms
+                yadifDeinterlace(
+                    currentField, outputRGB, width, height * 2,
+                    prevField, nextField,
+                    fieldParity,
+                    1, 1
+                )
+            }
+        }
     }
 
 

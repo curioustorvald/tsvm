@@ -2,6 +2,7 @@
 // TSVM Enhanced Video (TEV) Format Decoder - YCoCg-R 4:2:0 Version
 // Usage: playtev moviefile.tev [options]
 // Options: -i (interactive), -debug-mv (show motion vector debug visualization)
+//          -deinterlace=algorithm (yadif or bwdif, default: yadif)
 
 const WIDTH = 560
 const HEIGHT = 448
@@ -41,6 +42,7 @@ let subtitlePosition = 0  // 0=bottom center (default)
 
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const debugMotionVectors = exec_args[2] && exec_args[2].toLowerCase() == "-debug-mv"
+const deinterlaceAlgorithm = "yadif"
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
 
@@ -387,12 +389,13 @@ let hasAudio = !!(flags & 1)
 let hasSubtitle = !!(flags & 2)
 let videoFlags = seqread.readOneByte()
 let isInterlaced = !!(videoFlags & 1)
+let isNTSC = !!(videoFlags & 2)
 let unused2 = seqread.readOneByte()
 
 
 serial.println(`Video metadata:`)
 serial.println(`  Frames: ${totalFrames}`)
-serial.println(`  FPS: ${fps}`)
+serial.println(`  FPS: ${(isNTSC) ? (fps * 1000 / 1001) : fps}`)
 serial.println(`  Duration: ${totalFrames / fps}`)
 serial.println(`  Audio: ${hasAudio ? "Yes" : "No"}`)
 serial.println(`  Resolution: ${width}x${height}, ${isInterlaced ? "interlaced" : "progressive"}`)
@@ -460,6 +463,7 @@ sys.memset(DISPLAY_RG_ADDR, 0, FRAME_PIXELS) // Black in RG plane
 sys.memset(DISPLAY_BA_ADDR, 15, FRAME_PIXELS) // Black with alpha=15 (opaque) in BA plane
 
 let frameCount = 0
+let trueFrameCount = 0
 let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
@@ -537,10 +541,12 @@ function rotateFieldBuffers() {
     nextFieldAddr = temp
 }
 
+let frameDuped = false
+
 // Main decoding loop - simplified for performance
 try {
     let t1 = sys.nanoTime()
-    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && frameCount < totalFrames) {
+    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && trueFrameCount < totalFrames) {
 
         // Handle interactive controls
         if (interactive) {
@@ -560,6 +566,7 @@ try {
 
                 // Sync packet - frame complete
                 frameCount++
+                trueFrameCount++
 
                 // Swap ping-pong buffers instead of expensive memcpy (752KB copy eliminated!)
                 let temp = CURRENT_RGB_ADDR
@@ -603,29 +610,39 @@ try {
 
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
-                    let decodeStart = sys.nanoTime()
-                    let decodingHeight = isInterlaced ? (height / 2)|0 : height
-                    
-                    if (isInterlaced) {
-                        // For interlaced: decode current frame into currentFieldAddr
-                        // For display: use prevFieldAddr as current, currentFieldAddr as next
-                        graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version)
-                        graphics.tevDeinterlace(frameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR)
+                    // duplicate every 1000th frame (pass a turn every 1000n+501st) if NTSC
+                    if (!isInterlaced || frameCount % 1000 != 501 || frameDuped) {
+                        frameDuped = false
 
-                        // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV  
-                        rotateFieldBuffers()
-                    } else {
-                        // Progressive or first frame: normal decoding without temporal prediction
-                        graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], frameCount, debugMotionVectors, version)
+                        let decodeStart = sys.nanoTime()
+                        let decodingHeight = isInterlaced ? (height / 2)|0 : height
+
+                        if (isInterlaced) {
+                            // For interlaced: decode current frame into currentFieldAddr
+                            // For display: use prevFieldAddr as current, currentFieldAddr as next
+                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, [qualityY, qualityCo, qualityCg], trueFrameCount, debugMotionVectors, version)
+                            graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
+
+                            // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
+                            rotateFieldBuffers()
+                        } else {
+                            // Progressive or first frame: normal decoding without temporal prediction
+                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], trueFrameCount, debugMotionVectors, version)
+                        }
+
+                        decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
+
+
+                        // Upload RGB buffer to display framebuffer with dithering
+                        let uploadStart = sys.nanoTime()
+                        graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, width, height, frameCount)
+                        uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0  // Convert to milliseconds
                     }
-                    
-                    decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
-
-                    // Upload RGB buffer to display framebuffer with dithering
-                    let uploadStart = sys.nanoTime()
-                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, width, height, frameCount)
-                    uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0  // Convert to milliseconds
-                    
+                    else {
+                        frameCount -= 1
+                        frameDuped = true
+                        serial.println(`Frame ${frameCount}: Duplicating previous frame`)
+                    }
 
                     // Defer audio playback until a first frame is sent
                     if (isInterlaced) {
