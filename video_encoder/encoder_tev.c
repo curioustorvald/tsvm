@@ -1527,7 +1527,7 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     // Video parameters
     uint16_t width = enc->width;
     uint16_t height = enc->progressive_mode ? enc->height : enc->height * 2;
-    uint8_t fps = enc->fps;
+    uint8_t fps = enc->output_fps;
     uint32_t total_frames = enc->total_frames;
     uint8_t qualityY = enc->qualityY;
     uint8_t qualityCo = enc->qualityCo;
@@ -1780,13 +1780,19 @@ static int get_video_metadata(tev_encoder_t *config) {
         config->total_frames = (int)(config->duration * config->fps);
     }
 
+    // calculate new total_frames if user has requested custom framerate
+    float inputFramerate;
+    if (config->is_ntsc_framerate) {
+        inputFramerate = config->fps * 1000.f / 1001.f;
+    } else {
+        inputFramerate = config->fps * 1.f;
+    }
+
+    config->total_frames = (int)(config->total_frames * (config->output_fps / inputFramerate));
+
     fprintf(stderr, "Video metadata:\n");
     fprintf(stderr, "  Frames: %d\n", config->total_frames);
-    if (config->is_ntsc_framerate) {
-        fprintf(stderr, "  FPS: %.2f\n", config->fps * 1000.f / 1001.f);
-    } else {
-        fprintf(stderr, "  FPS: %d\n", config->fps);
-    }
+    fprintf(stderr, "  FPS: %.2f\n", inputFramerate);
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
     fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height, 
@@ -1923,7 +1929,7 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
     }
 
     // Calculate how much audio time each frame represents (in seconds)
-    double frame_audio_time = 1.0 / enc->fps;
+    double frame_audio_time = 1.0 / enc->output_fps;
 
     // Calculate how much audio time each MP2 packet represents
     // MP2 frame contains 1152 samples at 32kHz = 0.036 seconds
@@ -2198,6 +2204,7 @@ int main(int argc, char *argv[]) {
     if (test_mode) {
         // Test mode: generate solid colour frames
         enc->fps = 1;
+        enc->output_fps = 1;
         enc->total_frames = 15;
         enc->has_audio = 0;
         printf("Test mode: Generating 15 solid colour frames\n");
@@ -2217,7 +2224,7 @@ int main(int argc, char *argv[]) {
         int format = detect_subtitle_format(enc->subtitle_file);
         const char *format_name = (format == 1) ? "SAMI" : "SubRip";
         
-        enc->subtitle_list = parse_subtitle_file(enc->subtitle_file, enc->fps);
+        enc->subtitle_list = parse_subtitle_file(enc->subtitle_file, enc->output_fps);
         if (enc->subtitle_list) {
             enc->has_subtitles = 1;
             enc->current_subtitle = enc->subtitle_list;
@@ -2398,7 +2405,7 @@ int main(int argc, char *argv[]) {
     printf("\nEncoding complete!\n");
     printf("  Frames encoded: %d\n", frame_count);
     printf("  - sync packets: %d\n", sync_packet_count);
-    printf("  Framerate: %d\n", enc->fps);
+    printf("  Framerate: %d\n", enc->output_fps);
     printf("  Output size: %zu bytes\n", enc->total_output_bytes);
     
     // Calculate achieved bitrate

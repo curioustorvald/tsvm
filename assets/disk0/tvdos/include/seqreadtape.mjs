@@ -38,7 +38,10 @@ function hsdpaDisableSequentialIO() {
 }
 
 function hsdpaRewind() {
+    // send rewind command to the tape drive
     sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_REWIND)
+
+    readCount = 0
 }
 
 function hsdpaSkip(bytes) {
@@ -46,8 +49,10 @@ function hsdpaSkip(bytes) {
     sys.poke(HSDPA_REG_SEQ_IO_ARG1, bytes & 0xFF)        // LSB
     sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 1, (bytes >> 8) & 0xFF)   // MSB
     sys.poke(HSDPA_REG_SEQ_IO_ARG1 - 2, (bytes >> 16) & 0xFF)  // MSB2
-    // Execute skip operation
+    // Execute skip operation (tape drive should fast forward)
     sys.poke(HSDPA_REG_SEQ_IO_OPCODE, HSDPA_OPCODE_SKIP)
+
+    readCount += bytes
 }
 
 function hsdpaReadToMemory(bytes, vmMemoryPointer) {
@@ -116,8 +121,7 @@ function prepare(fullPath) {
         
         // Reset position for actual reading
         hsdpaRewind()
-        readCount = 0
-        
+
         return 0
         
     } catch (e) {
@@ -190,12 +194,19 @@ function readString(length) {
     return s
 }
 
-function skip(n) {
-    if (n <= 0) return
-    
-    // For HSDPA, we can skip efficiently without reading
-    hsdpaSkip(n)
-    readCount += n
+function skip(n0) {
+    if (n0 <= 0) return
+    if (n0 < 16777215) {
+        hsdpaSkip(n0)
+        return
+    }
+    let n = n0
+    while (n > 0) {
+        let skiplen = Math.min(n, 16777215)
+        serial.println(`skip ${skiplen}; remaining: ${n}`)
+        hsdpaSkip(skiplen)
+        n -= skiplen
+    }
 }
 
 function getReadCount() {
@@ -226,12 +237,15 @@ function isReady() {
 }
 
 function seek(position) {
-    // Seek to absolute position
-    hsdpaRewind()
-    if (position > 0) {
-        hsdpaSkip(position)
+    let relPos = position - readCount
+    if (position == 0) {
+        return
+    } else if (position > 0) {
+        skip(relPos)
+    } else {
+        hsdpaRewind()
+        skip(position)
     }
-    readCount = position
 }
 
 function rewind() { seek(0) }

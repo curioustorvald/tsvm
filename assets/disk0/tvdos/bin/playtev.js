@@ -60,12 +60,12 @@ let fullFilePathStr = fullFilePath.full
 // Select seqread driver to use
 if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAPE')) {
     seqread = seqreadtape
+    seqread.prepare(fullFilePathStr)
     seqread.seek(0)
 } else {
     seqread = seqreadserial
+    seqread.prepare(fullFilePathStr)
 }
-
-seqread.prepare(fullFilePathStr)
 
 con.clear()
 con.curs_set(0)
