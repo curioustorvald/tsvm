@@ -1765,7 +1765,7 @@ static int get_video_metadata(tev_encoder_t *config) {
 
     while (line && line_num < 2) {
         switch (line_num) {
-            case 0: // Line format: "framerate,framecount" (e.g., "30000/1001,4423")
+            case 0: // Line format: "framerate,framecount" (e.g., "30000/1001,4423"), (e.g., "30/1,7514")
                 {
                     char *comma = strchr(line, ',');
                     if (comma) {
@@ -1775,7 +1775,7 @@ static int get_video_metadata(tev_encoder_t *config) {
                         if (sscanf(line, "%d/%d", &num, &den) == 2) {
                             config->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
                             config->is_ntsc_framerate = (den == 1001 && config->output_fps == 0) ? 1 : 0; // set NTSC framerate mode only when the user did not supply fps option
-                            input_is_ntsc_framerate = 1;
+                            input_is_ntsc_framerate = (den == 1001) ? 1 : 0;
                         } else {
                             config->fps = (int)round(atof(line));
                             config->is_ntsc_framerate = 0;
