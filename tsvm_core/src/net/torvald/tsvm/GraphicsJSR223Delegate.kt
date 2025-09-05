@@ -1965,6 +1965,167 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
+     * Advanced TEV Deblocking Filter - Reduces blocking artifacts from 16x16 macroblocks
+     * 
+     * Uses gradient analysis and adaptive filtering to handle:
+     * - Quantized smooth gradients appearing as discrete blocks
+     * - Diagonal edges crossing block boundaries causing color banding
+     * - Texture preservation to avoid over-smoothing genuine edges
+     * 
+     * @param rgbAddr RGB frame buffer address (24-bit: R,G,B per pixel)
+     * @param width Frame width in pixels
+     * @param height Frame height in pixels 
+     * @param blockSize Size of blocks (16 for TEV format)
+     * @param strength Filter strength (0.0-1.0, higher = more smoothing)
+     */
+    private fun tevDeblockingFilter(rgbAddr: Long, width: Int, height: Int, 
+                                  blockSize: Int = 16, strength: Float = 0.4f) {
+        val blocksX = (width + blockSize - 1) / blockSize
+        val blocksY = (height + blockSize - 1) / blockSize
+        val thisAddrIncVec: Long = if (rgbAddr < 0) -1 else 1
+        
+        // Helper function to get pixel value safely
+        fun getPixel(x: Int, y: Int, c: Int): Int {
+            if (x < 0 || y < 0 || x >= width || y >= height) return 0
+            val offset = (y.toLong() * width + x) * 3 + c
+            return vm.peek(rgbAddr + offset * thisAddrIncVec)!!.toUint().toInt()
+        }
+        
+        // Helper function to set pixel value safely
+        fun setPixel(x: Int, y: Int, c: Int, value: Int) {
+            if (x < 0 || y < 0 || x >= width || y >= height) return
+            val offset = (y.toLong() * width + x) * 3 + c
+            vm.poke(rgbAddr + offset * thisAddrIncVec, value.coerceIn(0, 255).toByte())
+        }
+        
+        // Detect if pixels form a smooth gradient (quantized)
+        fun isQuantizedGradient(p0: Int, p1: Int, p2: Int, p3: Int): Boolean {
+            // Check for step-like transitions typical of quantized gradients
+            val d01 = kotlin.math.abs(p1 - p0)
+            val d12 = kotlin.math.abs(p2 - p1) 
+            val d23 = kotlin.math.abs(p3 - p2)
+            
+            // Look for consistent small steps (quantized gradient)
+            val avgStep = (d01 + d12 + d23) / 3.0f
+            val stepVariance = kotlin.math.abs(d01 - avgStep) + kotlin.math.abs(d12 - avgStep) + kotlin.math.abs(d23 - avgStep)
+            
+            return avgStep in 3.0f..25.0f && stepVariance < avgStep * 0.8f
+        }
+        
+        // Apply horizontal deblocking (vertical edges between blocks)
+        for (by in 0 until blocksY) {
+            for (bx in 1 until blocksX) {
+                val blockEdgeX = bx * blockSize
+                if (blockEdgeX >= width) continue
+                
+                for (y in (by * blockSize) until minOf((by + 1) * blockSize, height)) {
+                    for (c in 0..2) { // RGB components
+                        // Sample 4 pixels across the block boundary: [left2][left1] | [right1][right2]
+                        val left2 = getPixel(blockEdgeX - 2, y, c)
+                        val left1 = getPixel(blockEdgeX - 1, y, c)
+                        val right1 = getPixel(blockEdgeX, y, c)
+                        val right2 = getPixel(blockEdgeX + 1, y, c)
+                        
+                        val edgeDiff = kotlin.math.abs(right1 - left1)
+                        
+                        // Skip strong edges (likely genuine features)
+                        if (edgeDiff > 50) continue
+                        
+                        // Check for quantized gradient pattern
+                        if (isQuantizedGradient(left2, left1, right1, right2)) {
+                            // Apply gradient-preserving smoothing
+                            val gradientLeft = left1 - left2
+                            val gradientRight = right2 - right1
+                            val avgGradient = (gradientLeft + gradientRight) / 2.0f
+                            
+                            val smoothedLeft1 = (left2 + avgGradient).toInt()
+                            val smoothedRight1 = (right2 - avgGradient).toInt()
+                            
+                            // Blend with original based on strength
+                            val blendLeft = (left1 * (1.0f - strength) + smoothedLeft1 * strength).toInt()
+                            val blendRight = (right1 * (1.0f - strength) + smoothedRight1 * strength).toInt()
+                            
+                            setPixel(blockEdgeX - 1, y, c, blendLeft)
+                            setPixel(blockEdgeX, y, c, blendRight)
+                        }
+                        // Check for color banding on diagonal features
+                        else if (edgeDiff in 8..35) {
+                            // Look at diagonal context to detect banding
+                            val diagContext = kotlin.math.abs(getPixel(blockEdgeX - 1, y - 1, c) - getPixel(blockEdgeX, y + 1, c))
+                            
+                            if (diagContext < edgeDiff * 1.5f) {
+                                // Likely diagonal banding - apply directional smoothing
+                                val blend = 0.3f * strength
+                                val blendLeft = (left1 * (1.0f - blend) + right1 * blend).toInt()
+                                val blendRight = (right1 * (1.0f - blend) + left1 * blend).toInt()
+                                
+                                setPixel(blockEdgeX - 1, y, c, blendLeft)
+                                setPixel(blockEdgeX, y, c, blendRight)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Apply vertical deblocking (horizontal edges between blocks)
+        for (by in 1 until blocksY) {
+            for (bx in 0 until blocksX) {
+                val blockEdgeY = by * blockSize
+                if (blockEdgeY >= height) continue
+                
+                for (x in (bx * blockSize) until minOf((bx + 1) * blockSize, width)) {
+                    for (c in 0..2) { // RGB components
+                        // Sample 4 pixels across the block boundary: [top2][top1] | [bottom1][bottom2]
+                        val top2 = getPixel(x, blockEdgeY - 2, c)
+                        val top1 = getPixel(x, blockEdgeY - 1, c)
+                        val bottom1 = getPixel(x, blockEdgeY, c)
+                        val bottom2 = getPixel(x, blockEdgeY + 1, c)
+                        
+                        val edgeDiff = kotlin.math.abs(bottom1 - top1)
+                        
+                        // Skip strong edges (likely genuine features)
+                        if (edgeDiff > 50) continue
+                        
+                        // Check for quantized gradient pattern
+                        if (isQuantizedGradient(top2, top1, bottom1, bottom2)) {
+                            // Apply gradient-preserving smoothing
+                            val gradientTop = top1 - top2
+                            val gradientBottom = bottom2 - bottom1
+                            val avgGradient = (gradientTop + gradientBottom) / 2.0f
+                            
+                            val smoothedTop1 = (top2 + avgGradient).toInt()
+                            val smoothedBottom1 = (bottom2 - avgGradient).toInt()
+                            
+                            // Blend with original based on strength
+                            val blendTop = (top1 * (1.0f - strength) + smoothedTop1 * strength).toInt()
+                            val blendBottom = (bottom1 * (1.0f - strength) + smoothedBottom1 * strength).toInt()
+                            
+                            setPixel(x, blockEdgeY - 1, c, blendTop)
+                            setPixel(x, blockEdgeY, c, blendBottom)
+                        }
+                        // Check for color banding on diagonal features
+                        else if (edgeDiff in 8..35) {
+                            // Look at diagonal context to detect banding
+                            val diagContext = kotlin.math.abs(getPixel(x - 1, blockEdgeY - 1, c) - getPixel(x + 1, blockEdgeY, c))
+                            
+                            if (diagContext < edgeDiff * 1.5f) {
+                                // Likely diagonal banding - apply directional smoothing
+                                val blend = 0.3f * strength
+                                val blendTop = (top1 * (1.0f - blend) + bottom1 * blend).toInt()
+                                val blendBottom = (bottom1 * (1.0f - blend) + top1 * blend).toInt()
+                                
+                                setPixel(x, blockEdgeY - 1, c, blendTop)
+                                setPixel(x, blockEdgeY, c, blendBottom)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Hardware-accelerated TEV frame decoder for YCoCg-R 4:2:0 format
      * Decodes compressed TEV block data directly to framebuffer
      * 
@@ -1978,7 +2139,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qualityIndices: IntArray, frameCounter: Int,
-                  debugMotionVectors: Boolean = false, tevVersion: Int = 2) {
+                  debugMotionVectors: Boolean = false, tevVersion: Int = 2,
+                  enableDeblocking: Boolean = true) {
 
         // height doesn't change when interlaced, because that's the encoder's output
 
@@ -2368,6 +2530,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                 }
             }
+        }
+        
+        // Apply deblocking filter if enabled to reduce blocking artifacts
+        if (enableDeblocking) {
+            tevDeblockingFilter(currentRGBAddr, width, height)
         }
     }
 

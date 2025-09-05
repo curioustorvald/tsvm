@@ -3,6 +3,7 @@
 // Usage: playtev moviefile.tev [options]
 // Options: -i (interactive), -debug-mv (show motion vector debug visualization)
 //          -deinterlace=algorithm (yadif or bwdif, default: yadif)
+//          -nodeblock (disble deblocking filter)
 
 const WIDTH = 560
 const HEIGHT = 448
@@ -40,9 +41,26 @@ let subtitleVisible = false
 let subtitleText = ""
 let subtitlePosition = 0  // 0=bottom center (default)
 
-const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
-const debugMotionVectors = exec_args[2] && exec_args[2].toLowerCase() == "-debug-mv"
-const deinterlaceAlgorithm = "yadif"
+// Parse command line options
+let interactive = false
+let debugMotionVectors = false
+let deinterlaceAlgorithm = "yadif"
+let enableDeblocking = true  // Default: enabled (use -nodeblock to disable)
+
+if (exec_args.length > 2) {
+    for (let i = 2; i < exec_args.length; i++) {
+        const arg = exec_args[i].toLowerCase()
+        if (arg === "-i") {
+            interactive = true
+        } else if (arg === "-debug-mv") {
+            debugMotionVectors = true
+        } else if (arg === "-nodeblock") {
+            enableDeblocking = false
+        } else if (arg.startsWith("-deinterlace=")) {
+            deinterlaceAlgorithm = arg.substring(13)
+        }
+    }
+}
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
 
@@ -374,7 +392,7 @@ if (version !== TEV_VERSION_YCOCG && version !== TEV_VERSION_XYB) {
 let colorSpace = (version === TEV_VERSION_XYB) ? "XYB" : "YCoCg-R"
 if (interactive) {
     con.move(1,1)
-    println(`Push and hold Backspace to exit | TEV Format ${version} (${colorSpace})`)
+    println(`Push and hold Backspace to exit | TEV Format ${version} (${colorSpace}) | Deblocking: ${enableDeblocking ? 'ON' : 'OFF'}`)
 }
 
 let width = seqread.readShort()
@@ -628,7 +646,7 @@ try {
                 // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
                 try {
                     // duplicate every 1000th frame (pass a turn every 1000n+501st) if NTSC
-                    if (!isInterlaced || frameCount % 1000 != 501 || frameDuped) {
+                    if (!isNTSC || frameCount % 1000 != 501 || frameDuped) {
                         frameDuped = false
 
                         let decodeStart = sys.nanoTime()
@@ -637,14 +655,14 @@ try {
                         if (isInterlaced) {
                             // For interlaced: decode current frame into currentFieldAddr
                             // For display: use prevFieldAddr as current, currentFieldAddr as next
-                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, [qualityY, qualityCo, qualityCg], trueFrameCount, debugMotionVectors, version)
+                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, [qualityY, qualityCo, qualityCg], trueFrameCount, debugMotionVectors, version, enableDeblocking)
                             graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
 
                             // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
                             rotateFieldBuffers()
                         } else {
                             // Progressive or first frame: normal decoding without temporal prediction
-                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], trueFrameCount, debugMotionVectors, version)
+                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, [qualityY, qualityCo, qualityCg], trueFrameCount, debugMotionVectors, version, enableDeblocking)
                         }
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
