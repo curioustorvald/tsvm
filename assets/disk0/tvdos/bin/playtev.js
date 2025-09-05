@@ -497,13 +497,30 @@ function getRGBfromScr(x, y) {
 
 function setBiasLighting() {
     let samples = []
-    for (let x = 8; x < 560; x+=32) {
-        samples.push(getRGBfromScr(x, 3))
-        samples.push(getRGBfromScr(x, 445))
+    
+    // Get native resolution for centering calculation
+    let nativeWidth = graphics.getPixelDimension()[0]
+    let nativeHeight = graphics.getPixelDimension()[1]
+    
+    // Calculate video position offset (centered)
+    let offsetX = Math.floor((nativeWidth - width) / 2)
+    let offsetY = Math.floor((nativeHeight - height) / 2)
+    
+    // Sample from video borders, scaled to actual video dimensions
+    let sampleStepX = Math.max(8, Math.floor(width / 18)) // ~18 samples across width
+    let sampleStepY = Math.max(8, Math.floor(height / 17)) // ~17 samples across height
+    let borderMargin = Math.min(8, Math.floor(width / 70)) // Proportional border margin
+    
+    // Sample top and bottom borders
+    for (let x = borderMargin; x < width - borderMargin; x += sampleStepX) {
+        samples.push(getRGBfromScr(x + offsetX, borderMargin + offsetY))
+        samples.push(getRGBfromScr(x + offsetX, height - borderMargin - 1 + offsetY))
     }
-    for (let y = 29; y < 448; y+=26) {
-        samples.push(getRGBfromScr(8, y))
-        samples.push(getRGBfromScr(552, y))
+    
+    // Sample left and right borders
+    for (let y = borderMargin; y < height - borderMargin; y += sampleStepY) {
+        samples.push(getRGBfromScr(borderMargin + offsetX, y + offsetY))
+        samples.push(getRGBfromScr(width - borderMargin - 1 + offsetX, y + offsetY))
     }
 
     let out = [0.0, 0.0, 0.0]

@@ -1325,15 +1325,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Calculate centering offset
         val offsetX = (nativeWidth - width) / 2
         val offsetY = (nativeHeight - height) / 2
-        
-        // Clear framebuffer with transparent pixels first
-        val transparentRG = 0.toByte() // r=0, g=0
-        val transparentBA = 0.toByte() // b=0, a=0 (transparent)
-        
-        // Fill entire framebuffer with transparent pixels
+
         val totalNativePixels = (nativeWidth * nativeHeight).toLong()
-//        UnsafeHelper.unsafe.setMemory(gpu.framebuffer.ptr, totalNativePixels, transparentRG)
-//        UnsafeHelper.unsafe.setMemory(gpu.framebuffer2!!.ptr, totalNativePixels, transparentBA)
 
         // Process video pixels in 8KB chunks to balance memory usage and performance
         val totalVideoPixels = width * height
