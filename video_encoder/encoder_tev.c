@@ -128,7 +128,7 @@ static void generate_random_filename(char *filename) {
     filename[41] = '\0';  // Null terminate
 }
 
-char TEMP_AUDIO_FILE[42];// "/tmp/tev_temp_audio.mp2"
+char TEMP_AUDIO_FILE[42];
 
 typedef struct __attribute__((packed)) {
     uint8_t mode;           // Block encoding mode
@@ -1407,7 +1407,7 @@ static tev_encoder_t* init_encoder(void) {
     if (!enc) return NULL;
 
     // set defaults
-    enc->qualityIndex = 2; // Default quality
+    enc->qualityIndex = 1; // Default quality
     enc->qualityY = QUALITY_Y[enc->qualityIndex];
     enc->qualityCo = QUALITY_CO[enc->qualityIndex];
     enc->qualityCg = enc->qualityCo / 2;
@@ -1700,6 +1700,27 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num, int fie
     return 1;
 }
 
+// Parse resolution string like "1024x768"
+static int parse_resolution(const char *res_str, int *width, int *height) {
+    if (!res_str) return 0;
+    if (strcmp(res_str, "cif") == 0 || strcmp(res_str, "CIF") == 0) {
+        *width = 352;
+        *height = 288;
+        return 1;
+    }
+    if (strcmp(res_str, "qcif") == 0 || strcmp(res_str, "QCIF") == 0) {
+        *width = 176;
+        *height = 144;
+        return 1;
+    }
+    if (strcmp(res_str, "default") == 0 || strcmp(res_str, "DEFAULT") == 0) {
+        *width = DEFAULT_WIDTH;
+        *height = DEFAULT_HEIGHT;
+        return 1;
+    }
+    return sscanf(res_str, "%dx%d", width, height) == 2;
+}
+
 // Execute command and capture output
 static char *execute_command(const char *command) {
     FILE *pipe = popen(command, "r");
@@ -1733,13 +1754,14 @@ static int get_video_metadata(tev_encoder_t *config) {
 
     output = execute_command(command);
     if (!output) {
-        fprintf(stderr, "Failed to get video metadata\n");
+        fprintf(stderr, "Failed to get video metadata (ffprobe failed)\n");
         return 0;
     }
 
     // Parse the combined output
     char *line = strtok(output, "\n");
     int line_num = 0;
+    int input_is_ntsc_framerate = 0;
 
     while (line && line_num < 2) {
         switch (line_num) {
@@ -1752,7 +1774,8 @@ static int get_video_metadata(tev_encoder_t *config) {
                         int num, den;
                         if (sscanf(line, "%d/%d", &num, &den) == 2) {
                             config->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
-                            config->is_ntsc_framerate = (den == 1001) ? 1 : 0;
+                            config->is_ntsc_framerate = (den == 1001 && config->output_fps == 0) ? 1 : 0; // set NTSC framerate mode only when the user did not supply fps option
+                            input_is_ntsc_framerate = 1;
                         } else {
                             config->fps = (int)round(atof(line));
                             config->is_ntsc_framerate = 0;
@@ -1780,15 +1803,17 @@ static int get_video_metadata(tev_encoder_t *config) {
         config->total_frames = (int)(config->duration * config->fps);
     }
 
-    // calculate new total_frames if user has requested custom framerate
+    // calculate new total_frames if the user has requested a custom framerate
     float inputFramerate;
-    if (config->is_ntsc_framerate) {
+    if (input_is_ntsc_framerate) {
         inputFramerate = config->fps * 1000.f / 1001.f;
     } else {
         inputFramerate = config->fps * 1.f;
     }
 
-    config->total_frames = (int)(config->total_frames * (config->output_fps / inputFramerate));
+    if (config->output_fps > 0) {
+        config->total_frames = (int)(config->total_frames * (config->output_fps / inputFramerate));
+    }
 
     fprintf(stderr, "Video metadata:\n");
     fprintf(stderr, "  Frames: %d\n", config->total_frames);
@@ -2011,22 +2036,21 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
 
 // Show usage information
 static void show_usage(const char *program_name) {
-    printf("TEV YCoCg-R 4:2:0 Video Encoder with Bitrate Control\n");
+    printf("TEV YCoCg-R 4:2:0 Video Encoder\n");
     printf("Usage: %s [options] -i input.mp4 -o output.mv2\n\n", program_name);
     printf("Options:\n");
-    printf("  -i, --input FILE     Input video file\n");
-    printf("  -o, --output FILE    Output video file (use '-' for stdout)\n");
-    printf("  -s, --subtitles FILE SubRip (.srt) or SAMI (.smi) subtitle file\n");
-    printf("  -w, --width N        Video width (default: %d)\n", DEFAULT_WIDTH);
-    printf("  -h, --height N       Video height (default: %d)\n", DEFAULT_HEIGHT);
-    printf("  -f, --fps N          Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N      Quality level 0-4 (default: 2, only decides audio rate in bitrate mode and quantiser mode)\n");
-    printf("  -Q, --quantiser N    Quantiser level 0-100 (100: lossless, 0: potato)\n");
-//    printf("  -b, --bitrate N      Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
-    printf("  -p, --progressive    Use progressive scan (default: interlaced)\n");
-    printf("  -v, --verbose        Verbose output\n");
-    printf("  -t, --test           Test mode: generate solid colour frames\n");
-    printf("  --help               Show this help\n\n");
+    printf("  -i, --input FILE       Input video file\n");
+    printf("  -o, --output FILE      Output video file (use '-' for stdout)\n");
+    printf("  -s, --size WxH         Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    printf("  -f, --fps N            Output frames per second (enables frame rate conversion)\n");
+    printf("  -q, --quality N        Quality level 0-4 (default: 1, only decides audio rate in quantiser mode)\n");
+    printf("  -Q, --quantiser N      Quantiser level 0-100 (100: lossless, 0: potato)\n");
+//    printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
+    printf("  -p, --progressive      Use progressive scan (default: interlaced)\n");
+    printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
+    printf("  -v, --verbose          Verbose output\n");
+    printf("  -t, --test             Test mode: generate solid colour frames\n");
+    printf("  --help                 Show this help\n\n");
 //    printf("Rate Control Modes:\n");
 //    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
 //    printf("  Bitrate mode (-b N):    Dynamic quantisation targeting N kbps average\n\n");
@@ -2040,6 +2064,10 @@ static void show_usage(const char *program_name) {
     for (int i = 0; i < sizeof(QUALITY_Y) / sizeof(int); i++) {
         printf("%d: -Q %d  \t", i, QUALITY_Y[i]);
     }
+    printf("\nVideo Size Keywords:");
+    printf("\n  -s cif: equal to 352x288");
+    printf("\n  -s qcif: equal to 176x144");
+    printf("\n  -s default: equal to %dx%d", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("\n\n");
     printf("Features:\n");
     printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
@@ -2048,9 +2076,10 @@ static void show_usage(const char *program_name) {
     printf("  - Adaptive quality control with complexity-based adjustment\n");
     printf("Examples:\n");
     printf("  %s -i input.mp4 -o output.mv2                 # Use default setting (q=2)\n", program_name);
-    printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # 15fps @ q=3\n", program_name);
-    printf("  %s -i input.mp4 -s input.srt -o output.mv2    # With SubRip subtitles\n", program_name);
-    printf("  %s -i input.mp4 -s input.smi -o output.mv2    # With SAMI subtitles\n", program_name);
+    printf("  %s -i input.mp4 -s 352x288 -o output.mv2      # Encode at 352x288 resolution\n", program_name);
+    printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # Encode at 15 frames per second with higher quality\n", program_name);
+    printf("  %s -i input.mp4 -S input.srt -o output.mv2    # With SubRip subtitles\n", program_name);
+    printf("  %s -i input.mp4 -S input.smi -o output.mv2    # With SAMI subtitles\n", program_name);
 //    printf("  %s -i input.mp4 -b 800 -o output.mv2          # 800 kbps bitrate target\n", program_name);
 //    printf("  %s -i input.avi -f 15 -b 500 -o output.mv2    # 15fps @ 500 kbps\n", program_name);
 //    printf("  %s --test -b 1000 -o test.mv2                 # Test with 1000 kbps target\n", program_name);
@@ -2097,9 +2126,8 @@ int main(int argc, char *argv[]) {
     static struct option long_options[] = {
         {"input", required_argument, 0, 'i'},
         {"output", required_argument, 0, 'o'},
-        {"subtitles", required_argument, 0, 's'},
-        {"width", required_argument, 0, 'w'},
-        {"height", required_argument, 0, 'h'},
+        {"size", required_argument, 0, 's'},
+        {"subtitles", required_argument, 0, 'S'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
         {"quantiser", required_argument, 0, 'Q'},
@@ -2115,7 +2143,7 @@ int main(int argc, char *argv[]) {
     int option_index = 0;
     int c;
 
-    while ((c = getopt_long(argc, argv, "i:o:s:w:h:f:q:b:Q:pvt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:S:w:h:f:q:b:Q:pvt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -2125,6 +2153,13 @@ int main(int argc, char *argv[]) {
                 enc->output_to_stdout = (strcmp(optarg, "-") == 0);
                 break;
             case 's':
+                if (!parse_resolution(optarg, &enc->width, &enc->height)) {
+                    fprintf(stderr, "Invalid resolution format: %s\n", optarg);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                break;
+            case 'S':
                 enc->subtitle_file = strdup(optarg);
                 break;
             case 'w':
@@ -2135,6 +2170,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'f':
                 enc->output_fps = atoi(optarg);
+                enc->is_ntsc_framerate = 0;
                 if (enc->output_fps <= 0) {
                     fprintf(stderr, "Invalid FPS: %d\n", enc->output_fps);
                     cleanup_encoder(enc);
@@ -2142,10 +2178,16 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'q':
-                enc->qualityIndex = CLAMP(atoi(optarg), 0, 4);
+                int qi = atoi(optarg);
+                if (qi < 0 || qi > 4) {
+                    fprintf(stderr, "Invalid quality index: %d\nUse value between 0 and 4.\n", qi);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                enc->qualityIndex = qi;
                 enc->qualityY = QUALITY_Y[enc->qualityIndex];
                 enc->qualityCo = QUALITY_CO[enc->qualityIndex];
-                enc->qualityCg = enc->qualityCo / 2;
+                enc->qualityCg = enc->qualityCo >> 1; // bitshift instead of division so it would round up
                 break;
             case 'b':
                 enc->target_bitrate_kbps = atoi(optarg);
@@ -2216,6 +2258,7 @@ int main(int argc, char *argv[]) {
             cleanup_encoder(enc);
             return 1;
         }
+        enc->output_fps = enc->fps;
     }
 
     // Load subtitle file if specified
