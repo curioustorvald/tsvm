@@ -45,14 +45,14 @@ static inline float FCLAMP(float x, float min, float max) {
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 // 56  96 128 192 256  Claude Opus 4.1 (with data analysis)
 // 64  96 128 192 256  ChatGPT-5 (without data analysis)
-static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384};
+static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384, 384};
 // Which preset should I be using?
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 //  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
 // 10  25  45  65  85  ChatGPT-5 (without data analysis)
 // 10  30  50  70  90  ChatGPT-5 (with data analysis)
-static const int QUALITY_Y[] =  {5, 18, 42, 63, 80};
-static const int QUALITY_CO[] = {5, 18, 42, 63, 80};
+static const int QUALITY_Y[] =  {5, 18, 36, 54, 72, 90};
+static const int QUALITY_CO[] = {5, 18, 36, 54, 72, 90};
 
 // Encoding parameters
 #define MAX_MOTION_SEARCH 16
@@ -1407,7 +1407,7 @@ static tev_encoder_t* init_encoder(void) {
     if (!enc) return NULL;
 
     // set defaults
-    enc->qualityIndex = 1; // Default quality
+    enc->qualityIndex = 2; // Default quality
     enc->qualityY = QUALITY_Y[enc->qualityIndex];
     enc->qualityCo = QUALITY_CO[enc->qualityIndex];
     enc->qualityCg = enc->qualityCo / 2;
@@ -1713,6 +1713,11 @@ static int parse_resolution(const char *res_str, int *width, int *height) {
         *height = 144;
         return 1;
     }
+    if (strcmp(res_str, "half") == 0 || strcmp(res_str, "HALF") == 0) {
+        *width = DEFAULT_WIDTH >> 1;
+        *height = DEFAULT_HEIGHT >> 1;
+        return 1;
+    }
     if (strcmp(res_str, "default") == 0 || strcmp(res_str, "DEFAULT") == 0) {
         *width = DEFAULT_WIDTH;
         *height = DEFAULT_HEIGHT;
@@ -1744,10 +1749,10 @@ static int get_video_metadata(tev_encoder_t *config) {
     char command[1024];
     char *output;
 
-    // Get all metadata in a single ffprobe call
+    // Get all metadata without frame count (much faster)
     snprintf(command, sizeof(command),
-        "ffprobe -v quiet -count_frames "
-        "-show_entries stream=nb_read_frames,r_frame_rate:format=duration "
+        "ffprobe -v quiet "
+        "-show_entries stream=r_frame_rate:format=duration "
         "-select_streams v:0 -of csv=p=0 \"%s\" 2>/dev/null; "
         "ffprobe -v quiet -select_streams a:0 -show_entries stream=index -of csv=p=0 \"%s\" 2>/dev/null",
         config->input_file, config->input_file);
@@ -1765,24 +1770,20 @@ static int get_video_metadata(tev_encoder_t *config) {
 
     while (line && line_num < 2) {
         switch (line_num) {
-            case 0: // Line format: "framerate,framecount" (e.g., "30000/1001,4423"), (e.g., "30/1,7514")
+            case 0: // Line format: "framerate" (e.g., "30000/1001"), (e.g., "30/1")
                 {
-                    char *comma = strchr(line, ',');
-                    if (comma) {
-                        *comma = '\0'; // Split at comma
-                        // Parse frame rate (first part)
-                        int num, den;
-                        if (sscanf(line, "%d/%d", &num, &den) == 2) {
-                            config->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
-                            config->is_ntsc_framerate = (den == 1001 && config->output_fps == 0) ? 1 : 0; // set NTSC framerate mode only when the user did not supply fps option
-                            input_is_ntsc_framerate = (den == 1001) ? 1 : 0;
-                        } else {
-                            config->fps = (int)round(atof(line));
-                            config->is_ntsc_framerate = 0;
-                        }
-                        // Parse frame count (second part)
-                        config->total_frames = atoi(comma + 1);
+                    // Parse frame rate
+                    int num, den;
+                    if (sscanf(line, "%d/%d", &num, &den) == 2) {
+                        config->fps = (den > 0) ? (int)round((float)num/(float)den) : 30;
+                        config->is_ntsc_framerate = (den == 1001 && config->output_fps == 0) ? 1 : 0; // set NTSC framerate mode only when the user did not supply fps option
+                        input_is_ntsc_framerate = (den == 1001) ? 1 : 0;
+                    } else {
+                        config->fps = (int)round(atof(line));
+                        config->is_ntsc_framerate = 0;
                     }
+                    // Frame count will be determined during encoding
+                    config->total_frames = 0;
                 }
                 break;
             case 1: // duration in seconds
@@ -1798,32 +1799,26 @@ static int get_video_metadata(tev_encoder_t *config) {
 
     free(output);
 
-    // Validate frame count using duration if needed
-    if (config->total_frames <= 0 && config->duration > 0) {
-        config->total_frames = (int)(config->duration * config->fps);
-    }
-
-    // calculate new total_frames if the user has requested a custom framerate
+    // Store input framerate for later calculations
     float inputFramerate;
     if (input_is_ntsc_framerate) {
         inputFramerate = config->fps * 1000.f / 1001.f;
     } else {
         inputFramerate = config->fps * 1.f;
     }
-
-    if (config->output_fps > 0) {
-        config->total_frames = (int)(config->total_frames * (config->output_fps / inputFramerate));
-    }
+    
+    // Frame count will be determined during encoding
+    config->total_frames = 0;
 
     fprintf(stderr, "Video metadata:\n");
-    fprintf(stderr, "  Frames: %d\n", config->total_frames);
+    fprintf(stderr, "  Frames: (will be determined during encoding)\n");
     fprintf(stderr, "  FPS: %.2f\n", inputFramerate);
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
     fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height, 
             config->progressive_mode ? "progressive" : "interlaced");
 
-    return (config->total_frames > 0 && config->fps > 0);
+    return (config->fps > 0);
 }
 
 // Start FFmpeg process for video conversion with frame rate support
@@ -2043,7 +2038,7 @@ static void show_usage(const char *program_name) {
     printf("  -o, --output FILE      Output video file (use '-' for stdout)\n");
     printf("  -s, --size WxH         Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("  -f, --fps N            Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N        Quality level 0-4 (default: 1, only decides audio rate in quantiser mode)\n");
+    printf("  -q, --quality N        Quality level 0-4 (default: 2, only decides audio rate in quantiser mode)\n");
     printf("  -Q, --quantiser N      Quantiser level 0-100 (100: lossless, 0: potato)\n");
 //    printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
     printf("  -p, --progressive      Use progressive scan (default: interlaced)\n");
@@ -2067,6 +2062,7 @@ static void show_usage(const char *program_name) {
     printf("\nVideo Size Keywords:");
     printf("\n  -s cif: equal to 352x288");
     printf("\n  -s qcif: equal to 176x144");
+    printf("\n  -s half: equal to %dx%d", DEFAULT_WIDTH >> 1, DEFAULT_HEIGHT >> 1);
     printf("\n  -s default: equal to %dx%d", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("\n\n");
     printf("Features:\n");
@@ -2179,7 +2175,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'q':
                 int qi = atoi(optarg);
-                if (qi < 0 || qi > 4) {
+                if (qi < 0 || qi > 5) {
                     fprintf(stderr, "Invalid quality index: %d\nUse value between 0 and 4.\n", qi);
                     cleanup_encoder(enc);
                     return 1;
@@ -2258,7 +2254,6 @@ int main(int argc, char *argv[]) {
             cleanup_encoder(enc);
             return 1;
         }
-        enc->output_fps = enc->fps;
     }
 
     // Load subtitle file if specified
@@ -2326,10 +2321,16 @@ int main(int argc, char *argv[]) {
         printf("Quantiser levels: %d, %d, %d\n", enc->qualityY, enc->qualityCo, enc->qualityCg);
     }
 
-    // Process frames
+    // Process frames (read until EOF from FFmpeg, or frame limit in test mode)
     int frame_count = 0;
-    while (frame_count < enc->total_frames) {
+    int continue_encoding = 1;
+    while (continue_encoding) {
         if (test_mode) {
+            // Test mode has a fixed frame count
+            if (frame_count >= enc->total_frames) {
+                continue_encoding = 0;
+                break;
+            }
             // Generate test frame with solid colours
             size_t rgb_size = enc->width * enc->height * 3;
             uint8_t test_r = 0, test_g = 0, test_b = 0;
@@ -2389,6 +2390,7 @@ int main(int argc, char *argv[]) {
                         printf("FFmpeg pipe error occurred\n");
                     }
                 }
+                continue_encoding = 0;
                 break; // End of video or error
             }
             
@@ -2426,16 +2428,28 @@ int main(int argc, char *argv[]) {
             double elapsed = (now.tv_sec - enc->start_time.tv_sec) + 
                            (now.tv_usec - enc->start_time.tv_usec) / 1000000.0;
             double fps = frame_count / elapsed;
-            printf("Encoded frame %d/%d (%.1f fps)\n", frame_count, enc->total_frames, fps);
+            printf("Encoded frame %d (%.1f fps)\n", frame_count, fps);
         }
     }
+    
+    // Update actual frame count in encoder struct  
+    enc->total_frames = frame_count;
     
     // Write final sync packet
     uint8_t sync_packet = TEV_PACKET_SYNC;
     fwrite(&sync_packet, 1, 1, output);
     sync_packet_count++;
 
+    // Update header with actual frame count (seek back to header position)
     if (!enc->output_to_stdout) {
+        long current_pos = ftell(output);
+        fseek(output, 14, SEEK_SET);  // Offset of total_frames field in header
+        uint32_t actual_frames = frame_count;
+        fwrite(&actual_frames, 4, 1, output);
+        fseek(output, current_pos, SEEK_SET);  // Restore position
+        if (enc->verbose) {
+            printf("Updated header with actual frame count: %d\n", frame_count);
+        }
         fclose(output);
     }
     
