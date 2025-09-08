@@ -1924,7 +1924,12 @@ static int get_video_metadata(tev_encoder_t *config) {
     } else {
         inputFramerate = config->fps * 1.f;
     }
-    
+
+    // if output FPS is unspecified, use the input rate
+    if (config->output_fps == 0) {
+        config->output_fps = config->fps;
+    }
+
     // Frame count will be determined during encoding
     config->total_frames = 0;
 
