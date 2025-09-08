@@ -216,6 +216,12 @@ typedef struct {
     // Subtitle handling
     subtitle_entry_t *subtitle_list;
     subtitle_entry_t *current_subtitle;
+    
+    // Complexity statistics collection
+    int stats_mode;           // 0 = disabled, 1 = enabled
+    float *complexity_values; // Array to store all complexity values
+    int complexity_count;     // Current count of complexity values
+    int complexity_capacity;  // Capacity of complexity_values array
 } tev_encoder_t;
 
 // RGB to YCoCg-R transform (per YCoCg-R specification with truncated division)
@@ -461,11 +467,119 @@ static float calculate_block_complexity(const float *y_block) {
 }
 
 // Map complexity to rate control factor (pure per-block, no global factor)
+// Data-driven approach: rate_control_factor multiplies reconstructed coefficients in decoder
+// Higher factor = more detail preserved, lower factor = acceptable quality loss
 static float complexity_to_rate_factor(float complexity) {
-    const float P = 10.f;
-    const float e = -0.5f;
-    float factor = P * powf(FCLAMP(complexity, 1.f, 16777216.f), e);
-    return FCLAMP(factor, 1.f / 2.f, 2.f); // the "auto quality" thing can be excessively permissive
+    // Handle zero/near-zero complexity (very common in sample data)
+    if (complexity <= 0.001f) {
+        return 0.7f; // Reduce detail for flat blocks (saves bits, minimal perceptual loss)
+    }
+    
+    // Parameters derived from statistical analysis of 10 video samples:
+    // - Most content has median complexity around 500-3000
+    // - Heavy concentration at low complexity, wide spread at high complexity
+    
+    const float median_complexity = 2400.0f;  // Target for rate_factor = 1.0
+    const float high_complexity = 8500.0f;    // ~91st percentile threshold
+    
+    // Logarithmic preprocessing to handle wide dynamic range (0 to 17000+)
+    float log_complexity = logf(complexity + 1.0f);
+    float log_median = logf(median_complexity + 1.0f);
+    float log_high = logf(high_complexity + 1.0f);
+    
+    // Normalize: 0 = median complexity, 1 = high complexity threshold
+    float normalized = (log_complexity - log_median) / (log_high - log_median);
+    
+    // Sigmoid centered at median: f(0) ≈ 1.0, f(1) ≈ 1.6, f(-∞) ≈ 0.7
+    float sigmoid = 1.0f / (1.0f + expf(-4.0f * normalized));
+    float rate_factor = 0.7f + 0.9f * sigmoid; // Range: 0.7 to 1.6
+    
+    // Clamp to prevent extreme coefficient amplification/reduction
+    return FCLAMP(rate_factor, 0.6f, 1.8f);
+}
+
+// Add complexity value to statistics collection
+static void add_complexity_value(tev_encoder_t *enc, float complexity) {
+    if (!enc->stats_mode) return;
+    
+    // Initialize array if needed
+    if (!enc->complexity_values) {
+        enc->complexity_capacity = 10000; // Initial capacity
+        enc->complexity_values = malloc(enc->complexity_capacity * sizeof(float));
+        if (!enc->complexity_values) {
+            fprintf(stderr, "Warning: Failed to allocate complexity statistics array\n");
+            enc->stats_mode = 0;
+            return;
+        }
+        enc->complexity_count = 0;
+    }
+    
+    // Resize array if needed
+    if (enc->complexity_count >= enc->complexity_capacity) {
+        enc->complexity_capacity *= 2;
+        float *new_array = realloc(enc->complexity_values, enc->complexity_capacity * sizeof(float));
+        if (!new_array) {
+            fprintf(stderr, "Warning: Failed to resize complexity statistics array\n");
+            return;
+        }
+        enc->complexity_values = new_array;
+    }
+    
+    enc->complexity_values[enc->complexity_count++] = complexity;
+}
+
+// Comparison function for qsort
+static int compare_float(const void *a, const void *b) {
+    float fa = *(const float*)a;
+    float fb = *(const float*)b;
+    if (fa < fb) return -1;
+    if (fa > fb) return 1;
+    return 0;
+}
+
+// Calculate seven-number summary statistics
+static void calculate_complexity_stats(tev_encoder_t *enc) {
+    if (!enc->stats_mode || enc->complexity_count == 0) return;
+    
+    printf("\n=== BLOCK COMPLEXITY STATISTICS ===\n");
+    printf("Analyzed %d blocks during encoding\n\n", enc->complexity_count);
+    
+    // Sort the values to calculate percentiles
+    float *sorted_values = malloc(enc->complexity_count * sizeof(float));
+    if (!sorted_values) {
+        fprintf(stderr, "Failed to allocate memory for statistics calculation\n");
+        return;
+    }
+    
+    memcpy(sorted_values, enc->complexity_values, enc->complexity_count * sizeof(float));
+    qsort(sorted_values, enc->complexity_count, sizeof(float), compare_float);
+    
+    // Calculate seven-number summary percentiles: 2.15%, 8.87%, 25%, 50%, 75%, 91.13%, 97.85%
+    float p2_15 = sorted_values[(int)(0.0215 * (enc->complexity_count - 1))];
+    float p8_87 = sorted_values[(int)(0.0887 * (enc->complexity_count - 1))];
+    float p25 = sorted_values[(int)(0.25 * (enc->complexity_count - 1))];
+    float p50 = sorted_values[(int)(0.50 * (enc->complexity_count - 1))];
+    float p75 = sorted_values[(int)(0.75 * (enc->complexity_count - 1))];
+    float p91_13 = sorted_values[(int)(0.9113 * (enc->complexity_count - 1))];
+    float p97_85 = sorted_values[(int)(0.9785 * (enc->complexity_count - 1))];
+
+    // Print human-readable format
+    printf("Seven-Number Summary:\n");
+    printf("  2.15%% percentile:  %.6f\n", p2_15);
+    printf("  8.87%% percentile:  %.6f\n", p8_87);
+    printf("  25.0%% percentile:    %.6f\n", p25);
+    printf("  50.0%% percentile:    %.6f\n", p50);
+    printf("  75.0%% percentile:    %.6f\n", p75);
+    printf("  91.13%% percentile: %.6f\n", p91_13);
+    printf("  97.85%% percentile: %.6f\n", p97_85);
+
+    // Print CSV format for copy-pasting
+    printf("CSV Format (copy-pastable):\n");
+    printf("2.15%%,8.87%%,25.0%%,50.0%%,75.0%%,91.13%%,97.85%%\n");
+    printf("%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", p2_15, p8_87, p25, p50, p75, p91_13, p97_85);
+    
+    free(sorted_values);
+    printf("=====================================\n");
 }
 
 // Simple motion estimation (full search) for 16x16 blocks
@@ -749,6 +863,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             block->mv_y = 0;
             // Even skip blocks benefit from complexity analysis for consistency
             float block_complexity = calculate_block_complexity(enc->y_workspace);
+            add_complexity_value(enc, block_complexity);
             block->rate_control_factor = complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
@@ -763,6 +878,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             block->mode = TEV_MODE_MOTION;
             // Analyze complexity for motion blocks too
             float block_complexity = calculate_block_complexity(enc->y_workspace);
+            add_complexity_value(enc, block_complexity);
             block->rate_control_factor = complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
@@ -807,6 +923,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // Calculate block complexity BEFORE DCT transform for adaptive rate control
     float block_complexity = calculate_block_complexity(enc->y_workspace);
+    add_complexity_value(enc, block_complexity);
     block->rate_control_factor = complexity_to_rate_factor(block_complexity);
 
     // Apply fast DCT transform
@@ -1513,6 +1630,7 @@ static void free_encoder(tev_encoder_t *enc) {
     if (enc->block_data) { free(enc->block_data); enc->block_data = NULL; }
     if (enc->compressed_buffer) { free(enc->compressed_buffer); enc->compressed_buffer = NULL; }
     if (enc->mp2_buffer) { free(enc->mp2_buffer); enc->mp2_buffer = NULL; }
+    if (enc->complexity_values) { free(enc->complexity_values); enc->complexity_values = NULL; }
     free(enc);
 }
 
@@ -2045,6 +2163,7 @@ static void show_usage(const char *program_name) {
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose          Verbose output\n");
     printf("  -t, --test             Test mode: generate solid colour frames\n");
+    printf("  --enable-encode-stats  Collect and report block complexity statistics\n");
     printf("  --help                 Show this help\n\n");
 //    printf("Rate Control Modes:\n");
 //    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
@@ -2132,6 +2251,7 @@ int main(int argc, char *argv[]) {
         {"progressive", no_argument, 0, 'p'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
+        {"enable-encode-stats", no_argument, 0, 1000},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -2199,6 +2319,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 't':
                 test_mode = 1;
+                break;
+            case 1000:  // --enable-encode-stats
+                enc->stats_mode = 1;
                 break;
             case 0:
                 if (strcmp(long_options[option_index].name, "help") == 0) {
@@ -2481,6 +2604,9 @@ int main(int argc, char *argv[]) {
     if (enc->bitrate_mode > 0) {
         printf("  Per-block complexity-based rate control: enabled\n");
     }
+    
+    // Print complexity statistics if enabled
+    calculate_complexity_stats(enc);
     
     cleanup_encoder(enc);
     return 0;
