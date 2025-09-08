@@ -256,7 +256,11 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     private val defaultGuiBackgroundColour = Color(0x444444ff)
 
+    private var framecount = 0L
+
     private fun renderGame(delta: Float) {
+        framecount++
+
         camera.setToOrtho(false, viewportWidth.toFloat(), viewportHeight.toFloat())
         batch.projectionMatrix = camera.combined
         gpuFBO.begin()
@@ -286,6 +290,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             // draw GPU and border
             batch.shader = crtShader
             batch.shader.setUniformf("resolution", viewportWidth.toFloat(), viewportHeight.toFloat())
+            batch.shader.setUniformf("interlacer", (framecount % 2).toFloat())
             batch.setBlendFunctionSeparate(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, GL20.GL_SRC_ALPHA, GL20.GL_ONE)
             batch.draw(gpuFBO.colorBufferTexture, 0f, 0f)
         }
@@ -415,7 +420,7 @@ uniform sampler2D u_texture;
 uniform vec2 resolution = vec2(640.0, 480.0);
 out vec4 fragColor;
 
-const vec4 scanline = vec4(0.9, 0.9, 0.9, 1.0);
+const vec4 scanline = vec4(0.8, 0.8, 0.8, 1.0);
 const vec4 one = vec4(1.0);
 const vec4 pointfive = vec4(0.5);
 
@@ -456,6 +461,8 @@ uniform float rcount = 96.0;
 uniform float gcount = 96.0;
 uniform float bcount = 96.0;
 uniform float acount = 1.0;
+
+uniform float interlacer = 0.0;
 
 vec4 toYUV(vec4 rgb) { return rgb_to_yuv * rgb; }
 vec4 toRGB(vec4 ycc) { return yuv_to_rgb * ycc; }
@@ -538,7 +545,7 @@ void main() {
     vec4 wgtavr = avr(LRavr, colourIn, gamma);
         
     vec4 outCol = wgtavr;
-    vec4 out2 = clamp(grading(outCol, gradingarg) * ((mod(gl_FragCoord.y, 2.0) >= 1.0) ? scanline : one), 0.0, 1.0);
+    vec4 out2 = clamp(grading(outCol, gradingarg) * ((mod(gl_FragCoord.y + interlacer, 2.0) >= 1.0) ? scanline : one), 0.0, 1.0);
 
     // mix in CRT glass overlay
     float spread = 1.0 / (0.299 * (rcount - 1.0) + 0.587 * (gcount - 1.0) + 0.114 * (bcount - 1.0));  // this spread value is optimised one -- try your own values for various effects!

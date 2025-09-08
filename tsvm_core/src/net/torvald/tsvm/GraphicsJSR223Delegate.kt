@@ -1312,8 +1312,21 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
      * @param width Frame width
      * @param height Frame height
+     * @param frameCounter Frame counter for dithering
      */
     fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCounter: Int) {
+        uploadRGBToFramebuffer(rgbAddr, width, height, frameCounter, false)
+    }
+
+    /**
+     * Upload RGB frame buffer to graphics framebuffer with dithering and optional resize
+     * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
+     * @param width Frame width
+     * @param height Frame height
+     * @param frameCounter Frame counter for dithering
+     * @param resizeToFull If true, resize video to fill entire screen; if false, center video
+     */
+    fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCounter: Int, resizeToFull: Boolean) {
         val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
 
         val rgbAddrIncVec = if (rgbAddr >= 0) 1 else -1
@@ -1322,68 +1335,121 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val nativeWidth = gpu.config.width
         val nativeHeight = gpu.config.height
         
-        // Calculate centering offset
-        val offsetX = (nativeWidth - width) / 2
-        val offsetY = (nativeHeight - height) / 2
-
         val totalNativePixels = (nativeWidth * nativeHeight).toLong()
 
-        // Process video pixels in 8KB chunks to balance memory usage and performance
-        val totalVideoPixels = width * height
-        val chunkSize = 8192
-        val rgChunk = ByteArray(chunkSize)
-        val baChunk = ByteArray(chunkSize)
-        val positionChunk = IntArray(chunkSize) // Store framebuffer positions
-        
-        var pixelsProcessed = 0
-        
-        while (pixelsProcessed < totalVideoPixels) {
-            val pixelsInChunk = kotlin.math.min(chunkSize, totalVideoPixels - pixelsProcessed)
+        if (resizeToFull && (width / 2 != nativeWidth / 2 || height / 2 != nativeHeight / 2)) {
+            // Calculate scaling factors for resize-to-full (source to native mapping)
+            val scaleX = width.toFloat() / nativeWidth.toFloat()
+            val scaleY = height.toFloat() / nativeHeight.toFloat()
             
-            // Batch process chunk of pixels
-            for (i in 0 until pixelsInChunk) {
-                val pixelIndex = pixelsProcessed + i
-                val videoY = pixelIndex / width
-                val videoX = pixelIndex % width
-                
-                // Calculate position in native framebuffer (centered)
-                val nativeX = videoX + offsetX
-                val nativeY = videoY + offsetY
-                val nativePos = nativeY * nativeWidth + nativeX
-                positionChunk[i] = nativePos
-                
-                val rgbOffset = (pixelIndex.toLong() * 3) * rgbAddrIncVec
-
-                // Read RGB values (3 peek operations per pixel - still the bottleneck)
-                val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
-                val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
-                val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
-
-                // Apply Bayer dithering and convert to 4-bit
-                val r4 = ditherValue(r, videoX, videoY, frameCounter)
-                val g4 = ditherValue(g, videoX, videoY, frameCounter)
-                val b4 = ditherValue(b, videoX, videoY, frameCounter)
-
-                // Pack and store in chunk buffers
-                rgChunk[i] = ((r4 shl 4) or g4).toByte()
-                baChunk[i] = ((b4 shl 4) or 15).toByte()
-            }
+            // Process native pixels in 8KB chunks
+            val chunkSize = 8192
+            val rgChunk = ByteArray(chunkSize)
+            val baChunk = ByteArray(chunkSize)
             
-            // Write pixels to their calculated positions in framebuffer
-            for (i in 0 until pixelsInChunk) {
-                val pos = positionChunk[i].toLong()
-                // Bounds check to ensure we don't write outside framebuffer
-                if (pos in 0 until totalNativePixels) {
-                    UnsafeHelper.memcpyRaw(
-                        rgChunk, UnsafeHelper.getArrayOffset(rgChunk) + i,
-                        null, gpu.framebuffer.ptr + pos, 1L)
-                    UnsafeHelper.memcpyRaw(
-                        baChunk, UnsafeHelper.getArrayOffset(baChunk) + i,
-                        null, gpu.framebuffer2!!.ptr + pos, 1L)
+            var pixelsProcessed = 0
+            
+            while (pixelsProcessed < totalNativePixels) {
+                val pixelsInChunk = kotlin.math.min(chunkSize, (totalNativePixels - pixelsProcessed).toInt())
+                
+                // Batch process chunk of pixels
+                for (i in 0 until pixelsInChunk) {
+                    val nativePixelIndex = pixelsProcessed + i
+                    val nativeY = nativePixelIndex / nativeWidth
+                    val nativeX = nativePixelIndex % nativeWidth
+                    
+                    // Map native pixel to source video coordinates for bilinear sampling
+                    val videoX = nativeX * scaleX
+                    val videoY = nativeY * scaleY
+                    
+                    // Sample RGB values using bilinear interpolation
+                    val rgb = sampleBilinear(rgbAddr, width, height, videoX, videoY, rgbAddrIncVec)
+                    val r = rgb[0]
+                    val g = rgb[1]
+                    val b = rgb[2]
+
+                    // Apply Bayer dithering and convert to 4-bit using native coordinates
+                    val r4 = ditherValue(r, nativeX, nativeY, frameCounter)
+                    val g4 = ditherValue(g, nativeX, nativeY, frameCounter)
+                    val b4 = ditherValue(b, nativeX, nativeY, frameCounter)
+
+                    // Pack and store in chunk buffers
+                    rgChunk[i] = ((r4 shl 4) or g4).toByte()
+                    baChunk[i] = ((b4 shl 4) or 15).toByte()
                 }
-            }
+                
+                // Write pixels to their sequential positions in framebuffer
+                UnsafeHelper.memcpyRaw(
+                    rgChunk, UnsafeHelper.getArrayOffset(rgChunk),
+                    null, gpu.framebuffer.ptr + pixelsProcessed, pixelsInChunk.toLong())
+                UnsafeHelper.memcpyRaw(
+                    baChunk, UnsafeHelper.getArrayOffset(baChunk),
+                    null, gpu.framebuffer2!!.ptr + pixelsProcessed, pixelsInChunk.toLong())
 
-            pixelsProcessed += pixelsInChunk
+                pixelsProcessed += pixelsInChunk
+            }
+        } else {
+            // Original centering logic
+            val offsetX = (nativeWidth - width) / 2
+            val offsetY = (nativeHeight - height) / 2
+
+            // Process video pixels in 8KB chunks to balance memory usage and performance
+            val totalVideoPixels = width * height
+            val chunkSize = 65536
+            val rgChunk = ByteArray(chunkSize)
+            val baChunk = ByteArray(chunkSize)
+            val positionChunk = IntArray(chunkSize) // Store framebuffer positions
+            
+            var pixelsProcessed = 0
+            
+            while (pixelsProcessed < totalVideoPixels) {
+                val pixelsInChunk = kotlin.math.min(chunkSize, totalVideoPixels - pixelsProcessed)
+                
+                // Batch process chunk of pixels
+                for (i in 0 until pixelsInChunk) {
+                    val pixelIndex = pixelsProcessed + i
+                    val videoY = pixelIndex / width
+                    val videoX = pixelIndex % width
+                    
+                    // Calculate position in native framebuffer (centered)
+                    val nativeX = videoX + offsetX
+                    val nativeY = videoY + offsetY
+                    val nativePos = nativeY * nativeWidth + nativeX
+                    positionChunk[i] = nativePos
+                    
+                    val rgbOffset = (pixelIndex.toLong() * 3) * rgbAddrIncVec
+
+                    // Read RGB values (3 peek operations per pixel - still the bottleneck)
+                    val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
+                    val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
+                    val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
+
+                    // Apply Bayer dithering and convert to 4-bit
+                    val r4 = ditherValue(r, videoX, videoY, frameCounter)
+                    val g4 = ditherValue(g, videoX, videoY, frameCounter)
+                    val b4 = ditherValue(b, videoX, videoY, frameCounter)
+
+                    // Pack and store in chunk buffers
+                    rgChunk[i] = ((r4 shl 4) or g4).toByte()
+                    baChunk[i] = ((b4 shl 4) or 15).toByte()
+                }
+                
+                // Write pixels to their calculated positions in framebuffer
+                for (i in 0 until pixelsInChunk) {
+                    val pos = positionChunk[i].toLong()
+                    // Bounds check to ensure we don't write outside framebuffer
+                    if (pos in 0 until totalNativePixels) {
+                        UnsafeHelper.memcpyRaw(
+                            rgChunk, UnsafeHelper.getArrayOffset(rgChunk) + i,
+                            null, gpu.framebuffer.ptr + pos, 1L)
+                        UnsafeHelper.memcpyRaw(
+                            baChunk, UnsafeHelper.getArrayOffset(baChunk) + i,
+                            null, gpu.framebuffer2!!.ptr + pos, 1L)
+                    }
+                }
+
+                pixelsProcessed += pixelsInChunk
+            }
         }
     }
 
@@ -1398,6 +1464,57 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
         val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
         return round(15f * q)
+    }
+
+    /**
+     * Sample RGB values using bilinear interpolation
+     * @param rgbAddr Source RGB buffer address
+     * @param width Source image width
+     * @param height Source image height  
+     * @param x Floating-point x coordinate in source image
+     * @param y Floating-point y coordinate in source image
+     * @param rgbAddrIncVec Address increment vector
+     * @return IntArray containing interpolated [R, G, B] values
+     */
+    private fun sampleBilinear(rgbAddr: Long, width: Int, height: Int, x: Float, y: Float, rgbAddrIncVec: Int): IntArray {
+        // Clamp coordinates to valid range
+        val clampedX = x.coerceIn(0f, (width - 1).toFloat())
+        val clampedY = y.coerceIn(0f, (height - 1).toFloat())
+        
+        // Get integer coordinates and fractional parts
+        val x0 = clampedX.toInt()
+        val y0 = clampedY.toInt()
+        val x1 = kotlin.math.min(x0 + 1, width - 1)
+        val y1 = kotlin.math.min(y0 + 1, height - 1)
+        
+        val fx = clampedX - x0
+        val fy = clampedY - y0
+        
+        // Sample the four corner pixels
+        fun samplePixel(px: Int, py: Int): IntArray {
+            val pixelIndex = py * width + px
+            val rgbOffset = (pixelIndex.toLong() * 3) * rgbAddrIncVec
+            return intArrayOf(
+                vm.peek(rgbAddr + rgbOffset)!!.toUint(),
+                vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint(),
+                vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
+            )
+        }
+        
+        val c00 = samplePixel(x0, y0) // top-left
+        val c10 = samplePixel(x1, y0) // top-right
+        val c01 = samplePixel(x0, y1) // bottom-left
+        val c11 = samplePixel(x1, y1) // bottom-right
+        
+        // Bilinear interpolation
+        val result = IntArray(3)
+        for (i in 0..2) {
+            val top = c00[i] * (1f - fx) + c10[i] * fx
+            val bottom = c01[i] * (1f - fx) + c11[i] * fx
+            result[i] = (top * (1f - fy) + bottom * fy).toInt().coerceIn(0, 255)
+        }
+        
+        return result
     }
 
 

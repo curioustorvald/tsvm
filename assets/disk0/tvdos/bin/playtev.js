@@ -670,7 +670,7 @@ try {
 
                         // Upload RGB buffer to display framebuffer with dithering
                         let uploadStart = sys.nanoTime()
-                        graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, width, height, frameCount)
+                        graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, width, height, frameCount, true)
                         uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0  // Convert to milliseconds
                     }
                     else {
