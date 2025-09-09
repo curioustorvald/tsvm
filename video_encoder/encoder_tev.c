@@ -931,10 +931,10 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // quantise Y coefficients (luma) using per-block rate control
     const uint32_t *y_quant = QUANT_TABLE_Y;
-    const float qmult_y = jpeg_quality_to_mult(enc->qualityY);
+    const float qmult_y = jpeg_quality_to_mult(enc->qualityY * block->rate_control_factor);
     for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
-        float effective_quant = y_quant[i] * qmult_y * block->rate_control_factor;
+        float effective_quant = y_quant[i] * qmult_y;
         block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 0);
     }
 
@@ -943,10 +943,10 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // quantise Co coefficients (chroma - orange-blue) using per-block rate control
     const uint32_t *co_quant = QUANT_TABLE_C;
-    const float qmult_co = jpeg_quality_to_mult(enc->qualityCo);
+    const float qmult_co = jpeg_quality_to_mult(enc->qualityCo * block->rate_control_factor);
     for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
-        float effective_quant = co_quant[i] * qmult_co * block->rate_control_factor;
+        float effective_quant = co_quant[i] * qmult_co;
         block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
     }
 
@@ -955,10 +955,10 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q) using per-block rate control
     const uint32_t *cg_quant = QUANT_TABLE_C;
-    const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg);
+    const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg * block->rate_control_factor);
     for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
-        float effective_quant = cg_quant[i] * qmult_cg * block->rate_control_factor;
+        float effective_quant = cg_quant[i] * qmult_cg;
         block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
     }
 

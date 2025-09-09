@@ -580,8 +580,6 @@ let frameDuped = false
 
 // Main decoding loop - simplified for performance
 try {
-    graphics.tevPrepareQuantTable(qualityY, qualityCo, qualityCg)
-
     let t1 = sys.nanoTime()
     while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && trueFrameCount < totalFrames) {
 
@@ -657,14 +655,14 @@ try {
                         if (isInterlaced) {
                             // For interlaced: decode current frame into currentFieldAddr
                             // For display: use prevFieldAddr as current, currentFieldAddr as next
-                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, trueFrameCount, debugMotionVectors, version, enableDeblocking)
+                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking)
                             graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
 
                             // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
                             rotateFieldBuffers()
                         } else {
                             // Progressive or first frame: normal decoding without temporal prediction
-                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, trueFrameCount, debugMotionVectors, version, enableDeblocking)
+                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking)
                         }
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
