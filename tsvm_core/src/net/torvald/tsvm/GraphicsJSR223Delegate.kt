@@ -1325,18 +1325,48 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      */
     private fun bulkPeekRGB(startAddr: Long, numPixels: Int, rgbAddrIncVec: Int, destBuffer: ByteArray) {
         val totalBytes = numPixels * 3
+        
+        // Bounds check to prevent buffer overflow
+        if (totalBytes > destBuffer.size) {
+            throw IllegalArgumentException("Required bytes ($totalBytes) exceeds buffer size (${destBuffer.size})")
+        }
+        
+        if (totalBytes <= 0) {
+            return // Nothing to read
+        }
+        
         val (memspace, offset) = vm.translateAddr(startAddr)
         
         if (memspace is UnsafePtr) {
+            // Check bounds for UnsafePtr
+            val endAddr = if (rgbAddrIncVec == 1) offset + totalBytes else offset
+            if (endAddr < 0 || endAddr >= memspace.size) {
+                // Fallback to individual peeks with bounds checking
+                for (i in 0 until totalBytes) {
+                    val addr = offset + i * rgbAddrIncVec
+                    destBuffer[i] = if (addr >= 0 && addr < memspace.size) {
+                        memspace.get(addr)
+                    } else {
+                        0
+                    }
+                }
+                return
+            }
+            
             // Direct memory access for user memory
             if (rgbAddrIncVec == 1) {
                 // Forward direction - single bulk copy
                 UnsafeHelper.memcpyRaw(null, memspace.ptr + offset, 
                     destBuffer, UnsafeHelper.getArrayOffset(destBuffer), totalBytes.toLong())
             } else {
-                // Backward direction - reverse copy
+                // Backward direction - reverse copy with bounds checking
                 for (i in 0 until totalBytes) {
-                    destBuffer[i] = memspace.get(offset - i)
+                    val addr = offset - i
+                    destBuffer[i] = if (addr >= 0 && addr < memspace.size) {
+                        memspace.get(addr)
+                    } else {
+                        0
+                    }
                 }
             }
         } else if (memspace is PeriBase) {
@@ -1346,7 +1376,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         } else {
             // Invalid memory - fill with zeros
-            destBuffer.fill(0)
+            for (i in 0 until kotlin.math.min(totalBytes, destBuffer.size)) {
+                destBuffer[i] = 0
+            }
         }
     }
 
@@ -1734,7 +1766,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
     
     /**
-     * YADIF (Yet Another Deinterlacing Filter) implementation
+     * YADIF (Yet Another Deinterlacing Filter) implementation - Optimized
      * Converts interlaced field to progressive frame with temporal/spatial interpolation
      */
     fun yadifDeinterlace(fieldRGBAddr: Long, outputRGBAddr: Long, width: Int, height: Int, 
@@ -1742,110 +1774,170 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         fieldIncVec: Int, outputIncVec: Int) {
 
         val fieldHeight = height / 2
+        val rowBytes = width * 3
+        val maxChunkRows = kotlin.math.min(256, fieldHeight) // Limit chunk rows to prevent huge buffers
+        val maxChunkPixels = maxChunkRows * width
+        val maxChunkBytes = maxChunkPixels * 3
         
-        for (y in 0 until fieldHeight) {
-            for (x in 0 until width) {
-                // fieldRGBAddr now contains sequential field data from extractFieldFromProgressive
-                val fieldOffset = (y * width + x) * 3
-                val outputOffset = ((y * 2 + fieldParity) * width + x) * 3
+        // Pre-allocate buffers for bulk operations with proper sizing
+        val fieldBuffer = ByteArray(maxChunkBytes)
+        val prevBuffer = ByteArray(maxChunkBytes)
+        val nextBuffer = ByteArray(maxChunkBytes)
+        val outputBuffer = ByteArray(maxChunkBytes)
+        
+        // Process field data in chunks for better cache efficiency
+        for (yChunk in 0 until fieldHeight step maxChunkRows) {
+            val chunkHeight = kotlin.math.min(maxChunkRows, fieldHeight - yChunk)
+            val totalPixelsInChunk = chunkHeight * width
+            val totalBytesInChunk = totalPixelsInChunk * 3
+            
+            // Safety check to prevent buffer overflow
+            if (totalBytesInChunk > maxChunkBytes) {
+                throw IllegalStateException("Chunk size ($totalBytesInChunk) exceeds buffer size ($maxChunkBytes)")
+            }
+            
+            // Bulk read current field data
+            val fieldStartAddr = fieldRGBAddr + (yChunk * rowBytes) * fieldIncVec
+            bulkPeekRGB(fieldStartAddr, totalPixelsInChunk, fieldIncVec, fieldBuffer)
+            
+            // Bulk read temporal data if available
+            var hasPrevNext = false
+            if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
+                val prevStartAddr = prevFieldAddr + (yChunk * rowBytes) * fieldIncVec
+                val nextStartAddr = nextFieldAddr + (yChunk * rowBytes) * fieldIncVec
+                bulkPeekRGB(prevStartAddr, totalPixelsInChunk, fieldIncVec, prevBuffer)
+                bulkPeekRGB(nextStartAddr, totalPixelsInChunk, fieldIncVec, nextBuffer)
+                hasPrevNext = true
+            }
+            
+            // Process each row in the chunk
+            for (y in 0 until chunkHeight) {
+                val globalY = yChunk + y
+                val rowStartIdx = y * width * 3
                 
-                // Copy current field lines directly (no interpolation needed) with loop unrolling
-                vm.poke(outputRGBAddr + (outputOffset + 0) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 0) * fieldIncVec)!!)
-                vm.poke(outputRGBAddr + (outputOffset + 1) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 1) * fieldIncVec)!!)
-                vm.poke(outputRGBAddr + (outputOffset + 2) * outputIncVec, vm.peek(fieldRGBAddr + (fieldOffset + 2) * fieldIncVec)!!)
-
-                // Interpolate missing lines using Yadif algorithm
-                // Even field (0,2,4...) interpolates odd lines (1,3,5...)
-                // Odd field (1,3,5...) interpolates even lines (2,4,6...) - skip line 0!
-                if (y > 0 && y < fieldHeight - 1) {
-                    // Even field: interpolate odd progressive lines (1,3,5...)
-                    // Odd field: interpolate even progressive lines (2,4,6...)
-                    val interpLine = y * 2 + (1 - fieldParity)
-
-                    // Skip interpolation if the line would be out of bounds
-                    if (interpLine < height) {
-                        val interpOutputOffset = (interpLine * width + x) * 3
+                // Copy current field line directly (bulk operation)
+                val outputOffset = ((globalY * 2 + fieldParity) * width) * 3
+                val outputAddr = outputRGBAddr + outputOffset * outputIncVec
+                
+                if (outputIncVec == 1) {
+                    // Direct bulk copy for forward addressing
+                    val (outputMemspace, outputOffset2) = vm.translateAddr(outputAddr)
+                    if (outputMemspace is UnsafePtr) {
+                        UnsafeHelper.memcpyRaw(
+                            fieldBuffer, UnsafeHelper.getArrayOffset(fieldBuffer) + rowStartIdx,
+                            null, outputMemspace.ptr + outputOffset2, rowBytes.toLong())
+                    } else {
+                        // Fallback to individual pokes
+                        for (i in 0 until rowBytes) {
+                            vm.poke(outputAddr + i, fieldBuffer[rowStartIdx + i])
+                        }
+                    }
+                } else {
+                    // Individual pokes for reverse addressing
+                    for (i in 0 until rowBytes) {
+                        vm.poke(outputAddr + i * outputIncVec, fieldBuffer[rowStartIdx + i])
+                    }
+                }
+                
+                // Interpolate missing lines using vectorized YADIF
+                if (globalY > 0 && globalY < fieldHeight - 1) {
+                    val interpLine = globalY * 2 + (1 - fieldParity)
                     
-                        for (c in 0..2) {
-                            // Get spatial neighbors from sequential field data
-                            val fieldStride = width * 3
-                            val aboveOffset = fieldOffset - fieldStride + c
-                            val belowOffset = fieldOffset + fieldStride + c
-                            val currentOffset = fieldOffset + c
-                            
-                            // Ensure we don't read out of bounds
-                            val above = if (y > 0) {
-                                vm.peek(fieldRGBAddr + aboveOffset * fieldIncVec)!!.toInt() and 0xFF
+                    if (interpLine < height) {
+                        processYadifInterpolation(
+                            fieldBuffer, prevBuffer, nextBuffer, outputBuffer,
+                            y, width, rowStartIdx, hasPrevNext, globalY, fieldHeight)
+                        
+                        // Write interpolated line
+                        val interpOutputOffset = (interpLine * width) * 3
+                        val interpOutputAddr = outputRGBAddr + interpOutputOffset * outputIncVec
+                        
+                        if (outputIncVec == 1) {
+                            val (interpMemspace, interpOffset2) = vm.translateAddr(interpOutputAddr)
+                            if (interpMemspace is UnsafePtr) {
+                                UnsafeHelper.memcpyRaw(
+                                    outputBuffer, UnsafeHelper.getArrayOffset(outputBuffer),
+                                    null, interpMemspace.ptr + interpOffset2, rowBytes.toLong())
                             } else {
-                                // Use current pixel for top edge
-                                vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
-                            }
-                            
-                            val below = if (y < fieldHeight - 1) {
-                                vm.peek(fieldRGBAddr + belowOffset * fieldIncVec)!!.toInt() and 0xFF
-                            } else {
-                                // Use current pixel for bottom edge  
-                                vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
-                            }
-                            
-                            val current = vm.peek(fieldRGBAddr + currentOffset * fieldIncVec)!!.toInt() and 0xFF
-
-                            // Spatial interpolation
-                            val spatialInterp = (above + below) / 2
-
-                            // Temporal prediction using previous and next fields
-                            var temporalPred = spatialInterp
-                            if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
-                                // Get temporal neighbors from same spatial position
-                                val tempFieldOffset = (y * width + x) * 3 + c  // Compact field addressing
-                                val prevPixel = (vm.peek(prevFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
-                                val nextPixel = (vm.peek(nextFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
-
-                                // Simple temporal interpolation
-                                val tempInterp = (prevPixel + nextPixel) / 2
-
-                                // Yadif edge-directed temporal-spatial decision
-                                val spatialDiff = kotlin.math.abs(above - below)
-                                val temporalDiff = kotlin.math.abs(prevPixel - nextPixel)
-
-                                // Choose between spatial and temporal prediction based on local characteristics
-                                temporalPred = when {
-                                    spatialDiff < 32 && temporalDiff < 32 -> {
-                                        // Low spatial and temporal variation: blend all
-                                        (spatialInterp + tempInterp + current) / 3
-                                    }
-                                    spatialDiff < temporalDiff -> {
-                                        // Prefer spatial interpolation
-                                        (spatialInterp * 3 + tempInterp) / 4
-                                    }
-                                    else -> {
-                                        // Prefer temporal interpolation
-                                        (tempInterp * 3 + spatialInterp) / 4
-                                    }
+                                for (i in 0 until rowBytes) {
+                                    vm.poke(interpOutputAddr + i, outputBuffer[i])
                                 }
                             }
-
-                            // Final edge-directed filtering
-                            val finalValue = if (kotlin.math.abs(above - below) < 16) {
-                                (current + temporalPred) / 2  // Very low edge activity: blend with current
-                            } else {
-                                temporalPred  // Higher edge activity: use prediction
+                        } else {
+                            for (i in 0 until rowBytes) {
+                                vm.poke(interpOutputAddr + i * outputIncVec, outputBuffer[i])
                             }
-
-                            vm.poke(outputRGBAddr + (interpOutputOffset + c) * outputIncVec,
-                                   finalValue.coerceIn(0, 255).toByte())
                         }
                     }
                 }
             }
         }
 
-        // cover up top two and bottom two lines with current border colour
+        // Cover up top and bottom lines with border color (optimized)
         val destT = 0
         val destB = (height - 2) * width * 3
         val col = (vm.peek(-1299457)!!.toUint() shl 16) or (vm.peek(-1299458)!!.toUint() shl 8) or vm.peek(-1299459)!!.toUint()
         vm.memsetI24(outputRGBAddr.toInt() + destT, col, width * 6)
         vm.memsetI24(outputRGBAddr.toInt() + destB, col, width * 6)
+    }
+
+    /**
+     * Process YADIF interpolation for a single row using vectorized operations
+     */
+    private fun processYadifInterpolation(
+        fieldBuffer: ByteArray, prevBuffer: ByteArray, nextBuffer: ByteArray, outputBuffer: ByteArray,
+        y: Int, width: Int, rowStartIdx: Int, hasPrevNext: Boolean, globalY: Int, fieldHeight: Int) {
+        
+        val rowBytes = width * 3
+        val aboveRowIdx = if (globalY > 0) rowStartIdx - rowBytes else rowStartIdx
+        val belowRowIdx = if (globalY < fieldHeight - 1) rowStartIdx + rowBytes else rowStartIdx
+        
+        // Process RGB components in parallel
+        for (x in 0 until width) {
+            val pixelIdx = x * 3
+            
+            for (c in 0..2) {
+                val idx = pixelIdx + c
+                
+                // Get spatial neighbors
+                val above = fieldBuffer[aboveRowIdx + idx].toUint()
+                val below = fieldBuffer[belowRowIdx + idx].toUint()
+                val current = fieldBuffer[rowStartIdx + idx].toUint()
+                
+                // Spatial interpolation
+                val spatialInterp = (above + below) / 2
+                
+                // Temporal prediction
+                var temporalPred = spatialInterp
+                if (hasPrevNext) {
+                    val prevPixel = prevBuffer[rowStartIdx + idx].toUint()
+                    val nextPixel = nextBuffer[rowStartIdx + idx].toUint()
+                    val tempInterp = (prevPixel + nextPixel) / 2
+                    
+                    // YADIF edge-directed decision (optimized)
+                    val spatialDiff = kotlin.math.abs(above.toInt() - below.toInt())
+                    val temporalDiff = kotlin.math.abs(prevPixel.toInt() - nextPixel.toInt())
+                    
+                    temporalPred = when {
+                        spatialDiff < 32 && temporalDiff < 32 -> 
+                            (spatialInterp + tempInterp + current) / 3
+                        spatialDiff < temporalDiff -> 
+                            (spatialInterp * 3 + tempInterp) / 4
+                        else -> 
+                            (tempInterp * 3 + spatialInterp) / 4
+                    }
+                }
+                
+                // Final edge-directed filtering
+                val finalValue = if (kotlin.math.abs(above.toInt() - below.toInt()) < 16) {
+                    (current + temporalPred) / 2
+                } else {
+                    temporalPred
+                }
+                
+                outputBuffer[idx] = finalValue.coerceIn(0, 255).toByte()
+            }
+        }
     }
     
     /**
