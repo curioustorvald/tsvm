@@ -740,16 +740,13 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 
 ## DCT Quantization and Rate Control
 TEV uses 5 quality levels (0=lowest, 4=highest) with progressive quantization
-tables optimized for perceptual quality. DC coefficients use fixed quantizer
-of 8, while AC coefficients are quantized according to quality tables.
+tables optimized for perceptual quality. DC coefficients are encoded losslessly,
+while AC coefficients are quantized according to quality tables.
 
 ### Rate Control Factor
-Each video frame includes a Rate Control Factor that modifies quantization:
-- Quality mode: Factor = 1.0 (fixed quantization based on quality level)
-- Bitrate mode: Factor varies per frame based on content complexity and target bitrate
-- Encoder: quantized_coeff = dct_coeff / (base_quant * rate_factor)  
-- Decoder: dequantized_coeff = quantized_coeff * (base_quant / rate_factor)
-- Optimization: When factor ≈ 1.0 (0.999-1.001), decoder uses original tables
+Each block includes a Rate Control Factor that modifies quality level for that specific block.
+This feature allows more efficient coding by allows higher quality for complex blocks and lower quality for
+flat blocks.
 
 ## Motion Compensation
 - Search range: ±8 pixels
@@ -792,6 +789,8 @@ The format is designed to be compatible with SubRip and SAMI (without markups).
           0x81 = upload to high font rom (arguments: uint16 payload length, var bytes)
             note: changing the font rom will change the appearance of the every subtitle currently being displayed
     *    arguments separated AND terminated by 0x00
+            text argument may be terminated by 0x00 BEFORE the entire arguments being terminated by 0x00,
+            leaving extra 0x00 on the byte stream. A decoder must be able to handle the extra zeros.
 
 --------------------------------------------------------------------------------
 
