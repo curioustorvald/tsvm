@@ -427,7 +427,79 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
     }
 }
 
-// Calculate block complexity based on spatial activity
+// Calculate spatial activity for any channel (16x16 or 8x8)
+static float calculate_spatial_activity(const float *block, int block_size) {
+    float activity = 0.0f;
+    
+    // Sum of absolute differences with neighbors (spatial activity)
+    for (int y = 0; y < block_size; y++) {
+        for (int x = 0; x < block_size; x++) {
+            float pixel = block[y * block_size + x];
+            
+            // Compare with right neighbor
+            if (x < block_size - 1) {
+                activity += fabsf(pixel - block[y * block_size + (x + 1)]);
+            }
+            
+            // Compare with bottom neighbor
+            if (y < block_size - 1) {
+                activity += fabsf(pixel - block[(y + 1) * block_size + x]);
+            }
+        }
+    }
+    
+    return activity;
+}
+
+// Calculate variance for any channel
+static float calculate_variance(const float *block, int block_size) {
+    int total_pixels = block_size * block_size;
+    
+    // Calculate mean
+    float mean = 0.0f;
+    for (int i = 0; i < total_pixels; i++) {
+        mean += block[i];
+    }
+    mean /= total_pixels;
+    
+    // Calculate variance
+    float variance = 0.0f;
+    for (int i = 0; i < total_pixels; i++) {
+        float diff = block[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= total_pixels;
+    
+    return variance;
+}
+
+// Enhanced block complexity calculation including chroma information
+static float calculate_block_complexity_enhanced(const float *y_block, const float *co_block, const float *cg_block) {
+    // Luma complexity (16x16)
+    float luma_activity = calculate_spatial_activity(y_block, BLOCK_SIZE);
+    float luma_variance = calculate_variance(y_block, BLOCK_SIZE);
+    float luma_complexity = luma_activity + sqrtf(luma_variance) * 10.0f;
+    
+    // Chroma complexity (8x8 blocks, but weighted appropriately)
+    float co_activity = calculate_spatial_activity(co_block, HALF_BLOCK_SIZE);
+    float co_variance = calculate_variance(co_block, HALF_BLOCK_SIZE);
+    float co_complexity = co_activity + sqrtf(co_variance) * 10.0f;
+    
+    float cg_activity = calculate_spatial_activity(cg_block, HALF_BLOCK_SIZE);
+    float cg_variance = calculate_variance(cg_block, HALF_BLOCK_SIZE);
+    float cg_complexity = cg_activity + sqrtf(cg_variance) * 10.0f;
+    
+    // Combine complexities with appropriate weighting
+    // Luma gets primary weight, chroma gets secondary weight but significant enough to matter
+    // Scale chroma by 4 to account for 8x8 vs 16x16 size difference (64 vs 256 pixels)
+    float total_complexity = luma_complexity + 
+                           (co_complexity * 4.0f * 0.3f) + 
+                           (cg_complexity * 4.0f * 0.3f);
+    
+    return total_complexity;
+}
+
+// Legacy function for compatibility - calls enhanced version
 static float calculate_block_complexity(const float *y_block) {
     float complexity = 0.0f;
     
@@ -475,14 +547,15 @@ static float complexity_to_rate_factor(float complexity) {
         return 0.7f; // Reduce detail for flat blocks (saves bits, minimal perceptual loss)
     }
     
-    // Parameters derived from statistical analysis of 10 video samples:
-    // - Most content has median complexity around 500-3000
-    // - Heavy concentration at low complexity, wide spread at high complexity
+    // Parameters recalibrated for chroma-aware complexity calculation:
+    // - Median complexity now ~1400-3700 (increased due to chroma contribution)
+    // - High complexity threshold ~10000-15000 (91st percentile)
+    // - Maximum values up to ~22800 (vs ~17000 in luma-only version)
     
-    const float median_complexity = 2400.0f;  // Target for rate_factor = 1.0
-    const float high_complexity = 8500.0f;    // ~91st percentile threshold
+    const float median_complexity = 4447.0f;  // Target for rate_factor ≈ 1.0. e^8.4
+    const float high_complexity = 12088.0f;   // ~91st percentile threshold. e^9.4
     
-    // Logarithmic preprocessing to handle wide dynamic range (0 to 17000+)
+    // Logarithmic preprocessing to handle wide dynamic range (0 to 23000+)
     float log_complexity = logf(complexity + 1.0f);
     float log_median = logf(median_complexity + 1.0f);
     float log_high = logf(high_complexity + 1.0f);
@@ -495,7 +568,9 @@ static float complexity_to_rate_factor(float complexity) {
     float rate_factor = 0.7f + 0.9f * sigmoid; // Range: 0.7 to 1.6
     
     // Clamp to prevent extreme coefficient amplification/reduction
-    return FCLAMP(rate_factor, 0.6f, 1.8f);
+    return FCLAMP(rate_factor, 0.7f, 1.6f);
+
+    // See also: https://www.desmos.com/calculator/awwjztvv3o
 }
 
 // Add complexity value to statistics collection
@@ -862,7 +937,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             block->mv_x = 0;
             block->mv_y = 0;
             // Even skip blocks benefit from complexity analysis for consistency
-            float block_complexity = calculate_block_complexity(enc->y_workspace);
+            float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
             add_complexity_value(enc, block_complexity);
             block->rate_control_factor = complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
@@ -877,7 +952,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             // Good motion prediction - use motion-only mode
             block->mode = TEV_MODE_MOTION;
             // Analyze complexity for motion blocks too
-            float block_complexity = calculate_block_complexity(enc->y_workspace);
+            float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
             add_complexity_value(enc, block_complexity);
             block->rate_control_factor = complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
@@ -922,7 +997,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     }
 
     // Calculate block complexity BEFORE DCT transform for adaptive rate control
-    float block_complexity = calculate_block_complexity(enc->y_workspace);
+    // Use enhanced complexity calculation that includes chroma information
+    float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
     add_complexity_value(enc, block_complexity);
     block->rate_control_factor = complexity_to_rate_factor(block_complexity);
 
@@ -2439,7 +2515,7 @@ int main(int argc, char *argv[]) {
     gettimeofday(&enc->start_time, NULL);
 
     printf("Encoding video with YCoCg-R 4:2:0 format...\n");
-    if (enc->output_fps > 0) {
+    if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
     if (enc->bitrate_mode > 0) {
