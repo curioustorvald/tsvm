@@ -2242,6 +2242,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    private lateinit var quantTableY: FloatArray
+    private lateinit var quantTableCo: FloatArray
+    private lateinit var quantTableCg: FloatArray
+    private lateinit var quantTableB: FloatArray
+
+    fun tevPrepareQuantTable(qualityY: Int, qualityCo: Int, qualityCg: Int) {
+        val quantYmult = jpeg_quality_to_mult(qualityY)
+        val quantCOmult = jpeg_quality_to_mult(qualityCo)
+        val quantCGmult = jpeg_quality_to_mult(qualityCg)
+        val quantBmult = quantCGmult
+
+        quantTableY = QUANT_TABLE_Y.map { (it * quantYmult).coerceIn(1f, 255f) }.toFloatArray()
+        quantTableCo = QUANT_TABLE_C.map { (it * quantCOmult).coerceIn(1f, 255f) }.toFloatArray()
+        quantTableCg = QUANT_TABLE_C.map { (it * quantCGmult).coerceIn(1f, 255f) }.toFloatArray()
+        quantTableB = QUANT_TABLE_C.map { (it * quantBmult).coerceIn(1f, 255f) }.toFloatArray()
+    }
+
     /**
      * Hardware-accelerated TEV frame decoder for YCoCg-R 4:2:0 format
      * Decodes compressed TEV block data directly to framebuffer
@@ -2255,7 +2272,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param frameCounter Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qualityIndices: IntArray, frameCounter: Int,
+                  width: Int, height: Int, frameCounter: Int,
                   debugMotionVectors: Boolean = false, tevVersion: Int = 2,
                   enableDeblocking: Boolean = true) {
 
@@ -2265,23 +2282,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val blocksX = (width + 15) / 16  // 16x16 blocks now
         val blocksY = (height + 15) / 16
 
-        val quantYmult = jpeg_quality_to_mult(qualityIndices[0])
-        val quantCOmult = jpeg_quality_to_mult(qualityIndices[1])
-        val quantCGmult = jpeg_quality_to_mult(qualityIndices[2])
-        val quantBmult = quantCGmult
-
-        // Apply rate control factor to quantization tables (if not ~1.0, skip optimization)
-        val quantTableY = QUANT_TABLE_Y.map { (it * quantYmult).coerceIn(1f, 255f) }.toFloatArray()
-        val quantTableCo = QUANT_TABLE_C.map { (it * quantCOmult).coerceIn(1f, 255f) }.toFloatArray()
-        val quantTableCg = QUANT_TABLE_C.map { (it * quantCGmult).coerceIn(1f, 255f) }.toFloatArray()
-        val quantTableB = QUANT_TABLE_C.map { it * quantBmult.toFloat() }.toFloatArray()
-
         var readPtr = blockDataPtr
 
         // decide increment "direction" by the sign of the pointer  
         val prevAddrIncVec = if (prevRGBAddr >= 0) 1 else -1
         val thisAddrIncVec = if (currentRGBAddr >= 0) 1 else -1
-
 
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX) {

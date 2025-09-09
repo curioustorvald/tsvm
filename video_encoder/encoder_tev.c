@@ -2589,26 +2589,11 @@ int main(int argc, char *argv[]) {
     
     printf("\nEncoding complete!\n");
     printf("  Frames encoded: %d\n", frame_count);
-    printf("  - sync packets: %d\n", sync_packet_count);
     printf("  Framerate: %d\n", enc->output_fps);
     printf("  Output size: %zu bytes\n", enc->total_output_bytes);
-    
-    // Calculate achieved bitrate
-    double achieved_bitrate_kbps = (enc->total_output_bytes * 8.0) / 1000.0 / total_time;
-    printf("  Achieved bitrate: %.1f kbps", achieved_bitrate_kbps);
-    if (enc->bitrate_mode > 0) {
-        printf(" (target: %d kbps, %.1f%%)", enc->target_bitrate_kbps, 
-               (achieved_bitrate_kbps / enc->target_bitrate_kbps) * 100.0);
-    }
-    printf("\n");
-    
     printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
     printf("  Block statistics: INTRA=%d, INTER=%d, MOTION=%d, SKIP=%d\n",
            enc->blocks_intra, enc->blocks_inter, enc->blocks_motion, enc->blocks_skip);
-    
-    if (enc->bitrate_mode > 0) {
-        printf("  Per-block complexity-based rate control: enabled\n");
-    }
     
     // Print complexity statistics if enabled
     calculate_complexity_stats(enc);
