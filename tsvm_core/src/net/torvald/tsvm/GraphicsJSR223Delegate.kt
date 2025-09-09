@@ -7,8 +7,10 @@ import com.badlogic.gdx.math.MathUtils.ceil
 import com.badlogic.gdx.math.MathUtils.floor
 import com.badlogic.gdx.math.MathUtils.round
 import net.torvald.UnsafeHelper
+import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
+import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.fmod
 import kotlin.math.*
 
@@ -1319,6 +1321,36 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
+     * Bulk peek RGB data from VM memory, handling both user and peripheral memory
+     */
+    private fun bulkPeekRGB(startAddr: Long, numPixels: Int, rgbAddrIncVec: Int, destBuffer: ByteArray) {
+        val totalBytes = numPixels * 3
+        val (memspace, offset) = vm.translateAddr(startAddr)
+        
+        if (memspace is UnsafePtr) {
+            // Direct memory access for user memory
+            if (rgbAddrIncVec == 1) {
+                // Forward direction - single bulk copy
+                UnsafeHelper.memcpyRaw(null, memspace.ptr + offset, 
+                    destBuffer, UnsafeHelper.getArrayOffset(destBuffer), totalBytes.toLong())
+            } else {
+                // Backward direction - reverse copy
+                for (i in 0 until totalBytes) {
+                    destBuffer[i] = memspace.get(offset - i)
+                }
+            }
+        } else if (memspace is PeriBase) {
+            // Peripheral memory - still need individual peeks
+            for (i in 0 until totalBytes) {
+                destBuffer[i] = memspace.peek(offset + i * rgbAddrIncVec) ?: 0
+            }
+        } else {
+            // Invalid memory - fill with zeros
+            destBuffer.fill(0)
+        }
+    }
+
+    /**
      * Upload RGB frame buffer to graphics framebuffer with dithering and optional resize
      * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
      * @param width Frame width
@@ -1362,8 +1394,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val videoX = nativeX * scaleX
                     val videoY = nativeY * scaleY
                     
-                    // Sample RGB values using bilinear interpolation
-                    val rgb = sampleBilinear(rgbAddr, width, height, videoX, videoY, rgbAddrIncVec)
+                    // Sample RGB values using bilinear interpolation (optimized version)
+                    val rgb = sampleBilinearOptimized(rgbAddr, width, height, videoX, videoY, rgbAddrIncVec)
                     val r = rgb[0]
                     val g = rgb[1]
                     val b = rgb[2]
@@ -1389,23 +1421,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 pixelsProcessed += pixelsInChunk
             }
         } else {
-            // Original centering logic
+            // Optimized centering logic with bulk memory operations
             val offsetX = (nativeWidth - width) / 2
             val offsetY = (nativeHeight - height) / 2
 
-            // Process video pixels in 8KB chunks to balance memory usage and performance
             val totalVideoPixels = width * height
-            val chunkSize = 65536
-            val rgChunk = ByteArray(chunkSize)
-            val baChunk = ByteArray(chunkSize)
-            val positionChunk = IntArray(chunkSize) // Store framebuffer positions
+            val chunkSize = 32768 // Larger chunks for bulk processing
             
             var pixelsProcessed = 0
             
+            // Pre-allocate RGB buffer for bulk reads
+            val rgbBulkBuffer = ByteArray(chunkSize * 3)
+            val rgChunk = ByteArray(chunkSize)
+            val baChunk = ByteArray(chunkSize)
+            
             while (pixelsProcessed < totalVideoPixels) {
                 val pixelsInChunk = kotlin.math.min(chunkSize, totalVideoPixels - pixelsProcessed)
+                val rgbStartAddr = rgbAddr + (pixelsProcessed.toLong() * 3) * rgbAddrIncVec
                 
-                // Batch process chunk of pixels
+                // Bulk read RGB data for this chunk
+                bulkPeekRGB(rgbStartAddr, pixelsInChunk, rgbAddrIncVec, rgbBulkBuffer)
+                
+                // Process pixels using bulk-read data
                 for (i in 0 until pixelsInChunk) {
                     val pixelIndex = pixelsProcessed + i
                     val videoY = pixelIndex / width
@@ -1414,38 +1451,36 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     // Calculate position in native framebuffer (centered)
                     val nativeX = videoX + offsetX
                     val nativeY = videoY + offsetY
-                    val nativePos = nativeY * nativeWidth + nativeX
-                    positionChunk[i] = nativePos
                     
-                    val rgbOffset = (pixelIndex.toLong() * 3) * rgbAddrIncVec
-
-                    // Read RGB values (3 peek operations per pixel - still the bottleneck)
-                    val r = vm.peek(rgbAddr + rgbOffset)!!.toUint()
-                    val g = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec)!!.toUint()
-                    val b = vm.peek(rgbAddr + rgbOffset + rgbAddrIncVec * 2)!!.toUint()
+                    // Skip pixels outside framebuffer bounds
+                    if (nativeX < 0 || nativeX >= nativeWidth || nativeY < 0 || nativeY >= nativeHeight) {
+                        continue
+                    }
+                    
+                    // Read RGB values from bulk buffer
+                    val rgbIndex = i * 3
+                    val r = rgbBulkBuffer[rgbIndex].toUint()
+                    val g = rgbBulkBuffer[rgbIndex + 1].toUint()
+                    val b = rgbBulkBuffer[rgbIndex + 2].toUint()
 
                     // Apply Bayer dithering and convert to 4-bit
                     val r4 = ditherValue(r, videoX, videoY, frameCounter)
                     val g4 = ditherValue(g, videoX, videoY, frameCounter)
                     val b4 = ditherValue(b, videoX, videoY, frameCounter)
 
-                    // Pack and store in chunk buffers
-                    rgChunk[i] = ((r4 shl 4) or g4).toByte()
-                    baChunk[i] = ((b4 shl 4) or 15).toByte()
-                }
-                
-                // Write pixels to their calculated positions in framebuffer
-                for (i in 0 until pixelsInChunk) {
-                    val pos = positionChunk[i].toLong()
-                    // Bounds check to ensure we don't write outside framebuffer
-                    if (pos in 0 until totalNativePixels) {
-                        UnsafeHelper.memcpyRaw(
-                            rgChunk, UnsafeHelper.getArrayOffset(rgChunk) + i,
-                            null, gpu.framebuffer.ptr + pos, 1L)
-                        UnsafeHelper.memcpyRaw(
-                            baChunk, UnsafeHelper.getArrayOffset(baChunk) + i,
-                            null, gpu.framebuffer2!!.ptr + pos, 1L)
-                    }
+                    // Pack RGB values and store in chunk arrays for batch processing
+                    val validIndex = i
+                    rgChunk[validIndex] = ((r4 shl 4) or g4).toByte()
+                    baChunk[validIndex] = ((b4 shl 4) or 15).toByte()
+                    
+                    // Write directly to framebuffer position
+                    val nativePos = nativeY * nativeWidth + nativeX
+                    UnsafeHelper.memcpyRaw(
+                        rgChunk, UnsafeHelper.getArrayOffset(rgChunk) + validIndex,
+                        null, gpu.framebuffer.ptr + nativePos, 1L)
+                    UnsafeHelper.memcpyRaw(
+                        baChunk, UnsafeHelper.getArrayOffset(baChunk) + validIndex,
+                        null, gpu.framebuffer2!!.ptr + nativePos, 1L)
                 }
 
                 pixelsProcessed += pixelsInChunk
@@ -1517,6 +1552,59 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
+    /**
+     * Optimized bilinear sampling with bulk memory access and caching
+     */
+    private fun sampleBilinearOptimized(rgbAddr: Long, width: Int, height: Int, x: Float, y: Float, rgbAddrIncVec: Int): IntArray {
+        // Clamp coordinates to valid range
+        val clampedX = x.coerceIn(0f, (width - 1).toFloat())
+        val clampedY = y.coerceIn(0f, (height - 1).toFloat())
+        
+        // Get integer coordinates and fractional parts
+        val x0 = clampedX.toInt()
+        val y0 = clampedY.toInt()
+        val x1 = kotlin.math.min(x0 + 1, width - 1)
+        val y1 = kotlin.math.min(y0 + 1, height - 1)
+        
+        val fx = clampedX - x0
+        val fy = clampedY - y0
+        
+        // Use bulk read for the 4 corner pixels (2x2 block)
+        val pixelBuffer = ByteArray(12) // 4 pixels * 3 bytes
+        val (memspace, baseOffset) = vm.translateAddr(rgbAddr)
+        
+        if (memspace is UnsafePtr && rgbAddrIncVec == 1) {
+            // Optimized path for user memory with forward addressing
+            val y0RowAddr = baseOffset + (y0 * width + x0) * 3
+            val y1RowAddr = baseOffset + (y1 * width + x0) * 3
+            
+            // Read row 0 (top-left, top-right)
+            UnsafeHelper.memcpyRaw(null, memspace.ptr + y0RowAddr, 
+                pixelBuffer, UnsafeHelper.getArrayOffset(pixelBuffer), 6L) // 2 pixels * 3 bytes
+            
+            // Read row 1 (bottom-left, bottom-right)  
+            UnsafeHelper.memcpyRaw(null, memspace.ptr + y1RowAddr,
+                pixelBuffer, UnsafeHelper.getArrayOffset(pixelBuffer) + 6, 6L)
+                
+            // Extract corner values from bulk-read data
+            val c00 = intArrayOf(pixelBuffer[0].toUint(), pixelBuffer[1].toUint(), pixelBuffer[2].toUint())
+            val c10 = intArrayOf(pixelBuffer[3].toUint(), pixelBuffer[4].toUint(), pixelBuffer[5].toUint())  
+            val c01 = intArrayOf(pixelBuffer[6].toUint(), pixelBuffer[7].toUint(), pixelBuffer[8].toUint())
+            val c11 = intArrayOf(pixelBuffer[9].toUint(), pixelBuffer[10].toUint(), pixelBuffer[11].toUint())
+            
+            // Fast integer-based bilinear interpolation
+            val result = IntArray(3)
+            for (i in 0..2) {
+                val top = c00[i] + ((c10[i] - c00[i]) * fx).toInt()
+                val bottom = c01[i] + ((c11[i] - c01[i]) * fx).toInt()
+                result[i] = (top + ((bottom - top) * fy).toInt()).coerceIn(0, 255)
+            }
+            return result
+        } else {
+            // Fallback to original individual peeks for peripheral memory or reverse addressing
+            return sampleBilinear(rgbAddr, width, height, x, y, rgbAddrIncVec)
+        }
+    }
 
     val dctBasis8 = Array(8) { u ->
         FloatArray(8) { x ->
