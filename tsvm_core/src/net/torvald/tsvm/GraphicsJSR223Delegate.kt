@@ -2423,6 +2423,59 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
+     * Bulk write RGB block data to VM memory  
+     */
+    private fun bulkWriteRGB(destAddr: Long, rgbData: IntArray, width: Int, height: Int,
+                           startX: Int, startY: Int, blockWidth: Int, blockHeight: Int, addrIncVec: Int) {
+        val (memspace, baseOffset) = vm.translateAddr(destAddr)
+        
+        if (memspace is UnsafePtr && addrIncVec == 1) {
+            // Optimized path for user memory with forward addressing
+            for (dy in 0 until blockHeight) {
+                val y = startY + dy
+                if (y >= height) break
+                
+                val rowStartX = kotlin.math.max(0, startX)
+                val rowEndX = kotlin.math.min(width, startX + blockWidth)
+                val rowPixels = rowEndX - rowStartX
+                
+                if (rowPixels > 0) {
+                    val srcRowOffset = dy * blockWidth * 3 + (rowStartX - startX) * 3
+                    val dstRowOffset = baseOffset + (y * width + rowStartX) * 3
+                    val rowBytes = rowPixels * 3
+                    
+                    // Convert IntArray to ByteArray for this row
+                    val rowBuffer = ByteArray(rowBytes)
+                    for (i in 0 until rowBytes) {
+                        rowBuffer[i] = rgbData[srcRowOffset + i].toByte()
+                    }
+                    
+                    // Bulk write the row
+                    UnsafeHelper.memcpyRaw(
+                        rowBuffer, UnsafeHelper.getArrayOffset(rowBuffer),
+                        null, memspace.ptr + dstRowOffset, rowBytes.toLong())
+                }
+            }
+        } else {
+            // Fallback to individual pokes for peripheral memory or reverse addressing
+            for (dy in 0 until blockHeight) {
+                for (dx in 0 until blockWidth) {
+                    val x = startX + dx
+                    val y = startY + dy
+                    if (x < width && y < height) {
+                        val rgbIdx = (dy * blockWidth + dx) * 3
+                        val bufferOffset = (y.toLong() * width + x) * 3
+                        
+                        vm.poke(destAddr + bufferOffset * addrIncVec, rgbData[rgbIdx].toByte())
+                        vm.poke(destAddr + (bufferOffset + 1) * addrIncVec, rgbData[rgbIdx + 1].toByte())
+                        vm.poke(destAddr + (bufferOffset + 2) * addrIncVec, rgbData[rgbIdx + 2].toByte())
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Hardware-accelerated TEV frame decoder for YCoCg-R 4:2:0 format
      * Decodes compressed TEV block data directly to framebuffer
      * 
@@ -2456,16 +2509,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val startX = bx * 16
                 val startY = by * 16
                 
-                // Read TEV block header (7 bytes)
-                val mode = vm.peek(readPtr)!!.toUint()
-                val mvX = ((vm.peek(readPtr + 1)!!.toUint()) or 
-                          ((vm.peek(readPtr + 2)!!.toUint()) shl 8)).toShort().toInt()
-                val mvY = ((vm.peek(readPtr + 3)!!.toUint()) or 
-                          ((vm.peek(readPtr + 4)!!.toUint()) shl 8)).toShort().toInt()
-                val rateControlFactor = Float.fromBits((vm.peek(readPtr + 5)!!.toUint()) or
-                        ((vm.peek(readPtr + 6)!!.toUint()) shl 8) or
-                        ((vm.peek(readPtr + 7)!!.toUint()) shl 16) or
-                        ((vm.peek(readPtr + 8)!!.toUint()) shl 24))
+                // Read TEV block header (11 bytes) with bulk operation
+                val headerBuffer = ByteArray(11)
+                val (memspace, offset) = vm.translateAddr(readPtr)
+                if (memspace is UnsafePtr) {
+                    UnsafeHelper.memcpyRaw(null, memspace.ptr + offset,
+                        headerBuffer, UnsafeHelper.getArrayOffset(headerBuffer), 11L)
+                } else {
+                    // Fallback for peripheral memory
+                    for (i in 0 until 11) {
+                        headerBuffer[i] = vm.peek(readPtr + i) ?: 0
+                    }
+                }  
+                val mode = headerBuffer[0].toUint()
+                val mvX = ((headerBuffer[1].toUint()) or ((headerBuffer[2].toUint()) shl 8)).toShort().toInt()
+                val mvY = ((headerBuffer[3].toUint()) or ((headerBuffer[4].toUint()) shl 8)).toShort().toInt()
+                val rateControlFactor = Float.fromBits((headerBuffer[5].toUint()) or
+                        ((headerBuffer[6].toUint()) shl 8) or
+                        ((headerBuffer[7].toUint()) shl 16) or
+                        ((headerBuffer[8].toUint()) shl 24))
                 readPtr += 11 // Skip CBP field
                 
                 
@@ -2484,23 +2546,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 )
                             }
                         } else {
-                            // Fallback to pixel-by-pixel for boundary blocks
+                            // Optimized fallback using row-by-row copying for boundary blocks
                             for (dy in 0 until 16) {
-                                for (dx in 0 until 16) {
-                                    val x = startX + dx
-                                    val y = startY + dy
-                                    if (x < width && y < height) {
-                                        val pixelOffset = y.toLong() * width + x
-                                        val rgbOffset = pixelOffset * 3
+                                val y = startY + dy
+                                if (y < height) {
+                                    val rowStartX = kotlin.math.max(0, startX)
+                                    val rowEndX = kotlin.math.min(width, startX + 16)
+                                    val rowPixels = rowEndX - rowStartX
+                                    
+                                    if (rowPixels > 0) {
+                                        val srcRowOffset = (y.toLong() * width + rowStartX) * 3
+                                        val dstRowOffset = srcRowOffset
+                                        val rowBytes = rowPixels * 3
                                         
-                                        // Copy RGB values from previous frame
-                                        val prevR = vm.peek(prevRGBAddr + rgbOffset*prevAddrIncVec)!!
-                                        val prevG = vm.peek(prevRGBAddr + (rgbOffset + 1)*prevAddrIncVec)!!
-                                        val prevB = vm.peek(prevRGBAddr + (rgbOffset + 2)*prevAddrIncVec)!!
-                                        
-                                        vm.poke(currentRGBAddr + rgbOffset*thisAddrIncVec, prevR)
-                                        vm.poke(currentRGBAddr + (rgbOffset + 1)*thisAddrIncVec, prevG)
-                                        vm.poke(currentRGBAddr + (rgbOffset + 2)*thisAddrIncVec, prevB)
+                                        // Use vm.memcpy for partial rows
+                                        vm.memcpy(
+                                            (prevRGBAddr + srcRowOffset*prevAddrIncVec).toInt(),
+                                            (currentRGBAddr + dstRowOffset*thisAddrIncVec).toInt(),
+                                            rowBytes
+                                        )
                                     }
                                 }
                             }
@@ -2621,22 +2685,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             tevYcocgToRGB(yBlock, coBlock, cgBlock)  // YCoCg-R format (v2)
                         }
                         
-                        // Store RGB data to frame buffer (complete replacement)
-                        for (dy in 0 until 16) {
-                            for (dx in 0 until 16) {
-                                val x = startX + dx
-                                val y = startY + dy
-                                if (x < width && y < height) {
-                                    val rgbIdx = (dy * 16 + dx) * 3
-                                    val imageOffset = y.toLong() * width + x
-                                    val bufferOffset = imageOffset * 3
-                                    
-                                    vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, rgbData[rgbIdx].toByte())
-                                    vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, rgbData[rgbIdx + 1].toByte()) 
-                                    vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, rgbData[rgbIdx + 2].toByte())
-                                }
-                            }
-                        }
+                        // Store RGB data to frame buffer with bulk write
+                        bulkWriteRGB(currentRGBAddr, rgbData, width, height, startX, startY, 16, 16, thisAddrIncVec)
                     }
                     
                     0x02 -> { // TEV_MODE_INTER - Motion compensation + residual DCT
@@ -2763,34 +2813,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         
                         // Step 5: Store final RGB data to frame buffer
-                        for (dy in 0 until 16) {
-                            for (dx in 0 until 16) {
-                                val x = startX + dx
-                                val y = startY + dy
-                                if (x < width && y < height) {
-                                    val imageOffset = y.toLong() * width + x
-                                    val bufferOffset = imageOffset * 3
-                                    
-                                    if (debugMotionVectors) {
-                                        // Debug: Color INTER blocks by motion vector magnitude
+                        if (debugMotionVectors) {
+                            // Debug mode: individual pokes for motion vector visualization
+                            for (dy in 0 until 16) {
+                                for (dx in 0 until 16) {
+                                    val x = startX + dx
+                                    val y = startY + dy
+                                    if (x < width && y < height) {
+                                        val imageOffset = y.toLong() * width + x
+                                        val bufferOffset = imageOffset * 3
+                                        
                                         val mvMagnitude = kotlin.math.sqrt((mvX * mvX + mvY * mvY).toDouble()).toInt()
                                         val intensity = (mvMagnitude * 8).coerceIn(0, 255) // Scale for visibility
                                         
                                         vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, intensity.toByte())        // R = MV magnitude
                                         vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, 0.toByte())         // G = 0
                                         vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, (255-intensity).toByte()) // B = inverse
-                                    } else {
-                                        val rgbIdx = (dy * 16 + dx) * 3
-                                        val finalR = finalRgb[rgbIdx]
-                                        val finalG = finalRgb[rgbIdx + 1]  
-                                        val finalB = finalRgb[rgbIdx + 2]
-                                        
-                                        vm.poke(currentRGBAddr + bufferOffset*thisAddrIncVec, finalR.toByte())
-                                        vm.poke(currentRGBAddr + (bufferOffset + 1)*thisAddrIncVec, finalG.toByte()) 
-                                        vm.poke(currentRGBAddr + (bufferOffset + 2)*thisAddrIncVec, finalB.toByte())
                                     }
                                 }
                             }
+                        } else {
+                            // Optimized bulk write for normal operation
+                            bulkWriteRGB(currentRGBAddr, finalRgb, width, height, startX, startY, 16, 16, thisAddrIncVec)
                         }
                     }
                     
