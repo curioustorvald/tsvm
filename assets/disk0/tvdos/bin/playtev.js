@@ -418,6 +418,7 @@ let hasSubtitle = !!(flags & 2)
 let videoFlags = seqread.readOneByte()
 let isInterlaced = !!(videoFlags & 1)
 let isNTSC = !!(videoFlags & 2)
+let isLossless = !!(videoFlags & 4)
 let unused2 = seqread.readOneByte()
 
 
@@ -427,6 +428,7 @@ serial.println(`  FPS: ${(isNTSC) ? (fps * 1000 / 1001) : fps}`)
 serial.println(`  Duration: ${totalFrames / fps}`)
 serial.println(`  Audio: ${hasAudio ? "Yes" : "No"}`)
 serial.println(`  Resolution: ${width}x${height}, ${isInterlaced ? "interlaced" : "progressive"}`)
+serial.println(`  Quality: Y=${qualityY}, Co=${qualityCo}, Cg=${qualityCg}, ${isLossless ? "lossless" : "lossy"}`)
 
 
 // DEBUG interlace raw output
@@ -665,14 +667,14 @@ try {
                         if (isInterlaced) {
                             // For interlaced: decode current frame into currentFieldAddr
                             // For display: use prevFieldAddr as current, currentFieldAddr as next
-                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
+                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding, isLossless)
                             graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
 
                             // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
                             rotateFieldBuffers()
                         } else {
                             // Progressive or first frame: normal decoding without temporal prediction
-                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
+                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding, isLossless)
                         }
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds

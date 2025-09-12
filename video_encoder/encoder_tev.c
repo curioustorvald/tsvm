@@ -14,6 +14,58 @@
 #include <sys/time.h>
 #include <time.h>
 
+// Float16 conversion functions (adapted from Float16.kt)
+static inline uint16_t float_to_float16(float fval) {
+    uint32_t fbits = *(uint32_t*)&fval;
+    uint16_t sign = (fbits >> 16) & 0x8000;  // sign only
+    uint32_t val = (fbits & 0x7fffffff) + 0x1000; // rounded value
+
+    if (val >= 0x47800000) { // might be or become NaN/Inf
+        if ((fbits & 0x7fffffff) >= 0x47800000) { // is or must become NaN/Inf
+            if (val < 0x7f800000) // was value but too large
+                return sign | 0x7c00; // make it +/-Inf
+            return sign | 0x7c00 | // remains +/-Inf or NaN
+                   ((fbits & 0x007fffff) >> 13); // keep NaN (and Inf) bits
+        }
+        return sign | 0x7bff; // unrounded not quite Inf
+    }
+    if (val >= 0x38800000) // remains normalized value
+        return sign | ((val - 0x38000000) >> 13); // exp - 127 + 15
+    if (val < 0x33000000) // too small for subnormal
+        return sign; // becomes +/-0
+    val = (fbits & 0x7fffffff) >> 23;  // tmp exp for subnormal calc
+
+    return sign | (((fbits & 0x7fffff) | 0x800000) + // add subnormal bit
+                   (0x800000 >> (val - 102)) // round depending on cut off
+                  ) >> (126 - val); // div by 2^(1-(exp-127+15)) and >> 13 | exp=0
+}
+
+static inline float float16_to_float(uint16_t hbits) {
+    uint32_t mant = hbits & 0x03ff;            // 10 bits mantissa
+    uint32_t exp = hbits & 0x7c00;             // 5 bits exponent
+    
+    if (exp == 0x7c00) // NaN/Inf
+        exp = 0x3fc00; // -> NaN/Inf
+    else if (exp != 0) { // normalized value
+        exp += 0x1c000; // exp - 15 + 127
+        if (mant == 0 && exp > 0x1c400) { // smooth transition
+            uint32_t fbits = ((hbits & 0x8000) << 16) | (exp << 13) | 0x3ff;
+            return *(float*)&fbits;
+        }
+    }
+    else if (mant != 0) { // && exp==0 -> subnormal
+        exp = 0x1c400; // make it normal
+        do {
+            mant <<= 1; // mantissa * 2
+            exp -= 0x400; // decrease exp by 1
+        } while ((mant & 0x400) == 0); // while not normal
+        mant &= 0x3ff; // discard subnormal bit
+    } // else +/-0 -> +/-0
+    
+    uint32_t fbits = ((hbits & 0x8000) << 16) | ((exp | mant) << 13);
+    return *(float*)&fbits;
+}
+
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
 #define TEV_VERSION 2  // Updated for YCoCg-R 4:2:0
@@ -103,7 +155,7 @@ static const uint32_t QUANT_TABLE_C[HALF_BLOCK_SIZE_SQR] =
 
 // Audio constants (reuse MP2 from existing system)
 #define MP2_SAMPLE_RATE 32000
-#define MP2_DEFAULT_PACKET_SIZE 0x240
+#define MP2_DEFAULT_PACKET_SIZE 1728
 
 // Default values
 #define DEFAULT_WIDTH 560
@@ -140,6 +192,17 @@ typedef struct __attribute__((packed)) {
     int16_t cg_coeffs[HALF_BLOCK_SIZE_SQR];  // quantised Cg DCT coefficients (8x8)
 } tev_block_t;
 
+// Lossless TEV block structure (uses float32 internally, converted to float16 during serialization)
+typedef struct __attribute__((packed)) {
+    uint8_t mode;           // Block encoding mode
+    int16_t mv_x, mv_y;     // Motion vector (1/4 pixel precision)
+    float rate_control_factor; // Always 1.0f in lossless mode
+    uint16_t cbp;           // Coded block pattern (which channels have non-zero coeffs)
+    float y_coeffs[BLOCK_SIZE_SQR];  // lossless Y DCT coefficients (16x16)
+    float co_coeffs[HALF_BLOCK_SIZE_SQR];  // lossless Co DCT coefficients (8x8)
+    float cg_coeffs[HALF_BLOCK_SIZE_SQR];  // lossless Cg DCT coefficients (8x8)
+} tev_lossless_block_t;
+
 // Subtitle entry structure
 typedef struct subtitle_entry {
     int start_frame;
@@ -168,6 +231,8 @@ typedef struct {
     int qualityCo;
     int qualityCg;
     int verbose;
+    int disable_rcf;          // 0 = rcf enabled, 1 = disabled
+    int lossless_mode;    // 0 = lossy (default), 1 = lossless mode
 
     // Bitrate control
     int target_bitrate_kbps;  // Target bitrate in kbps (0 = quality mode)
@@ -216,10 +281,9 @@ typedef struct {
     // Subtitle handling
     subtitle_entry_t *subtitle_list;
     subtitle_entry_t *current_subtitle;
-    
+
     // Complexity statistics collection
     int stats_mode;           // 0 = disabled, 1 = enabled
-    int disable_rcf;          // 0 = rcf enabled, 1 = disabled
     float *complexity_values; // Array to store all complexity values
     int complexity_count;     // Current count of complexity values
     int complexity_capacity;  // Capacity of complexity_values array
@@ -1041,6 +1105,107 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     block->cbp = 0x07;  // Y, Co, Cg all present
 }
 
+// Encode a 16x16 block in lossless mode
+static void encode_block_lossless(tev_encoder_t *enc, int block_x, int block_y, int is_keyframe) {
+    tev_lossless_block_t *block = (tev_lossless_block_t*)&enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
+
+    // Extract YCoCg-R block
+    extract_ycocgr_block(enc->current_rgb, enc->width, enc->height,
+                        block_x, block_y,
+                        enc->y_workspace, enc->co_workspace, enc->cg_workspace);
+
+    if (is_keyframe) {
+        // Intra coding for keyframes
+        block->mode = TEV_MODE_INTRA;
+        block->mv_x = block->mv_y = 0;
+        enc->blocks_intra++;
+    } else {
+        // Same mode decision logic as regular encode_block
+        // For simplicity, using INTRA for now in lossless mode
+        block->mode = TEV_MODE_INTRA;
+        block->mv_x = block->mv_y = 0;
+        enc->blocks_intra++;
+    }
+
+    // Lossless mode: rate control factor is always 1.0f
+    block->rate_control_factor = 1.0f;
+
+    // Apply DCT transforms using the same pattern as regular encoding
+    // Y channel (16x16)
+    dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
+    for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
+        block->y_coeffs[i] = enc->dct_workspace[i]; // Store directly without quantization
+    }
+
+    // Co channel (8x8)  
+    dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
+    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
+        block->co_coeffs[i] = enc->dct_workspace[i]; // Store directly without quantization
+    }
+
+    // Cg channel (8x8)
+    dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
+    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
+        block->cg_coeffs[i] = enc->dct_workspace[i]; // Store directly without quantization
+    }
+
+    // Set CBP (simplified - always encode all channels)
+    block->cbp = 0x07;  // Y, Co, Cg all present
+}
+
+// Serialized lossless block structure (for writing to file with float16 coefficients)
+typedef struct __attribute__((packed)) {
+    uint8_t mode;
+    int16_t mv_x, mv_y;
+    float rate_control_factor; // Always 1.0f in lossless mode
+    uint16_t cbp;
+    uint16_t y_coeffs[BLOCK_SIZE_SQR];      // float16 Y coefficients
+    uint16_t co_coeffs[HALF_BLOCK_SIZE_SQR]; // float16 Co coefficients
+    uint16_t cg_coeffs[HALF_BLOCK_SIZE_SQR]; // float16 Cg coefficients
+} tev_serialized_lossless_block_t;
+
+// Convert lossless blocks to serialized format with float16 coefficients
+static void serialize_lossless_blocks(tev_encoder_t *enc, int blocks_x, int blocks_y, 
+                                     tev_serialized_lossless_block_t *serialized_blocks) {
+    for (int by = 0; by < blocks_y; by++) {
+        for (int bx = 0; bx < blocks_x; bx++) {
+            tev_lossless_block_t *src = (tev_lossless_block_t*)&enc->block_data[by * blocks_x + bx];
+            tev_serialized_lossless_block_t *dst = &serialized_blocks[by * blocks_x + bx];
+            
+            // Copy basic fields
+            dst->mode = src->mode;
+            dst->mv_x = src->mv_x;
+            dst->mv_y = src->mv_y;
+            dst->rate_control_factor = src->rate_control_factor;
+            dst->cbp = src->cbp;
+            
+            // Convert float32 coefficients to float16 with range clamping
+            // Float16 max finite value is approximately 65504
+            const float FLOAT16_MAX = 65504.0f;
+            
+            for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
+                float coeff = FCLAMP(src->y_coeffs[i], -FLOAT16_MAX, FLOAT16_MAX);
+                dst->y_coeffs[i] = float_to_float16(coeff);
+                if (enc->verbose && fabsf(src->y_coeffs[i]) > FLOAT16_MAX) {
+                    printf("WARNING: Y coefficient %d clamped: %f -> %f\n", i, src->y_coeffs[i], coeff);
+                }
+            }
+            for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
+                float co_coeff = FCLAMP(src->co_coeffs[i], -FLOAT16_MAX, FLOAT16_MAX);
+                float cg_coeff = FCLAMP(src->cg_coeffs[i], -FLOAT16_MAX, FLOAT16_MAX);
+                dst->co_coeffs[i] = float_to_float16(co_coeff);
+                dst->cg_coeffs[i] = float_to_float16(cg_coeff);
+                if (enc->verbose && fabsf(src->co_coeffs[i]) > FLOAT16_MAX) {
+                    printf("WARNING: Co coefficient %d clamped: %f -> %f\n", i, src->co_coeffs[i], co_coeff);
+                }
+                if (enc->verbose && fabsf(src->cg_coeffs[i]) > FLOAT16_MAX) {
+                    printf("WARNING: Cg coefficient %d clamped: %f -> %f\n", i, src->cg_coeffs[i], cg_coeff);
+                }
+            }
+        }
+    }
+}
+
 // Convert SubRip time format (HH:MM:SS,mmm) to frame number
 static int srt_time_to_frame(const char *time_str, int fps) {
     int hours, minutes, seconds, milliseconds;
@@ -1182,7 +1347,7 @@ static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
         }
     }
     
-    fclose(file);
+    //fclose(file); // why uncommenting it errors out with "Fatal error: glibc detected an invalid stdio handle"?
     return head;
 }
 
@@ -1613,6 +1778,7 @@ static tev_encoder_t* init_encoder(void) {
     enc->output_fps = 0;  // No frame rate conversion by default
     enc->is_ntsc_framerate = 0;  // Will be detected from input
     enc->verbose = 0;
+    enc->disable_rcf = 1;
     enc->subtitle_file = NULL;
     enc->has_subtitles = 0;
     enc->subtitle_list = NULL;
@@ -1655,7 +1821,16 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     enc->dct_workspace = malloc(16 * 16 * sizeof(float));
 
     enc->block_data = malloc(total_blocks * sizeof(tev_block_t));
-    enc->compressed_buffer = malloc(total_blocks * sizeof(tev_block_t) * 2);
+    // Allocate compression buffer large enough for both regular and lossless modes
+    size_t max_block_size = sizeof(tev_block_t) > sizeof(tev_serialized_lossless_block_t) ? 
+                            sizeof(tev_block_t) : sizeof(tev_serialized_lossless_block_t);
+    size_t compressed_buffer_size = total_blocks * max_block_size * 2;
+    enc->compressed_buffer = malloc(compressed_buffer_size);
+    
+    if (enc->verbose) {
+        printf("Allocated compressed buffer: %zu bytes for %d blocks (max_block_size: %zu)\n", 
+               compressed_buffer_size, total_blocks, max_block_size);
+    }
     enc->mp2_buffer = malloc(MP2_DEFAULT_PACKET_SIZE);
 
     if (!enc->current_rgb || !enc->previous_rgb || !enc->reference_rgb ||
@@ -1726,7 +1901,7 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     uint8_t qualityCo = enc->qualityCo;
     uint8_t qualityCg = enc->qualityCg;
     uint8_t flags = (enc->has_audio) | (enc->has_subtitles << 1);
-    uint8_t video_flags = (enc->progressive_mode ? 0 : 1) | (enc->is_ntsc_framerate ? 2 : 0); // bit 0 = is_interlaced, bit 1 = is_ntsc_framerate
+    uint8_t video_flags = (enc->progressive_mode ? 0 : 1) | (enc->is_ntsc_framerate ? 2 : 0) | (enc->lossless_mode ? 4 : 0); // bit 0 = is_interlaced, bit 1 = is_ntsc_framerate, bit 2 = is_lossless
     uint8_t reserved = 0;
 
     fwrite(&width, 2, 1, output);
@@ -1833,7 +2008,11 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num, int fie
     // Encode all blocks
     for (int by = 0; by < blocks_y; by++) {
         for (int bx = 0; bx < blocks_x; bx++) {
-            encode_block(enc, bx, by, is_keyframe);
+            if (enc->lossless_mode) {
+                encode_block_lossless(enc, bx, by, is_keyframe);
+            } else {
+                encode_block(enc, bx, by, is_keyframe);
+            }
 
             // Calculate complexity for rate control (if enabled)
             if (enc->bitrate_mode > 0) {
@@ -1849,13 +2028,34 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num, int fie
     }
 
     // Compress block data using Zstd (compatible with TSVM decoder)
-    size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
-
-    // Compress using Zstd with controlled memory usage
-    size_t compressed_size = ZSTD_compressCCtx(enc->zstd_context,
-                                             enc->compressed_buffer, block_data_size * 2,
-                                             enc->block_data, block_data_size,
-                                             ZSTD_COMPRESSON_LEVEL);
+    size_t compressed_size;
+    
+    if (enc->lossless_mode) {
+        // Lossless mode: serialize blocks with float16 coefficients
+        size_t serialized_block_data_size = blocks_x * blocks_y * sizeof(tev_serialized_lossless_block_t);
+        tev_serialized_lossless_block_t *serialized_blocks = malloc(serialized_block_data_size);
+        if (!serialized_blocks) {
+            fprintf(stderr, "Failed to allocate memory for serialized lossless blocks\n");
+            return -1;
+        }
+        
+        serialize_lossless_blocks(enc, blocks_x, blocks_y, serialized_blocks);
+        
+        // Use the pre-allocated buffer size instead of calculating dynamically
+        size_t output_buffer_size = blocks_x * blocks_y * sizeof(tev_serialized_lossless_block_t) * 2;
+        compressed_size = ZSTD_compressCCtx(enc->zstd_context,
+                                           enc->compressed_buffer, output_buffer_size,
+                                           serialized_blocks, serialized_block_data_size,
+                                           ZSTD_COMPRESSON_LEVEL);
+        free(serialized_blocks);
+    } else {
+        // Regular mode: use regular block data
+        size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
+        compressed_size = ZSTD_compressCCtx(enc->zstd_context,
+                                           enc->compressed_buffer, block_data_size * 2,
+                                           enc->block_data, block_data_size,
+                                           ZSTD_COMPRESSON_LEVEL);
+    }
     
     if (ZSTD_isError(compressed_size)) {
         fprintf(stderr, "Zstd compression failed: %s\n", ZSTD_getErrorName(compressed_size));
@@ -2088,7 +2288,7 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     char command[2048];
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, MP2_RATE_TABLE[enc->qualityIndex], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
+        enc->input_file, enc->lossless_mode ? 384 : MP2_RATE_TABLE[enc->qualityIndex], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
 
     int result = system(command);
     if (result == 0) {
@@ -2236,15 +2436,16 @@ static void show_usage(const char *program_name) {
     printf("  -o, --output FILE      Output video file (use '-' for stdout)\n");
     printf("  -s, --size WxH         Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("  -f, --fps N            Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N        Quality level 0-4 (default: 2, only decides audio rate in quantiser mode)\n");
+    printf("  -q, --quality N        Quality level 0-4 (default: 2, only decides audio rate in quantiser/lossless mode)\n");
     printf("  -Q, --quantiser N      Quantiser level 0-100 (100: lossless, 0: potato)\n");
 //    printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
     printf("  -p, --progressive      Use progressive scan (default: interlaced)\n");
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose          Verbose output\n");
     printf("  -t, --test             Test mode: generate solid colour frames\n");
+    printf("  --lossless             Lossless mode: store coefficients as float16 (no quantisation, implies -p, 384k audio)\n");
+    printf("  --enable-rcf           Enable per-block rate control (experimental)\n");
     printf("  --enable-encode-stats  Collect and report block complexity statistics\n");
-    printf("  --disable-rcf          Disable per-block rate control\n");
     printf("  --help                 Show this help\n\n");
 //    printf("Rate Control Modes:\n");
 //    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
@@ -2334,7 +2535,8 @@ int main(int argc, char *argv[]) {
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"enable-encode-stats", no_argument, 0, 1000},
-        {"disable-rcf", no_argument, 0, 1100},
+        {"enable-rcf", no_argument, 0, 1100},
+        {"lossless", no_argument, 0, 1200},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -2403,11 +2605,14 @@ int main(int argc, char *argv[]) {
             case 't':
                 test_mode = 1;
                 break;
-            case 1000:  // --enable-encode-stats
+            case 1000: // --enable-encode-stats
                 enc->stats_mode = 1;
                 break;
-             case 1100:  // --disable-rcf
-                enc->disable_rcf = 1;
+             case 1100: // --enable-rcf
+                enc->disable_rcf = 0;
+                break;
+            case 1200: // --lossless
+                enc->lossless_mode = 1;
                 break;
             case 0:
                 if (strcmp(long_options[option_index].name, "help") == 0) {
@@ -2419,12 +2624,25 @@ int main(int argc, char *argv[]) {
             case 'Q':
                 enc->qualityY = CLAMP(atoi(optarg), 0, 100);
                 enc->qualityCo = enc->qualityY;
-                enc->qualityCg = (enc->qualityY == 100) ? enc->qualityY : enc->qualityCo >> 2;
+                enc->qualityCg = (enc->qualityY == 100) ? enc->qualityY : enc->qualityCo >> 1;
                 break;
             default:
                 show_usage(argv[0]);
                 cleanup_encoder(enc);
                 return 1;
+        }
+    }
+
+    // Lossless mode validation and adjustments
+    if (enc->lossless_mode) {
+        // In lossless mode, disable rate control and set quality to maximum
+        enc->bitrate_mode = 0;
+        enc->disable_rcf = 1;
+        enc->progressive_mode = 1;
+        enc->qualityIndex = 5;
+        enc->qualityY = enc->qualityCo = enc->qualityCg = 255; // Use 255 as a redundant lossless marker
+        if (enc->verbose) {
+            printf("Lossless mode enabled: Rate control disabled, quality set to maximum, enabling progressive scan\n");
         }
     }
 

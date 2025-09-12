@@ -12,6 +12,7 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.fmod
+import net.torvald.util.Float16
 import kotlin.math.*
 
 class GraphicsJSR223Delegate(private val vm: VM) {
@@ -20,6 +21,77 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val idct8TempBuffer = FloatArray(64)
     private val idct16TempBuffer = FloatArray(256) // For 16x16 IDCT
     private val idct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
+    
+    // Lossless IDCT functions for float16 coefficients (no quantization)
+    private fun tevIdct8x8_lossless(coeffs: FloatArray): IntArray {
+        val result = IntArray(64)
+        
+        // Fast separable IDCT (row-column decomposition) for lossless coefficients
+        // First pass: Process rows (8 1D IDCTs)
+        for (row in 0 until 8) {
+            for (col in 0 until 8) {
+                var sum = 0f
+                for (u in 0 until 8) {
+                    sum += dctBasis8[u][col] * coeffs[row * 8 + u]
+                }
+                idct8TempBuffer[row * 8 + col] = sum * 0.5f
+            }
+        }
+        
+        // Second pass: Process columns (8 1D IDCTs)
+        for (col in 0 until 8) {
+            for (row in 0 until 8) {
+                var sum = 0f
+                for (v in 0 until 8) {
+                    sum += dctBasis8[v][row] * idct8TempBuffer[v * 8 + col]
+                }
+                val finalValue = sum * 0.5f + 128f
+                result[row * 8 + col] = if (finalValue.isNaN() || finalValue.isInfinite()) {
+                    println("NaN/Inf detected in 8x8 IDCT at ($row,$col): sum=$sum, finalValue=$finalValue")
+                    128 // Default to middle gray
+                } else {
+                    finalValue.roundToInt().coerceIn(0, 255)
+                }
+            }
+        }
+        
+        return result
+    }
+    
+    private fun tevIdct16x16_lossless(coeffs: FloatArray): IntArray {
+        val result = IntArray(256)
+        
+        // Fast separable IDCT (row-column decomposition) for 16x16 lossless coefficients  
+        // First pass: Process rows (16 1D IDCTs)
+        for (row in 0 until 16) {
+            for (col in 0 until 16) {
+                var sum = 0f
+                for (u in 0 until 16) {
+                    sum += dctBasis16[u][col] * coeffs[row * 16 + u]
+                }
+                idct16TempBuffer[row * 16 + col] = sum * 0.25f
+            }
+        }
+        
+        // Second pass: Process columns (16 1D IDCTs)
+        for (col in 0 until 16) {
+            for (row in 0 until 16) {
+                var sum = 0f
+                for (v in 0 until 16) {
+                    sum += dctBasis16[v][row] * idct16TempBuffer[v * 16 + col]
+                }
+                val finalValue = sum * 0.25f + 128f
+                result[row * 16 + col] = if (finalValue.isNaN() || finalValue.isInfinite()) {
+                    println("NaN/Inf detected in 16x16 IDCT at ($row,$col): sum=$sum, finalValue=$finalValue")
+                    128 // Default to middle gray
+                } else {
+                    finalValue.roundToInt().coerceIn(0, 255)
+                }
+            }
+        }
+        
+        return result
+    }
     
 
     private fun getFirstGPU(): GraphicsAdapter? {
@@ -1649,7 +1721,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val result = IntArray(64)
         // Reuse preallocated temp buffer to reduce GC pressure
         for (i in coeffs.indices) {
-            idct8TempBuffer[i] = coeffs[i] * quantTable[i] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)
+            idct8TempBuffer[i] = coeffs[i] * (quantTable[i] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)).coerceIn(1f, 255f)
         }
 
         // Fast separable IDCT (row-column decomposition)
@@ -1662,7 +1734,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val coeff = if (isChromaResidual && coeffIdx == 0) {
                         coeffs[coeffIdx].toFloat() // DC lossless for chroma residual
                     } else {
-                        coeffs[coeffIdx] * quantTable[coeffIdx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)
+                        coeffs[coeffIdx] * (quantTable[coeffIdx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)).coerceIn(1f, 255f)
                     }
                     sum += dctBasis8[u][col] * coeff
                 }
@@ -1708,7 +1780,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val coeff = if (idx == 0) {
                     coeffs[idx].toFloat() // DC lossless for luma
                 } else {
-                    coeffs[idx] * quantTable[idx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)
+                    coeffs[idx] * (quantTable[idx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)).coerceIn(1f, 255f)
                 }
                 idct16TempBuffer[idx] = coeff
             }
@@ -2555,7 +2627,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, frameCounter: Int,
                   debugMotionVectors: Boolean = false, tevVersion: Int = 2,
-                  enableDeblocking: Boolean = true, enableBoundaryAwareDecoding: Boolean = false) {
+                  enableDeblocking: Boolean = true, enableBoundaryAwareDecoding: Boolean = false,
+                  isLossless: Boolean = false) {
 
         // height doesn't change when interlaced, because that's the encoder's output
 
@@ -2846,17 +2919,65 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
 
                         0x01 -> { // TEV_MODE_INTRA - Full YCoCg-R DCT decode (no motion compensation)
-                            // Read DCT coefficients: Y (16x16=256), Co (8x8=64), Cg (8x8=64)
+                            val yBlock: IntArray
+                            val coBlock: IntArray  
+                            val cgBlock: IntArray
+                            
+                            if (isLossless) {
+                                // Lossless mode: coefficients are stored as float16, no quantization
+                                // Read float16 coefficients: Y (16x16=256), Co (8x8=64), Cg (8x8=64)
+                                val coeffFloat16Array = ShortArray(384) // 384 float16 values stored as shorts
+                                vm.bulkPeekShort(readPtr.toInt(), coeffFloat16Array, 768) // 384 * 2 bytes
+                                readPtr += 768
+                                
+                                // Convert float16 to float32 and perform IDCT directly (no quantization)
+                                println("DEBUG: Reading lossless coefficients, first few float16 values: ${coeffFloat16Array.take(10).map { "0x${it.toString(16)}" }}")
+                                val yCoeffs = FloatArray(256) { i ->
+                                    // Convert signed short to unsigned short for float16 interpretation
+                                    val signedShort = coeffFloat16Array[i]
+                                    val float16bits = signedShort.toInt() and 0xFFFF  // Convert to unsigned
+                                    val floatVal = Float16.toFloat(float16bits.toShort())
+                                    if (floatVal.isNaN() || floatVal.isInfinite()) {
+                                        println("NaN/Inf detected at Y coefficient $i: signedShort=0x${signedShort.toString(16)}, unsigned=0x${float16bits.toString(16)}, floatVal=$floatVal")
+                                        0f // Replace NaN with 0
+                                    } else floatVal
+                                }
+                                val coCoeffs = FloatArray(64) { i ->
+                                    // Convert signed short to unsigned short for float16 interpretation
+                                    val signedShort = coeffFloat16Array[256 + i]
+                                    val float16bits = signedShort.toInt() and 0xFFFF  // Convert to unsigned
+                                    val floatVal = Float16.toFloat(float16bits.toShort())
+                                    if (floatVal.isNaN() || floatVal.isInfinite()) {
+                                        println("NaN/Inf detected at Co coefficient $i: signedShort=0x${signedShort.toString(16)}, unsigned=0x${float16bits.toString(16)}, floatVal=$floatVal")
+                                        0f // Replace NaN with 0
+                                    } else floatVal
+                                }
+                                val cgCoeffs = FloatArray(64) { i ->
+                                    // Convert signed short to unsigned short for float16 interpretation
+                                    val signedShort = coeffFloat16Array[320 + i]
+                                    val float16bits = signedShort.toInt() and 0xFFFF  // Convert to unsigned
+                                    val floatVal = Float16.toFloat(float16bits.toShort())
+                                    if (floatVal.isNaN() || floatVal.isInfinite()) {
+                                        println("NaN/Inf detected at Cg coefficient $i: signedShort=0x${signedShort.toString(16)}, unsigned=0x${float16bits.toString(16)}, floatVal=$floatVal")
+                                        0f // Replace NaN with 0
+                                    } else floatVal
+                                }
+                                
+                                yBlock = tevIdct16x16_lossless(yCoeffs)
+                                coBlock = tevIdct8x8_lossless(coCoeffs)
+                                cgBlock = tevIdct8x8_lossless(cgCoeffs)
+                            } else {
+                                // Regular lossy mode: quantized int16 coefficients
+                                // Optimized bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                                val coeffShortArray = ShortArray(384) // Total coefficients: 256 + 64 + 64 = 384 shorts
+                                vm.bulkPeekShort(readPtr.toInt(), coeffShortArray, 768)
+                                readPtr += 768
 
-                            // Optimized bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
-                            val coeffShortArray = ShortArray(384) // Total coefficients: 256 + 64 + 64 = 384 shorts
-                            vm.bulkPeekShort(readPtr.toInt(), coeffShortArray, 768)
-                            readPtr += 768
-
-                            // Perform hardware IDCT for each channel using fast algorithm
-                            val yBlock = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), QUANT_TABLE_Y, qY, rateControlFactor)
-                            val coBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), QUANT_TABLE_C, true, qCo, rateControlFactor)
-                            val cgBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), QUANT_TABLE_C, true, qCg, rateControlFactor)
+                                // Perform hardware IDCT for each channel using fast algorithm
+                                yBlock = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), QUANT_TABLE_Y, qY, rateControlFactor)
+                                coBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), QUANT_TABLE_C, true, qCo, rateControlFactor)
+                                cgBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), QUANT_TABLE_C, true, qCg, rateControlFactor)
+                            }
 
                             // Convert to RGB (YCoCg-R for v2, XYB for v3)
                             val rgbData = if (tevVersion == 3) {
@@ -3275,7 +3396,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val quantValue = if (i == 0) 1.0f else {
                         quantTable[coeffIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)
                     }
-                    result[blockIndex]!![i] = block[i] * quantValue
+                    result[blockIndex]!![i] = block[i] * quantValue.coerceIn(1f, 255f)
                 }
             }
         }
@@ -3307,7 +3428,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 
                 for (i in 1 until coeffsSize) {
                     val coeffIdx = i.coerceIn(0, quantTable.size - 1)
-                    val quant = (quantTable[coeffIdx] * qualityMult).toInt()
+                    val quant = (quantTable[coeffIdx] * qualityMult).coerceIn(1f, 255f).toInt()
                     quantValues[blockIndex][i] = quant
                     quantHalfValues[blockIndex][i] = quant / 2
                 }
@@ -3511,7 +3632,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val rightOff = blocksOff[rightBlockIndex]
         
         // OPTIMIZATION 4: Process multiple frequencies in single loop for better cache locality
-        for (v in 0 until 16) { // Only low-to-mid frequencies
+        for (v in 0 until 8) { // Only low-to-mid frequencies
             var deltaV = 0L
             var hfPenalty = 0L
             val vOffset = v * 16
@@ -3667,7 +3788,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         blocksMid[blockIndex][i] = dcValue
                     } else {
                         // AC coefficients: use quantization intervals
-                        val quant = (quantTable[quantIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).toInt()
+                        val quant = (quantTable[quantIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).coerceIn(1f, 255f).toInt()
 
                         // Standard dequantized value (midpoint)
                         blocksMid[blockIndex][i] = block[i].toInt() * quant
@@ -3719,7 +3840,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         blocksMax[blockIndex][i] = dcValue
                     } else {
                         // AC coefficients: use quantization intervals
-                        val quant = (quantTable[quantIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).toInt()
+                        val quant = (quantTable[quantIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).coerceIn(1f, 255f).toInt()
                         
                         // Standard dequantized value (midpoint)
                         blocksMid[blockIndex][i] = block[i].toInt() * quant
@@ -3789,73 +3910,116 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
+    // BULK OPTIMIZED 8x8 horizontal boundary analysis for chroma channels
     private fun analyzeHorizontalBoundary(
         leftBlockIndex: Int, rightBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray
     ) {
-        // Only process low-to-mid frequencies (v < 4 for 8x8, v < 8 for 16x16)
-        val maxV = 8
+        val leftMid = blocksMid[leftBlockIndex]
+        val rightMid = blocksMid[rightBlockIndex]
+        val leftOff = blocksOff[leftBlockIndex]
+        val rightOff = blocksOff[rightBlockIndex]
         
-        for (v in 0 until maxV) {
+        // OPTIMIZATION 12: Process 8x8 boundaries with bulk operations (v < 4 for low-to-mid frequencies)
+        for (v in 0 until 4) { // Only low-to-mid frequencies for 8x8
             var deltaV = 0L
             var hfPenalty = 0L
+            val vOffset = v * 8
             
-            // Analyze boundary discontinuity 
+            // First pass: Calculate boundary discontinuity
             for (u in 0 until 8) {
-                val alpha = kAlphaSqrt2[u.coerceIn(0, 7)]
-                val sign = if (u and 1 == 1) -1 else 1
-                val gi = blocksMid[leftBlockIndex][v * 8 + u]
-                val gj = blocksMid[rightBlockIndex][v * 8 + u]
+                val idx = vOffset + u
+                val alpha = kAlphaSqrt2[u] // Direct access (u < 8)
+                val sign = if (u and 1 != 0) -1 else 1
+                val gi = leftMid[idx]
+                val gj = rightMid[idx]
                 
-                deltaV += (alpha * (gj - sign * gi)).toLong()
-                hfPenalty += (u * u * (gi * gi + gj * gj)).toLong()
+                deltaV += alpha * (gj - sign * gi)
+                hfPenalty += (u * u) * (gi * gi + gj * gj)
             }
             
-            // Apply corrections with high-frequency damping
-            if (hfPenalty > 400) deltaV /= 2
+            // Early exit for very small adjustments
+            if (kotlin.math.abs(deltaV) < 100) continue
             
-            for (u in 0 until 8) {
-                val gradientIdx = u.coerceIn(0, kLinearGradient.size - 1)
-                val sign = if (u and 1 == 1) 1 else -1
-                blocksOff[leftBlockIndex][v * 8 + u] = blocksOff[leftBlockIndex][v * 8 + u] + deltaV * kLinearGradient[gradientIdx]
-                blocksOff[rightBlockIndex][v * 8 + u] = blocksOff[rightBlockIndex][v * 8 + u] + deltaV * kLinearGradient[gradientIdx] * sign
-            }
+            // Apply high-frequency damping once per frequency band
+            if (hfPenalty > 400) deltaV /= 2 // 8x8 threshold
+            
+            // Second pass: Apply corrections (BULK OPTIMIZED with unrolling for 8x8)
+            val correction = deltaV
+            // Bulk apply corrections for 8 coefficients - manually unrolled for performance
+            leftOff[vOffset] += correction * kLinearGradient[0]
+            rightOff[vOffset] += correction * kLinearGradient[0]
+            leftOff[vOffset + 1] += correction * kLinearGradient[1]
+            rightOff[vOffset + 1] -= correction * kLinearGradient[1] // Alternating signs
+            leftOff[vOffset + 2] += correction * kLinearGradient[2]
+            rightOff[vOffset + 2] += correction * kLinearGradient[2]
+            leftOff[vOffset + 3] += correction * kLinearGradient[3]
+            rightOff[vOffset + 3] -= correction * kLinearGradient[3]
+            leftOff[vOffset + 4] += correction * kLinearGradient[4]
+            rightOff[vOffset + 4] += correction * kLinearGradient[4]
+            leftOff[vOffset + 5] += correction * kLinearGradient[5]
+            rightOff[vOffset + 5] -= correction * kLinearGradient[5]
+            leftOff[vOffset + 6] += correction * kLinearGradient[6]
+            rightOff[vOffset + 6] += correction * kLinearGradient[6]
+            leftOff[vOffset + 7] += correction * kLinearGradient[7]
+            rightOff[vOffset + 7] -= correction * kLinearGradient[7]
         }
     }
     
+    // BULK OPTIMIZED 8x8 vertical boundary analysis for chroma channels
     private fun analyzeVerticalBoundary(
         topBlockIndex: Int, bottomBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>, 
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray
     ) {
-        // Only process low-to-mid frequencies (u < 4 for 8x8, u < 8 for 16x16)
-        val maxU = 8
+        val topMid = blocksMid[topBlockIndex]
+        val bottomMid = blocksMid[bottomBlockIndex]
+        val topOff = blocksOff[topBlockIndex]
+        val bottomOff = blocksOff[bottomBlockIndex]
         
-        for (u in 0 until maxU) {
+        // OPTIMIZATION 13: Optimized vertical analysis for 8x8 with better cache access pattern
+        for (u in 0 until 4) { // Only low-to-mid frequencies for 8x8
             var deltaU = 0L
             var hfPenalty = 0L
             
-            // Analyze boundary discontinuity
+            // First pass: Calculate boundary discontinuity
             for (v in 0 until 8) {
-                val alpha = kAlphaSqrt2[v.coerceIn(0, 7)]
-                val sign = if (v and 1 == 1) -1 else 1
-                val gi = blocksMid[topBlockIndex][v * 8 + u]
-                val gj = blocksMid[bottomBlockIndex][v * 8 + u]
+                val idx = v * 8 + u
+                val alpha = kAlphaSqrt2[v] // Direct access (v < 8)
+                val sign = if (v and 1 != 0) -1 else 1
+                val gi = topMid[idx]
+                val gj = bottomMid[idx]
                 
-                deltaU += (alpha * (gj - sign * gi)).toLong()
-                hfPenalty += (v * v * (gi * gi + gj * gj)).toLong()
+                deltaU += alpha * (gj - sign * gi)
+                hfPenalty += (v * v) * (gi * gi + gj * gj)
             }
             
-            // Apply corrections with high-frequency damping
-            if (hfPenalty > 400) deltaU /= 2
+            // Early exit for very small adjustments
+            if (kotlin.math.abs(deltaU) < 100) continue
             
-            for (v in 0 until 8) {
-                val gradientIdx = v.coerceIn(0, kLinearGradient.size - 1)
-                val sign = if (v and 1 == 1) 1 else -1
-                blocksOff[topBlockIndex][v * 8 + u] = blocksOff[topBlockIndex][v * 8 + u] + deltaU * kLinearGradient[gradientIdx]
-                blocksOff[bottomBlockIndex][v * 8 + u] = blocksOff[bottomBlockIndex][v * 8 + u] + deltaU * kLinearGradient[gradientIdx] * sign
-            }
+            // Apply high-frequency damping once per frequency band
+            if (hfPenalty > 400) deltaU /= 2 // 8x8 threshold
+            
+            // Second pass: Apply corrections (BULK OPTIMIZED vertical for 8x8)
+            val correction = deltaU
+            // Bulk apply corrections for 8 vertical coefficients - manually unrolled
+            topOff[u] += correction * kLinearGradient[0]
+            bottomOff[u] += correction * kLinearGradient[0]
+            topOff[8 + u] += correction * kLinearGradient[1]
+            bottomOff[8 + u] -= correction * kLinearGradient[1] // Alternating signs
+            topOff[16 + u] += correction * kLinearGradient[2]
+            bottomOff[16 + u] += correction * kLinearGradient[2]
+            topOff[24 + u] += correction * kLinearGradient[3]
+            bottomOff[24 + u] -= correction * kLinearGradient[3]
+            topOff[32 + u] += correction * kLinearGradient[4]
+            bottomOff[32 + u] += correction * kLinearGradient[4]
+            topOff[40 + u] += correction * kLinearGradient[5]
+            bottomOff[40 + u] -= correction * kLinearGradient[5]
+            topOff[48 + u] += correction * kLinearGradient[6]
+            bottomOff[48 + u] += correction * kLinearGradient[6]
+            topOff[56 + u] += correction * kLinearGradient[7]
+            bottomOff[56 + u] -= correction * kLinearGradient[7]
         }
     }
 
