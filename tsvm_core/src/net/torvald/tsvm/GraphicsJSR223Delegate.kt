@@ -1690,52 +1690,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
-    private fun tevIdctf8x8_fast(coeffs: ShortArray, quantTable: IntArray, isChromaResidual: Boolean = false, qualityIndex: Int, rateControlFactor: Float): FloatArray {
-        val result = FloatArray(64)
-        // Reuse preallocated temp buffer to reduce GC pressure
-        for (i in coeffs.indices) {
-            idct8TempBuffer[i] = coeffs[i] * quantTable[i] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)
-        }
-
-        // Fast separable IDCT (row-column decomposition)
-        // First pass: Process rows (8 1D IDCTs)
-        for (row in 0 until 8) {
-            for (col in 0 until 8) {
-                var sum = 0f
-                for (u in 0 until 8) {
-                    val coeffIdx = row * 8 + u
-                    val coeff = if (isChromaResidual && coeffIdx == 0) {
-                        coeffs[coeffIdx].toFloat() // DC lossless for chroma residual
-                    } else {
-                        coeffs[coeffIdx] * quantTable[coeffIdx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)
-                    }
-                    sum += dctBasis8[u][col] * coeff
-                }
-                idct8TempBuffer[row * 8 + col] = sum
-            }
-        }
-
-        // Second pass: Process columns (8 1D IDCTs)
-        for (col in 0 until 8) {
-            for (row in 0 until 8) {
-                var sum = 0f
-                for (v in 0 until 8) {
-                    sum += dctBasis8[v][row] * idct8TempBuffer[v * 8 + col]
-                }
-
-                val pixel = if (isChromaResidual) {
-                    sum.coerceIn(-256f, 255f)
-                } else {
-                    (sum + 128f).coerceIn(0f, 255f)
-                }
-                result[row * 8 + col] = pixel
-            }
-        }
-
-        return result
-    }
-
-
     val dctBasis16 = Array(16) { u ->
         FloatArray(16) { x ->
             val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
@@ -1787,49 +1741,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
-    private fun tevIdctf16x16_fast(coeffs: ShortArray, quantTable: IntArray, qualityIndex: Int, rateControlFactor: Float): FloatArray {
-        val result = FloatArray(256) // 16x16 = 256
-
-        // Process coefficients and dequantize using preallocated buffer
-        for (u in 0 until 16) {
-            for (v in 0 until 16) {
-                val idx = u * 16 + v
-                val coeff = if (idx == 0) {
-                    coeffs[idx].toFloat() // DC lossless for luma
-                } else {
-                    coeffs[idx] * quantTable[idx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)
-                }
-                idct16TempBuffer[idx] = coeff
-            }
-        }
-
-        // Fast separable IDCT
-        // First pass: Process rows (16 1D IDCTs)
-        for (row in 0 until 16) {
-            for (col in 0 until 16) {
-                var sum = 0f
-                for (u in 0 until 16) {
-                    sum += dctBasis16[u][col] * idct16TempBuffer[row * 16 + u]
-                }
-                idct16SeparableBuffer[row * 16 + col] = sum
-            }
-        }
-
-        // Second pass: Process columns (16 1D IDCTs)
-        for (col in 0 until 16) {
-            for (row in 0 until 16) {
-                var sum = 0f
-                for (v in 0 until 16) {
-                    sum += dctBasis16[v][row] * idct16SeparableBuffer[v * 16 + col]
-                }
-                val pixel = (sum + 128f).coerceIn(0f, 255f)
-                result[row * 16 + col] = pixel
-            }
-        }
-
-        return result
-    }
-
     // YCoCg-R to RGB conversion with 4:2:0 chroma upsampling
     // Pre-allocated arrays for chroma component caching (reused across blocks)
     private val cgHalfCache = IntArray(64) // 8x8 cache for cg/2 values
@@ -1837,25 +1748,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     
     // Temporary buffer for interlaced field processing
     private val interlacedFieldBuffer = IntArray(560 * 224 * 3) // Half-height RGB buffer
-    
-    /**
-     * Extract a specific field (even or odd lines) from a progressive frame
-     * Used for temporal prediction in Yadif deinterlacing
-     */
-    private fun extractFieldFromProgressive(progressiveAddr: Long, fieldAddr: Long, width: Int, height: Int, 
-                                           fieldParity: Int, addrIncVec: Int) {
-        assert(addrIncVec == 1)
 
-        val fieldHeight = height / 2
-        for (y in 0 until fieldHeight) {
-            val progressiveY = y * 2 + fieldParity // Extract even (0) or odd (1) lines
-            val progressiveOffset = (progressiveY * width) * 3
-            val fieldOffset = (y * width) * 3
-
-            vm.memcpy(progressiveAddr.toInt() + progressiveOffset, fieldAddr.toInt() + fieldOffset, width * 3)
-        }
-    }
-    
     /**
      * YADIF (Yet Another Deinterlacing Filter) implementation - Optimized
      * Converts interlaced field to progressive frame with temporal/spatial interpolation
@@ -2350,159 +2243,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         
         return xybData
-    }
-
-    /**
-     * Knusperli-inspired boundary-aware DCT coefficient adjustment
-     * 
-     * Adapts Google's knusperli algorithm to TEV blocks for boundary continuity.
-     * Uses quantization intervals and gradient-based discontinuity minimization.
-     * 
-     * @param coeffs Quantized DCT coefficients  
-     * @param quantTable Quantization table
-     * @param qualityMult Quality multiplier
-     * @param blockX Block X coordinate
-     * @param blockY Block Y coordinate  
-     * @param blocksPerRow Number of blocks per row
-     * @param allBlocks All decoded blocks in frame (for neighbor analysis)
-     * @param width Frame width
-     * @param height Frame height
-     * @param isLuma True for luma channel
-     * @return Adjusted coefficient values ready for IDCT
-     */
-    private fun adjustCoefficientsForBoundaries(
-        coeffs: ShortArray,
-        quantTable: IntArray,
-        qualityMult: Float,
-        blockX: Int,
-        blockY: Int,
-        blocksPerRow: Int,
-        allBlocks: Array<FloatArray?>?,
-        width: Int, 
-        height: Int,
-        isLuma: Boolean = true,
-        isChromaResidual: Boolean = true
-    ): FloatArray {
-        val blockSize = if (isLuma) 16 else 8
-        val result = FloatArray(coeffs.size)
-        
-        // Standard dequantization to establish quantization intervals 
-        for (i in coeffs.indices) {
-            result[i] = if (i == 0 && (isLuma || isChromaResidual)) {
-                coeffs[i].toFloat() // DC lossless
-            } else {
-                coeffs[i] * quantTable[i] * qualityMult
-            }
-        }
-        
-        // Skip boundary optimization if we can't access neighboring blocks
-        if (allBlocks == null) return result
-        
-        // Knusperli constants adapted for TEV block sizes
-        val blockSizeRatio = blockSize / 8.0f
-        
-        // Linear gradient DCT coefficients (scaled for block size)
-        val kLinearGradient = FloatArray(blockSize) { i ->
-            when (i) {
-                0 -> 318f * blockSizeRatio
-                1 -> -285f * blockSizeRatio  
-                2 -> 81f * blockSizeRatio
-                3 -> -32f * blockSizeRatio
-                else -> 0f // Higher frequencies zeroed to avoid artifacts
-            }
-        }
-        
-        // Alpha(u) * sqrt(2) in fixed-point (scaled for block size)
-        val kAlphaSqrt2 = FloatArray(blockSize) { i ->
-            if (i == 0) 1024f * blockSizeRatio else 1448f * blockSizeRatio
-        }
-        
-        val adjustments = FloatArray(coeffs.size) { 0f }
-        val blocksY = height / blockSize
-        val blocksX = width / blockSize
-        val blockIndex = blockY * blocksX + blockX
-        
-        // Horizontal boundary optimization (with right neighbor)
-        if (blockX < blocksX - 1) {
-            val rightBlockIndex = blockY * blocksX + (blockX + 1)
-            val rightBlock = allBlocks[rightBlockIndex]
-            
-            if (rightBlock != null) {
-                // Apply knusperli horizontal discontinuity minimization
-                // Only process low-to-mid frequencies (v < 4) to avoid artifacts
-                for (v in 0 until minOf(4, blockSize)) {
-                    var deltaV = 0f
-                    var hfPenalty = 0f
-                    
-                    for (u in 0 until blockSize) {
-                        val alpha = kAlphaSqrt2[u]
-                        val sign = if (u % 2 == 1) -1f else 1f
-                        val gi = result[v * blockSize + u] 
-                        val gj = rightBlock[v * blockSize + u]
-                        deltaV += alpha * (gj - sign * gi)
-                        hfPenalty += (u * u) * (gi * gi + gj * gj)
-                    }
-                    
-                    // Reduce correction if high-frequency patterns present
-                    if (hfPenalty > 400f * blockSizeRatio * blockSizeRatio) deltaV /= 2f
-                    
-                    for (u in 0 until blockSize) {
-                        val sign = if (u % 2 == 1) 1f else -1f
-                        adjustments[v * blockSize + u] += deltaV * kLinearGradient[u]
-                    }
-                }
-            }
-        }
-        
-        // Vertical boundary optimization (with bottom neighbor)  
-        if (blockY < blocksY - 1) {
-            val bottomBlockIndex = (blockY + 1) * blocksX + blockX
-            val bottomBlock = allBlocks[bottomBlockIndex]
-            
-            if (bottomBlock != null) {
-                // Apply knusperli vertical discontinuity minimization
-                // Only process low-to-mid frequencies (u < 4) to avoid artifacts
-                for (u in 0 until minOf(4, blockSize)) {
-                    var deltaU = 0f
-                    var hfPenalty = 0f
-                    
-                    for (v in 0 until blockSize) {
-                        val alpha = kAlphaSqrt2[v]
-                        val sign = if (v % 2 == 1) -1f else 1f
-                        val gi = result[v * blockSize + u]
-                        val gj = bottomBlock[v * blockSize + u] 
-                        deltaU += alpha * (gj - sign * gi)
-                        hfPenalty += (v * v) * (gi * gi + gj * gj)
-                    }
-                    
-                    // Reduce correction if high-frequency patterns present
-                    if (hfPenalty > 400f * blockSizeRatio * blockSizeRatio) deltaU /= 2f
-                    
-                    for (v in 0 until blockSize) {
-                        val sign = if (v % 2 == 1) 1f else -1f
-                        adjustments[v * blockSize + u] += deltaU * kLinearGradient[v]
-                    }
-                }
-            }
-        }
-        
-        // Apply adjustments while respecting quantization intervals
-        val kHalfSqrt2 = 0.7071f // sqrt(2)/2 for averaging horizontal/vertical corrections
-        
-        for (i in 1 until coeffs.size) { // Skip DC coefficient
-            val quantValue = quantTable[i] * qualityMult
-            val originalValue = coeffs[i] * quantValue
-            val intervalHalfWidth = quantValue * 0.5f
-            
-            // Apply knusperli-style correction with interval clamping
-            val correctedValue = originalValue + (adjustments[i] * kHalfSqrt2)
-            val minValue = originalValue - intervalHalfWidth
-            val maxValue = originalValue + intervalHalfWidth
-            
-            result[i] = correctedValue.coerceIn(minValue, maxValue)
-        }
-        
-        return result
     }
 
     /**
@@ -3341,212 +3081,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    // Helper function to read block data and return coefficients (for two-pass)
-    private fun readBlockDataForTwoPass(readPtr: Long, qY: Int, qCo: Int, qCg: Int, frameCounter: Int, tevVersion: Int): Tuple4<Int, Int, Int, Pair<ShortArray, Long>> {
-        var ptr = readPtr
-        
-        // Read block mode
-        val mode = vm.peek(ptr)?.toInt() ?: 0
-        ptr++
-        
-        var mvX = 0
-        var mvY = 0
-        val coeffs = ShortArray(384) // 256 Y + 64 Co + 64 Cg
-        
-        when (mode) {
-            0x00 -> {
-                // SKIP - no data to read
-            }
-            0x01 -> {
-                // INTRA - read DCT coefficients
-                for (i in 0 until 384) {
-                    coeffs[i] = vm.peek(ptr)?.toShort() ?: 0
-                    ptr++
-                }
-            }
-            0x02 -> {
-                // INTER - read motion vector and DCT coefficients
-                mvX = vm.peek(ptr)?.toByte()?.toInt() ?: 0
-                mvY = vm.peek(ptr + 1)?.toByte()?.toInt() ?: 0
-                ptr += 2
-                
-                for (i in 0 until 384) {
-                    coeffs[i] = vm.peek(ptr)?.toShort() ?: 0
-                    ptr++
-                }
-            }
-            0x03 -> {
-                // MOTION - read motion vector only
-                mvX = vm.peek(ptr)?.toByte()?.toInt() ?: 0
-                mvY = vm.peek(ptr + 1)?.toByte()?.toInt() ?: 0
-                ptr += 2
-            }
-        }
-        
-        return Tuple4(mode, mvX, mvY, Pair(coeffs, ptr))
-    }
-    
-    // Standard dequantization without boundary optimization
-    private fun standardDequantizeForTwoPass(coeffs: ShortArray, quantTable: IntArray, qScale: Int, rateControlFactor: Float, isLuma: Boolean): FloatArray {
-        val dequantized = FloatArray(coeffs.size)
-        
-        for (i in coeffs.indices) {
-            val quant = if (i == 0) 1f else quantTable[i] * jpeg_quality_to_mult(qScale * rateControlFactor)
-            dequantized[i] = coeffs[i].toFloat() * quant
-        }
-        
-        return dequantized
-    }
-    
-    // Knusperli boundary optimization function
-    private fun optimizeBlockBoundariesKnusperli(
-        currentBlock: ShortArray,
-        bx: Int, by: Int, 
-        blocksX: Int, blocksY: Int,
-        allBlocks: Array<ShortArray?>,
-        isLuma: Boolean
-    ): ShortArray {
-        val gradientAdjustmentPower = 0.05f // Much more conservative
-
-        val optimized = currentBlock.copyOf()
-        val blockSize = if (isLuma) 16 else 8
-        
-        // Skip perimeter blocks that don't have all neighbors
-        if (bx == 0 || by == 0 || bx >= blocksX - 1 || by >= blocksY - 1) {
-            return optimized
-        }
-        
-        // Get neighbor blocks
-        val leftBlock = allBlocks.getOrNull((by * blocksX + bx - 1))
-        val rightBlock = allBlocks.getOrNull((by * blocksX + bx + 1)) 
-        val topBlock = allBlocks.getOrNull(((by - 1) * blocksX + bx))
-        val bottomBlock = allBlocks.getOrNull(((by + 1) * blocksX + bx))
-        
-        // Only optimize if all neighbors exist
-        if (leftBlock == null || rightBlock == null || topBlock == null || bottomBlock == null) {
-            return optimized
-        }
-        
-        // Apply knusperli algorithm - focus on low-to-mid frequencies (u,v < half block size)
-        for (v in 0 until blockSize / 2) {
-            for (u in 0 until blockSize / 2) {
-                val coeffIdx = v * blockSize + u
-                
-                if (coeffIdx >= optimized.size) continue
-                
-                // Calculate boundary gradients (simplified knusperli approach)
-                val currentCoeff = optimized[coeffIdx].toFloat()
-                
-                // Apply very conservative boundary optimization
-                var adjustment = 0.0f
-                var adjustmentCount = 0
-                
-                // Left boundary (u == 0)
-                if (u == 0) {
-                    val leftCoeff = leftBlock[v * blockSize + (blockSize - 1)].toFloat()
-                    val gradient = currentCoeff - leftCoeff
-                    adjustment += gradient * gradientAdjustmentPower
-                    adjustmentCount++
-                }
-                
-                // Right boundary (u == blockSize-1) 
-                if (u == blockSize - 1) {
-                    val rightCoeff = rightBlock[v * blockSize + 0].toFloat()
-                    val gradient = rightCoeff - currentCoeff
-                    adjustment += gradient * gradientAdjustmentPower
-                    adjustmentCount++
-                }
-                
-                // Top boundary (v == 0)
-                if (v == 0) {
-                    val topCoeff = topBlock[(blockSize - 1) * blockSize + u].toFloat()
-                    val gradient = currentCoeff - topCoeff
-                    adjustment += gradient * gradientAdjustmentPower
-                    adjustmentCount++
-                }
-                
-                // Bottom boundary (v == blockSize-1)
-                if (v == blockSize - 1) {
-                    val bottomCoeff = bottomBlock[0 * blockSize + u].toFloat()
-                    val gradient = bottomCoeff - currentCoeff
-                    adjustment += gradient * gradientAdjustmentPower
-                    adjustmentCount++
-                }
-                
-                // Apply averaged adjustment with bounds checking
-                if (adjustmentCount > 0) {
-                    val avgAdjustment = adjustment / adjustmentCount
-                    val newValue = (currentCoeff + avgAdjustment).toInt()
-                    // Clamp to Short range to prevent overflow
-                    optimized[coeffIdx] = newValue.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-                }
-            }
-        }
-        
-        return optimized
-    }
-    
-    // Adjust coefficient based on gradient with quantization interval enforcement
-    private fun adjustCoeffWithGradientKnusperli(coeff: Float, gradient: Float, strength: Float): Float {
-        val adjustment = gradient * strength
-        return coeff + adjustment
-    }
-    
-    // IDCT functions that work directly with coefficient arrays
-    private fun tevIdct16x16_fromCoeffs(coeffs: FloatArray): IntArray {
-        val pixels = IntArray(256) // 16x16 pixels
-        
-        // Apply 2D IDCT
-        for (y in 0 until 16) {
-            for (x in 0 until 16) {
-                var sum = 0.0
-                
-                for (v in 0 until 16) {
-                    for (u in 0 until 16) {
-                        val coeff = coeffs[v * 16 + u]
-                        val cu = if (u == 0) 1.0 / Math.sqrt(2.0) else 1.0
-                        val cv = if (v == 0) 1.0 / Math.sqrt(2.0) else 1.0
-                        
-                        sum += 0.25 * cu * cv * coeff *
-                               Math.cos((2.0 * x + 1.0) * u * Math.PI / 32.0) *
-                               Math.cos((2.0 * y + 1.0) * v * Math.PI / 32.0)
-                    }
-                }
-                
-                pixels[y * 16 + x] = (sum / 4).toInt().coerceIn(0, 255)
-            }
-        }
-        
-        return pixels
-    }
-    
-    private fun tevIdct8x8_fromCoeffs(coeffs: FloatArray): IntArray {
-        val pixels = IntArray(64) // 8x8 pixels
-        
-        // Apply 2D IDCT
-        for (y in 0 until 8) {
-            for (x in 0 until 8) {
-                var sum = 0.0
-                
-                for (v in 0 until 8) {
-                    for (u in 0 until 8) {
-                        val coeff = coeffs[v * 8 + u]
-                        val cu = if (u == 0) 1.0 / Math.sqrt(2.0) else 1.0
-                        val cv = if (v == 0) 1.0 / Math.sqrt(2.0) else 1.0
-                        
-                        sum += 0.5 * cu * cv * coeff *
-                               Math.cos((2.0 * x + 1.0) * u * Math.PI / 16.0) *
-                               Math.cos((2.0 * y + 1.0) * v * Math.PI / 16.0)
-                    }
-                }
-                
-                pixels[y * 8 + x] = (sum / 2).toInt().coerceIn(0, 255)
-            }
-        }
-        
-        return pixels
-    }
-    
     // Helper functions for motion compensation and block handling in two-pass mode
     private fun handleSkipBlockTwoPass(startX: Int, startY: Int, currentRGBAddr: Long, prevRGBAddr: Long, 
                               width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int) {
@@ -3657,106 +3191,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val kHalfSqrt2 = 724 // sqrt(2)/2 in 10-bit fixed-point
 
         // Convert to dequantized FloatArrays and apply knusperli optimization
-        val optimizedYBlocks = convertAndOptimizeYBlocks(yBlocks, quantTableY, qY, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-        val optimizedCoBlocks = convertAndOptimizeBlocks(coBlocks, quantTableCo, qCo, rateControlFactors, blocksX, blocksY, 8, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-        val optimizedCgBlocks = convertAndOptimizeBlocks(cgBlocks, quantTableCg, qCg, rateControlFactors, blocksX, blocksY, 8, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-//        val optimizedYBlocks = convertAndDoNothing(yBlocks, quantTableY, qY, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-//        val optimizedCoBlocks = convertAndOptimizeBlocks(coBlocks, quantTableCo, qCo, rateControlFactors, blocksX, blocksY, 8, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-//        val optimizedCgBlocks = convertAndOptimizeBlocks(cgBlocks, quantTableCg, qCg, rateControlFactors, blocksX, blocksY, 8, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
+        val optimizedYBlocks = convertAndOptimize16x16Blocks(yBlocks, quantTableY, qY, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
+        val optimizedCoBlocks = convertAndOptimize8x8Blocks(coBlocks, quantTableCo, qCo, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
+        val optimizedCgBlocks = convertAndOptimize8x8Blocks(cgBlocks, quantTableCg, qCg, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
 
         return Triple(optimizedYBlocks, optimizedCoBlocks, optimizedCgBlocks)
     }
-    
-    private fun processBlocksWithKnusperli(
-        blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
-        blocksX: Int, blocksY: Int, blockSize: Int,
-        kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
-    ) {
-        val coeffsSize = blockSize * blockSize
-        val numBlocks = blocksX * blocksY
-        
-        // Step 1: Setup quantization intervals for all blocks (use integers like Google's code)
-        val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
-        val blocksMin = Array(numBlocks) { IntArray(coeffsSize) }
-        val blocksMax = Array(numBlocks) { IntArray(coeffsSize) }
-        val blocksOff = Array(numBlocks) { LongArray(coeffsSize) } // Long for accumulation
-        
-        for (blockIndex in 0 until numBlocks) {
-            val block = blocks[blockIndex]
-            if (block != null) {
-                val rateControlFactor = rateControlFactors[blockIndex]
-                for (i in 0 until coeffsSize) {
-                    val coeffIdx = i.coerceIn(0, quantTable.size - 1)
-                    val quant = if (i == 0) 1 else (quantTable[coeffIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).toInt()
-                    
-                    // Standard dequantized value (midpoint)
-                    blocksMid[blockIndex][i] = block[i].toInt() * quant
-                    
-                    // Quantization interval bounds
-                    val halfQuant = quant / 2
-                    blocksMin[blockIndex][i] = blocksMid[blockIndex][i] - halfQuant
-                    blocksMax[blockIndex][i] = blocksMid[blockIndex][i] + halfQuant
-                    
-                    // Initialize adjustment accumulator
-                    blocksOff[blockIndex][i] = 0L
-                }
-            }
-        }
-        
-        // Step 2: Horizontal continuity analysis
-        for (by in 0 until blocksY) {
-            for (bx in 0 until blocksX - 1) {
-                val leftBlockIndex = by * blocksX + bx
-                val rightBlockIndex = by * blocksX + (bx + 1)
-                
-                if (blocks[leftBlockIndex] != null && blocks[rightBlockIndex] != null) {
-                    analyzeHorizontalBoundary(
-                        leftBlockIndex, rightBlockIndex, blocksMid, blocksOff, 
-                        blockSize, kLinearGradient, kAlphaSqrt2
-                    )
-                }
-            }
-        }
-        
-        // Step 3: Vertical continuity analysis  
-        for (by in 0 until blocksY - 1) {
-            for (bx in 0 until blocksX) {
-                val topBlockIndex = by * blocksX + bx
-                val bottomBlockIndex = (by + 1) * blocksX + bx
-                
-                if (blocks[topBlockIndex] != null && blocks[bottomBlockIndex] != null) {
-                    analyzeVerticalBoundary(
-                        topBlockIndex, bottomBlockIndex, blocksMid, blocksOff,
-                        blockSize, kLinearGradient, kAlphaSqrt2
-                    )
-                }
-            }
-        }
-        
-        // Step 4: Apply corrections and clamp to quantization intervals
-        for (blockIndex in 0 until numBlocks) {
-            val block = blocks[blockIndex]
-            if (block != null) {
-                for (i in 0 until coeffsSize) {
-                    // Apply corrections with sqrt(2)/2 weighting (Google's exact formula with right shift)
-                    /*blocksMid[blockIndex][i] += ((blocksOff[blockIndex][i] * kHalfSqrt2) shr 31).toInt()
-                    
-                    // Clamp to quantization interval bounds
-                    blocksMid[blockIndex][i] = blocksMid[blockIndex][i].coerceIn(
-                        blocksMin[blockIndex][i], 
-                        blocksMax[blockIndex][i]
-                    )*/
-                    
-                    // Convert back to quantized coefficient for storage
-                    val rateControlFactor = rateControlFactors[blockIndex]
-                    val coeffIdx = i.coerceIn(0, quantTable.size - 1)
-                    val quant = if (i == 0) 1 else (quantTable[coeffIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).toInt()
-                    block[i] = (blocksMid[blockIndex][i] / quant).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-                }
-            }
-        }
-    }
-    
+
     // IDCT functions for knusperli-optimized coefficients (coefficients are already dequantized)
     private fun tevIdct16x16_fromOptimizedCoeffs(coeffs: FloatArray): IntArray {
         val result = IntArray(256) // 16x16
@@ -4070,7 +3511,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val rightOff = blocksOff[rightBlockIndex]
         
         // OPTIMIZATION 4: Process multiple frequencies in single loop for better cache locality
-        for (v in 0 until 8) { // Only low-to-mid frequencies
+        for (v in 0 until 16) { // Only low-to-mid frequencies
             var deltaV = 0L
             var hfPenalty = 0L
             val vOffset = v * 16
@@ -4143,7 +3584,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val bottomOff = blocksOff[bottomBlockIndex]
         
         // OPTIMIZATION 6: Optimized vertical analysis with better cache access pattern
-        for (u in 0 until 8) { // Only low-to-mid frequencies
+        for (u in 0 until 16) { // Only low-to-mid frequencies
             var deltaU = 0L
             var hfPenalty = 0L
             
@@ -4202,159 +3643,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             bottomOff[240 + u] -= correction * kLinearGradient16[15]
         }
     }
-    
-    private fun convertAndOptimizeYBlocks(
-        blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
-        blocksX: Int, blocksY: Int,
-        kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
-    ): Array<FloatArray?> {
-        // Process 16x16 Y blocks directly - don't subdivide into 8x8  
-        return convertAndOptimize16x16Blocks(blocks, quantTable, qScale, rateControlFactors,
-                                           blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-    }
-    
-    private fun convertAndOptimizeYBlocks_OLD(
-        blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
-        blocksX: Int, blocksY: Int,
-        kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
-    ): Array<FloatArray?> {
-        // OLD BROKEN VERSION: Convert 16x16 Y blocks to 8x8 sub-blocks for knusperli processing
-        val subBlocksX = blocksX * 2  // Each 16x16 becomes 2x2 sub-blocks
-        val subBlocksY = blocksY * 2
-        val subBlocks = Array<ShortArray?>(subBlocksX * subBlocksY) { null }
-        
-        // Split each 16x16 block into four 8x8 sub-blocks
-        for (by in 0 until blocksY) {
-            for (bx in 0 until blocksX) {
-                val blockIndex = by * blocksX + bx
-                val yBlock = blocks[blockIndex]
-                
-                if (yBlock != null) {
-                    // Split into 4 sub-blocks - try swapping row/col to fix mirroring
-                    // Top-left (0,0)
-                    val topLeftIndex = (by * 2 + 0) * subBlocksX + (bx * 2 + 0)
-                    subBlocks[topLeftIndex] = ShortArray(64)
-                    for (u in 0 until 8) {
-                        for (v in 0 until 8) {
-                            val srcIdx = u * 16 + v  // Top-left 8x8 of 16x16 (frequency domain)
-                            val dstIdx = u * 8 + v
-                            subBlocks[topLeftIndex]!![dstIdx] = yBlock[srcIdx]
-                        }
-                    }
-                    
-                    // Top-right (0,1)  
-                    val topRightIndex = (by * 2 + 0) * subBlocksX + (bx * 2 + 1)
-                    subBlocks[topRightIndex] = ShortArray(64)
-                    for (u in 0 until 8) {
-                        for (v in 0 until 8) {
-                            val srcIdx = u * 16 + (v + 8)  // Top-right 8x8 of 16x16
-                            val dstIdx = u * 8 + v
-                            subBlocks[topRightIndex]!![dstIdx] = yBlock[srcIdx]
-                        }
-                    }
-                    
-                    // Bottom-left (1,0)
-                    val bottomLeftIndex = (by * 2 + 1) * subBlocksX + (bx * 2 + 0) 
-                    subBlocks[bottomLeftIndex] = ShortArray(64)
-                    for (u in 0 until 8) {
-                        for (v in 0 until 8) {
-                            val srcIdx = (u + 8) * 16 + v  // Bottom-left 8x8 of 16x16
-                            val dstIdx = u * 8 + v
-                            subBlocks[bottomLeftIndex]!![dstIdx] = yBlock[srcIdx]
-                        }
-                    }
-                    
-                    // Bottom-right (1,1)
-                    val bottomRightIndex = (by * 2 + 1) * subBlocksX + (bx * 2 + 1)
-                    subBlocks[bottomRightIndex] = ShortArray(64)
-                    for (u in 0 until 8) {
-                        for (v in 0 until 8) {
-                            val srcIdx = (u + 8) * 16 + (v + 8)  // Bottom-right 8x8 of 16x16
-                            val dstIdx = u * 8 + v
-                            subBlocks[bottomRightIndex]!![dstIdx] = yBlock[srcIdx]
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Apply knusperli to the 8x8 sub-blocks
-        val optimizedSubBlocks = convertAndOptimizeBlocks(subBlocks, quantTable, qScale,
-                          // Expand rateControlFactors for sub-blocks (each block becomes 4)
-                          FloatArray(subBlocksX * subBlocksY) { i ->
-                              val originalBlockIndex = (i / 4) 
-                              rateControlFactors[originalBlockIndex.coerceIn(0, rateControlFactors.size - 1)]
-                          },
-                          subBlocksX, subBlocksY, 8,
-                          kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-        
-        // Merge the optimized 8x8 sub-blocks back into 16x16 blocks  
-        val result = Array<FloatArray?>(blocks.size) { null }
-        for (by in 0 until blocksY) {
-            for (bx in 0 until blocksX) {
-                val blockIndex = by * blocksX + bx
-                
-                if (blocks[blockIndex] != null) {
-                    result[blockIndex] = FloatArray(256) // 16x16 = 256
-                    
-                    // Merge 4 sub-blocks back using same u/v indexing as subdivision
-                    // Top-left (0,0)
-                    val topLeftIndex = (by * 2 + 0) * subBlocksX + (bx * 2 + 0)
-                    val topLeftBlock = optimizedSubBlocks[topLeftIndex]
-                    if (topLeftBlock != null) {
-                        for (u in 0 until 8) {
-                            for (v in 0 until 8) {
-                                val srcIdx = u * 8 + v
-                                val dstIdx = u * 16 + v  // Top-left of 16x16
-                                result[blockIndex]!![dstIdx] = topLeftBlock[srcIdx]
-                            }
-                        }
-                    }
-                    
-                    // Top-right (0,1)
-                    val topRightIndex = (by * 2 + 0) * subBlocksX + (bx * 2 + 1)
-                    val topRightBlock = optimizedSubBlocks[topRightIndex]
-                    if (topRightBlock != null) {
-                        for (u in 0 until 8) {
-                            for (v in 0 until 8) {
-                                val srcIdx = u * 8 + v
-                                val dstIdx = u * 16 + (v + 8)  // Top-right of 16x16
-                                result[blockIndex]!![dstIdx] = topRightBlock[srcIdx]
-                            }
-                        }
-                    }
-                    
-                    // Bottom-left (1,0)
-                    val bottomLeftIndex = (by * 2 + 1) * subBlocksX + (bx * 2 + 0)
-                    val bottomLeftBlock = optimizedSubBlocks[bottomLeftIndex]
-                    if (bottomLeftBlock != null) {
-                        for (u in 0 until 8) {
-                            for (v in 0 until 8) {
-                                val srcIdx = u * 8 + v
-                                val dstIdx = (u + 8) * 16 + v  // Bottom-left of 16x16
-                                result[blockIndex]!![dstIdx] = bottomLeftBlock[srcIdx]
-                            }
-                        }
-                    }
-                    
-                    // Bottom-right (1,1)
-                    val bottomRightIndex = (by * 2 + 1) * subBlocksX + (bx * 2 + 1)
-                    val bottomRightBlock = optimizedSubBlocks[bottomRightIndex]
-                    if (bottomRightBlock != null) {
-                        for (u in 0 until 8) {
-                            for (v in 0 until 8) {
-                                val srcIdx = u * 8 + v
-                                val dstIdx = (u + 8) * 16 + (v + 8)  // Bottom-right of 16x16
-                                result[blockIndex]!![dstIdx] = bottomRightBlock[srcIdx]
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        return result
-    }
 
     private fun convertAndDoNothing(
         blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
@@ -4402,12 +3690,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     }
 
-    private fun convertAndOptimizeBlocks(
+    private fun convertAndOptimize8x8Blocks(
         blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
-        blocksX: Int, blocksY: Int, blockSize: Int,
+        blocksX: Int, blocksY: Int,
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
     ): Array<FloatArray?> {
-        val coeffsSize = blockSize * blockSize
+        val coeffsSize = 64
         val numBlocks = blocksX * blocksY
         
         // Step 1: Setup quantization intervals for all blocks (using integers like Google's code)
@@ -4457,7 +3745,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 if (blocks[leftBlockIndex] != null && blocks[rightBlockIndex] != null) {
                     analyzeHorizontalBoundary(
                         leftBlockIndex, rightBlockIndex, blocksMid, blocksOff, 
-                        blockSize, kLinearGradient, kAlphaSqrt2
+                        kLinearGradient, kAlphaSqrt2
                     )
                 }
             }
@@ -4472,7 +3760,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 if (blocks[topBlockIndex] != null && blocks[bottomBlockIndex] != null) {
                     analyzeVerticalBoundary(
                         topBlockIndex, bottomBlockIndex, blocksMid, blocksOff,
-                        blockSize, kLinearGradient, kAlphaSqrt2
+                        kLinearGradient, kAlphaSqrt2
                     )
                 }
             }
@@ -4501,102 +3789,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
 
-    // Special handler for 16x16 Y blocks - treats each as four 8x8 sub-blocks 
-    private fun processYBlocksWithKnusperli(
-        blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
-        blocksX: Int, blocksY: Int,
-        kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
-    ) {
-        // Convert 16x16 Y blocks to 8x8 sub-blocks for knusperli processing
-        val subBlocksX = blocksX * 2  // Each 16x16 becomes 2x2 sub-blocks
-        val subBlocksY = blocksY * 2
-        val subBlocks = Array<ShortArray?>(subBlocksX * subBlocksY) { null }
-        
-        // Split each 16x16 block into four 8x8 sub-blocks
-        for (by in 0 until blocksY) {
-            for (bx in 0 until blocksX) {
-                val blockIndex = by * blocksX + bx
-                val yBlock = blocks[blockIndex]
-                
-                if (yBlock != null) {
-                    // Split into 4 sub-blocks: top-left, top-right, bottom-left, bottom-right
-                    for (subY in 0 until 2) {
-                        for (subX in 0 until 2) {
-                            val subBlockIndex = (by * 2 + subY) * subBlocksX + (bx * 2 + subX)
-                            subBlocks[subBlockIndex] = ShortArray(64) // 8x8 = 64
-                            
-                            // Copy 8x8 region from 16x16 block
-                            for (y in 0 until 8) {
-                                for (x in 0 until 8) {
-                                    val srcIdx = (subY * 8 + y) * 16 + (subX * 8 + x)
-                                    val dstIdx = y * 8 + x
-                                    subBlocks[subBlockIndex]!![dstIdx] = yBlock[srcIdx]
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Apply knusperli to the 8x8 sub-blocks
-        processBlocksWithKnusperli(subBlocks, quantTable, qScale,
-                                  // Expand rateControlFactors for sub-blocks (each block becomes 4)
-                                  FloatArray(subBlocksX * subBlocksY) { i ->
-                                      val originalBlockIndex = (i / 4) 
-                                      rateControlFactors[originalBlockIndex.coerceIn(0, rateControlFactors.size - 1)]
-                                  },
-                                  subBlocksX, subBlocksY, 8,
-                                  kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-        
-        // Merge the optimized 8x8 sub-blocks back into 16x16 blocks
-        for (by in 0 until blocksY) {
-            for (bx in 0 until blocksX) {
-                val blockIndex = by * blocksX + bx
-                val yBlock = blocks[blockIndex]
-                
-                if (yBlock != null) {
-                    // Merge 4 sub-blocks back into one 16x16 block
-                    for (subY in 0 until 2) {
-                        for (subX in 0 until 2) {
-                            val subBlockIndex = (by * 2 + subY) * subBlocksX + (bx * 2 + subX)
-                            val subBlock = subBlocks[subBlockIndex]
-                            
-                            if (subBlock != null) {
-                                // Copy 8x8 sub-block back to 16x16 block
-                                for (y in 0 until 8) {
-                                    for (x in 0 until 8) {
-                                        val srcIdx = y * 8 + x
-                                        val dstIdx = (subY * 8 + y) * 16 + (subX * 8 + x)
-                                        yBlock[dstIdx] = subBlock[srcIdx]
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
     private fun analyzeHorizontalBoundary(
         leftBlockIndex: Int, rightBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
-        blockSize: Int, kLinearGradient: IntArray, kAlphaSqrt2: IntArray
+        kLinearGradient: IntArray, kAlphaSqrt2: IntArray
     ) {
         // Only process low-to-mid frequencies (v < 4 for 8x8, v < 8 for 16x16)
-        val maxV = blockSize / 2
+        val maxV = 8
         
         for (v in 0 until maxV) {
             var deltaV = 0L
             var hfPenalty = 0L
             
             // Analyze boundary discontinuity 
-            for (u in 0 until blockSize) {
+            for (u in 0 until 8) {
                 val alpha = kAlphaSqrt2[u.coerceIn(0, 7)]
                 val sign = if (u and 1 == 1) -1 else 1
-                val gi = blocksMid[leftBlockIndex][v * blockSize + u]
-                val gj = blocksMid[rightBlockIndex][v * blockSize + u]
+                val gi = blocksMid[leftBlockIndex][v * 8 + u]
+                val gj = blocksMid[rightBlockIndex][v * 8 + u]
                 
                 deltaV += (alpha * (gj - sign * gi)).toLong()
                 hfPenalty += (u * u * (gi * gi + gj * gj)).toLong()
@@ -4605,11 +3815,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Apply corrections with high-frequency damping
             if (hfPenalty > 400) deltaV /= 2
             
-            for (u in 0 until blockSize) {
+            for (u in 0 until 8) {
                 val gradientIdx = u.coerceIn(0, kLinearGradient.size - 1)
                 val sign = if (u and 1 == 1) 1 else -1
-                blocksOff[leftBlockIndex][v * blockSize + u] = blocksOff[leftBlockIndex][v * blockSize + u] + deltaV * kLinearGradient[gradientIdx]
-                blocksOff[rightBlockIndex][v * blockSize + u] = blocksOff[rightBlockIndex][v * blockSize + u] + deltaV * kLinearGradient[gradientIdx] * sign
+                blocksOff[leftBlockIndex][v * 8 + u] = blocksOff[leftBlockIndex][v * 8 + u] + deltaV * kLinearGradient[gradientIdx]
+                blocksOff[rightBlockIndex][v * 8 + u] = blocksOff[rightBlockIndex][v * 8 + u] + deltaV * kLinearGradient[gradientIdx] * sign
             }
         }
     }
@@ -4617,21 +3827,21 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun analyzeVerticalBoundary(
         topBlockIndex: Int, bottomBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>, 
-        blockSize: Int, kLinearGradient: IntArray, kAlphaSqrt2: IntArray
+        kLinearGradient: IntArray, kAlphaSqrt2: IntArray
     ) {
         // Only process low-to-mid frequencies (u < 4 for 8x8, u < 8 for 16x16)
-        val maxU = blockSize / 2
+        val maxU = 8
         
         for (u in 0 until maxU) {
             var deltaU = 0L
             var hfPenalty = 0L
             
             // Analyze boundary discontinuity
-            for (v in 0 until blockSize) {
+            for (v in 0 until 8) {
                 val alpha = kAlphaSqrt2[v.coerceIn(0, 7)]
                 val sign = if (v and 1 == 1) -1 else 1
-                val gi = blocksMid[topBlockIndex][v * blockSize + u]
-                val gj = blocksMid[bottomBlockIndex][v * blockSize + u]
+                val gi = blocksMid[topBlockIndex][v * 8 + u]
+                val gj = blocksMid[bottomBlockIndex][v * 8 + u]
                 
                 deltaU += (alpha * (gj - sign * gi)).toLong()
                 hfPenalty += (v * v * (gi * gi + gj * gj)).toLong()
@@ -4640,16 +3850,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Apply corrections with high-frequency damping
             if (hfPenalty > 400) deltaU /= 2
             
-            for (v in 0 until blockSize) {
+            for (v in 0 until 8) {
                 val gradientIdx = v.coerceIn(0, kLinearGradient.size - 1)
                 val sign = if (v and 1 == 1) 1 else -1
-                blocksOff[topBlockIndex][v * blockSize + u] = blocksOff[topBlockIndex][v * blockSize + u] + deltaU * kLinearGradient[gradientIdx]
-                blocksOff[bottomBlockIndex][v * blockSize + u] = blocksOff[bottomBlockIndex][v * blockSize + u] + deltaU * kLinearGradient[gradientIdx] * sign
+                blocksOff[topBlockIndex][v * 8 + u] = blocksOff[topBlockIndex][v * 8 + u] + deltaU * kLinearGradient[gradientIdx]
+                blocksOff[bottomBlockIndex][v * 8 + u] = blocksOff[bottomBlockIndex][v * 8 + u] + deltaU * kLinearGradient[gradientIdx] * sign
             }
         }
     }
-
-    // Tuple class for returning multiple values
-    private data class Tuple4<T1, T2, T3, T4>(val first: T1, val second: T2, val third: T3, val fourth: T4)
 
 }

@@ -46,7 +46,7 @@ let subtitlePosition = 0  // 0=bottom center (default)
 let interactive = false
 let debugMotionVectors = false
 let deinterlaceAlgorithm = "yadif"
-let enableDeblocking = true  // Default: enabled (use -nodeblock to disable)
+let enableDeblocking = false  // Default: disabled (use -deblock to enable)
 let enableBoundaryAwareDecoding = false  // Default: disabled (use -boundaryaware to enable) // suitable for still frame and slide shows, absolutely unsuitable for videos
 
 if (exec_args.length > 2) {
@@ -56,8 +56,8 @@ if (exec_args.length > 2) {
             interactive = true
         } else if (arg === "-debug-mv") {
             debugMotionVectors = true
-        } else if (arg === "-nodeblock") {
-            enableDeblocking = false
+        } else if (arg === "-deblock") {
+            enableDeblocking = true
         } else if (arg === "-boundaryaware") {
             enableBoundaryAwareDecoding = true
         } else if (arg.startsWith("-deinterlace=")) {
