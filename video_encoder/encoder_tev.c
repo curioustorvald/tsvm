@@ -219,6 +219,7 @@ typedef struct {
     
     // Complexity statistics collection
     int stats_mode;           // 0 = disabled, 1 = enabled
+    int disable_rcf;          // 0 = rcf enabled, 1 = disabled
     float *complexity_values; // Array to store all complexity values
     int complexity_count;     // Current count of complexity values
     int complexity_capacity;  // Capacity of complexity_values array
@@ -852,7 +853,6 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         // Intra coding for keyframes
         block->mode = TEV_MODE_INTRA;
         block->mv_x = block->mv_y = 0;
-        block->rate_control_factor = enc->rate_control_factor;
         enc->blocks_intra++;
     } else {
         // Implement proper mode decision for P-frames
@@ -939,7 +939,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             // Even skip blocks benefit from complexity analysis for consistency
             float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
             add_complexity_value(enc, block_complexity);
-            block->rate_control_factor = complexity_to_rate_factor(block_complexity);
+            block->rate_control_factor = (enc->disable_rcf) ? 1.f : complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
@@ -954,7 +954,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             // Analyze complexity for motion blocks too
             float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
             add_complexity_value(enc, block_complexity);
-            block->rate_control_factor = complexity_to_rate_factor(block_complexity);
+            block->rate_control_factor = (enc->disable_rcf) ? 1.f : complexity_to_rate_factor(block_complexity);
             block->cbp = 0x00;  // No coefficients present
             // Zero out DCT coefficients for consistent format
             memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
@@ -967,7 +967,6 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
             // Motion compensation with threshold
             if (motion_sad <= 1024) {
                 block->mode = TEV_MODE_MOTION;
-                block->rate_control_factor = enc->rate_control_factor;
                 block->cbp = 0x00;  // No coefficients present
                 memset(block->y_coeffs, 0, sizeof(block->y_coeffs));
                 memset(block->co_coeffs, 0, sizeof(block->co_coeffs));
@@ -1000,7 +999,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     // Use enhanced complexity calculation that includes chroma information
     float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
     add_complexity_value(enc, block_complexity);
-    block->rate_control_factor = complexity_to_rate_factor(block_complexity);
+    block->rate_control_factor = (enc->disable_rcf) ? 1.f : complexity_to_rate_factor(block_complexity);
 
     // Apply fast DCT transform
     dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
@@ -2245,6 +2244,7 @@ static void show_usage(const char *program_name) {
     printf("  -v, --verbose          Verbose output\n");
     printf("  -t, --test             Test mode: generate solid colour frames\n");
     printf("  --enable-encode-stats  Collect and report block complexity statistics\n");
+    printf("  --disable-rcf          Disable per-block rate control\n");
     printf("  --help                 Show this help\n\n");
 //    printf("Rate Control Modes:\n");
 //    printf("  Quality mode (default): Fixed quantisation based on -q parameter\n");
@@ -2272,10 +2272,11 @@ static void show_usage(const char *program_name) {
     printf("  - Adaptive quality control with complexity-based adjustment\n");
     printf("Examples:\n");
     printf("  %s -i input.mp4 -o output.mv2                 # Use default setting (q=2)\n", program_name);
-    printf("  %s -i input.mp4 -s 352x288 -o output.mv2      # Encode at 352x288 resolution\n", program_name);
-    printf("  %s -i input.avi -f 15 -q 3 -o output.mv2      # Encode at 15 frames per second with higher quality\n", program_name);
-    printf("  %s -i input.mp4 -S input.srt -o output.mv2    # With SubRip subtitles\n", program_name);
-    printf("  %s -i input.mp4 -S input.smi -o output.mv2    # With SAMI subtitles\n", program_name);
+    printf("  %s -i input.mkv -s cif -o output.mv2          # Encode at CIF (352x288) resolution\n", program_name);
+    printf("  %s -i input.mxf -f 15 -q 3 -p -o output.mv2   # Encode at 15 FPS progressive with higher quality\n", program_name);
+    printf("  %s -i input.webp -Q 50 -o output.mv2          # Encode at quantiser level 50\n", program_name);
+    printf("  %s -i input.flv -S input.srt -o output.mv2    # With SubRip subtitles\n", program_name);
+    printf("  %s -i input.ts -S input.smi -o output.mv2     # With SAMI subtitles\n", program_name);
 //    printf("  %s -i input.mp4 -b 800 -o output.mv2          # 800 kbps bitrate target\n", program_name);
 //    printf("  %s -i input.avi -f 15 -b 500 -o output.mv2    # 15fps @ 500 kbps\n", program_name);
 //    printf("  %s --test -b 1000 -o test.mv2                 # Test with 1000 kbps target\n", program_name);
@@ -2333,6 +2334,7 @@ int main(int argc, char *argv[]) {
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"enable-encode-stats", no_argument, 0, 1000},
+        {"disable-rcf", no_argument, 0, 1100},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -2404,6 +2406,9 @@ int main(int argc, char *argv[]) {
             case 1000:  // --enable-encode-stats
                 enc->stats_mode = 1;
                 break;
+             case 1100:  // --disable-rcf
+                enc->disable_rcf = 1;
+                break;
             case 0:
                 if (strcmp(long_options[option_index].name, "help") == 0) {
                     show_usage(argv[0]);
@@ -2414,7 +2419,7 @@ int main(int argc, char *argv[]) {
             case 'Q':
                 enc->qualityY = CLAMP(atoi(optarg), 0, 100);
                 enc->qualityCo = enc->qualityY;
-                enc->qualityCg = enc->qualityCo / 2;
+                enc->qualityCg = (enc->qualityY == 100) ? enc->qualityY : enc->qualityCo >> 2;
                 break;
             default:
                 show_usage(argv[0]);
