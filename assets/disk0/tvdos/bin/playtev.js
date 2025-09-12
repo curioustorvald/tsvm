@@ -3,7 +3,8 @@
 // Usage: playtev moviefile.tev [options]
 // Options: -i (interactive), -debug-mv (show motion vector debug visualization)
 //          -deinterlace=algorithm (yadif or bwdif, default: yadif)
-//          -nodeblock (disble deblocking filter)
+//          -nodeblock (disable post-processing deblocking filter)
+//          -boundaryaware (enable boundary-aware decoding to prevent artifacts at DCT level)
 
 const WIDTH = 560
 const HEIGHT = 448
@@ -46,6 +47,7 @@ let interactive = false
 let debugMotionVectors = false
 let deinterlaceAlgorithm = "yadif"
 let enableDeblocking = true  // Default: enabled (use -nodeblock to disable)
+let enableBoundaryAwareDecoding = false  // Default: disabled (use -boundaryaware to enable) // suitable for still frame and slide shows, absolutely unsuitable for videos
 
 if (exec_args.length > 2) {
     for (let i = 2; i < exec_args.length; i++) {
@@ -56,6 +58,8 @@ if (exec_args.length > 2) {
             debugMotionVectors = true
         } else if (arg === "-nodeblock") {
             enableDeblocking = false
+        } else if (arg === "-boundaryaware") {
+            enableBoundaryAwareDecoding = true
         } else if (arg.startsWith("-deinterlace=")) {
             deinterlaceAlgorithm = arg.substring(13)
         }
@@ -96,6 +100,9 @@ audio.resetParams(0)
 audio.purgeQueue(0)
 audio.setPcmMode(0)
 audio.setMasterVolume(0, 255)
+
+// set colour zero as half-opaque black
+graphics.setPalette(0, 0, 0, 0, 9)
 
 // Subtitle display functions
 function clearSubtitleArea() {
@@ -392,7 +399,10 @@ if (version !== TEV_VERSION_YCOCG && version !== TEV_VERSION_XYB) {
 let colorSpace = (version === TEV_VERSION_XYB) ? "XYB" : "YCoCg-R"
 if (interactive) {
     con.move(1,1)
-    println(`Push and hold Backspace to exit | TEV Format ${version} (${colorSpace}) | Deblocking: ${enableDeblocking ? 'ON' : 'OFF'}`)
+    if (colorSpace == "XYB")
+        println(`Push and hold Backspace to exit | TEV Format ${version} (${colorSpace}) | Deblock: ${enableDeblocking ? 'ON' : 'OFF'}, ${enableBoundaryAwareDecoding ? 'ON' : 'OFF'}`);
+    else
+        println(`Push and hold Backspace to exit | Deblock: ${enableDeblocking ? 'ON' : 'OFF'} | BoundaryAware: ${enableBoundaryAwareDecoding ? 'ON' : 'OFF'}`);
 }
 
 let width = seqread.readShort()
@@ -655,14 +665,14 @@ try {
                         if (isInterlaced) {
                             // For interlaced: decode current frame into currentFieldAddr
                             // For display: use prevFieldAddr as current, currentFieldAddr as next
-                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking)
+                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
                             graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
 
                             // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
                             rotateFieldBuffers()
                         } else {
                             // Progressive or first frame: normal decoding without temporal prediction
-                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking)
+                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
                         }
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds
@@ -750,10 +760,10 @@ try {
 
             if (!hasSubtitle) {
                 con.move(31, 1)
-                graphics.setTextFore(161)
+                con.color_pair(253, 0)
                 print(`Frame: ${frameCount}/${totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
                 con.move(32, 1)
-                graphics.setTextFore(161)
+                con.color_pair(253, 0)
                 print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
                 con.move(1, 1)
             }
@@ -781,7 +791,10 @@ finally {
     if (interactive) {
         //con.clear()
     }
+
+    // set colour zero as opaque black
 }
 
+graphics.setPalette(0, 0, 0, 0, 0)
 con.move(cy, cx) // restore cursor
 return errorlevel

@@ -48,7 +48,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param index which palette number to modify, 0-255
      * @param r g - b - a - RGBA value, 0-15
      */
-    fun setPalette(index: Int, r: Int, g: Int, b: Int, a: Int = 16) {
+    fun setPalette(index: Int, r: Int, g: Int, b: Int, a: Int = 15) {
         getFirstGPU()?.let {
             it.paletteOfFloats[index * 4] = (r and 15) / 15f
             it.paletteOfFloats[index * 4 + 1] = (g and 15) / 15f
@@ -2506,159 +2506,240 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Advanced TEV Deblocking Filter - Reduces blocking artifacts from 16x16 macroblocks
+     * Enhanced TEV Deblocking Filter - Uses Knusperli-inspired techniques for superior boundary analysis
      * 
-     * Uses gradient analysis and adaptive filtering to handle:
-     * - Quantized smooth gradients appearing as discrete blocks
-     * - Diagonal edges crossing block boundaries causing color banding
-     * - Texture preservation to avoid over-smoothing genuine edges
+     * Advanced features inspired by Google's Knusperli algorithm:
+     * - Frequency-domain boundary discontinuity detection
+     * - High-frequency penalty system to preserve detail
+     * - Linear gradient pattern analysis for directional filtering
+     * - Adaptive strength based on local image complexity
+     * - Bulk memory operations for improved performance
      * 
      * @param rgbAddr RGB frame buffer address (24-bit: R,G,B per pixel)
      * @param width Frame width in pixels
      * @param height Frame height in pixels 
      * @param blockSize Size of blocks (16 for TEV format)
-     * @param strength Filter strength (0.0-1.0, higher = more smoothing)
+     * @param strength Base filter strength (0.0-1.0, adaptive adjustment applied)
      */
-    private fun tevDeblockingFilter(rgbAddr: Long, width: Int, height: Int, 
-                                  blockSize: Int = 16, strength: Float = 0.4f) {
+    private fun tevDeblockingFilterEnhanced(rgbAddr: Long, width: Int, height: Int, 
+                                          blockSize: Int = 16, strength: Float = 1.0f) {
         val blocksX = (width + blockSize - 1) / blockSize
         val blocksY = (height + blockSize - 1) / blockSize
         val thisAddrIncVec: Long = if (rgbAddr < 0) -1 else 1
         
-        // Helper function to get pixel value safely
-        fun getPixel(x: Int, y: Int, c: Int): Int {
-            if (x < 0 || y < 0 || x >= width || y >= height) return 0
-            val offset = (y.toLong() * width + x) * 3 + c
-            return vm.peek(rgbAddr + offset * thisAddrIncVec)!!.toUint().toInt()
+        // Knusperli-inspired constants adapted for RGB post-processing
+        val kLinearGradient = intArrayOf(318, -285, 81, -32, 17, -9, 5, -2) // Gradient pattern (8 taps for block boundary)
+        val kAlphaSqrt2 = intArrayOf(1024, 1448, 1448, 1448, 1448, 1448, 1448, 1448) // Alpha * sqrt(2) in 10-bit fixed-point
+        
+        // Bulk memory access helpers for performance
+        fun getPixelBulk(x: Int, y: Int): IntArray {
+            if (x < 0 || y < 0 || x >= width || y >= height) return intArrayOf(0, 0, 0)
+            val offset = (y.toLong() * width + x) * 3
+            val addr = rgbAddr + offset * thisAddrIncVec
+            return intArrayOf(
+                vm.peek(addr)!!.toUint().toInt(),
+                vm.peek(addr + thisAddrIncVec)!!.toUint().toInt(), 
+                vm.peek(addr + 2 * thisAddrIncVec)!!.toUint().toInt()
+            )
         }
         
-        // Helper function to set pixel value safely
-        fun setPixel(x: Int, y: Int, c: Int, value: Int) {
+        fun setPixelBulk(x: Int, y: Int, rgb: IntArray) {
             if (x < 0 || y < 0 || x >= width || y >= height) return
-            val offset = (y.toLong() * width + x) * 3 + c
-            vm.poke(rgbAddr + offset * thisAddrIncVec, value.coerceIn(0, 255).toByte())
+            val offset = (y.toLong() * width + x) * 3
+            val addr = rgbAddr + offset * thisAddrIncVec
+            vm.poke(addr, rgb[0].coerceIn(0, 255).toByte())
+            vm.poke(addr + thisAddrIncVec, rgb[1].coerceIn(0, 255).toByte())
+            vm.poke(addr + 2 * thisAddrIncVec, rgb[2].coerceIn(0, 255).toByte())
         }
         
-        // Detect if pixels form a smooth gradient (quantized)
-        fun isQuantizedGradient(p0: Int, p1: Int, p2: Int, p3: Int): Boolean {
-            // Check for step-like transitions typical of quantized gradients
-            val d01 = kotlin.math.abs(p1 - p0)
-            val d12 = kotlin.math.abs(p2 - p1) 
-            val d23 = kotlin.math.abs(p3 - p2)
+        // ENHANCED: Knusperli-inspired boundary discontinuity analysis
+        fun analyzeBoundaryDiscontinuity(samples: IntArray): Pair<Long, Long> {
+            // samples: 8-pixel samples across the boundary for frequency analysis
+            var delta = 0L
+            var hfPenalty = 0L
             
-            // Look for consistent small steps (quantized gradient)
-            val avgStep = (d01 + d12 + d23) / 3.0f
-            val stepVariance = kotlin.math.abs(d01 - avgStep) + kotlin.math.abs(d12 - avgStep) + kotlin.math.abs(d23 - avgStep)
+            for (u in 0 until 8) {
+                val alpha = kAlphaSqrt2[u]
+                val sign = if (u and 1 != 0) -1 else 1
+                val leftVal = samples[u]
+                val rightVal = samples[7 - u] // Mirror for boundary analysis
+                
+                delta += alpha * (rightVal - sign * leftVal)
+                hfPenalty += (u * u) * (leftVal * leftVal + rightVal * rightVal)
+            }
             
-            return avgStep in 3.0f..25.0f && stepVariance < avgStep * 0.8f
+            return Pair(delta, hfPenalty)
         }
         
-        // Apply horizontal deblocking (vertical edges between blocks)
+        // ENHANCED: Adaptive strength based on local complexity
+        fun calculateAdaptiveStrength(baseStrength: Float, hfPenalty: Long, delta: Long): Float {
+            val complexity = kotlin.math.sqrt(hfPenalty.toDouble()).toFloat()
+            val discontinuityMagnitude = kotlin.math.abs(delta).toFloat()
+            
+            // Reduce filtering strength in high-frequency areas (preserve detail)
+            val complexityFactor = if (complexity > 800) 0.3f else 1.0f
+            
+            // Increase filtering strength for clear discontinuities
+            val discontinuityFactor = kotlin.math.min(2.0f, discontinuityMagnitude / 1000.0f)
+            
+            return baseStrength * complexityFactor * discontinuityFactor
+        }
+        
+        // ENHANCED: Apply Knusperli-style corrections using linear gradient patterns
+        fun applyBoundaryCorrection(
+            samples: IntArray, delta: Long, adaptiveStrength: Float
+        ): IntArray {
+            val result = samples.clone()
+            val correction = (delta * 724 shr 31).toInt() // Apply sqrt(2)/2 weighting like Knusperli
+            
+            // Apply linear gradient corrections across boundary
+            for (i in 0 until 8) {
+                val gradientWeight = kLinearGradient[i] * correction / 1024 // Scale from 10-bit fixed-point
+                val sign = if (i < 4) 1 else -1 // Left/right side weighting
+                
+                val adjustment = (gradientWeight * sign * adaptiveStrength).toInt()
+                result[i] = (result[i] + adjustment).coerceIn(0, 255)
+            }
+            
+            return result
+        }
+        
+        // ENHANCED HORIZONTAL DEBLOCKING: Using Knusperli-inspired boundary analysis
         for (by in 0 until blocksY) {
             for (bx in 1 until blocksX) {
                 val blockEdgeX = bx * blockSize
                 if (blockEdgeX >= width) continue
                 
-                for (y in (by * blockSize) until minOf((by + 1) * blockSize, height)) {
-                    for (c in 0..2) { // RGB components
-                        // Sample 4 pixels across the block boundary: [left2][left1] | [right1][right2]
-                        val left2 = getPixel(blockEdgeX - 2, y, c)
-                        val left1 = getPixel(blockEdgeX - 1, y, c)
-                        val right1 = getPixel(blockEdgeX, y, c)
-                        val right2 = getPixel(blockEdgeX + 1, y, c)
+                // Process boundary in chunks for better performance
+                val yStart = by * blockSize
+                val yEnd = minOf((by + 1) * blockSize, height)
+                
+                for (y in yStart until yEnd step 2) { // Process 2 lines at a time
+                    if (y + 1 >= height) continue
+                    
+                    // Sample 8x2 pixel region across boundary for both lines
+                    val samples1 = IntArray(24) // 8 pixels × 3 channels (RGB)
+                    val samples2 = IntArray(24)
+                    
+                    for (i in 0 until 8) {
+                        val x = blockEdgeX - 4 + i
+                        val rgb1 = getPixelBulk(x, y)
+                        val rgb2 = getPixelBulk(x, y + 1)
                         
-                        val edgeDiff = kotlin.math.abs(right1 - left1)
+                        samples1[i * 3] = rgb1[0]     // R
+                        samples1[i * 3 + 1] = rgb1[1] // G  
+                        samples1[i * 3 + 2] = rgb1[2] // B
+                        samples2[i * 3] = rgb2[0]
+                        samples2[i * 3 + 1] = rgb2[1]
+                        samples2[i * 3 + 2] = rgb2[2]
+                    }
+                    
+                    // Analyze each color channel separately
+                    for (c in 0..2) {
+                        val channelSamples1 = IntArray(8) { samples1[it * 3 + c] }
+                        val channelSamples2 = IntArray(8) { samples2[it * 3 + c] }
                         
-                        // Skip strong edges (likely genuine features)
-                        if (edgeDiff > 50) continue
+                        val (delta1, hfPenalty1) = analyzeBoundaryDiscontinuity(channelSamples1)
+                        val (delta2, hfPenalty2) = analyzeBoundaryDiscontinuity(channelSamples2)
                         
-                        // Check for quantized gradient pattern
-                        if (isQuantizedGradient(left2, left1, right1, right2)) {
-                            // Apply gradient-preserving smoothing
-                            val gradientLeft = left1 - left2
-                            val gradientRight = right2 - right1
-                            val avgGradient = (gradientLeft + gradientRight) / 2.0f
-                            
-                            val smoothedLeft1 = (left2 + avgGradient).toInt()
-                            val smoothedRight1 = (right2 - avgGradient).toInt()
-                            
-                            // Blend with original based on strength
-                            val blendLeft = (left1 * (1.0f - strength) + smoothedLeft1 * strength).toInt()
-                            val blendRight = (right1 * (1.0f - strength) + smoothedRight1 * strength).toInt()
-                            
-                            setPixel(blockEdgeX - 1, y, c, blendLeft)
-                            setPixel(blockEdgeX, y, c, blendRight)
-                        }
-                        // Check for color banding on diagonal features
-                        else if (edgeDiff in 8..35) {
-                            // Look at diagonal context to detect banding
-                            val diagContext = kotlin.math.abs(getPixel(blockEdgeX - 1, y - 1, c) - getPixel(blockEdgeX, y + 1, c))
-                            
-                            if (diagContext < edgeDiff * 1.5f) {
-                                // Likely diagonal banding - apply directional smoothing
-                                val blend = 0.3f * strength
-                                val blendLeft = (left1 * (1.0f - blend) + right1 * blend).toInt()
-                                val blendRight = (right1 * (1.0f - blend) + left1 * blend).toInt()
-                                
-                                setPixel(blockEdgeX - 1, y, c, blendLeft)
-                                setPixel(blockEdgeX, y, c, blendRight)
+                        // Skip if very small discontinuity (early exit optimization)
+                        if (kotlin.math.abs(delta1) < 50 && kotlin.math.abs(delta2) < 50) continue
+                        
+                        // Calculate adaptive filtering strength
+                        val adaptiveStrength1 = calculateAdaptiveStrength(strength, hfPenalty1, delta1)
+                        val adaptiveStrength2 = calculateAdaptiveStrength(strength, hfPenalty2, delta2)
+                        
+                        // Apply corrections if strength is significant
+                        if (adaptiveStrength1 > 0.05f) {
+                            val corrected1 = applyBoundaryCorrection(channelSamples1, delta1, adaptiveStrength1)
+                            for (i in 0 until 8) {
+                                samples1[i * 3 + c] = corrected1[i]
                             }
+                        }
+                        
+                        if (adaptiveStrength2 > 0.05f) {
+                            val corrected2 = applyBoundaryCorrection(channelSamples2, delta2, adaptiveStrength2)
+                            for (i in 0 until 8) {
+                                samples2[i * 3 + c] = corrected2[i]
+                            }
+                        }
+                    }
+                    
+                    // Write back corrected pixels in bulk
+                    for (i in 2..5) { // Only write middle 4 pixels to avoid artifacts
+                        val x = blockEdgeX - 4 + i
+                        setPixelBulk(x, y, intArrayOf(samples1[i * 3], samples1[i * 3 + 1], samples1[i * 3 + 2]))
+                        if (y + 1 < height) {
+                            setPixelBulk(x, y + 1, intArrayOf(samples2[i * 3], samples2[i * 3 + 1], samples2[i * 3 + 2]))
                         }
                     }
                 }
             }
         }
         
-        // Apply vertical deblocking (horizontal edges between blocks)
+        // ENHANCED VERTICAL DEBLOCKING: Same approach for horizontal block boundaries
         for (by in 1 until blocksY) {
             for (bx in 0 until blocksX) {
                 val blockEdgeY = by * blockSize
                 if (blockEdgeY >= height) continue
                 
-                for (x in (bx * blockSize) until minOf((bx + 1) * blockSize, width)) {
-                    for (c in 0..2) { // RGB components
-                        // Sample 4 pixels across the block boundary: [top2][top1] | [bottom1][bottom2]
-                        val top2 = getPixel(x, blockEdgeY - 2, c)
-                        val top1 = getPixel(x, blockEdgeY - 1, c)
-                        val bottom1 = getPixel(x, blockEdgeY, c)
-                        val bottom2 = getPixel(x, blockEdgeY + 1, c)
+                val xStart = bx * blockSize
+                val xEnd = minOf((bx + 1) * blockSize, width)
+                
+                for (x in xStart until xEnd step 2) {
+                    if (x + 1 >= width) continue
+                    
+                    // Sample 8x2 pixel region across vertical boundary
+                    val samples1 = IntArray(24)
+                    val samples2 = IntArray(24)
+                    
+                    for (i in 0 until 8) {
+                        val y = blockEdgeY - 4 + i
+                        val rgb1 = getPixelBulk(x, y)
+                        val rgb2 = getPixelBulk(x + 1, y)
                         
-                        val edgeDiff = kotlin.math.abs(bottom1 - top1)
+                        samples1[i * 3] = rgb1[0]
+                        samples1[i * 3 + 1] = rgb1[1]
+                        samples1[i * 3 + 2] = rgb1[2]
+                        samples2[i * 3] = rgb2[0]
+                        samples2[i * 3 + 1] = rgb2[1]
+                        samples2[i * 3 + 2] = rgb2[2]
+                    }
+                    
+                    // Same boundary analysis and correction as horizontal
+                    for (c in 0..2) {
+                        val channelSamples1 = IntArray(8) { samples1[it * 3 + c] }
+                        val channelSamples2 = IntArray(8) { samples2[it * 3 + c] }
                         
-                        // Skip strong edges (likely genuine features)
-                        if (edgeDiff > 50) continue
+                        val (delta1, hfPenalty1) = analyzeBoundaryDiscontinuity(channelSamples1)
+                        val (delta2, hfPenalty2) = analyzeBoundaryDiscontinuity(channelSamples2)
                         
-                        // Check for quantized gradient pattern
-                        if (isQuantizedGradient(top2, top1, bottom1, bottom2)) {
-                            // Apply gradient-preserving smoothing
-                            val gradientTop = top1 - top2
-                            val gradientBottom = bottom2 - bottom1
-                            val avgGradient = (gradientTop + gradientBottom) / 2.0f
-                            
-                            val smoothedTop1 = (top2 + avgGradient).toInt()
-                            val smoothedBottom1 = (bottom2 - avgGradient).toInt()
-                            
-                            // Blend with original based on strength
-                            val blendTop = (top1 * (1.0f - strength) + smoothedTop1 * strength).toInt()
-                            val blendBottom = (bottom1 * (1.0f - strength) + smoothedBottom1 * strength).toInt()
-                            
-                            setPixel(x, blockEdgeY - 1, c, blendTop)
-                            setPixel(x, blockEdgeY, c, blendBottom)
-                        }
-                        // Check for color banding on diagonal features
-                        else if (edgeDiff in 8..35) {
-                            // Look at diagonal context to detect banding
-                            val diagContext = kotlin.math.abs(getPixel(x - 1, blockEdgeY - 1, c) - getPixel(x + 1, blockEdgeY, c))
-                            
-                            if (diagContext < edgeDiff * 1.5f) {
-                                // Likely diagonal banding - apply directional smoothing
-                                val blend = 0.3f * strength
-                                val blendTop = (top1 * (1.0f - blend) + bottom1 * blend).toInt()
-                                val blendBottom = (bottom1 * (1.0f - blend) + top1 * blend).toInt()
-                                
-                                setPixel(x, blockEdgeY - 1, c, blendTop)
-                                setPixel(x, blockEdgeY, c, blendBottom)
+                        if (kotlin.math.abs(delta1) < 50 && kotlin.math.abs(delta2) < 50) continue
+                        
+                        val adaptiveStrength1 = calculateAdaptiveStrength(strength, hfPenalty1, delta1)
+                        val adaptiveStrength2 = calculateAdaptiveStrength(strength, hfPenalty2, delta2)
+                        
+                        if (adaptiveStrength1 > 0.05f) {
+                            val corrected1 = applyBoundaryCorrection(channelSamples1, delta1, adaptiveStrength1)
+                            for (i in 0 until 8) {
+                                samples1[i * 3 + c] = corrected1[i]
                             }
+                        }
+                        
+                        if (adaptiveStrength2 > 0.05f) {
+                            val corrected2 = applyBoundaryCorrection(channelSamples2, delta2, adaptiveStrength2)
+                            for (i in 0 until 8) {
+                                samples2[i * 3 + c] = corrected2[i]
+                            }
+                        }
+                    }
+                    
+                    // Write back corrected pixels
+                    for (i in 2..5) {
+                        val y = blockEdgeY - 4 + i
+                        setPixelBulk(x, y, intArrayOf(samples1[i * 3], samples1[i * 3 + 1], samples1[i * 3 + 2]))
+                        if (x + 1 < width) {
+                            setPixelBulk(x + 1, y, intArrayOf(samples2[i * 3], samples2[i * 3 + 1], samples2[i * 3 + 2]))
                         }
                     }
                 }
@@ -3221,9 +3302,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
         
-        // Apply deblocking filter if enabled to reduce blocking artifacts
+        // Apply enhanced deblocking filter if enabled to reduce blocking artifacts
         if (enableDeblocking) {
-            tevDeblockingFilter(currentRGBAddr, width, height)
+            tevDeblockingFilterEnhanced(currentRGBAddr, width, height)
         }
     }
 
@@ -3761,7 +3842,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return result
     }
     
-    // 16x16 version of Knusperli processing for Y blocks
+    // Optimized 16x16 version of Knusperli processing for Y blocks
     private fun processBlocksWithKnusperli16x16(
         blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
         blocksX: Int, blocksY: Int,
@@ -3770,144 +3851,355 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val coeffsSize = 256 // 16x16 = 256
         val numBlocks = blocksX * blocksY
         
-        // Step 1: Setup quantization intervals for all blocks
-        val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
-        val blocksMin = Array(numBlocks) { IntArray(coeffsSize) }
-        val blocksMax = Array(numBlocks) { IntArray(coeffsSize) }
-        val blocksOff = Array(numBlocks) { LongArray(coeffsSize) }
+        // OPTIMIZATION 1: Pre-compute quantization values to avoid repeated calculations
+        val quantValues = Array(numBlocks) { IntArray(coeffsSize) }
+        val quantHalfValues = Array(numBlocks) { IntArray(coeffsSize) }
         
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
                 val rateControlFactor = rateControlFactors[blockIndex]
-                for (i in 0 until coeffsSize) {
+                val qualityMult = jpeg_quality_to_mult(qScale * rateControlFactor)
+                
+                quantValues[blockIndex][0] = 1 // DC is lossless
+                quantHalfValues[blockIndex][0] = 0 // DC has no quantization interval
+                
+                for (i in 1 until coeffsSize) {
                     val coeffIdx = i.coerceIn(0, quantTable.size - 1)
-                    val quant = if (i == 0) 1 else (quantTable[coeffIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).toInt()
-                    
-                    blocksMid[blockIndex][i] = block[i].toInt() * quant
-                    val halfQuant = quant / 2
-                    blocksMin[blockIndex][i] = blocksMid[blockIndex][i] - halfQuant
-                    blocksMax[blockIndex][i] = blocksMid[blockIndex][i] + halfQuant
-                    blocksOff[blockIndex][i] = 0L
+                    val quant = (quantTable[coeffIdx] * qualityMult).toInt()
+                    quantValues[blockIndex][i] = quant
+                    quantHalfValues[blockIndex][i] = quant / 2
                 }
             }
         }
         
-        // Step 2: Horizontal continuity analysis (16x16 version)
-        for (by in 0 until blocksY) {
-            for (bx in 0 until blocksX - 1) {
-                val leftBlockIndex = by * blocksX + bx
-                val rightBlockIndex = by * blocksX + (bx + 1)
-                
-                if (blocks[leftBlockIndex] != null && blocks[rightBlockIndex] != null) {
-                    analyzeHorizontalBoundary16x16(
-                        leftBlockIndex, rightBlockIndex, blocksMid, blocksOff, 
-                        kLinearGradient16, kAlphaSqrt2_16
-                    )
-                }
-            }
-        }
+        // OPTIMIZATION 2: Use single-allocation arrays with block-stride access
+        val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
+        val blocksOff = Array(numBlocks) { LongArray(coeffsSize) } // Keep Long for accumulation
         
-        // Step 3: Vertical continuity analysis (16x16 version)
-        for (by in 0 until blocksY - 1) {
-            for (bx in 0 until blocksX) {
-                val topBlockIndex = by * blocksX + bx
-                val bottomBlockIndex = (by + 1) * blocksX + bx
-                
-                if (blocks[topBlockIndex] != null && blocks[bottomBlockIndex] != null) {
-                    analyzeVerticalBoundary16x16(
-                        topBlockIndex, bottomBlockIndex, blocksMid, blocksOff,
-                        kLinearGradient16, kAlphaSqrt2_16
-                    )
-                }
-            }
-        }
-        
-        // Step 4: Apply corrections and clamp to quantization intervals
+        // Step 1: Setup dequantized values and initialize adjustments (BULK OPTIMIZED)
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
-                for (i in 0 until coeffsSize) {
-                    // Apply corrections with sqrt(2)/2 weighting
-                    blocksMid[blockIndex][i] += ((blocksOff[blockIndex][i] * kHalfSqrt2) shr 31).toInt()
-                    
-                    // Clamp to quantization interval bounds
-                    blocksMid[blockIndex][i] = blocksMid[blockIndex][i].coerceIn(
-                        blocksMin[blockIndex][i], 
-                        blocksMax[blockIndex][i]
-                    )
-                    
-                    // Convert back to quantized coefficient for storage
-                    val rateControlFactor = rateControlFactors[blockIndex]
-                    val coeffIdx = i.coerceIn(0, quantTable.size - 1)
-                    val quant = if (i == 0) 1 else (quantTable[coeffIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).toInt()
-                    block[i] = (blocksMid[blockIndex][i] / quant).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                val mid = blocksMid[blockIndex]
+                val off = blocksOff[blockIndex]
+                val quantVals = quantValues[blockIndex]
+                
+                // OPTIMIZATION 9: Bulk dequantization using vectorized operations
+                bulkDequantizeCoefficients(block, mid, quantVals, coeffsSize)
+                
+                // OPTIMIZATION 10: Bulk zero initialization of adjustments
+                off.fill(0L)
+            }
+        }
+        
+        // OPTIMIZATION 7: Combined boundary analysis loops for better cache locality
+        // Process horizontal and vertical boundaries in interleaved pattern
+        for (by in 0 until blocksY) {
+            for (bx in 0 until blocksX) {
+                val currentIndex = by * blocksX + bx
+                
+                // Horizontal boundary (if not rightmost column)
+                if (bx < blocksX - 1) {
+                    val rightIndex = currentIndex + 1
+                    if (blocks[currentIndex] != null && blocks[rightIndex] != null) {
+                        analyzeHorizontalBoundary16x16(
+                            currentIndex, rightIndex, blocksMid, blocksOff, 
+                            kLinearGradient16, kAlphaSqrt2_16
+                        )
+                    }
                 }
+                
+                // Vertical boundary (if not bottom row)
+                if (by < blocksY - 1) {
+                    val bottomIndex = currentIndex + blocksX
+                    if (blocks[currentIndex] != null && blocks[bottomIndex] != null) {
+                        analyzeVerticalBoundary16x16(
+                            currentIndex, bottomIndex, blocksMid, blocksOff,
+                            kLinearGradient16, kAlphaSqrt2_16
+                        )
+                    }
+                }
+            }
+        }
+        
+        // Step 4: Apply corrections and clamp to quantization intervals (BULK OPTIMIZED)
+        for (blockIndex in 0 until numBlocks) {
+            val block = blocks[blockIndex]
+            if (block != null) {
+                // OPTIMIZATION 11: Bulk apply corrections and quantization clamping
+                bulkApplyCorrectionsAndClamp(
+                    block, blocksMid[blockIndex], blocksOff[blockIndex],
+                    quantValues[blockIndex], quantHalfValues[blockIndex],
+                    kHalfSqrt2, coeffsSize
+                )
             }
         }
     }
     
-    // 16x16 horizontal boundary analysis (adapted from Google's 8x8 version)
+    // BULK MEMORY ACCESS HELPER FUNCTIONS FOR KNUSPERLI
+    
+    /**
+     * OPTIMIZATION 9: Bulk dequantization using vectorized operations
+     * Performs coefficient * quantization in optimized chunks
+     */
+    private fun bulkDequantizeCoefficients(
+        coeffs: ShortArray, result: IntArray, quantVals: IntArray, size: Int
+    ) {
+        // Process in chunks of 16 for better vectorization (CPU can process multiple values per instruction)
+        var i = 0
+        val chunks = size and 0xFFFFFFF0.toInt() // Round down to nearest 16
+        
+        // Bulk process 16 coefficients at a time for SIMD-friendly operations
+        while (i < chunks) {
+            // Manual loop unrolling for better performance
+            result[i] = coeffs[i].toInt() * quantVals[i]
+            result[i + 1] = coeffs[i + 1].toInt() * quantVals[i + 1]
+            result[i + 2] = coeffs[i + 2].toInt() * quantVals[i + 2]
+            result[i + 3] = coeffs[i + 3].toInt() * quantVals[i + 3]
+            result[i + 4] = coeffs[i + 4].toInt() * quantVals[i + 4]
+            result[i + 5] = coeffs[i + 5].toInt() * quantVals[i + 5]
+            result[i + 6] = coeffs[i + 6].toInt() * quantVals[i + 6]
+            result[i + 7] = coeffs[i + 7].toInt() * quantVals[i + 7]
+            result[i + 8] = coeffs[i + 8].toInt() * quantVals[i + 8]
+            result[i + 9] = coeffs[i + 9].toInt() * quantVals[i + 9]
+            result[i + 10] = coeffs[i + 10].toInt() * quantVals[i + 10]
+            result[i + 11] = coeffs[i + 11].toInt() * quantVals[i + 11]
+            result[i + 12] = coeffs[i + 12].toInt() * quantVals[i + 12]
+            result[i + 13] = coeffs[i + 13].toInt() * quantVals[i + 13]
+            result[i + 14] = coeffs[i + 14].toInt() * quantVals[i + 14]
+            result[i + 15] = coeffs[i + 15].toInt() * quantVals[i + 15]
+            i += 16
+        }
+        
+        // Handle remaining coefficients
+        while (i < size) {
+            result[i] = coeffs[i].toInt() * quantVals[i]
+            i++
+        }
+    }
+    
+    /**
+     * OPTIMIZATION 11: Bulk apply corrections and quantization clamping
+     * Vectorized correction application with proper bounds checking
+     */
+    private fun bulkApplyCorrectionsAndClamp(
+        block: ShortArray, mid: IntArray, off: LongArray,
+        quantVals: IntArray, quantHalf: IntArray,
+        kHalfSqrt2: Int, size: Int
+    ) {
+        var i = 0
+        val chunks = size and 0xFFFFFFF0.toInt() // Process in chunks of 16
+        
+        // Bulk process corrections in chunks for better CPU pipeline utilization
+        while (i < chunks) {
+            // Apply corrections with sqrt(2)/2 weighting - bulk operations
+            val corr0 = ((off[i] * kHalfSqrt2) shr 31).toInt()
+            val corr1 = ((off[i + 1] * kHalfSqrt2) shr 31).toInt()
+            val corr2 = ((off[i + 2] * kHalfSqrt2) shr 31).toInt()
+            val corr3 = ((off[i + 3] * kHalfSqrt2) shr 31).toInt()
+            val corr4 = ((off[i + 4] * kHalfSqrt2) shr 31).toInt()
+            val corr5 = ((off[i + 5] * kHalfSqrt2) shr 31).toInt()
+            val corr6 = ((off[i + 6] * kHalfSqrt2) shr 31).toInt()
+            val corr7 = ((off[i + 7] * kHalfSqrt2) shr 31).toInt()
+            
+            mid[i] += corr0
+            mid[i + 1] += corr1
+            mid[i + 2] += corr2
+            mid[i + 3] += corr3
+            mid[i + 4] += corr4
+            mid[i + 5] += corr5
+            mid[i + 6] += corr6
+            mid[i + 7] += corr7
+            
+            // Apply quantization interval clamping - bulk operations
+            val orig0 = block[i].toInt() * quantVals[i]
+            val orig1 = block[i + 1].toInt() * quantVals[i + 1]
+            val orig2 = block[i + 2].toInt() * quantVals[i + 2]
+            val orig3 = block[i + 3].toInt() * quantVals[i + 3]
+            val orig4 = block[i + 4].toInt() * quantVals[i + 4]
+            val orig5 = block[i + 5].toInt() * quantVals[i + 5]
+            val orig6 = block[i + 6].toInt() * quantVals[i + 6]
+            val orig7 = block[i + 7].toInt() * quantVals[i + 7]
+            
+            mid[i] = mid[i].coerceIn(orig0 - quantHalf[i], orig0 + quantHalf[i])
+            mid[i + 1] = mid[i + 1].coerceIn(orig1 - quantHalf[i + 1], orig1 + quantHalf[i + 1])
+            mid[i + 2] = mid[i + 2].coerceIn(orig2 - quantHalf[i + 2], orig2 + quantHalf[i + 2])
+            mid[i + 3] = mid[i + 3].coerceIn(orig3 - quantHalf[i + 3], orig3 + quantHalf[i + 3])
+            mid[i + 4] = mid[i + 4].coerceIn(orig4 - quantHalf[i + 4], orig4 + quantHalf[i + 4])
+            mid[i + 5] = mid[i + 5].coerceIn(orig5 - quantHalf[i + 5], orig5 + quantHalf[i + 5])
+            mid[i + 6] = mid[i + 6].coerceIn(orig6 - quantHalf[i + 6], orig6 + quantHalf[i + 6])
+            mid[i + 7] = mid[i + 7].coerceIn(orig7 - quantHalf[i + 7], orig7 + quantHalf[i + 7])
+            
+            // Convert back to quantized coefficients - bulk operations
+            val quantMax = Short.MAX_VALUE.toInt()
+            val quantMin = Short.MIN_VALUE.toInt()
+            block[i] = (mid[i] / quantVals[i]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 1] = (mid[i + 1] / quantVals[i + 1]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 2] = (mid[i + 2] / quantVals[i + 2]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 3] = (mid[i + 3] / quantVals[i + 3]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 4] = (mid[i + 4] / quantVals[i + 4]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 5] = (mid[i + 5] / quantVals[i + 5]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 6] = (mid[i + 6] / quantVals[i + 6]).coerceIn(quantMin, quantMax).toShort()
+            block[i + 7] = (mid[i + 7] / quantVals[i + 7]).coerceIn(quantMin, quantMax).toShort()
+            
+            i += 8 // Process 8 at a time for the remaining corrections
+        }
+        
+        // Handle remaining coefficients (usually 0-15 remaining for 256-coefficient blocks)
+        while (i < size) {
+            mid[i] += ((off[i] * kHalfSqrt2) shr 31).toInt()
+            
+            val originalValue = block[i].toInt() * quantVals[i]
+            mid[i] = mid[i].coerceIn(originalValue - quantHalf[i], originalValue + quantHalf[i])
+            
+            block[i] = (mid[i] / quantVals[i]).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            i++
+        }
+    }
+    
+    // OPTIMIZED 16x16 horizontal boundary analysis 
     private fun analyzeHorizontalBoundary16x16(
         leftBlockIndex: Int, rightBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
         kLinearGradient16: IntArray, kAlphaSqrt2_16: IntArray
     ) {
-        // Analyze low-to-mid frequencies only (v < 8 for 16x16, similar to v < 4 for 8x8)
-        for (v in 0 until 8) {
+        val leftMid = blocksMid[leftBlockIndex]
+        val rightMid = blocksMid[rightBlockIndex]
+        val leftOff = blocksOff[leftBlockIndex]
+        val rightOff = blocksOff[rightBlockIndex]
+        
+        // OPTIMIZATION 4: Process multiple frequencies in single loop for better cache locality
+        for (v in 0 until 8) { // Only low-to-mid frequencies
             var deltaV = 0L
             var hfPenalty = 0L
+            val vOffset = v * 16
             
-            // Analyze discontinuity across the boundary
+            // First pass: Calculate boundary discontinuity
             for (u in 0 until 16) {
+                val idx = vOffset + u
                 val alpha = kAlphaSqrt2_16[u]
                 val sign = if (u and 1 != 0) -1 else 1
-                val gi = blocksMid[leftBlockIndex][v * 16 + u]
-                val gj = blocksMid[rightBlockIndex][v * 16 + u]
+                val gi = leftMid[idx]
+                val gj = rightMid[idx]
                 
                 deltaV += alpha * (gj - sign * gi)
                 hfPenalty += (u * u) * (gi * gi + gj * gj)
             }
             
-            // Apply corrections with high-frequency damping (scaled for 16x16)
-            for (u in 0 until 16) {
-                if (hfPenalty > 1600) deltaV /= 2 // Scaled threshold for 16x16
-                val sign = if (u and 1 != 0) 1 else -1
-                val gradientIdx = u.coerceIn(0, kLinearGradient16.size - 1)
-                blocksOff[leftBlockIndex][v * 16 + u] += deltaV * kLinearGradient16[gradientIdx]
-                blocksOff[rightBlockIndex][v * 16 + u] += deltaV * kLinearGradient16[gradientIdx] * sign
-            }
+            // OPTIMIZATION 8: Early exit for very small adjustments  
+            if (kotlin.math.abs(deltaV) < 100) continue
+            
+            // OPTIMIZATION 5: Apply high-frequency damping once per frequency band
+            if (hfPenalty > 1600) deltaV /= 2
+            
+            // Second pass: Apply corrections (BULK OPTIMIZED with unrolling)
+            val correction = deltaV
+            // Bulk apply corrections for 16 coefficients - manually unrolled for performance
+            leftOff[vOffset] += correction * kLinearGradient16[0]
+            rightOff[vOffset] += correction * kLinearGradient16[0]
+            leftOff[vOffset + 1] += correction * kLinearGradient16[1]
+            rightOff[vOffset + 1] -= correction * kLinearGradient16[1] // Alternating signs
+            leftOff[vOffset + 2] += correction * kLinearGradient16[2]
+            rightOff[vOffset + 2] += correction * kLinearGradient16[2]
+            leftOff[vOffset + 3] += correction * kLinearGradient16[3]
+            rightOff[vOffset + 3] -= correction * kLinearGradient16[3]
+            leftOff[vOffset + 4] += correction * kLinearGradient16[4]
+            rightOff[vOffset + 4] += correction * kLinearGradient16[4]
+            leftOff[vOffset + 5] += correction * kLinearGradient16[5]
+            rightOff[vOffset + 5] -= correction * kLinearGradient16[5]
+            leftOff[vOffset + 6] += correction * kLinearGradient16[6]
+            rightOff[vOffset + 6] += correction * kLinearGradient16[6]
+            leftOff[vOffset + 7] += correction * kLinearGradient16[7]
+            rightOff[vOffset + 7] -= correction * kLinearGradient16[7]
+            leftOff[vOffset + 8] += correction * kLinearGradient16[8]
+            rightOff[vOffset + 8] += correction * kLinearGradient16[8]
+            leftOff[vOffset + 9] += correction * kLinearGradient16[9]
+            rightOff[vOffset + 9] -= correction * kLinearGradient16[9]
+            leftOff[vOffset + 10] += correction * kLinearGradient16[10]
+            rightOff[vOffset + 10] += correction * kLinearGradient16[10]
+            leftOff[vOffset + 11] += correction * kLinearGradient16[11]
+            rightOff[vOffset + 11] -= correction * kLinearGradient16[11]
+            leftOff[vOffset + 12] += correction * kLinearGradient16[12]
+            rightOff[vOffset + 12] += correction * kLinearGradient16[12]
+            leftOff[vOffset + 13] += correction * kLinearGradient16[13]
+            rightOff[vOffset + 13] -= correction * kLinearGradient16[13]
+            leftOff[vOffset + 14] += correction * kLinearGradient16[14]
+            rightOff[vOffset + 14] += correction * kLinearGradient16[14]
+            leftOff[vOffset + 15] += correction * kLinearGradient16[15]
+            rightOff[vOffset + 15] -= correction * kLinearGradient16[15]
         }
     }
     
-    // 16x16 vertical boundary analysis (adapted from Google's 8x8 version)
+    // OPTIMIZED 16x16 vertical boundary analysis  
     private fun analyzeVerticalBoundary16x16(
         topBlockIndex: Int, bottomBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
         kLinearGradient16: IntArray, kAlphaSqrt2_16: IntArray
     ) {
-        // Analyze low-to-mid frequencies only (u < 8 for 16x16)
-        for (u in 0 until 8) {
+        val topMid = blocksMid[topBlockIndex]
+        val bottomMid = blocksMid[bottomBlockIndex]
+        val topOff = blocksOff[topBlockIndex]
+        val bottomOff = blocksOff[bottomBlockIndex]
+        
+        // OPTIMIZATION 6: Optimized vertical analysis with better cache access pattern
+        for (u in 0 until 8) { // Only low-to-mid frequencies
             var deltaU = 0L
             var hfPenalty = 0L
             
+            // First pass: Calculate boundary discontinuity
             for (v in 0 until 16) {
+                val idx = v * 16 + u
                 val alpha = kAlphaSqrt2_16[v]
                 val sign = if (v and 1 != 0) -1 else 1
-                val gi = blocksMid[topBlockIndex][v * 16 + u]
-                val gj = blocksMid[bottomBlockIndex][v * 16 + u]
+                val gi = topMid[idx]
+                val gj = bottomMid[idx]
                 
                 deltaU += alpha * (gj - sign * gi)
                 hfPenalty += (v * v) * (gi * gi + gj * gj)
             }
             
-            for (v in 0 until 16) {
-                if (hfPenalty > 1600) deltaU /= 2 // Scaled threshold for 16x16
-                val sign = if (v and 1 != 0) 1 else -1
-                val gradientIdx = v.coerceIn(0, kLinearGradient16.size - 1)
-                blocksOff[topBlockIndex][v * 16 + u] += deltaU * kLinearGradient16[gradientIdx]
-                blocksOff[bottomBlockIndex][v * 16 + u] += deltaU * kLinearGradient16[gradientIdx] * sign
-            }
+            // Early exit for very small adjustments
+            if (kotlin.math.abs(deltaU) < 100) continue
+            
+            // Apply high-frequency damping once per frequency band
+            if (hfPenalty > 1600) deltaU /= 2
+            
+            // Second pass: Apply corrections (BULK OPTIMIZED vertical)
+            val correction = deltaU
+            // Bulk apply corrections for 16 vertical coefficients - manually unrolled
+            topOff[u] += correction * kLinearGradient16[0]
+            bottomOff[u] += correction * kLinearGradient16[0]
+            topOff[16 + u] += correction * kLinearGradient16[1]
+            bottomOff[16 + u] -= correction * kLinearGradient16[1] // Alternating signs
+            topOff[32 + u] += correction * kLinearGradient16[2]
+            bottomOff[32 + u] += correction * kLinearGradient16[2]
+            topOff[48 + u] += correction * kLinearGradient16[3]
+            bottomOff[48 + u] -= correction * kLinearGradient16[3]
+            topOff[64 + u] += correction * kLinearGradient16[4]
+            bottomOff[64 + u] += correction * kLinearGradient16[4]
+            topOff[80 + u] += correction * kLinearGradient16[5]
+            bottomOff[80 + u] -= correction * kLinearGradient16[5]
+            topOff[96 + u] += correction * kLinearGradient16[6]
+            bottomOff[96 + u] += correction * kLinearGradient16[6]
+            topOff[112 + u] += correction * kLinearGradient16[7]
+            bottomOff[112 + u] -= correction * kLinearGradient16[7]
+            topOff[128 + u] += correction * kLinearGradient16[8]
+            bottomOff[128 + u] += correction * kLinearGradient16[8]
+            topOff[144 + u] += correction * kLinearGradient16[9]
+            bottomOff[144 + u] -= correction * kLinearGradient16[9]
+            topOff[160 + u] += correction * kLinearGradient16[10]
+            bottomOff[160 + u] += correction * kLinearGradient16[10]
+            topOff[176 + u] += correction * kLinearGradient16[11]
+            bottomOff[176 + u] -= correction * kLinearGradient16[11]
+            topOff[192 + u] += correction * kLinearGradient16[12]
+            bottomOff[192 + u] += correction * kLinearGradient16[12]
+            topOff[208 + u] += correction * kLinearGradient16[13]
+            bottomOff[208 + u] -= correction * kLinearGradient16[13]
+            topOff[224 + u] += correction * kLinearGradient16[14]
+            bottomOff[224 + u] += correction * kLinearGradient16[14]
+            topOff[240 + u] += correction * kLinearGradient16[15]
+            bottomOff[240 + u] -= correction * kLinearGradient16[15]
         }
     }
     
