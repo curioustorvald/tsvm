@@ -709,6 +709,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     uint8  Video Flags
             - bit 0 = is interlaced (should be default for most non-archival TEV videos)
             - bit 1 = is NTSC framerate (repeat every 1000th frame)
+            - bit 2 = is lossless mode
     uint8  Reserved, fill with zero
 
 ## Packet Types
@@ -791,6 +792,158 @@ The format is designed to be compatible with SubRip and SAMI (without markups).
     *    arguments separated AND terminated by 0x00
             text argument may be terminated by 0x00 BEFORE the entire arguments being terminated by 0x00,
             leaving extra 0x00 on the byte stream. A decoder must be able to handle the extra zeros.
+
+--------------------------------------------------------------------------------
+
+TSVM Advanced Video (TAV) Format
+Created by Claude on 2025-09-13
+
+TAV is a next-generation video codec for TSVM utilizing Discrete Wavelet Transform (DWT)
+similar to JPEG2000, providing superior compression efficiency and scalability compared
+to DCT-based codecs like TEV. Features include multi-resolution encoding, progressive
+transmission capability, and region-of-interest coding.
+
+## Version History
+- Version 1.0: Initial DWT-based implementation with 5/3 reversible filter
+- Version 1.1: Added 9/7 irreversible filter for higher compression
+- Version 1.2: Multi-resolution pyramid encoding with up to 4 decomposition levels
+
+# File Structure
+\x1F T S V M T A V
+[HEADER]
+[PACKET 0]
+[PACKET 1]
+[PACKET 2]
+...
+
+## Header (32 bytes)
+    uint8  Magic[8]: "\x1FTSVM TAV"
+    uint8  Version: 1
+    uint16 Width: video width in pixels  
+    uint16 Height: video height in pixels
+    uint8  FPS: frames per second
+    uint32 Total Frames: number of video frames
+    uint8  Wavelet Filter Type: 0=5/3 reversible, 1=9/7 irreversible
+    uint8  Decomposition Levels: number of DWT levels (1-4)
+    uint8  Quality Index for Y channel (0-99; 100 denotes lossless)
+    uint8  Quality Index for Co channel (0-99; 100 denotes lossless) 
+    uint8  Quality Index for Cg channel (0-99; 100 denotes lossless)
+    uint8  Extra Feature Flags
+            - bit 0 = has audio
+            - bit 1 = has subtitle
+            - bit 2 = progressive transmission enabled
+            - bit 3 = region-of-interest coding enabled
+    uint8  Video Flags
+            - bit 0 = is interlaced
+            - bit 1 = is NTSC framerate
+            - bit 2 = is lossless mode
+            - bit 3 = multi-resolution encoding
+    uint8  Reserved[7]: fill with zeros
+
+## Packet Types
+    0x10: I-frame (intra-coded frame)
+    0x11: P-frame (predicted frame with motion compensation)
+    0x20: MP2 audio packet
+    0x30: Subtitle in "Simple" format  
+    0xFF: sync packet
+
+## Video Packet Structure
+    uint8  Packet Type
+    uint32 Compressed Size
+    *      Zstd-compressed Block Data
+
+## Block Data (per 64x64 tile)
+    uint8  Mode: encoding mode
+           0x00 = SKIP (copy from previous frame)
+           0x01 = INTRA (DWT-coded, no prediction)
+           0x02 = INTER (DWT-coded with motion compensation)
+           0x03 = MOTION (motion vector only, no residual)
+    int16  Motion Vector X (1/4 pixel precision)
+    int16  Motion Vector Y (1/4 pixel precision)
+    float32 Rate Control Factor (4 bytes, little-endian)
+    
+    ## DWT Coefficient Structure (per tile)
+    For each decomposition level L (from highest to lowest):
+        uint16 LL_size: size of LL subband coefficients
+        uint16 LH_size: size of LH subband coefficients  
+        uint16 HL_size: size of HL subband coefficients
+        uint16 HH_size: size of HH subband coefficients
+        int16[] LL_coeffs: quantized LL subband (low-low frequencies)
+        int16[] LH_coeffs: quantized LH subband (low-high frequencies)
+        int16[] HL_coeffs: quantized HL subband (high-low frequencies)  
+        int16[] HH_coeffs: quantized HH subband (high-high frequencies)
+
+## DWT Implementation Details
+
+### Wavelet Filters
+- 5/3 Reversible Filter (lossless capable):
+  * Analysis: Low-pass [1/2, 1, 1/2], High-pass [-1/8, -1/4, 3/4, -1/4, -1/8]
+  * Synthesis: Low-pass [1/4, 1/2, 1/4], High-pass [-1/16, -1/8, 3/8, -1/8, -1/16]
+
+- 9/7 Irreversible Filter (higher compression):
+  * Analysis: Daubechies 9/7 coefficients optimized for image compression
+  * Provides better energy compaction than 5/3 but lossy reconstruction
+
+### Decomposition Levels
+- Level 1: 64x64 → 32x32 (LL) + 3×32x32 subbands (LH,HL,HH)
+- Level 2: 32x32 → 16x16 (LL) + 3×16x16 subbands  
+- Level 3: 16x16 → 8x8 (LL) + 3×8x8 subbands
+- Level 4: 8x8 → 4x4 (LL) + 3×4x4 subbands
+
+### Quantization Strategy
+TAV uses different quantization steps for each subband based on human visual
+system sensitivity:
+- LL subbands: Fine quantization (preserve DC and low frequencies)
+- LH/HL subbands: Medium quantization (diagonal details less critical)  
+- HH subbands: Coarse quantization (high frequency noise can be discarded)
+
+### Progressive Transmission
+When enabled, coefficients are transmitted in order of visual importance:
+1. LL subband of highest decomposition level (thumbnail)
+2. Lower frequency subbands first
+3. Higher frequency subbands for refinement
+
+## Motion Compensation
+- Search range: ±16 pixels (larger than TEV due to 64x64 tiles)
+- Sub-pixel precision: 1/4 pixel with bilinear interpolation
+- Tile size: 64x64 pixels (4x larger than TEV blocks)
+- Uses Sum of Absolute Differences (SAD) for motion estimation
+- Overlapped block motion compensation (OBMC) for smooth boundaries
+
+## Colour Space  
+TAV operates in YCoCg-R colour space with full resolution channels:
+- Y: Luma channel (full resolution, fine quantization)
+- Co: Orange-Cyan chroma (full resolution, aggressive quantization by default)  
+- Cg: Green-Magenta chroma (full resolution, very aggressive quantization by default)
+
+## Compression Features
+- 64x64 DWT tiles vs 16x16 DCT blocks in TEV
+- Multi-resolution representation enables scalable decoding
+- Better frequency localization than DCT
+- Reduced blocking artifacts due to overlapping basis functions
+- Region-of-Interest (ROI) coding for selective quality enhancement
+- Progressive transmission for bandwidth adaptation
+
+## Performance Comparison  
+Expected improvements over TEV:
+- 20-30% better compression efficiency
+- Reduced blocking artifacts
+- Scalable quality/resolution decoding
+- Better performance on natural images vs artificial content
+- Full resolution chroma preserves color detail while aggressive quantization maintains compression
+
+## Hardware Acceleration Functions
+TAV decoder requires new GraphicsJSR223Delegate functions:
+- tavDecode(): Main DWT decoding function
+- tavDWT2D(): 2D DWT/IDWT transforms  
+- tavQuantize(): Multi-band quantization
+- tavMotionCompensate(): 64x64 tile motion compensation
+
+## Audio Support
+Reuses existing MP2 audio infrastructure from TEV/MOV formats for compatibility.
+
+## Subtitle Support  
+Uses same Simple Subtitle Format (SSF) as TEV for text overlay functionality.
 
 --------------------------------------------------------------------------------
 

@@ -4023,4 +4023,409 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    // =============================================================================
+    // TAV (TSVM Advanced Video) Hardware Acceleration Functions
+    // =============================================================================
+
+    // 5/3 Reversible wavelet filter coefficients
+    private val wavelet53LP = floatArrayOf(0.5f, 1.0f, 0.5f)
+    private val wavelet53HP = floatArrayOf(-0.125f, -0.25f, 0.75f, -0.25f, -0.125f)
+
+    // 9/7 Irreversible wavelet filter coefficients (Daubechies)
+    private val wavelet97LP = floatArrayOf(
+        0.037828455507f, -0.023849465020f, -0.110624404418f, 0.377402855613f,
+        0.852698679009f, 0.377402855613f, -0.110624404418f, -0.023849465020f, 0.037828455507f
+    )
+    private val wavelet97HP = floatArrayOf(
+        0.064538882629f, -0.040689417609f, -0.418092273222f, 0.788485616406f,
+        -0.418092273222f, -0.040689417609f, 0.064538882629f
+    )
+
+    // Working buffers for DWT processing
+    private val dwtTempBuffer = FloatArray(64 * 64)
+    private val dwtSubbandLL = FloatArray(32 * 32)
+    private val dwtSubbandLH = FloatArray(32 * 32) 
+    private val dwtSubbandHL = FloatArray(32 * 32)
+    private val dwtSubbandHH = FloatArray(32 * 32)
+
+    /**
+     * Main TAV decoder function - processes compressed TAV tile data
+     * Called from JavaScript playtav.js decoder
+     */
+    fun tavDecode(
+        compressedDataPtr: Long,
+        currentYPtr: Long, currentCoPtr: Long, currentCgPtr: Long,
+        prevYPtr: Long, prevCoPtr: Long, prevCgPtr: Long,
+        width: Int, height: Int,
+        qY: Int, qCo: Int, qCg: Int,
+        frameCounter: Int,
+        debugMotionVectors: Boolean = false,
+        waveletFilter: Int = 1,
+        decompLevels: Int = 3,
+        enableDeblocking: Boolean = true,
+        isLossless: Boolean = false
+    ): Boolean {
+        try {
+            val tilesX = (width + 63) / 64  // 64x64 tiles
+            val tilesY = (height + 63) / 64
+            
+            // TODO: Decompress zstd data (placeholder)
+            // val decompressedData = decompressZstd(compressedDataPtr)
+            
+            // Process each tile
+            for (tileY in 0 until tilesY) {
+                for (tileX in 0 until tilesX) {
+                    val tileIdx = tileY * tilesX + tileX
+                    
+                    // Read tile header (mode, motion vectors, rate control factor)
+                    // TODO: Parse actual tile data format
+                    val mode = 0x01  // TAV_MODE_INTRA (placeholder)
+                    val mvX = 0
+                    val mvY = 0
+                    val rcf = 1.0f
+                    
+                    when (mode) {
+                        0x00 -> { // TAV_MODE_SKIP
+                            // Copy from previous frame
+                            copyTileFromPrevious(
+                                tileX, tileY, 
+                                currentYPtr, currentCoPtr, currentCgPtr,
+                                prevYPtr, prevCoPtr, prevCgPtr,
+                                width, height
+                            )
+                        }
+                        0x01 -> { // TAV_MODE_INTRA
+                            // Decode DWT coefficients and reconstruct tile
+                            decodeDWTTile(
+                                tileX, tileY,
+                                currentYPtr, currentCoPtr, currentCgPtr,
+                                width, height,
+                                qY, qCo, qCg, rcf,
+                                waveletFilter, decompLevels,
+                                isLossless
+                            )
+                        }
+                        0x02 -> { // TAV_MODE_INTER
+                            // Decode DWT residual and apply motion compensation
+                            decodeDWTTileWithMotion(
+                                tileX, tileY, mvX, mvY,
+                                currentYPtr, currentCoPtr, currentCgPtr,
+                                prevYPtr, prevCoPtr, prevCgPtr,
+                                width, height,
+                                qY, qCo, qCg, rcf,
+                                waveletFilter, decompLevels,
+                                isLossless
+                            )
+                        }
+                        0x03 -> { // TAV_MODE_MOTION
+                            // Motion compensation only
+                            applyMotionCompensation64x64(
+                                tileX, tileY, mvX, mvY,
+                                currentYPtr, currentCoPtr, currentCgPtr,
+                                prevYPtr, prevCoPtr, prevCgPtr,
+                                width, height
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // Convert YCoCg to RGB and render to display
+            renderYCoCgToDisplay(
+                currentYPtr, currentCoPtr, currentCgPtr,
+                width, height
+            )
+            
+            return true
+            
+        } catch (e: Exception) {
+            println("TAV decode error: ${e.message}")
+            return false
+        }
+    }
+
+    /**
+     * 2D DWT forward/inverse transform
+     * Supports both 5/3 reversible and 9/7 irreversible filters
+     */
+    fun tavDWT2D(
+        inputPtr: Long, outputPtr: Long,
+        width: Int, height: Int,
+        levels: Int, filterType: Int,
+        isForward: Boolean
+    ) {
+        // Copy input data to working buffer
+        for (i in 0 until width * height) {
+            dwtTempBuffer[i] = UnsafeHelper.getFloat(inputPtr + i * 4L)
+        }
+        
+        if (isForward) {
+            // Forward DWT - decompose into subbands
+            for (level in 0 until levels) {
+                val levelWidth = width shr level
+                val levelHeight = height shr level
+                
+                if (filterType == 0) {
+                    applyDWT53Forward(dwtTempBuffer, levelWidth, levelHeight)
+                } else {
+                    applyDWT97Forward(dwtTempBuffer, levelWidth, levelHeight)
+                }
+            }
+        } else {
+            // Inverse DWT - reconstruct from subbands
+            for (level in levels - 1 downTo 0) {
+                val levelWidth = width shr level
+                val levelHeight = height shr level
+                
+                if (filterType == 0) {
+                    applyDWT53Inverse(dwtTempBuffer, levelWidth, levelHeight)
+                } else {
+                    applyDWT97Inverse(dwtTempBuffer, levelWidth, levelHeight)
+                }
+            }
+        }
+        
+        // Copy result to output
+        for (i in 0 until width * height) {
+            UnsafeHelper.setFloat(outputPtr + i * 4L, dwtTempBuffer[i])
+        }
+    }
+
+    /**
+     * Multi-band quantization for DWT subbands
+     */
+    fun tavQuantize(
+        subbandPtr: Long, quantTable: IntArray,
+        width: Int, height: Int,
+        isInverse: Boolean
+    ) {
+        val size = width * height
+        
+        if (isInverse) {
+            // Dequantization
+            for (i in 0 until size) {
+                val quantized = UnsafeHelper.getShort(subbandPtr + i * 2L).toInt()
+                val dequantized = quantized * quantTable[i % quantTable.size]
+                UnsafeHelper.setFloat(subbandPtr + i * 4L, dequantized.toFloat())
+            }
+        } else {
+            // Quantization
+            for (i in 0 until size) {
+                val value = UnsafeHelper.getFloat(subbandPtr + i * 4L)
+                val quantized = (value / quantTable[i % quantTable.size]).toInt()
+                UnsafeHelper.setShort(subbandPtr + i * 2L, quantized.toShort())
+            }
+        }
+    }
+
+    /**
+     * 64x64 tile motion compensation with bilinear interpolation
+     */
+    fun tavMotionCompensate64x64(
+        currentTilePtr: Long, refFramePtr: Long,
+        tileX: Int, tileY: Int,
+        mvX: Int, mvY: Int,
+        width: Int, height: Int
+    ) {
+        val tileSize = 64
+        val startX = tileX * tileSize
+        val startY = tileY * tileSize
+        
+        // Motion vector in 1/4 pixel precision
+        val refX = startX + (mvX / 4.0f)
+        val refY = startY + (mvY / 4.0f)
+        
+        for (y in 0 until tileSize) {
+            for (x in 0 until tileSize) {
+                val currentPixelIdx = (startY + y) * width + (startX + x)
+                
+                if (currentPixelIdx >= 0 && currentPixelIdx < width * height) {
+                    // Bilinear interpolation for sub-pixel motion vectors
+                    val interpolatedValue = bilinearInterpolate(
+                        refFramePtr, width, height,
+                        refX + x, refY + y
+                    )
+                    
+                    UnsafeHelper.setFloat(
+                        currentTilePtr + currentPixelIdx * 4L,
+                        interpolatedValue
+                    )
+                }
+            }
+        }
+    }
+
+    // Private helper functions for TAV implementation
+
+    private fun copyTileFromPrevious(
+        tileX: Int, tileY: Int,
+        currentYPtr: Long, currentCoPtr: Long, currentCgPtr: Long,
+        prevYPtr: Long, prevCoPtr: Long, prevCgPtr: Long,
+        width: Int, height: Int
+    ) {
+        val tileSize = 64
+        val startX = tileX * tileSize
+        val startY = tileY * tileSize
+        
+        for (y in 0 until tileSize) {
+            for (x in 0 until tileSize) {
+                val pixelIdx = (startY + y) * width + (startX + x)
+                if (pixelIdx >= 0 && pixelIdx < width * height) {
+                    val prevY = UnsafeHelper.getFloat(prevYPtr + pixelIdx * 4L)
+                    val prevCo = UnsafeHelper.getFloat(prevCoPtr + pixelIdx * 4L)
+                    val prevCg = UnsafeHelper.getFloat(prevCgPtr + pixelIdx * 4L)
+                    
+                    UnsafeHelper.setFloat(currentYPtr + pixelIdx * 4L, prevY)
+                    UnsafeHelper.setFloat(currentCoPtr + pixelIdx * 4L, prevCo)
+                    UnsafeHelper.setFloat(currentCgPtr + pixelIdx * 4L, prevCg)
+                }
+            }
+        }
+    }
+
+    private fun decodeDWTTile(
+        tileX: Int, tileY: Int,
+        currentYPtr: Long, currentCoPtr: Long, currentCgPtr: Long,
+        width: Int, height: Int,
+        qY: Int, qCo: Int, qCg: Int, rcf: Float,
+        waveletFilter: Int, decompLevels: Int,
+        isLossless: Boolean
+    ) {
+        // TODO: Implement DWT tile decoding
+        // 1. Read DWT coefficients from compressed data
+        // 2. Dequantize subbands according to quality settings
+        // 3. Apply inverse DWT to reconstruct 64x64 tile
+        // 4. Copy reconstructed data to frame buffers
+        
+        // Placeholder implementation
+        val tileSize = 64
+        val startX = tileX * tileSize
+        val startY = tileY * tileSize
+        
+        for (y in 0 until tileSize) {
+            for (x in 0 until tileSize) {
+                val pixelIdx = (startY + y) * width + (startX + x)
+                if (pixelIdx >= 0 && pixelIdx < width * height) {
+                    // Placeholder: set to mid-gray
+                    UnsafeHelper.setFloat(currentYPtr + pixelIdx * 4L, 128.0f)
+                    UnsafeHelper.setFloat(currentCoPtr + pixelIdx * 4L, 0.0f)
+                    UnsafeHelper.setFloat(currentCgPtr + pixelIdx * 4L, 0.0f)
+                }
+            }
+        }
+    }
+
+    private fun decodeDWTTileWithMotion(
+        tileX: Int, tileY: Int, mvX: Int, mvY: Int,
+        currentYPtr: Long, currentCoPtr: Long, currentCgPtr: Long,
+        prevYPtr: Long, prevCoPtr: Long, prevCgPtr: Long,
+        width: Int, height: Int,
+        qY: Int, qCo: Int, qCg: Int, rcf: Float,
+        waveletFilter: Int, decompLevels: Int,
+        isLossless: Boolean
+    ) {
+        // TODO: Implement DWT residual decoding with motion compensation
+        // 1. Apply motion compensation from previous frame
+        // 2. Decode DWT residual coefficients
+        // 3. Add residual to motion-compensated prediction
+        
+        // Placeholder: apply motion compensation only
+        applyMotionCompensation64x64(
+            tileX, tileY, mvX, mvY,
+            currentYPtr, currentCoPtr, currentCgPtr,
+            prevYPtr, prevCoPtr, prevCgPtr,
+            width, height
+        )
+    }
+
+    private fun applyMotionCompensation64x64(
+        tileX: Int, tileY: Int, mvX: Int, mvY: Int,
+        currentYPtr: Long, currentCoPtr: Long, currentCgPtr: Long,
+        prevYPtr: Long, prevCoPtr: Long, prevCgPtr: Long,
+        width: Int, height: Int
+    ) {
+        tavMotionCompensate64x64(currentYPtr, prevYPtr, tileX, tileY, mvX, mvY, width, height)
+        tavMotionCompensate64x64(currentCoPtr, prevCoPtr, tileX, tileY, mvX, mvY, width, height)
+        tavMotionCompensate64x64(currentCgPtr, prevCgPtr, tileX, tileY, mvX, mvY, width, height)
+    }
+
+    private fun applyDWT53Forward(data: FloatArray, width: Int, height: Int) {
+        // TODO: Implement 5/3 forward DWT
+        // Lifting scheme implementation for 5/3 reversible filter
+    }
+
+    private fun applyDWT53Inverse(data: FloatArray, width: Int, height: Int) {
+        // TODO: Implement 5/3 inverse DWT
+        // Lifting scheme implementation for 5/3 reversible filter
+    }
+
+    private fun applyDWT97Forward(data: FloatArray, width: Int, height: Int) {
+        // TODO: Implement 9/7 forward DWT  
+        // Lifting scheme implementation for 9/7 irreversible filter
+    }
+
+    private fun applyDWT97Inverse(data: FloatArray, width: Int, height: Int) {
+        // TODO: Implement 9/7 inverse DWT
+        // Lifting scheme implementation for 9/7 irreversible filter
+    }
+
+    private fun bilinearInterpolate(
+        dataPtr: Long, width: Int, height: Int,
+        x: Float, y: Float
+    ): Float {
+        val x0 = floor(x).toInt()
+        val y0 = floor(y).toInt()
+        val x1 = x0 + 1
+        val y1 = y0 + 1
+        
+        if (x0 < 0 || y0 < 0 || x1 >= width || y1 >= height) {
+            return 0.0f  // Out of bounds
+        }
+        
+        val fx = x - x0
+        val fy = y - y0
+        
+        val p00 = UnsafeHelper.getFloat(dataPtr + (y0 * width + x0) * 4L)
+        val p10 = UnsafeHelper.getFloat(dataPtr + (y0 * width + x1) * 4L)
+        val p01 = UnsafeHelper.getFloat(dataPtr + (y1 * width + x0) * 4L)
+        val p11 = UnsafeHelper.getFloat(dataPtr + (y1 * width + x1) * 4L)
+        
+        return p00 * (1 - fx) * (1 - fy) +
+               p10 * fx * (1 - fy) +
+               p01 * (1 - fx) * fy +
+               p11 * fx * fy
+    }
+
+    private fun renderYCoCgToDisplay(
+        yPtr: Long, coPtr: Long, cgPtr: Long,
+        width: Int, height: Int
+    ) {
+        // Convert YCoCg to RGB and render to display
+        val adapter = vm.getPeripheralByClass(GraphicsAdapter::class.java)
+        if (adapter != null) {
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    val idx = y * width + x
+                    val Y = UnsafeHelper.getFloat(yPtr + idx * 4L)
+                    val Co = UnsafeHelper.getFloat(coPtr + idx * 4L)
+                    val Cg = UnsafeHelper.getFloat(cgPtr + idx * 4L)
+                    
+                    // YCoCg to RGB conversion
+                    val tmp = Y - Cg
+                    val G = Y + Cg
+                    val B = tmp - Co
+                    val R = tmp + Co
+                    
+                    // Clamp to 0-255 and convert to 4-bit RGB for TSVM display
+                    val r4 = (R.toInt().coerceIn(0, 255) / 16).coerceIn(0, 15)
+                    val g4 = (G.toInt().coerceIn(0, 255) / 16).coerceIn(0, 15)
+                    val b4 = (B.toInt().coerceIn(0, 255) / 16).coerceIn(0, 15)
+                    
+                    val color4096 = (r4 shl 8) or (g4 shl 4) or b4
+                    adapter.setPixel(x, y, color4096)
+                }
+            }
+        }
+    }
+
 }
