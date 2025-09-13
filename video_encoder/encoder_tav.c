@@ -231,7 +231,7 @@ static void cleanup_encoder(tav_encoder_t *enc);
 static int initialize_encoder(tav_encoder_t *enc);
 static int encode_frame(tav_encoder_t *enc, int frame_num, int is_keyframe);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
-static void dwt_2d_forward(float *input, dwt_tile_t *tile, int filter_type);
+static void dwt_2d_forward(float *tile_data, int levels, int filter_type);
 static void dwt_2d_inverse(dwt_tile_t *tile, float *output, int filter_type);
 static void quantize_subbands(dwt_tile_t *tile, int q_y, int q_co, int q_cg, float rcf);
 static int estimate_motion_64x64(const float *current, const float *reference, 
@@ -356,6 +356,321 @@ static int initialize_encoder(tav_encoder_t *enc) {
     return 0;
 }
 
+// =============================================================================
+// DWT Implementation - 5/3 Reversible and 9/7 Irreversible Filters
+// =============================================================================
+
+// 1D DWT using lifting scheme for 5/3 reversible filter
+static void dwt_53_forward_1d(float *data, int length) {
+    if (length < 2) return;
+    
+    float *temp = malloc(length * sizeof(float));
+    int half = length / 2;
+    
+    // Predict step (high-pass)
+    for (int i = 0; i < half; i++) {
+        int idx = 2 * i + 1;
+        if (idx < length) {
+            float pred = 0.5f * (data[2 * i] + (2 * i + 2 < length ? data[2 * i + 2] : data[2 * i]));
+            temp[half + i] = data[idx] - pred;
+        }
+    }
+    
+    // Update step (low-pass)
+    for (int i = 0; i < half; i++) {
+        float update = 0.25f * ((i > 0 ? temp[half + i - 1] : 0) + 
+                               (i < half - 1 ? temp[half + i] : 0));
+        temp[i] = data[2 * i] + update;
+    }
+    
+    // Copy back
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
+static void dwt_53_inverse_1d(float *data, int length) {
+    if (length < 2) return;
+    
+    float *temp = malloc(length * sizeof(float));
+    int half = length / 2;
+    
+    // Inverse update step
+    for (int i = 0; i < half; i++) {
+        float update = 0.25f * ((i > 0 ? data[half + i - 1] : 0) + 
+                               (i < half - 1 ? data[half + i] : 0));
+        temp[2 * i] = data[i] - update;
+    }
+    
+    // Inverse predict step  
+    for (int i = 0; i < half; i++) {
+        int idx = 2 * i + 1;
+        if (idx < length) {
+            float pred = 0.5f * (temp[2 * i] + (2 * i + 2 < length ? temp[2 * i + 2] : temp[2 * i]));
+            temp[idx] = data[half + i] + pred;
+        }
+    }
+    
+    // Copy back
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
+// 1D DWT using lifting scheme for 9/7 irreversible filter
+static void dwt_97_forward_1d(float *data, int length) {
+    if (length < 2) return;
+    
+    float *temp = malloc(length * sizeof(float));
+    int half = length / 2;
+    
+    // Split into even/odd samples
+    for (int i = 0; i < half; i++) {
+        temp[i] = data[2 * i];           // Even (low)
+        if (2 * i + 1 < length) {
+            temp[half + i] = data[2 * i + 1]; // Odd (high)
+        }
+    }
+    
+    // Apply 9/7 lifting steps
+    const float alpha = -1.586134342f;
+    const float beta = -0.052980118f;
+    const float gamma = 0.882911076f;
+    const float delta = 0.443506852f;
+    const float K = 1.230174105f;
+    
+    // First lifting step
+    for (int i = 0; i < half; i++) {
+        float left = (i > 0) ? temp[i - 1] : temp[i];
+        float right = (i < half - 1) ? temp[i + 1] : temp[i];
+        temp[half + i] += alpha * (left + right);
+    }
+    
+    // Second lifting step
+    for (int i = 0; i < half; i++) {
+        float left = (i > 0) ? temp[half + i - 1] : temp[half + i];
+        float right = (i < half - 1) ? temp[half + i + 1] : temp[half + i];
+        temp[i] += beta * (left + right);
+    }
+    
+    // Third lifting step
+    for (int i = 0; i < half; i++) {
+        float left = (i > 0) ? temp[i - 1] : temp[i];
+        float right = (i < half - 1) ? temp[i + 1] : temp[i];
+        temp[half + i] += gamma * (left + right);
+    }
+    
+    // Fourth lifting step
+    for (int i = 0; i < half; i++) {
+        float left = (i > 0) ? temp[half + i - 1] : temp[half + i];
+        float right = (i < half - 1) ? temp[half + i + 1] : temp[half + i];
+        temp[i] += delta * (left + right);
+    }
+    
+    // Scaling
+    for (int i = 0; i < half; i++) {
+        temp[i] *= K;
+        temp[half + i] /= K;
+    }
+    
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
+// 2D DWT forward transform for 64x64 tile
+static void dwt_2d_forward(float *tile_data, int levels, int filter_type) {
+    const int size = 64;
+    float *temp_row = malloc(size * sizeof(float));
+    float *temp_col = malloc(size * sizeof(float));
+    
+    for (int level = 0; level < levels; level++) {
+        int current_size = size >> level;
+        if (current_size < 2) break;
+        
+        // Row transform
+        for (int y = 0; y < current_size; y++) {
+            for (int x = 0; x < current_size; x++) {
+                temp_row[x] = tile_data[y * size + x];
+            }
+            
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_row, current_size);
+            } else {
+                dwt_97_forward_1d(temp_row, current_size);
+            }
+            
+            for (int x = 0; x < current_size; x++) {
+                tile_data[y * size + x] = temp_row[x];
+            }
+        }
+        
+        // Column transform
+        for (int x = 0; x < current_size; x++) {
+            for (int y = 0; y < current_size; y++) {
+                temp_col[y] = tile_data[y * size + x];
+            }
+            
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_col, current_size);
+            } else {
+                dwt_97_forward_1d(temp_col, current_size);
+            }
+            
+            for (int y = 0; y < current_size; y++) {
+                tile_data[y * size + x] = temp_col[y];
+            }
+        }
+    }
+    
+    free(temp_row);
+    free(temp_col);
+}
+
+// Quantization for DWT subbands with rate control
+static void quantize_dwt_tile(dwt_tile_t *tile, int q_y, int q_co, int q_cg, float rcf) {
+    // Apply rate control factor to quantizers
+    int effective_q_y = (int)(q_y * rcf);
+    int effective_q_co = (int)(q_co * rcf);  
+    int effective_q_cg = (int)(q_cg * rcf);
+    
+    // Clamp quantizers to valid range
+    effective_q_y = CLAMP(effective_q_y, 1, 255);
+    effective_q_co = CLAMP(effective_q_co, 1, 255);
+    effective_q_cg = CLAMP(effective_q_cg, 1, 255);
+    
+    // TODO: Apply quantization to each subband based on frequency and channel
+    // Different quantization strategies for LL, LH, HL, HH subbands
+    // More aggressive quantization for higher frequency subbands
+}
+
+// Motion estimation for 64x64 tiles using SAD
+static int estimate_motion_64x64(const float *current, const float *reference, 
+                                 int width, int height, int tile_x, int tile_y, 
+                                 motion_vector_t *mv) {
+    const int tile_size = 64;
+    const int search_range = 16;  // ±16 pixels
+    const int start_x = tile_x * tile_size;
+    const int start_y = tile_y * tile_size;
+    
+    int best_mv_x = 0, best_mv_y = 0;
+    int min_sad = INT_MAX;
+    
+    // Search within ±16 pixel range
+    for (int dy = -search_range; dy <= search_range; dy++) {
+        for (int dx = -search_range; dx <= search_range; dx++) {
+            int ref_x = start_x + dx;
+            int ref_y = start_y + dy;
+            
+            // Check bounds
+            if (ref_x < 0 || ref_y < 0 || 
+                ref_x + tile_size > width || ref_y + tile_size > height) {
+                continue;
+            }
+            
+            // Calculate SAD
+            int sad = 0;
+            for (int y = 0; y < tile_size; y++) {
+                for (int x = 0; x < tile_size; x++) {
+                    int curr_idx = (start_y + y) * width + (start_x + x);
+                    int ref_idx = (ref_y + y) * width + (ref_x + x);
+                    
+                    if (curr_idx >= 0 && curr_idx < width * height &&
+                        ref_idx >= 0 && ref_idx < width * height) {
+                        int diff = (int)(current[curr_idx] - reference[ref_idx]);
+                        sad += abs(diff);
+                    }
+                }
+            }
+            
+            if (sad < min_sad) {
+                min_sad = sad;
+                best_mv_x = dx * 4;  // Convert to 1/4 pixel precision
+                best_mv_y = dy * 4;
+            }
+        }
+    }
+    
+    mv->mv_x = best_mv_x;
+    mv->mv_y = best_mv_y;
+    mv->rate_control_factor = 1.0f;  // TODO: Calculate based on complexity
+    
+    return min_sad;
+}
+
+// RGB to YCoCg color space conversion
+static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height) {
+    for (int i = 0; i < width * height; i++) {
+        float r = rgb[i * 3 + 0];
+        float g = rgb[i * 3 + 1]; 
+        float b = rgb[i * 3 + 2];
+        
+        // YCoCg-R transform
+        co[i] = r - b;
+        float tmp = b + co[i] / 2;
+        cg[i] = g - tmp;
+        y[i] = tmp + cg[i] / 2;
+    }
+}
+
+// Write TAV file header
+static int write_tav_header(tav_encoder_t *enc) {
+    if (!enc->output_fp) return -1;
+    
+    // Magic number
+    fwrite(TAV_MAGIC, 1, 8, enc->output_fp);
+    
+    // Version
+    fputc(TAV_VERSION, enc->output_fp);
+    
+    // Video parameters
+    fwrite(&enc->width, sizeof(uint16_t), 1, enc->output_fp);
+    fwrite(&enc->height, sizeof(uint16_t), 1, enc->output_fp);
+    fputc(enc->fps, enc->output_fp);
+    fwrite(&enc->total_frames, sizeof(uint32_t), 1, enc->output_fp);
+    
+    // Encoder parameters
+    fputc(enc->wavelet_filter, enc->output_fp);
+    fputc(enc->decomp_levels, enc->output_fp);
+    fputc(enc->quantizer_y, enc->output_fp);
+    fputc(enc->quantizer_co, enc->output_fp);
+    fputc(enc->quantizer_cg, enc->output_fp);
+    
+    // Feature flags
+    uint8_t extra_flags = 0;
+    if (1) extra_flags |= 0x01;  // Has audio (placeholder)
+    if (enc->subtitle_file) extra_flags |= 0x02;  // Has subtitles
+    if (enc->enable_progressive_transmission) extra_flags |= 0x04;
+    if (enc->enable_roi) extra_flags |= 0x08;
+    fputc(extra_flags, enc->output_fp);
+    
+    uint8_t video_flags = 0;
+    if (!enc->progressive) video_flags |= 0x01;  // Interlaced
+    if (enc->fps == 29 || enc->fps == 30) video_flags |= 0x02;  // NTSC
+    if (enc->lossless) video_flags |= 0x04;  // Lossless
+    if (enc->decomp_levels > 1) video_flags |= 0x08;  // Multi-resolution
+    fputc(video_flags, enc->output_fp);
+    
+    // Reserved bytes (7 bytes)
+    for (int i = 0; i < 7; i++) {
+        fputc(0, enc->output_fp);
+    }
+    
+    return 0;
+}
+
+// Encode a single frame
+static int encode_frame(tav_encoder_t *enc, int frame_num, int is_keyframe) {
+    // TODO: Read frame data from FFmpeg pipe
+    // TODO: Convert RGB to YCoCg
+    // TODO: Process tiles with DWT
+    // TODO: Apply motion estimation for P-frames
+    // TODO: Quantize and compress tile data
+    // TODO: Write packet to output file
+    
+    printf("Encoding frame %d/%d (%s)\n", frame_num + 1, enc->total_frames, 
+           is_keyframe ? "I-frame" : "P-frame");
+    
+    return 0;
+}
+
 // Main function
 int main(int argc, char *argv[]) {
     generate_random_filename(TEMP_AUDIO_FILE);
@@ -439,7 +754,7 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    if (!enc->input_file || !enc->output_file) {
+    if ((!enc->input_file && !enc->test_mode) || !enc->output_file) {
         fprintf(stderr, "Error: Input and output files must be specified\n");
         show_usage(argv[0]);
         cleanup_encoder(enc);
@@ -460,8 +775,159 @@ int main(int argc, char *argv[]) {
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Quality: Y=%d, Co=%d, Cg=%d\n", enc->quantizer_y, enc->quantizer_co, enc->quantizer_cg);
     
-    // TODO: Implement actual encoding pipeline
-    printf("Note: TAV encoder implementation in progress...\n");
+    // Open output file
+    if (strcmp(enc->output_file, "-") == 0) {
+        enc->output_fp = stdout;
+    } else {
+        enc->output_fp = fopen(enc->output_file, "wb");
+        if (!enc->output_fp) {
+            fprintf(stderr, "Error: Cannot open output file %s\n", enc->output_file);
+            cleanup_encoder(enc);
+            return 1;
+        }
+    }
+    
+    // Start FFmpeg process for video input
+    char ffmpeg_cmd[1024];
+    if (enc->test_mode) {
+        // Test mode - generate solid color frames
+        snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
+            "ffmpeg -f lavfi -i color=gray:size=%dx%d:duration=5:rate=%d "
+            "-f rawvideo -pix_fmt rgb24 -",
+            enc->width, enc->height, enc->fps);
+        enc->total_frames = enc->fps * 5;  // 5 seconds of test video
+    } else {
+        // Normal mode - read from input file
+        snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
+            "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+            "-s %dx%d -r %d -",
+            enc->input_file, enc->width, enc->height, enc->fps);
+        
+        // Get total frame count (simplified)
+        enc->total_frames = 300; // Placeholder - should be calculated from input
+    }
+    
+    if (enc->verbose) {
+        printf("FFmpeg command: %s\n", ffmpeg_cmd);
+    }
+    
+    enc->ffmpeg_video_pipe = popen(ffmpeg_cmd, "r");
+    if (!enc->ffmpeg_video_pipe) {
+        fprintf(stderr, "Error: Failed to start FFmpeg process\n");
+        cleanup_encoder(enc);
+        return 1;
+    }
+    
+    // Write TAV header
+    if (write_tav_header(enc) != 0) {
+        fprintf(stderr, "Error: Failed to write TAV header\n");
+        cleanup_encoder(enc);
+        return 1;
+    }
+    
+    printf("Starting encoding...\n");
+    
+    // Main encoding loop
+    int keyframe_interval = 30;  // I-frame every 30 frames
+    size_t frame_size = enc->width * enc->height * 3;  // RGB24
+    
+    for (int frame = 0; frame < enc->total_frames; frame++) {
+        // Read frame from FFmpeg
+        size_t bytes_read = fread(enc->current_frame_rgb, 1, frame_size, enc->ffmpeg_video_pipe);
+        if (bytes_read != frame_size) {
+            if (feof(enc->ffmpeg_video_pipe)) {
+                printf("End of input reached at frame %d\n", frame);
+                break;
+            } else {
+                fprintf(stderr, "Error reading frame %d\n", frame);
+                break;
+            }
+        }
+        
+        // Determine frame type
+        int is_keyframe = (frame % keyframe_interval == 0);
+        
+        // Convert RGB to YCoCg
+        rgb_to_ycocg(enc->current_frame_rgb, 
+                     enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
+                     enc->width, enc->height);
+        
+        // Process tiles
+        int num_tiles = enc->tiles_x * enc->tiles_y;
+        for (int tile_idx = 0; tile_idx < num_tiles; tile_idx++) {
+            int tile_x = tile_idx % enc->tiles_x;
+            int tile_y = tile_idx / enc->tiles_x;
+            
+            // Extract 64x64 tile data
+            float tile_y_data[64 * 64];
+            float tile_co_data[64 * 64];
+            float tile_cg_data[64 * 64];
+            
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    int src_x = tile_x * 64 + x;
+                    int src_y = tile_y * 64 + y;
+                    int src_idx = src_y * enc->width + src_x;
+                    int tile_idx_local = y * 64 + x;
+                    
+                    if (src_x < enc->width && src_y < enc->height) {
+                        tile_y_data[tile_idx_local] = enc->current_frame_y[src_idx];
+                        tile_co_data[tile_idx_local] = enc->current_frame_co[src_idx];
+                        tile_cg_data[tile_idx_local] = enc->current_frame_cg[src_idx];
+                    } else {
+                        // Pad with zeros if tile extends beyond frame
+                        tile_y_data[tile_idx_local] = 0.0f;
+                        tile_co_data[tile_idx_local] = 0.0f;
+                        tile_cg_data[tile_idx_local] = 0.0f;
+                    }
+                }
+            }
+            
+            // Apply DWT transform
+            dwt_2d_forward(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
+            dwt_2d_forward(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
+            dwt_2d_forward(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+            
+            // Motion estimation for P-frames
+            if (!is_keyframe && frame > 0) {
+                estimate_motion_64x64(enc->current_frame_y, enc->previous_frame_y,
+                                      enc->width, enc->height, tile_x, tile_y,
+                                      &enc->motion_vectors[tile_idx]);
+            } else {
+                enc->motion_vectors[tile_idx].mv_x = 0;
+                enc->motion_vectors[tile_idx].mv_y = 0;
+                enc->motion_vectors[tile_idx].rate_control_factor = 1.0f;
+            }
+        }
+        
+        // Write frame packet
+        uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
+        
+        // Placeholder: write minimal packet structure
+        fwrite(&packet_type, 1, 1, enc->output_fp);
+        uint32_t compressed_size = 1024;  // Placeholder
+        fwrite(&compressed_size, sizeof(uint32_t), 1, enc->output_fp);
+        
+        // Write dummy compressed data
+        uint8_t dummy_data[1024] = {0};
+        fwrite(dummy_data, 1, compressed_size, enc->output_fp);
+        
+        // Copy current frame to previous frame buffer
+        memcpy(enc->previous_frame_y, enc->current_frame_y, enc->width * enc->height * sizeof(float));
+        memcpy(enc->previous_frame_co, enc->current_frame_co, enc->width * enc->height * sizeof(float));
+        memcpy(enc->previous_frame_cg, enc->current_frame_cg, enc->width * enc->height * sizeof(float));
+        memcpy(enc->previous_frame_rgb, enc->current_frame_rgb, frame_size);
+        
+        enc->frame_count++;
+        
+        if (enc->verbose || frame % 30 == 0) {
+            printf("Encoded frame %d/%d (%s)\n", frame + 1, enc->total_frames, 
+                   is_keyframe ? "I-frame" : "P-frame");
+        }
+    }
+    
+    printf("Encoding completed: %d frames\n", enc->frame_count);
+    printf("Output file: %s\n", enc->output_file);
     
     cleanup_encoder(enc);
     return 0;
