@@ -13,6 +13,8 @@
 #include <ctype.h>
 #include <sys/time.h>
 #include <time.h>
+#include <limits.h>
+#include <float.h>
 
 // Float16 conversion functions (same as TEV)
 static inline uint16_t float_to_float16(float fval) {
@@ -168,8 +170,12 @@ typedef struct {
     // Video parameters
     int width, height;
     int fps;
+    int output_fps;  // For frame rate conversion
     int total_frames;
     int frame_count;
+    double duration;
+    int has_audio;
+    int is_ntsc_framerate;
     
     // Encoding parameters
     int quality_level;
@@ -198,6 +204,9 @@ typedef struct {
     int tiles_x, tiles_y;
     dwt_tile_t *tiles;
     motion_vector_t *motion_vectors;
+    
+    // Audio processing
+    size_t audio_remaining;
     
     // Compression
     ZSTD_CCtx *zstd_ctx;
@@ -229,7 +238,6 @@ static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialize_encoder(tav_encoder_t *enc);
-static int encode_frame(tav_encoder_t *enc, int frame_num, int is_keyframe);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
 static void dwt_2d_forward(float *tile_data, int levels, int filter_type);
 static void dwt_2d_inverse(dwt_tile_t *tile, float *output, int filter_type);
@@ -244,7 +252,7 @@ static size_t compress_tile_data(tav_encoder_t *enc, const dwt_tile_t *tiles,
 // Show usage information
 static void show_usage(const char *program_name) {
     printf("TAV DWT-based Video Encoder\n");
-    printf("Usage: %s [options] -i input.mp4 -o output.tav\n\n", program_name);
+    printf("Usage: %s [options] -i input.mp4 -o output.mv3\n\n", program_name);
     printf("Options:\n");
     printf("  -i, --input FILE       Input video file\n");
     printf("  -o, --output FILE      Output video file (use '-' for stdout)\n");
@@ -291,11 +299,11 @@ static void show_usage(const char *program_name) {
     printf("  - Lossless and lossy compression modes\n");
     
     printf("\nExamples:\n");
-    printf("  %s -i input.mp4 -o output.tav                    # Default settings\n", program_name);
-    printf("  %s -i input.mkv -q 3 -w 1 -d 4 -o output.tav     # High quality with 9/7 wavelet\n", program_name);
-    printf("  %s -i input.avi --lossless -o output.tav         # Lossless encoding\n", program_name);
-    printf("  %s -i input.mp4 -b 800 -o output.tav             # 800 kbps bitrate target\n", program_name);
-    printf("  %s -i input.webm -S subs.srt -o output.tav       # With subtitles\n", program_name);
+    printf("  %s -i input.mp4 -o output.mv3                    # Default settings\n", program_name);
+    printf("  %s -i input.mkv -q 3 -w 1 -d 4 -o output.mv3     # High quality with 9/7 wavelet\n", program_name);
+    printf("  %s -i input.avi --lossless -o output.mv3         # Lossless encoding\n", program_name);
+    printf("  %s -i input.mp4 -b 800 -o output.mv3             # 800 kbps bitrate target\n", program_name);
+    printf("  %s -i input.webm -S subs.srt -o output.mv3       # With subtitles\n", program_name);
 }
 
 // Create encoder instance
@@ -525,20 +533,136 @@ static void dwt_2d_forward(float *tile_data, int levels, int filter_type) {
 }
 
 // Quantization for DWT subbands with rate control
-static void quantize_dwt_tile(dwt_tile_t *tile, int q_y, int q_co, int q_cg, float rcf) {
-    // Apply rate control factor to quantizers
-    int effective_q_y = (int)(q_y * rcf);
-    int effective_q_co = (int)(q_co * rcf);  
-    int effective_q_cg = (int)(q_cg * rcf);
+static void quantize_dwt_coefficients(float *coeffs, int16_t *quantized, int size, int quantizer, float rcf) {
+    float effective_q = quantizer * rcf;
+    effective_q = FCLAMP(effective_q, 1.0f, 255.0f);
     
-    // Clamp quantizers to valid range
-    effective_q_y = CLAMP(effective_q_y, 1, 255);
-    effective_q_co = CLAMP(effective_q_co, 1, 255);
-    effective_q_cg = CLAMP(effective_q_cg, 1, 255);
+    for (int i = 0; i < size; i++) {
+        float quantized_val = coeffs[i] / effective_q;
+        quantized[i] = (int16_t)CLAMP((int)(quantized_val + (quantized_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
+    }
+}
+
+// Serialize tile data for compression
+static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y, 
+                                  const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
+                                  const motion_vector_t *mv, uint8_t mode, uint8_t *buffer) {
+    size_t offset = 0;
     
-    // TODO: Apply quantization to each subband based on frequency and channel
-    // Different quantization strategies for LL, LH, HL, HH subbands
-    // More aggressive quantization for higher frequency subbands
+    // Write tile header
+    buffer[offset++] = mode;
+    memcpy(buffer + offset, &mv->mv_x, sizeof(int16_t)); offset += sizeof(int16_t);
+    memcpy(buffer + offset, &mv->mv_y, sizeof(int16_t)); offset += sizeof(int16_t);
+    memcpy(buffer + offset, &mv->rate_control_factor, sizeof(float)); offset += sizeof(float);
+    
+    if (mode == TAV_MODE_SKIP || mode == TAV_MODE_MOTION) {
+        // No coefficient data for SKIP/MOTION modes
+        return offset;
+    }
+    
+    // Quantize and serialize DWT coefficients
+    const int tile_size = 64 * 64;
+    int16_t *quantized_y = malloc(tile_size * sizeof(int16_t));
+    int16_t *quantized_co = malloc(tile_size * sizeof(int16_t));
+    int16_t *quantized_cg = malloc(tile_size * sizeof(int16_t));
+    
+    quantize_dwt_coefficients((float*)tile_y_data, quantized_y, tile_size, enc->quantizer_y, mv->rate_control_factor);
+    quantize_dwt_coefficients((float*)tile_co_data, quantized_co, tile_size, enc->quantizer_co, mv->rate_control_factor);
+    quantize_dwt_coefficients((float*)tile_cg_data, quantized_cg, tile_size, enc->quantizer_cg, mv->rate_control_factor);
+    
+    // Write quantized coefficients
+    memcpy(buffer + offset, quantized_y, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
+    memcpy(buffer + offset, quantized_co, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
+    memcpy(buffer + offset, quantized_cg, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
+    
+    free(quantized_y);
+    free(quantized_co);
+    free(quantized_cg);
+    
+    return offset;
+}
+
+// Compress and write frame data
+static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
+    // Calculate total uncompressed size
+    const size_t max_tile_size = 9 + (64 * 64 * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
+    
+    // Allocate buffer for uncompressed tile data
+    uint8_t *uncompressed_buffer = malloc(total_uncompressed_size);
+    size_t uncompressed_offset = 0;
+    
+    // Serialize all tiles
+    for (int tile_y = 0; tile_y < enc->tiles_y; tile_y++) {
+        for (int tile_x = 0; tile_x < enc->tiles_x; tile_x++) {
+            int tile_idx = tile_y * enc->tiles_x + tile_x;
+            
+            // Determine tile mode (simplified)
+            uint8_t mode = TAV_MODE_INTRA;  // For now, all tiles are INTRA
+            
+            // Extract tile data (already processed)
+            float tile_y_data[64 * 64];
+            float tile_co_data[64 * 64];
+            float tile_cg_data[64 * 64];
+            
+            // Extract tile data from frame buffers
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    int src_x = tile_x * 64 + x;
+                    int src_y = tile_y * 64 + y;
+                    int src_idx = src_y * enc->width + src_x;
+                    int tile_idx_local = y * 64 + x;
+                    
+                    if (src_x < enc->width && src_y < enc->height) {
+                        tile_y_data[tile_idx_local] = enc->current_frame_y[src_idx];
+                        tile_co_data[tile_idx_local] = enc->current_frame_co[src_idx];
+                        tile_cg_data[tile_idx_local] = enc->current_frame_cg[src_idx];
+                    } else {
+                        // Pad with zeros if tile extends beyond frame
+                        tile_y_data[tile_idx_local] = 0.0f;
+                        tile_co_data[tile_idx_local] = 0.0f;
+                        tile_cg_data[tile_idx_local] = 0.0f;
+                    }
+                }
+            }
+            
+            // Apply DWT transform to each channel
+            dwt_2d_forward(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
+            dwt_2d_forward(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
+            dwt_2d_forward(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+            
+            // Serialize tile
+            size_t tile_size = serialize_tile_data(enc, tile_x, tile_y, 
+                                                   tile_y_data, tile_co_data, tile_cg_data,
+                                                   &enc->motion_vectors[tile_idx], mode,
+                                                   uncompressed_buffer + uncompressed_offset);
+            uncompressed_offset += tile_size;
+        }
+    }
+    
+    // Compress with zstd
+    size_t compressed_size = ZSTD_compress(enc->compressed_buffer, enc->compressed_buffer_size,
+                                           uncompressed_buffer, uncompressed_offset,
+                                           ZSTD_CLEVEL_DEFAULT);
+    
+    if (ZSTD_isError(compressed_size)) {
+        fprintf(stderr, "Error: ZSTD compression failed: %s\n", ZSTD_getErrorName(compressed_size));
+        free(uncompressed_buffer);
+        return 0;
+    }
+    
+    // Write packet header and compressed data
+    fwrite(&packet_type, 1, 1, enc->output_fp);
+    uint32_t compressed_size_32 = (uint32_t)compressed_size;
+    fwrite(&compressed_size_32, sizeof(uint32_t), 1, enc->output_fp);
+    fwrite(enc->compressed_buffer, 1, compressed_size, enc->output_fp);
+    
+    free(uncompressed_buffer);
+    
+    enc->total_compressed_size += compressed_size;
+    enc->total_uncompressed_size += uncompressed_offset;
+    
+    return compressed_size + 5; // packet type + size field + compressed data
 }
 
 // Motion estimation for 64x64 tiles using SAD
@@ -656,18 +780,154 @@ static int write_tav_header(tav_encoder_t *enc) {
     return 0;
 }
 
-// Encode a single frame
-static int encode_frame(tav_encoder_t *enc, int frame_num, int is_keyframe) {
-    // TODO: Read frame data from FFmpeg pipe
-    // TODO: Convert RGB to YCoCg
-    // TODO: Process tiles with DWT
-    // TODO: Apply motion estimation for P-frames
-    // TODO: Quantize and compress tile data
-    // TODO: Write packet to output file
+// =============================================================================
+// Video Processing Pipeline (from TEV for compatibility)
+// =============================================================================
+
+// Execute command and capture output
+static char* execute_command(const char* command) {
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return NULL;
     
-    printf("Encoding frame %d/%d (%s)\n", frame_num + 1, enc->total_frames, 
-           is_keyframe ? "I-frame" : "P-frame");
+    size_t buffer_size = 4096;
+    char* buffer = malloc(buffer_size);
+    size_t total_size = 0;
+    size_t bytes_read;
     
+    while ((bytes_read = fread(buffer + total_size, 1, buffer_size - total_size - 1, pipe)) > 0) {
+        total_size += bytes_read;
+        if (total_size + 1 >= buffer_size) {
+            buffer_size *= 2;
+            buffer = realloc(buffer, buffer_size);
+        }
+    }
+    
+    buffer[total_size] = '\0';
+    pclose(pipe);
+    return buffer;
+}
+
+// Get video metadata using ffprobe
+static int get_video_metadata(tav_encoder_t *config) {
+    char command[1024];
+    char *output;
+
+    // Get all metadata without frame count (much faster)
+    snprintf(command, sizeof(command),
+        "ffprobe -v quiet "
+        "-show_entries stream=r_frame_rate:format=duration "
+        "-select_streams v:0 -of csv=p=0 \"%s\" 2>/dev/null; "
+        "ffprobe -v quiet -select_streams a:0 -show_entries stream=index -of csv=p=0 \"%s\" 2>/dev/null",
+        config->input_file, config->input_file);
+
+    output = execute_command(command);
+    if (!output) {
+        fprintf(stderr, "Failed to get video metadata (ffprobe failed)\n");
+        return 0;
+    }
+
+    // Parse the combined output
+    char *line = strtok(output, "\n");
+    int line_num = 0;
+    double inputFramerate = 0;
+
+    while (line) {
+        switch (line_num) {
+            case 0: // framerate (e.g., "30000/1001", "30/1")
+                if (strlen(line) > 0) {
+                    double num, den;
+                    if (sscanf(line, "%lf/%lf", &num, &den) == 2) {
+                        inputFramerate = num / den;
+                        config->fps = (int)round(inputFramerate);
+                        config->is_ntsc_framerate = (fabs(den - 1001.0) < 0.1);
+                    } else {
+                        config->fps = (int)round(atof(line));
+                        config->is_ntsc_framerate = 0;
+                    }
+                    // Frame count will be determined during encoding
+                    config->total_frames = 0;
+                }
+                break;
+            case 1: // duration in seconds
+                config->duration = atof(line);
+                break;
+        }
+        line = strtok(NULL, "\n");
+        line_num++;
+    }
+
+    // Check for audio (line_num > 2 means audio stream was found)
+    config->has_audio = (line_num > 2);
+
+    free(output);
+
+    if (config->fps <= 0) {
+        fprintf(stderr, "Invalid or missing framerate in input file\n");
+        return 0;
+    }
+
+    // Set output FPS to input FPS if not specified
+    if (config->output_fps == 0) {
+        config->output_fps = config->fps;
+    }
+
+    // Frame count will be determined during encoding
+    config->total_frames = 0;
+
+    fprintf(stderr, "Video metadata:\n");
+    fprintf(stderr, "  Frames: (will be determined during encoding)\n");
+    fprintf(stderr, "  FPS: %.2f\n", inputFramerate);
+    fprintf(stderr, "  Duration: %.2fs\n", config->duration);
+    fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
+    fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height, 
+            config->progressive ? "progressive" : "interlaced");
+
+    return (config->fps > 0);
+}
+
+// Start FFmpeg process for video conversion with frame rate support
+static int start_video_conversion(tav_encoder_t *enc) {
+    char command[2048];
+
+    // Use simple FFmpeg command like TEV encoder for reliable EOF detection
+    snprintf(command, sizeof(command),
+        "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+        "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
+        "-y - 2>/dev/null",
+        enc->input_file, enc->width, enc->height, enc->width, enc->height);
+
+    if (enc->verbose) {
+        printf("FFmpeg command: %s\n", command);
+    }
+
+    enc->ffmpeg_video_pipe = popen(command, "r");
+    if (!enc->ffmpeg_video_pipe) {
+        fprintf(stderr, "Failed to start FFmpeg video conversion\n");
+        return 0;
+    }
+
+    return 1;
+}
+
+// Start audio conversion
+static int start_audio_conversion(tav_encoder_t *enc) {
+    if (!enc->has_audio) return 1;
+
+    char command[2048];
+    snprintf(command, sizeof(command),
+        "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar 32000 -ac 2 -y \"%s\" 2>/dev/null",
+        enc->input_file, enc->lossless ? 384 : MP2_RATE_TABLE[enc->quality_level], TEMP_AUDIO_FILE);
+
+    int result = system(command);
+    if (result == 0) {
+        enc->mp2_file = fopen(TEMP_AUDIO_FILE, "rb");
+        if (enc->mp2_file) {
+            fseek(enc->mp2_file, 0, SEEK_END);
+            enc->audio_remaining = ftell(enc->mp2_file);
+            fseek(enc->mp2_file, 0, SEEK_SET);
+        }
+        return 1;
+    }
     return 0;
 }
 
@@ -723,6 +983,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'w':
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 1);
+                break;
+            case 'f':
+                enc->output_fps = atoi(optarg);
                 break;
             case 'd':
                 enc->decomp_levels = CLAMP(atoi(optarg), 1, MAX_DECOMP_LEVELS);
@@ -787,35 +1050,35 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    // Start FFmpeg process for video input
-    char ffmpeg_cmd[1024];
+    // Start FFmpeg process for video input (using TEV-compatible filtergraphs)
     if (enc->test_mode) {
         // Test mode - generate solid color frames
-        snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
-            "ffmpeg -f lavfi -i color=gray:size=%dx%d:duration=5:rate=%d "
-            "-f rawvideo -pix_fmt rgb24 -",
-            enc->width, enc->height, enc->fps);
-        enc->total_frames = enc->fps * 5;  // 5 seconds of test video
+        enc->total_frames = 15;  // Fixed 15 test frames like TEV
+        printf("Test mode: Generating %d solid colour frames\n", enc->total_frames);
     } else {
-        // Normal mode - read from input file
-        snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
-            "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-            "-s %dx%d -r %d -",
-            enc->input_file, enc->width, enc->height, enc->fps);
+        // Normal mode - get video metadata first
+        printf("Retrieving video metadata...\n");
+        if (!get_video_metadata(enc)) {
+            fprintf(stderr, "Error: Failed to get video metadata\n");
+            cleanup_encoder(enc);
+            return 1;
+        }
         
-        // Get total frame count (simplified)
-        enc->total_frames = 300; // Placeholder - should be calculated from input
-    }
-    
-    if (enc->verbose) {
-        printf("FFmpeg command: %s\n", ffmpeg_cmd);
-    }
-    
-    enc->ffmpeg_video_pipe = popen(ffmpeg_cmd, "r");
-    if (!enc->ffmpeg_video_pipe) {
-        fprintf(stderr, "Error: Failed to start FFmpeg process\n");
-        cleanup_encoder(enc);
-        return 1;
+        // Start video preprocessing pipeline
+        if (start_video_conversion(enc) != 1) {
+            fprintf(stderr, "Error: Failed to start video conversion\n");
+            cleanup_encoder(enc);
+            return 1;
+        }
+        
+        // Start audio conversion if needed
+        if (enc->has_audio) {
+            printf("Starting audio conversion...\n");
+            if (!start_audio_conversion(enc)) {
+                fprintf(stderr, "Warning: Audio conversion failed\n");
+                enc->has_audio = 0;
+            }
+        }
     }
     
     // Write TAV header
@@ -827,69 +1090,91 @@ int main(int argc, char *argv[]) {
     
     printf("Starting encoding...\n");
     
-    // Main encoding loop
+    // Main encoding loop - process frames until EOF or frame limit
     int keyframe_interval = 30;  // I-frame every 30 frames
-    size_t frame_size = enc->width * enc->height * 3;  // RGB24
+    int frame_count = 0;
+    int continue_encoding = 1;
     
-    for (int frame = 0; frame < enc->total_frames; frame++) {
-        // Read frame from FFmpeg
-        size_t bytes_read = fread(enc->current_frame_rgb, 1, frame_size, enc->ffmpeg_video_pipe);
-        if (bytes_read != frame_size) {
-            if (feof(enc->ffmpeg_video_pipe)) {
-                printf("End of input reached at frame %d\n", frame);
-                break;
-            } else {
-                fprintf(stderr, "Error reading frame %d\n", frame);
+    while (continue_encoding) {
+        if (enc->test_mode) {
+            // Test mode has a fixed frame count
+            if (frame_count >= enc->total_frames) {
+                continue_encoding = 0;
                 break;
             }
+            
+            // Generate test frame with solid colours (TEV-style)
+            size_t rgb_size = enc->width * enc->height * 3;
+            uint8_t test_r = 0, test_g = 0, test_b = 0;
+            const char* colour_name = "unknown";
+            
+            switch (frame_count) {
+                case 0: test_r = 0; test_g = 0; test_b = 0; colour_name = "black"; break;
+                case 1: test_r = 127; test_g = 127; test_b = 127; colour_name = "grey"; break;
+                case 2: test_r = 255; test_g = 255; test_b = 255; colour_name = "white"; break;
+                case 3: test_r = 127; test_g = 0; test_b = 0; colour_name = "half red"; break;
+                case 4: test_r = 127; test_g = 127; test_b = 0; colour_name = "half yellow"; break;
+                case 5: test_r = 0; test_g = 127; test_b = 0; colour_name = "half green"; break;
+                case 6: test_r = 0; test_g = 127; test_b = 127; colour_name = "half cyan"; break;
+                case 7: test_r = 0; test_g = 0; test_b = 127; colour_name = "half blue"; break;
+                case 8: test_r = 127; test_g = 0; test_b = 127; colour_name = "half magenta"; break;
+                case 9: test_r = 255; test_g = 0; test_b = 0; colour_name = "red"; break;
+                case 10: test_r = 255; test_g = 255; test_b = 0; colour_name = "yellow"; break;
+                case 11: test_r = 0; test_g = 255; test_b = 0; colour_name = "green"; break;
+                case 12: test_r = 0; test_g = 255; test_b = 255; colour_name = "cyan"; break;
+                case 13: test_r = 0; test_g = 0; test_b = 255; colour_name = "blue"; break;
+                case 14: test_r = 255; test_g = 0; test_b = 255; colour_name = "magenta"; break;
+            }
+            
+            // Fill frame with test colour
+            for (size_t i = 0; i < rgb_size; i += 3) {
+                enc->current_frame_rgb[i] = test_r;
+                enc->current_frame_rgb[i + 1] = test_g;
+                enc->current_frame_rgb[i + 2] = test_b;
+            }
+            
+            printf("Frame %d: %s (%d,%d,%d)\n", frame_count, colour_name, test_r, test_g, test_b);
+            
+        } else {
+            // Real video mode - read frame from FFmpeg
+            // height-halving is already done on the encoder initialisation
+            int frame_height = enc->height;
+            size_t rgb_size = enc->width * frame_height * 3;
+            size_t bytes_read = fread(enc->current_frame_rgb, 1, rgb_size, enc->ffmpeg_video_pipe);
+            
+            if (bytes_read != rgb_size) {
+                if (enc->verbose) {
+                    printf("Frame %d: Expected %zu bytes, got %zu bytes\n", frame_count, rgb_size, bytes_read);
+                    if (feof(enc->ffmpeg_video_pipe)) {
+                        printf("FFmpeg pipe reached end of file\n");
+                    }
+                    if (ferror(enc->ffmpeg_video_pipe)) {
+                        printf("FFmpeg pipe error occurred\n");
+                    }
+                }
+                continue_encoding = 0;
+                break;
+            }
+            
+            // Each frame from FFmpeg is now a single field at half height (for interlaced)
+            // Frame parity: even frames (0,2,4...) = bottom fields, odd frames (1,3,5...) = top fields
         }
         
         // Determine frame type
-        int is_keyframe = (frame % keyframe_interval == 0);
+        int is_keyframe = (frame_count % keyframe_interval == 0);
         
         // Convert RGB to YCoCg
         rgb_to_ycocg(enc->current_frame_rgb, 
                      enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
                      enc->width, enc->height);
         
-        // Process tiles
+        // Process motion vectors for P-frames
         int num_tiles = enc->tiles_x * enc->tiles_y;
         for (int tile_idx = 0; tile_idx < num_tiles; tile_idx++) {
             int tile_x = tile_idx % enc->tiles_x;
             int tile_y = tile_idx / enc->tiles_x;
             
-            // Extract 64x64 tile data
-            float tile_y_data[64 * 64];
-            float tile_co_data[64 * 64];
-            float tile_cg_data[64 * 64];
-            
-            for (int y = 0; y < 64; y++) {
-                for (int x = 0; x < 64; x++) {
-                    int src_x = tile_x * 64 + x;
-                    int src_y = tile_y * 64 + y;
-                    int src_idx = src_y * enc->width + src_x;
-                    int tile_idx_local = y * 64 + x;
-                    
-                    if (src_x < enc->width && src_y < enc->height) {
-                        tile_y_data[tile_idx_local] = enc->current_frame_y[src_idx];
-                        tile_co_data[tile_idx_local] = enc->current_frame_co[src_idx];
-                        tile_cg_data[tile_idx_local] = enc->current_frame_cg[src_idx];
-                    } else {
-                        // Pad with zeros if tile extends beyond frame
-                        tile_y_data[tile_idx_local] = 0.0f;
-                        tile_co_data[tile_idx_local] = 0.0f;
-                        tile_cg_data[tile_idx_local] = 0.0f;
-                    }
-                }
-            }
-            
-            // Apply DWT transform
-            dwt_2d_forward(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
-            dwt_2d_forward(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
-            dwt_2d_forward(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
-            
-            // Motion estimation for P-frames
-            if (!is_keyframe && frame > 0) {
+            if (!is_keyframe && frame_count > 0) {
                 estimate_motion_64x64(enc->current_frame_y, enc->previous_frame_y,
                                       enc->width, enc->height, tile_x, tile_y,
                                       &enc->motion_vectors[tile_idx]);
@@ -900,33 +1185,48 @@ int main(int argc, char *argv[]) {
             }
         }
         
-        // Write frame packet
+        // Compress and write frame packet
         uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
+        size_t packet_size = compress_and_write_frame(enc, packet_type);
         
-        // Placeholder: write minimal packet structure
-        fwrite(&packet_type, 1, 1, enc->output_fp);
-        uint32_t compressed_size = 1024;  // Placeholder
-        fwrite(&compressed_size, sizeof(uint32_t), 1, enc->output_fp);
-        
-        // Write dummy compressed data
-        uint8_t dummy_data[1024] = {0};
-        fwrite(dummy_data, 1, compressed_size, enc->output_fp);
+        if (packet_size == 0) {
+            fprintf(stderr, "Error: Failed to compress frame %d\n", frame_count);
+            break;
+        }
         
         // Copy current frame to previous frame buffer
-        memcpy(enc->previous_frame_y, enc->current_frame_y, enc->width * enc->height * sizeof(float));
-        memcpy(enc->previous_frame_co, enc->current_frame_co, enc->width * enc->height * sizeof(float));
-        memcpy(enc->previous_frame_cg, enc->current_frame_cg, enc->width * enc->height * sizeof(float));
-        memcpy(enc->previous_frame_rgb, enc->current_frame_rgb, frame_size);
+        size_t float_frame_size = enc->width * enc->height * sizeof(float);
+        size_t rgb_frame_size = enc->width * enc->height * 3;
+        memcpy(enc->previous_frame_y, enc->current_frame_y, float_frame_size);
+        memcpy(enc->previous_frame_co, enc->current_frame_co, float_frame_size);
+        memcpy(enc->previous_frame_cg, enc->current_frame_cg, float_frame_size);
+        memcpy(enc->previous_frame_rgb, enc->current_frame_rgb, rgb_frame_size);
         
-        enc->frame_count++;
+        frame_count++;
+        enc->frame_count = frame_count;
         
-        if (enc->verbose || frame % 30 == 0) {
-            printf("Encoded frame %d/%d (%s)\n", frame + 1, enc->total_frames, 
+        if (enc->verbose || frame_count % 30 == 0) {
+            printf("Encoded frame %d (%s)\n", frame_count, 
                    is_keyframe ? "I-frame" : "P-frame");
         }
     }
     
-    printf("Encoding completed: %d frames\n", enc->frame_count);
+    // Update actual frame count in encoder struct  
+    enc->total_frames = frame_count;
+    
+    // Update header with actual frame count (seek back to header position)
+    if (enc->output_fp != stdout) {
+        long current_pos = ftell(enc->output_fp);
+        fseek(enc->output_fp, 17, SEEK_SET);  // Offset of total_frames field in TAV header
+        uint32_t actual_frames = frame_count;
+        fwrite(&actual_frames, sizeof(uint32_t), 1, enc->output_fp);
+        fseek(enc->output_fp, current_pos, SEEK_SET);  // Restore position
+        if (enc->verbose) {
+            printf("Updated header with actual frame count: %d\n", frame_count);
+        }
+    }
+    
+    printf("Encoding completed: %d frames\n", frame_count);
     printf("Output file: %s\n", enc->output_file);
     
     cleanup_encoder(enc);
