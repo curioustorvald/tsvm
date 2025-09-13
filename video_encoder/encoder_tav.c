@@ -1161,7 +1161,7 @@ int main(int argc, char *argv[]) {
         }
         
         // Determine frame type
-        int is_keyframe = (frame_count % keyframe_interval == 0);
+        int is_keyframe = 1;//(frame_count % keyframe_interval == 0);
         
         // Convert RGB to YCoCg
         rgb_to_ycocg(enc->current_frame_rgb, 
@@ -1226,7 +1226,7 @@ int main(int argc, char *argv[]) {
     // Update header with actual frame count (seek back to header position)
     if (enc->output_fp != stdout) {
         long current_pos = ftell(enc->output_fp);
-        fseek(enc->output_fp, 17, SEEK_SET);  // Offset of total_frames field in TAV header
+        fseek(enc->output_fp, 14, SEEK_SET);  // Offset of total_frames field in TAV header
         uint32_t actual_frames = frame_count;
         fwrite(&actual_frames, sizeof(uint32_t), 1, enc->output_fp);
         fseek(enc->output_fp, current_pos, SEEK_SET);  // Restore position
