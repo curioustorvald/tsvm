@@ -1193,6 +1193,11 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Error: Failed to compress frame %d\n", frame_count);
             break;
         }
+        else {
+            // Write a sync packet only after a video is been coded
+            uint8_t sync_packet = TAV_PACKET_SYNC;
+            fwrite(&sync_packet, 1, 1, enc->output_fp);
+        }
         
         // Copy current frame to previous frame buffer
         size_t float_frame_size = enc->width * enc->height * sizeof(float);
@@ -1213,7 +1218,11 @@ int main(int argc, char *argv[]) {
     
     // Update actual frame count in encoder struct  
     enc->total_frames = frame_count;
-    
+
+    // Write final sync packet
+    uint8_t sync_packet = TAV_PACKET_SYNC;
+    fwrite(&sync_packet, 1, 1, enc->output_fp);
+
     // Update header with actual frame count (seek back to header position)
     if (enc->output_fp != stdout) {
         long current_pos = ftell(enc->output_fp);

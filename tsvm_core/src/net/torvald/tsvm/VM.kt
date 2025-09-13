@@ -438,13 +438,89 @@ class VM(
             (memspace as PeriBase).poke(offset, value)
     }
 
-    fun peek(addr:Long): Byte? {
+    fun pokeShort(addr: Long, value: Short) {
+        val value0 = value.toByte()
+        val value1 = value.toInt().shr(8).toByte()
+
+        val (memspace, offset) = translateAddr(addr)
+        if (memspace == null)
+            throw ErrorIllegalAccess(this, addr)
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw ErrorIllegalAccess(this, addr)
+            else {
+                memspace.set(offset+0, value0)
+                memspace.set(offset+1, value1)
+            }
+        }
+        else {
+            (memspace as PeriBase).poke(offset+0, value0)
+            (memspace as PeriBase).poke(offset+1, value1)
+        }
+    }
+
+    fun pokeFloat(addr: Long, value: Float) {
+        val vi = value.toRawBits()
+        val value0 = vi.toByte()
+        val value1 = vi.shr(8).toByte()
+        val value2 = vi.shr(16).toByte()
+        val value3 = vi.shr(24).toByte()
+
+        val (memspace, offset) = translateAddr(addr)
+        if (memspace == null)
+            throw ErrorIllegalAccess(this, addr)
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw ErrorIllegalAccess(this, addr)
+            else {
+                memspace.set(offset+0, value0)
+                memspace.set(offset+1, value1)
+                memspace.set(offset+2, value2)
+                memspace.set(offset+3, value3)
+            }
+        }
+        else {
+            (memspace as PeriBase).poke(offset+0, value0)
+            (memspace as PeriBase).poke(offset+1, value1)
+            (memspace as PeriBase).poke(offset+2, value2)
+            (memspace as PeriBase).poke(offset+3, value3)
+        }
+    }
+
+    fun pokeInt(addr: Long, value: Int) {
+        val value0 = value.toByte()
+        val value1 = value.shr(8).toByte()
+        val value2 = value.shr(16).toByte()
+        val value3 = value.shr(24).toByte()
+
+        val (memspace, offset) = translateAddr(addr)
+        if (memspace == null)
+            throw ErrorIllegalAccess(this, addr)
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw ErrorIllegalAccess(this, addr)
+            else {
+                memspace.set(offset+0, value0)
+                memspace.set(offset+1, value1)
+                memspace.set(offset+2, value2)
+                memspace.set(offset+3, value3)
+            }
+        }
+        else {
+            (memspace as PeriBase).poke(offset+0, value0)
+            (memspace as PeriBase).poke(offset+1, value1)
+            (memspace as PeriBase).poke(offset+2, value2)
+            (memspace as PeriBase).poke(offset+3, value3)
+        }
+    }
+
+    fun peek(addr:Long): Byte {
         val (memspace, offset) = translateAddr(addr)
 
 //        println("peek $addr -> ${offset}@${memspace?.javaClass?.canonicalName}")
 
         return if (memspace == null)
-            null
+            throw NullPointerException()//null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
                 throw ErrorIllegalAccess(this, addr)
@@ -452,7 +528,76 @@ class VM(
                 memspace.get(offset)
         }
         else
-            (memspace as PeriBase).peek(offset)
+            (memspace as PeriBase).peek(offset)!!
+    }
+
+    fun peekShort(addr: Long): Short {
+        val (memspace, offset) = translateAddr(addr)
+
+        return if (memspace == null)
+            throw NullPointerException()//null
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw ErrorIllegalAccess(this, addr)
+            else {
+                (memspace.get(offset+0).toUint() or
+                 memspace.get(offset+1).toUint().shl(8)).toShort()
+            }
+        }
+        else {
+            ((memspace as PeriBase).peek(offset+0)!!.toUint() or
+             (memspace as PeriBase).peek(offset+1)!!.toUint().shl(8)).toShort()
+        }
+    }
+
+    fun peekFloat(addr: Long): Float {
+        val (memspace, offset) = translateAddr(addr)
+
+        return if (memspace == null)
+            throw NullPointerException()//null
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw ErrorIllegalAccess(this, addr)
+            else {
+                Float.fromBits(memspace.get(offset+0).toUint() or
+                 memspace.get(offset+1).toUint().shl(8) or
+                 memspace.get(offset+2).toUint().shl(16) or
+                 memspace.get(offset+3).toUint().shl(24)
+                )
+            }
+        }
+        else {
+            Float.fromBits((memspace as PeriBase).peek(offset+0)!!.toUint() or
+             (memspace as PeriBase).peek(offset+1)!!.toUint().shl(8) or
+             (memspace as PeriBase).peek(offset+2)!!.toUint().shl(16) or
+             (memspace as PeriBase).peek(offset+3)!!.toUint().shl(24)
+            )
+        }
+    }
+
+    fun peekInt(addr: Long): Int? {
+        val (memspace, offset) = translateAddr(addr)
+
+        return if (memspace == null)
+            throw NullPointerException()//null
+        else if (memspace is UnsafePtr) {
+            if (addr >= memspace.size)
+                throw ErrorIllegalAccess(this, addr)
+            else {
+                (memspace.get(offset+0).toUint() or
+                        memspace.get(offset+1).toUint().shl(8) or
+                        memspace.get(offset+2).toUint().shl(16) or
+                        memspace.get(offset+3).toUint().shl(24)
+                )
+            }
+        }
+        else {
+            ((memspace as PeriBase).peek(offset+0)!!.toUint() or
+                    (memspace as PeriBase).peek(offset+1)!!.toUint().shl(8) or
+                    (memspace as PeriBase).peek(offset+2)!!.toUint().shl(16) or
+                    (memspace as PeriBase).peek(offset+3)!!.toUint().shl(24)
+            )
+        }
     }
 
     private fun findEmptySpace(blockSize: Int): Int? {
