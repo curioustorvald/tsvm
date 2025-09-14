@@ -444,7 +444,7 @@ try {
             if (notifHidden) {
                 con.move(31, 1)
                 con.color_pair(253, 0)
-                print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                //print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
             }
         }
 

@@ -4048,6 +4048,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val dwtSubbandHL = FloatArray(32 * 32)
     private val dwtSubbandHH = FloatArray(32 * 32)
 
+    private var frameCounter = 0
     /**
      * Main TAV decoder function - processes compressed TAV tile data
      * Called from JavaScript playtav.js decoder
@@ -4057,6 +4058,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                   debugMotionVectors: Boolean = false, waveletFilter: Int = 1,
                   decompLevels: Int = 3, enableDeblocking: Boolean = true,
                   isLossless: Boolean = false) {
+        this.frameCounter = frameCounter
+
         var readPtr = blockDataPtr
 
         try {
@@ -4076,6 +4079,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     readPtr += 2
                     val rcf = vm.peekFloat(readPtr)
                     readPtr += 4
+
+                    // Debug tile header for first few tiles
+                    if ((tileX < 2 && tileY < 2) && frameCounter < 3) {
+                        println("TAV Debug: Tile ($tileX,$tileY) frame $frameCounter - mode=0x${mode.toString(16)}, mvX=$mvX, mvY=$mvY, rcf=$rcf")
+                    }
 
                     when (mode) {
                         0x00 -> { // TAV_MODE_SKIP
@@ -4173,16 +4181,51 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val coTile = FloatArray(coeffCount)
         val cgTile = FloatArray(coeffCount)
         
+        // Debug: check quantized values before dequantization
+        if (tileX == 0 && tileY == 0 && frameCounter < 3) {
+            println("TAV Debug: Tile (0,0) frame $frameCounter - Quantized Y coeffs (first 64):")
+            for (i in 0 until 8) {
+                for (j in 0 until 8) {
+                    print("${quantizedY[i * 8 + j]} ")
+                }
+                println()
+            }
+            println("qY=$qY, qCo=$qCo, qCg=$qCg, rcf=$rcf")
+        }
+        
         for (i in 0 until coeffCount) {
             yTile[i] = quantizedY[i] * qY * rcf
             coTile[i] = quantizedCo[i] * qCo * rcf
             cgTile[i] = quantizedCg[i] * qCg * rcf
         }
         
-        // Apply inverse DWT using 9/7 irreversible filter
-        applyDWT97Inverse(yTile, tileSize, tileSize)
-        applyDWT97Inverse(coTile, tileSize, tileSize)
-        applyDWT97Inverse(cgTile, tileSize, tileSize)
+        // Apply inverse DWT using 9/7 irreversible filter with 3 decomposition levels
+        applyDWTInverseMultiLevel(yTile, tileSize, tileSize, 3, 1)
+        applyDWTInverseMultiLevel(coTile, tileSize, tileSize, 3, 1)
+        applyDWTInverseMultiLevel(cgTile, tileSize, tileSize, 3, 1)
+        
+        // DEBUG: Try replacing with reasonable test values to verify the rest of pipeline works
+        if (tileX == 0 && tileY == 0 && frameCounter < 3) {
+            println("TAV Debug: Before test override - Y[0-7]: ${yTile.sliceArray(0..7).joinToString { "%.1f".format(it) }}")
+            // Set reasonable test values
+            for (i in 0 until coeffCount) {
+                yTile[i] = 128.0f + (i % 32) * 2.0f  // Reasonable Y values around middle gray
+                coTile[i] = (i % 16 - 8) * 4.0f      // Small chroma values  
+                cgTile[i] = (i % 16 - 8) * 4.0f      // Small chroma values
+            }
+            println("TAV Debug: After test override - Y[0-7]: ${yTile.sliceArray(0..7).joinToString { "%.1f".format(it) }}")
+        }
+        
+        // Debug: check if we get reasonable values after DWT
+        if (tileX == 0 && tileY == 0 && frameCounter < 3) {
+            println("TAV Debug: Tile (0,0) frame $frameCounter - Y sample values after DWT:")
+            for (i in 0 until 8) {
+                for (j in 0 until 8) {
+                    print("%.2f ".format(yTile[i * tileSize + j]))
+                }
+                println()
+            }
+        }
         
         // Convert YCoCg to RGB and store in buffer
         convertYCoCgTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
@@ -4231,9 +4274,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             cgResidual[i] = quantizedCg[i] * qCg * rcf
         }
         
-        applyDWT97Inverse(yResidual, tileSize, tileSize)
-        applyDWT97Inverse(coResidual, tileSize, tileSize)
-        applyDWT97Inverse(cgResidual, tileSize, tileSize)
+        applyDWTInverseMultiLevel(yResidual, tileSize, tileSize, 3, 1)
+        applyDWTInverseMultiLevel(coResidual, tileSize, tileSize, 3, 1)
+        applyDWTInverseMultiLevel(cgResidual, tileSize, tileSize, 3, 1)
         
         // Add residual to motion-compensated prediction
         addYCoCgResidualToRGBTile(tileX, tileY, yResidual, coResidual, cgResidual, currentRGBAddr, width, height)
@@ -4586,13 +4629,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Apply inverse DWT to reconstruct tile
         if (waveletFilter == 0) { // 5/3 reversible
-            applyDWT53Inverse(dequantizedY, tileSize, tileSize)
-            applyDWT53Inverse(dequantizedCo, tileSize, tileSize)
-            applyDWT53Inverse(dequantizedCg, tileSize, tileSize)
+            applyDWTInverseMultiLevel(dequantizedY, tileSize, tileSize, 3, 0)
+            applyDWTInverseMultiLevel(dequantizedCo, tileSize, tileSize, 3, 0)
+            applyDWTInverseMultiLevel(dequantizedCg, tileSize, tileSize, 3, 0)
         } else { // 9/7 irreversible
-            applyDWT97Inverse(dequantizedY, tileSize, tileSize)
-            applyDWT97Inverse(dequantizedCo, tileSize, tileSize)
-            applyDWT97Inverse(dequantizedCg, tileSize, tileSize)
+            applyDWTInverseMultiLevel(dequantizedY, tileSize, tileSize, 3, 1)
+            applyDWTInverseMultiLevel(dequantizedCo, tileSize, tileSize, 3, 1)
+            applyDWTInverseMultiLevel(dequantizedCg, tileSize, tileSize, 3, 1)
         }
 
         // Copy reconstructed data to frame buffers
@@ -4677,13 +4720,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Apply inverse DWT to reconstruct residual
         if (waveletFilter == 0) { // 5/3 reversible
-            applyDWT53Inverse(residualY, tileSize, tileSize)
-            applyDWT53Inverse(residualCo, tileSize, tileSize)
-            applyDWT53Inverse(residualCg, tileSize, tileSize)
+            applyDWTInverseMultiLevel(residualY, tileSize, tileSize, 3, 0)
+            applyDWTInverseMultiLevel(residualCo, tileSize, tileSize, 3, 0)
+            applyDWTInverseMultiLevel(residualCg, tileSize, tileSize, 3, 0)
         } else { // 9/7 irreversible
-            applyDWT97Inverse(residualY, tileSize, tileSize)
-            applyDWT97Inverse(residualCo, tileSize, tileSize)
-            applyDWT97Inverse(residualCg, tileSize, tileSize)
+            applyDWTInverseMultiLevel(residualY, tileSize, tileSize, 3, 1)
+            applyDWTInverseMultiLevel(residualCo, tileSize, tileSize, 3, 1)
+            applyDWTInverseMultiLevel(residualCg, tileSize, tileSize, 3, 1)
         }
 
         // Step 3: Add residual to motion-compensated prediction
@@ -4758,6 +4801,52 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun applyDWT97Forward(data: FloatArray, width: Int, height: Int) {
         // TODO: Implement 9/7 forward DWT
         // Lifting scheme implementation for 9/7 irreversible filter
+    }
+
+    private fun applyDWTInverseMultiLevel(data: FloatArray, width: Int, height: Int, levels: Int, filterType: Int) {
+        // Multi-level inverse DWT - reconstruct from smallest to largest (reverse of encoder)
+        val size = width // Full tile size (64)
+        val tempRow = FloatArray(size)
+        val tempCol = FloatArray(size)
+        
+        for (level in levels - 1 downTo 0) {
+            val currentSize = size shr level
+            if (currentSize < 2) break
+            
+            // Column transform (reverse order from encoder)
+            for (x in 0 until currentSize) {
+                for (y in 0 until currentSize) {
+                    tempCol[y] = data[y * size + x]
+                }
+                
+                if (filterType == 0) {
+                    applyLift53InverseVertical(tempCol, currentSize)
+                } else {
+                    applyLift97InverseVertical(tempCol, currentSize)
+                }
+                
+                for (y in 0 until currentSize) {
+                    data[y * size + x] = tempCol[y]
+                }
+            }
+            
+            // Row transform (reverse order from encoder)
+            for (y in 0 until currentSize) {
+                for (x in 0 until currentSize) {
+                    tempRow[x] = data[y * size + x]
+                }
+                
+                if (filterType == 0) {
+                    applyLift53InverseHorizontal(tempRow, currentSize)
+                } else {
+                    applyLift97InverseHorizontal(tempRow, currentSize)
+                }
+                
+                for (x in 0 until currentSize) {
+                    data[y * size + x] = tempRow[x]
+                }
+            }
+        }
     }
 
     private fun applyDWT97Inverse(data: FloatArray, width: Int, height: Int) {
@@ -4850,49 +4939,49 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             temp[half + i] = data[2 * i + 1] // Odd samples (high-pass)
         }
 
-        // 9/7 inverse lifting coefficients
+        // 9/7 inverse lifting coefficients (must match encoder exactly)
         val alpha = -1.586134342f   // Inverse lifting coefficient
-        val beta = -0.05298011854f  // Inverse lifting coefficient  
-        val gamma = 0.8829110762f   // Inverse lifting coefficient
-        val delta = 0.4435068522f   // Inverse lifting coefficient
-        val K = 1.149604398f        // Scaling factor
+        val beta = -0.052980118f    // Inverse lifting coefficient (match encoder)  
+        val gamma = 0.882911076f    // Inverse lifting coefficient (match encoder)
+        val delta = 0.443506852f    // Inverse lifting coefficient (match encoder)
+        val K = 1.230174105f        // Scaling factor (match encoder)
         val invK = 1.0f / K
 
-        // Inverse lifting steps for 9/7 filter
-        // Step 4: Scale
+        // Inverse lifting steps for 9/7 filter (undo forward steps in reverse order)
+        // Step 5: Undo scaling
         for (i in 0 until half) {
-            temp[i] *= K
+            temp[i] /= K  // Undo temp[i] *= K
         }
         for (i in 0 until length / 2) {
-            temp[half + i] *= invK
+            temp[half + i] *= K  // Undo temp[half + i] /= K
         }
 
-        // Step 3: Undo update step
+        // Step 4: Undo update step (delta)
         for (i in 0 until half) {
-            val oddPrev = if (i - 1 >= 0) temp[half + i - 1] else 0.0f
-            val oddNext = if (i < length / 2) temp[half + i] else 0.0f
-            temp[i] -= delta * (oddPrev + oddNext)
+            val left = if (i > 0) temp[half + i - 1] else temp[half + i]
+            val right = if (i < half - 1) temp[half + i + 1] else temp[half + i]
+            temp[i] -= delta * (left + right)
         }
 
-        // Step 2: Undo predict step
-        for (i in 0 until length / 2) {
-            val evenCurr = temp[i]
-            val evenNext = if (i + 1 < half) temp[i + 1] else temp[half - 1]
-            temp[half + i] -= gamma * (evenCurr + evenNext)
-        }
-
-        // Step 1: Undo update step
+        // Step 3: Undo predict step (gamma)
         for (i in 0 until half) {
-            val oddPrev = if (i - 1 >= 0) temp[half + i - 1] else 0.0f
-            val oddNext = if (i < length / 2) temp[half + i] else 0.0f
-            temp[i] -= beta * (oddPrev + oddNext)
+            val left = if (i > 0) temp[i - 1] else temp[i]
+            val right = if (i < half - 1) temp[i + 1] else temp[i]
+            temp[half + i] -= gamma * (left + right)
         }
 
-        // Step 0: Undo predict step  
-        for (i in 0 until length / 2) {
-            val evenCurr = temp[i]
-            val evenNext = if (i + 1 < half) temp[i + 1] else temp[half - 1]
-            temp[half + i] -= alpha * (evenCurr + evenNext)
+        // Step 2: Undo update step (beta)
+        for (i in 0 until half) {
+            val left = if (i > 0) temp[half + i - 1] else temp[half + i]
+            val right = if (i < half - 1) temp[half + i + 1] else temp[half + i]
+            temp[i] -= beta * (left + right)
+        }
+
+        // Step 1: Undo predict step (alpha)
+        for (i in 0 until half) {
+            val left = if (i > 0) temp[i - 1] else temp[i]
+            val right = if (i < half - 1) temp[i + 1] else temp[i]
+            temp[half + i] -= alpha * (left + right)
         }
 
         // Interleave back
@@ -4908,6 +4997,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Same as horizontal but for vertical direction
         applyLift97InverseHorizontal(data, length)
     }
+
 
     private fun bilinearInterpolate(
         dataPtr: Long, width: Int, height: Int,
