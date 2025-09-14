@@ -11,7 +11,7 @@ const HEIGHT = 448
 const BLOCK_SIZE = 16  // 16x16 blocks for YCoCg-R
 const TEV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x45, 0x56] // "\x1FTSVM TEV"
 const TEV_VERSION_YCOCG = 2  // YCoCg-R version
-const TEV_VERSION_XYB = 3    // XYB version
+const TEV_VERSION_ICtCp = 3    // ICtCp version
 const SND_BASE_ADDR = audio.getBaseAddr()
 const pcm = require("pcm")
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
@@ -391,18 +391,15 @@ if (!magicMatching) {
 
 // Read header
 let version = seqread.readOneByte()
-if (version !== TEV_VERSION_YCOCG && version !== TEV_VERSION_XYB) {
-    println(`Unsupported TEV version: ${version} (expected ${TEV_VERSION_YCOCG} for YCoCg-R or ${TEV_VERSION_XYB} for XYB)`)
+if (version !== TEV_VERSION_YCOCG && version !== TEV_VERSION_ICtCp) {
+    println(`Unsupported TEV version: ${version} (expected ${TEV_VERSION_YCOCG} for YCoCg-R or ${TEV_VERSION_ICtCp} for ICtCp)`)
     return 1
 }
 
-let colorSpace = (version === TEV_VERSION_XYB) ? "XYB" : "YCoCg-R"
+let colorSpace = (version === TEV_VERSION_ICtCp) ? "ICtCp" : "YCoCg"
 if (interactive) {
     con.move(1,1)
-    if (colorSpace == "XYB")
-        println(`Push and hold Backspace to exit | TEV Format ${version} (${colorSpace}) | Deblock: ${enableDeblocking ? 'ON' : 'OFF'}, ${enableBoundaryAwareDecoding ? 'ON' : 'OFF'}`);
-    else
-        println(`Push and hold Backspace to exit | Deblock: ${enableDeblocking ? 'ON' : 'OFF'} | BoundaryAware: ${enableBoundaryAwareDecoding ? 'ON' : 'OFF'}`);
+    println(`Push and hold Backspace to exit | ${colorSpace} | Deblock: ${enableDeblocking ? 'ON' : 'OFF'} | EdgeAware: ${enableBoundaryAwareDecoding ? 'ON' : 'OFF'}`);
 }
 
 let width = seqread.readShort()
@@ -418,7 +415,6 @@ let hasSubtitle = !!(flags & 2)
 let videoFlags = seqread.readOneByte()
 let isInterlaced = !!(videoFlags & 1)
 let isNTSC = !!(videoFlags & 2)
-let isLossless = !!(videoFlags & 4)
 let unused2 = seqread.readOneByte()
 
 
@@ -428,7 +424,7 @@ serial.println(`  FPS: ${(isNTSC) ? (fps * 1000 / 1001) : fps}`)
 serial.println(`  Duration: ${totalFrames / fps}`)
 serial.println(`  Audio: ${hasAudio ? "Yes" : "No"}`)
 serial.println(`  Resolution: ${width}x${height}, ${isInterlaced ? "interlaced" : "progressive"}`)
-serial.println(`  Quality: Y=${qualityY}, Co=${qualityCo}, Cg=${qualityCg}, ${isLossless ? "lossless" : "lossy"}`)
+serial.println(`  Quality: Y=${qualityY}, Co=${qualityCo}, Cg=${qualityCg}`)
 
 
 // DEBUG interlace raw output
@@ -621,7 +617,7 @@ try {
                 PREV_RGB_ADDR = temp
 
             } else if (packetType == TEV_PACKET_IFRAME || packetType == TEV_PACKET_PFRAME) {
-                // Video frame packet (always includes rate control factor)
+                // Video frame packet
                 let payloadLen = seqread.readInt()
                 let compressedPtr = seqread.readBytes(payloadLen)
                 updateDataRateBin(payloadLen)
@@ -636,11 +632,6 @@ try {
 
                 // Decompress using gzip
                 // Optimized buffer size calculation for TEV YCoCg-R blocks
-                let blocksX = (width + 15) >> 4  // 16x16 blocks
-                let blocksY = (height + 15) >> 4
-                let tevBlockSize = 1 + 4 + 2 + (256 * 2) + (64 * 2) + (64 * 2) // mode + mv + cbp + Y(16x16) + Co(8x8) + Cg(8x8)
-                let decompressedSize = Math.max(payloadLen * 4, blocksX * blocksY * tevBlockSize) // More efficient sizing
-
                 let actualSize
                 let decompressStart = sys.nanoTime()
                 try {
@@ -655,7 +646,7 @@ try {
                     continue
                 }
 
-                // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or XYB based on version)
+                // Hardware-accelerated TEV decoding to RGB buffers (YCoCg-R or ICtCp based on version)
                 try {
                     // duplicate every 1000th frame (pass a turn every 1000n+501st) if NTSC
                     if (!isNTSC || frameCount % 1000 != 501 || frameDuped) {
@@ -667,14 +658,14 @@ try {
                         if (isInterlaced) {
                             // For interlaced: decode current frame into currentFieldAddr
                             // For display: use prevFieldAddr as current, currentFieldAddr as next
-                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding, isLossless)
+                            graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
                             graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
 
                             // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
                             rotateFieldBuffers()
                         } else {
                             // Progressive or first frame: normal decoding without temporal prediction
-                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding, isLossless)
+                            graphics.tevDecode(blockDataPtr, CURRENT_RGB_ADDR, PREV_RGB_ADDR, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
                         }
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0  // Convert to milliseconds

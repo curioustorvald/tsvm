@@ -1,5 +1,5 @@
 // Created by Claude on 2025-08-18.
-// TEV (TSVM Enhanced Video) Encoder - YCoCg-R 4:2:0 16x16 Block Version
+// TEV (TSVM Enhanced Video) Encoder - YCoCg-R/ICtCp 4:2:0 16x16 Block Version
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -68,7 +68,9 @@ static inline float float16_to_float(uint16_t hbits) {
 
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
-#define TEV_VERSION 2  // Updated for YCoCg-R 4:2:0
+// TEV version - dynamic based on color space mode
+// Version 2: YCoCg-R 4:2:0 (default)
+// Version 3: ICtCp 4:2:0 (--ictcp flag)
 // version 1: 8x8 RGB
 // version 2: 16x16 Y, 8x8 Co/Cg, asymetric quantisation, optional quantiser multiplier for rate control multiplier (1.0 when unused) {current winner}
 // version 3: version 2 + internal 6-bit processing (discarded due to higher noise floor)
@@ -192,17 +194,6 @@ typedef struct __attribute__((packed)) {
     int16_t cg_coeffs[HALF_BLOCK_SIZE_SQR];  // quantised Cg DCT coefficients (8x8)
 } tev_block_t;
 
-// Lossless TEV block structure (uses float32 internally, converted to float16 during serialization)
-typedef struct __attribute__((packed)) {
-    uint8_t mode;           // Block encoding mode
-    int16_t mv_x, mv_y;     // Motion vector (1/4 pixel precision)
-    float rate_control_factor; // Always 1.0f in lossless mode
-    uint16_t cbp;           // Coded block pattern (which channels have non-zero coeffs)
-    float y_coeffs[BLOCK_SIZE_SQR];  // lossless Y DCT coefficients (16x16)
-    float co_coeffs[HALF_BLOCK_SIZE_SQR];  // lossless Co DCT coefficients (8x8)
-    float cg_coeffs[HALF_BLOCK_SIZE_SQR];  // lossless Cg DCT coefficients (8x8)
-} tev_lossless_block_t;
-
 // Subtitle entry structure
 typedef struct subtitle_entry {
     int start_frame;
@@ -232,7 +223,7 @@ typedef struct {
     int qualityCg;
     int verbose;
     int disable_rcf;          // 0 = rcf enabled, 1 = disabled
-    int lossless_mode;    // 0 = lossy (default), 1 = lossless mode
+    int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp color space
 
     // Bitrate control
     int target_bitrate_kbps;  // Target bitrate in kbps (0 = quality mode)
@@ -289,6 +280,10 @@ typedef struct {
     int complexity_capacity;  // Capacity of complexity_values array
 } tev_encoder_t;
 
+//////////////////////////
+// COLOUR MATHS CODES //
+//////////////////////////
+
 // RGB to YCoCg-R transform (per YCoCg-R specification with truncated division)
 static void rgb_to_ycocgr(uint8_t r, uint8_t g, uint8_t b, int *y, int *co, int *cg) {
     *co = (int)r - (int)b;
@@ -314,6 +309,180 @@ static void ycocgr_to_rgb(int y, int co, int cg, uint8_t *r, uint8_t *g, uint8_t
     *g = CLAMP(*g, 0, 255);
     *b = CLAMP(*b, 0, 255);
 }
+
+// ---------------------- ICtCp Implementation ----------------------
+
+static inline int iround(double v) { return (int)floor(v + 0.5); }
+
+// ---------------------- sRGB gamma helpers ----------------------
+static inline double srgb_linearize(double val) {
+    // val in [0,1]
+    if (val <= 0.04045) return val / 12.92;
+    return pow((val + 0.055) / 1.055, 2.4);
+}
+static inline double srgb_unlinearize(double val) {
+    // val in [0,1]
+    if (val <= 0.0031308) return val * 12.92;
+    return 1.055 * pow(val, 1.0 / 2.4) - 0.055;
+}
+
+// -------------------------- HLG --------------------------
+// Forward HLG OETF (linear -> HLG)
+static inline double HLG_OETF(double L) {
+    // L in [0,1], relative scene-linear
+    const double a = 0.17883277;
+    const double b = 1.0 - 4.0 * a;
+    const double c = 0.5 - a * log(4.0 * a);
+
+    if (L <= 1.0/12.0)
+        return sqrt(3.0 * L);
+    else
+        return a * log(12.0 * L - b) + c;
+}
+
+// Inverse HLG OETF (HLG -> linear)
+static inline double HLG_inverse_OETF(double V) {
+    const double a = 0.17883277;
+    const double b = 1.0 - 4.0 * a;
+    const double c = 0.5 - a * log(4.0 * a);
+
+    if (V <= 0.5)
+        return (V * V) / 3.0;
+    else
+        return (exp((V - c)/a) + b) / 12.0;
+}
+
+// ---------------------- Matrices (doubles) ----------------------
+// Combined linear sRGB -> LMS (single 3x3): product of sRGB->XYZ, XYZ->BT2020, BT2020->LMS
+// Computed from standard matrices (double precision).
+static const double M_RGB_TO_LMS[3][3] = {
+    {0.20502672199540622, 0.42945363228947586, 0.31165003516511786},
+    {0.2233144413317712, 0.5540422172466897, 0.21854692537153908},
+    {0.0609931761282002, 0.17917502499816504, 0.9323768661336348}
+};
+
+// Inverse: LMS -> linear sRGB (inverse of above)
+static const double M_LMS_TO_RGB[3][3] = {
+    {29.601046511687, -21.364325340529906, -4.886500015143518},
+    {-12.083229161592032, 10.673933874098694, 1.5369143265611211},
+    {0.38562844776642574, -0.6536244436141302, 1.0968381245163787}
+};
+
+// ICtCp matrix (L' M' S' -> I Ct Cp). Values are the BT.2100 integer-derived /4096 constants.
+static const double M_LMSPRIME_TO_ICTCP[3][3] = {
+    { 2048.0/4096.0,   2048.0/4096.0,     0.0          },
+    { 3625.0/4096.0, -7465.0/4096.0, 3840.0/4096.0    },
+    { 9500.0/4096.0, -9212.0/4096.0, -288.0/4096.0    }
+};
+
+// Inverse: I Ct Cp -> L' M' S'  (precomputed inverse)
+static const double M_ICTCP_TO_LMSPRIME[3][3] = {
+    { 1.0,         0.015718580108730416,  0.2095810681164055 },
+    { 1.0,        -0.015718580108730416, -0.20958106811640548 },
+    { 1.0,         1.0212710798422344, -0.6052744909924316 }
+};
+
+// ---------------------- Forward: sRGB8 -> ICtCp (doubles) ----------------------
+// Inputs: r,g,b in 0..255 sRGB (8-bit)
+// Outputs: I, Ct, Cp as doubles (nominally I in ~[0..1], Ct/Cp ranges depend on colors)
+void srgb8_to_ictcp_hlg(uint8_t r8, uint8_t g8, uint8_t b8,
+                       double *out_I, double *out_Ct, double *out_Cp)
+{
+    // 1) linearize sRGB to 0..1
+    double r = srgb_linearize((double)r8 / 255.0);
+    double g = srgb_linearize((double)g8 / 255.0);
+    double b = srgb_linearize((double)b8 / 255.0);
+
+    // 2) linear RGB -> LMS (single 3x3 multiply)
+    double L = M_RGB_TO_LMS[0][0]*r + M_RGB_TO_LMS[0][1]*g + M_RGB_TO_LMS[0][2]*b;
+    double M = M_RGB_TO_LMS[1][0]*r + M_RGB_TO_LMS[1][1]*g + M_RGB_TO_LMS[1][2]*b;
+    double S = M_RGB_TO_LMS[2][0]*r + M_RGB_TO_LMS[2][1]*g + M_RGB_TO_LMS[2][2]*b;
+
+    // 3) apply HLG encode (map linear LMS -> perceptual domain L',M',S')
+    double Lp = HLG_OETF(L);
+    double Mp = HLG_OETF(M);
+    double Sp = HLG_OETF(S);
+
+    // 4) L'M'S' -> ICtCp
+    double I  = M_LMSPRIME_TO_ICTCP[0][0]*Lp + M_LMSPRIME_TO_ICTCP[0][1]*Mp + M_LMSPRIME_TO_ICTCP[0][2]*Sp;
+    double Ct = M_LMSPRIME_TO_ICTCP[1][0]*Lp + M_LMSPRIME_TO_ICTCP[1][1]*Mp + M_LMSPRIME_TO_ICTCP[1][2]*Sp;
+    double Cp = M_LMSPRIME_TO_ICTCP[2][0]*Lp + M_LMSPRIME_TO_ICTCP[2][1]*Mp + M_LMSPRIME_TO_ICTCP[2][2]*Sp;
+
+    *out_I = FCLAMP(I * 255.f, 0.f, 255.f);
+    *out_Ct = FCLAMP(Ct * 255.f, -256.f, 255.f);
+    *out_Cp = FCLAMP(Cp * 255.f, -256.f, 255.f);
+}
+
+// ---------------------- Reverse: ICtCp -> sRGB8 (doubles) ----------------------
+// Inputs: I, Ct, Cp as doubles
+// Outputs: r8,g8,b8 in 0..255 (8-bit sRGB, clamped and rounded)
+void ictcp_hlg_to_srgb8(double I8, double Ct8, double Cp8,
+                       uint8_t *r8, uint8_t *g8, uint8_t *b8)
+{
+    double I = I8 / 255.f;
+    double Ct = Ct8 / 255.f;
+    double Cp = Cp8 / 255.f;
+
+    // 1) ICtCp -> L' M' S' (3x3 multiply)
+    double Lp = M_ICTCP_TO_LMSPRIME[0][0]*I + M_ICTCP_TO_LMSPRIME[0][1]*Ct + M_ICTCP_TO_LMSPRIME[0][2]*Cp;
+    double Mp = M_ICTCP_TO_LMSPRIME[1][0]*I + M_ICTCP_TO_LMSPRIME[1][1]*Ct + M_ICTCP_TO_LMSPRIME[1][2]*Cp;
+    double Sp = M_ICTCP_TO_LMSPRIME[2][0]*I + M_ICTCP_TO_LMSPRIME[2][1]*Ct + M_ICTCP_TO_LMSPRIME[2][2]*Cp;
+
+    // 2) HLG decode: L' -> linear LMS
+    double L = HLG_inverse_OETF(Lp);
+    double M = HLG_inverse_OETF(Mp);
+    double S = HLG_inverse_OETF(Sp);
+
+    // 3) LMS -> linear sRGB (3x3 inverse)
+    double r_lin = M_LMS_TO_RGB[0][0]*L + M_LMS_TO_RGB[0][1]*M + M_LMS_TO_RGB[0][2]*S;
+    double g_lin = M_LMS_TO_RGB[1][0]*L + M_LMS_TO_RGB[1][1]*M + M_LMS_TO_RGB[1][2]*S;
+    double b_lin = M_LMS_TO_RGB[2][0]*L + M_LMS_TO_RGB[2][1]*M + M_LMS_TO_RGB[2][2]*S;
+
+    // 4) gamma encode and convert to 0..255 with center-of-bin rounding
+    double r = srgb_unlinearize(r_lin);
+    double g = srgb_unlinearize(g_lin);
+    double b = srgb_unlinearize(b_lin);
+
+    *r8 = (uint8_t)CLAMP(iround(r * 255.0), 0, 255);
+    *g8 = (uint8_t)CLAMP(iround(g * 255.0), 0, 255);
+    *b8 = (uint8_t)CLAMP(iround(b * 255.0), 0, 255);
+}
+
+// ---------------------- Color Space Switching Functions ----------------------
+// Wrapper functions that choose between YCoCg-R and ICtCp based on encoder mode
+
+static void rgb_to_color_space(tev_encoder_t *enc, uint8_t r, uint8_t g, uint8_t b,
+                               double *c1, double *c2, double *c3) {
+    if (enc->ictcp_mode) {
+        // Use ICtCp color space
+        srgb8_to_ictcp_hlg(r, g, b, c1, c2, c3);
+    } else {
+        // Use YCoCg-R color space (convert to int first, then to double)
+        int y_val, co_val, cg_val;
+        rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
+        *c1 = (double)y_val;
+        *c2 = (double)co_val;
+        *c3 = (double)cg_val;
+    }
+}
+
+static void color_space_to_rgb(tev_encoder_t *enc, double c1, double c2, double c3,
+                               uint8_t *r, uint8_t *g, uint8_t *b) {
+    if (enc->ictcp_mode) {
+        // Use ICtCp color space
+        ictcp_hlg_to_srgb8(c1, c2, c3, r, g, b);
+    } else {
+        // Use YCoCg-R color space (convert from double to int first)
+        int y_val = (int)round(c1);
+        int co_val = (int)round(c2);
+        int cg_val = (int)round(c3);
+        ycocgr_to_rgb(y_val, co_val, cg_val, r, g, b);
+    }
+}
+
+////////////////////////////////////////
+// DISCRETE COSINE TRANSFORMATIONS //
+////////////////////////////////////////
 
 // Pre-calculated cosine tables
 static float dct_table_16[16][16]; // For 16x16 DCT
@@ -429,14 +598,14 @@ static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma
     }
 }
 
-// Extract 16x16 block from RGB frame and convert to YCoCg-R
-static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
-                                int block_x, int block_y,
-                                float *y_block, float *co_block, float *cg_block) {
+// Extract 16x16 block from RGB frame and convert to color space
+static void extract_color_space_block(tev_encoder_t *enc, uint8_t *rgb_frame, int width, int height,
+                                      int block_x, int block_y,
+                                      float *c1_block, float *c2_block, float *c3_block) {
     int start_x = block_x * BLOCK_SIZE;
     int start_y = block_y * BLOCK_SIZE;
 
-    // Extract 16x16 Y block
+    // Extract 16x16 primary channel block (Y for YCoCg-R, I for ICtCp)
     for (int py = 0; py < BLOCK_SIZE; py++) {
         for (int px = 0; px < BLOCK_SIZE; px++) {
             int x = start_x + px;
@@ -448,10 +617,10 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                 uint8_t g = rgb_frame[offset + 1];
                 uint8_t b = rgb_frame[offset + 2];
 
-                int y_val, co_val, cg_val;
-                rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
+                double c1, c2, c3;
+                rgb_to_color_space(enc, r, g, b, &c1, &c2, &c3);
 
-                y_block[py * BLOCK_SIZE + px] = (float)y_val - 128.0f;  // Center around 0
+                c1_block[py * BLOCK_SIZE + px] = (float)c1 - 128.0f;
             }
         }
     }
@@ -473,24 +642,29 @@ static void extract_ycocgr_block(uint8_t *rgb_frame, int width, int height,
                         uint8_t g = rgb_frame[offset + 1];
                         uint8_t b = rgb_frame[offset + 2];
 
-                        int y_val, co_val, cg_val;
-                        rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
+                        double c1, c2, c3;
+                        rgb_to_color_space(enc, r, g, b, &c1, &c2, &c3);
 
-                        co_sum += co_val;
-                        cg_sum += cg_val;
+                        co_sum += (int)c2;
+                        cg_sum += (int)c3;
+
                         count++;
                     }
                 }
             }
 
             if (count > 0) {
-                // Center chroma around 0 for DCT (Co/Cg range is -255 to +255, so don't add offset)
-                co_block[py * HALF_BLOCK_SIZE + px] = (float)(co_sum / count);
-                cg_block[py * HALF_BLOCK_SIZE + px] = (float)(cg_sum / count);
+                // Average the accumulated chroma values and store
+                c2_block[py * HALF_BLOCK_SIZE + px] = (float)(co_sum / count);
+                c3_block[py * HALF_BLOCK_SIZE + px] = (float)(cg_sum / count);
             }
         }
     }
 }
+
+
+
+
 
 // Calculate spatial activity for any channel (16x16 or 8x8)
 static float calculate_spatial_activity(const float *block, int block_size) {
@@ -791,8 +965,138 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
 }
 
 // Convert RGB block to YCoCg-R with 4:2:0 chroma subsampling
-static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
-                                       uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
+static void convert_rgb_to_color_space_block(tev_encoder_t *enc, const uint8_t *rgb_block,
+                                            float *c1_workspace, float *c2_workspace, float *c3_workspace) {
+    if (enc->ictcp_mode) {
+        // ICtCp mode: Convert 16x16 RGB to ICtCp (full resolution for I, 4:2:0 subsampling for CtCp)
+
+        // Convert I channel at full resolution (16x16)
+        for (int py = 0; py < BLOCK_SIZE; py++) {
+            for (int px = 0; px < BLOCK_SIZE; px++) {
+                int rgb_idx = (py * BLOCK_SIZE + px) * 3;
+                uint8_t r = rgb_block[rgb_idx];
+                uint8_t g = rgb_block[rgb_idx + 1];
+                uint8_t b = rgb_block[rgb_idx + 2];
+
+                double I, Ct, Cp;
+                srgb8_to_ictcp_hlg(r, g, b, &I, &Ct, &Cp);
+
+                // Store I at full resolution, scale to appropriate range
+                c1_workspace[py * BLOCK_SIZE + px] = (float)(I * 255.0);
+            }
+        }
+
+        // Convert Ct and Cp with 4:2:0 subsampling (8x8)
+        for (int cy = 0; cy < HALF_BLOCK_SIZE; cy++) {
+            for (int cx = 0; cx < HALF_BLOCK_SIZE; cx++) {
+                double sum_ct = 0.0, sum_cp = 0.0;
+
+                // Sample 2x2 block from RGB and average for chroma
+                for (int dy = 0; dy < 2; dy++) {
+                    for (int dx = 0; dx < 2; dx++) {
+                        int py = cy * 2 + dy;
+                        int px = cx * 2 + dx;
+                        int rgb_idx = (py * 16 + px) * 3;
+
+                        int r = rgb_block[rgb_idx];
+                        int g = rgb_block[rgb_idx + 1];
+                        int b = rgb_block[rgb_idx + 2];
+
+                        double I, Ct, Cp;
+                        srgb8_to_ictcp_hlg(r, g, b, &I, &Ct, &Cp);
+
+                        sum_ct += Ct;
+                        sum_cp += Cp;
+                    }
+                }
+
+                // Average and store subsampled chroma, scale to signed 8-bit equivalent range
+                c2_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)((sum_ct / 4.0) * 255.0);
+                c3_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)((sum_cp / 4.0) * 255.0);
+            }
+        }
+    } else {
+        // YCoCg-R mode: Original implementation
+
+        // Convert 16x16 RGB to Y (full resolution)
+        for (int py = 0; py < BLOCK_SIZE; py++) {
+            for (int px = 0; px < BLOCK_SIZE; px++) {
+                int rgb_idx = (py * BLOCK_SIZE + px) * 3;
+                int r = rgb_block[rgb_idx];
+                int g = rgb_block[rgb_idx + 1];
+                int b = rgb_block[rgb_idx + 2];
+
+                // YCoCg-R transform (per specification with truncated division)
+                int y = (r + 2*g + b) / 4;
+                c1_workspace[py * BLOCK_SIZE + px] = (float)CLAMP(y, 0, 255);
+            }
+        }
+
+        // Convert to Co and Cg with 4:2:0 subsampling (8x8)
+        for (int cy = 0; cy < HALF_BLOCK_SIZE; cy++) {
+            for (int cx = 0; cx < HALF_BLOCK_SIZE; cx++) {
+                int sum_co = 0, sum_cg = 0;
+
+                // Sample 2x2 block from RGB and average for chroma
+                for (int dy = 0; dy < 2; dy++) {
+                    for (int dx = 0; dx < 2; dx++) {
+                        int py = cy * 2 + dy;
+                        int px = cx * 2 + dx;
+                        int rgb_idx = (py * 16 + px) * 3;
+
+                        int r = rgb_block[rgb_idx];
+                        int g = rgb_block[rgb_idx + 1];
+                        int b = rgb_block[rgb_idx + 2];
+
+                        int co = r - b;
+                        int tmp = b + (co / 2);
+                        int cg = g - tmp;
+
+                        sum_co += co;
+                        sum_cg += cg;
+                    }
+                }
+
+                // Average and store subsampled chroma
+                c2_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)CLAMP(sum_co / 4, -256, 255);
+                c3_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)CLAMP(sum_cg / 4, -256, 255);
+            }
+        }
+    }
+}
+
+// Extract motion-compensated YCoCg-R block from reference frame
+static void extract_motion_compensated_block(const uint8_t *rgb_data, int width, int height,
+                                           int block_x, int block_y, int mv_x, int mv_y,
+                                           uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
+    // Extract 16x16 RGB block with motion compensation
+    uint8_t rgb_block[BLOCK_SIZE * BLOCK_SIZE * 3];
+
+    for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+        for (int dx = 0; dx < BLOCK_SIZE; dx++) {
+            int cur_x = block_x + dx;
+            int cur_y = block_y + dy;
+            int ref_x = cur_x + mv_x;  // Revert to original motion compensation
+            int ref_y = cur_y + mv_y;
+
+            int rgb_idx = (dy * BLOCK_SIZE + dx) * 3;
+
+            if (ref_x >= 0 && ref_y >= 0 && ref_x < width && ref_y < height) {
+                // Copy RGB from reference position
+                int ref_offset = (ref_y * width + ref_x) * 3;
+                rgb_block[rgb_idx] = rgb_data[ref_offset];         // R
+                rgb_block[rgb_idx + 1] = rgb_data[ref_offset + 1]; // G
+                rgb_block[rgb_idx + 2] = rgb_data[ref_offset + 2]; // B
+            } else {
+                // Out of bounds - use black
+                rgb_block[rgb_idx] = 0;     // R
+                rgb_block[rgb_idx + 1] = 0; // G
+                rgb_block[rgb_idx + 2] = 0; // B
+            }
+        }
+    }
+
+    // Convert RGB block to YCoCg-R (original implementation for motion compensation)
     // Convert 16x16 RGB to Y (full resolution)
     for (int py = 0; py < BLOCK_SIZE; py++) {
         for (int px = 0; px < BLOCK_SIZE; px++) {
@@ -840,41 +1144,6 @@ static void convert_rgb_to_ycocgr_block(const uint8_t *rgb_block,
     }
 }
 
-// Extract motion-compensated YCoCg-R block from reference frame
-static void extract_motion_compensated_block(const uint8_t *rgb_data, int width, int height,
-                                           int block_x, int block_y, int mv_x, int mv_y,
-                                           uint8_t *y_block, int8_t *co_block, int8_t *cg_block) {
-    // Extract 16x16 RGB block with motion compensation
-    uint8_t rgb_block[BLOCK_SIZE * BLOCK_SIZE * 3];
-
-    for (int dy = 0; dy < BLOCK_SIZE; dy++) {
-        for (int dx = 0; dx < BLOCK_SIZE; dx++) {
-            int cur_x = block_x + dx;
-            int cur_y = block_y + dy;
-            int ref_x = cur_x + mv_x;  // Revert to original motion compensation
-            int ref_y = cur_y + mv_y;
-
-            int rgb_idx = (dy * BLOCK_SIZE + dx) * 3;
-
-            if (ref_x >= 0 && ref_y >= 0 && ref_x < width && ref_y < height) {
-                // Copy RGB from reference position
-                int ref_offset = (ref_y * width + ref_x) * 3;
-                rgb_block[rgb_idx] = rgb_data[ref_offset];         // R
-                rgb_block[rgb_idx + 1] = rgb_data[ref_offset + 1]; // G
-                rgb_block[rgb_idx + 2] = rgb_data[ref_offset + 2]; // B
-            } else {
-                // Out of bounds - use black
-                rgb_block[rgb_idx] = 0;     // R
-                rgb_block[rgb_idx + 1] = 0; // G
-                rgb_block[rgb_idx + 2] = 0; // B
-            }
-        }
-    }
-
-    // Convert RGB block to YCoCg-R
-    convert_rgb_to_ycocgr_block(rgb_block, y_block, co_block, cg_block);
-}
-
 // Compute motion-compensated residual for INTER mode
 static void compute_motion_residual(tev_encoder_t *enc, int block_x, int block_y, int mv_x, int mv_y) {
     int start_x = block_x * BLOCK_SIZE;
@@ -909,7 +1178,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     tev_block_t *block = &enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
 
     // Extract YCoCg-R block
-    extract_ycocgr_block(enc->current_rgb, enc->width, enc->height,
+    extract_color_space_block(enc, enc->current_rgb, enc->width, enc->height,
                         block_x, block_y,
                         enc->y_workspace, enc->co_workspace, enc->cg_workspace);
 
@@ -1103,107 +1372,6 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
     // Set CBP (simplified - always encode all channels)
     block->cbp = 0x07;  // Y, Co, Cg all present
-}
-
-// Encode a 16x16 block in lossless mode
-static void encode_block_lossless(tev_encoder_t *enc, int block_x, int block_y, int is_keyframe) {
-    tev_lossless_block_t *block = (tev_lossless_block_t*)&enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
-
-    // Extract YCoCg-R block
-    extract_ycocgr_block(enc->current_rgb, enc->width, enc->height,
-                        block_x, block_y,
-                        enc->y_workspace, enc->co_workspace, enc->cg_workspace);
-
-    if (is_keyframe) {
-        // Intra coding for keyframes
-        block->mode = TEV_MODE_INTRA;
-        block->mv_x = block->mv_y = 0;
-        enc->blocks_intra++;
-    } else {
-        // Same mode decision logic as regular encode_block
-        // For simplicity, using INTRA for now in lossless mode
-        block->mode = TEV_MODE_INTRA;
-        block->mv_x = block->mv_y = 0;
-        enc->blocks_intra++;
-    }
-
-    // Lossless mode: rate control factor is always 1.0f
-    block->rate_control_factor = 1.0f;
-
-    // Apply DCT transforms using the same pattern as regular encoding
-    // Y channel (16x16)
-    dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
-    for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
-        block->y_coeffs[i] = enc->dct_workspace[i]; // Store directly without quantization
-    }
-
-    // Co channel (8x8)  
-    dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
-    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
-        block->co_coeffs[i] = enc->dct_workspace[i]; // Store directly without quantization
-    }
-
-    // Cg channel (8x8)
-    dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
-    for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
-        block->cg_coeffs[i] = enc->dct_workspace[i]; // Store directly without quantization
-    }
-
-    // Set CBP (simplified - always encode all channels)
-    block->cbp = 0x07;  // Y, Co, Cg all present
-}
-
-// Serialized lossless block structure (for writing to file with float16 coefficients)
-typedef struct __attribute__((packed)) {
-    uint8_t mode;
-    int16_t mv_x, mv_y;
-    float rate_control_factor; // Always 1.0f in lossless mode
-    uint16_t cbp;
-    uint16_t y_coeffs[BLOCK_SIZE_SQR];      // float16 Y coefficients
-    uint16_t co_coeffs[HALF_BLOCK_SIZE_SQR]; // float16 Co coefficients
-    uint16_t cg_coeffs[HALF_BLOCK_SIZE_SQR]; // float16 Cg coefficients
-} tev_serialized_lossless_block_t;
-
-// Convert lossless blocks to serialized format with float16 coefficients
-static void serialize_lossless_blocks(tev_encoder_t *enc, int blocks_x, int blocks_y, 
-                                     tev_serialized_lossless_block_t *serialized_blocks) {
-    for (int by = 0; by < blocks_y; by++) {
-        for (int bx = 0; bx < blocks_x; bx++) {
-            tev_lossless_block_t *src = (tev_lossless_block_t*)&enc->block_data[by * blocks_x + bx];
-            tev_serialized_lossless_block_t *dst = &serialized_blocks[by * blocks_x + bx];
-            
-            // Copy basic fields
-            dst->mode = src->mode;
-            dst->mv_x = src->mv_x;
-            dst->mv_y = src->mv_y;
-            dst->rate_control_factor = src->rate_control_factor;
-            dst->cbp = src->cbp;
-            
-            // Convert float32 coefficients to float16 with range clamping
-            // Float16 max finite value is approximately 65504
-            const float FLOAT16_MAX = 65504.0f;
-            
-            for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
-                float coeff = FCLAMP(src->y_coeffs[i], -FLOAT16_MAX, FLOAT16_MAX);
-                dst->y_coeffs[i] = float_to_float16(coeff);
-                if (enc->verbose && fabsf(src->y_coeffs[i]) > FLOAT16_MAX) {
-                    printf("WARNING: Y coefficient %d clamped: %f -> %f\n", i, src->y_coeffs[i], coeff);
-                }
-            }
-            for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
-                float co_coeff = FCLAMP(src->co_coeffs[i], -FLOAT16_MAX, FLOAT16_MAX);
-                float cg_coeff = FCLAMP(src->cg_coeffs[i], -FLOAT16_MAX, FLOAT16_MAX);
-                dst->co_coeffs[i] = float_to_float16(co_coeff);
-                dst->cg_coeffs[i] = float_to_float16(cg_coeff);
-                if (enc->verbose && fabsf(src->co_coeffs[i]) > FLOAT16_MAX) {
-                    printf("WARNING: Co coefficient %d clamped: %f -> %f\n", i, src->co_coeffs[i], co_coeff);
-                }
-                if (enc->verbose && fabsf(src->cg_coeffs[i]) > FLOAT16_MAX) {
-                    printf("WARNING: Cg coefficient %d clamped: %f -> %f\n", i, src->cg_coeffs[i], cg_coeff);
-                }
-            }
-        }
-    }
 }
 
 // Convert SubRip time format (HH:MM:SS,mmm) to frame number
@@ -1820,17 +1988,13 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     enc->cg_workspace = malloc(8 * 8 * sizeof(float));
     enc->dct_workspace = malloc(16 * 16 * sizeof(float));
 
+    // Allocate block data
     enc->block_data = malloc(total_blocks * sizeof(tev_block_t));
-    // Allocate compression buffer large enough for both regular and lossless modes
-    size_t max_block_size = sizeof(tev_block_t) > sizeof(tev_serialized_lossless_block_t) ? 
-                            sizeof(tev_block_t) : sizeof(tev_serialized_lossless_block_t);
-    size_t compressed_buffer_size = total_blocks * max_block_size * 2;
+
+    // Allocate compression buffer
+    size_t compressed_buffer_size = total_blocks * sizeof(tev_block_t) * 2;
     enc->compressed_buffer = malloc(compressed_buffer_size);
-    
-    if (enc->verbose) {
-        printf("Allocated compressed buffer: %zu bytes for %d blocks (max_block_size: %zu)\n", 
-               compressed_buffer_size, total_blocks, max_block_size);
-    }
+
     enc->mp2_buffer = malloc(MP2_DEFAULT_PACKET_SIZE);
 
     if (!enc->current_rgb || !enc->previous_rgb || !enc->reference_rgb ||
@@ -1889,7 +2053,7 @@ static void free_encoder(tev_encoder_t *enc) {
 static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     // Magic + version
     fwrite(TEV_MAGIC, 1, 8, output);
-    uint8_t version = TEV_VERSION;
+    uint8_t version = enc->ictcp_mode ? 3 : 2;  // Version 3 for ICtCp, 2 for YCoCg-R
     fwrite(&version, 1, 1, output);
 
     // Video parameters
@@ -1901,7 +2065,7 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     uint8_t qualityCo = enc->qualityCo;
     uint8_t qualityCg = enc->qualityCg;
     uint8_t flags = (enc->has_audio) | (enc->has_subtitles << 1);
-    uint8_t video_flags = (enc->progressive_mode ? 0 : 1) | (enc->is_ntsc_framerate ? 2 : 0) | (enc->lossless_mode ? 4 : 0); // bit 0 = is_interlaced, bit 1 = is_ntsc_framerate, bit 2 = is_lossless
+    uint8_t video_flags = (enc->progressive_mode ? 0 : 1) | (enc->is_ntsc_framerate ? 2 : 0); // bit 0 = is_interlaced, bit 1 = is_ntsc_framerate
     uint8_t reserved = 0;
 
     fwrite(&width, 2, 1, output);
@@ -2008,11 +2172,7 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num, int fie
     // Encode all blocks
     for (int by = 0; by < blocks_y; by++) {
         for (int bx = 0; bx < blocks_x; bx++) {
-            if (enc->lossless_mode) {
-                encode_block_lossless(enc, bx, by, is_keyframe);
-            } else {
-                encode_block(enc, bx, by, is_keyframe);
-            }
+            encode_block(enc, bx, by, is_keyframe);
 
             // Calculate complexity for rate control (if enabled)
             if (enc->bitrate_mode > 0) {
@@ -2029,34 +2189,14 @@ static int encode_frame(tev_encoder_t *enc, FILE *output, int frame_num, int fie
 
     // Compress block data using Zstd (compatible with TSVM decoder)
     size_t compressed_size;
-    
-    if (enc->lossless_mode) {
-        // Lossless mode: serialize blocks with float16 coefficients
-        size_t serialized_block_data_size = blocks_x * blocks_y * sizeof(tev_serialized_lossless_block_t);
-        tev_serialized_lossless_block_t *serialized_blocks = malloc(serialized_block_data_size);
-        if (!serialized_blocks) {
-            fprintf(stderr, "Failed to allocate memory for serialized lossless blocks\n");
-            return -1;
-        }
-        
-        serialize_lossless_blocks(enc, blocks_x, blocks_y, serialized_blocks);
-        
-        // Use the pre-allocated buffer size instead of calculating dynamically
-        size_t output_buffer_size = blocks_x * blocks_y * sizeof(tev_serialized_lossless_block_t) * 2;
-        compressed_size = ZSTD_compressCCtx(enc->zstd_context,
-                                           enc->compressed_buffer, output_buffer_size,
-                                           serialized_blocks, serialized_block_data_size,
-                                           ZSTD_COMPRESSON_LEVEL);
-        free(serialized_blocks);
-    } else {
-        // Regular mode: use regular block data
-        size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
-        compressed_size = ZSTD_compressCCtx(enc->zstd_context,
-                                           enc->compressed_buffer, block_data_size * 2,
-                                           enc->block_data, block_data_size,
-                                           ZSTD_COMPRESSON_LEVEL);
-    }
-    
+
+    // Regular mode: use regular block data
+    size_t block_data_size = blocks_x * blocks_y * sizeof(tev_block_t);
+    compressed_size = ZSTD_compressCCtx(enc->zstd_context,
+                                       enc->compressed_buffer, block_data_size * 2,
+                                       enc->block_data, block_data_size,
+                                       ZSTD_COMPRESSON_LEVEL);
+
     if (ZSTD_isError(compressed_size)) {
         fprintf(stderr, "Zstd compression failed: %s\n", ZSTD_getErrorName(compressed_size));
         return 0;
@@ -2288,7 +2428,7 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     char command[2048];
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, enc->lossless_mode ? 384 : MP2_RATE_TABLE[enc->qualityIndex], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
+        enc->input_file, MP2_RATE_TABLE[enc->qualityIndex], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
 
     int result = system(command);
     if (result == 0) {
@@ -2429,7 +2569,7 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
 
 // Show usage information
 static void show_usage(const char *program_name) {
-    printf("TEV YCoCg-R 4:2:0 Video Encoder\n");
+    printf("TEV YCoCg-R/ICtCp 4:2:0 Video Encoder\n");
     printf("Usage: %s [options] -i input.mp4 -o output.mv2\n\n", program_name);
     printf("Options:\n");
     printf("  -i, --input FILE       Input video file\n");
@@ -2443,7 +2583,7 @@ static void show_usage(const char *program_name) {
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose          Verbose output\n");
     printf("  -t, --test             Test mode: generate solid colour frames\n");
-    printf("  --lossless             Lossless mode: store coefficients as float16 (no quantisation, implies -p, 384k audio)\n");
+    printf("  --ictcp                Use ICtCp color space instead of YCoCg-R (generates TEV version 3)\n");
     printf("  --enable-rcf           Enable per-block rate control (experimental)\n");
     printf("  --enable-encode-stats  Collect and report block complexity statistics\n");
     printf("  --help                 Show this help\n\n");
@@ -2467,7 +2607,7 @@ static void show_usage(const char *program_name) {
     printf("\n  -s default: equal to %dx%d", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("\n\n");
     printf("Features:\n");
-    printf("  - YCoCg-R 4:2:0 chroma subsampling for 50%% compression improvement\n");
+    printf("  - YCoCg-R or ICtCp 4:2:0 chroma subsampling for 50%% compression improvement\n");
     printf("  - 16x16 Y blocks with 8x8 chroma for optimal DCT efficiency\n");
     printf("  - Frame rate conversion with FFmpeg temporal filtering\n");
     printf("  - Adaptive quality control with complexity-based adjustment\n");
@@ -2536,7 +2676,7 @@ int main(int argc, char *argv[]) {
         {"test", no_argument, 0, 't'},
         {"enable-encode-stats", no_argument, 0, 1000},
         {"enable-rcf", no_argument, 0, 1100},
-        {"lossless", no_argument, 0, 1200},
+        {"ictcp", no_argument, 0, 1300},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -2611,8 +2751,8 @@ int main(int argc, char *argv[]) {
              case 1100: // --enable-rcf
                 enc->disable_rcf = 0;
                 break;
-            case 1200: // --lossless
-                enc->lossless_mode = 1;
+            case 1300: // --ictcp
+                enc->ictcp_mode = 1;
                 break;
             case 0:
                 if (strcmp(long_options[option_index].name, "help") == 0) {
@@ -2633,22 +2773,15 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Lossless mode validation and adjustments
-    if (enc->lossless_mode) {
-        // In lossless mode, disable rate control and set quality to maximum
-        enc->bitrate_mode = 0;
-        enc->disable_rcf = 1;
-        enc->progressive_mode = 1;
-        enc->qualityIndex = 5;
-        enc->qualityY = enc->qualityCo = enc->qualityCg = 255; // Use 255 as a redundant lossless marker
-        if (enc->verbose) {
-            printf("Lossless mode enabled: Rate control disabled, quality set to maximum, enabling progressive scan\n");
-        }
-    }
-
     // halve the internal representation of frame height
     if (!enc->progressive_mode) {
         enc->height /= 2;
+    }
+
+    if (enc->ictcp_mode) {
+        int qc = (enc->qualityCo + enc->qualityCg) / 2;
+        enc->qualityCo = qc;
+        enc->qualityCg = qc;
     }
 
     if (!test_mode && (!enc->input_file || !enc->output_file)) {
@@ -2737,7 +2870,7 @@ int main(int argc, char *argv[]) {
     write_tev_header(output, enc);
     gettimeofday(&enc->start_time, NULL);
 
-    printf("Encoding video with YCoCg-R 4:2:0 format...\n");
+    printf("Encoding video with %s 4:2:0 format...\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
     if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
@@ -2791,13 +2924,13 @@ int main(int argc, char *argv[]) {
             printf("Frame %d: %s (%d,%d,%d)\n", frame_count, colour_name, test_r, test_g, test_b);
             
             // Test YCoCg-R conversion
-            int y_test, co_test, cg_test;
-            rgb_to_ycocgr(test_r, test_g, test_b, &y_test, &co_test, &cg_test);
-            printf("  YCoCg-R: Y=%d Co=%d Cg=%d\n", y_test, co_test, cg_test);
+            double y_test, co_test, cg_test;
+            rgb_to_color_space(enc, test_r, test_g, test_b, &y_test, &co_test, &cg_test);
+            printf("  %s: Y=%.3f Co=%.3f Cg=%.3f\n", enc->ictcp_mode ? "ICtCp" : "YCoCg", y_test, co_test, cg_test);
             
             // Test reverse conversion
             uint8_t r_rev, g_rev, b_rev;
-            ycocgr_to_rgb(y_test, co_test, cg_test, &r_rev, &g_rev, &b_rev);
+            color_space_to_rgb(enc, y_test, co_test, cg_test, &r_rev, &g_rev, &b_rev);
             printf("  Reverse: R=%d G=%d B=%d\n", r_rev, g_rev, b_rev);
             
         } else {
