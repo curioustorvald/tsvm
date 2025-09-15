@@ -200,7 +200,7 @@ typedef struct {
     int target_bitrate;
     
     // Flags
-    int progressive;
+//    int progressive; // no interlaced mode for TAV
     int lossless;
     int enable_rcf;
     int enable_progressive_transmission;
@@ -302,7 +302,6 @@ static void show_usage(const char *program_name) {
     printf("  -w, --wavelet N        Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
     printf("  -d, --decomp N         Decomposition levels 1-6 (default: 4)\n");
     printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode)\n");
-    printf("  -p, --progressive      Use progressive scan (default: interlaced)\n");
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose          Verbose output\n");
     printf("  -t, --test             Test mode: generate solid colour frames\n");
@@ -361,7 +360,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->quantizer_y = QUALITY_Y[DEFAULT_QUALITY];
     enc->quantizer_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantizer_cg = QUALITY_CG[DEFAULT_QUALITY];
-    
+
     return enc;
 }
 
@@ -1022,7 +1021,7 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(extra_flags, enc->output_fp);
     
     uint8_t video_flags = 0;
-    if (!enc->progressive) video_flags |= 0x01;  // Interlaced
+//    if (!enc->progressive) video_flags |= 0x01;  // Interlaced
     if (enc->fps == 29 || enc->fps == 30) video_flags |= 0x02;  // NTSC
     if (enc->lossless) video_flags |= 0x04;  // Lossless
     if (enc->decomp_levels > 1) video_flags |= 0x08;  // Multi-resolution
@@ -1135,10 +1134,9 @@ static int get_video_metadata(tav_encoder_t *config) {
     fprintf(stderr, "  FPS: %.2f\n", inputFramerate);
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
-    fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height, 
-            config->progressive ? "progressive" : "interlaced");
-
-    return (config->fps > 0);
+//    fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height,
+//            config->progressive ? "progressive" : "interlaced");
+    fprintf(stderr, "  Resolution: %dx%d\n", config->width, config->height);
 }
 
 // Start FFmpeg process for video conversion with frame rate support
@@ -1605,7 +1603,7 @@ int main(int argc, char *argv[]) {
         {"wavelet", required_argument, 0, 'w'},
         {"decomp", required_argument, 0, 'd'},
         {"bitrate", required_argument, 0, 'b'},
-        {"progressive", no_argument, 0, 'p'},
+//        {"progressive", no_argument, 0, 'p'},
         {"subtitles", required_argument, 0, 'S'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
@@ -1652,9 +1650,6 @@ int main(int argc, char *argv[]) {
                 break;
             case 'd':
                 enc->decomp_levels = CLAMP(atoi(optarg), 1, MAX_DECOMP_LEVELS);
-                break;
-            case 'p':
-                enc->progressive = 1;
                 break;
             case 'v':
                 enc->verbose = 1;
