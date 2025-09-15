@@ -4183,6 +4183,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         
         // Debug: check quantized values before dequantization
         if (tileX == 0 && tileY == 0 && frameCounter < 3) {
+            println("TAV Debug: Tile (0,0) frame $frameCounter - readPtr=0x${readPtr.toString(16)}")
+            println("TAV Debug: First 32 bytes at readPtr: ${(0 until 32).map { "0x%02x".format(vm.peek(readPtr + it).toInt() and 0xFF) }.joinToString(" ")}")
             println("TAV Debug: Tile (0,0) frame $frameCounter - Quantized Y coeffs (first 64):")
             for (i in 0 until 8) {
                 for (j in 0 until 8) {
@@ -4190,6 +4192,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
                 println()
             }
+            
+            // Check how many non-zero coefficients we have
+            var nonZeroCount = 0
+            for (i in 0 until coeffCount) {
+                if (quantizedY[i] != 0.toShort()) nonZeroCount++
+            }
+            println("TAV Debug: Non-zero Y coefficients: $nonZeroCount out of $coeffCount")
+            
+            // Show all non-zero coefficients with their positions
+            println("TAV Debug: All non-zero Y coefficients:")
+            for (i in 0 until coeffCount) {
+                if (quantizedY[i] != 0.toShort()) {
+                    val row = i / 64
+                    val col = i % 64
+                    println("  Y[$row,$col] = ${quantizedY[i]}")
+                }
+            }
+            
             println("qY=$qY, qCo=$qCo, qCg=$qCg, rcf=$rcf")
         }
         
@@ -4199,22 +4219,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             cgTile[i] = quantizedCg[i] * qCg * rcf
         }
         
+        // Debug: compare expected vs actual DC values
+        if (tileX == 0 && tileY == 0 && frameCounter < 3) {
+            val expectedDC = 195 * 5 * 1.0f  // quantized_dc * qY * rcf
+            val actualDC = yTile[0] 
+            println("TAV Debug: DC comparison - quantized=${quantizedY[0]}, expected_dc=$expectedDC, actual_dc=$actualDC")
+            println("TAV Debug: Dequantized Y[0-15]: ${yTile.sliceArray(0..15).joinToString { "%.1f".format(it) }}")
+        }
+        
         // Apply inverse DWT using 9/7 irreversible filter with 3 decomposition levels
         applyDWTInverseMultiLevel(yTile, tileSize, tileSize, 3, 1)
         applyDWTInverseMultiLevel(coTile, tileSize, tileSize, 3, 1)
         applyDWTInverseMultiLevel(cgTile, tileSize, tileSize, 3, 1)
         
-        // DEBUG: Try replacing with reasonable test values to verify the rest of pipeline works
-        if (tileX == 0 && tileY == 0 && frameCounter < 3) {
-            println("TAV Debug: Before test override - Y[0-7]: ${yTile.sliceArray(0..7).joinToString { "%.1f".format(it) }}")
-            // Set reasonable test values
-            for (i in 0 until coeffCount) {
-                yTile[i] = 128.0f + (i % 32) * 2.0f  // Reasonable Y values around middle gray
-                coTile[i] = (i % 16 - 8) * 4.0f      // Small chroma values  
-                cgTile[i] = (i % 16 - 8) * 4.0f      // Small chroma values
-            }
-            println("TAV Debug: After test override - Y[0-7]: ${yTile.sliceArray(0..7).joinToString { "%.1f".format(it) }}")
-        }
         
         // Debug: check if we get reasonable values after DWT
         if (tileX == 0 && tileY == 0 && frameCounter < 3) {
@@ -4371,15 +4388,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val tileIdx = y * tileSize + x
                     val pixelIdx = frameY * width + frameX
                     
-                    // YCoCg-R to RGB conversion
+                    // YCoCg-R to RGB conversion (exact inverse of encoder)
                     val Y = yTile[tileIdx]
                     val Co = coTile[tileIdx] 
                     val Cg = cgTile[tileIdx]
                     
-                    val tmp = Y - Cg
-                    val g = Y + Cg
-                    val b = tmp - Co
-                    val r = tmp + Co
+                    // Inverse of encoder's YCoCg-R transform:
+                    // Forward: Co = r - b; tmp = b + Co/2; Cg = g - tmp; Y = tmp + Cg/2
+                    val tmp = Y - Cg / 2.0f
+                    val g = Cg + tmp
+                    val b = tmp - Co / 2.0f
+                    val r = Co + b
                     
                     val rgbOffset = pixelIdx * 3L
                     vm.poke(rgbAddr + rgbOffset, r.toInt().coerceIn(0, 255).toByte())
@@ -4813,16 +4832,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val currentSize = size shr level
             if (currentSize < 2) break
             
-            // Column transform (reverse order from encoder)
+            // Apply inverse DWT to current subband region - EXACT match to encoder
+            // The encoder does ROW transform first, then COLUMN transform
+            // So inverse must do COLUMN inverse first, then ROW inverse
+            
+            // Column inverse transform first
             for (x in 0 until currentSize) {
                 for (y in 0 until currentSize) {
                     tempCol[y] = data[y * size + x]
                 }
                 
                 if (filterType == 0) {
-                    applyLift53InverseVertical(tempCol, currentSize)
+                    applyDWT53Inverse1D(tempCol, currentSize)
                 } else {
-                    applyLift97InverseVertical(tempCol, currentSize)
+                    applyDWT97Inverse1D(tempCol, currentSize)
                 }
                 
                 for (y in 0 until currentSize) {
@@ -4830,16 +4853,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
             
-            // Row transform (reverse order from encoder)
+            // Row inverse transform second  
             for (y in 0 until currentSize) {
                 for (x in 0 until currentSize) {
                     tempRow[x] = data[y * size + x]
                 }
                 
                 if (filterType == 0) {
-                    applyLift53InverseHorizontal(tempRow, currentSize)
+                    applyDWT53Inverse1D(tempRow, currentSize)
                 } else {
-                    applyLift97InverseHorizontal(tempRow, currentSize)
+                    applyDWT97Inverse1D(tempRow, currentSize)
                 }
                 
                 for (x in 0 until currentSize) {
@@ -4875,6 +4898,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
     }
+
+    private fun applyLift97InverseHorizontal(row: FloatArray, width: Int) { TODO() }
+    private fun applyLift97InverseVertical(col: FloatArray, height: Int) { TODO() }
 
     // 1D lifting scheme implementations for 5/3 filter
     private fun applyLift53InverseHorizontal(data: FloatArray, length: Int) {
@@ -4925,38 +4951,35 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // 1D lifting scheme implementations for 9/7 irreversible filter
-    private fun applyLift97InverseHorizontal(data: FloatArray, length: Int) {
+    private fun applyDWT97Inverse1D(data: FloatArray, length: Int) {
         if (length < 2) return
 
         val temp = FloatArray(length)
-        val half = (length + 1) / 2
+        val half = length / 2
 
-        // Separate even and odd samples (inverse interleaving)
+        // Split into low and high frequency components (matching encoder layout)
+        // After forward DWT: first half = low-pass, second half = high-pass
         for (i in 0 until half) {
-            temp[i] = data[2 * i] // Even samples (low-pass)
-        }
-        for (i in 0 until length / 2) {
-            temp[half + i] = data[2 * i + 1] // Odd samples (high-pass)
+            temp[i] = data[i]              // Low-pass coefficients (first half)
+            temp[half + i] = data[half + i] // High-pass coefficients (second half)
         }
 
-        // 9/7 inverse lifting coefficients (must match encoder exactly)
-        val alpha = -1.586134342f   // Inverse lifting coefficient
-        val beta = -0.052980118f    // Inverse lifting coefficient (match encoder)  
-        val gamma = 0.882911076f    // Inverse lifting coefficient (match encoder)
-        val delta = 0.443506852f    // Inverse lifting coefficient (match encoder)
-        val K = 1.230174105f        // Scaling factor (match encoder)
-        val invK = 1.0f / K
+        // 9/7 inverse lifting coefficients (exactly matching encoder)
+        val alpha = -1.586134342f
+        val beta = -0.052980118f  
+        val gamma = 0.882911076f
+        val delta = 0.443506852f
+        val K = 1.230174105f
 
-        // Inverse lifting steps for 9/7 filter (undo forward steps in reverse order)
-        // Step 5: Undo scaling
+        // Inverse lifting steps (undo forward steps in reverse order)
+        
+        // Step 5: Undo scaling (reverse of encoder's final step)
         for (i in 0 until half) {
             temp[i] /= K  // Undo temp[i] *= K
-        }
-        for (i in 0 until length / 2) {
             temp[half + i] *= K  // Undo temp[half + i] /= K
         }
 
-        // Step 4: Undo update step (delta)
+        // Step 4: Undo update step (delta) 
         for (i in 0 until half) {
             val left = if (i > 0) temp[half + i - 1] else temp[half + i]
             val right = if (i < half - 1) temp[half + i + 1] else temp[half + i]
@@ -4984,18 +5007,50 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             temp[half + i] -= alpha * (left + right)
         }
 
-        // Interleave back
+        // Merge back (inverse of encoder's split)
         for (i in 0 until half) {
-            data[2 * i] = temp[i]
-        }
-        for (i in 0 until length / 2) {
-            data[2 * i + 1] = temp[half + i]
+            data[2 * i] = temp[i]           // Even positions get low-pass
+            if (2 * i + 1 < length) {
+                data[2 * i + 1] = temp[half + i] // Odd positions get high-pass
+            }
         }
     }
 
-    private fun applyLift97InverseVertical(data: FloatArray, length: Int) {
-        // Same as horizontal but for vertical direction
-        applyLift97InverseHorizontal(data, length)
+    private fun applyDWT53Inverse1D(data: FloatArray, length: Int) {
+        if (length < 2) return
+
+        val temp = FloatArray(length)
+        val half = length / 2
+
+        // Split into low and high frequency components (matching encoder layout)
+        for (i in 0 until half) {
+            temp[i] = data[i]              // Low-pass coefficients (first half)
+            temp[half + i] = data[half + i] // High-pass coefficients (second half)
+        }
+
+        // 5/3 inverse lifting (undo forward steps in reverse order)
+        
+        // Step 2: Undo update step (1/4 coefficient)
+        for (i in 0 until half) {
+            val left = if (i > 0) temp[half + i - 1] else 0.0f
+            val right = if (i < half - 1) temp[half + i] else 0.0f
+            temp[i] -= 0.25f * (left + right)
+        }
+
+        // Step 1: Undo predict step (1/2 coefficient)
+        for (i in 0 until half) {
+            val left = temp[i]
+            val right = if (i < half - 1) temp[i + 1] else temp[i]
+            temp[half + i] -= 0.5f * (left + right)
+        }
+
+        // Merge back (inverse of encoder's split)
+        for (i in 0 until half) {
+            data[2 * i] = temp[i]           // Even positions get low-pass
+            if (2 * i + 1 < length) {
+                data[2 * i + 1] = temp[half + i] // Odd positions get high-pass
+            }
+        }
     }
 
 

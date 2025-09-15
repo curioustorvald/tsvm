@@ -566,9 +566,29 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     int16_t *quantized_co = malloc(tile_size * sizeof(int16_t));
     int16_t *quantized_cg = malloc(tile_size * sizeof(int16_t));
     
+    // Debug: check DWT coefficients before quantization
+    if (tile_x == 0 && tile_y == 0) {
+        printf("Encoder Debug: Tile (0,0) - DWT Y coeffs before quantization (first 16): ");
+        for (int i = 0; i < 16; i++) {
+            printf("%.2f ", tile_y_data[i]);
+        }
+        printf("\n");
+        printf("Encoder Debug: Quantizers - Y=%d, Co=%d, Cg=%d, rcf=%.2f\n", 
+               enc->quantizer_y, enc->quantizer_co, enc->quantizer_cg, mv->rate_control_factor);
+    }
+    
     quantize_dwt_coefficients((float*)tile_y_data, quantized_y, tile_size, enc->quantizer_y, mv->rate_control_factor);
     quantize_dwt_coefficients((float*)tile_co_data, quantized_co, tile_size, enc->quantizer_co, mv->rate_control_factor);
     quantize_dwt_coefficients((float*)tile_cg_data, quantized_cg, tile_size, enc->quantizer_cg, mv->rate_control_factor);
+    
+    // Debug: check quantized coefficients after quantization
+    if (tile_x == 0 && tile_y == 0) {
+        printf("Encoder Debug: Tile (0,0) - Quantized Y coeffs (first 16): ");
+        for (int i = 0; i < 16; i++) {
+            printf("%d ", quantized_y[i]);
+        }
+        printf("\n");
+    }
     
     // Write quantized coefficients
     memcpy(buffer + offset, quantized_y, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
@@ -624,6 +644,15 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                         tile_cg_data[tile_idx_local] = 0.0f;
                     }
                 }
+            }
+            
+            // Debug: check input data before DWT
+            if (tile_x == 0 && tile_y == 0) {
+                printf("Encoder Debug: Tile (0,0) - Y data before DWT (first 16): ");
+                for (int i = 0; i < 16; i++) {
+                    printf("%.2f ", tile_y_data[i]);
+                }
+                printf("\n");
             }
             
             // Apply DWT transform to each channel
@@ -981,6 +1010,17 @@ int main(int argc, char *argv[]) {
                 enc->quantizer_co = QUALITY_CO[enc->quality_level];
                 enc->quantizer_cg = QUALITY_CG[enc->quality_level];
                 break;
+            case 'Q':
+                // Parse quantizer values Y,Co,Cg
+                if (sscanf(optarg, "%d,%d,%d", &enc->quantizer_y, &enc->quantizer_co, &enc->quantizer_cg) != 3) {
+                    fprintf(stderr, "Error: Invalid quantizer format. Use Y,Co,Cg (e.g., 5,3,2)\n");
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                enc->quantizer_y = CLAMP(enc->quantizer_y, 1, 100);
+                enc->quantizer_co = CLAMP(enc->quantizer_co, 1, 100);
+                enc->quantizer_cg = CLAMP(enc->quantizer_cg, 1, 100);
+                break;
             case 'w':
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 1);
                 break;
@@ -1163,10 +1203,29 @@ int main(int argc, char *argv[]) {
         // Determine frame type
         int is_keyframe = 1;//(frame_count % keyframe_interval == 0);
         
+        // Debug: check RGB input data
+        if (frame_count < 3) {
+            printf("Encoder Debug: Frame %d - RGB data (first 16 bytes): ", frame_count);
+            for (int i = 0; i < 16; i++) {
+                printf("%d ", enc->current_frame_rgb[i]);
+            }
+            printf("\n");
+        }
+        
         // Convert RGB to YCoCg
         rgb_to_ycocg(enc->current_frame_rgb, 
                      enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
                      enc->width, enc->height);
+                     
+        // Debug: check YCoCg conversion result
+        if (frame_count < 3) {
+            printf("Encoder Debug: Frame %d - YCoCg result (first 16): ", frame_count);
+            for (int i = 0; i < 16; i++) {
+                printf("Y=%.1f Co=%.1f Cg=%.1f ", enc->current_frame_y[i], enc->current_frame_co[i], enc->current_frame_cg[i]);
+                if (i % 4 == 3) break; // Only show first 4 pixels for readability
+            }
+            printf("\n");
+        }
         
         // Process motion vectors for P-frames
         int num_tiles = enc->tiles_x * enc->tiles_y;
