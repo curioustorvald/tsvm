@@ -2181,9 +2181,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val S = HLG_inverse_OETF(Sp)
 
                 // LMS -> linear sRGB (inverse matrix)
-                val rLin = 3.436606694333079 * L -2.5064521186562705 * M + 0.06984542432319149 * S
-                val gLin = -0.7913295555989289 * L + 1.983600451792291 * M -0.192270896193362 * S
-                val bLin = -0.025949899690592665 * L -0.09891371471172647 * M + 1.1248636144023192 * S
+                val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
+                val gLin = -1.3243428148026244 * L + 2.560286104841917 * M -0.2359203727576164 * S
+                val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
 
                 // Gamma encode to sRGB
                 val rSrgb = srgbUnlinearize(rLin)

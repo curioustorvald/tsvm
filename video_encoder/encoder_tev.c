@@ -352,18 +352,28 @@ static inline double HLG_inverse_OETF(double V) {
 }
 
 // ---------------------- Matrices (doubles) ----------------------
-// linear RGB -> LMS (technically we should convert sRGB to Rec.2100, but if encoder and decoder agrees on the same colourimetry, this utilises more bits
-static const double M_RGB_TO_LMS[3][3] = {
+// linear RGB -> XYZ -> Rec.2100 -> LMS
+/*static const double M_RGB_TO_LMS[3][3] = {
     {1688.0/4096.0,2146.0/4096.0, 262.0/4096.0},
     { 683.0/4096.0,2951.0/4096.0, 462.0/4096.0},
     {  99.0/4096.0, 309.0/4096.0,3688.0/4096.0}
+};*/
+static const double M_RGB_TO_LMS[3][3] = {
+    {0.2958564579364564, 0.6230869483219083, 0.08106989398623762},
+    {0.15627390752659093, 0.727308963512872, 0.11639736914944238},
+    {0.035141262332177715, 0.15657109121101628, 0.8080956851990795}
 };
 
 // Inverse: LMS -> linear sRGB (inverse of above)
-static const double M_LMS_TO_RGB[3][3] = {
+/*static const double M_LMS_TO_RGB[3][3] = {
     {3.436606694333079, -2.5064521186562705, 0.06984542432319149},
     {-0.7913295555989289, 1.983600451792291, -0.192270896193362},
     {-0.025949899690592665, -0.09891371471172647, 1.1248636144023192}
+};*/
+static const double M_LMS_TO_RGB[3][3] = {
+    {6.1723815689243215, -5.319534979827695, 0.14699442094633924},
+    {-1.3243428148026244, 2.560286104841917, -0.2359203727576164},
+    {-0.011819739235953752, -0.26473549971186555, 1.2767952602537955}
 };
 
 // ICtCp matrix (L' M' S' -> I Ct Cp). Values are the BT.2100 integer-derived /4096 constants.
@@ -2785,7 +2795,7 @@ int main(int argc, char *argv[]) {
     if (enc->ictcp_mode) {
         // ICtCp: Ct and Cp have different characteristics than YCoCg Co/Cg
         // Cp channel now uses specialized quantization table, so moderate quality is fine
-        int base_chroma_quality = (enc->qualityCo + enc->qualityCg) >> 1;
+        int base_chroma_quality = enc->qualityCo;
         enc->qualityCo = base_chroma_quality;           // Ct channel: keep original Co quantization
         enc->qualityCg = base_chroma_quality;           // Cp channel: same quality since Q_Cp_8 handles detail preservation
     }
