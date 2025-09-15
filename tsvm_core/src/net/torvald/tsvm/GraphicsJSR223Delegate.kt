@@ -4536,7 +4536,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 // Even positions: low-pass coefficients
                 data[i] = temp[i / 2]
             } else {
-                // Odd positions: high-pass coefficients  
+                // Odd positions: high-pass coefficients
                 val idx = i / 2
                 if (half + idx < length) {
                     data[i] = temp[half + idx]

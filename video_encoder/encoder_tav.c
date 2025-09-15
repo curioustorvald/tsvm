@@ -16,57 +16,6 @@
 #include <limits.h>
 #include <float.h>
 
-// Float16 conversion functions (same as TEV)
-static inline uint16_t float_to_float16(float fval) {
-    uint32_t fbits = *(uint32_t*)&fval;
-    uint16_t sign = (fbits >> 16) & 0x8000;
-    uint32_t val = (fbits & 0x7fffffff) + 0x1000;
-
-    if (val >= 0x47800000) {
-        if ((fbits & 0x7fffffff) >= 0x47800000) {
-            if (val < 0x7f800000)
-                return sign | 0x7c00;
-            return sign | 0x7c00 | ((fbits & 0x007fffff) >> 13);
-        }
-        return sign | 0x7bff;
-    }
-    if (val >= 0x38800000)
-        return sign | ((val - 0x38000000) >> 13);
-    if (val < 0x33000000)
-        return sign;
-    val = (fbits & 0x7fffffff) >> 23;
-
-    return sign | (((fbits & 0x7fffff) | 0x800000) +
-                   (0x800000 >> (val - 102))
-                  ) >> (126 - val);
-}
-
-static inline float float16_to_float(uint16_t hbits) {
-    uint32_t mant = hbits & 0x03ff;
-    uint32_t exp = hbits & 0x7c00;
-    
-    if (exp == 0x7c00)
-        exp = 0x3fc00;
-    else if (exp != 0) {
-        exp += 0x1c000;
-        if (mant == 0 && exp > 0x1c400) {
-            uint32_t fbits = ((hbits & 0x8000) << 16) | (exp << 13) | 0x3ff;
-            return *(float*)&fbits;
-        }
-    }
-    else if (mant != 0) {
-        exp = 0x1c400;
-        do {
-            mant <<= 1;
-            exp -= 0x400;
-        } while ((mant & 0x400) == 0);
-        mant &= 0x3ff;
-    }
-    
-    uint32_t fbits = ((hbits & 0x8000) << 16) | ((exp | mant) << 13);
-    return *(float*)&fbits;
-}
-
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
 // TAV version - dynamic based on color space mode
@@ -89,7 +38,7 @@ static inline float float16_to_float(uint16_t hbits) {
 // DWT settings
 #define TILE_SIZE 112  // 112x112 tiles - perfect fit for TSVM 560x448 (GCD = 112)
 #define MAX_DECOMP_LEVELS 6  // Can go deeper: 112→56→28→14→7→3→1
-#define DEFAULT_DECOMP_LEVELS 6  // Increased default for better compression
+#define DEFAULT_DECOMP_LEVELS 5  // Increased default for better compression
 
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
@@ -293,24 +242,23 @@ static void show_usage(const char *program_name) {
     printf("TAV DWT-based Video Encoder\n");
     printf("Usage: %s [options] -i input.mp4 -o output.mv3\n\n", program_name);
     printf("Options:\n");
-    printf("  -i, --input FILE       Input video file\n");
-    printf("  -o, --output FILE      Output video file (use '-' for stdout)\n");
-    printf("  -s, --size WxH         Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
-    printf("  -f, --fps N            Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N        Quality level 0-5 (default: 2)\n");
+    printf("  -i, --input FILE        Input video file\n");
+    printf("  -o, --output FILE       Output video file (use '-' for stdout)\n");
+    printf("  -s, --size WxH          Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    printf("  -f, --fps N             Output frames per second (enables frame rate conversion)\n");
+    printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
     printf("  -Q, --quantizer Y,Co,Cg Quantizer levels 0-100 for each channel\n");
-    printf("  -w, --wavelet N        Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
-    printf("  -d, --decomp N         Decomposition levels 1-6 (default: 4)\n");
-    printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode)\n");
-    printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
-    printf("  -v, --verbose          Verbose output\n");
-    printf("  -t, --test             Test mode: generate solid colour frames\n");
-    printf("  --lossless             Lossless mode: use 5/3 reversible wavelet\n");
-    printf("  --enable-rcf           Enable per-tile rate control (experimental)\n");
-    printf("  --enable-progressive   Enable progressive transmission\n");
-    printf("  --enable-roi           Enable region-of-interest coding\n");
-    printf("  --ictcp                Use ICtCp color space instead of YCoCg-R (generates TAV version 2)\n");
-    printf("  --help                 Show this help\n\n");
+//    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
+//    printf("  -d, --decomp N          Decomposition levels 1-6 (default: %d)\n", DEFAULT_DECOMP_LEVELS);
+    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
+    printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
+    printf("  -v, --verbose           Verbose output\n");
+    printf("  -t, --test              Test mode: generate solid colour frames\n");
+    printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
+//    printf("  --enable-progressive    Enable progressive transmission\n");
+//    printf("  --enable-roi            Enable region-of-interest coding\n");
+    printf("  --ictcp                 Use ICtCp color space instead of YCoCg-R (generates TAV version 2)\n");
+    printf("  --help                  Show this help\n\n");
     
     printf("Audio Rate by Quality:\n  ");
     for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
@@ -332,9 +280,9 @@ static void show_usage(const char *program_name) {
     
     printf("\n\nFeatures:\n");
     printf("  - 112x112 DWT tiles with multi-resolution encoding\n");
-    printf("  - Full resolution YCoCg-R color space\n");
-    printf("  - Progressive transmission and ROI coding\n");
-    printf("  - Motion compensation with ±16 pixel search range\n");
+    printf("  - Full resolution YCoCg-R/ICtCp color space\n");
+//    printf("  - Progressive transmission and ROI coding\n");
+//    printf("  - Motion compensation with ±16 pixel search range\n");
     printf("  - Lossless and lossy compression modes\n");
     
     printf("\nExamples:\n");
@@ -465,10 +413,10 @@ static void dwt_53_inverse_1d(float *data, int length) {
 // 1D DWT using lifting scheme for 9/7 irreversible filter
 static void dwt_97_forward_1d(float *data, int length) {
     if (length < 2) return;
-    
+
     float *temp = malloc(length * sizeof(float));
     int half = (length + 1) / 2;  // Handle odd lengths properly
-    
+
     // Split into even/odd samples
     for (int i = 0; i < half; i++) {
         temp[i] = data[2 * i];           // Even (low)
@@ -476,14 +424,14 @@ static void dwt_97_forward_1d(float *data, int length) {
     for (int i = 0; i < length / 2; i++) {
         temp[half + i] = data[2 * i + 1]; // Odd (high)
     }
-    
+
     // JPEG2000 9/7 forward lifting steps (corrected to match decoder)
     const float alpha = -1.586134342f;
     const float beta = -0.052980118f;
     const float gamma = 0.882911076f;
     const float delta = 0.443506852f;
     const float K = 1.230174105f;
-    
+
     // Step 1: Predict α - d[i] += α * (s[i] + s[i+1])
     for (int i = 0; i < length / 2; i++) {
         if (half + i < length) {
@@ -492,14 +440,14 @@ static void dwt_97_forward_1d(float *data, int length) {
             temp[half + i] += alpha * (s_curr + s_next);
         }
     }
-    
+
     // Step 2: Update β - s[i] += β * (d[i-1] + d[i])
     for (int i = 0; i < half; i++) {
         float d_curr = (half + i < length) ? temp[half + i] : 0.0f;
         float d_prev = (i > 0 && half + i - 1 < length) ? temp[half + i - 1] : d_curr;
         temp[i] += beta * (d_prev + d_curr);
     }
-    
+
     // Step 3: Predict γ - d[i] += γ * (s[i] + s[i+1])
     for (int i = 0; i < length / 2; i++) {
         if (half + i < length) {
@@ -508,14 +456,14 @@ static void dwt_97_forward_1d(float *data, int length) {
             temp[half + i] += gamma * (s_curr + s_next);
         }
     }
-    
+
     // Step 4: Update δ - s[i] += δ * (d[i-1] + d[i])
     for (int i = 0; i < half; i++) {
         float d_curr = (half + i < length) ? temp[half + i] : 0.0f;
         float d_prev = (i > 0 && half + i - 1 < length) ? temp[half + i - 1] : d_curr;
         temp[i] += delta * (d_prev + d_curr);
     }
-    
+
     // Step 5: Scaling - s[i] *= K, d[i] /= K
     for (int i = 0; i < half; i++) {
         temp[i] *= K;  // Low-pass coefficients
@@ -525,7 +473,7 @@ static void dwt_97_forward_1d(float *data, int length) {
             temp[half + i] /= K;  // High-pass coefficients
         }
     }
-    
+
     memcpy(data, temp, length * sizeof(float));
     free(temp);
 }
@@ -1613,17 +1561,16 @@ int main(int argc, char *argv[]) {
         {"quality", required_argument, 0, 'q'},
         {"quantizer", required_argument, 0, 'Q'},
         {"quantiser", required_argument, 0, 'Q'},
-        {"wavelet", required_argument, 0, 'w'},
-        {"decomp", required_argument, 0, 'd'},
+//        {"wavelet", required_argument, 0, 'w'},
+//        {"decomp", required_argument, 0, 'd'},
         {"bitrate", required_argument, 0, 'b'},
 //        {"progressive", no_argument, 0, 'p'},
         {"subtitles", required_argument, 0, 'S'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"lossless", no_argument, 0, 1000},
-        {"enable-rcf", no_argument, 0, 1001},
-        {"enable-progressive", no_argument, 0, 1002},
-        {"enable-roi", no_argument, 0, 1003},
+//        {"enable-progressive", no_argument, 0, 1002},
+//        {"enable-roi", no_argument, 0, 1003},
         {"ictcp", no_argument, 0, 1005},
         {"help", no_argument, 0, 1004},
         {0, 0, 0, 0}
@@ -1655,15 +1602,15 @@ int main(int argc, char *argv[]) {
                 enc->quantizer_co = CLAMP(enc->quantizer_co, 1, 100);
                 enc->quantizer_cg = CLAMP(enc->quantizer_cg, 1, 100);
                 break;
-            case 'w':
+            /*case 'w':
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 1);
-                break;
+                break;*/
             case 'f':
                 enc->output_fps = atoi(optarg);
                 break;
-            case 'd':
+            /*case 'd':
                 enc->decomp_levels = CLAMP(atoi(optarg), 1, MAX_DECOMP_LEVELS);
-                break;
+                break;*/
             case 'v':
                 enc->verbose = 1;
                 break;
@@ -1676,9 +1623,6 @@ int main(int argc, char *argv[]) {
             case 1000: // --lossless
                 enc->lossless = 1;
                 enc->wavelet_filter = WAVELET_5_3_REVERSIBLE;
-                break;
-            case 1001: // --enable-rcf
-                enc->enable_rcf = 1;
                 break;
             case 1005: // --ictcp
                 enc->ictcp_mode = 1;
