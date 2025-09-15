@@ -156,7 +156,7 @@ for (let i = 0; i < 7; i++) {
     seqread.readOneByte()
 }
 
-if (header.version !== TAV_VERSION) {
+if (header.version < 1 || header.version > 2) {
     con.puts(`Error: Unsupported TAV version ${header.version}`)
     errorlevel = 1
     return
@@ -185,6 +185,7 @@ console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ?
 console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
+console.log(`Color space: ${header.version === 2 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
 
 // Frame buffer addresses - same as TEV
@@ -357,7 +358,8 @@ try {
                             header.waveletFilter,      // TAV-specific parameter
                             header.decompLevels,       // TAV-specific parameter
                             enableDeblocking,
-                            isLossless
+                            isLossless,
+                            header.version             // TAV version for color space detection
                         )
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0

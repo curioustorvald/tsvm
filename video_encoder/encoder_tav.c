@@ -69,7 +69,9 @@ static inline float float16_to_float(uint16_t hbits) {
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
-#define TAV_VERSION 1  // Initial DWT implementation
+// TAV version - dynamic based on color space mode
+// Version 1: YCoCg-R (default) 
+// Version 2: ICtCp (--ictcp flag)
 
 // Tile encoding modes (64x64 tiles)
 #define TAV_MODE_SKIP      0x00  // Skip tile (copy from reference)
@@ -193,6 +195,7 @@ typedef struct {
     int enable_roi;
     int verbose;
     int test_mode;
+    int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp color space
     
     // Frame buffers
     uint8_t *current_frame_rgb;
@@ -271,6 +274,7 @@ static void show_usage(const char *program_name) {
     printf("  --enable-rcf           Enable per-tile rate control (experimental)\n");
     printf("  --enable-progressive   Enable progressive transmission\n");
     printf("  --enable-roi           Enable region-of-interest coding\n");
+    printf("  --ictcp                Use ICtCp color space instead of YCoCg-R (generates TAV version 2)\n");
     printf("  --help                 Show this help\n\n");
     
     printf("Audio Rate by Quality:\n  ");
@@ -567,7 +571,7 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     int16_t *quantized_cg = malloc(tile_size * sizeof(int16_t));
     
     // Debug: check DWT coefficients before quantization
-    if (tile_x == 0 && tile_y == 0) {
+    /*if (tile_x == 0 && tile_y == 0) {
         printf("Encoder Debug: Tile (0,0) - DWT Y coeffs before quantization (first 16): ");
         for (int i = 0; i < 16; i++) {
             printf("%.2f ", tile_y_data[i]);
@@ -575,20 +579,20 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         printf("\n");
         printf("Encoder Debug: Quantizers - Y=%d, Co=%d, Cg=%d, rcf=%.2f\n", 
                enc->quantizer_y, enc->quantizer_co, enc->quantizer_cg, mv->rate_control_factor);
-    }
+    }*/
     
     quantize_dwt_coefficients((float*)tile_y_data, quantized_y, tile_size, enc->quantizer_y, mv->rate_control_factor);
     quantize_dwt_coefficients((float*)tile_co_data, quantized_co, tile_size, enc->quantizer_co, mv->rate_control_factor);
     quantize_dwt_coefficients((float*)tile_cg_data, quantized_cg, tile_size, enc->quantizer_cg, mv->rate_control_factor);
     
     // Debug: check quantized coefficients after quantization
-    if (tile_x == 0 && tile_y == 0) {
+    /*if (tile_x == 0 && tile_y == 0) {
         printf("Encoder Debug: Tile (0,0) - Quantized Y coeffs (first 16): ");
         for (int i = 0; i < 16; i++) {
             printf("%d ", quantized_y[i]);
         }
         printf("\n");
-    }
+    }*/
     
     // Write quantized coefficients
     memcpy(buffer + offset, quantized_y, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
@@ -647,13 +651,13 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             }
             
             // Debug: check input data before DWT
-            if (tile_x == 0 && tile_y == 0) {
+            /*if (tile_x == 0 && tile_y == 0) {
                 printf("Encoder Debug: Tile (0,0) - Y data before DWT (first 16): ");
                 for (int i = 0; i < 16; i++) {
                     printf("%.2f ", tile_y_data[i]);
                 }
                 printf("\n");
-            }
+            }*/
             
             // Apply DWT transform to each channel
             dwt_2d_forward(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
@@ -763,6 +767,192 @@ static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int
     }
 }
 
+// ---------------------- ICtCp Implementation ----------------------
+
+static inline int iround(double v) { return (int)floor(v + 0.5); }
+
+// ---------------------- sRGB gamma helpers ----------------------
+static inline double srgb_linearize(double val) {
+    if (val <= 0.04045) return val / 12.92;
+    return pow((val + 0.055) / 1.055, 2.4);
+}
+
+static inline double srgb_unlinearize(double val) {
+    if (val <= 0.0031308) return 12.92 * val;
+    return 1.055 * pow(val, 1.0/2.4) - 0.055;
+}
+
+// ---------------------- HLG OETF/EOTF ----------------------
+static inline double HLG_OETF(double E) {
+    const double a = 0.17883277;
+    const double b = 0.28466892;  // 1 - 4*a
+    const double c = 0.55991073;  // 0.5 - a*ln(4*a)
+    
+    if (E <= 1.0/12.0) return sqrt(3.0 * E);
+    return a * log(12.0 * E - b) + c;
+}
+
+static inline double HLG_EOTF(double Ep) {
+    const double a = 0.17883277;
+    const double b = 0.28466892;
+    const double c = 0.55991073;
+    
+    if (Ep <= 0.5) {
+        double val = Ep * Ep / 3.0;
+        return val;
+    }
+    double val = (exp((Ep - c) / a) + b) / 12.0;
+    return val;
+}
+
+// sRGB -> LMS matrix
+static const double M_RGB_TO_LMS[3][3] = {
+    {0.2958564579364564, 0.6230869483219083, 0.08106989398623762},
+    {0.15627390752659093, 0.727308963512872, 0.11639736914944238},
+    {0.035141262332177715, 0.15657109121101628, 0.8080956851990795}
+};
+
+static const double M_LMS_TO_RGB[3][3] = {
+    {6.1723815689243215, -5.319534979827695, 0.14699442094633924},
+    {-1.3243428148026244, 2.560286104841917, -0.2359203727576164},
+    {-0.011819739235953752, -0.26473549971186555, 1.2767952602537955}
+};
+
+// ICtCp matrix (L' M' S' -> I Ct Cp). Values are the BT.2100 integer-derived /4096 constants.
+static const double M_LMSPRIME_TO_ICTCP[3][3] = {
+    { 2048.0/4096.0,   2048.0/4096.0,     0.0          },
+    { 3625.0/4096.0, -7465.0/4096.0, 3840.0/4096.0    },
+    { 9500.0/4096.0, -9212.0/4096.0, -288.0/4096.0    }
+};
+
+// Inverse matrices
+static const double M_ICTCP_TO_LMSPRIME[3][3] = {
+    { 1.0,         0.015718580108730416,  0.2095810681164055 },
+    { 1.0,        -0.015718580108730416, -0.20958106811640548 },
+    { 1.0,         1.0212710798422344, -0.6052744909924316 }
+};
+
+// ---------------------- Forward: sRGB8 -> ICtCp (doubles) ----------------------
+void srgb8_to_ictcp_hlg(uint8_t r8, uint8_t g8, uint8_t b8,
+                       double *out_I, double *out_Ct, double *out_Cp)
+{
+    // 1) linearize sRGB to 0..1
+    double r = srgb_linearize((double)r8 / 255.0);
+    double g = srgb_linearize((double)g8 / 255.0);
+    double b = srgb_linearize((double)b8 / 255.0);
+
+    // 2) linear RGB -> LMS (single 3x3 multiply)
+    double L = M_RGB_TO_LMS[0][0]*r + M_RGB_TO_LMS[0][1]*g + M_RGB_TO_LMS[0][2]*b;
+    double M = M_RGB_TO_LMS[1][0]*r + M_RGB_TO_LMS[1][1]*g + M_RGB_TO_LMS[1][2]*b;
+    double S = M_RGB_TO_LMS[2][0]*r + M_RGB_TO_LMS[2][1]*g + M_RGB_TO_LMS[2][2]*b;
+
+    // 3) HLG OETF
+    double Lp = HLG_OETF(L);
+    double Mp = HLG_OETF(M);
+    double Sp = HLG_OETF(S);
+
+    // 4) L'M'S' -> ICtCp
+    double I  = M_LMSPRIME_TO_ICTCP[0][0]*Lp + M_LMSPRIME_TO_ICTCP[0][1]*Mp + M_LMSPRIME_TO_ICTCP[0][2]*Sp;
+    double Ct = M_LMSPRIME_TO_ICTCP[1][0]*Lp + M_LMSPRIME_TO_ICTCP[1][1]*Mp + M_LMSPRIME_TO_ICTCP[1][2]*Sp;
+    double Cp = M_LMSPRIME_TO_ICTCP[2][0]*Lp + M_LMSPRIME_TO_ICTCP[2][1]*Mp + M_LMSPRIME_TO_ICTCP[2][2]*Sp;
+
+    *out_I = FCLAMP(I * 255.f, 0.f, 255.f);
+    *out_Ct = FCLAMP(Ct * 255.f + 127.5f, 0.f, 255.f);
+    *out_Cp = FCLAMP(Cp * 255.f + 127.5f, 0.f, 255.f);
+}
+
+// ---------------------- Reverse: ICtCp -> sRGB8 (doubles) ----------------------
+void ictcp_hlg_to_srgb8(double I8, double Ct8, double Cp8,
+                       uint8_t *r8, uint8_t *g8, uint8_t *b8)
+{
+    double I = I8 / 255.f;
+    double Ct = (Ct8 - 127.5f) / 255.f;
+    double Cp = (Cp8 - 127.5f) / 255.f;
+
+    // 1) ICtCp -> L' M' S' (3x3 multiply)
+    double Lp = M_ICTCP_TO_LMSPRIME[0][0]*I + M_ICTCP_TO_LMSPRIME[0][1]*Ct + M_ICTCP_TO_LMSPRIME[0][2]*Cp;
+    double Mp = M_ICTCP_TO_LMSPRIME[1][0]*I + M_ICTCP_TO_LMSPRIME[1][1]*Ct + M_ICTCP_TO_LMSPRIME[1][2]*Cp;
+    double Sp = M_ICTCP_TO_LMSPRIME[2][0]*I + M_ICTCP_TO_LMSPRIME[2][1]*Ct + M_ICTCP_TO_LMSPRIME[2][2]*Cp;
+
+    // 2) HLG decode: L' -> linear LMS
+    double L = HLG_EOTF(Lp);
+    double M = HLG_EOTF(Mp);
+    double S = HLG_EOTF(Sp);
+
+    // 3) LMS -> linear sRGB (3x3 inverse)
+    double r_lin = M_LMS_TO_RGB[0][0]*L + M_LMS_TO_RGB[0][1]*M + M_LMS_TO_RGB[0][2]*S;
+    double g_lin = M_LMS_TO_RGB[1][0]*L + M_LMS_TO_RGB[1][1]*M + M_LMS_TO_RGB[1][2]*S;
+    double b_lin = M_LMS_TO_RGB[2][0]*L + M_LMS_TO_RGB[2][1]*M + M_LMS_TO_RGB[2][2]*S;
+
+    // 4) gamma encode and convert to 0..255 with center-of-bin rounding
+    double r = srgb_unlinearize(r_lin);
+    double g = srgb_unlinearize(g_lin);
+    double b = srgb_unlinearize(b_lin);
+
+    *r8 = (uint8_t)iround(FCLAMP(r * 255.0, 0.0, 255.0));
+    *g8 = (uint8_t)iround(FCLAMP(g * 255.0, 0.0, 255.0));
+    *b8 = (uint8_t)iround(FCLAMP(b * 255.0, 0.0, 255.0));
+}
+
+// ---------------------- Color Space Switching Functions ----------------------
+// Wrapper functions that choose between YCoCg-R and ICtCp based on encoder mode
+
+static void rgb_to_color_space(tav_encoder_t *enc, uint8_t r, uint8_t g, uint8_t b,
+                               double *c1, double *c2, double *c3) {
+    if (enc->ictcp_mode) {
+        // Use ICtCp color space
+        srgb8_to_ictcp_hlg(r, g, b, c1, c2, c3);
+    } else {
+        // Use YCoCg-R color space (convert from existing function)
+        float rf = r, gf = g, bf = b;
+        float co = rf - bf;
+        float tmp = bf + co / 2;
+        float cg = gf - tmp;
+        float y = tmp + cg / 2;
+        *c1 = (double)y;
+        *c2 = (double)co;
+        *c3 = (double)cg;
+    }
+}
+
+static void color_space_to_rgb(tav_encoder_t *enc, double c1, double c2, double c3,
+                               uint8_t *r, uint8_t *g, uint8_t *b) {
+    if (enc->ictcp_mode) {
+        // Use ICtCp color space
+        ictcp_hlg_to_srgb8(c1, c2, c3, r, g, b);
+    } else {
+        // Use YCoCg-R color space (inverse of rgb_to_ycocg)
+        float y = (float)c1;
+        float co = (float)c2;
+        float cg = (float)c3;
+        float tmp = y - cg / 2.0f;
+        float g_val = cg + tmp;
+        float b_val = tmp - co / 2.0f;
+        float r_val = co + b_val;
+        *r = (uint8_t)CLAMP((int)(r_val + 0.5f), 0, 255);
+        *g = (uint8_t)CLAMP((int)(g_val + 0.5f), 0, 255);
+        *b = (uint8_t)CLAMP((int)(b_val + 0.5f), 0, 255);
+    }
+}
+
+// RGB to color space conversion for full frames
+static void rgb_to_color_space_frame(tav_encoder_t *enc, const uint8_t *rgb, 
+                                    float *c1, float *c2, float *c3, int width, int height) {
+    if (enc->ictcp_mode) {
+        // ICtCp mode
+        for (int i = 0; i < width * height; i++) {
+            double I, Ct, Cp;
+            srgb8_to_ictcp_hlg(rgb[i*3], rgb[i*3+1], rgb[i*3+2], &I, &Ct, &Cp);
+            c1[i] = (float)I;
+            c2[i] = (float)Ct;
+            c3[i] = (float)Cp;
+        }
+    } else {
+        // Use existing YCoCg function
+        rgb_to_ycocg(rgb, c1, c2, c3, width, height);
+    }
+}
+
 // Write TAV file header
 static int write_tav_header(tav_encoder_t *enc) {
     if (!enc->output_fp) return -1;
@@ -770,8 +960,9 @@ static int write_tav_header(tav_encoder_t *enc) {
     // Magic number
     fwrite(TAV_MAGIC, 1, 8, enc->output_fp);
     
-    // Version
-    fputc(TAV_VERSION, enc->output_fp);
+    // Version (dynamic based on color space)
+    uint8_t version = enc->ictcp_mode ? 2 : 1;  // Version 2 for ICtCp, 1 for YCoCg-R
+    fputc(version, enc->output_fp);
     
     // Video parameters
     fwrite(&enc->width, sizeof(uint16_t), 1, enc->output_fp);
@@ -991,6 +1182,7 @@ int main(int argc, char *argv[]) {
         {"enable-rcf", no_argument, 0, 1001},
         {"enable-progressive", no_argument, 0, 1002},
         {"enable-roi", no_argument, 0, 1003},
+        {"ictcp", no_argument, 0, 1005},
         {"help", no_argument, 0, 1004},
         {0, 0, 0, 0}
     };
@@ -1046,6 +1238,9 @@ int main(int argc, char *argv[]) {
             case 1001: // --enable-rcf
                 enc->enable_rcf = 1;
                 break;
+            case 1005: // --ictcp
+                enc->ictcp_mode = 1;
+                break;
             case 1004: // --help
                 show_usage(argv[0]);
                 cleanup_encoder(enc);
@@ -1077,6 +1272,7 @@ int main(int argc, char *argv[]) {
     printf("Wavelet: %s\n", enc->wavelet_filter ? "9/7 irreversible" : "5/3 reversible");
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Quality: Y=%d, Co=%d, Cg=%d\n", enc->quantizer_y, enc->quantizer_co, enc->quantizer_cg);
+    printf("Color space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
     
     // Open output file
     if (strcmp(enc->output_file, "-") == 0) {
@@ -1204,28 +1400,28 @@ int main(int argc, char *argv[]) {
         int is_keyframe = 1;//(frame_count % keyframe_interval == 0);
         
         // Debug: check RGB input data
-        if (frame_count < 3) {
+        /*if (frame_count < 3) {
             printf("Encoder Debug: Frame %d - RGB data (first 16 bytes): ", frame_count);
             for (int i = 0; i < 16; i++) {
                 printf("%d ", enc->current_frame_rgb[i]);
             }
             printf("\n");
-        }
+        }*/
         
-        // Convert RGB to YCoCg
-        rgb_to_ycocg(enc->current_frame_rgb, 
-                     enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
-                     enc->width, enc->height);
+        // Convert RGB to color space (YCoCg-R or ICtCp)
+        rgb_to_color_space_frame(enc, enc->current_frame_rgb, 
+                                enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
+                                enc->width, enc->height);
                      
         // Debug: check YCoCg conversion result
-        if (frame_count < 3) {
+        /*if (frame_count < 3) {
             printf("Encoder Debug: Frame %d - YCoCg result (first 16): ", frame_count);
             for (int i = 0; i < 16; i++) {
                 printf("Y=%.1f Co=%.1f Cg=%.1f ", enc->current_frame_y[i], enc->current_frame_co[i], enc->current_frame_cg[i]);
                 if (i % 4 == 3) break; // Only show first 4 pixels for readability
             }
             printf("\n");
-        }
+        }*/
         
         // Process motion vectors for P-frames
         int num_tiles = enc->tiles_x * enc->tiles_y;
