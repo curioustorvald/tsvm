@@ -564,7 +564,7 @@ let blockDataPtr = sys.malloc(560*448*3)
 // Playback loop - properly adapted from TEV
 try {
     let t1 = sys.nanoTime()
-    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && frameCount < header.totalFrames) {
+    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && (header.totalFrames == 0 || header.totalFrames > 0 && frameCount < header.totalFrames)) {
 
         // Handle interactive controls
         if (interactive) {

@@ -3924,7 +3924,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, frameCounter: Int,
                   debugMotionVectors: Boolean = false, waveletFilter: Int = 1,
-                  decompLevels: Int = 3, enableDeblocking: Boolean = true,
+                  decompLevels: Int = 6, enableDeblocking: Boolean = true,
                   isLossless: Boolean = false, tavVersion: Int = 1) {
 
         var readPtr = blockDataPtr
@@ -3977,6 +3977,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         } catch (e: Exception) {
             println("TAV decode error: ${e.message}")
         }
+
+        // Apply deblocking filter if enabled to reduce DWT quantization artifacts
+//        if (enableDeblocking) {
+//            tavDeblockingFilter(currentRGBAddr, width, height)
+//        }
     }
 
     private fun decodeDWTIntraTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
@@ -4323,13 +4328,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun applyDWTInverseMultiLevel(data: FloatArray, width: Int, height: Int, levels: Int, filterType: Int) {
         // Multi-level inverse DWT - reconstruct from smallest to largest (reverse of encoder)
-        val size = width // Full tile size (64)
+        val size = width // Full tile size (112 for TAV)
         val tempRow = FloatArray(size)
         val tempCol = FloatArray(size)
 
         for (level in levels - 1 downTo 0) {
             val currentSize = size shr level
-            if (currentSize < 2) break
+            
+            // Handle edge cases for very small decomposition levels
+            if (currentSize < 1) continue // Skip invalid sizes
+            if (currentSize == 1) {
+                // Level 6: 1x1 - single DC coefficient, no DWT needed but preserve it
+                continue
+            }
 
             // Apply inverse DWT to current subband region - EXACT match to encoder
             // The encoder does ROW transform first, then COLUMN transform
@@ -4454,63 +4465,84 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         if (length < 2) return
 
         val temp = FloatArray(length)
-        val half = length / 2
+        val half = (length + 1) / 2  // Handle odd lengths properly
 
         // Split into low and high frequency components (matching encoder layout)
         // After forward DWT: first half = low-pass, second half = high-pass
         for (i in 0 until half) {
             temp[i] = data[i]              // Low-pass coefficients (first half)
-            temp[half + i] = data[half + i] // High-pass coefficients (second half)
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length && half + i < data.size) {
+                temp[half + i] = data[half + i] // High-pass coefficients (second half)
+            }
         }
 
-        // 9/7 inverse lifting coefficients (exactly matching encoder)
+        // 9/7 inverse lifting coefficients (original working values)
         val alpha = -1.586134342f
         val beta = -0.052980118f
         val gamma = 0.882911076f
         val delta = 0.443506852f
         val K = 1.230174105f
 
-        // Inverse lifting steps (undo forward steps in reverse order)
+        // JPEG2000 9/7 inverse lifting steps (corrected implementation)
+        // Reference order: undo scaling → undo δ → undo γ → undo β → undo α → interleave
 
-        // Step 5: Undo scaling (reverse of encoder's final step)
+        // Step 1: Undo scaling - s[i] /= K, d[i] *= K
         for (i in 0 until half) {
-            temp[i] /= K  // Undo temp[i] *= K
-            temp[half + i] *= K  // Undo temp[half + i] /= K
+            temp[i] /= K  // Low-pass coefficients
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                temp[half + i] *= K  // High-pass coefficients
+            }
         }
 
-        // Step 4: Undo update step (delta)
+        // Step 2: Undo δ update - s[i] -= δ * (d[i] + d[i-1])
         for (i in 0 until half) {
-            val left = if (i > 0) temp[half + i - 1] else temp[half + i]
-            val right = if (i < half - 1) temp[half + i + 1] else temp[half + i]
-            temp[i] -= delta * (left + right)
+            val d_curr = if (half + i < length) temp[half + i] else 0.0f
+            val d_prev = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else d_curr
+            temp[i] -= delta * (d_curr + d_prev)
         }
 
-        // Step 3: Undo predict step (gamma)
-        for (i in 0 until half) {
-            val left = if (i > 0) temp[i - 1] else temp[i]
-            val right = if (i < half - 1) temp[i + 1] else temp[i]
-            temp[half + i] -= gamma * (left + right)
+        // Step 3: Undo γ predict - d[i] -= γ * (s[i] + s[i+1])
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val s_curr = temp[i]
+                val s_next = if (i + 1 < half) temp[i + 1] else s_curr
+                temp[half + i] -= gamma * (s_curr + s_next)
+            }
         }
 
-        // Step 2: Undo update step (beta)
+        // Step 4: Undo β update - s[i] -= β * (d[i] + d[i-1])
         for (i in 0 until half) {
-            val left = if (i > 0) temp[half + i - 1] else temp[half + i]
-            val right = if (i < half - 1) temp[half + i + 1] else temp[half + i]
-            temp[i] -= beta * (left + right)
+            val d_curr = if (half + i < length) temp[half + i] else 0.0f
+            val d_prev = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else d_curr
+            temp[i] -= beta * (d_curr + d_prev)
         }
 
-        // Step 1: Undo predict step (alpha)
-        for (i in 0 until half) {
-            val left = if (i > 0) temp[i - 1] else temp[i]
-            val right = if (i < half - 1) temp[i + 1] else temp[i]
-            temp[half + i] -= alpha * (left + right)
+        // Step 5: Undo α predict - d[i] -= α * (s[i] + s[i+1])
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val s_curr = temp[i]
+                val s_next = if (i + 1 < half) temp[i + 1] else s_curr
+                temp[half + i] -= alpha * (s_curr + s_next)
+            }
         }
 
-        // Merge back (inverse of encoder's split)
-        for (i in 0 until half) {
-            data[2 * i] = temp[i]           // Even positions get low-pass
-            if (2 * i + 1 < length) {
-                data[2 * i + 1] = temp[half + i] // Odd positions get high-pass
+        // Simple reconstruction (revert to working version)
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients  
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    data[i] = 0.0f // Boundary case
+                }
             }
         }
     }
@@ -4519,35 +4551,59 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         if (length < 2) return
 
         val temp = FloatArray(length)
-        val half = length / 2
+        val half = (length + 1) / 2  // Handle odd lengths properly
 
         // Split into low and high frequency components (matching encoder layout)
         for (i in 0 until half) {
             temp[i] = data[i]              // Low-pass coefficients (first half)
-            temp[half + i] = data[half + i] // High-pass coefficients (second half)
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length && half + i < data.size) {
+                temp[half + i] = data[half + i] // High-pass coefficients (second half)
+            }
         }
 
         // 5/3 inverse lifting (undo forward steps in reverse order)
 
-        // Step 2: Undo update step (1/4 coefficient)
+        // Step 2: Undo update step (1/4 coefficient) - JPEG2000 symmetric extension
         for (i in 0 until half) {
-            val left = if (i > 0) temp[half + i - 1] else 0.0f
-            val right = if (i < half - 1) temp[half + i] else 0.0f
+            val leftIdx = half + i - 1
+            val centerIdx = half + i
+            
+            // Symmetric extension for boundary handling
+            val left = when {
+                leftIdx >= 0 && leftIdx < length -> temp[leftIdx]
+                centerIdx < length && centerIdx + 1 < length -> temp[centerIdx + 1] // Mirror
+                centerIdx < length -> temp[centerIdx]
+                else -> 0.0f
+            }
+            val right = if (centerIdx < length) temp[centerIdx] else 0.0f
             temp[i] -= 0.25f * (left + right)
         }
 
-        // Step 1: Undo predict step (1/2 coefficient)
-        for (i in 0 until half) {
-            val left = temp[i]
-            val right = if (i < half - 1) temp[i + 1] else temp[i]
-            temp[half + i] -= 0.5f * (left + right)
+        // Step 1: Undo predict step (1/2 coefficient) - JPEG2000 symmetric extension
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val left = temp[i]
+                // Symmetric extension for right boundary
+                val right = if (i < half - 1) temp[i + 1] else if (half > 2) temp[half - 2] else temp[half - 1]
+                temp[half + i] -= 0.5f * (left + right)
+            }
         }
 
-        // Merge back (inverse of encoder's split)
-        for (i in 0 until half) {
-            data[2 * i] = temp[i]           // Even positions get low-pass
-            if (2 * i + 1 < length) {
-                data[2 * i + 1] = temp[half + i] // Odd positions get high-pass
+        // Simple reconstruction (revert to working version)
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    data[i] = 0.0f // Boundary case
+                }
             }
         }
     }
@@ -4577,6 +4633,117 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 p10 * fx * (1 - fy) +
                 p01 * (1 - fx) * fy +
                 p11 * fx * fy
+    }
+
+    /**
+     * TAV deblocking filter - reduces DWT quantization artifacts and tile boundary artifacts
+     * Applies a gentle smoothing filter across tile boundaries and high-frequency areas
+     */
+    private fun tavDeblockingFilter(rgbAddr: Long, width: Int, height: Int) {
+        val tileSize = 112 // TAV uses 112x112 tiles
+        val tilesX = (width + tileSize - 1) / tileSize
+        val tilesY = (height + tileSize - 1) / tileSize
+        val thisAddrIncVec: Long = if (rgbAddr < 0) -1 else 1
+
+        // Process tile boundaries (horizontal and vertical)
+        for (tileY in 0 until tilesY) {
+            for (tileX in 0 until tilesX) {
+                val startX = tileX * tileSize
+                val startY = tileY * tileSize
+                val endX = kotlin.math.min(startX + tileSize, width)
+                val endY = kotlin.math.min(startY + tileSize, height)
+
+                // Smooth vertical tile boundaries
+                if (tileX > 0 && startX < width) {
+                    for (y in startY until endY) {
+                        smoothVerticalBoundary(rgbAddr, width, height, startX - 1, y, thisAddrIncVec)
+                    }
+                }
+
+                // Smooth horizontal tile boundaries  
+                if (tileY > 0 && startY < height) {
+                    for (x in startX until endX) {
+                        smoothHorizontalBoundary(rgbAddr, width, height, x, startY - 1, thisAddrIncVec)
+                    }
+                }
+            }
+        }
+
+        // Apply gentle smoothing to reduce DWT quantization artifacts
+        applyDWTSmoothing(rgbAddr, width, height, thisAddrIncVec)
+    }
+
+    private fun smoothVerticalBoundary(rgbAddr: Long, width: Int, height: Int, x: Int, y: Int, addrInc: Long) {
+        if (x < 1 || x >= width - 1 || y < 0 || y >= height) return
+
+        for (channel in 0 until 3) {
+            val leftOffset = (y.toLong() * width + (x - 1)) * 3 + channel
+            val centerOffset = (y.toLong() * width + x) * 3 + channel
+            val rightOffset = (y.toLong() * width + (x + 1)) * 3 + channel
+
+            val left = vm.peek(rgbAddr + leftOffset * addrInc)?.toUint()?.toInt() ?: 0
+            val center = vm.peek(rgbAddr + centerOffset * addrInc)?.toUint()?.toInt() ?: 0
+            val right = vm.peek(rgbAddr + rightOffset * addrInc)?.toUint()?.toInt() ?: 0
+
+            // Apply gentle 3-tap filter: [0.25, 0.5, 0.25]
+            val smoothed = ((left + 2 * center + right) / 4).coerceIn(0, 255)
+            vm.poke(rgbAddr + centerOffset * addrInc, smoothed.toByte())
+        }
+    }
+
+    private fun smoothHorizontalBoundary(rgbAddr: Long, width: Int, height: Int, x: Int, y: Int, addrInc: Long) {
+        if (x < 0 || x >= width || y < 1 || y >= height - 1) return
+
+        for (channel in 0 until 3) {
+            val topOffset = ((y - 1).toLong() * width + x) * 3 + channel
+            val centerOffset = (y.toLong() * width + x) * 3 + channel
+            val bottomOffset = ((y + 1).toLong() * width + x) * 3 + channel
+
+            val top = vm.peek(rgbAddr + topOffset * addrInc)?.toUint()?.toInt() ?: 0
+            val center = vm.peek(rgbAddr + centerOffset * addrInc)?.toUint()?.toInt() ?: 0
+            val bottom = vm.peek(rgbAddr + bottomOffset * addrInc)?.toUint()?.toInt() ?: 0
+
+            // Apply gentle 3-tap filter: [0.25, 0.5, 0.25]
+            val smoothed = ((top + 2 * center + bottom) / 4).coerceIn(0, 255)
+            vm.poke(rgbAddr + centerOffset * addrInc, smoothed.toByte())
+        }
+    }
+
+    private fun applyDWTSmoothing(rgbAddr: Long, width: Int, height: Int, addrInc: Long) {
+        // Apply very gentle smoothing to reduce DWT quantization artifacts
+        // Uses a 3x3 Gaussian-like kernel with low strength
+        val kernel = arrayOf(
+            arrayOf(1, 2, 1),
+            arrayOf(2, 4, 2),
+            arrayOf(1, 2, 1)
+        )
+        val kernelSum = 16
+        
+        // Process inner pixels only to avoid boundary issues
+        for (y in 1 until height - 1) {
+            for (x in 1 until width - 1) {
+                for (channel in 0 until 3) {
+                    var sum = 0
+                    
+                    for (ky in -1..1) {
+                        for (kx in -1..1) {
+                            val pixelOffset = ((y + ky).toLong() * width + (x + kx)) * 3 + channel
+                            val pixelValue = vm.peek(rgbAddr + pixelOffset * addrInc)?.toUint()?.toInt() ?: 0
+                            sum += pixelValue * kernel[ky + 1][kx + 1]
+                        }
+                    }
+                    
+                    val centerOffset = (y.toLong() * width + x) * 3 + channel
+                    val originalValue = vm.peek(rgbAddr + centerOffset * addrInc)?.toUint()?.toInt() ?: 0
+                    
+                    // Blend original with smoothed (low strength: 75% original, 25% smoothed)
+                    val smoothedValue = sum / kernelSum
+                    val blendedValue = ((originalValue * 3 + smoothedValue) / 4).coerceIn(0, 255)
+                    
+                    vm.poke(rgbAddr + centerOffset * addrInc, blendedValue.toByte())
+                }
+            }
+        }
     }
 
 }

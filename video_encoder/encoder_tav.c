@@ -89,7 +89,7 @@ static inline float float16_to_float(uint16_t hbits) {
 // DWT settings
 #define TILE_SIZE 112  // 112x112 tiles - perfect fit for TSVM 560x448 (GCD = 112)
 #define MAX_DECOMP_LEVELS 6  // Can go deeper: 112→56→28→14→7→3→1
-#define DEFAULT_DECOMP_LEVELS 4  // Increased default for better compression
+#define DEFAULT_DECOMP_LEVELS 6  // Increased default for better compression
 
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
@@ -412,7 +412,7 @@ static void dwt_53_forward_1d(float *data, int length) {
     if (length < 2) return;
     
     float *temp = malloc(length * sizeof(float));
-    int half = length / 2;
+    int half = (length + 1) / 2;  // Handle odd lengths properly
     
     // Predict step (high-pass)
     for (int i = 0; i < half; i++) {
@@ -439,7 +439,7 @@ static void dwt_53_inverse_1d(float *data, int length) {
     if (length < 2) return;
     
     float *temp = malloc(length * sizeof(float));
-    int half = length / 2;
+    int half = (length + 1) / 2;  // Handle odd lengths properly
     
     // Inverse update step
     for (int i = 0; i < half; i++) {
@@ -467,55 +467,63 @@ static void dwt_97_forward_1d(float *data, int length) {
     if (length < 2) return;
     
     float *temp = malloc(length * sizeof(float));
-    int half = length / 2;
+    int half = (length + 1) / 2;  // Handle odd lengths properly
     
     // Split into even/odd samples
     for (int i = 0; i < half; i++) {
         temp[i] = data[2 * i];           // Even (low)
-        if (2 * i + 1 < length) {
-            temp[half + i] = data[2 * i + 1]; // Odd (high)
-        }
+    }
+    for (int i = 0; i < length / 2; i++) {
+        temp[half + i] = data[2 * i + 1]; // Odd (high)
     }
     
-    // Apply 9/7 lifting steps
+    // JPEG2000 9/7 forward lifting steps (corrected to match decoder)
     const float alpha = -1.586134342f;
     const float beta = -0.052980118f;
     const float gamma = 0.882911076f;
     const float delta = 0.443506852f;
     const float K = 1.230174105f;
     
-    // First lifting step
-    for (int i = 0; i < half; i++) {
-        float left = (i > 0) ? temp[i - 1] : temp[i];
-        float right = (i < half - 1) ? temp[i + 1] : temp[i];
-        temp[half + i] += alpha * (left + right);
+    // Step 1: Predict α - d[i] += α * (s[i] + s[i+1])
+    for (int i = 0; i < length / 2; i++) {
+        if (half + i < length) {
+            float s_curr = temp[i];
+            float s_next = (i + 1 < half) ? temp[i + 1] : s_curr;
+            temp[half + i] += alpha * (s_curr + s_next);
+        }
     }
     
-    // Second lifting step
+    // Step 2: Update β - s[i] += β * (d[i-1] + d[i])
     for (int i = 0; i < half; i++) {
-        float left = (i > 0) ? temp[half + i - 1] : temp[half + i];
-        float right = (i < half - 1) ? temp[half + i + 1] : temp[half + i];
-        temp[i] += beta * (left + right);
+        float d_curr = (half + i < length) ? temp[half + i] : 0.0f;
+        float d_prev = (i > 0 && half + i - 1 < length) ? temp[half + i - 1] : d_curr;
+        temp[i] += beta * (d_prev + d_curr);
     }
     
-    // Third lifting step
-    for (int i = 0; i < half; i++) {
-        float left = (i > 0) ? temp[i - 1] : temp[i];
-        float right = (i < half - 1) ? temp[i + 1] : temp[i];
-        temp[half + i] += gamma * (left + right);
+    // Step 3: Predict γ - d[i] += γ * (s[i] + s[i+1])
+    for (int i = 0; i < length / 2; i++) {
+        if (half + i < length) {
+            float s_curr = temp[i];
+            float s_next = (i + 1 < half) ? temp[i + 1] : s_curr;
+            temp[half + i] += gamma * (s_curr + s_next);
+        }
     }
     
-    // Fourth lifting step
+    // Step 4: Update δ - s[i] += δ * (d[i-1] + d[i])
     for (int i = 0; i < half; i++) {
-        float left = (i > 0) ? temp[half + i - 1] : temp[half + i];
-        float right = (i < half - 1) ? temp[half + i + 1] : temp[half + i];
-        temp[i] += delta * (left + right);
+        float d_curr = (half + i < length) ? temp[half + i] : 0.0f;
+        float d_prev = (i > 0 && half + i - 1 < length) ? temp[half + i - 1] : d_curr;
+        temp[i] += delta * (d_prev + d_curr);
     }
     
-    // Scaling
+    // Step 5: Scaling - s[i] *= K, d[i] /= K
     for (int i = 0; i < half; i++) {
-        temp[i] *= K;
-        temp[half + i] /= K;
+        temp[i] *= K;  // Low-pass coefficients
+    }
+    for (int i = 0; i < length / 2; i++) {
+        if (half + i < length) {
+            temp[half + i] /= K;  // High-pass coefficients
+        }
     }
     
     memcpy(data, temp, length * sizeof(float));
@@ -530,7 +538,12 @@ static void dwt_2d_forward(float *tile_data, int levels, int filter_type) {
     
     for (int level = 0; level < levels; level++) {
         int current_size = size >> level;
-        if (current_size < 2) break;
+        if (current_size < 1) break;
+        if (current_size == 1) {
+            // Level 6: 1x1 - single DC coefficient, no DWT needed
+            // The single coefficient is already in the correct position
+            continue;
+        }
         
         // Row transform
         for (int y = 0; y < current_size; y++) {
