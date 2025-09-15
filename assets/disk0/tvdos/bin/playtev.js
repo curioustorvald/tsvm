@@ -589,7 +589,7 @@ let frameDuped = false
 // Main decoding loop - simplified for performance
 try {
     let t1 = sys.nanoTime()
-    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && trueFrameCount < totalFrames) {
+    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH /*&& trueFrameCount < totalFrames*/) {
 
         // Handle interactive controls
         if (interactive) {

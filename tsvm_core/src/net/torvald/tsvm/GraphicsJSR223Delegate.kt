@@ -2171,9 +2171,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val Cp = (cp / 255.0)
 
                 // ICtCp -> L'M'S' (inverse matrix)
-                val Lp = (I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp).coerceIn(0.0, 1.0)
-                val Mp = (I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp).coerceIn(0.0, 1.0)
-                val Sp = (I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp).coerceIn(0.0, 1.0)
+                val Lp = I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp
+                val Mp = I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp
+                val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
 
                 // HLG decode: L'M'S' -> linear LMS
                 val L = HLG_inverse_OETF(Lp)
@@ -2181,9 +2181,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val S = HLG_inverse_OETF(Sp)
 
                 // LMS -> linear sRGB (inverse matrix)
-                val rLin = 29.601046511687 * L - 21.364325340529906 * M - 4.886500015143518 * S
-                val gLin = -12.083229161592032 * L + 10.673933874098694 * M + 1.5369143265611211 * S
-                val bLin = 0.38562844776642574 * L - 0.6536244436141302 * M + 1.0968381245163787 * S
+                val rLin = 3.436606694333079 * L -2.5064521186562705 * M + 0.06984542432319149 * S
+                val gLin = -0.7913295555989289 * L + 1.983600451792291 * M -0.192270896193362 * S
+                val bLin = -0.025949899690592665 * L -0.09891371471172647 * M + 1.1248636144023192 * S
 
                 // Gamma encode to sRGB
                 val rSrgb = srgbUnlinearize(rLin)
@@ -2648,7 +2648,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // PASS 2: Apply proper knusperli boundary optimization (Google's algorithm)
             val (optimizedYBlocks, optimizedCoBlocks, optimizedCgBlocks) = applyKnusperliOptimization(
                 yBlocks, coBlocks, cgBlocks,
-                QUANT_TABLE_Y, QUANT_TABLE_C, QUANT_TABLE_C,
+                if (tevVersion == 3) QUANT_TABLE_Y else QUANT_TABLE_Y,
+                if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C,
+                if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C,
                 qY, qCo, qCg, rateControlFactors,
                 blocksX, blocksY
             )
@@ -2869,9 +2871,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             readPtr += 768
 
                             // Perform hardware IDCT for each channel using fast algorithm
-                            val yBlock = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), QUANT_TABLE_Y, qY, rateControlFactor)
-                            val coBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), QUANT_TABLE_C, true, qCo, rateControlFactor)
-                            val cgBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), QUANT_TABLE_C, true, qCg, rateControlFactor)
+                            val yBlock = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), if (tevVersion == 3) QUANT_TABLE_Y else QUANT_TABLE_Y, qY, rateControlFactor)
+                            val coBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C, true, qCo, rateControlFactor)
+                            val cgBlock = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C, true, qCg, rateControlFactor)
 
                             // Convert to RGB (YCoCg-R for v2, XYB for v3)
                             val rgbData = if (tevVersion == 3) {
@@ -2893,9 +2895,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             readPtr += 768
 
                             // Step 2: Decode residual DCT
-                            val yResidual = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), QUANT_TABLE_Y, qY, rateControlFactor)
-                            val coResidual = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), QUANT_TABLE_C, true, qCo, rateControlFactor)
-                            val cgResidual = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), QUANT_TABLE_C, true, qCg, rateControlFactor)
+                            val yResidual = tevIdct16x16_fast(coeffShortArray.sliceArray(0 until 256), if (tevVersion == 3) QUANT_TABLE_Y else QUANT_TABLE_Y, qY, rateControlFactor)
+                            val coResidual = tevIdct8x8_fast(coeffShortArray.sliceArray(256 until 320), if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C, true, qCo, rateControlFactor)
+                            val cgResidual = tevIdct8x8_fast(coeffShortArray.sliceArray(320 until 384), if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C, true, qCg, rateControlFactor)
 
                             // Step 3: Build motion-compensated YCoCg-R block and add residuals
                             val finalY = IntArray(256)

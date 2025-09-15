@@ -154,7 +154,6 @@ static const uint32_t QUANT_TABLE_C[HALF_BLOCK_SIZE_SQR] =
      99, 99, 99, 99, 99, 99, 99, 99,
      99, 99, 99, 99, 99, 99, 99, 99};
 
-
 // Audio constants (reuse MP2 from existing system)
 #define MP2_SAMPLE_RATE 32000
 #define MP2_DEFAULT_PACKET_SIZE 1728
@@ -353,19 +352,18 @@ static inline double HLG_inverse_OETF(double V) {
 }
 
 // ---------------------- Matrices (doubles) ----------------------
-// Combined linear sRGB -> LMS (single 3x3): product of sRGB->XYZ, XYZ->BT2020, BT2020->LMS
-// Computed from standard matrices (double precision).
+// linear RGB -> LMS (technically we should convert sRGB to Rec.2100, but if encoder and decoder agrees on the same colourimetry, this utilises more bits
 static const double M_RGB_TO_LMS[3][3] = {
-    {0.20502672199540622, 0.42945363228947586, 0.31165003516511786},
-    {0.2233144413317712, 0.5540422172466897, 0.21854692537153908},
-    {0.0609931761282002, 0.17917502499816504, 0.9323768661336348}
+    {1688.0/4096.0,2146.0/4096.0, 262.0/4096.0},
+    { 683.0/4096.0,2951.0/4096.0, 462.0/4096.0},
+    {  99.0/4096.0, 309.0/4096.0,3688.0/4096.0}
 };
 
 // Inverse: LMS -> linear sRGB (inverse of above)
 static const double M_LMS_TO_RGB[3][3] = {
-    {29.601046511687, -21.364325340529906, -4.886500015143518},
-    {-12.083229161592032, 10.673933874098694, 1.5369143265611211},
-    {0.38562844776642574, -0.6536244436141302, 1.0968381245163787}
+    {3.436606694333079, -2.5064521186562705, 0.06984542432319149},
+    {-0.7913295555989289, 1.983600451792291, -0.192270896193362},
+    {-0.025949899690592665, -0.09891371471172647, 1.1248636144023192}
 };
 
 // ICtCp matrix (L' M' S' -> I Ct Cp). Values are the BT.2100 integer-derived /4096 constants.
@@ -1011,8 +1009,13 @@ static void convert_rgb_to_color_space_block(tev_encoder_t *enc, const uint8_t *
                 }
 
                 // Average and store subsampled chroma, scale to signed 8-bit equivalent range
-                c2_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)((sum_ct / 4.0) * 255.0);
-                c3_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)((sum_cp / 4.0) * 255.0);
+                // Apply centering to ensure chroma is balanced around 0 (like YCoCg-R)
+                double avg_ct = sum_ct / 4.0;
+                double avg_cp = sum_cp / 4.0;
+
+                // Scale and clamp to [-256, 255] range like YCoCg-R
+                c2_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)CLAMP(avg_ct * 255.0, -256, 255);
+                c3_workspace[cy * HALF_BLOCK_SIZE + cx] = (float)CLAMP(avg_cp * 255.0, -256, 255);
             }
         }
     } else {
@@ -1338,7 +1341,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     dct_16x16_fast(enc->y_workspace, enc->dct_workspace);
 
     // quantise Y coefficients (luma) using per-block rate control
-    const uint32_t *y_quant = QUANT_TABLE_Y;
+    const uint32_t *y_quant = enc->ictcp_mode ? QUANT_TABLE_Y : QUANT_TABLE_Y;
     const float qmult_y = jpeg_quality_to_mult(enc->qualityY * block->rate_control_factor);
     for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
@@ -1350,7 +1353,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     dct_8x8_fast(enc->co_workspace, enc->dct_workspace);
 
     // quantise Co coefficients (chroma - orange-blue) using per-block rate control
-    const uint32_t *co_quant = QUANT_TABLE_C;
+    const uint32_t *co_quant = enc->ictcp_mode ? QUANT_TABLE_C : QUANT_TABLE_C;
     const float qmult_co = jpeg_quality_to_mult(enc->qualityCo * block->rate_control_factor);
     for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
@@ -1362,7 +1365,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
 
     // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q) using per-block rate control
-    const uint32_t *cg_quant = QUANT_TABLE_C;
+    // In ICtCp mode, Cg becomes Cp (chroma-red) which needs special quantization table
+    const uint32_t *cg_quant = enc->ictcp_mode ? QUANT_TABLE_C : QUANT_TABLE_C;
     const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg * block->rate_control_factor);
     for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
         // Apply rate control factor to quantization table (like decoder does)
@@ -2779,9 +2783,11 @@ int main(int argc, char *argv[]) {
     }
 
     if (enc->ictcp_mode) {
-        int qc = (enc->qualityCo + enc->qualityCg) / 2;
-        enc->qualityCo = qc;
-        enc->qualityCg = qc;
+        // ICtCp: Ct and Cp have different characteristics than YCoCg Co/Cg
+        // Cp channel now uses specialized quantization table, so moderate quality is fine
+        int base_chroma_quality = (enc->qualityCo + enc->qualityCg) >> 1;
+        enc->qualityCo = base_chroma_quality;           // Ct channel: keep original Co quantization
+        enc->qualityCg = base_chroma_quality;           // Cp channel: same quality since Q_Cp_8 handles detail preservation
     }
 
     if (!test_mode && (!enc->input_file || !enc->output_file)) {
