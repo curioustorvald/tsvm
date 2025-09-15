@@ -73,7 +73,7 @@ static inline float float16_to_float(uint16_t hbits) {
 // Version 1: YCoCg-R (default) 
 // Version 2: ICtCp (--ictcp flag)
 
-// Tile encoding modes (64x64 tiles)
+// Tile encoding modes (112x112 tiles)
 #define TAV_MODE_SKIP      0x00  // Skip tile (copy from reference)
 #define TAV_MODE_INTRA     0x01  // Intra DWT coding (I-frame tiles)
 #define TAV_MODE_INTER     0x02  // Inter DWT coding with motion compensation
@@ -87,9 +87,9 @@ static inline float float16_to_float(uint16_t hbits) {
 #define TAV_PACKET_SYNC        0xFF  // Sync packet
 
 // DWT settings
-#define TILE_SIZE 64
-#define MAX_DECOMP_LEVELS 4
-#define DEFAULT_DECOMP_LEVELS 3
+#define TILE_SIZE 112  // 112x112 tiles - perfect fit for TSVM 560x448 (GCD = 112)
+#define MAX_DECOMP_LEVELS 6  // Can go deeper: 112→56→28→14→7→3→1
+#define DEFAULT_DECOMP_LEVELS 4  // Increased default for better compression
 
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
@@ -100,6 +100,18 @@ static inline float float16_to_float(uint16_t hbits) {
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 2
+
+// Audio/subtitle constants (reused from TEV)
+#define MP2_DEFAULT_PACKET_SIZE 1152
+#define MAX_SUBTITLE_LENGTH 2048
+
+// Subtitle structure
+typedef struct subtitle_entry {
+    int start_frame;
+    int end_frame;
+    char *text;
+    struct subtitle_entry *next;
+} subtitle_entry_t;
 
 static void generate_random_filename(char *filename) {
     srand(time(NULL));
@@ -208,8 +220,18 @@ typedef struct {
     dwt_tile_t *tiles;
     motion_vector_t *motion_vectors;
     
-    // Audio processing
+    // Audio processing (expanded from TEV)
     size_t audio_remaining;
+    uint8_t *mp2_buffer;
+    size_t mp2_buffer_size;
+    int mp2_packet_size;
+    int mp2_rate_index;
+    int target_audio_buffer_size;
+    
+    // Subtitle processing  
+    subtitle_entry_t *subtitles;
+    subtitle_entry_t *current_subtitle;
+    int subtitle_visible;
     
     // Compression
     ZSTD_CCtx *zstd_ctx;
@@ -245,12 +267,26 @@ static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int
 static void dwt_2d_forward(float *tile_data, int levels, int filter_type);
 static void dwt_2d_inverse(dwt_tile_t *tile, float *output, int filter_type);
 static void quantize_subbands(dwt_tile_t *tile, int q_y, int q_co, int q_cg, float rcf);
-static int estimate_motion_64x64(const float *current, const float *reference, 
-                                 int width, int height, int tile_x, int tile_y, 
-                                 motion_vector_t *mv);
+static int estimate_motion_112x112(const float *current, const float *reference, 
+                                   int width, int height, int tile_x, int tile_y, 
+                                   motion_vector_t *mv);
 static size_t compress_tile_data(tav_encoder_t *enc, const dwt_tile_t *tiles, 
                                  const motion_vector_t *mvs, int num_tiles,
                                  uint8_t packet_type);
+
+// Audio and subtitle processing prototypes (from TEV)
+static int start_audio_conversion(tav_encoder_t *enc);
+static int get_mp2_packet_size(uint8_t *header);
+static int mp2_packet_size_to_rate_index(int packet_size, int is_mono);
+static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output);
+static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps);
+static subtitle_entry_t* parse_srt_file(const char *filename, int fps);
+static subtitle_entry_t* parse_smi_file(const char *filename, int fps);
+static int srt_time_to_frame(const char *time_str, int fps);
+static int sami_ms_to_frame(int milliseconds, int fps);
+static void free_subtitle_list(subtitle_entry_t *list);
+static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text);
+static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output);
 
 // Show usage information
 static void show_usage(const char *program_name) {
@@ -264,7 +300,7 @@ static void show_usage(const char *program_name) {
     printf("  -q, --quality N        Quality level 0-5 (default: 2)\n");
     printf("  -Q, --quantizer Y,Co,Cg Quantizer levels 0-100 for each channel\n");
     printf("  -w, --wavelet N        Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
-    printf("  -d, --decomp N         Decomposition levels 1-4 (default: 3)\n");
+    printf("  -d, --decomp N         Decomposition levels 1-6 (default: 4)\n");
     printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  -p, --progressive      Use progressive scan (default: interlaced)\n");
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
@@ -296,7 +332,7 @@ static void show_usage(const char *program_name) {
     }
     
     printf("\n\nFeatures:\n");
-    printf("  - 64x64 DWT tiles with multi-resolution encoding\n");
+    printf("  - 112x112 DWT tiles with multi-resolution encoding\n");
     printf("  - Full resolution YCoCg-R color space\n");
     printf("  - Progressive transmission and ROI coding\n");
     printf("  - Motion compensation with ±16 pixel search range\n");
@@ -304,7 +340,7 @@ static void show_usage(const char *program_name) {
     
     printf("\nExamples:\n");
     printf("  %s -i input.mp4 -o output.mv3                    # Default settings\n", program_name);
-    printf("  %s -i input.mkv -q 3 -w 1 -d 4 -o output.mv3     # High quality with 9/7 wavelet\n", program_name);
+    printf("  %s -i input.mkv -q 3 -w 1 -d 6 -o output.mv3     # Maximum quality with 9/7 wavelet\n", program_name);
     printf("  %s -i input.avi --lossless -o output.mv3         # Lossless encoding\n", program_name);
     printf("  %s -i input.mp4 -b 800 -o output.mv3             # 800 kbps bitrate target\n", program_name);
     printf("  %s -i input.webm -S subs.srt -o output.mv3       # With subtitles\n", program_name);
@@ -487,9 +523,9 @@ static void dwt_97_forward_1d(float *data, int length) {
     free(temp);
 }
 
-// 2D DWT forward transform for 64x64 tile
+// 2D DWT forward transform for 112x112 tile
 static void dwt_2d_forward(float *tile_data, int levels, int filter_type) {
-    const int size = 64;
+    const int size = TILE_SIZE;
     float *temp_row = malloc(size * sizeof(float));
     float *temp_col = malloc(size * sizeof(float));
     
@@ -565,7 +601,7 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     }
     
     // Quantize and serialize DWT coefficients
-    const int tile_size = 64 * 64;
+    const int tile_size = TILE_SIZE * TILE_SIZE;
     int16_t *quantized_y = malloc(tile_size * sizeof(int16_t));
     int16_t *quantized_co = malloc(tile_size * sizeof(int16_t));
     int16_t *quantized_cg = malloc(tile_size * sizeof(int16_t));
@@ -609,7 +645,7 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
     // Calculate total uncompressed size
-    const size_t max_tile_size = 9 + (64 * 64 * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    const size_t max_tile_size = 9 + (TILE_SIZE * TILE_SIZE * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
     
     // Allocate buffer for uncompressed tile data
@@ -625,17 +661,17 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             uint8_t mode = TAV_MODE_INTRA;  // For now, all tiles are INTRA
             
             // Extract tile data (already processed)
-            float tile_y_data[64 * 64];
-            float tile_co_data[64 * 64];
-            float tile_cg_data[64 * 64];
+            float tile_y_data[TILE_SIZE * TILE_SIZE];
+            float tile_co_data[TILE_SIZE * TILE_SIZE];
+            float tile_cg_data[TILE_SIZE * TILE_SIZE];
             
             // Extract tile data from frame buffers
-            for (int y = 0; y < 64; y++) {
-                for (int x = 0; x < 64; x++) {
-                    int src_x = tile_x * 64 + x;
-                    int src_y = tile_y * 64 + y;
+            for (int y = 0; y < TILE_SIZE; y++) {
+                for (int x = 0; x < TILE_SIZE; x++) {
+                    int src_x = tile_x * TILE_SIZE + x;
+                    int src_y = tile_y * TILE_SIZE + y;
                     int src_idx = src_y * enc->width + src_x;
-                    int tile_idx_local = y * 64 + x;
+                    int tile_idx_local = y * TILE_SIZE + x;
                     
                     if (src_x < enc->width && src_y < enc->height) {
                         tile_y_data[tile_idx_local] = enc->current_frame_y[src_idx];
@@ -698,12 +734,12 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
     return compressed_size + 5; // packet type + size field + compressed data
 }
 
-// Motion estimation for 64x64 tiles using SAD
-static int estimate_motion_64x64(const float *current, const float *reference, 
+// Motion estimation for 112x112 tiles using SAD
+static int estimate_motion_112x112(const float *current, const float *reference, 
                                  int width, int height, int tile_x, int tile_y, 
                                  motion_vector_t *mv) {
-    const int tile_size = 64;
-    const int search_range = 16;  // ±16 pixels
+    const int tile_size = TILE_SIZE;
+    const int search_range = 28;  // ±28 pixels (increased proportionally: 16 * 112/64 = 28)
     const int start_x = tile_x * tile_size;
     const int start_y = tile_y * tile_size;
     
@@ -1131,6 +1167,7 @@ static int start_video_conversion(tav_encoder_t *enc) {
 
 // Start audio conversion
 static int start_audio_conversion(tav_encoder_t *enc) {
+    return 1;
     if (!enc->has_audio) return 1;
 
     char command[2048];
@@ -1149,6 +1186,400 @@ static int start_audio_conversion(tav_encoder_t *enc) {
         return 1;
     }
     return 0;
+}
+
+// Get MP2 packet size from header (copied from TEV)
+static int get_mp2_packet_size(uint8_t *header) {
+    int bitrate_index = (header[2] >> 4) & 0x0F;
+    int bitrates[] = {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
+    if (bitrate_index >= 15) return MP2_DEFAULT_PACKET_SIZE;
+
+    int bitrate = bitrates[bitrate_index];
+    if (bitrate == 0) return MP2_DEFAULT_PACKET_SIZE;
+
+    int sampling_freq_index = (header[2] >> 2) & 0x03;
+    int sampling_freqs[] = {44100, 48000, 32000, 0};
+    int sampling_freq = sampling_freqs[sampling_freq_index];
+    if (sampling_freq == 0) return MP2_DEFAULT_PACKET_SIZE;
+
+    int padding = (header[2] >> 1) & 0x01;
+    return (144 * bitrate * 1000) / sampling_freq + padding;
+}
+
+// Convert MP2 packet size to rate index (copied from TEV)
+static int mp2_packet_size_to_rate_index(int packet_size, int is_mono) {
+    // Map packet size to rate index for MP2_RATE_TABLE
+    if (packet_size <= 576) return is_mono ? 0 : 0;      // 128k
+    else if (packet_size <= 720) return 1;               // 160k
+    else if (packet_size <= 1008) return 2;              // 224k
+    else if (packet_size <= 1440) return 3;              // 320k
+    else return 4;                                        // 384k
+}
+
+// Convert SRT time format to frame number (copied from TEV)
+static int srt_time_to_frame(const char *time_str, int fps) {
+    int hours, minutes, seconds, milliseconds;
+    if (sscanf(time_str, "%d:%d:%d,%d", &hours, &minutes, &seconds, &milliseconds) != 4) {
+        return -1;
+    }
+    
+    double total_seconds = hours * 3600.0 + minutes * 60.0 + seconds + milliseconds / 1000.0;
+    return (int)(total_seconds * fps + 0.5);  // Round to nearest frame
+}
+
+// Convert SAMI milliseconds to frame number (copied from TEV)
+static int sami_ms_to_frame(int milliseconds, int fps) {
+    double seconds = milliseconds / 1000.0;
+    return (int)(seconds * fps + 0.5);  // Round to nearest frame
+}
+
+// Parse SubRip subtitle file (copied from TEV)
+static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        fprintf(stderr, "Failed to open subtitle file: %s\n", filename);
+        return NULL;
+    }
+    
+    subtitle_entry_t *head = NULL;
+    subtitle_entry_t *tail = NULL;
+    char line[1024];
+    int state = 0;  // 0=index, 1=time, 2=text, 3=blank
+    
+    subtitle_entry_t *current_entry = NULL;
+    char *text_buffer = NULL;
+    size_t text_buffer_size = 0;
+    
+    while (fgets(line, sizeof(line), file)) {
+        // Remove trailing newline
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') {
+            line[len-1] = '\0';
+            len--;
+        }
+        if (len > 0 && line[len-1] == '\r') {
+            line[len-1] = '\0';
+            len--;
+        }
+        
+        if (state == 0) {  // Expecting subtitle index
+            if (strlen(line) == 0) continue;  // Skip empty lines
+            // Create new subtitle entry
+            current_entry = calloc(1, sizeof(subtitle_entry_t));
+            if (!current_entry) break;
+            state = 1;
+        } else if (state == 1) {  // Expecting time range
+            char start_time[32], end_time[32];
+            if (sscanf(line, "%31s --> %31s", start_time, end_time) == 2) {
+                current_entry->start_frame = srt_time_to_frame(start_time, fps);
+                current_entry->end_frame = srt_time_to_frame(end_time, fps);
+                
+                if (current_entry->start_frame < 0 || current_entry->end_frame < 0) {
+                    free(current_entry);
+                    current_entry = NULL;
+                    state = 3;  // Skip to next blank line
+                    continue;
+                }
+                
+                // Initialize text buffer
+                text_buffer_size = 256;
+                text_buffer = malloc(text_buffer_size);
+                if (!text_buffer) {
+                    free(current_entry);
+                    current_entry = NULL;
+                    fprintf(stderr, "Memory allocation failed while parsing subtitles\n");
+                    break;
+                }
+                text_buffer[0] = '\0';
+                state = 2;
+            } else {
+                free(current_entry);
+                current_entry = NULL;
+                state = 3;  // Skip malformed entry
+            }
+        } else if (state == 2) {  // Collecting subtitle text
+            if (strlen(line) == 0) {
+                // End of subtitle text
+                current_entry->text = strdup(text_buffer);
+                free(text_buffer);
+                text_buffer = NULL;
+                
+                // Add to list
+                if (!head) {
+                    head = current_entry;
+                    tail = current_entry;
+                } else {
+                    tail->next = current_entry;
+                    tail = current_entry;
+                }
+                current_entry = NULL;
+                state = 0;
+            } else {
+                // Append text line
+                size_t current_len = strlen(text_buffer);
+                size_t line_len = strlen(line);
+                size_t needed = current_len + line_len + 2;  // +2 for newline and null
+                
+                if (needed > text_buffer_size) {
+                    text_buffer_size = needed + 256;
+                    char *new_buffer = realloc(text_buffer, text_buffer_size);
+                    if (!new_buffer) {
+                        free(text_buffer);
+                        free(current_entry);
+                        current_entry = NULL;
+                        fprintf(stderr, "Memory reallocation failed while parsing subtitles\n");
+                        break;
+                    }
+                    text_buffer = new_buffer;
+                }
+                
+                if (current_len > 0) {
+                    strcat(text_buffer, "\\n");  // Use \n as newline marker in subtitle text
+                }
+                strcat(text_buffer, line);
+            }
+        } else if (state == 3) {  // Skip to next blank line
+            if (strlen(line) == 0) {
+                state = 0;
+            }
+        }
+    }
+    
+    // Handle final subtitle if file doesn't end with blank line
+    if (current_entry && state == 2) {
+        current_entry->text = strdup(text_buffer);
+        if (!head) {
+            head = current_entry;
+        } else {
+            tail->next = current_entry;
+        }
+        free(text_buffer);
+    }
+    
+    fclose(file);
+    return head;
+}
+
+// Parse SAMI subtitle file (simplified version from TEV)
+static subtitle_entry_t* parse_smi_file(const char *filename, int fps) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        fprintf(stderr, "Failed to open subtitle file: %s\n", filename);
+        return NULL;
+    }
+    
+    subtitle_entry_t *head = NULL;
+    subtitle_entry_t *tail = NULL;
+    char line[2048];
+    
+    while (fgets(line, sizeof(line), file)) {
+        // Look for SYNC tags with Start= attribute
+        char *sync_pos = strstr(line, "<SYNC");
+        if (sync_pos) {
+            char *start_pos = strstr(sync_pos, "Start=");
+            if (start_pos) {
+                int start_ms;
+                if (sscanf(start_pos, "Start=%d", &start_ms) == 1) {
+                    // Look for P tag with subtitle text
+                    char *p_start = strstr(sync_pos, "<P");
+                    if (p_start) {
+                        char *text_start = strchr(p_start, '>');
+                        if (text_start) {
+                            text_start++;
+                            char *text_end = strstr(text_start, "</P>");
+                            if (text_end) {
+                                size_t text_len = text_end - text_start;
+                                if (text_len > 0 && text_len < MAX_SUBTITLE_LENGTH) {
+                                    subtitle_entry_t *entry = calloc(1, sizeof(subtitle_entry_t));
+                                    if (entry) {
+                                        entry->start_frame = sami_ms_to_frame(start_ms, fps);
+                                        entry->end_frame = entry->start_frame + fps * 3;  // Default 3 second duration
+                                        entry->text = strndup(text_start, text_len);
+                                        
+                                        // Add to list
+                                        if (!head) {
+                                            head = entry;
+                                            tail = entry;
+                                        } else {
+                                            tail->next = entry;
+                                            tail = entry;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    fclose(file);
+    return head;
+}
+
+// Parse subtitle file based on extension (copied from TEV)
+static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps) {
+    if (!filename) return NULL;
+    
+    size_t len = strlen(filename);
+    if (len > 4 && strcasecmp(filename + len - 4, ".smi") == 0) {
+        return parse_smi_file(filename, fps);
+    } else {
+        return parse_srt_file(filename, fps);
+    }
+}
+
+// Free subtitle list (copied from TEV)
+static void free_subtitle_list(subtitle_entry_t *list) {
+    while (list) {
+        subtitle_entry_t *next = list->next;
+        free(list->text);
+        free(list);
+        list = next;
+    }
+}
+
+// Write subtitle packet (copied from TEV)
+static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text) {
+    // Calculate packet size
+    size_t text_len = text ? strlen(text) : 0;
+    size_t packet_size = 3 + 1 + text_len + 1;  // index (3 bytes) + opcode + text + null terminator
+    
+    // Write packet type and size
+    uint8_t packet_type = TAV_PACKET_SUBTITLE;
+    fwrite(&packet_type, 1, 1, output);
+    uint32_t size32 = (uint32_t)packet_size;
+    fwrite(&size32, 4, 1, output);
+    
+    // Write subtitle data
+    uint8_t index_bytes[3] = {
+        (uint8_t)(index & 0xFF),
+        (uint8_t)((index >> 8) & 0xFF),
+        (uint8_t)((index >> 16) & 0xFF)
+    };
+    fwrite(index_bytes, 3, 1, output);
+    fwrite(&opcode, 1, 1, output);
+    
+    if (text && text_len > 0) {
+        fwrite(text, 1, text_len, output);
+    }
+    
+    uint8_t null_terminator = 0;
+    fwrite(&null_terminator, 1, 1, output);
+    
+    return 1 + 4 + packet_size;  // Total bytes written
+}
+
+// Process audio for current frame (copied and adapted from TEV)
+static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
+    if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
+        return 1;
+    }
+
+    // Initialize packet size on first frame
+    if (frame_num == 0) {
+        uint8_t header[4];
+        if (fread(header, 1, 4, enc->mp2_file) != 4) return 1;
+        fseek(enc->mp2_file, 0, SEEK_SET);
+        enc->mp2_packet_size = get_mp2_packet_size(header);
+        int is_mono = (header[3] >> 6) == 3;
+        enc->mp2_rate_index = mp2_packet_size_to_rate_index(enc->mp2_packet_size, is_mono);
+        enc->target_audio_buffer_size = 4; // 4 audio packets in buffer
+    }
+
+    // Calculate how much audio we need for this frame
+    double frame_duration = 1.0 / enc->fps;
+    double samples_per_frame = 32000.0 * frame_duration;  // 32kHz sample rate
+    int target_buffer_samples = (int)(samples_per_frame * enc->target_audio_buffer_size);
+    int target_buffer_bytes = (target_buffer_samples * enc->mp2_packet_size) / 1152;  // 1152 samples per MP2 frame
+
+    if (!enc->mp2_buffer) {
+        enc->mp2_buffer_size = target_buffer_bytes * 2;  // Extra buffer space
+        enc->mp2_buffer = malloc(enc->mp2_buffer_size);
+        if (!enc->mp2_buffer) {
+            fprintf(stderr, "Failed to allocate audio buffer\n");
+            return 1;
+        }
+    }
+
+    // Read audio data
+    size_t bytes_to_read = target_buffer_bytes;
+    if (bytes_to_read > enc->audio_remaining) {
+        bytes_to_read = enc->audio_remaining;
+    }
+    if (bytes_to_read > enc->mp2_buffer_size) {
+        bytes_to_read = enc->mp2_buffer_size;
+    }
+
+    size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
+    if (bytes_read == 0) {
+        return 1;  // No more audio
+    }
+
+    // Write audio packet
+    uint8_t audio_packet_type = TAV_PACKET_AUDIO_MP2;
+    uint32_t audio_len = (uint32_t)bytes_read;
+    
+    fwrite(&audio_packet_type, 1, 1, output);
+    fwrite(&audio_len, 4, 1, output);
+    fwrite(enc->mp2_buffer, 1, bytes_read, output);
+
+    // Track audio bytes written
+    enc->audio_remaining -= bytes_read;
+
+    if (enc->verbose) {
+        printf("Frame %d: Audio packet %zu bytes (remaining: %zu)\n", 
+               frame_num, bytes_read, enc->audio_remaining);
+    }
+
+    return 1;
+}
+
+// Process subtitles for current frame (copied and adapted from TEV)
+static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
+    if (!enc->subtitles) {
+        return 1;  // No subtitles to process
+    }
+
+    int bytes_written = 0;
+    
+    // Check if we need to show a new subtitle
+    if (!enc->subtitle_visible) {
+        subtitle_entry_t *sub = enc->current_subtitle;
+        if (!sub) sub = enc->subtitles;  // Start from beginning if not set
+        
+        // Find next subtitle to show
+        while (sub && sub->start_frame <= frame_num) {
+            if (sub->end_frame > frame_num) {
+                // This subtitle should be shown
+                if (sub != enc->current_subtitle) {
+                    enc->current_subtitle = sub;
+                    enc->subtitle_visible = 1;
+                    bytes_written += write_subtitle_packet(output, 0, 0x01, sub->text);
+                    if (enc->verbose) {
+                        printf("Frame %d: Showing subtitle: %.50s%s\n", 
+                               frame_num, sub->text, strlen(sub->text) > 50 ? "..." : "");
+                    }
+                }
+                break;
+            }
+            sub = sub->next;
+        }
+    }
+    
+    // Check if we need to hide current subtitle
+    if (enc->subtitle_visible && enc->current_subtitle) {
+        if (frame_num >= enc->current_subtitle->end_frame) {
+            enc->subtitle_visible = 0;
+            bytes_written += write_subtitle_packet(output, 0, 0x02, NULL);
+            if (enc->verbose) {
+                printf("Frame %d: Hiding subtitle\n", frame_num);
+            }
+        }
+    }
+    
+    return bytes_written;
 }
 
 // Main function
@@ -1230,6 +1661,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 't':
                 enc->test_mode = 1;
+                break;
+            case 'S':
+                enc->subtitle_file = strdup(optarg);
                 break;
             case 1000: // --lossless
                 enc->lossless = 1;
@@ -1314,6 +1748,17 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Warning: Audio conversion failed\n");
                 enc->has_audio = 0;
             }
+        }
+    }
+    
+    // Parse subtitles if provided
+    if (enc->subtitle_file) {
+        printf("Parsing subtitles: %s\n", enc->subtitle_file);
+        enc->subtitles = parse_subtitle_file(enc->subtitle_file, enc->fps);
+        if (!enc->subtitles) {
+            fprintf(stderr, "Warning: Failed to parse subtitle file\n");
+        } else {
+            printf("Loaded subtitles successfully\n");
         }
     }
     
@@ -1430,7 +1875,7 @@ int main(int argc, char *argv[]) {
             int tile_y = tile_idx / enc->tiles_x;
             
             if (!is_keyframe && frame_count > 0) {
-                estimate_motion_64x64(enc->current_frame_y, enc->previous_frame_y,
+                estimate_motion_112x112(enc->current_frame_y, enc->previous_frame_y,
                                       enc->width, enc->height, tile_x, tile_y,
                                       &enc->motion_vectors[tile_idx]);
             } else {
@@ -1449,6 +1894,12 @@ int main(int argc, char *argv[]) {
             break;
         }
         else {
+            // Process audio for this frame
+            process_audio(enc, frame_count, enc->output_fp);
+            
+            // Process subtitles for this frame
+            process_subtitles(enc, frame_count, enc->output_fp);
+            
             // Write a sync packet only after a video is been coded
             uint8_t sync_packet = TAV_PACKET_SYNC;
             fwrite(&sync_packet, 1, 1, enc->output_fp);
@@ -1526,6 +1977,12 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->tiles);
     free(enc->motion_vectors);
     free(enc->compressed_buffer);
+    free(enc->mp2_buffer);
+    
+    // Free subtitle list
+    if (enc->subtitles) {
+        free_subtitle_list(enc->subtitles);
+    }
     
     if (enc->zstd_ctx) {
         ZSTD_freeCCtx(enc->zstd_ctx);

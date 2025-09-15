@@ -3930,8 +3930,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         var readPtr = blockDataPtr
 
         try {
-            val tilesX = (width + 63) / 64  // 64x64 tiles
-            val tilesY = (height + 63) / 64
+            val tilesX = (width + 111) / 112  // 112x112 tiles
+            val tilesY = (height + 111) / 112
             
             // Process each tile
             for (tileY in 0 until tilesY) {
@@ -3949,8 +3949,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                     when (mode) {
                         0x00 -> { // TAV_MODE_SKIP
-                            // Copy 64x64 tile from previous frame to current frame
-                            copyTile64x64RGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
+                            // Copy 112x112 tile from previous frame to current frame
+                            copyTile112x112RGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
                         }
                         0x01 -> { // TAV_MODE_INTRA  
                             // Decode DWT coefficients directly to RGB buffer
@@ -3967,8 +3967,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         0x03 -> { // TAV_MODE_MOTION
                             // Motion compensation only (no residual)
-                            applyMotionCompensation64x64RGB(tileX, tileY, mvX, mvY,
-                                                          currentRGBAddr, prevRGBAddr, width, height)
+                            applyMotionCompensation112x112RGB(tileX, tileY, mvX, mvY,
+                                                            currentRGBAddr, prevRGBAddr, width, height)
                         }
                     }
                 }
@@ -3982,7 +3982,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun decodeDWTIntraTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                     width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, rcf: Float,
                                     waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
-        val tileSize = 64
+        val tileSize = 112
         val coeffCount = tileSize * tileSize
         var ptr = readPtr
         
@@ -4043,7 +4043,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun convertYCoCgTileToRGB(tileX: Int, tileY: Int, yTile: FloatArray, coTile: FloatArray, cgTile: FloatArray,
                                     rgbAddr: Long, width: Int, height: Int) {
-        val tileSize = 64
+        val tileSize = 112
         val startX = tileX * tileSize
         val startY = tileY * tileSize
         
@@ -4078,7 +4078,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun convertICtCpTileToRGB(tileX: Int, tileY: Int, iTile: FloatArray, ctTile: FloatArray, cpTile: FloatArray,
                                     rgbAddr: Long, width: Int, height: Int) {
-        val tileSize = 64
+        val tileSize = 112
         val startX = tileX * tileSize
         val startY = tileY * tileSize
         
@@ -4127,7 +4127,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun addYCoCgResidualToRGBTile(tileX: Int, tileY: Int, yRes: FloatArray, coRes: FloatArray, cgRes: FloatArray,
                                           rgbAddr: Long, width: Int, height: Int) {
-        val tileSize = 64
+        val tileSize = 112
         val startX = tileX * tileSize
         val startY = tileY * tileSize
 
@@ -4172,8 +4172,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // Helper functions (simplified versions of existing DWT functions)
-    private fun copyTile64x64RGB(tileX: Int, tileY: Int, currentRGBAddr: Long, prevRGBAddr: Long, width: Int, height: Int) {
-        val tileSize = 64
+    private fun copyTile112x112RGB(tileX: Int, tileY: Int, currentRGBAddr: Long, prevRGBAddr: Long, width: Int, height: Int) {
+        val tileSize = 112
         val startX = tileX * tileSize
         val startY = tileY * tileSize
         
@@ -4205,17 +4205,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
         
         // Step 1: Apply motion compensation
-        applyMotionCompensation64x64RGB(tileX, tileY, mvX, mvY, currentRGBAddr, prevRGBAddr, width, height)
+        applyMotionCompensation112x112RGB(tileX, tileY, mvX, mvY, currentRGBAddr, prevRGBAddr, width, height)
         
         // Step 2: Add DWT residual (same as intra but add to existing pixels)
         return decodeDWTIntraTileRGB(readPtr, tileX, tileY, currentRGBAddr, width, height, qY, qCo, qCg, rcf, 
                                    waveletFilter, decompLevels, isLossless, tavVersion)
     }
 
-    private fun applyMotionCompensation64x64RGB(tileX: Int, tileY: Int, mvX: Int, mvY: Int,
+    private fun applyMotionCompensation112x112RGB(tileX: Int, tileY: Int, mvX: Int, mvY: Int,
                                               currentRGBAddr: Long, prevRGBAddr: Long, 
                                               width: Int, height: Int) {
-        val tileSize = 64
+        val tileSize = 112
         val startX = tileX * tileSize
         val startY = tileY * tileSize
 

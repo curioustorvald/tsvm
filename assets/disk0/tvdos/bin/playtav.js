@@ -8,7 +8,7 @@
 
 const WIDTH = 560
 const HEIGHT = 448
-const TILE_SIZE = 64  // 64x64 tiles for DWT (vs 16x16 blocks in TEV)
+const TILE_SIZE = 112  // 112x112 tiles for DWT (perfect fit for TSVM 560x448 resolution)
 const TAV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x41, 0x56] // "\x1FTSVM TAV"
 const TAV_VERSION = 1  // Initial DWT version
 const SND_BASE_ADDR = audio.getBaseAddr()
@@ -99,6 +99,275 @@ graphics.clearPixels2(0)
 // Initialize audio
 audio.resetParams(0)
 audio.purgeQueue(0)
+audio.setPcmMode(0)
+audio.setMasterVolume(0, 255)
+
+// Subtitle display functions
+function clearSubtitleArea() {
+    // Clear the subtitle area at the bottom of the screen
+    // Text mode is 80x32, so clear the bottom few lines
+    let oldFgColor = con.get_color_fore()
+    let oldBgColor = con.get_color_back()
+
+    con.color_pair(255, 255)  // transparent to clear
+
+    // Clear bottom 4 lines for subtitles
+    for (let row = 29; row <= 32; row++) {
+        con.move(row, 1)
+        for (let col = 1; col <= 80; col++) {
+            print(" ")
+        }
+    }
+
+    con.color_pair(oldFgColor, oldBgColor)
+}
+
+function getVisualLength(line) {
+    // Calculate the visual length of a line excluding formatting tags
+    let visualLength = 0
+    let i = 0
+
+    while (i < line.length) {
+        if (i < line.length - 2 && line[i] === '<') {
+            // Check for formatting tags and skip them
+            if (line.substring(i, i + 3).toLowerCase() === '<b>' ||
+                line.substring(i, i + 3).toLowerCase() === '<i>') {
+                i += 3  // Skip tag
+            } else if (i < line.length - 3 &&
+                      (line.substring(i, i + 4).toLowerCase() === '</b>' ||
+                       line.substring(i, i + 4).toLowerCase() === '</i>')) {
+                i += 4  // Skip closing tag
+            } else {
+                // Not a formatting tag, count the character
+                visualLength++
+                i++
+            }
+        } else {
+            // Regular character, count it
+            visualLength++
+            i++
+        }
+    }
+
+    return visualLength
+}
+
+function displayFormattedLine(line) {
+    // Parse line and handle <b> and <i> tags with color changes
+    // Default subtitle color: yellow (231), formatted text: white (254)
+
+    let i = 0
+    let inBoldOrItalic = false
+
+    // insert initial padding block
+    con.color_pair(0, 255)
+    con.prnch(0xDE)
+    con.color_pair(231, 0)
+
+    while (i < line.length) {
+        if (i < line.length - 2 && line[i] === '<') {
+            // Check for opening tags
+            if (line.substring(i, i + 3).toLowerCase() === '<b>' ||
+                line.substring(i, i + 3).toLowerCase() === '<i>') {
+                con.color_pair(254, 0)  // Switch to white for formatted text
+                inBoldOrItalic = true
+                i += 3
+            } else if (i < line.length - 3 &&
+                      (line.substring(i, i + 4).toLowerCase() === '</b>' ||
+                       line.substring(i, i + 4).toLowerCase() === '</i>')) {
+                con.color_pair(231, 0)  // Switch back to yellow for normal text
+                inBoldOrItalic = false
+                i += 4
+            } else {
+                // Not a formatting tag, print the character
+                print(line[i])
+                i++
+            }
+        } else {
+            // Regular character, print it
+            print(line[i])
+            i++
+        }
+    }
+
+    // insert final padding block
+    con.color_pair(0, 255)
+    con.prnch(0xDD)
+    con.color_pair(231, 0)
+}
+
+function displaySubtitle(text, position = 0) {
+    if (!text || text.length === 0) {
+        clearSubtitleArea()
+        return
+    }
+
+    // Set subtitle colors: yellow (231) on black (0)
+    let oldFgColor = con.get_color_fore()
+    let oldBgColor = con.get_color_back()
+    con.color_pair(231, 0)
+
+    // Split text into lines
+    let lines = text.split('\n')
+
+    // Calculate position based on subtitle position setting
+    let startRow, startCol
+    // Calculate visual length without formatting tags for positioning
+    let longestLineLength = lines.map(s => getVisualLength(s)).sort().last()
+
+    switch (position) {
+        case 2: // center left
+        case 6: // center right
+        case 8: // dead center
+            startRow = 16 - Math.floor(lines.length / 2)
+            break
+        case 3: // top left
+        case 4: // top center
+        case 5: // top right
+            startRow = 2
+            break
+        case 0: // bottom center
+        case 1: // bottom left
+        case 7: // bottom right
+        default:
+            startRow = 32 - lines.length
+            startRow = 32 - lines.length
+            startRow = 32 - lines.length  // Default to bottom center
+    }
+
+    // Display each line
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim()
+        if (line.length === 0) continue
+
+        let row = startRow + i
+        if (row < 1) row = 1
+        if (row > 32) row = 32
+
+        // Calculate column based on alignment
+        switch (position) {
+            case 1: // bottom left
+            case 2: // center left
+            case 3: // top left
+                startCol = 1
+                break
+            case 5: // top right
+            case 6: // center right
+            case 7: // bottom right
+                startCol = Math.max(1, 78 - getVisualLength(line) - 2)
+                break
+            case 0: // bottom center
+            case 4: // top center
+            case 8: // dead center
+            default:
+                startCol = Math.max(1, Math.floor((80 - longestLineLength - 2) / 2) + 1)
+                break
+        }
+
+        con.move(row, startCol)
+
+        // Parse and display line with formatting tag support
+        displayFormattedLine(line)
+    }
+
+    con.color_pair(oldFgColor, oldBgColor)
+}
+
+function processSubtitlePacket(packetSize) {
+    // Read subtitle packet data according to SSF format
+    // uint24 index + uint8 opcode + variable arguments
+
+    let index = 0
+    // Read 24-bit index (little-endian)
+    let indexByte0 = seqread.readOneByte()
+    let indexByte1 = seqread.readOneByte()
+    let indexByte2 = seqread.readOneByte()
+    index = indexByte0 | (indexByte1 << 8) | (indexByte2 << 16)
+
+    let opcode = seqread.readOneByte()
+    let remainingBytes = packetSize - 4  // Subtract 3 bytes for index + 1 byte for opcode
+
+    switch (opcode) {
+        case SSF_OP_SHOW: {
+            // Read UTF-8 text until null terminator
+            if (remainingBytes > 1) {
+                let textBytes = seqread.readBytes(remainingBytes)
+                let textStr = ""
+
+                // Convert bytes to string, stopping at null terminator
+                for (let i = 0; i < remainingBytes - 1; i++) {  // -1 for null terminator
+                    let byte = sys.peek(textBytes + i)
+                    if (byte === 0) break
+                    textStr += String.fromCharCode(byte)
+                }
+
+                sys.free(textBytes)
+                subtitleText = textStr
+                subtitleVisible = true
+                displaySubtitle(subtitleText, subtitlePosition)
+            }
+            break
+        }
+
+        case SSF_OP_HIDE: {
+            subtitleVisible = false
+            subtitleText = ""
+            clearSubtitleArea()
+            break
+        }
+
+        case SSF_OP_MOVE: {
+            if (remainingBytes >= 2) {  // Need at least 1 byte for position + 1 null terminator
+                let newPosition = seqread.readOneByte()
+                seqread.readOneByte()  // Read null terminator
+
+                if (newPosition >= 0 && newPosition <= 7) {
+                    subtitlePosition = newPosition
+
+                    // Re-display current subtitle at new position if visible
+                    if (subtitleVisible && subtitleText.length > 0) {
+                        clearSubtitleArea()
+                        displaySubtitle(subtitleText, subtitlePosition)
+                    }
+                }
+            }
+            break
+        }
+
+        case SSF_OP_UPLOAD_LOW_FONT:
+        case SSF_OP_UPLOAD_HIGH_FONT: {
+            // Font upload - read payload length and font data
+            if (remainingBytes >= 3) {  // uint16 length + at least 1 byte data
+                let payloadLen = seqread.readShort()
+                if (remainingBytes >= payloadLen + 2) {
+                    let fontData = seqread.readBytes(payloadLen)
+
+                    // upload font data
+                    for (let i = 0; i < Math.min(payloadLen, 1920); i++) sys.poke(-1300607 - i, sys.peek(fontData + i))
+                    sys.poke(-1299460, (opcode == SSF_OP_UPLOAD_LOW_FONT) ? 18 : 19)
+
+                    sys.free(fontData)
+                }
+            }
+            break
+        }
+
+        case SSF_OP_NOP:
+        default: {
+            // Skip remaining bytes
+            if (remainingBytes > 0) {
+                let skipBytes = seqread.readBytes(remainingBytes)
+                sys.free(skipBytes)
+            }
+
+            if (interactive && opcode !== SSF_OP_NOP) {
+                serial.println(`[SUBTITLE UNKNOWN] Index: ${index}, Opcode: 0x${opcode.toString(16).padStart(2, '0')}`)
+            }
+            break
+        }
+    }
+}
+
 
 // TAV header structure (32 bytes vs TEV's 24 bytes)
 let header = {
@@ -172,7 +441,7 @@ const isNTSC = (header.videoFlags & 0x02) !== 0
 const isLossless = (header.videoFlags & 0x04) !== 0
 const multiResolution = (header.videoFlags & 0x08) !== 0
 
-// Calculate tile dimensions (64x64 vs TEV's 16x16 blocks)
+// Calculate tile dimensions (112x112 vs TEV's 16x16 blocks)
 const tilesX = Math.ceil(header.width / TILE_SIZE)
 const tilesY = Math.ceil(header.height / TILE_SIZE)
 const numTiles = tilesX * tilesY
@@ -210,6 +479,9 @@ let audioBufferBytesLastFrame = 0
 let frame_cnt = 0
 let frametime = 1000000000.0 / header.fps
 let nextFrameTime = 0
+let mp2Initialised = false
+let audioFired = false
+
 
 // Performance tracking variables (from TEV)
 let decompressTime = 0
@@ -374,6 +646,21 @@ try {
                         console.log(`Frame ${frameCount}: Duplicating previous frame`)
                     }
 
+                    // Defer audio playback until a first frame is sent
+                    if (isInterlaced) {
+                        // fire audio after frame 1
+                        if (!audioFired && frameCount > 0) {
+                            audio.play(0)
+                            audioFired = true
+                        }
+                    }
+                    else {
+                        // fire audio after frame 0
+                        if (!audioFired) {
+                            audio.play(0)
+                            audioFired = true
+                        }
+                    }
                 } catch (e) {
                     console.log(`Frame ${frameCount}: decode failed: ${e}`)
                 }
@@ -390,38 +677,23 @@ try {
                     console.log(`Frame ${frameCount}: Decompress=${decompressTime.toFixed(1)}ms, Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms`)
                 }
 
-            } else if (packetType === TAV_PACKET_AUDIO_MP2 && hasAudio) {
-                // Audio packet - same as TEV
-                let audioPtr = seqread.readBytes(compressedSize)
+            } else if (packetType === TAV_PACKET_AUDIO_MP2) {
+                // MP2 Audio packet
+                let audioLen = seqread.readInt()
 
-                // Send to audio hardware
-                for (let i = 0; i < compressedSize; i++) {
-                    vm.poke(SND_BASE_ADDR + audioBufferBytesLastFrame + i, sys.peek(audioPtr + i))
+                if (!mp2Initialised) {
+                    mp2Initialised = true
+                    audio.mp2Init()
                 }
-                audioBufferBytesLastFrame += compressedSize
-                sys.free(audioPtr)
 
-            } else if (packetType === TAV_PACKET_SUBTITLE && hasSubtitles) {
+                seqread.readBytes(audioLen, SND_BASE_ADDR - 2368)
+                audio.mp2Decode()
+                audio.mp2UploadDecoded(0)
+
+            } else if (packetType === TAV_PACKET_SUBTITLE) {
                 // Subtitle packet - same format as TEV
-                let subtitlePtr = seqread.readBytes(compressedSize)
-
-                // Process subtitle (simplified)
-                if (compressedSize >= 4) {
-                    const index = (sys.peek(subtitlePtr) << 16) | (sys.peek(subtitlePtr + 1) << 8) | sys.peek(subtitlePtr + 2)
-                    const opcode = sys.peek(subtitlePtr + 3)
-
-                    if (opcode === SSF_OP_SHOW && compressedSize > 4) {
-                        let text = ""
-                        for (let i = 4; i < compressedSize && sys.peek(subtitlePtr + i) !== 0; i++) {
-                            text += String.fromCharCode(sys.peek(subtitlePtr + i))
-                        }
-                        subtitleText = text
-                        subtitleVisible = true
-                    } else if (opcode === SSF_OP_HIDE) {
-                        subtitleVisible = false
-                    }
-                }
-                sys.free(subtitlePtr)
+                let packetSize = seqread.readInt()
+                processSubtitlePacket(packetSize)
             } else if (packetType == 0x00) {
                 // Silently discard, faulty subtitle creation can cause this as 0x00 is used as an argument terminator
             } else {
@@ -463,14 +735,13 @@ finally {
     sys.free(RGB_BUFFER_A)
     sys.free(RGB_BUFFER_B)
 
-    graphics.setGraphicsMode(0) // Return to text mode
     con.curs_set(1)
     con.clear()
 
     if (errorlevel === 0) {
         console.log(`Playback completed: ${frameCount} frames`)
     } else {
-        console.log(`Playbook failed with error ${errorlevel}`)
+        console.log(`Playback failed with error ${errorlevel}`)
     }
 }
 
