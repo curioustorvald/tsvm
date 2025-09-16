@@ -16,6 +16,10 @@
 #include <limits.h>
 #include <float.h>
 
+#ifndef PI
+#define PI 3.14159265358979323846f
+#endif
+
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
 // TAV version - dynamic based on color space mode
@@ -39,6 +43,12 @@
 #define TILE_SIZE 112  // 112x112 tiles - perfect fit for TSVM 560x448 (GCD = 112)
 #define MAX_DECOMP_LEVELS 6  // Can go deeper: 112→56→28→14→7→3→1
 #define DEFAULT_DECOMP_LEVELS 5  // Increased default for better compression
+
+// Simulated overlapping tiles settings for seamless DWT processing
+#define DWT_FILTER_HALF_SUPPORT 4  // For 9/7 filter (filter lengths 9,7 → L=4)
+#define TILE_MARGIN_LEVELS 3       // Use margin for 3 levels: 4 * (2^3) = 4 * 8 = 32px
+#define TILE_MARGIN (DWT_FILTER_HALF_SUPPORT * (1 << TILE_MARGIN_LEVELS))  // 4 * 8 = 32px
+#define PADDED_TILE_SIZE (TILE_SIZE + 2 * TILE_MARGIN)  // 112 + 64 = 176px
 
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
@@ -478,6 +488,92 @@ static void dwt_97_forward_1d(float *data, int length) {
     free(temp);
 }
 
+// Extract padded tile with margins for seamless DWT processing (correct implementation)
+static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y, 
+                               float *padded_y, float *padded_co, float *padded_cg) {
+    const int core_start_x = tile_x * TILE_SIZE;
+    const int core_start_y = tile_y * TILE_SIZE;
+    
+    // Extract padded tile: margin + core + margin  
+    for (int py = 0; py < PADDED_TILE_SIZE; py++) {
+        for (int px = 0; px < PADDED_TILE_SIZE; px++) {
+            // Map padded coordinates to source image coordinates
+            int src_x = core_start_x + px - TILE_MARGIN;
+            int src_y = core_start_y + py - TILE_MARGIN;
+            
+            // Handle boundary conditions with mirroring
+            if (src_x < 0) src_x = -src_x;
+            else if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
+            
+            if (src_y < 0) src_y = -src_y;
+            else if (src_y >= enc->height) src_y = enc->height - 1 - (src_y - enc->height);
+            
+            // Clamp to valid bounds
+            src_x = CLAMP(src_x, 0, enc->width - 1);
+            src_y = CLAMP(src_y, 0, enc->height - 1);
+            
+            int src_idx = src_y * enc->width + src_x;
+            int padded_idx = py * PADDED_TILE_SIZE + px;
+            
+            padded_y[padded_idx] = enc->current_frame_y[src_idx];
+            padded_co[padded_idx] = enc->current_frame_co[src_idx];
+            padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
+        }
+    }
+}
+
+
+// 2D DWT forward transform for padded tile
+static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type) {
+    const int size = PADDED_TILE_SIZE;
+    float *temp_row = malloc(size * sizeof(float));
+    float *temp_col = malloc(size * sizeof(float));
+    
+    for (int level = 0; level < levels; level++) {
+        int current_size = size >> level;
+        if (current_size < 1) break;
+        
+        // Row transform
+        for (int y = 0; y < current_size; y++) {
+            for (int x = 0; x < current_size; x++) {
+                temp_row[x] = tile_data[y * size + x];
+            }
+            
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_row, current_size);
+            } else {
+                dwt_97_forward_1d(temp_row, current_size);
+            }
+            
+            for (int x = 0; x < current_size; x++) {
+                tile_data[y * size + x] = temp_row[x];
+            }
+        }
+        
+        // Column transform
+        for (int x = 0; x < current_size; x++) {
+            for (int y = 0; y < current_size; y++) {
+                temp_col[y] = tile_data[y * size + x];
+            }
+            
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_col, current_size);
+            } else {
+                dwt_97_forward_1d(temp_col, current_size);
+            }
+            
+            for (int y = 0; y < current_size; y++) {
+                tile_data[y * size + x] = temp_col[y];
+            }
+        }
+    }
+    
+    free(temp_row);
+    free(temp_col);
+}
+
+
+
 // 2D DWT forward transform for 112x112 tile
 static void dwt_2d_forward(float *tile_data, int levels, int filter_type) {
     const int size = TILE_SIZE;
@@ -560,8 +656,8 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         return offset;
     }
     
-    // Quantize and serialize DWT coefficients
-    const int tile_size = TILE_SIZE * TILE_SIZE;
+    // Quantize and serialize DWT coefficients (full padded tile: 176x176)
+    const int tile_size = PADDED_TILE_SIZE * PADDED_TILE_SIZE;
     int16_t *quantized_y = malloc(tile_size * sizeof(int16_t));
     int16_t *quantized_co = malloc(tile_size * sizeof(int16_t));
     int16_t *quantized_cg = malloc(tile_size * sizeof(int16_t));
@@ -604,8 +700,8 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
-    // Calculate total uncompressed size
-    const size_t max_tile_size = 9 + (TILE_SIZE * TILE_SIZE * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    // Calculate total uncompressed size (for padded tile coefficients: 176x176)
+    const size_t max_tile_size = 9 + (PADDED_TILE_SIZE * PADDED_TILE_SIZE * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
     
     // Allocate buffer for uncompressed tile data
@@ -620,31 +716,13 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             // Determine tile mode (simplified)
             uint8_t mode = TAV_MODE_INTRA;  // For now, all tiles are INTRA
             
-            // Extract tile data (already processed)
-            float tile_y_data[TILE_SIZE * TILE_SIZE];
-            float tile_co_data[TILE_SIZE * TILE_SIZE];
-            float tile_cg_data[TILE_SIZE * TILE_SIZE];
+            // Extract padded tile data (176x176) with neighbor context for overlapping tiles
+            float tile_y_data[PADDED_TILE_SIZE * PADDED_TILE_SIZE];
+            float tile_co_data[PADDED_TILE_SIZE * PADDED_TILE_SIZE];
+            float tile_cg_data[PADDED_TILE_SIZE * PADDED_TILE_SIZE];
             
-            // Extract tile data from frame buffers
-            for (int y = 0; y < TILE_SIZE; y++) {
-                for (int x = 0; x < TILE_SIZE; x++) {
-                    int src_x = tile_x * TILE_SIZE + x;
-                    int src_y = tile_y * TILE_SIZE + y;
-                    int src_idx = src_y * enc->width + src_x;
-                    int tile_idx_local = y * TILE_SIZE + x;
-                    
-                    if (src_x < enc->width && src_y < enc->height) {
-                        tile_y_data[tile_idx_local] = enc->current_frame_y[src_idx];
-                        tile_co_data[tile_idx_local] = enc->current_frame_co[src_idx];
-                        tile_cg_data[tile_idx_local] = enc->current_frame_cg[src_idx];
-                    } else {
-                        // Pad with zeros if tile extends beyond frame
-                        tile_y_data[tile_idx_local] = 0.0f;
-                        tile_co_data[tile_idx_local] = 0.0f;
-                        tile_cg_data[tile_idx_local] = 0.0f;
-                    }
-                }
-            }
+            // Extract padded tiles using context from neighbors
+            extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
             
             // Debug: check input data before DWT
             /*if (tile_x == 0 && tile_y == 0) {
@@ -655,10 +733,10 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 printf("\n");
             }*/
             
-            // Apply DWT transform to each channel
-            dwt_2d_forward(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
-            dwt_2d_forward(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
-            dwt_2d_forward(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+            // Apply DWT transform to each padded channel (176x176)
+            dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
+            dwt_2d_forward_padded(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
+            dwt_2d_forward_padded(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
             
             // Serialize tile
             size_t tile_size = serialize_tile_data(enc, tile_x, tile_y, 
