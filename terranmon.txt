@@ -826,19 +826,16 @@ transmission capability, and region-of-interest coding.
     uint32 Total Frames: number of video frames
     uint8  Wavelet Filter Type: 0=5/3 reversible, 1=9/7 irreversible
     uint8  Decomposition Levels: number of DWT levels (1-4)
-    uint8  Quality Index for Y channel (0-99; 100 denotes lossless)
-    uint8  Quality Index for Co channel (0-99; 100 denotes lossless) 
-    uint8  Quality Index for Cg channel (0-99; 100 denotes lossless)
+    uint8  Quantiser Index for Y channel (1: lossless, 255: potato)
+    uint8  Quantiser Index for Co channel (1: lossless, 255: potato)
+    uint8  Quantiser Index for Cg channel (1: lossless, 255: potato)
     uint8  Extra Feature Flags
             - bit 0 = has audio
             - bit 1 = has subtitle
-            - bit 2 = progressive transmission enabled
-            - bit 3 = region-of-interest coding enabled
     uint8  Video Flags
-            - bit 0 = is interlaced
+            - bit 0 = is interlaced (unused)
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
-            - bit 3 = multi-resolution encoding
     uint8  Reserved[7]: fill with zeros
 
 ## Packet Types

@@ -439,7 +439,6 @@ const roiCoding = (header.extraFlags & 0x08) !== 0
 const isInterlaced = (header.videoFlags & 0x01) !== 0
 const isNTSC = (header.videoFlags & 0x02) !== 0
 const isLossless = (header.videoFlags & 0x04) !== 0
-const multiResolution = (header.videoFlags & 0x08) !== 0
 
 // Calculate tile dimensions (112x112 vs TEV's 16x16 blocks)
 const tilesX = Math.ceil(header.width / TILE_SIZE)
