@@ -214,7 +214,10 @@ typedef struct {
     // Statistics
     size_t total_compressed_size;
     size_t total_uncompressed_size;
-    
+
+    // Progress tracking
+    struct timeval start_time;
+
 } tav_encoder_t;
 
 // Wavelet filter constants removed - using lifting scheme implementation instead
@@ -1949,6 +1952,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    gettimeofday(&enc->start_time, NULL);
+
     if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
@@ -1958,6 +1963,9 @@ int main(int argc, char *argv[]) {
     // Main encoding loop - process frames until EOF or frame limit
     int frame_count = 0;
     int continue_encoding = 1;
+
+    int count_iframe = 0;
+    int count_pframe = 0;
     
     while (continue_encoding) {
         if (enc->test_mode) {
@@ -2080,6 +2088,11 @@ int main(int argc, char *argv[]) {
             // Write a sync packet only after a video is been coded
             uint8_t sync_packet = TAV_PACKET_SYNC;
             fwrite(&sync_packet, 1, 1, enc->output_fp);
+
+            if (is_keyframe)
+                count_iframe++;
+            else
+                count_pframe++;
         }
         
         // Copy current frame to previous frame buffer
@@ -2094,8 +2107,13 @@ int main(int argc, char *argv[]) {
         enc->frame_count = frame_count;
         
         if (enc->verbose || frame_count % 30 == 0) {
-            printf("Encoded frame %d (%s)\n", frame_count, 
-                   is_keyframe ? "I-frame" : "P-frame");
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            double elapsed = (now.tv_sec - enc->start_time.tv_sec) +
+                           (now.tv_usec - enc->start_time.tv_usec) / 1000000.0;
+            double fps = frame_count / elapsed;
+            printf("Encoded frame %d (%s, %.1f fps)\n", frame_count,
+                   is_keyframe ? "I-frame" : "P-frame", fps);
         }
     }
     
@@ -2117,9 +2135,20 @@ int main(int argc, char *argv[]) {
             printf("Updated header with actual frame count: %d\n", frame_count);
         }
     }
-    
-    printf("Encoding completed: %d frames\n", frame_count);
-    printf("Output file: %s\n", enc->output_file);
+
+    // Final statistics
+    struct timeval end_time;
+    gettimeofday(&end_time, NULL);
+    double total_time = (end_time.tv_sec - enc->start_time.tv_sec) +
+                       (end_time.tv_usec - enc->start_time.tv_usec) / 1000000.0;
+
+    printf("\nEncoding complete!\n");
+    printf("  Frames encoded: %d\n", frame_count);
+    printf("  Framerate: %d\n", enc->output_fps);
+    printf("  Output size: %zu bytes\n", enc->total_compressed_size);
+    printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
+    printf("  Frame statistics: I-Frame=%d, P-Frame=%d\n", count_iframe, count_pframe);
+
     
     cleanup_encoder(enc);
     return 0;
