@@ -2089,6 +2089,12 @@ int main(int argc, char *argv[]) {
             uint8_t sync_packet = TAV_PACKET_SYNC;
             fwrite(&sync_packet, 1, 1, enc->output_fp);
 
+            // NTSC frame duplication: emit extra sync packet for every 1000n+500 frames
+            if (enc->is_ntsc_framerate && (frame_count % 1000 == 500)) {
+                fwrite(&sync_packet, 1, 1, enc->output_fp);
+                printf("Frame %d: NTSC duplication - extra sync packet emitted\n", frame_count);
+            }
+
             if (is_keyframe)
                 count_iframe++;
             else

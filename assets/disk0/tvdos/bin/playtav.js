@@ -553,7 +553,6 @@ let FRAME_TIME = 1.0 / header.fps
 
 let frameCount = 0 
 let trueFrameCount = 0
-let frameDuped = false
 let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
@@ -613,38 +612,29 @@ try {
 
                 try {
 //                    serial.println(actualSize)
-                    // Duplicate every 1000th frame if NTSC (same as TEV)
-                    if (!isNTSC || frameCount % 1000 != 501 || frameDuped) {
-                        frameDuped = false
+                    let decodeStart = sys.nanoTime()
 
-                        let decodeStart = sys.nanoTime()
+                    // Call TAV hardware decoder (like TEV's tevDecode but with RGB buffer outputs)
+                    graphics.tavDecode(
+                        blockDataPtr,
+                        CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers (not float arrays!)
+                        header.width, header.height,
+                        header.qualityY, header.qualityCo, header.qualityCg,
+                        frameCount,
+                        debugMotionVectors,
+                        header.waveletFilter,      // TAV-specific parameter
+                        header.decompLevels,       // TAV-specific parameter
+                        enableDeblocking,
+                        isLossless,
+                        header.version             // TAV version for colour space detection
+                    )
 
-                        // Call TAV hardware decoder (like TEV's tevDecode but with RGB buffer outputs)
-                        graphics.tavDecode(
-                            blockDataPtr,
-                            CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers (not float arrays!)
-                            header.width, header.height,
-                            header.qualityY, header.qualityCo, header.qualityCg,
-                            frameCount,
-                            debugMotionVectors,
-                            header.waveletFilter,      // TAV-specific parameter
-                            header.decompLevels,       // TAV-specific parameter
-                            enableDeblocking,
-                            isLossless,
-                            header.version             // TAV version for colour space detection
-                        )
+                    decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
 
-                        decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
-
-                        // Upload RGB buffer to display framebuffer (like TEV)
-                        let uploadStart = sys.nanoTime()
-                        graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, frameCount, true)
-                        uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
-                    } else {
-                        frameCount -= 1
-                        frameDuped = true
-                        console.log(`Frame ${frameCount}: Duplicating previous frame`)
-                    }
+                    // Upload RGB buffer to display framebuffer (like TEV)
+                    let uploadStart = sys.nanoTime()
+                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, frameCount, true)
+                    uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
 
                     // Defer audio playback until a first frame is sent
                     if (isInterlaced) {

@@ -793,6 +793,10 @@ The format is designed to be compatible with SubRip and SAMI (without markups).
             text argument may be terminated by 0x00 BEFORE the entire arguments being terminated by 0x00,
             leaving extra 0x00 on the byte stream. A decoder must be able to handle the extra zeros.
 
+## NTSC Framerate handling
+The encoder encodes the frames as-is. The decoder must duplicate every 1000th frame to keep the decoding
+in-sync.
+
 --------------------------------------------------------------------------------
 
 TSVM Advanced Video (TAV) Format
@@ -946,6 +950,10 @@ Reuses existing MP2 audio infrastructure from TEV/MOV formats for compatibility.
 
 ## Subtitle Support  
 Uses same Simple Subtitle Format (SSF) as TEV for text overlay functionality.
+
+## NTSC Framerate handling
+Unlike the TEV format, TAV emits extra sync packet for every 1000th frames. Decoder can just play the video
+without any special treatment.
 
 --------------------------------------------------------------------------------
 
