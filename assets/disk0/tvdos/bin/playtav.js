@@ -549,6 +549,12 @@ function updateDataRateBin(rate) {
     }
 }
 
+function getVideoRate() {
+    let baseRate = videoRateBin.reduce((a, c) => a + c, 0)
+    let mult = header.fps / videoRateBin.length
+    return baseRate * mult
+}
+
 let FRAME_TIME = 1.0 / header.fps
 
 let frameCount = 0 
@@ -704,10 +710,14 @@ try {
                 notifHidden = true
             }
 
-            if (notifHidden) {
+            if (!hasSubtitles) {
                 con.move(31, 1)
                 con.color_pair(253, 0)
-                //print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                con.move(32, 1)
+                con.color_pair(253, 0)
+                print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
+                con.move(1, 1)
             }
         }
 
@@ -715,7 +725,7 @@ try {
     }
 }
 catch (e) {
-    printerrln(`TAV decode error: ${e}`)
+    serial.printerr(`TAV decode error: ${e}`)
     errorlevel = 1
 }
 finally {

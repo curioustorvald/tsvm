@@ -68,7 +68,7 @@ static inline float float16_to_float(uint16_t hbits) {
 
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
-// TEV version - dynamic based on color space mode
+// TEV version - dynamic based on colour space mode
 // Version 2: YCoCg-R 4:2:0 (default)
 // Version 3: ICtCp 4:2:0 (--ictcp flag)
 // version 1: 8x8 RGB
@@ -222,7 +222,7 @@ typedef struct {
     int qualityCg;
     int verbose;
     int disable_rcf;          // 0 = rcf enabled, 1 = disabled
-    int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp color space
+    int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp colour space
 
     // Bitrate control
     int target_bitrate_kbps;  // Target bitrate in kbps (0 = quality mode)
@@ -392,7 +392,7 @@ static const double M_ICTCP_TO_LMSPRIME[3][3] = {
 
 // ---------------------- Forward: sRGB8 -> ICtCp (doubles) ----------------------
 // Inputs: r,g,b in 0..255 sRGB (8-bit)
-// Outputs: I, Ct, Cp as doubles (nominally I in ~[0..1], Ct/Cp ranges depend on colors)
+// Outputs: I, Ct, Cp as doubles (nominally I in ~[0..1], Ct/Cp ranges depend on colours)
 void srgb8_to_ictcp_hlg(uint8_t r8, uint8_t g8, uint8_t b8,
                        double *out_I, double *out_Ct, double *out_Cp)
 {
@@ -459,13 +459,13 @@ void ictcp_hlg_to_srgb8(double I8, double Ct8, double Cp8,
 // ---------------------- Color Space Switching Functions ----------------------
 // Wrapper functions that choose between YCoCg-R and ICtCp based on encoder mode
 
-static void rgb_to_color_space(tev_encoder_t *enc, uint8_t r, uint8_t g, uint8_t b,
+static void rgb_to_colour_space(tev_encoder_t *enc, uint8_t r, uint8_t g, uint8_t b,
                                double *c1, double *c2, double *c3) {
     if (enc->ictcp_mode) {
-        // Use ICtCp color space
+        // Use ICtCp colour space
         srgb8_to_ictcp_hlg(r, g, b, c1, c2, c3);
     } else {
-        // Use YCoCg-R color space (convert to int first, then to double)
+        // Use YCoCg-R colour space (convert to int first, then to double)
         int y_val, co_val, cg_val;
         rgb_to_ycocgr(r, g, b, &y_val, &co_val, &cg_val);
         *c1 = (double)y_val;
@@ -474,13 +474,13 @@ static void rgb_to_color_space(tev_encoder_t *enc, uint8_t r, uint8_t g, uint8_t
     }
 }
 
-static void color_space_to_rgb(tev_encoder_t *enc, double c1, double c2, double c3,
+static void colour_space_to_rgb(tev_encoder_t *enc, double c1, double c2, double c3,
                                uint8_t *r, uint8_t *g, uint8_t *b) {
     if (enc->ictcp_mode) {
-        // Use ICtCp color space
+        // Use ICtCp colour space
         ictcp_hlg_to_srgb8(c1, c2, c3, r, g, b);
     } else {
-        // Use YCoCg-R color space (convert from double to int first)
+        // Use YCoCg-R colour space (convert from double to int first)
         int y_val = (int)round(c1);
         int co_val = (int)round(c2);
         int cg_val = (int)round(c3);
@@ -606,8 +606,8 @@ static int16_t quantise_coeff(float coeff, float quant, int is_dc, int is_chroma
     }
 }
 
-// Extract 16x16 block from RGB frame and convert to color space
-static void extract_color_space_block(tev_encoder_t *enc, uint8_t *rgb_frame, int width, int height,
+// Extract 16x16 block from RGB frame and convert to colour space
+static void extract_colour_space_block(tev_encoder_t *enc, uint8_t *rgb_frame, int width, int height,
                                       int block_x, int block_y,
                                       float *c1_block, float *c2_block, float *c3_block) {
     int start_x = block_x * BLOCK_SIZE;
@@ -626,7 +626,7 @@ static void extract_color_space_block(tev_encoder_t *enc, uint8_t *rgb_frame, in
                 uint8_t b = rgb_frame[offset + 2];
 
                 double c1, c2, c3;
-                rgb_to_color_space(enc, r, g, b, &c1, &c2, &c3);
+                rgb_to_colour_space(enc, r, g, b, &c1, &c2, &c3);
 
                 c1_block[py * BLOCK_SIZE + px] = (float)c1 - 128.0f;
             }
@@ -651,7 +651,7 @@ static void extract_color_space_block(tev_encoder_t *enc, uint8_t *rgb_frame, in
                         uint8_t b = rgb_frame[offset + 2];
 
                         double c1, c2, c3;
-                        rgb_to_color_space(enc, r, g, b, &c1, &c2, &c3);
+                        rgb_to_colour_space(enc, r, g, b, &c1, &c2, &c3);
 
                         co_sum += (int)c2;
                         cg_sum += (int)c3;
@@ -864,7 +864,7 @@ static void calculate_complexity_stats(tev_encoder_t *enc) {
     if (!enc->stats_mode || enc->complexity_count == 0) return;
     
     printf("\n=== BLOCK COMPLEXITY STATISTICS ===\n");
-    printf("Analyzed %d blocks during encoding\n\n", enc->complexity_count);
+    printf("Analysed %d blocks during encoding\n\n", enc->complexity_count);
     
     // Sort the values to calculate percentiles
     float *sorted_values = malloc(enc->complexity_count * sizeof(float));
@@ -973,7 +973,7 @@ static void estimate_motion(tev_encoder_t *enc, int block_x, int block_y,
 }
 
 // Convert RGB block to YCoCg-R with 4:2:0 chroma subsampling
-static void convert_rgb_to_color_space_block(tev_encoder_t *enc, const uint8_t *rgb_block,
+static void convert_rgb_to_colour_space_block(tev_encoder_t *enc, const uint8_t *rgb_block,
                                             float *c1_workspace, float *c2_workspace, float *c3_workspace) {
     if (enc->ictcp_mode) {
         // ICtCp mode: Convert 16x16 RGB to ICtCp (full resolution for I, 4:2:0 subsampling for CtCp)
@@ -1191,7 +1191,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     tev_block_t *block = &enc->block_data[block_y * ((enc->width + 15) / 16) + block_x];
 
     // Extract YCoCg-R block
-    extract_color_space_block(enc, enc->current_rgb, enc->width, enc->height,
+    extract_colour_space_block(enc, enc->current_rgb, enc->width, enc->height,
                         block_x, block_y,
                         enc->y_workspace, enc->co_workspace, enc->cg_workspace);
 
@@ -1207,7 +1207,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
         // Calculate SAD for skip mode (no motion compensation)
         int skip_sad = 0;
-        int skip_color_diff = 0;
+        int skip_colour_diff = 0;
         for (int dy = 0; dy < BLOCK_SIZE; dy++) {
             for (int dx = 0; dx < BLOCK_SIZE; dx++) {
                 int x = start_x + dx;
@@ -1225,7 +1225,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
 
                     skip_sad += abs(cur_luma - prev_luma);
                     
-                    // Also check for color differences to prevent SKIP on color changes
+                    // Also check for colour differences to prevent SKIP on colour changes
                     int cur_r = enc->current_rgb[cur_offset];
                     int cur_g = enc->current_rgb[cur_offset + 1];
                     int cur_b = enc->current_rgb[cur_offset + 2];
@@ -1233,7 +1233,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                     int prev_g = enc->previous_rgb[cur_offset + 1];
                     int prev_b = enc->previous_rgb[cur_offset + 2];
                     
-                    skip_color_diff += abs(cur_r - prev_r) + abs(cur_g - prev_g) + abs(cur_b - prev_b);
+                    skip_colour_diff += abs(cur_r - prev_r) + abs(cur_g - prev_g) + abs(cur_b - prev_b);
                 }
             }
         }
@@ -1276,8 +1276,8 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
         }
 
         // Mode decision with strict thresholds for quality
-        // Require both low luma difference AND low color difference for SKIP
-        if (skip_sad <= 64 && skip_color_diff <= 192) {
+        // Require both low luma difference AND low colour difference for SKIP
+        if (skip_sad <= 64 && skip_colour_diff <= 192) {
             // Very small difference - skip block (copy from previous frame)
             block->mode = TEV_MODE_SKIP;
             block->mv_x = 0;
@@ -1297,7 +1297,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
                    (abs(block->mv_x) > 0 || abs(block->mv_y) > 0)) {
             // Good motion prediction - use motion-only mode
             block->mode = TEV_MODE_MOTION;
-            // Analyze complexity for motion blocks too
+            // Analyse complexity for motion blocks too
             float block_complexity = calculate_block_complexity_enhanced(enc->y_workspace, enc->co_workspace, enc->cg_workspace);
             add_complexity_value(enc, block_complexity);
             block->rate_control_factor = (enc->disable_rcf) ? 1.f : complexity_to_rate_factor(block_complexity);
@@ -1354,7 +1354,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     const uint32_t *y_quant = enc->ictcp_mode ? QUANT_TABLE_Y : QUANT_TABLE_Y;
     const float qmult_y = jpeg_quality_to_mult(enc->qualityY * block->rate_control_factor);
     for (int i = 0; i < BLOCK_SIZE_SQR; i++) {
-        // Apply rate control factor to quantization table (like decoder does)
+        // Apply rate control factor to quantisation table (like decoder does)
         float effective_quant = y_quant[i] * qmult_y;
         block->y_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 0);
     }
@@ -1366,7 +1366,7 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     const uint32_t *co_quant = enc->ictcp_mode ? QUANT_TABLE_C : QUANT_TABLE_C;
     const float qmult_co = jpeg_quality_to_mult(enc->qualityCo * block->rate_control_factor);
     for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
-        // Apply rate control factor to quantization table (like decoder does)
+        // Apply rate control factor to quantisation table (like decoder does)
         float effective_quant = co_quant[i] * qmult_co;
         block->co_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
     }
@@ -1375,11 +1375,11 @@ static void encode_block(tev_encoder_t *enc, int block_x, int block_y, int is_ke
     dct_8x8_fast(enc->cg_workspace, enc->dct_workspace);
 
     // quantise Cg coefficients (chroma - green-magenta, qmult_cg is more aggressive like NTSC Q) using per-block rate control
-    // In ICtCp mode, Cg becomes Cp (chroma-red) which needs special quantization table
+    // In ICtCp mode, Cg becomes Cp (chroma-red) which needs special quantisation table
     const uint32_t *cg_quant = enc->ictcp_mode ? QUANT_TABLE_C : QUANT_TABLE_C;
     const float qmult_cg = jpeg_quality_to_mult(enc->qualityCg * block->rate_control_factor);
     for (int i = 0; i < HALF_BLOCK_SIZE_SQR; i++) {
-        // Apply rate control factor to quantization table (like decoder does)
+        // Apply rate control factor to quantisation table (like decoder does)
         float effective_quant = cg_quant[i] * qmult_cg;
         block->cg_coeffs[i] = quantise_coeff(enc->dct_workspace[i], FCLAMP(effective_quant, 1.f, 255.f), i == 0, 1);
     }
@@ -2096,7 +2096,7 @@ static int write_tev_header(FILE *output, tev_encoder_t *enc) {
     return 0;
 }
 
-// Detect scene changes by analyzing frame differences
+// Detect scene changes by analysing frame differences
 static int detect_scene_change(tev_encoder_t *enc, int field_parity) {
     if (!enc->current_rgb) {
         return 0; // No current frame to compare
@@ -2126,7 +2126,7 @@ static int detect_scene_change(tev_encoder_t *enc, int field_parity) {
         for (int x = 0; x < enc->width; x += 2) {
             int offset = (y * enc->width + x) * 3;
             
-            // Calculate color difference
+            // Calculate colour difference
             int r_diff = abs(enc->current_rgb[offset] - comparison_buffer[offset]);
             int g_diff = abs(enc->current_rgb[offset + 1] - comparison_buffer[offset + 1]);
             int b_diff = abs(enc->current_rgb[offset + 2] - comparison_buffer[offset + 2]);
@@ -2597,7 +2597,7 @@ static void show_usage(const char *program_name) {
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose          Verbose output\n");
     printf("  -t, --test             Test mode: generate solid colour frames\n");
-    printf("  --ictcp                Use ICtCp color space instead of YCoCg-R (generates TEV version 3)\n");
+    printf("  --ictcp                Use ICtCp colour space instead of YCoCg-R (generates TEV version 3)\n");
     printf("  --enable-rcf           Enable per-block rate control (experimental)\n");
     printf("  --enable-encode-stats  Collect and report block complexity statistics\n");
     printf("  --help                 Show this help\n\n");
@@ -2794,9 +2794,9 @@ int main(int argc, char *argv[]) {
 
     if (enc->ictcp_mode) {
         // ICtCp: Ct and Cp have different characteristics than YCoCg Co/Cg
-        // Cp channel now uses specialized quantization table, so moderate quality is fine
+        // Cp channel now uses specialized quantisation table, so moderate quality is fine
         int base_chroma_quality = enc->qualityCo;
-        enc->qualityCo = base_chroma_quality;           // Ct channel: keep original Co quantization
+        enc->qualityCo = base_chroma_quality;           // Ct channel: keep original Co quantisation
         enc->qualityCg = base_chroma_quality;           // Cp channel: same quality since Q_Cp_8 handles detail preservation
     }
 
@@ -2941,12 +2941,12 @@ int main(int argc, char *argv[]) {
             
             // Test YCoCg-R conversion
             double y_test, co_test, cg_test;
-            rgb_to_color_space(enc, test_r, test_g, test_b, &y_test, &co_test, &cg_test);
+            rgb_to_colour_space(enc, test_r, test_g, test_b, &y_test, &co_test, &cg_test);
             printf("  %s: Y=%.3f Co=%.3f Cg=%.3f\n", enc->ictcp_mode ? "ICtCp" : "YCoCg", y_test, co_test, cg_test);
             
             // Test reverse conversion
             uint8_t r_rev, g_rev, b_rev;
-            color_space_to_rgb(enc, y_test, co_test, cg_test, &r_rev, &g_rev, &b_rev);
+            colour_space_to_rgb(enc, y_test, co_test, cg_test, &r_rev, &g_rev, &b_rev);
             printf("  Reverse: R=%d G=%d B=%d\n", r_rev, g_rev, b_rev);
             
         } else {

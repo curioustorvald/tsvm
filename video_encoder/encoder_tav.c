@@ -618,8 +618,8 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
     }
 }
 
-// Serialize tile data for compression
-static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y, 
+// Serialise tile data for compression
+static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y, 
                                   const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
                                   uint8_t mode, uint8_t *buffer) {
     size_t offset = 0;
@@ -637,7 +637,7 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         return offset;
     }
     
-    // Quantise and serialize DWT coefficients (full padded tile: 344x288)
+    // Quantise and serialise DWT coefficients (full padded tile: 344x288)
     const int tile_size = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
     // OPTIMIZATION: Use pre-allocated buffers instead of malloc/free per tile
     int16_t *quantised_y = enc->reusable_quantised_y;
@@ -738,7 +738,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
     uint8_t *uncompressed_buffer = malloc(total_uncompressed_size);
     size_t uncompressed_offset = 0;
     
-    // Serialize all tiles
+    // Serialise all tiles
     for (int tile_y = 0; tile_y < enc->tiles_y; tile_y++) {
         for (int tile_x = 0; tile_x < enc->tiles_x; tile_x++) {
             int tile_idx = tile_y * enc->tiles_x + tile_x;
@@ -774,8 +774,8 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             dwt_2d_forward_padded(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
             dwt_2d_forward_padded(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
             
-            // Serialize tile
-            size_t tile_size = serialize_tile_data(enc, tile_x, tile_y, 
+            // Serialise tile
+            size_t tile_size = serialise_tile_data(enc, tile_x, tile_y, 
                                                    tile_y_data, tile_co_data, tile_cg_data,
                                                    mode, uncompressed_buffer + uncompressed_offset);
             uncompressed_offset += tile_size;
@@ -1759,15 +1759,11 @@ int main(int argc, char *argv[]) {
         {"quantiser", required_argument, 0, 'Q'},
         {"quantizer", required_argument, 0, 'Q'},
 //        {"wavelet", required_argument, 0, 'w'},
-//        {"decomp", required_argument, 0, 'd'},
         {"bitrate", required_argument, 0, 'b'},
-//        {"progressive", no_argument, 0, 'p'},
         {"subtitles", required_argument, 0, 'S'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"lossless", no_argument, 0, 1000},
-//        {"enable-progressive", no_argument, 0, 1002},
-//        {"enable-roi", no_argument, 0, 1003},
         {"delta-code", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
         {"help", no_argument, 0, 1004},

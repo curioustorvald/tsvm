@@ -444,7 +444,7 @@ function updateDataRateBin(rate) {
     }
 }
 
-function getVideoRate(rate) {
+function getVideoRate() {
     let baseRate = videoRateBin.reduce((a, c) => a + c, 0)
     let mult = fps / videoRateBin.length
     return baseRate * mult
@@ -766,7 +766,7 @@ try {
     }
 }
 catch (e) {
-    printerrln(`TEV ${colorSpace} decode error: ${e}`)
+    serial.printerr(`TEV ${colorSpace} decode error: ${e}`)
     errorlevel = 1
 }
 finally {
