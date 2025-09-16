@@ -188,6 +188,7 @@ typedef struct {
     int mp2_packet_size;
     int mp2_rate_index;
     int target_audio_buffer_size;
+    double audio_frames_in_buffer;
     
     // Subtitle processing  
     subtitle_entry_t *subtitles;
@@ -1244,7 +1245,6 @@ static int start_video_conversion(tav_encoder_t *enc) {
 
 // Start audio conversion
 static int start_audio_conversion(tav_encoder_t *enc) {
-    return 1;
     if (!enc->has_audio) return 1;
 
     char command[2048];
@@ -1563,16 +1563,23 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
         int is_mono = (header[3] >> 6) == 3;
         enc->mp2_rate_index = mp2_packet_size_to_rate_index(enc->mp2_packet_size, is_mono);
         enc->target_audio_buffer_size = 4; // 4 audio packets in buffer
+        enc->audio_frames_in_buffer = 0.0;
     }
 
-    // Calculate how much audio we need for this frame
-    double frame_duration = 1.0 / enc->fps;
-    double samples_per_frame = 32000.0 * frame_duration;  // 32kHz sample rate
-    int target_buffer_samples = (int)(samples_per_frame * enc->target_audio_buffer_size);
-    int target_buffer_bytes = (target_buffer_samples * enc->mp2_packet_size) / 1152;  // 1152 samples per MP2 frame
+    // Calculate how much audio time each frame represents (in seconds)
+    double frame_audio_time = 1.0 / enc->fps;
 
+    // Calculate how much audio time each MP2 packet represents
+    // MP2 frame contains 1152 samples at 32kHz = 0.036 seconds
+    #define MP2_SAMPLE_RATE 32000
+    double packet_audio_time = 1152.0 / MP2_SAMPLE_RATE;
+
+    // Estimate how many packets we consume per video frame
+    double packets_per_frame = frame_audio_time / packet_audio_time;
+
+    // Allocate MP2 buffer if needed
     if (!enc->mp2_buffer) {
-        enc->mp2_buffer_size = target_buffer_bytes * 2;  // Extra buffer space
+        enc->mp2_buffer_size = enc->mp2_packet_size * 2;  // Space for multiple packets
         enc->mp2_buffer = malloc(enc->mp2_buffer_size);
         if (!enc->mp2_buffer) {
             fprintf(stderr, "Failed to allocate audio buffer\n");
@@ -1580,34 +1587,71 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
         }
     }
 
-    // Read audio data
-    size_t bytes_to_read = target_buffer_bytes;
-    if (bytes_to_read > enc->audio_remaining) {
-        bytes_to_read = enc->audio_remaining;
+    // Audio buffering strategy: maintain target buffer level
+    int packets_to_insert = 0;
+    if (frame_num == 0) {
+        // Prime buffer to target level initially
+        packets_to_insert = enc->target_audio_buffer_size;
+        enc->audio_frames_in_buffer = 0; // count starts from 0
+        if (enc->verbose) {
+            printf("Frame %d: Priming audio buffer with %d packets\n", frame_num, packets_to_insert);
+        }
+    } else {
+        // Simulate buffer consumption (fractional consumption per frame)
+        double old_buffer = enc->audio_frames_in_buffer;
+        enc->audio_frames_in_buffer -= packets_per_frame;
+
+        // Calculate how many packets we need to maintain target buffer level
+        // Only insert when buffer drops below target, and only insert enough to restore target
+        double target_level = (double)enc->target_audio_buffer_size;
+        if (enc->audio_frames_in_buffer < target_level) {
+            double deficit = target_level - enc->audio_frames_in_buffer;
+            // Insert packets to cover the deficit, but at least maintain minimum flow
+            packets_to_insert = (int)ceil(deficit);
+            // Cap at reasonable maximum to prevent excessive insertion
+            if (packets_to_insert > enc->target_audio_buffer_size) {
+                packets_to_insert = enc->target_audio_buffer_size;
+            }
+
+            if (enc->verbose) {
+                printf("Frame %d: Buffer low (%.2f->%.2f), deficit %.2f, inserting %d packets\n",
+                       frame_num, old_buffer, enc->audio_frames_in_buffer, deficit, packets_to_insert);
+            }
+        } else if (enc->verbose && old_buffer != enc->audio_frames_in_buffer) {
+            printf("Frame %d: Buffer sufficient (%.2f->%.2f), no packets\n",
+                   frame_num, old_buffer, enc->audio_frames_in_buffer);
+        }
     }
-    if (bytes_to_read > enc->mp2_buffer_size) {
-        bytes_to_read = enc->mp2_buffer_size;
-    }
 
-    size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
-    if (bytes_read == 0) {
-        return 1;  // No more audio
-    }
+    // Insert the calculated number of audio packets
+    for (int q = 0; q < packets_to_insert; q++) {
+        size_t bytes_to_read = enc->mp2_packet_size;
+        if (bytes_to_read > enc->audio_remaining) {
+            bytes_to_read = enc->audio_remaining;
+        }
 
-    // Write audio packet
-    uint8_t audio_packet_type = TAV_PACKET_AUDIO_MP2;
-    uint32_t audio_len = (uint32_t)bytes_read;
-    
-    fwrite(&audio_packet_type, 1, 1, output);
-    fwrite(&audio_len, 4, 1, output);
-    fwrite(enc->mp2_buffer, 1, bytes_read, output);
+        size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
+        if (bytes_read == 0) break;
 
-    // Track audio bytes written
-    enc->audio_remaining -= bytes_read;
+        // Write TAV MP2 audio packet
+        uint8_t audio_packet_type = TAV_PACKET_AUDIO_MP2;
+        uint32_t audio_len = (uint32_t)bytes_read;
+        fwrite(&audio_packet_type, 1, 1, output);
+        fwrite(&audio_len, 4, 1, output);
+        fwrite(enc->mp2_buffer, 1, bytes_read, output);
 
-    if (enc->verbose) {
-        printf("Frame %d: Audio packet %zu bytes (remaining: %zu)\n", 
-               frame_num, bytes_read, enc->audio_remaining);
+        // Track audio bytes written
+        enc->audio_remaining -= bytes_read;
+        enc->audio_frames_in_buffer++;
+
+        if (frame_num == 0) {
+            enc->audio_frames_in_buffer = enc->target_audio_buffer_size / 2; // trick the buffer simulator so that it doesn't count the frame 0 priming
+        }
+
+        if (enc->verbose) {
+            printf("Audio packet %d: %zu bytes (buffer: %.2f packets)\n",
+                   q, bytes_read, enc->audio_frames_in_buffer);
+        }
     }
 
     return 1;
