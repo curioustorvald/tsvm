@@ -92,7 +92,7 @@ if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\\\T
 
 con.clear()
 con.curs_set(0)
-graphics.setGraphicsMode(4) // 4096-color mode  
+graphics.setGraphicsMode(4) // 4096-colour mode  
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
 
@@ -106,8 +106,8 @@ audio.setMasterVolume(0, 255)
 function clearSubtitleArea() {
     // Clear the subtitle area at the bottom of the screen
     // Text mode is 80x32, so clear the bottom few lines
-    let oldFgColor = con.get_color_fore()
-    let oldBgColor = con.get_color_back()
+    let oldFgColour = con.get_color_fore()
+    let oldBgColour = con.get_color_back()
 
     con.color_pair(255, 255)  // transparent to clear
 
@@ -119,7 +119,7 @@ function clearSubtitleArea() {
         }
     }
 
-    con.color_pair(oldFgColor, oldBgColor)
+    con.color_pair(oldFgColour, oldBgColour)
 }
 
 function getVisualLength(line) {
@@ -153,8 +153,8 @@ function getVisualLength(line) {
 }
 
 function displayFormattedLine(line) {
-    // Parse line and handle <b> and <i> tags with color changes
-    // Default subtitle color: yellow (231), formatted text: white (254)
+    // Parse line and handle <b> and <i> tags with colour changes
+    // Default subtitle colour: yellow (231), formatted text: white (254)
 
     let i = 0
     let inBoldOrItalic = false
@@ -202,9 +202,9 @@ function displaySubtitle(text, position = 0) {
         return
     }
 
-    // Set subtitle colors: yellow (231) on black (0)
-    let oldFgColor = con.get_color_fore()
-    let oldBgColor = con.get_color_back()
+    // Set subtitle colours: yellow (231) on black (0)
+    let oldFgColour = con.get_color_fore()
+    let oldBgColour = con.get_color_back()
     con.color_pair(231, 0)
 
     // Split text into lines
@@ -270,7 +270,7 @@ function displaySubtitle(text, position = 0) {
         displayFormattedLine(line)
     }
 
-    con.color_pair(oldFgColor, oldBgColor)
+    con.color_pair(oldFgColour, oldBgColour)
 }
 
 function processSubtitlePacket(packetSize) {
@@ -454,7 +454,7 @@ console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ?
 console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
-console.log(`Color space: ${header.version === 2 ? "ICtCp" : "YCoCg-R"}`)
+console.log(`Colour space: ${header.version === 2 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
 
 // Frame buffer addresses - same as TEV
@@ -559,7 +559,7 @@ let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
 
-let blockDataPtr = sys.malloc(560*448*3)
+let blockDataPtr = sys.malloc(2377764)
 
 // Playback loop - properly adapted from TEV
 try {
@@ -613,6 +613,7 @@ try {
                 }
 
                 try {
+//                    serial.println(actualSize)
                     // Duplicate every 1000th frame if NTSC (same as TEV)
                     if (!isNTSC || frameCount % 1000 != 501 || frameDuped) {
                         frameDuped = false
@@ -631,7 +632,7 @@ try {
                             header.decompLevels,       // TAV-specific parameter
                             enableDeblocking,
                             isLossless,
-                            header.version             // TAV version for color space detection
+                            header.version             // TAV version for colour space detection
                         )
 
                         decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
@@ -663,9 +664,10 @@ try {
                     }
                 } catch (e) {
                     console.log(`Frame ${frameCount}: decode failed: ${e}`)
+                } finally {
+                    sys.free(compressedPtr)
                 }
 
-                sys.free(compressedPtr)
 
                 let biasStart = sys.nanoTime()
                 setBiasLighting()

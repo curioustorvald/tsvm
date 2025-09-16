@@ -22,7 +22,7 @@
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
-// TAV version - dynamic based on color space mode
+// TAV version - dynamic based on colour space mode
 // Version 1: YCoCg-R (default) 
 // Version 2: ICtCp (--ictcp flag)
 
@@ -40,15 +40,16 @@
 #define TAV_PACKET_SYNC        0xFF  // Sync packet
 
 // DWT settings
-#define TILE_SIZE 112  // 112x112 tiles - perfect fit for TSVM 560x448 (GCD = 112)
-#define MAX_DECOMP_LEVELS 6  // Can go deeper: 112→56→28→14→7→3→1
-#define DEFAULT_DECOMP_LEVELS 5  // Increased default for better compression
+#define TILE_SIZE_X 280  // 280x224 tiles - better compression efficiency  
+#define TILE_SIZE_Y 224  // Optimized for TSVM 560x448 (2×2 tiles exactly)
+#define MAX_DECOMP_LEVELS 6  // Can go deeper: 280→140→70→35→17→8→4, 224→112→56→28→14→7→3
 
 // Simulated overlapping tiles settings for seamless DWT processing
 #define DWT_FILTER_HALF_SUPPORT 4  // For 9/7 filter (filter lengths 9,7 → L=4)
 #define TILE_MARGIN_LEVELS 3       // Use margin for 3 levels: 4 * (2^3) = 4 * 8 = 32px
 #define TILE_MARGIN (DWT_FILTER_HALF_SUPPORT * (1 << TILE_MARGIN_LEVELS))  // 4 * 8 = 32px
-#define PADDED_TILE_SIZE (TILE_SIZE + 2 * TILE_MARGIN)  // 112 + 64 = 176px
+#define PADDED_TILE_SIZE_X (TILE_SIZE_X + 2 * TILE_MARGIN)  // 280 + 64 = 344px
+#define PADDED_TILE_SIZE_Y (TILE_SIZE_Y + 2 * TILE_MARGIN)  // 224 + 64 = 288px
 
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
@@ -166,7 +167,7 @@ typedef struct {
     int enable_roi;
     int verbose;
     int test_mode;
-    int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp color space
+    int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp colour space
     
     // Frame buffers
     uint8_t *current_frame_rgb;
@@ -216,7 +217,7 @@ static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialize_encoder(tav_encoder_t *enc);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
-static int estimate_motion_112x112(const float *current, const float *reference, 
+static int estimate_motion_280x224(const float *current, const float *reference, 
                                    int width, int height, int tile_x, int tile_y, 
                                    motion_vector_t *mv);
 
@@ -246,7 +247,6 @@ static void show_usage(const char *program_name) {
     printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
     printf("  -Q, --quantizer Y,Co,Cg Quantizer levels 0-100 for each channel\n");
 //    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
-//    printf("  -d, --decomp N          Decomposition levels 1-6 (default: %d)\n", DEFAULT_DECOMP_LEVELS);
     printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose           Verbose output\n");
@@ -254,7 +254,7 @@ static void show_usage(const char *program_name) {
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
 //    printf("  --enable-progressive    Enable progressive transmission\n");
 //    printf("  --enable-roi            Enable region-of-interest coding\n");
-    printf("  --ictcp                 Use ICtCp color space instead of YCoCg-R (generates TAV version 2)\n");
+    printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (generates TAV version 2)\n");
     printf("  --help                  Show this help\n\n");
     
     printf("Audio Rate by Quality:\n  ");
@@ -277,7 +277,7 @@ static void show_usage(const char *program_name) {
     
     printf("\n\nFeatures:\n");
     printf("  - 112x112 DWT tiles with multi-resolution encoding\n");
-    printf("  - Full resolution YCoCg-R/ICtCp color space\n");
+    printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
 //    printf("  - Progressive transmission and ROI coding\n");
 //    printf("  - Motion compensation with ±16 pixel search range\n");
     printf("  - Lossless and lossy compression modes\n");
@@ -301,7 +301,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->fps = DEFAULT_FPS;
     enc->quality_level = DEFAULT_QUALITY;
     enc->wavelet_filter = WAVELET_9_7_IRREVERSIBLE;
-    enc->decomp_levels = DEFAULT_DECOMP_LEVELS;
+    enc->decomp_levels = MAX_DECOMP_LEVELS;
     enc->quantizer_y = QUALITY_Y[DEFAULT_QUALITY];
     enc->quantizer_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantizer_cg = QUALITY_CG[DEFAULT_QUALITY];
@@ -314,8 +314,8 @@ static int initialize_encoder(tav_encoder_t *enc) {
     if (!enc) return -1;
     
     // Calculate tile dimensions
-    enc->tiles_x = (enc->width + TILE_SIZE - 1) / TILE_SIZE;
-    enc->tiles_y = (enc->height + TILE_SIZE - 1) / TILE_SIZE;
+    enc->tiles_x = (enc->width + TILE_SIZE_X - 1) / TILE_SIZE_X;
+    enc->tiles_y = (enc->height + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
     int num_tiles = enc->tiles_x * enc->tiles_y;
     
     // Allocate frame buffers
@@ -338,8 +338,8 @@ static int initialize_encoder(tav_encoder_t *enc) {
     enc->compressed_buffer_size = ZSTD_compressBound(1024 * 1024); // 1MB max
     enc->compressed_buffer = malloc(enc->compressed_buffer_size);
     
-    // OPTIMIZATION: Allocate reusable quantization buffers for padded tiles (176x176)
-    const int padded_coeff_count = PADDED_TILE_SIZE * PADDED_TILE_SIZE;
+    // OPTIMIZATION: Allocate reusable quantization buffers for padded tiles (344x288)
+    const int padded_coeff_count = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
     enc->reusable_quantized_y = malloc(padded_coeff_count * sizeof(int16_t));
     enc->reusable_quantized_co = malloc(padded_coeff_count * sizeof(int16_t));
     enc->reusable_quantized_cg = malloc(padded_coeff_count * sizeof(int16_t));
@@ -459,11 +459,11 @@ static void dwt_97_forward_1d(float *data, int length) {
 // Extract padded tile with margins for seamless DWT processing (correct implementation)
 static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y, 
                                float *padded_y, float *padded_co, float *padded_cg) {
-    const int core_start_x = tile_x * TILE_SIZE;
-    const int core_start_y = tile_y * TILE_SIZE;
+    const int core_start_x = tile_x * TILE_SIZE_X;
+    const int core_start_y = tile_y * TILE_SIZE_Y;
     
     // OPTIMIZATION: Process row by row with bulk copying for core region
-    for (int py = 0; py < PADDED_TILE_SIZE; py++) {
+    for (int py = 0; py < PADDED_TILE_SIZE_Y; py++) {
         // Map padded row to source image row
         int src_y = core_start_y + py - TILE_MARGIN;
         
@@ -473,30 +473,30 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
         src_y = CLAMP(src_y, 0, enc->height - 1);
         
         // Calculate source and destination row offsets
-        const int padded_row_offset = py * PADDED_TILE_SIZE;
+        const int padded_row_offset = py * PADDED_TILE_SIZE_X;
         const int src_row_offset = src_y * enc->width;
         
         // Check if we can do bulk copying for the core region
         int core_start_px = TILE_MARGIN;
-        int core_end_px = TILE_MARGIN + TILE_SIZE;
+        int core_end_px = TILE_MARGIN + TILE_SIZE_X;
         
         // Check if core region is entirely within frame bounds
         int core_src_start_x = core_start_x;
-        int core_src_end_x = core_start_x + TILE_SIZE;
+        int core_src_end_x = core_start_x + TILE_SIZE_X;
         
         if (core_src_start_x >= 0 && core_src_end_x <= enc->width) {
-            // OPTIMIZATION: Bulk copy core region (112 pixels) in one operation
+            // OPTIMIZATION: Bulk copy core region (280 pixels) in one operation
             const int src_core_offset = src_row_offset + core_src_start_x;
             
             memcpy(&padded_y[padded_row_offset + core_start_px], 
                    &enc->current_frame_y[src_core_offset], 
-                   TILE_SIZE * sizeof(float));
+                   TILE_SIZE_X * sizeof(float));
             memcpy(&padded_co[padded_row_offset + core_start_px], 
                    &enc->current_frame_co[src_core_offset], 
-                   TILE_SIZE * sizeof(float));
+                   TILE_SIZE_X * sizeof(float));
             memcpy(&padded_cg[padded_row_offset + core_start_px], 
                    &enc->current_frame_cg[src_core_offset], 
-                   TILE_SIZE * sizeof(float));
+                   TILE_SIZE_X * sizeof(float));
             
             // Handle margin pixels individually (left and right margins)
             for (int px = 0; px < core_start_px; px++) {
@@ -512,7 +512,7 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
                 padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
             }
             
-            for (int px = core_end_px; px < PADDED_TILE_SIZE; px++) {
+            for (int px = core_end_px; px < PADDED_TILE_SIZE_X; px++) {
                 int src_x = core_start_x + px - TILE_MARGIN;
                 if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
                 src_x = CLAMP(src_x, 0, enc->width - 1);
@@ -526,7 +526,7 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
             }
         } else {
             // Fallback: process entire row pixel by pixel (for edge tiles)
-            for (int px = 0; px < PADDED_TILE_SIZE; px++) {
+            for (int px = 0; px < PADDED_TILE_SIZE_X; px++) {
                 int src_x = core_start_x + px - TILE_MARGIN;
                 
                 // Handle horizontal boundary conditions with mirroring
@@ -546,47 +546,50 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
 }
 
 
-// 2D DWT forward transform for padded tile
+// 2D DWT forward transform for rectangular padded tile (344x288)
 static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type) {
-    const int size = PADDED_TILE_SIZE;
-    float *temp_row = malloc(size * sizeof(float));
-    float *temp_col = malloc(size * sizeof(float));
+    const int width = PADDED_TILE_SIZE_X;   // 344
+    const int height = PADDED_TILE_SIZE_Y;  // 288
+    const int max_size = (width > height) ? width : height;
+    float *temp_row = malloc(max_size * sizeof(float));
+    float *temp_col = malloc(max_size * sizeof(float));
     
     for (int level = 0; level < levels; level++) {
-        int current_size = size >> level;
-        if (current_size < 1) break;
+        int current_width = width >> level;
+        int current_height = height >> level;
+        if (current_width < 1 || current_height < 1) break;
         
-        // Row transform
-        for (int y = 0; y < current_size; y++) {
-            for (int x = 0; x < current_size; x++) {
-                temp_row[x] = tile_data[y * size + x];
+        // Row transform (horizontal)
+        for (int y = 0; y < current_height; y++) {
+            for (int x = 0; x < current_width; x++) {
+                temp_row[x] = tile_data[y * width + x];
             }
             
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
-                dwt_53_forward_1d(temp_row, current_size);
+                dwt_53_forward_1d(temp_row, current_width);
             } else {
-                dwt_97_forward_1d(temp_row, current_size);
+                dwt_97_forward_1d(temp_row, current_width);
             }
             
-            for (int x = 0; x < current_size; x++) {
-                tile_data[y * size + x] = temp_row[x];
+            for (int x = 0; x < current_width; x++) {
+                tile_data[y * width + x] = temp_row[x];
             }
         }
         
-        // Column transform
-        for (int x = 0; x < current_size; x++) {
-            for (int y = 0; y < current_size; y++) {
-                temp_col[y] = tile_data[y * size + x];
+        // Column transform (vertical)
+        for (int x = 0; x < current_width; x++) {
+            for (int y = 0; y < current_height; y++) {
+                temp_col[y] = tile_data[y * width + x];
             }
             
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
-                dwt_53_forward_1d(temp_col, current_size);
+                dwt_53_forward_1d(temp_col, current_height);
             } else {
-                dwt_97_forward_1d(temp_col, current_size);
+                dwt_97_forward_1d(temp_col, current_height);
             }
             
-            for (int y = 0; y < current_size; y++) {
-                tile_data[y * size + x] = temp_col[y];
+            for (int y = 0; y < current_height; y++) {
+                tile_data[y * width + x] = temp_col[y];
             }
         }
     }
@@ -626,8 +629,8 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         return offset;
     }
     
-    // Quantize and serialize DWT coefficients (full padded tile: 176x176)
-    const int tile_size = PADDED_TILE_SIZE * PADDED_TILE_SIZE;
+    // Quantize and serialize DWT coefficients (full padded tile: 344x288)
+    const int tile_size = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
     // OPTIMIZATION: Use pre-allocated buffers instead of malloc/free per tile
     int16_t *quantized_y = enc->reusable_quantized_y;
     int16_t *quantized_co = enc->reusable_quantized_co;
@@ -669,8 +672,8 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
-    // Calculate total uncompressed size (for padded tile coefficients: 176x176)
-    const size_t max_tile_size = 9 + (PADDED_TILE_SIZE * PADDED_TILE_SIZE * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    // Calculate total uncompressed size (for padded tile coefficients: 344x288)
+    const size_t max_tile_size = 9 + (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
     
     // Allocate buffer for uncompressed tile data
@@ -685,12 +688,12 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             // Determine tile mode (simplified)
             uint8_t mode = TAV_MODE_INTRA;  // For now, all tiles are INTRA
             
-            // Extract padded tile data (176x176) with neighbor context for overlapping tiles
-            float tile_y_data[PADDED_TILE_SIZE * PADDED_TILE_SIZE];
-            float tile_co_data[PADDED_TILE_SIZE * PADDED_TILE_SIZE];
-            float tile_cg_data[PADDED_TILE_SIZE * PADDED_TILE_SIZE];
+            // Extract padded tile data (344x288) with neighbour context for overlapping tiles
+            float tile_y_data[PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y];
+            float tile_co_data[PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y];
+            float tile_cg_data[PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y];
             
-            // Extract padded tiles using context from neighbors
+            // Extract padded tiles using context from neighbours
             extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
             
             // Debug: check input data before DWT
@@ -742,13 +745,14 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
 }
 
 // Motion estimation for 112x112 tiles using SAD
-static int estimate_motion_112x112(const float *current, const float *reference, 
+static int estimate_motion_280x224(const float *current, const float *reference, 
                                  int width, int height, int tile_x, int tile_y, 
                                  motion_vector_t *mv) {
-    const int tile_size = TILE_SIZE;
-    const int search_range = 28;  // ±28 pixels (increased proportionally: 16 * 112/64 = 28)
-    const int start_x = tile_x * tile_size;
-    const int start_y = tile_y * tile_size;
+    const int tile_size_x = TILE_SIZE_X;
+    const int tile_size_y = TILE_SIZE_Y;
+    const int search_range = 32;  // ±32 pixels (scaled for larger tiles)
+    const int start_x = tile_x * tile_size_x;
+    const int start_y = tile_y * tile_size_y;
     
     int best_mv_x = 0, best_mv_y = 0;
     int min_sad = INT_MAX;
@@ -761,14 +765,14 @@ static int estimate_motion_112x112(const float *current, const float *reference,
             
             // Check bounds
             if (ref_x < 0 || ref_y < 0 || 
-                ref_x + tile_size > width || ref_y + tile_size > height) {
+                ref_x + tile_size_x > width || ref_y + tile_size_y > height) {
                 continue;
             }
             
             // Calculate SAD
             int sad = 0;
-            for (int y = 0; y < tile_size; y++) {
-                for (int x = 0; x < tile_size; x++) {
+            for (int y = 0; y < tile_size_y; y++) {
+                for (int x = 0; x < tile_size_x; x++) {
                     int curr_idx = (start_y + y) * width + (start_x + x);
                     int ref_idx = (ref_y + y) * width + (ref_x + x);
                     
@@ -795,7 +799,7 @@ static int estimate_motion_112x112(const float *current, const float *reference,
     return min_sad;
 }
 
-// RGB to YCoCg color space conversion
+// RGB to YCoCg colour space conversion
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height) {
     const int total_pixels = width * height;
     
@@ -815,7 +819,7 @@ static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int
             const float g = rgb_ptr[j * 3 + 1]; 
             const float b = rgb_ptr[j * 3 + 2];
             
-            // YCoCg-R transform (optimized with fewer temporary variables)
+            // YCoCg-R transform (optimised with fewer temporary variables)
             co[idx] = r - b;
             const float tmp = b + co[idx] * 0.5f;
             cg[idx] = g - tmp;
@@ -963,16 +967,16 @@ void ictcp_hlg_to_srgb8(double I8, double Ct8, double Cp8,
     *b8 = (uint8_t)iround(FCLAMP(b * 255.0, 0.0, 255.0));
 }
 
-// ---------------------- Color Space Switching Functions ----------------------
+// ---------------------- Colour Space Switching Functions ----------------------
 // Wrapper functions that choose between YCoCg-R and ICtCp based on encoder mode
 
-static void rgb_to_color_space(tav_encoder_t *enc, uint8_t r, uint8_t g, uint8_t b,
+static void rgb_to_colour_space(tav_encoder_t *enc, uint8_t r, uint8_t g, uint8_t b,
                                double *c1, double *c2, double *c3) {
     if (enc->ictcp_mode) {
-        // Use ICtCp color space
+        // Use ICtCp colour space
         srgb8_to_ictcp_hlg(r, g, b, c1, c2, c3);
     } else {
-        // Use YCoCg-R color space (convert from existing function)
+        // Use YCoCg-R colour space (convert from existing function)
         float rf = r, gf = g, bf = b;
         float co = rf - bf;
         float tmp = bf + co / 2;
@@ -984,13 +988,13 @@ static void rgb_to_color_space(tav_encoder_t *enc, uint8_t r, uint8_t g, uint8_t
     }
 }
 
-static void color_space_to_rgb(tav_encoder_t *enc, double c1, double c2, double c3,
+static void colour_space_to_rgb(tav_encoder_t *enc, double c1, double c2, double c3,
                                uint8_t *r, uint8_t *g, uint8_t *b) {
     if (enc->ictcp_mode) {
-        // Use ICtCp color space
+        // Use ICtCp colour space
         ictcp_hlg_to_srgb8(c1, c2, c3, r, g, b);
     } else {
-        // Use YCoCg-R color space (inverse of rgb_to_ycocg)
+        // Use YCoCg-R colour space (inverse of rgb_to_ycocg)
         float y = (float)c1;
         float co = (float)c2;
         float cg = (float)c3;
@@ -1004,8 +1008,8 @@ static void color_space_to_rgb(tav_encoder_t *enc, double c1, double c2, double 
     }
 }
 
-// RGB to color space conversion for full frames
-static void rgb_to_color_space_frame(tav_encoder_t *enc, const uint8_t *rgb, 
+// RGB to colour space conversion for full frames
+static void rgb_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgb, 
                                     float *c1, float *c2, float *c3, int width, int height) {
     if (enc->ictcp_mode) {
         // ICtCp mode
@@ -1029,7 +1033,7 @@ static int write_tav_header(tav_encoder_t *enc) {
     // Magic number
     fwrite(TAV_MAGIC, 1, 8, enc->output_fp);
     
-    // Version (dynamic based on color space)
+    // Version (dynamic based on colour space)
     uint8_t version = enc->ictcp_mode ? 2 : 1;  // Version 2 for ICtCp, 1 for YCoCg-R
     fputc(version, enc->output_fp);
     
@@ -1731,7 +1735,7 @@ int main(int argc, char *argv[]) {
     printf("Wavelet: %s\n", enc->wavelet_filter ? "9/7 irreversible" : "5/3 reversible");
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Quality: Y=%d, Co=%d, Cg=%d\n", enc->quantizer_y, enc->quantizer_co, enc->quantizer_cg);
-    printf("Color space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
+    printf("Colour space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
     
     // Open output file
     if (strcmp(enc->output_file, "-") == 0) {
@@ -1747,7 +1751,7 @@ int main(int argc, char *argv[]) {
     
     // Start FFmpeg process for video input (using TEV-compatible filtergraphs)
     if (enc->test_mode) {
-        // Test mode - generate solid color frames
+        // Test mode - generate solid colour frames
         enc->total_frames = 15;  // Fixed 15 test frames like TEV
         printf("Test mode: Generating %d solid colour frames\n", enc->total_frames);
     } else {
@@ -1877,8 +1881,8 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }*/
         
-        // Convert RGB to color space (YCoCg-R or ICtCp)
-        rgb_to_color_space_frame(enc, enc->current_frame_rgb, 
+        // Convert RGB to colour space (YCoCg-R or ICtCp)
+        rgb_to_colour_space_frame(enc, enc->current_frame_rgb, 
                                 enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
                                 enc->width, enc->height);
                      
@@ -1899,7 +1903,7 @@ int main(int argc, char *argv[]) {
             int tile_y = tile_idx / enc->tiles_x;
             
             if (!is_keyframe && frame_count > 0) {
-                estimate_motion_112x112(enc->current_frame_y, enc->previous_frame_y,
+                estimate_motion_280x224(enc->current_frame_y, enc->previous_frame_y,
                                       enc->width, enc->height, tile_x, tile_y,
                                       &enc->motion_vectors[tile_idx]);
             } else {
