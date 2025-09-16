@@ -6,16 +6,19 @@ CFLAGS = -std=c99 -Wall -Wextra -O2 -D_GNU_SOURCE
 LIBS = -lm -lzstd
 
 # Source files and targets
-SOURCES = encoder_tev.c
-TARGETS = encoder_tev
+TARGETS = encoder_tev encoder_tav
 
 # Build all encoders
 all: $(TARGETS)
 
 # Build main encoder
-encoder_tev: encoder_tev.c
+tev: encoder_tev.c
 	rm -f encoder_tev
-	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
+	$(CC) $(CFLAGS) -o encoder_tev $< $(LIBS)
+
+tav: encoder_tav.c
+	rm -f encoder_tav
+	$(CC) $(CFLAGS) -o encoder_tav $< $(LIBS)
 
 # Default target
 $(TARGETS): all
@@ -45,8 +48,8 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all          - Build both encoders (default)"
-	@echo "  encoder_tev  - Build the main TEV encoder"
-	@echo "  encoder_tev_xyb - Build the XYB color space encoder"
+	@echo "  tev          - Build the main TEV encoder"
+	@echo "  tav          - Build the advanced TAV encoder"
 	@echo "  debug        - Build with debug symbols"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  install      - Install to /usr/local/bin"
@@ -54,8 +57,9 @@ help:
 	@echo "  help         - Show this help"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make         # Build both encoders"
-	@echo "  ./encoder_tev input.mp4 -o output.tev"
-	@echo "  ./encoder_tev_xyb input.mp4 -o output.tev"
+	@echo "  make               # Build both encoders"
+	@echo "  make tev           # Build TEV encoder"
+	@echo "  make tav           # Build TAV encoder"
+	@echo "  sudo make install  # Install both encoders"
 
 .PHONY: all clean install check-deps help debug

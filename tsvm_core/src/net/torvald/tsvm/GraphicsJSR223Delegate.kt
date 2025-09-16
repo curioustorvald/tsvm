@@ -12,87 +12,26 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.fmod
-import net.torvald.util.Float16
 import kotlin.math.*
 
 class GraphicsJSR223Delegate(private val vm: VM) {
     
+    // TAV Simulated overlapping tiles constants (must match encoder)
+    private val TILE_SIZE_X = 280
+    private val TILE_SIZE_Y = 224
+    private val TAV_TILE_MARGIN = 32  // 32-pixel margin for 3 DWT levels (4 * 2^3 = 32px)
+    private val PADDED_TILE_SIZE_X = TILE_SIZE_X + 2 * TAV_TILE_MARGIN  // 280 + 64 = 344px
+    private val PADDED_TILE_SIZE_Y = TILE_SIZE_Y + 2 * TAV_TILE_MARGIN  // 224 + 64 = 288px
+
     // Reusable working arrays to reduce allocation overhead
-    private val idct8TempBuffer = FloatArray(64)
-    private val idct16TempBuffer = FloatArray(256) // For 16x16 IDCT
-    private val idct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
+    private val tevIdct8TempBuffer = FloatArray(64)
+    private val tevIdct16TempBuffer = FloatArray(256) // For 16x16 IDCT
+    private val tevIdct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
     
-    // Lossless IDCT functions for float16 coefficients (no quantization)
-    private fun tevIdct8x8_lossless(coeffs: FloatArray): IntArray {
-        val result = IntArray(64)
-        
-        // Fast separable IDCT (row-column decomposition) for lossless coefficients
-        // First pass: Process rows (8 1D IDCTs)
-        for (row in 0 until 8) {
-            for (col in 0 until 8) {
-                var sum = 0f
-                for (u in 0 until 8) {
-                    sum += dctBasis8[u][col] * coeffs[row * 8 + u]
-                }
-                idct8TempBuffer[row * 8 + col] = sum * 0.5f
-            }
-        }
-        
-        // Second pass: Process columns (8 1D IDCTs)
-        for (col in 0 until 8) {
-            for (row in 0 until 8) {
-                var sum = 0f
-                for (v in 0 until 8) {
-                    sum += dctBasis8[v][row] * idct8TempBuffer[v * 8 + col]
-                }
-                val finalValue = sum * 0.5f + 128f
-                result[row * 8 + col] = if (finalValue.isNaN() || finalValue.isInfinite()) {
-                    println("NaN/Inf detected in 8x8 IDCT at ($row,$col): sum=$sum, finalValue=$finalValue")
-                    128 // Default to middle gray
-                } else {
-                    finalValue.roundToInt().coerceIn(0, 255)
-                }
-            }
-        }
-        
-        return result
-    }
-    
-    private fun tevIdct16x16_lossless(coeffs: FloatArray): IntArray {
-        val result = IntArray(256)
-        
-        // Fast separable IDCT (row-column decomposition) for 16x16 lossless coefficients  
-        // First pass: Process rows (16 1D IDCTs)
-        for (row in 0 until 16) {
-            for (col in 0 until 16) {
-                var sum = 0f
-                for (u in 0 until 16) {
-                    sum += dctBasis16[u][col] * coeffs[row * 16 + u]
-                }
-                idct16TempBuffer[row * 16 + col] = sum * 0.25f
-            }
-        }
-        
-        // Second pass: Process columns (16 1D IDCTs)
-        for (col in 0 until 16) {
-            for (row in 0 until 16) {
-                var sum = 0f
-                for (v in 0 until 16) {
-                    sum += dctBasis16[v][row] * idct16TempBuffer[v * 16 + col]
-                }
-                val finalValue = sum * 0.25f + 128f
-                result[row * 16 + col] = if (finalValue.isNaN() || finalValue.isInfinite()) {
-                    println("NaN/Inf detected in 16x16 IDCT at ($row,$col): sum=$sum, finalValue=$finalValue")
-                    128 // Default to middle gray
-                } else {
-                    finalValue.roundToInt().coerceIn(0, 255)
-                }
-            }
-        }
-        
-        return result
-    }
-    
+    // TAV coefficient delta storage for previous frame (for efficient P-frames)
+    private var tavPreviousCoeffsY: MutableMap<Int, FloatArray>? = null
+    private var tavPreviousCoeffsCo: MutableMap<Int, FloatArray>? = null 
+    private var tavPreviousCoeffsCg: MutableMap<Int, FloatArray>? = null
 
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
@@ -149,19 +88,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         getFirstGPU()?._storebulk(fromAddr, toAddr, length)
     }*/
 
-    fun plotPixel(x: Int, y: Int, color: Int) {
+    fun plotPixel(x: Int, y: Int, colour: Int) {
         getFirstGPU()?.let {
             if (x in 0 until it.config.width && y in 0 until it.config.height) {
-                it.poke(y.toLong() * it.config.width + x, color.toByte())
+                it.poke(y.toLong() * it.config.width + x, colour.toByte())
                 it.applyDelay()
             }
         }
     }
 
-    fun plotPixel2(x: Int, y: Int, color: Int) {
+    fun plotPixel2(x: Int, y: Int, colour: Int) {
         getFirstGPU()?.let {
             if (x in 0 until it.config.width && y in 0 until it.config.height) {
-                it.poke(262144 + y.toLong() * it.config.width + x, color.toByte())
+                it.poke(262144 + y.toLong() * it.config.width + x, colour.toByte())
                 it.applyDelay()
             }
         }
@@ -986,7 +925,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun clampRGB(f: Float) = f.coerceIn(0f, 1f)
-    private fun ycocgToRGB(co: Int, cg: Int, ys: Int, As: Int): Array<Int> { // ys: 4 Y-values
+    private fun ipf1YcocgToRGB(co: Int, cg: Int, ys: Int, As: Int): Array<Int> { // ys: 4 Y-values
         // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
 
 //    cocg = 0x7777
@@ -1035,7 +974,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         )
     }
 
-    private fun ycocgToRGB(co1: Int, co2: Int, cg1: Int, cg2: Int, ys: Int, As: Int): Array<Int> { // ys: 4 Y-values
+    private fun ipf2YcocgToRGB(co1: Int, co2: Int, cg1: Int, cg2: Int, ys: Int, As: Int): Array<Int> { // ys: 4 Y-values
         // return [R1|G1, B1|A1, R2|G2, B2|A2, R3|G3, B3|A3, R4|G4, B4|A4]
 
 //    cocg = 0x7777
@@ -1118,25 +1057,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 a4 = readShort()
             }
 
-            var corner = ycocgToRGB(co and 15, cg and 15, y1, a1)
+            var corner = ipf1YcocgToRGB(co and 15, cg and 15, y1, a1)
             rg[0] = corner[0];ba[0] = corner[1]
             rg[1] = corner[2];ba[1] = corner[3]
             rg[4] = corner[4];ba[4] = corner[5]
             rg[5] = corner[6];ba[5] = corner[7]
 
-            corner = ycocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, a2)
+            corner = ipf1YcocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, a2)
             rg[2] = corner[0];ba[2] = corner[1]
             rg[3] = corner[2];ba[3] = corner[3]
             rg[6] = corner[4];ba[6] = corner[5]
             rg[7] = corner[6];ba[7] = corner[7]
 
-            corner = ycocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, a3)
+            corner = ipf1YcocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, a3)
             rg[8] = corner[0];ba[8] = corner[1]
             rg[9] = corner[2];ba[9] = corner[3]
             rg[12] = corner[4];ba[12] = corner[5]
             rg[13] = corner[6];ba[13] = corner[7]
 
-            corner = ycocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, a4)
+            corner = ipf1YcocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, a4)
             rg[10] = corner[0];ba[10] = corner[1]
             rg[11] = corner[2];ba[11] = corner[3]
             rg[14] = corner[4];ba[14] = corner[5]
@@ -1209,25 +1148,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         val rg = IntArray(16)
                         val ba = IntArray(16)
 
-                        var px = ycocgToRGB(co and 15, cg and 15, y1, 65535)
+                        var px = ipf1YcocgToRGB(co and 15, cg and 15, y1, 65535)
                         rg[0] = px[0]; ba[0] = px[1]
                         rg[1] = px[2]; ba[1] = px[3]
                         rg[4] = px[4]; ba[4] = px[5]
                         rg[5] = px[6]; ba[5] = px[7]
 
-                        px = ycocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, 65535)
+                        px = ipf1YcocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, 65535)
                         rg[2] = px[0]; ba[2] = px[1]
                         rg[3] = px[2]; ba[3] = px[3]
                         rg[6] = px[4]; ba[6] = px[5]
                         rg[7] = px[6]; ba[7] = px[7]
 
-                        px = ycocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, 65535)
+                        px = ipf1YcocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, 65535)
                         rg[8] = px[0]; ba[8] = px[1]
                         rg[9] = px[2]; ba[9] = px[3]
                         rg[12] = px[4]; ba[12] = px[5]
                         rg[13] = px[6]; ba[13] = px[7]
 
-                        px = ycocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, 65535)
+                        px = ipf1YcocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, 65535)
                         rg[10] = px[0]; ba[10] = px[1]
                         rg[11] = px[2]; ba[11] = px[3]
                         rg[14] = px[4]; ba[14] = px[5]
@@ -1302,25 +1241,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 a4 = readShort()
             }
 
-            var corner = ycocgToRGB(co and 15, (co shr 8) and 15, cg and 15, (cg shr 8) and 15, y1, a1)
+            var corner = ipf2YcocgToRGB(co and 15, (co shr 8) and 15, cg and 15, (cg shr 8) and 15, y1, a1)
             rg[0] = corner[0];ba[0] = corner[1]
             rg[1] = corner[2];ba[1] = corner[3]
             rg[4] = corner[4];ba[4] = corner[5]
             rg[5] = corner[6];ba[5] = corner[7]
 
-            corner = ycocgToRGB((co shr 4) and 15, (co shr 12) and 15, (cg shr 4) and 15, (cg shr 12) and 15, y2, a2)
+            corner = ipf2YcocgToRGB((co shr 4) and 15, (co shr 12) and 15, (cg shr 4) and 15, (cg shr 12) and 15, y2, a2)
             rg[2] = corner[0];ba[2] = corner[1]
             rg[3] = corner[2];ba[3] = corner[3]
             rg[6] = corner[4];ba[6] = corner[5]
             rg[7] = corner[6];ba[7] = corner[7]
 
-            corner = ycocgToRGB((co shr 16) and 15, (co shr 24) and 15, (cg shr 16) and 15, (cg shr 24) and 15, y3, a3)
+            corner = ipf2YcocgToRGB((co shr 16) and 15, (co shr 24) and 15, (cg shr 16) and 15, (cg shr 24) and 15, y3, a3)
             rg[8] = corner[0];ba[8] = corner[1]
             rg[9] = corner[2];ba[9] = corner[3]
             rg[12] = corner[4];ba[12] = corner[5]
             rg[13] = corner[6];ba[13] = corner[7]
 
-            corner = ycocgToRGB((co shr 20) and 15, (co shr 28) and 15, (cg shr 20) and 15, (cg shr 28) and 15, y4, a4)
+            corner = ipf2YcocgToRGB((co shr 20) and 15, (co shr 28) and 15, (cg shr 20) and 15, (cg shr 28) and 15, y4, a4)
             rg[10] = corner[0];ba[10] = corner[1]
             rg[11] = corner[2];ba[11] = corner[3]
             rg[14] = corner[4];ba[14] = corner[5]
@@ -1351,7 +1290,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return (if ((q < 50)) 5000f / q else 200f - 2 * q) / 100f
     }
 
-    // Quality settings for quantization (Y channel) - 16x16 tables
+    // Quality settings for quantisation (Y channel) - 16x16 tables
     val QUANT_TABLE_Y: IntArray = intArrayOf(
         16, 14, 12, 11, 11, 13, 16, 20, 24, 30, 39, 48, 54, 61, 67, 73,
         14, 13, 12, 12, 12, 15, 18, 21, 25, 33, 46, 57, 61, 65, 67, 70,
@@ -1370,7 +1309,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         73, 82, 92, 98, 103, 107, 110, 117, 126, 132, 134, 136, 138, 138, 133, 127,
         86, 98, 109, 112, 114, 116, 118, 124, 133, 135, 129, 125, 128, 130, 128, 127)
 
-    // Quality settings for quantization (Co channel - orange-blue, 8x8)
+    // Quality settings for quantisation (Co channel - orange-blue, 8x8)
     val QUANT_TABLE_C: IntArray =  intArrayOf(
         17, 18, 24, 47, 99, 99, 99, 99,
         18, 21, 26, 66, 99, 99, 99, 99,
@@ -1498,8 +1437,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val videoX = nativeX * scaleX
                     val videoY = nativeY * scaleY
                     
-                    // Sample RGB values using bilinear interpolation (optimized version)
-                    val rgb = sampleBilinearOptimized(rgbAddr, width, height, videoX, videoY, rgbAddrIncVec)
+                    // Sample RGB values using bilinear interpolation (optimised version)
+                    val rgb = sampleBilinearOptimised(rgbAddr, width, height, videoX, videoY, rgbAddrIncVec)
                     val r = rgb[0]
                     val g = rgb[1]
                     val b = rgb[2]
@@ -1525,7 +1464,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 pixelsProcessed += pixelsInChunk
             }
         } else {
-            // Optimized centering logic with bulk memory operations
+            // Optimised centering logic with bulk memory operations
             val offsetX = (nativeWidth - width) / 2
             val offsetY = (nativeHeight - height) / 2
 
@@ -1593,10 +1532,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Apply Bayer dithering to reduce banding when quantizing to 4-bit
+     * Apply Bayer dithering to reduce banding when quantising to 4-bit
      */
     private fun ditherValue(value: Int, x: Int, y: Int, f: Int): Int {
-        // Preserve pure values (0 and 255) exactly to maintain color primaries
+        // Preserve pure values (0 and 255) exactly to maintain colour primaries
         if (value == 0) return 0
         if (value == 255) return 15
         
@@ -1657,9 +1596,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Optimized bilinear sampling with bulk memory access and caching
+     * Optimised bilinear sampling with bulk memory access and caching
      */
-    private fun sampleBilinearOptimized(rgbAddr: Long, width: Int, height: Int, x: Float, y: Float, rgbAddrIncVec: Int): IntArray {
+    private fun sampleBilinearOptimised(rgbAddr: Long, width: Int, height: Int, x: Float, y: Float, rgbAddrIncVec: Int): IntArray {
         // Clamp coordinates to valid range
         val clampedX = x.coerceIn(0f, (width - 1).toFloat())
         val clampedY = y.coerceIn(0f, (height - 1).toFloat())
@@ -1678,7 +1617,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val (memspace, baseOffset) = vm.translateAddr(rgbAddr)
         
         if (memspace is UnsafePtr && rgbAddrIncVec == 1) {
-            // Optimized path for user memory with forward addressing
+            // Optimised path for user memory with forward addressing
             val y0RowAddr = baseOffset + (y0 * width + x0) * 3
             val y1RowAddr = baseOffset + (y1 * width + x0) * 3
             
@@ -1721,7 +1660,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val result = IntArray(64)
         // Reuse preallocated temp buffer to reduce GC pressure
         for (i in coeffs.indices) {
-            idct8TempBuffer[i] = coeffs[i] * (quantTable[i] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)).coerceIn(1f, 255f)
+            tevIdct8TempBuffer[i] = coeffs[i] * (quantTable[i] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)).coerceIn(1f, 255f)
         }
 
         // Fast separable IDCT (row-column decomposition)
@@ -1738,7 +1677,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                     sum += dctBasis8[u][col] * coeff
                 }
-                idct8TempBuffer[row * 8 + col] = sum
+                tevIdct8TempBuffer[row * 8 + col] = sum
             }
         }
 
@@ -1747,7 +1686,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (row in 0 until 8) {
                 var sum = 0f
                 for (v in 0 until 8) {
-                    sum += dctBasis8[v][row] * idct8TempBuffer[v * 8 + col]
+                    sum += dctBasis8[v][row] * tevIdct8TempBuffer[v * 8 + col]
                 }
 
                 val pixel = if (isChromaResidual) {
@@ -1773,7 +1712,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun tevIdct16x16_fast(coeffs: ShortArray, quantTable: IntArray, qualityIndex: Int, rateControlFactor: Float): IntArray {
         val result = IntArray(256) // 16x16 = 256
         
-        // Process coefficients and dequantize using preallocated buffer
+        // Process coefficients and dequantise using preallocated buffer
         for (u in 0 until 16) {
             for (v in 0 until 16) {
                 val idx = u * 16 + v
@@ -1782,7 +1721,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 } else {
                     coeffs[idx] * (quantTable[idx] * jpeg_quality_to_mult(qualityIndex * rateControlFactor)).coerceIn(1f, 255f)
                 }
-                idct16TempBuffer[idx] = coeff
+                tevIdct16TempBuffer[idx] = coeff
             }
         }
 
@@ -1792,9 +1731,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (col in 0 until 16) {
                 var sum = 0f
                 for (u in 0 until 16) {
-                    sum += dctBasis16[u][col] * idct16TempBuffer[row * 16 + u]
+                    sum += dctBasis16[u][col] * tevIdct16TempBuffer[row * 16 + u]
                 }
-                idct16SeparableBuffer[row * 16 + col] = sum
+                tevIdct16SeparableBuffer[row * 16 + col] = sum
             }
         }
         
@@ -1803,7 +1742,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (row in 0 until 16) {
                 var sum = 0f
                 for (v in 0 until 16) {
-                    sum += dctBasis16[v][row] * idct16SeparableBuffer[v * 16 + col]
+                    sum += dctBasis16[v][row] * tevIdct16SeparableBuffer[v * 16 + col]
                 }
                 val pixel = (sum + 128f).coerceIn(0f, 255f)
                 result[row * 16 + col] = pixel.toInt()
@@ -1822,7 +1761,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val interlacedFieldBuffer = IntArray(560 * 224 * 3) // Half-height RGB buffer
 
     /**
-     * YADIF (Yet Another Deinterlacing Filter) implementation - Optimized
+     * YADIF (Yet Another Deinterlacing Filter) implementation - Optimised
      * Converts interlaced field to progressive frame with temporal/spatial interpolation
      */
     fun yadifDeinterlace(fieldRGBAddr: Long, outputRGBAddr: Long, width: Int, height: Int, 
@@ -1929,7 +1868,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
 
-        // Cover up top and bottom lines with border color (optimized)
+        // Cover up top and bottom lines with border colour (optimised)
         val destT = 0
         val destB = (height - 2) * width * 3
         val col = (vm.peek(-1299457)!!.toUint() shl 16) or (vm.peek(-1299458)!!.toUint() shl 8) or vm.peek(-1299459)!!.toUint()
@@ -1955,7 +1894,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (c in 0..2) {
                 val idx = pixelIdx + c
                 
-                // Get spatial neighbors
+                // Get spatial neighbours
                 val above = fieldBuffer[aboveRowIdx + idx].toUint()
                 val below = fieldBuffer[belowRowIdx + idx].toUint()
                 val current = fieldBuffer[rowStartIdx + idx].toUint()
@@ -1970,7 +1909,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val nextPixel = nextBuffer[rowStartIdx + idx].toUint()
                     val tempInterp = (prevPixel + nextPixel) / 2
                     
-                    // YADIF edge-directed decision (optimized)
+                    // YADIF edge-directed decision (optimised)
                     val spatialDiff = kotlin.math.abs(above.toInt() - below.toInt())
                     val temporalDiff = kotlin.math.abs(prevPixel.toInt() - nextPixel.toInt())
                     
@@ -2028,7 +1967,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         val interpOutputOffset = (interpLine * width + x) * 3
                     
                         for (c in 0..2) {
-                            // Get spatial neighbors from sequential field data
+                            // Get spatial neighbours from sequential field data
                             val fieldStride = width * 3
                             val aboveOffset = fieldOffset - fieldStride + c
                             val belowOffset = fieldOffset + fieldStride + c
@@ -2053,7 +1992,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             var interpolatedValue = (above + below) / 2  // Default spatial interpolation
                             
                             if (prevFieldAddr != 0L && nextFieldAddr != 0L) {
-                                // Get temporal neighbors
+                                // Get temporal neighbours
                                 val tempFieldOffset = (y * width + x) * 3 + c
                                 val prevPixel = (vm.peek(prevFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
                                 val nextPixel = (vm.peek(nextFieldAddr + tempFieldOffset * fieldIncVec)?.toInt() ?: current) and 0xFF
@@ -2061,7 +2000,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 // BWDIF-inspired temporal differences (adapted for 3-frame window)
                                 // Note: True BWDIF uses 5 frames, we adapt to 3-frame constraint
                                 
-                                // Get spatial neighbors from previous and next fields for temporal comparison
+                                // Get spatial neighbours from previous and next fields for temporal comparison
                                 // Use same addressing pattern as working YADIF implementation
                                 val prevAboveOffset = if (y > 0) ((y-1) * width + x) * 3 + c else tempFieldOffset
                                 val prevBelowOffset = if (y < fieldHeight - 1) ((y+1) * width + x) * 3 + c else tempFieldOffset
@@ -2176,9 +2115,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
 
                 // HLG decode: L'M'S' -> linear LMS
-                val L = HLG_inverse_OETF(Lp)
-                val M = HLG_inverse_OETF(Mp)
-                val S = HLG_inverse_OETF(Sp)
+                val L = HLG_EOTF(Lp)
+                val M = HLG_EOTF(Mp)
+                val S = HLG_EOTF(Sp)
 
                 // LMS -> linear sRGB (inverse matrix)
                 val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
@@ -2204,7 +2143,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // Helper functions for ICtCp decoding
 
     // Inverse HLG OETF (HLG -> linear)
-    fun HLG_inverse_OETF(V: Double): Double {
+    fun HLG_EOTF(V: Double): Double {
         val a = 0.17883277
         val b = 1.0 - 4.0 * a
         val c = 0.5 - a * ln(4.0 * a)
@@ -2309,102 +2248,102 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         
         // ENHANCED: Knusperli-inspired boundary discontinuity analysis
-        fun analyzeBoundaryDiscontinuity(samples: IntArray): Pair<Long, Long> {
+        fun analyseBoundaryDiscontinuity(samples: IntArray): Pair<Long, Long> {
             // samples: 8-pixel samples across the boundary for frequency analysis
             var delta = 0L
             var hfPenalty = 0L
-            
+
             for (u in 0 until 8) {
                 val alpha = kAlphaSqrt2[u]
                 val sign = if (u and 1 != 0) -1 else 1
                 val leftVal = samples[u]
                 val rightVal = samples[7 - u] // Mirror for boundary analysis
-                
+
                 delta += alpha * (rightVal - sign * leftVal)
                 hfPenalty += (u * u) * (leftVal * leftVal + rightVal * rightVal)
             }
-            
+
             return Pair(delta, hfPenalty)
         }
-        
+
         // ENHANCED: Adaptive strength based on local complexity
         fun calculateAdaptiveStrength(baseStrength: Float, hfPenalty: Long, delta: Long): Float {
             val complexity = kotlin.math.sqrt(hfPenalty.toDouble()).toFloat()
             val discontinuityMagnitude = kotlin.math.abs(delta).toFloat()
-            
+
             // Reduce filtering strength in high-frequency areas (preserve detail)
             val complexityFactor = if (complexity > 800) 0.3f else 1.0f
-            
+
             // Increase filtering strength for clear discontinuities
             val discontinuityFactor = kotlin.math.min(2.0f, discontinuityMagnitude / 1000.0f)
-            
+
             return baseStrength * complexityFactor * discontinuityFactor
         }
-        
+
         // ENHANCED: Apply Knusperli-style corrections using linear gradient patterns
         fun applyBoundaryCorrection(
             samples: IntArray, delta: Long, adaptiveStrength: Float
         ): IntArray {
             val result = samples.clone()
             val correction = (delta * 724 shr 31).toInt() // Apply sqrt(2)/2 weighting like Knusperli
-            
+
             // Apply linear gradient corrections across boundary
             for (i in 0 until 8) {
                 val gradientWeight = kLinearGradient[i] * correction / 1024 // Scale from 10-bit fixed-point
                 val sign = if (i < 4) 1 else -1 // Left/right side weighting
-                
+
                 val adjustment = (gradientWeight * sign * adaptiveStrength).toInt()
                 result[i] = (result[i] + adjustment).coerceIn(0, 255)
             }
-            
+
             return result
         }
-        
+
         // ENHANCED HORIZONTAL DEBLOCKING: Using Knusperli-inspired boundary analysis
         for (by in 0 until blocksY) {
             for (bx in 1 until blocksX) {
                 val blockEdgeX = bx * blockSize
                 if (blockEdgeX >= width) continue
-                
+
                 // Process boundary in chunks for better performance
                 val yStart = by * blockSize
                 val yEnd = minOf((by + 1) * blockSize, height)
-                
+
                 for (y in yStart until yEnd step 2) { // Process 2 lines at a time
                     if (y + 1 >= height) continue
-                    
+
                     // Sample 8x2 pixel region across boundary for both lines
                     val samples1 = IntArray(24) // 8 pixels × 3 channels (RGB)
                     val samples2 = IntArray(24)
-                    
+
                     for (i in 0 until 8) {
                         val x = blockEdgeX - 4 + i
                         val rgb1 = getPixelBulk(x, y)
                         val rgb2 = getPixelBulk(x, y + 1)
-                        
+
                         samples1[i * 3] = rgb1[0]     // R
-                        samples1[i * 3 + 1] = rgb1[1] // G  
+                        samples1[i * 3 + 1] = rgb1[1] // G
                         samples1[i * 3 + 2] = rgb1[2] // B
                         samples2[i * 3] = rgb2[0]
                         samples2[i * 3 + 1] = rgb2[1]
                         samples2[i * 3 + 2] = rgb2[2]
                     }
-                    
-                    // Analyze each color channel separately
+
+                    // Analyse each colour channel separately
                     for (c in 0..2) {
                         val channelSamples1 = IntArray(8) { samples1[it * 3 + c] }
                         val channelSamples2 = IntArray(8) { samples2[it * 3 + c] }
-                        
-                        val (delta1, hfPenalty1) = analyzeBoundaryDiscontinuity(channelSamples1)
-                        val (delta2, hfPenalty2) = analyzeBoundaryDiscontinuity(channelSamples2)
-                        
-                        // Skip if very small discontinuity (early exit optimization)
+
+                        val (delta1, hfPenalty1) = analyseBoundaryDiscontinuity(channelSamples1)
+                        val (delta2, hfPenalty2) = analyseBoundaryDiscontinuity(channelSamples2)
+
+                        // Skip if very small discontinuity (early exit optimisation)
                         if (kotlin.math.abs(delta1) < 50 && kotlin.math.abs(delta2) < 50) continue
-                        
+
                         // Calculate adaptive filtering strength
                         val adaptiveStrength1 = calculateAdaptiveStrength(strength, hfPenalty1, delta1)
                         val adaptiveStrength2 = calculateAdaptiveStrength(strength, hfPenalty2, delta2)
-                        
+
                         // Apply corrections if strength is significant
                         if (adaptiveStrength1 > 0.05f) {
                             val corrected1 = applyBoundaryCorrection(channelSamples1, delta1, adaptiveStrength1)
@@ -2412,7 +2351,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 samples1[i * 3 + c] = corrected1[i]
                             }
                         }
-                        
+
                         if (adaptiveStrength2 > 0.05f) {
                             val corrected2 = applyBoundaryCorrection(channelSamples2, delta2, adaptiveStrength2)
                             for (i in 0 until 8) {
@@ -2420,7 +2359,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             }
                         }
                     }
-                    
+
                     // Write back corrected pixels in bulk
                     for (i in 2..5) { // Only write middle 4 pixels to avoid artifacts
                         val x = blockEdgeX - 4 + i
@@ -2432,28 +2371,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
-        
+
         // ENHANCED VERTICAL DEBLOCKING: Same approach for horizontal block boundaries
         for (by in 1 until blocksY) {
             for (bx in 0 until blocksX) {
                 val blockEdgeY = by * blockSize
                 if (blockEdgeY >= height) continue
-                
+
                 val xStart = bx * blockSize
                 val xEnd = minOf((bx + 1) * blockSize, width)
-                
+
                 for (x in xStart until xEnd step 2) {
                     if (x + 1 >= width) continue
-                    
+
                     // Sample 8x2 pixel region across vertical boundary
                     val samples1 = IntArray(24)
                     val samples2 = IntArray(24)
-                    
+
                     for (i in 0 until 8) {
                         val y = blockEdgeY - 4 + i
                         val rgb1 = getPixelBulk(x, y)
                         val rgb2 = getPixelBulk(x + 1, y)
-                        
+
                         samples1[i * 3] = rgb1[0]
                         samples1[i * 3 + 1] = rgb1[1]
                         samples1[i * 3 + 2] = rgb1[2]
@@ -2461,27 +2400,27 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         samples2[i * 3 + 1] = rgb2[1]
                         samples2[i * 3 + 2] = rgb2[2]
                     }
-                    
+
                     // Same boundary analysis and correction as horizontal
                     for (c in 0..2) {
                         val channelSamples1 = IntArray(8) { samples1[it * 3 + c] }
                         val channelSamples2 = IntArray(8) { samples2[it * 3 + c] }
-                        
-                        val (delta1, hfPenalty1) = analyzeBoundaryDiscontinuity(channelSamples1)
-                        val (delta2, hfPenalty2) = analyzeBoundaryDiscontinuity(channelSamples2)
-                        
+
+                        val (delta1, hfPenalty1) = analyseBoundaryDiscontinuity(channelSamples1)
+                        val (delta2, hfPenalty2) = analyseBoundaryDiscontinuity(channelSamples2)
+
                         if (kotlin.math.abs(delta1) < 50 && kotlin.math.abs(delta2) < 50) continue
-                        
+
                         val adaptiveStrength1 = calculateAdaptiveStrength(strength, hfPenalty1, delta1)
                         val adaptiveStrength2 = calculateAdaptiveStrength(strength, hfPenalty2, delta2)
-                        
+
                         if (adaptiveStrength1 > 0.05f) {
                             val corrected1 = applyBoundaryCorrection(channelSamples1, delta1, adaptiveStrength1)
                             for (i in 0 until 8) {
                                 samples1[i * 3 + c] = corrected1[i]
                             }
                         }
-                        
+
                         if (adaptiveStrength2 > 0.05f) {
                             val corrected2 = applyBoundaryCorrection(channelSamples2, delta2, adaptiveStrength2)
                             for (i in 0 until 8) {
@@ -2489,7 +2428,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             }
                         }
                     }
-                    
+
                     // Write back corrected pixels
                     for (i in 2..5) {
                         val y = blockEdgeY - 4 + i
@@ -2504,33 +2443,33 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Bulk write RGB block data to VM memory  
+     * Bulk write RGB block data to VM memory
      */
     private fun bulkWriteRGB(destAddr: Long, rgbData: IntArray, width: Int, height: Int,
                            startX: Int, startY: Int, blockWidth: Int, blockHeight: Int, addrIncVec: Int) {
         val (memspace, baseOffset) = vm.translateAddr(destAddr)
-        
+
         if (memspace is UnsafePtr && addrIncVec == 1) {
-            // Optimized path for user memory with forward addressing
+            // Optimised path for user memory with forward addressing
             for (dy in 0 until blockHeight) {
                 val y = startY + dy
                 if (y >= height) break
-                
+
                 val rowStartX = kotlin.math.max(0, startX)
                 val rowEndX = kotlin.math.min(width, startX + blockWidth)
                 val rowPixels = rowEndX - rowStartX
-                
+
                 if (rowPixels > 0) {
                     val srcRowOffset = dy * blockWidth * 3 + (rowStartX - startX) * 3
                     val dstRowOffset = baseOffset + (y * width + rowStartX) * 3
                     val rowBytes = rowPixels * 3
-                    
+
                     // Convert IntArray to ByteArray for this row
                     val rowBuffer = ByteArray(rowBytes)
                     for (i in 0 until rowBytes) {
                         rowBuffer[i] = rgbData[srcRowOffset + i].toByte()
                     }
-                    
+
                     // Bulk write the row
                     UnsafeHelper.memcpyRaw(
                         rowBuffer, UnsafeHelper.getArrayOffset(rowBuffer),
@@ -2546,7 +2485,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     if (x < width && y < height) {
                         val rgbIdx = (dy * blockWidth + dx) * 3
                         val bufferOffset = (y.toLong() * width + x) * 3
-                        
+
                         vm.poke(destAddr + bufferOffset * addrIncVec, rgbData[rgbIdx].toByte())
                         vm.poke(destAddr + (bufferOffset + 1) * addrIncVec, rgbData[rgbIdx + 1].toByte())
                         vm.poke(destAddr + (bufferOffset + 2) * addrIncVec, rgbData[rgbIdx + 2].toByte())
@@ -2559,13 +2498,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     /**
      * Hardware-accelerated TEV frame decoder for YCoCg-R 4:2:0 format
      * Decodes compressed TEV block data directly to framebuffer
-     * 
+     *
      * @param blockDataPtr Pointer to decompressed TEV block data
      * @param currentRGBAddr Address of current frame RGB buffer (24-bit: R,G,B per pixel)
      * @param prevRGBAddr Address of previous frame RGB buffer (for motion compensation)
      * @param width Frame width in pixels
      * @param height Frame height in pixels
-     * @param quality Quantization quality level (0-7)
+     * @param quality Quantisation quality level (0-7)
      * @param frameCounter Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
@@ -2581,7 +2520,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         var readPtr = blockDataPtr
 
-        // decide increment "direction" by the sign of the pointer  
+        // decide increment "direction" by the sign of the pointer
         val prevAddrIncVec = if (prevRGBAddr >= 0) 1 else -1
         val thisAddrIncVec = if (currentRGBAddr >= 0) 1 else -1
 
@@ -2594,13 +2533,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val blockModes = IntArray(blocksX * blocksY)
             val motionVectors = Array(blocksX * blocksY) { intArrayOf(0, 0) }
             val rateControlFactors = FloatArray(blocksX * blocksY)
-            
+
             // Collect all blocks first
             var tempReadPtr = readPtr
             for (by in 0 until blocksY) {
                 for (bx in 0 until blocksX) {
                     val blockIndex = by * blocksX + bx
-                    
+
                     // Read TEV block header to get rate control factor
                     val headerBuffer = ByteArray(11)
                     val (memspace, offset) = vm.translateAddr(tempReadPtr)
@@ -2613,7 +2552,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             headerBuffer[i] = vm.peek(tempReadPtr + i) ?: 0
                         }
                     }
-                    
+
                     val mode = headerBuffer[0].toUint()
                     val mvX = ((headerBuffer[1].toUint()) or ((headerBuffer[2].toUint()) shl 8)).toShort().toInt()
                     val mvY = ((headerBuffer[3].toUint()) or ((headerBuffer[4].toUint()) shl 8)).toShort().toInt()
@@ -2622,20 +2561,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             ((headerBuffer[7].toUint()) shl 16) or
                             ((headerBuffer[8].toUint()) shl 24))
                     tempReadPtr += 11 // Skip header
-                    
+
                     blockModes[blockIndex] = mode.toInt()
                     motionVectors[blockIndex] = intArrayOf(mvX, mvY)
                     rateControlFactors[blockIndex] = rateControlFactor
-                    
+
                     // TEV format always has 768 bytes of DCT coefficients per block (fixed size)
                     val coeffShortArray = ShortArray(384) // 256 Y + 64 Co + 64 Cg = 384 shorts
-                    
+
                     // Use bulk read like the original implementation
                     vm.bulkPeekShort(tempReadPtr.toInt(), coeffShortArray, 768)
                     tempReadPtr += 768
-                    
+
                     when (mode.toInt()) {
-                        0x01, 0x02 -> { // INTRA or INTER - store raw coefficients for boundary optimization
+                        0x01, 0x02 -> { // INTRA or INTER - store raw coefficients for boundary optimisation
                             yBlocks[blockIndex] = coeffShortArray.sliceArray(0 until 256)
                             coBlocks[blockIndex] = coeffShortArray.sliceArray(256 until 320)
                             cgBlocks[blockIndex] = coeffShortArray.sliceArray(320 until 384)
@@ -2644,9 +2583,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                 }
             }
-            
-            // PASS 2: Apply proper knusperli boundary optimization (Google's algorithm)
-            val (optimizedYBlocks, optimizedCoBlocks, optimizedCgBlocks) = applyKnusperliOptimization(
+
+            // PASS 2: Apply proper knusperli boundary optimisation (Google's algorithm)
+            val (optimisedYBlocks, optimisedCoBlocks, optimisedCgBlocks) = tevApplyKnusperliOptimisation(
                 yBlocks, coBlocks, cgBlocks,
                 if (tevVersion == 3) QUANT_TABLE_Y else QUANT_TABLE_Y,
                 if (tevVersion == 3) QUANT_TABLE_C else QUANT_TABLE_C,
@@ -2654,46 +2593,46 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 qY, qCo, qCg, rateControlFactors,
                 blocksX, blocksY
             )
-            
-            // PASS 3: Convert optimized blocks to RGB and output
+
+            // PASS 3: Convert optimised blocks to RGB and output
             for (by in 0 until blocksY) {
                 for (bx in 0 until blocksX) {
                     val blockIndex = by * blocksX + bx
                     val startX = bx * 16
                     val startY = by * 16
-                    
+
                     when (blockModes[blockIndex]) {
                         0x00 -> { // SKIP - copy from previous frame
-                            handleSkipBlockTwoPass(startX, startY, currentRGBAddr, prevRGBAddr, width, height, thisAddrIncVec, prevAddrIncVec)
+                            tevHandleSkipBlockTwoPass(startX, startY, currentRGBAddr, prevRGBAddr, width, height, thisAddrIncVec, prevAddrIncVec)
                         }
                         0x03 -> { // MOTION - copy with motion vector
                             val mv = motionVectors[blockIndex]
-                            handleMotionBlockTwoPass(startX, startY, mv[0], mv[1], currentRGBAddr, prevRGBAddr, width, height, thisAddrIncVec, prevAddrIncVec, debugMotionVectors)
+                            tevHandleMotionBlockTwoPass(startX, startY, mv[0], mv[1], currentRGBAddr, prevRGBAddr, width, height, thisAddrIncVec, prevAddrIncVec, debugMotionVectors)
                         }
-                        0x01, 0x02 -> { // INTRA/INTER - use optimized DCT blocks
-                            val yBlock = optimizedYBlocks[blockIndex]
-                            val coBlock = optimizedCoBlocks[blockIndex]
-                            val cgBlock = optimizedCgBlocks[blockIndex]
-                            
+                        0x01, 0x02 -> { // INTRA/INTER - use optimised DCT blocks
+                            val yBlock = optimisedYBlocks[blockIndex]
+                            val coBlock = optimisedCoBlocks[blockIndex]
+                            val cgBlock = optimisedCgBlocks[blockIndex]
+
                             if (yBlock != null && coBlock != null && cgBlock != null) {
                                 // Skip INTER motion compensation for now (debugging)
                                 // TODO: Implement proper motion compensation for two-pass mode
                                 // if (blockModes[blockIndex] == 0x02) {
                                 //     val mv = motionVectors[blockIndex]
-                                //     applyMotionCompensationTwoPass(yBlock, coBlock, cgBlock, startX, startY, mv[0], mv[1], prevRGBAddr, width, height, prevAddrIncVec)
+                                //     tevApplyMotionCompensationTwoPass(yBlock, coBlock, cgBlock, startX, startY, mv[0], mv[1], prevRGBAddr, width, height, prevAddrIncVec)
                                 // }
-                                
-                                // Use IDCT on knusperli-optimized coefficients (coefficients are already optimally dequantized)
-                                val yPixels = tevIdct16x16_fromOptimizedCoeffs(yBlock)
-                                val coPixels = tevIdct8x8_fromOptimizedCoeffs(coBlock) 
-                                val cgPixels = tevIdct8x8_fromOptimizedCoeffs(cgBlock)
-                                
+
+                                // Use IDCT on knusperli-optimised coefficients (coefficients are already optimally dequantised)
+                                val yPixels = tevIdct16x16_fromOptimisedCoeffs(yBlock)
+                                val coPixels = tevIdct8x8_fromOptimisedCoeffs(coBlock)
+                                val cgPixels = tevIdct8x8_fromOptimisedCoeffs(cgBlock)
+
                                 val rgbData = if (tevVersion == 3) {
                                     tevIctcpToRGB(yPixels, coPixels, cgPixels)
                                 } else {
                                     tevYcocgToRGB(yPixels, coPixels, cgPixels)
                                 }
-                                
+
                                 bulkWriteRGB(currentRGBAddr, rgbData, width, height, startX, startY, 16, 16, thisAddrIncVec)
                             }
                         }
@@ -2730,10 +2669,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
 
                     when (mode) {
-                        0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame (optimized with memcpy)
+                        0x00 -> { // TEV_MODE_SKIP - copy RGB from previous frame (optimised with memcpy)
                             // Check if we can copy the entire block at once (no clipping)
                             if (startX + 16 <= width && startY + 16 <= height) {
-                                // Optimized case: copy entire 16x16 block with row-by-row memcpy
+                                // Optimised case: copy entire 16x16 block with row-by-row memcpy
                                 for (dy in 0 until 16) {
                                     val srcRowOffset = ((startY + dy).toLong() * width + startX) * 3
                                     val dstRowOffset = srcRowOffset
@@ -2744,7 +2683,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     )
                                 }
                             } else {
-                                // Optimized fallback using row-by-row copying for boundary blocks
+                                // Optimised fallback using row-by-row copying for boundary blocks
                                 for (dy in 0 until 16) {
                                     val y = startY + dy
                                     if (y < height) {
@@ -2771,7 +2710,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             readPtr += 768
                         }
 
-                        0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB (optimized with memcpy)
+                        0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB (optimised with memcpy)
                             if (debugMotionVectors) {
                                 // Debug mode: use original pixel-by-pixel for motion vector visualization
                                 for (dy in 0 until 16) {
@@ -2785,7 +2724,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                             val dstPixelOffset = y.toLong() * width + x
                                             val dstRgbOffset = dstPixelOffset * 3
 
-                                            // Debug: Color INTER blocks by motion vector magnitude
+                                            // Debug: Colour INTER blocks by motion vector magnitude
                                             val mvMagnitude = kotlin.math.sqrt((mvX * mvX + mvY * mvY).toDouble()).toInt()
                                             val intensity = (mvMagnitude * 8).coerceIn(0, 255) // Scale for visibility
 
@@ -2796,7 +2735,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     }
                                 }
                             } else {
-                                // Optimized motion compensation
+                                // Optimised motion compensation
                                 val refStartX = startX + mvX
                                 val refStartY = startY + mvY
 
@@ -2804,7 +2743,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                 if (startX + 16 <= width && startY + 16 <= height &&
                                     refStartX >= 0 && refStartY >= 0 && refStartX + 16 <= width && refStartY + 16 <= height) {
 
-                                    // Optimized case: copy entire 16x16 block with row-by-row memcpy
+                                    // Optimised case: copy entire 16x16 block with row-by-row memcpy
                                     for (dy in 0 until 16) {
                                         val srcRowOffset = ((refStartY + dy).toLong() * width + refStartX) * 3
                                         val dstRowOffset = ((startY + dy).toLong() * width + startX) * 3
@@ -2864,8 +2803,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
 
                         0x01 -> { // TEV_MODE_INTRA - Full YCoCg-R DCT decode (no motion compensation)
-                            // Regular lossy mode: quantized int16 coefficients
-                            // Optimized bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                            // Regular lossy mode: quantised int16 coefficients
+                            // Optimised bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
                             val coeffShortArray = ShortArray(384) // Total coefficients: 256 + 64 + 64 = 384 shorts
                             vm.bulkPeekShort(readPtr.toInt(), coeffShortArray, 768)
                             readPtr += 768
@@ -2889,7 +2828,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         0x02 -> { // TEV_MODE_INTER - Motion compensation + residual DCT
                             // Step 1: Read residual DCT coefficients
 
-                            // Optimized bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
+                            // Optimised bulk reading of all DCT coefficients: Y(256×2) + Co(64×2) + Cg(64×2) = 768 bytes
                             val coeffShortArray = ShortArray(384) // Total coefficients: 256 + 64 + 64 = 384 shorts
                             vm.bulkPeekShort(readPtr.toInt(), coeffShortArray, 768)
                             readPtr += 768
@@ -3030,7 +2969,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                     }
                                 }
                             } else {
-                                // Optimized bulk write for normal operation
+                                // Optimised bulk write for normal operation
                                 bulkWriteRGB(currentRGBAddr, finalRgb, width, height, startX, startY, 16, 16, thisAddrIncVec)
                             }
                         }
@@ -3058,7 +2997,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
-        
+
         // Apply enhanced deblocking filter if enabled to reduce blocking artifacts
         if (enableDeblocking) {
             tevDeblockingFilterEnhanced(currentRGBAddr, width, height)
@@ -3099,104 +3038,104 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // Helper functions for motion compensation and block handling in two-pass mode
-    private fun handleSkipBlockTwoPass(startX: Int, startY: Int, currentRGBAddr: Long, prevRGBAddr: Long, 
-                              width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int) {
+    private fun tevHandleSkipBlockTwoPass(startX: Int, startY: Int, currentRGBAddr: Long, prevRGBAddr: Long,
+                                          width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int) {
         // Copy 16x16 block from previous frame
         for (py in 0 until 16) {
             val y = startY + py
             if (y >= height) break
-            
+
             for (px in 0 until 16) {
                 val x = startX + px
                 if (x >= width) break
-                
+
                 val offset = (y * width + x) * 3
                 val prevR = vm.peek(prevRGBAddr + offset * prevAddrIncVec) ?: 0
                 val prevG = vm.peek(prevRGBAddr + (offset + 1) * prevAddrIncVec) ?: 0
                 val prevB = vm.peek(prevRGBAddr + (offset + 2) * prevAddrIncVec) ?: 0
-                
+
                 vm.poke(currentRGBAddr + offset * thisAddrIncVec, prevR)
                 vm.poke(currentRGBAddr + (offset + 1) * thisAddrIncVec, prevG)
                 vm.poke(currentRGBAddr + (offset + 2) * thisAddrIncVec, prevB)
             }
         }
     }
-    
-    private fun handleMotionBlockTwoPass(startX: Int, startY: Int, mvX: Int, mvY: Int,
-                                currentRGBAddr: Long, prevRGBAddr: Long, 
-                                width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int,
-                                debugMotionVectors: Boolean) {
+
+    private fun tevHandleMotionBlockTwoPass(startX: Int, startY: Int, mvX: Int, mvY: Int,
+                                            currentRGBAddr: Long, prevRGBAddr: Long,
+                                            width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int,
+                                            debugMotionVectors: Boolean) {
         // Copy 16x16 block with motion compensation
         for (py in 0 until 16) {
             val y = startY + py
             if (y >= height) break
-            
+
             for (px in 0 until 16) {
                 val x = startX + px
                 if (x >= width) break
-                
+
                 val srcX = (x + mvX).coerceIn(0, width - 1)
                 val srcY = (y + mvY).coerceIn(0, height - 1)
-                
+
                 val srcOffset = (srcY * width + srcX) * 3
                 val dstOffset = (y * width + x) * 3
-                
+
                 val r = vm.peek(prevRGBAddr + srcOffset * prevAddrIncVec) ?: 0
                 val g = vm.peek(prevRGBAddr + (srcOffset + 1) * prevAddrIncVec) ?: 0
                 val b = vm.peek(prevRGBAddr + (srcOffset + 2) * prevAddrIncVec) ?: 0
-                
+
                 vm.poke(currentRGBAddr + dstOffset * thisAddrIncVec, r)
                 vm.poke(currentRGBAddr + (dstOffset + 1) * thisAddrIncVec, g)
                 vm.poke(currentRGBAddr + (dstOffset + 2) * thisAddrIncVec, b)
             }
         }
     }
-    
-    /*private fun applyMotionCompensationTwoPass(yBlock: ShortArray, coBlock: ShortArray, cgBlock: ShortArray,
+
+    /*private fun tevApplyMotionCompensationTwoPass(yBlock: ShortArray, coBlock: ShortArray, cgBlock: ShortArray,
                                       startX: Int, startY: Int, mvX: Int, mvY: Int,
                                       prevRGBAddr: Long, width: Int, height: Int, prevAddrIncVec: Int) {
         // For INTER blocks, add residual to motion-compensated reference
         // This is a simplified version - full implementation would extract reference block and add residuals
-        
+
         // Apply motion compensation by reading reference pixels and converting to YCoCg-R coefficients
         for (py in 0 until 16) {
             val y = startY + py
             if (y >= height) break
-            
+
             for (px in 0 until 16) {
                 val x = startX + px
                 if (x >= width) break
-                
+
                 val srcX = (x + mvX).coerceIn(0, width - 1)
                 val srcY = (y + mvY).coerceIn(0, height - 1)
-                
+
                 val srcOffset = (srcY * width + srcX) * 3
                 val r = vm.peek(prevRGBAddr + srcOffset * prevAddrIncVec)?.toInt() ?: 0
                 val g = vm.peek(prevRGBAddr + (srcOffset + 1) * prevAddrIncVec)?.toInt() ?: 0
                 val b = vm.peek(prevRGBAddr + (srcOffset + 2) * prevAddrIncVec)?.toInt() ?: 0
-                
+
                 // Convert reference RGB to YCoCg-R and add residual
                 val co = r - b
-                val tmp = b + (co / 2)  
+                val tmp = b + (co / 2)
                 val cg = g - tmp
                 val refY = tmp + (cg / 2)
-                
+
                 val yIdx = py * 16 + px
                 if (yIdx < yBlock.size) {
                     yBlock[yIdx] += refY.toFloat()
                 }
-                
+
                 val cIdx = (py / 2) * 8 + (px / 2)
                 if (cIdx < coBlock.size) {
-                    coBlock[cIdx] += co.toFloat() 
+                    coBlock[cIdx] += co.toFloat()
                     cgBlock[cIdx] += cg.toFloat()
                 }
             }
         }
     }*/
 
-    // Proper knusperli boundary-aware DCT optimization based on Google's algorithm
-    private fun applyKnusperliOptimization(
+    // Proper knusperli boundary-aware DCT optimisation based on Google's algorithm
+    private fun tevApplyKnusperliOptimisation(
         yBlocks: Array<ShortArray?>, coBlocks: Array<ShortArray?>, cgBlocks: Array<ShortArray?>,
         quantTableY: IntArray, quantTableCo: IntArray, quantTableCg: IntArray,
         qY: Int, qCo: Int, qCg: Int, rateControlFactors: FloatArray,
@@ -3207,19 +3146,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val kAlphaSqrt2 = intArrayOf(1024, 1448, 1448, 1448, 1448, 1448, 1448, 1448)
         val kHalfSqrt2 = 724 // sqrt(2)/2 in 10-bit fixed-point
 
-        // Convert to dequantized FloatArrays and apply knusperli optimization
-        val optimizedYBlocks = convertAndOptimize16x16Blocks(yBlocks, quantTableY, qY, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-        val optimizedCoBlocks = convertAndOptimize8x8Blocks(coBlocks, quantTableCo, qCo, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
-        val optimizedCgBlocks = convertAndOptimize8x8Blocks(cgBlocks, quantTableCg, qCg, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
+        // Convert to dequantised FloatArrays and apply knusperli optimisation
+        val optimisedYBlocks = tevConvertAndOptimise16x16Blocks(yBlocks, quantTableY, qY, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
+        val optimisedCoBlocks = tevConvertAndOptimise8x8Blocks(coBlocks, quantTableCo, qCo, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
+        val optimisedCgBlocks = tevConvertAndOptimise8x8Blocks(cgBlocks, quantTableCg, qCg, rateControlFactors, blocksX, blocksY, kLinearGradient, kAlphaSqrt2, kHalfSqrt2)
 
-        return Triple(optimizedYBlocks, optimizedCoBlocks, optimizedCgBlocks)
+        return Triple(optimisedYBlocks, optimisedCoBlocks, optimisedCgBlocks)
     }
 
-    // IDCT functions for knusperli-optimized coefficients (coefficients are already dequantized)
-    private fun tevIdct16x16_fromOptimizedCoeffs(coeffs: FloatArray): IntArray {
+    // IDCT functions for knusperli-optimised coefficients (coefficients are already dequantised)
+    private fun tevIdct16x16_fromOptimisedCoeffs(coeffs: FloatArray): IntArray {
         val result = IntArray(256) // 16x16
-        
-        // Apply 2D IDCT directly to optimized coefficients (fix u/v indexing)
+
+        // Apply 2D IDCT directly to optimised coefficients (fix u/v indexing)
         for (y in 0 until 16) {
             for (x in 0 until 16) {
                 var sum = 0.0
@@ -3238,11 +3177,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         return result
     }
-    
-    private fun tevIdct8x8_fromOptimizedCoeffs(coeffs: FloatArray): IntArray {
+
+    private fun tevIdct8x8_fromOptimisedCoeffs(coeffs: FloatArray): IntArray {
         val result = IntArray(64) // 8x8
-        
-        // Apply 2D IDCT directly to optimized coefficients (fix u/v indexing)
+
+        // Apply 2D IDCT directly to optimised coefficients (fix u/v indexing)
         for (y in 0 until 8) {
             for (x in 0 until 8) {
                 var sum = 0.0
@@ -3262,31 +3201,31 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         return result
     }
-    
-    // Convert and optimize functions for proper knusperli implementation
+
+    // Convert and optimise functions for proper knusperli implementation
     // Direct 16x16 block processing for Y blocks (no subdivision needed)
-    private fun convertAndOptimize16x16Blocks(
+    private fun tevConvertAndOptimise16x16Blocks(
         blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
         blocksX: Int, blocksY: Int,
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
     ): Array<FloatArray?> {
         val result = Array<FloatArray?>(blocks.size) { null }
-        
+
         // Extended constants for 16x16 blocks (based on Google's 8x8 pattern)
         val kLinearGradient16 = intArrayOf(318, -285, 81, -32, 17, -9, 5, -2, 1, 0, 0, 0, 0, 0, 0, 0)
         val kAlphaSqrt2_16 = intArrayOf(1024, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448)
-        
-        // Apply knusperli boundary optimization to 16x16 blocks
-        processBlocksWithKnusperli16x16(blocks, quantTable, qScale, rateControlFactors, 
+
+        // Apply knusperli boundary optimisation to 16x16 blocks
+        tevProcessBlocksWithKnusperli16x16(blocks, quantTable, qScale, rateControlFactors,
                                        blocksX, blocksY, kLinearGradient16, kAlphaSqrt2_16, kHalfSqrt2)
-        
-        // Convert optimized ShortArray blocks to FloatArray (dequantized)
+
+        // Convert optimised ShortArray blocks to FloatArray (dequantised)
         for (blockIndex in 0 until blocks.size) {
             val block = blocks[blockIndex]
             if (block != null) {
                 result[blockIndex] = FloatArray(256) // 16x16 = 256 coefficients
                 val rateControlFactor = rateControlFactors[blockIndex]
-                
+
                 for (i in 0 until 256) {
                     val coeffIdx = i.coerceIn(0, quantTable.size - 1)
                     val quantValue = if (i == 0) 1.0f else {
@@ -3296,32 +3235,32 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
-        
+
         return result
     }
-    
-    // Optimized 16x16 version of Knusperli processing for Y blocks
-    private fun processBlocksWithKnusperli16x16(
+
+    // Optimised 16x16 version of Knusperli processing for Y blocks
+    private fun tevProcessBlocksWithKnusperli16x16(
         blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
         blocksX: Int, blocksY: Int,
         kLinearGradient16: IntArray, kAlphaSqrt2_16: IntArray, kHalfSqrt2: Int
     ) {
         val coeffsSize = 256 // 16x16 = 256
         val numBlocks = blocksX * blocksY
-        
-        // OPTIMIZATION 1: Pre-compute quantization values to avoid repeated calculations
+
+        // OPTIMIZATION 1: Pre-compute quantisation values to avoid repeated calculations
         val quantValues = Array(numBlocks) { IntArray(coeffsSize) }
         val quantHalfValues = Array(numBlocks) { IntArray(coeffsSize) }
-        
+
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
                 val rateControlFactor = rateControlFactors[blockIndex]
                 val qualityMult = jpeg_quality_to_mult(qScale * rateControlFactor)
-                
+
                 quantValues[blockIndex][0] = 1 // DC is lossless
-                quantHalfValues[blockIndex][0] = 0 // DC has no quantization interval
-                
+                quantHalfValues[blockIndex][0] = 0 // DC has no quantisation interval
+
                 for (i in 1 until coeffsSize) {
                     val coeffIdx = i.coerceIn(0, quantTable.size - 1)
                     val quant = (quantTable[coeffIdx] * qualityMult).coerceIn(1f, 255f).toInt()
@@ -3330,49 +3269,49 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
-        
+
         // OPTIMIZATION 2: Use single-allocation arrays with block-stride access
         val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
         val blocksOff = Array(numBlocks) { LongArray(coeffsSize) } // Keep Long for accumulation
-        
-        // Step 1: Setup dequantized values and initialize adjustments (BULK OPTIMIZED)
+
+        // Step 1: Setup dequantised values and initialize adjustments (BULK OPTIMIZED)
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
                 val mid = blocksMid[blockIndex]
                 val off = blocksOff[blockIndex]
                 val quantVals = quantValues[blockIndex]
-                
-                // OPTIMIZATION 9: Bulk dequantization using vectorized operations
-                bulkDequantizeCoefficients(block, mid, quantVals, coeffsSize)
-                
+
+                // OPTIMIZATION 9: Bulk dequantisation using vectorized operations
+                tevBulkDequantiseCoefficients(block, mid, quantVals, coeffsSize)
+
                 // OPTIMIZATION 10: Bulk zero initialization of adjustments
                 off.fill(0L)
             }
         }
-        
+
         // OPTIMIZATION 7: Combined boundary analysis loops for better cache locality
         // Process horizontal and vertical boundaries in interleaved pattern
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX) {
                 val currentIndex = by * blocksX + bx
-                
+
                 // Horizontal boundary (if not rightmost column)
                 if (bx < blocksX - 1) {
                     val rightIndex = currentIndex + 1
                     if (blocks[currentIndex] != null && blocks[rightIndex] != null) {
-                        analyzeHorizontalBoundary16x16(
-                            currentIndex, rightIndex, blocksMid, blocksOff, 
+                        tevAnalyseHorizontalBoundary16x16(
+                            currentIndex, rightIndex, blocksMid, blocksOff,
                             kLinearGradient16, kAlphaSqrt2_16
                         )
                     }
                 }
-                
+
                 // Vertical boundary (if not bottom row)
                 if (by < blocksY - 1) {
                     val bottomIndex = currentIndex + blocksX
                     if (blocks[currentIndex] != null && blocks[bottomIndex] != null) {
-                        analyzeVerticalBoundary16x16(
+                        tevAnalyseVerticalBoundary16x16(
                             currentIndex, bottomIndex, blocksMid, blocksOff,
                             kLinearGradient16, kAlphaSqrt2_16
                         )
@@ -3380,13 +3319,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
-        
-        // Step 4: Apply corrections and clamp to quantization intervals (BULK OPTIMIZED)
+
+        // Step 4: Apply corrections and clamp to quantisation intervals (BULK OPTIMIZED)
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
-                // OPTIMIZATION 11: Bulk apply corrections and quantization clamping
-                bulkApplyCorrectionsAndClamp(
+                // OPTIMIZATION 11: Bulk apply corrections and quantisation clamping
+                tevBulkApplyCorrectionsAndClamp(
                     block, blocksMid[blockIndex], blocksOff[blockIndex],
                     quantValues[blockIndex], quantHalfValues[blockIndex],
                     kHalfSqrt2, coeffsSize
@@ -3394,20 +3333,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
     }
-    
+
     // BULK MEMORY ACCESS HELPER FUNCTIONS FOR KNUSPERLI
-    
+
     /**
-     * OPTIMIZATION 9: Bulk dequantization using vectorized operations
-     * Performs coefficient * quantization in optimized chunks
+     * OPTIMIZATION 9: Bulk dequantisation using vectorized operations
+     * Performs coefficient * quantisation in optimised chunks
      */
-    private fun bulkDequantizeCoefficients(
+    private fun tevBulkDequantiseCoefficients(
         coeffs: ShortArray, result: IntArray, quantVals: IntArray, size: Int
     ) {
         // Process in chunks of 16 for better vectorization (CPU can process multiple values per instruction)
         var i = 0
         val chunks = size and 0xFFFFFFF0.toInt() // Round down to nearest 16
-        
+
         // Bulk process 16 coefficients at a time for SIMD-friendly operations
         while (i < chunks) {
             // Manual loop unrolling for better performance
@@ -3429,26 +3368,26 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             result[i + 15] = coeffs[i + 15].toInt() * quantVals[i + 15]
             i += 16
         }
-        
+
         // Handle remaining coefficients
         while (i < size) {
             result[i] = coeffs[i].toInt() * quantVals[i]
             i++
         }
     }
-    
+
     /**
-     * OPTIMIZATION 11: Bulk apply corrections and quantization clamping
+     * OPTIMIZATION 11: Bulk apply corrections and quantisation clamping
      * Vectorized correction application with proper bounds checking
      */
-    private fun bulkApplyCorrectionsAndClamp(
+    private fun tevBulkApplyCorrectionsAndClamp(
         block: ShortArray, mid: IntArray, off: LongArray,
         quantVals: IntArray, quantHalf: IntArray,
         kHalfSqrt2: Int, size: Int
     ) {
         var i = 0
         val chunks = size and 0xFFFFFFF0.toInt() // Process in chunks of 16
-        
+
         // Bulk process corrections in chunks for better CPU pipeline utilization
         while (i < chunks) {
             // Apply corrections with sqrt(2)/2 weighting - bulk operations
@@ -3460,7 +3399,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val corr5 = ((off[i + 5] * kHalfSqrt2) shr 31).toInt()
             val corr6 = ((off[i + 6] * kHalfSqrt2) shr 31).toInt()
             val corr7 = ((off[i + 7] * kHalfSqrt2) shr 31).toInt()
-            
+
             mid[i] += corr0
             mid[i + 1] += corr1
             mid[i + 2] += corr2
@@ -3469,8 +3408,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             mid[i + 5] += corr5
             mid[i + 6] += corr6
             mid[i + 7] += corr7
-            
-            // Apply quantization interval clamping - bulk operations
+
+            // Apply quantisation interval clamping - bulk operations
             val orig0 = block[i].toInt() * quantVals[i]
             val orig1 = block[i + 1].toInt() * quantVals[i + 1]
             val orig2 = block[i + 2].toInt() * quantVals[i + 2]
@@ -3479,7 +3418,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val orig5 = block[i + 5].toInt() * quantVals[i + 5]
             val orig6 = block[i + 6].toInt() * quantVals[i + 6]
             val orig7 = block[i + 7].toInt() * quantVals[i + 7]
-            
+
             mid[i] = mid[i].coerceIn(orig0 - quantHalf[i], orig0 + quantHalf[i])
             mid[i + 1] = mid[i + 1].coerceIn(orig1 - quantHalf[i + 1], orig1 + quantHalf[i + 1])
             mid[i + 2] = mid[i + 2].coerceIn(orig2 - quantHalf[i + 2], orig2 + quantHalf[i + 2])
@@ -3488,8 +3427,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             mid[i + 5] = mid[i + 5].coerceIn(orig5 - quantHalf[i + 5], orig5 + quantHalf[i + 5])
             mid[i + 6] = mid[i + 6].coerceIn(orig6 - quantHalf[i + 6], orig6 + quantHalf[i + 6])
             mid[i + 7] = mid[i + 7].coerceIn(orig7 - quantHalf[i + 7], orig7 + quantHalf[i + 7])
-            
-            // Convert back to quantized coefficients - bulk operations
+
+            // Convert back to quantised coefficients - bulk operations
             val quantMax = Short.MAX_VALUE.toInt()
             val quantMin = Short.MIN_VALUE.toInt()
             block[i] = (mid[i] / quantVals[i]).coerceIn(quantMin, quantMax).toShort()
@@ -3500,24 +3439,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             block[i + 5] = (mid[i + 5] / quantVals[i + 5]).coerceIn(quantMin, quantMax).toShort()
             block[i + 6] = (mid[i + 6] / quantVals[i + 6]).coerceIn(quantMin, quantMax).toShort()
             block[i + 7] = (mid[i + 7] / quantVals[i + 7]).coerceIn(quantMin, quantMax).toShort()
-            
+
             i += 8 // Process 8 at a time for the remaining corrections
         }
-        
+
         // Handle remaining coefficients (usually 0-15 remaining for 256-coefficient blocks)
         while (i < size) {
             mid[i] += ((off[i] * kHalfSqrt2) shr 31).toInt()
-            
+
             val originalValue = block[i].toInt() * quantVals[i]
             mid[i] = mid[i].coerceIn(originalValue - quantHalf[i], originalValue + quantHalf[i])
-            
+
             block[i] = (mid[i] / quantVals[i]).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
             i++
         }
     }
-    
-    // OPTIMIZED 16x16 horizontal boundary analysis 
-    private fun analyzeHorizontalBoundary16x16(
+
+    // OPTIMIZED 16x16 horizontal boundary analysis
+    private fun tevAnalyseHorizontalBoundary16x16(
         leftBlockIndex: Int, rightBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
         kLinearGradient16: IntArray, kAlphaSqrt2_16: IntArray
@@ -3526,13 +3465,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val rightMid = blocksMid[rightBlockIndex]
         val leftOff = blocksOff[leftBlockIndex]
         val rightOff = blocksOff[rightBlockIndex]
-        
+
         // OPTIMIZATION 4: Process multiple frequencies in single loop for better cache locality
         for (v in 0 until 8) { // Only low-to-mid frequencies
             var deltaV = 0L
             var hfPenalty = 0L
             val vOffset = v * 16
-            
+
             // First pass: Calculate boundary discontinuity
             for (u in 0 until 16) {
                 val idx = vOffset + u
@@ -3540,17 +3479,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val sign = if (u and 1 != 0) -1 else 1
                 val gi = leftMid[idx]
                 val gj = rightMid[idx]
-                
+
                 deltaV += alpha * (gj - sign * gi)
                 hfPenalty += (u * u) * (gi * gi + gj * gj)
             }
-            
-            // OPTIMIZATION 8: Early exit for very small adjustments  
+
+            // OPTIMIZATION 8: Early exit for very small adjustments
             if (kotlin.math.abs(deltaV) < 100) continue
-            
+
             // OPTIMIZATION 5: Apply high-frequency damping once per frequency band
             if (hfPenalty > 1600) deltaV /= 2
-            
+
             // Second pass: Apply corrections (BULK OPTIMIZED with unrolling)
             val correction = deltaV
             // Bulk apply corrections for 16 coefficients - manually unrolled for performance
@@ -3588,9 +3527,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             rightOff[vOffset + 15] -= correction * kLinearGradient16[15]
         }
     }
-    
-    // OPTIMIZED 16x16 vertical boundary analysis  
-    private fun analyzeVerticalBoundary16x16(
+
+    // OPTIMIZED 16x16 vertical boundary analysis
+    private fun tevAnalyseVerticalBoundary16x16(
         topBlockIndex: Int, bottomBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
         kLinearGradient16: IntArray, kAlphaSqrt2_16: IntArray
@@ -3599,12 +3538,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val bottomMid = blocksMid[bottomBlockIndex]
         val topOff = blocksOff[topBlockIndex]
         val bottomOff = blocksOff[bottomBlockIndex]
-        
-        // OPTIMIZATION 6: Optimized vertical analysis with better cache access pattern
+
+        // OPTIMIZATION 6: Optimised vertical analysis with better cache access pattern
         for (u in 0 until 16) { // Only low-to-mid frequencies
             var deltaU = 0L
             var hfPenalty = 0L
-            
+
             // First pass: Calculate boundary discontinuity
             for (v in 0 until 16) {
                 val idx = v * 16 + u
@@ -3612,17 +3551,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val sign = if (v and 1 != 0) -1 else 1
                 val gi = topMid[idx]
                 val gj = bottomMid[idx]
-                
+
                 deltaU += alpha * (gj - sign * gi)
                 hfPenalty += (v * v) * (gi * gi + gj * gj)
             }
-            
+
             // Early exit for very small adjustments
             if (kotlin.math.abs(deltaU) < 100) continue
-            
+
             // Apply high-frequency damping once per frequency band
             if (hfPenalty > 1600) deltaU /= 2
-            
+
             // Second pass: Apply corrections (BULK OPTIMIZED vertical)
             val correction = deltaU
             // Bulk apply corrections for 16 vertical coefficients - manually unrolled
@@ -3661,129 +3600,83 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun convertAndDoNothing(
-        blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
-        blocksX: Int, blocksY: Int,
-        kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
-    ): Array<FloatArray?> {
-        val coeffsSize = 16 * 16
-        val numBlocks = blocksX * blocksY
-
-        val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
-
-        for (blockIndex in 0 until numBlocks) {
-            val block = blocks[blockIndex]
-            if (block != null) {
-                val rateControlFactor = rateControlFactors[blockIndex]
-                for (i in 0 until coeffsSize) {
-                    val quantIdx = i.coerceIn(0, quantTable.size - 1)
-
-                    if (i == 0) {
-                        // DC coefficient: lossless (no quantization)
-                        val dcValue = block[i].toInt()
-                        blocksMid[blockIndex][i] = dcValue
-                    } else {
-                        // AC coefficients: use quantization intervals
-                        val quant = (quantTable[quantIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).coerceIn(1f, 255f).toInt()
-
-                        // Standard dequantized value (midpoint)
-                        blocksMid[blockIndex][i] = block[i].toInt() * quant
-                    }
-                }
-            }
-        }
-
-        val result = Array<FloatArray?>(blocks.size) { null }
-        for (blockIndex in 0 until numBlocks) {
-            val block = blocks[blockIndex]
-            if (block != null) {
-                result[blockIndex] = FloatArray(coeffsSize) { i ->
-                    blocksMid[blockIndex][i].toFloat()
-                }
-            }
-        }
-
-        return result
-
-    }
-
-    private fun convertAndOptimize8x8Blocks(
+    private fun tevConvertAndOptimise8x8Blocks(
         blocks: Array<ShortArray?>, quantTable: IntArray, qScale: Int, rateControlFactors: FloatArray,
         blocksX: Int, blocksY: Int,
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray, kHalfSqrt2: Int
     ): Array<FloatArray?> {
         val coeffsSize = 64
         val numBlocks = blocksX * blocksY
-        
-        // Step 1: Setup quantization intervals for all blocks (using integers like Google's code)
+
+        // Step 1: Setup quantisation intervals for all blocks (using integers like Google's code)
         val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
         val blocksMin = Array(numBlocks) { IntArray(coeffsSize) }
         val blocksMax = Array(numBlocks) { IntArray(coeffsSize) }
         val blocksOff = Array(numBlocks) { LongArray(coeffsSize) } // Long for accumulation
-        
+
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
                 val rateControlFactor = rateControlFactors[blockIndex]
                 for (i in 0 until coeffsSize) {
                     val quantIdx = i.coerceIn(0, quantTable.size - 1)
-                    
+
                     if (i == 0) {
-                        // DC coefficient: lossless (no quantization)
+                        // DC coefficient: lossless (no quantisation)
                         val dcValue = block[i].toInt()
                         blocksMid[blockIndex][i] = dcValue
                         blocksMin[blockIndex][i] = dcValue  // No interval for DC
                         blocksMax[blockIndex][i] = dcValue
                     } else {
-                        // AC coefficients: use quantization intervals
+                        // AC coefficients: use quantisation intervals
                         val quant = (quantTable[quantIdx] * jpeg_quality_to_mult(qScale * rateControlFactor)).coerceIn(1f, 255f).toInt()
-                        
-                        // Standard dequantized value (midpoint)
+
+                        // Standard dequantised value (midpoint)
                         blocksMid[blockIndex][i] = block[i].toInt() * quant
-                        
-                        // Quantization interval bounds
+
+                        // Quantisation interval bounds
                         val halfQuant = quant / 2
                         blocksMin[blockIndex][i] = blocksMid[blockIndex][i] - halfQuant
                         blocksMax[blockIndex][i] = blocksMid[blockIndex][i] + halfQuant
                     }
-                    
+
                     // Initialize adjustment accumulator
                     blocksOff[blockIndex][i] = 0L
                 }
             }
         }
-        
+
         // Step 2: Horizontal continuity analysis
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX - 1) {
                 val leftBlockIndex = by * blocksX + bx
                 val rightBlockIndex = by * blocksX + (bx + 1)
-                
+
                 if (blocks[leftBlockIndex] != null && blocks[rightBlockIndex] != null) {
-                    analyzeHorizontalBoundary(
-                        leftBlockIndex, rightBlockIndex, blocksMid, blocksOff, 
+                    tevAnalyseHorizontalBoundary8x8(
+                        leftBlockIndex, rightBlockIndex, blocksMid, blocksOff,
                         kLinearGradient, kAlphaSqrt2
                     )
                 }
             }
         }
-        
-        // Step 3: Vertical continuity analysis  
+
+        // Step 3: Vertical continuity analysis
         for (by in 0 until blocksY - 1) {
             for (bx in 0 until blocksX) {
                 val topBlockIndex = by * blocksX + bx
                 val bottomBlockIndex = (by + 1) * blocksX + bx
-                
+
                 if (blocks[topBlockIndex] != null && blocks[bottomBlockIndex] != null) {
-                    analyzeVerticalBoundary(
+                    tevAnalyseVerticalBoundary8x8(
                         topBlockIndex, bottomBlockIndex, blocksMid, blocksOff,
                         kLinearGradient, kAlphaSqrt2
                     )
                 }
             }
         }
-        
-        // Step 4: Apply corrections and return optimized dequantized coefficients
+
+        // Step 4: Apply corrections and return optimised dequantised coefficients
         val result = Array<FloatArray?>(blocks.size) { null }
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
@@ -3791,23 +3684,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 result[blockIndex] = FloatArray(coeffsSize) { i ->
                     // Apply corrections with sqrt(2)/2 weighting (Google's exact formula with right shift)
                     blocksMid[blockIndex][i] += ((blocksOff[blockIndex][i] * kHalfSqrt2) shr 31).toInt()
-                    
-                    // Clamp to quantization interval bounds
-                    val optimizedValue = blocksMid[blockIndex][i].coerceIn(
-                        blocksMin[blockIndex][i], 
+
+                    // Clamp to quantisation interval bounds
+                    val optimisedValue = blocksMid[blockIndex][i].coerceIn(
+                        blocksMin[blockIndex][i],
                         blocksMax[blockIndex][i]
                     )
-                    
-                    optimizedValue.toFloat()
+
+                    optimisedValue.toFloat()
                 }
             }
         }
-        
+
         return result
     }
 
     // BULK OPTIMIZED 8x8 horizontal boundary analysis for chroma channels
-    private fun analyzeHorizontalBoundary(
+    private fun tevAnalyseHorizontalBoundary8x8(
         leftBlockIndex: Int, rightBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>,
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray
@@ -3816,13 +3709,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val rightMid = blocksMid[rightBlockIndex]
         val leftOff = blocksOff[leftBlockIndex]
         val rightOff = blocksOff[rightBlockIndex]
-        
+
         // OPTIMIZATION 12: Process 8x8 boundaries with bulk operations (v < 4 for low-to-mid frequencies)
         for (v in 0 until 4) { // Only low-to-mid frequencies for 8x8
             var deltaV = 0L
             var hfPenalty = 0L
             val vOffset = v * 8
-            
+
             // First pass: Calculate boundary discontinuity
             for (u in 0 until 8) {
                 val idx = vOffset + u
@@ -3830,17 +3723,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val sign = if (u and 1 != 0) -1 else 1
                 val gi = leftMid[idx]
                 val gj = rightMid[idx]
-                
+
                 deltaV += alpha * (gj - sign * gi)
                 hfPenalty += (u * u) * (gi * gi + gj * gj)
             }
-            
+
             // Early exit for very small adjustments
             if (kotlin.math.abs(deltaV) < 100) continue
-            
+
             // Apply high-frequency damping once per frequency band
             if (hfPenalty > 400) deltaV /= 2 // 8x8 threshold
-            
+
             // Second pass: Apply corrections (BULK OPTIMIZED with unrolling for 8x8)
             val correction = deltaV
             // Bulk apply corrections for 8 coefficients - manually unrolled for performance
@@ -3862,9 +3755,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             rightOff[vOffset + 7] -= correction * kLinearGradient[7]
         }
     }
-    
+
     // BULK OPTIMIZED 8x8 vertical boundary analysis for chroma channels
-    private fun analyzeVerticalBoundary(
+    private fun tevAnalyseVerticalBoundary8x8(
         topBlockIndex: Int, bottomBlockIndex: Int,
         blocksMid: Array<IntArray>, blocksOff: Array<LongArray>, 
         kLinearGradient: IntArray, kAlphaSqrt2: IntArray
@@ -3874,7 +3767,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val topOff = blocksOff[topBlockIndex]
         val bottomOff = blocksOff[bottomBlockIndex]
         
-        // OPTIMIZATION 13: Optimized vertical analysis for 8x8 with better cache access pattern
+        // OPTIMIZATION 13: Optimised vertical analysis for 8x8 with better cache access pattern
         for (u in 0 until 4) { // Only low-to-mid frequencies for 8x8
             var deltaU = 0L
             var hfPenalty = 0L
@@ -3916,6 +3809,712 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             bottomOff[48 + u] += correction * kLinearGradient[6]
             topOff[56 + u] += correction * kLinearGradient[7]
             bottomOff[56 + u] -= correction * kLinearGradient[7]
+        }
+    }
+
+    // ================= TAV (TSVM Advanced Video) Decoder =================
+    // DWT-based video codec with ICtCp colour space support
+
+    fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
+                  width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, frameCounter: Int,
+                  debugMotionVectors: Boolean = false, waveletFilter: Int = 1,
+                  decompLevels: Int = 6, enableDeblocking: Boolean = true,
+                  isLossless: Boolean = false, tavVersion: Int = 1) {
+
+        var readPtr = blockDataPtr
+
+        try {
+            val tilesX = (width + TILE_SIZE_X - 1) / TILE_SIZE_X  // 280x224 tiles
+            val tilesY = (height + TILE_SIZE_Y - 1) / TILE_SIZE_Y
+            
+            // Process each tile
+            for (tileY in 0 until tilesY) {
+                for (tileX in 0 until tilesX) {
+                    
+                    // Read tile header (9 bytes: mode + mvX + mvY + rcf)
+                    val mode = vm.peek(readPtr).toInt() and 0xFF
+                    readPtr += 1
+                    val mvX = vm.peekShort(readPtr).toInt()
+                    readPtr += 2
+                    val mvY = vm.peekShort(readPtr).toInt()
+                    readPtr += 2
+                    val rcf = vm.peekFloat(readPtr)
+                    readPtr += 4
+
+                    // debug print: raw decompressed bytes
+                    /*print("TAV Decode raw bytes (Frame $frameCounter, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
+                    for (i in 0 until 32) {
+                        print("${vm.peek(blockDataPtr + i).toUint().toString(16).uppercase().padStart(2, '0')} ")
+                    }
+                    println("...")*/
+
+                    when (mode) {
+                        0x00 -> { // TAV_MODE_SKIP
+                            // Copy 280x224 tile from previous frame to current frame
+                            tavCopyTileRGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
+                        }
+                        0x01 -> { // TAV_MODE_INTRA  
+                            // Decode DWT coefficients directly to RGB buffer
+                            readPtr = tavDecodeDWTIntraTileRGB(readPtr, tileX, tileY, currentRGBAddr, 
+                                                          width, height, qY, qCo, qCg, rcf,
+                                                          waveletFilter, decompLevels, isLossless, tavVersion)
+                        }
+                        0x02 -> { // TAV_MODE_DELTA
+                            // Coefficient delta encoding for efficient P-frames
+                            readPtr = tavDecodeDeltaTileRGB(readPtr, tileX, tileY, currentRGBAddr,
+                                                      width, height, qY, qCo, qCg, rcf,
+                                                      waveletFilter, decompLevels, isLossless, tavVersion)
+                        }
+                    }
+                }
+            }
+
+        } catch (e: Exception) {
+            println("TAV decode error: ${e.message}")
+        }
+    }
+
+    private fun tavDecodeDWTIntraTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+                                         width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, rcf: Float,
+                                         waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
+        // Now reading padded coefficient tiles (344x288) instead of core tiles (280x224)
+        val paddedCoeffCount = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+        var ptr = readPtr
+        
+        // Read quantised DWT coefficients for padded tile Y, Co, Cg channels (344x288)
+        val quantisedY = ShortArray(paddedCoeffCount)
+        val quantisedCo = ShortArray(paddedCoeffCount)
+        val quantisedCg = ShortArray(paddedCoeffCount)
+        
+        // OPTIMIZATION: Bulk read all coefficient data (344x288 * 3 channels * 2 bytes = 594,432 bytes)
+        val totalCoeffBytes = paddedCoeffCount * 3 * 2L  // 3 channels, 2 bytes per short
+        val coeffBuffer = ByteArray(totalCoeffBytes.toInt())
+        UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), totalCoeffBytes)
+        
+        // Convert bulk data to coefficient arrays
+        var bufferOffset = 0
+        for (i in 0 until paddedCoeffCount) {
+            quantisedY[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
+            bufferOffset += 2
+        }
+        for (i in 0 until paddedCoeffCount) {
+            quantisedCo[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
+            bufferOffset += 2
+        }
+        for (i in 0 until paddedCoeffCount) {
+            quantisedCg[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
+            bufferOffset += 2
+        }
+        
+        ptr += totalCoeffBytes.toInt()
+        
+        // Dequantise padded coefficient tiles (344x288)
+        val yPaddedTile = FloatArray(paddedCoeffCount)
+        val coPaddedTile = FloatArray(paddedCoeffCount)
+        val cgPaddedTile = FloatArray(paddedCoeffCount)
+        
+        for (i in 0 until paddedCoeffCount) {
+            yPaddedTile[i] = quantisedY[i] * qY * rcf
+            coPaddedTile[i] = quantisedCo[i] * qCo * rcf
+            cgPaddedTile[i] = quantisedCg[i] * qCg * rcf
+        }
+        
+        // Store coefficients for future delta reference (for P-frames)
+        val tileIdx = tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+        if (tavPreviousCoeffsY == null) {
+            tavPreviousCoeffsY = mutableMapOf()
+            tavPreviousCoeffsCo = mutableMapOf()
+            tavPreviousCoeffsCg = mutableMapOf()
+        }
+        tavPreviousCoeffsY!![tileIdx] = yPaddedTile.clone()
+        tavPreviousCoeffsCo!![tileIdx] = coPaddedTile.clone()
+        tavPreviousCoeffsCg!![tileIdx] = cgPaddedTile.clone()
+        
+        // Apply inverse DWT on full padded tiles (344x288)
+        if (isLossless) {
+            tavApplyDWTInverseMultiLevel(yPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(coPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(cgPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+        } else {
+            tavApplyDWTInverseMultiLevel(yPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(coPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(cgPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+        }
+        
+        // Extract core 280x224 pixels from reconstructed padded tiles (344x288)
+        val yTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+        val coTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+        val cgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+        
+        for (y in 0 until TILE_SIZE_Y) {
+            for (x in 0 until TILE_SIZE_X) {
+                val coreIdx = y * TILE_SIZE_X + x
+                val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
+                
+                yTile[coreIdx] = yPaddedTile[paddedIdx]
+                coTile[coreIdx] = coPaddedTile[paddedIdx]
+                cgTile[coreIdx] = cgPaddedTile[paddedIdx]
+            }
+        }
+        
+        // Convert to RGB based on TAV version (YCoCg-R for v1, ICtCp for v2)
+        if (tavVersion == 2) {
+            tavConvertICtCpTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+        } else {
+            tavConvertYCoCgTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+        }
+        
+        return ptr
+    }
+
+    private fun tavConvertYCoCgTileToRGB(tileX: Int, tileY: Int, yTile: FloatArray, coTile: FloatArray, cgTile: FloatArray,
+                                         rgbAddr: Long, width: Int, height: Int) {
+        val startX = tileX * TILE_SIZE_X
+        val startY = tileY * TILE_SIZE_Y
+        
+        // OPTIMIZATION: Process pixels row by row with bulk copying for better cache locality
+        for (y in 0 until TILE_SIZE_Y) {
+            val frameY = startY + y
+            if (frameY >= height) break
+            
+            // Calculate valid pixel range for this row
+            val validStartX = maxOf(0, startX)
+            val validEndX = minOf(width, startX + TILE_SIZE_X)
+            val validPixelsInRow = validEndX - validStartX
+            
+            if (validPixelsInRow > 0) {
+                // Create row buffer for bulk RGB data
+                val rowRgbBuffer = ByteArray(validPixelsInRow * 3)
+                var bufferIdx = 0
+                
+                for (x in validStartX until validEndX) {
+                    val tileIdx = y * TILE_SIZE_X + (x - startX)
+                    
+                    // YCoCg-R to RGB conversion (exact inverse of encoder)
+                    val Y = yTile[tileIdx]
+                    val Co = coTile[tileIdx] 
+                    val Cg = cgTile[tileIdx]
+                    
+                    // Inverse of encoder's YCoCg-R transform:
+                    val tmp = Y - Cg / 2.0f
+                    val g = Cg + tmp
+                    val b = tmp - Co / 2.0f
+                    val r = Co + b
+                    
+                    rowRgbBuffer[bufferIdx++] = r.toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = g.toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = b.toInt().coerceIn(0, 255).toByte()
+                }
+                
+                // OPTIMIZATION: Bulk copy entire row at once
+                val rowStartOffset = (frameY * width + validStartX) * 3L
+                UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
+                                     null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
+            }
+        }
+    }
+
+    private fun tavConvertICtCpTileToRGB(tileX: Int, tileY: Int, iTile: FloatArray, ctTile: FloatArray, cpTile: FloatArray,
+                                         rgbAddr: Long, width: Int, height: Int) {
+        val startX = tileX * TILE_SIZE_X
+        val startY = tileY * TILE_SIZE_Y
+        
+        // OPTIMIZATION: Process pixels row by row with bulk copying for better cache locality
+        for (y in 0 until TILE_SIZE_Y) {
+            val frameY = startY + y
+            if (frameY >= height) break
+            
+            // Calculate valid pixel range for this row
+            val validStartX = maxOf(0, startX)
+            val validEndX = minOf(width, startX + TILE_SIZE_X)
+            val validPixelsInRow = validEndX - validStartX
+            
+            if (validPixelsInRow > 0) {
+                // Create row buffer for bulk RGB data
+                val rowRgbBuffer = ByteArray(validPixelsInRow * 3)
+                var bufferIdx = 0
+                
+                for (x in validStartX until validEndX) {
+                    val tileIdx = y * TILE_SIZE_X + (x - startX)
+                    
+                    // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
+                    val I = iTile[tileIdx].toDouble() / 255.0
+                    val Ct = (ctTile[tileIdx].toDouble() - 127.5) / 255.0
+                    val Cp = (cpTile[tileIdx].toDouble() - 127.5) / 255.0
+
+                    // ICtCp -> L'M'S' (inverse matrix)
+                    val Lp = I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp
+                    val Mp = I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp
+                    val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
+
+                    // HLG decode: L'M'S' -> linear LMS
+                    val L = HLG_EOTF(Lp)
+                    val M = HLG_EOTF(Mp) 
+                    val S = HLG_EOTF(Sp)
+
+                    // LMS -> linear sRGB (inverse matrix)
+                    val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
+                    val gLin = -1.3243428148026244 * L + 2.560286104841917 * M -0.2359203727576164 * S
+                    val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
+
+                    // Gamma encode to sRGB
+                    val rSrgb = srgbUnlinearize(rLin)
+                    val gSrgb = srgbUnlinearize(gLin)
+                    val bSrgb = srgbUnlinearize(bLin)
+
+                    rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                }
+                
+                // OPTIMIZATION: Bulk copy entire row at once
+                val rowStartOffset = (frameY * width + validStartX) * 3L
+                UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
+                                     null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
+            }
+        }
+    }
+
+    private fun tavAddYCoCgResidualToRGBTile(tileX: Int, tileY: Int, yRes: FloatArray, coRes: FloatArray, cgRes: FloatArray,
+                                             rgbAddr: Long, width: Int, height: Int) {
+        val startX = tileX * TILE_SIZE_X
+        val startY = tileY * TILE_SIZE_Y
+
+        for (y in 0 until TILE_SIZE_Y) {
+            for (x in 0 until TILE_SIZE_X) {
+                val frameX = startX + x
+                val frameY = startY + y
+
+                if (frameX < width && frameY < height) {
+                    val tileIdx = y * TILE_SIZE_X + x
+                    val pixelIdx = frameY * width + frameX
+                    val rgbOffset = pixelIdx * 3L
+
+                    // Get current RGB (from motion compensation)
+                    val curR = (vm.peek(rgbAddr + rgbOffset).toInt() and 0xFF).toFloat()
+                    val curG = (vm.peek(rgbAddr + rgbOffset + 1).toInt() and 0xFF).toFloat()
+                    val curB = (vm.peek(rgbAddr + rgbOffset + 2).toInt() and 0xFF).toFloat()
+
+                    // Convert current RGB back to YCoCg
+                    val co = (curR - curB) / 2
+                    val tmp = curB + co
+                    val cg = (curG - tmp) / 2
+                    val yPred = tmp + cg
+
+                    // Add residual
+                    val yFinal = yPred + yRes[tileIdx]
+                    val coFinal = co + coRes[tileIdx]
+                    val cgFinal = cg + cgRes[tileIdx]
+
+                    // Convert back to RGB
+                    val tmpFinal = yFinal - cgFinal
+                    val gFinal = yFinal + cgFinal
+                    val bFinal = tmpFinal - coFinal
+                    val rFinal = tmpFinal + coFinal
+
+                    vm.poke(rgbAddr + rgbOffset, rFinal.toInt().coerceIn(0, 255).toByte())
+                    vm.poke(rgbAddr + rgbOffset + 1, gFinal.toInt().coerceIn(0, 255).toByte())
+                    vm.poke(rgbAddr + rgbOffset + 2, bFinal.toInt().coerceIn(0, 255).toByte())
+                }
+            }
+        }
+    }
+
+    // Helper functions (simplified versions of existing DWT functions)
+    private fun tavCopyTileRGB(tileX: Int, tileY: Int, currentRGBAddr: Long, prevRGBAddr: Long, width: Int, height: Int) {
+        val startX = tileX * TILE_SIZE_X
+        val startY = tileY * TILE_SIZE_Y
+        
+        // OPTIMIZATION: Copy entire rows at once for maximum performance
+        for (y in 0 until TILE_SIZE_Y) {
+            val frameY = startY + y
+            if (frameY >= height) break
+            
+            // Calculate valid pixel range for this row
+            val validStartX = maxOf(0, startX)
+            val validEndX = minOf(width, startX + TILE_SIZE_X)
+            val validPixelsInRow = validEndX - validStartX
+            
+            if (validPixelsInRow > 0) {
+                val rowStartOffset = (frameY * width + validStartX) * 3L
+                val rowByteCount = validPixelsInRow * 3L
+                
+                // OPTIMIZATION: Bulk copy entire row of RGB data in one operation
+                UnsafeHelper.memcpy(
+                    vm.usermem.ptr + prevRGBAddr + rowStartOffset,
+                    vm.usermem.ptr + currentRGBAddr + rowStartOffset,
+                    rowByteCount
+                )
+            }
+        }
+    }
+
+    private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+                                      width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, rcf: Float,
+                                      waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
+        
+        val tileIdx = tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+        var ptr = readPtr
+        
+        // Initialize coefficient storage if needed
+        if (tavPreviousCoeffsY == null) {
+            tavPreviousCoeffsY = mutableMapOf()
+            tavPreviousCoeffsCo = mutableMapOf()
+            tavPreviousCoeffsCg = mutableMapOf()
+        }
+        
+        // Coefficient count for padded tiles: 344x288 = 99,072 coefficients per channel
+        val coeffCount = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+        
+        // Read delta coefficients (same format as intra: quantised int16 -> float)
+        val deltaY = ShortArray(coeffCount)
+        val deltaCo = ShortArray(coeffCount) 
+        val deltaCg = ShortArray(coeffCount)
+        
+        vm.bulkPeekShort(ptr.toInt(), deltaY, coeffCount * 2)
+        ptr += coeffCount * 2
+        vm.bulkPeekShort(ptr.toInt(), deltaCo, coeffCount * 2)
+        ptr += coeffCount * 2
+        vm.bulkPeekShort(ptr.toInt(), deltaCg, coeffCount * 2)
+        ptr += coeffCount * 2
+        
+        // Get or initialize previous coefficients for this tile
+        val prevY = tavPreviousCoeffsY!![tileIdx] ?: FloatArray(coeffCount)
+        val prevCo = tavPreviousCoeffsCo!![tileIdx] ?: FloatArray(coeffCount)
+        val prevCg = tavPreviousCoeffsCg!![tileIdx] ?: FloatArray(coeffCount)
+        
+        // Reconstruct current coefficients: current = previous + delta
+        val currentY = FloatArray(coeffCount)
+        val currentCo = FloatArray(coeffCount)
+        val currentCg = FloatArray(coeffCount)
+        
+        for (i in 0 until coeffCount) {
+            currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY * rcf)
+            currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo * rcf)
+            currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg * rcf)
+        }
+        
+        // Store current coefficients as previous for next frame
+        tavPreviousCoeffsY!![tileIdx] = currentY.clone()
+        tavPreviousCoeffsCo!![tileIdx] = currentCo.clone()
+        tavPreviousCoeffsCg!![tileIdx] = currentCg.clone()
+        
+        // Apply inverse DWT
+        if (isLossless) {
+            tavApplyDWTInverseMultiLevel(currentY, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(currentCo, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(currentCg, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+        } else {
+            tavApplyDWTInverseMultiLevel(currentY, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(currentCo, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(currentCg, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+        }
+        
+        // Extract core 280x224 pixels and convert to RGB (same as intra)
+        val yTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+        val coTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+        val cgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+        
+        for (y in 0 until TILE_SIZE_Y) {
+            for (x in 0 until TILE_SIZE_X) {
+                val coreIdx = y * TILE_SIZE_X + x
+                val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
+                
+                yTile[coreIdx] = currentY[paddedIdx]
+                coTile[coreIdx] = currentCo[paddedIdx]
+                cgTile[coreIdx] = currentCg[paddedIdx]
+            }
+        }
+        
+        // Convert to RGB based on TAV version
+        if (tavVersion == 2) {
+            tavConvertICtCpTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+        } else {
+            tavConvertYCoCgTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+        }
+        
+        return ptr
+    }
+
+    private fun tavApplyMotionCompensationRGB(tileX: Int, tileY: Int, mvX: Int, mvY: Int,
+                                              currentRGBAddr: Long, prevRGBAddr: Long,
+                                              width: Int, height: Int) {
+        val startX = tileX * TILE_SIZE_X
+        val startY = tileY * TILE_SIZE_Y
+
+        // Motion vectors in quarter-pixel precision
+        val refX = startX + (mvX / 4.0f)
+        val refY = startY + (mvY / 4.0f)
+
+        for (y in 0 until TILE_SIZE_Y) {
+            for (x in 0 until TILE_SIZE_X) {
+                val currentPixelIdx = (startY + y) * width + (startX + x)
+
+                if (currentPixelIdx >= 0 && currentPixelIdx < width * height) {
+                    // Bilinear interpolation for sub-pixel motion vectors
+                    val srcX = refX + x
+                    val srcY = refY + y
+
+                    val interpolatedRGB = tavBilinearInterpolateRGB(prevRGBAddr, width, height, srcX, srcY)
+
+                    val rgbOffset = currentPixelIdx * 3L
+                    vm.poke(currentRGBAddr + rgbOffset, interpolatedRGB[0])
+                    vm.poke(currentRGBAddr + rgbOffset + 1, interpolatedRGB[1])
+                    vm.poke(currentRGBAddr + rgbOffset + 2, interpolatedRGB[2])
+                }
+            }
+        }
+    }
+
+    private fun tavBilinearInterpolateRGB(rgbPtr: Long, width: Int, height: Int, x: Float, y: Float): ByteArray {
+        val x0 = kotlin.math.floor(x).toInt()
+        val y0 = kotlin.math.floor(y).toInt()
+        val x1 = x0 + 1
+        val y1 = y0 + 1
+
+        if (x0 < 0 || y0 < 0 || x1 >= width || y1 >= height) {
+            return byteArrayOf(0, 0, 0)  // Out of bounds - return black
+        }
+
+        val fx = x - x0
+        val fy = y - y0
+
+        // Get 4 corner pixels
+        val rgb00 = getRGBPixel(rgbPtr, y0 * width + x0)
+        val rgb10 = getRGBPixel(rgbPtr, y0 * width + x1)
+        val rgb01 = getRGBPixel(rgbPtr, y1 * width + x0)
+        val rgb11 = getRGBPixel(rgbPtr, y1 * width + x1)
+
+        // Bilinear interpolation
+        val result = ByteArray(3)
+        for (c in 0..2) {
+            val interp = (1 - fx) * (1 - fy) * (rgb00[c].toInt() and 0xFF) +
+                    fx * (1 - fy) * (rgb10[c].toInt() and 0xFF) +
+                    (1 - fx) * fy * (rgb01[c].toInt() and 0xFF) +
+                    fx * fy * (rgb11[c].toInt() and 0xFF)
+            result[c] = interp.toInt().coerceIn(0, 255).toByte()
+        }
+
+        return result
+    }
+
+    private fun getRGBPixel(rgbPtr: Long, pixelIdx: Int): ByteArray {
+        val offset = pixelIdx * 3L
+        return byteArrayOf(
+            vm.peek(rgbPtr + offset),
+            vm.peek(rgbPtr + offset + 1),
+            vm.peek(rgbPtr + offset + 2)
+        )
+    }
+
+    private fun tavApplyDWTInverseMultiLevel(data: FloatArray, width: Int, height: Int, levels: Int, filterType: Int) {
+        // Multi-level inverse DWT - reconstruct from smallest to largest (reverse of encoder)
+        val maxSize = kotlin.math.max(width, height)
+        val tempRow = FloatArray(maxSize)
+        val tempCol = FloatArray(maxSize)
+
+        for (level in levels - 1 downTo 0) {
+            val currentWidth = width shr level
+            val currentHeight = height shr level
+            
+            // Handle edge cases for very small decomposition levels
+            if (currentWidth < 1 || currentHeight < 1) continue // Skip invalid sizes
+            if (currentWidth == 1 && currentHeight == 1) {
+                // Single DC coefficient, no DWT needed but preserve it
+                continue
+            }
+
+            // Apply inverse DWT to current subband region - EXACT match to encoder
+            // The encoder does ROW transform first, then COLUMN transform
+            // So inverse must do COLUMN inverse first, then ROW inverse
+
+            // Column inverse transform first (vertical)
+            for (x in 0 until currentWidth) {
+                for (y in 0 until currentHeight) {
+                    tempCol[y] = data[y * width + x]
+                }
+
+                if (filterType == 0) {
+                    tavApplyDWT53Inverse1D(tempCol, currentHeight)
+                } else {
+                    tavApplyDWT97Inverse1D(tempCol, currentHeight)
+                }
+
+                for (y in 0 until currentHeight) {
+                    data[y * width + x] = tempCol[y]
+                }
+            }
+
+            // Row inverse transform second (horizontal)
+            for (y in 0 until currentHeight) {
+                for (x in 0 until currentWidth) {
+                    tempRow[x] = data[y * width + x]
+                }
+
+                if (filterType == 0) {
+                    tavApplyDWT53Inverse1D(tempRow, currentWidth)
+                } else {
+                    tavApplyDWT97Inverse1D(tempRow, currentWidth)
+                }
+
+                for (x in 0 until currentWidth) {
+                    data[y * width + x] = tempRow[x]
+                }
+            }
+        }
+    }
+
+    // 1D lifting scheme implementations for 9/7 irreversible filter
+    private fun tavApplyDWT97Inverse1D(data: FloatArray, length: Int) {
+        if (length < 2) return
+
+        val temp = FloatArray(length)
+        val half = (length + 1) / 2  // Handle odd lengths properly
+
+        // Split into low and high frequency components (matching encoder layout)
+        // After forward DWT: first half = low-pass, second half = high-pass
+        for (i in 0 until half) {
+            temp[i] = data[i]              // Low-pass coefficients (first half)
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length && half + i < data.size) {
+                temp[half + i] = data[half + i] // High-pass coefficients (second half)
+            }
+        }
+
+        // 9/7 inverse lifting coefficients (original working values)
+        val alpha = -1.586134342f
+        val beta = -0.052980118f
+        val gamma = 0.882911076f
+        val delta = 0.443506852f
+        val K = 1.230174105f
+
+        // JPEG2000 9/7 inverse lifting steps (corrected implementation)
+        // Reference order: undo scaling → undo δ → undo γ → undo β → undo α → interleave
+
+        // Step 1: Undo scaling - s[i] /= K, d[i] *= K
+        for (i in 0 until half) {
+            temp[i] /= K  // Low-pass coefficients
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                temp[half + i] *= K  // High-pass coefficients
+            }
+        }
+
+        // Step 2: Undo δ update - s[i] -= δ * (d[i] + d[i-1])
+        for (i in 0 until half) {
+            val d_curr = if (half + i < length) temp[half + i] else 0.0f
+            val d_prev = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else d_curr
+            temp[i] -= delta * (d_curr + d_prev)
+        }
+
+        // Step 3: Undo γ predict - d[i] -= γ * (s[i] + s[i+1])
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val s_curr = temp[i]
+                val s_next = if (i + 1 < half) temp[i + 1] else s_curr
+                temp[half + i] -= gamma * (s_curr + s_next)
+            }
+        }
+
+        // Step 4: Undo β update - s[i] -= β * (d[i] + d[i-1])
+        for (i in 0 until half) {
+            val d_curr = if (half + i < length) temp[half + i] else 0.0f
+            val d_prev = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else d_curr
+            temp[i] -= beta * (d_curr + d_prev)
+        }
+
+        // Step 5: Undo α predict - d[i] -= α * (s[i] + s[i+1])
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val s_curr = temp[i]
+                val s_next = if (i + 1 < half) temp[i + 1] else s_curr
+                temp[half + i] -= alpha * (s_curr + s_next)
+            }
+        }
+
+        // Simple reconstruction (revert to working version)
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    data[i] = 0.0f // Boundary case
+                }
+            }
+        }
+    }
+
+    private fun tavApplyDWT53Inverse1D(data: FloatArray, length: Int) {
+        if (length < 2) return
+
+        val temp = FloatArray(length)
+        val half = (length + 1) / 2  // Handle odd lengths properly
+
+        // Split into low and high frequency components (matching encoder layout)
+        for (i in 0 until half) {
+            temp[i] = data[i]              // Low-pass coefficients (first half)
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length && half + i < data.size) {
+                temp[half + i] = data[half + i] // High-pass coefficients (second half)
+            }
+        }
+
+        // 5/3 inverse lifting (undo forward steps in reverse order)
+
+        // Step 2: Undo update step (1/4 coefficient) - JPEG2000 symmetric extension
+        for (i in 0 until half) {
+            val leftIdx = half + i - 1
+            val centerIdx = half + i
+            
+            // Symmetric extension for boundary handling
+            val left = when {
+                leftIdx >= 0 && leftIdx < length -> temp[leftIdx]
+                centerIdx < length && centerIdx + 1 < length -> temp[centerIdx + 1] // Mirror
+                centerIdx < length -> temp[centerIdx]
+                else -> 0.0f
+            }
+            val right = if (centerIdx < length) temp[centerIdx] else 0.0f
+            temp[i] -= 0.25f * (left + right)
+        }
+
+        // Step 1: Undo predict step (1/2 coefficient) - JPEG2000 symmetric extension
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val left = temp[i]
+                // Symmetric extension for right boundary
+                val right = if (i < half - 1) temp[i + 1] else if (half > 2) temp[half - 2] else temp[half - 1]
+                temp[half + i] -= 0.5f * (left + right)
+            }
+        }
+
+        // Simple reconstruction (revert to working version)
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    // Symmetric extension: mirror the last available high-pass coefficient
+                    val lastHighIdx = (length / 2) - 1
+                    if (lastHighIdx >= 0 && half + lastHighIdx < length) {
+                        data[i] = temp[half + lastHighIdx]
+                    } else {
+                        data[i] = 0.0f
+                    }
+                }
+            }
         }
     }
 
