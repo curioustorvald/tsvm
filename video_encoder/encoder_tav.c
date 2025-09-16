@@ -203,19 +203,7 @@ typedef struct {
     
 } tav_encoder_t;
 
-// 5/3 Wavelet filter coefficients (reversible)
-static const float WAVELET_5_3_LP[] = {0.5f, 1.0f, 0.5f};
-static const float WAVELET_5_3_HP[] = {-0.125f, -0.25f, 0.75f, -0.25f, -0.125f};
-
-// 9/7 Wavelet filter coefficients (irreversible - Daubechies)
-static const float WAVELET_9_7_LP[] = {
-    0.037828455507f, -0.023849465020f, -0.110624404418f, 0.377402855613f,
-    0.852698679009f, 0.377402855613f, -0.110624404418f, -0.023849465020f, 0.037828455507f
-};
-static const float WAVELET_9_7_HP[] = {
-    0.064538882629f, -0.040689417609f, -0.418092273222f, 0.788485616406f,
-    -0.418092273222f, -0.040689417609f, 0.064538882629f
-};
+// Wavelet filter constants removed - using lifting scheme implementation instead
 
 // Function prototypes
 static void show_usage(const char *program_name);
@@ -223,15 +211,9 @@ static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialize_encoder(tav_encoder_t *enc);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
-static void dwt_2d_forward(float *tile_data, int levels, int filter_type);
-static void dwt_2d_inverse(dwt_tile_t *tile, float *output, int filter_type);
-static void quantize_subbands(dwt_tile_t *tile, int q_y, int q_co, int q_cg, float rcf);
 static int estimate_motion_112x112(const float *current, const float *reference, 
                                    int width, int height, int tile_x, int tile_y, 
                                    motion_vector_t *mv);
-static size_t compress_tile_data(tav_encoder_t *enc, const dwt_tile_t *tiles, 
-                                 const motion_vector_t *mvs, int num_tiles,
-                                 uint8_t packet_type);
 
 // Audio and subtitle processing prototypes (from TEV)
 static int start_audio_conversion(tav_encoder_t *enc);
@@ -393,32 +375,6 @@ static void dwt_53_forward_1d(float *data, int length) {
     free(temp);
 }
 
-static void dwt_53_inverse_1d(float *data, int length) {
-    if (length < 2) return;
-    
-    float *temp = malloc(length * sizeof(float));
-    int half = (length + 1) / 2;  // Handle odd lengths properly
-    
-    // Inverse update step
-    for (int i = 0; i < half; i++) {
-        float update = 0.25f * ((i > 0 ? data[half + i - 1] : 0) + 
-                               (i < half - 1 ? data[half + i] : 0));
-        temp[2 * i] = data[i] - update;
-    }
-    
-    // Inverse predict step  
-    for (int i = 0; i < half; i++) {
-        int idx = 2 * i + 1;
-        if (idx < length) {
-            float pred = 0.5f * (temp[2 * i] + (2 * i + 2 < length ? temp[2 * i + 2] : temp[2 * i]));
-            temp[idx] = data[half + i] + pred;
-        }
-    }
-    
-    // Copy back
-    memcpy(data, temp, length * sizeof(float));
-    free(temp);
-}
 
 // 1D DWT using lifting scheme for 9/7 irreversible filter
 static void dwt_97_forward_1d(float *data, int length) {
@@ -574,59 +530,6 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
 
 
 
-// 2D DWT forward transform for 112x112 tile
-static void dwt_2d_forward(float *tile_data, int levels, int filter_type) {
-    const int size = TILE_SIZE;
-    float *temp_row = malloc(size * sizeof(float));
-    float *temp_col = malloc(size * sizeof(float));
-    
-    for (int level = 0; level < levels; level++) {
-        int current_size = size >> level;
-        if (current_size < 1) break;
-        if (current_size == 1) {
-            // Level 6: 1x1 - single DC coefficient, no DWT needed
-            // The single coefficient is already in the correct position
-            continue;
-        }
-        
-        // Row transform
-        for (int y = 0; y < current_size; y++) {
-            for (int x = 0; x < current_size; x++) {
-                temp_row[x] = tile_data[y * size + x];
-            }
-            
-            if (filter_type == WAVELET_5_3_REVERSIBLE) {
-                dwt_53_forward_1d(temp_row, current_size);
-            } else {
-                dwt_97_forward_1d(temp_row, current_size);
-            }
-            
-            for (int x = 0; x < current_size; x++) {
-                tile_data[y * size + x] = temp_row[x];
-            }
-        }
-        
-        // Column transform
-        for (int x = 0; x < current_size; x++) {
-            for (int y = 0; y < current_size; y++) {
-                temp_col[y] = tile_data[y * size + x];
-            }
-            
-            if (filter_type == WAVELET_5_3_REVERSIBLE) {
-                dwt_53_forward_1d(temp_col, current_size);
-            } else {
-                dwt_97_forward_1d(temp_col, current_size);
-            }
-            
-            for (int y = 0; y < current_size; y++) {
-                tile_data[y * size + x] = temp_col[y];
-            }
-        }
-    }
-    
-    free(temp_row);
-    free(temp_col);
-}
 
 // Quantization for DWT subbands with rate control
 static void quantize_dwt_coefficients(float *coeffs, int16_t *quantized, int size, int quantizer, float rcf) {
@@ -1802,7 +1705,6 @@ int main(int argc, char *argv[]) {
     printf("Starting encoding...\n");
     
     // Main encoding loop - process frames until EOF or frame limit
-    int keyframe_interval = 30;  // I-frame every 30 frames
     int frame_count = 0;
     int continue_encoding = 1;
     
@@ -1871,8 +1773,8 @@ int main(int argc, char *argv[]) {
             // Frame parity: even frames (0,2,4...) = bottom fields, odd frames (1,3,5...) = top fields
         }
         
-        // Determine frame type
-        int is_keyframe = 1;//(frame_count % keyframe_interval == 0);
+        // Determine frame type (all frames are keyframes in current implementation)
+        int is_keyframe = 1;
         
         // Debug: check RGB input data
         /*if (frame_count < 3) {
