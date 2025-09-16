@@ -255,14 +255,12 @@ static void show_usage(const char *program_name) {
     printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
     printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 0-100 for each channel\n");
 //    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
-    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
+//    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
-//    printf("  --enable-progressive    Enable progressive transmission\n");
-//    printf("  --enable-roi            Enable region-of-interest coding\n");
-    printf("  --intra-only            Disable delta encoding (force all tiles to use INTRA mode)\n");
+    printf("  --intra-only            Disable delta encoding (improves quality but larger file)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --help                  Show this help\n\n");
     
@@ -290,11 +288,11 @@ static void show_usage(const char *program_name) {
     printf("  - Lossless and lossy compression modes\n");
     
     printf("\nExamples:\n");
-    printf("  %s -i input.mp4 -o output.mv3                    # Default settings\n", program_name);
-    printf("  %s -i input.mkv -q 3 -w 1 -d 6 -o output.mv3     # Maximum quality with 9/7 wavelet\n", program_name);
-    printf("  %s -i input.avi --lossless -o output.mv3         # Lossless encoding\n", program_name);
-    printf("  %s -i input.mp4 -b 800 -o output.mv3             # 800 kbps bitrate target\n", program_name);
-    printf("  %s -i input.webm -S subs.srt -o output.mv3       # With subtitles\n", program_name);
+    printf("  %s -i input.mp4 -o output.mv3               # Default settings\n", program_name);
+    printf("  %s -i input.mkv -q 4 -w 1 -o output.mv3     # Maximum quality with 9/7 wavelet\n", program_name);
+    printf("  %s -i input.avi --lossless -o output.mv3    # Lossless encoding\n", program_name);
+//    printf("  %s -i input.mp4 -b 800 -o output.mv3        # 800 kbps bitrate target\n", program_name);
+    printf("  %s -i input.webm -S subs.srt -o output.mv3  # With subtitles\n", program_name);
 }
 
 // Create encoder instance

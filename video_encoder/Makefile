@@ -6,7 +6,7 @@ CFLAGS = -std=c99 -Wall -Wextra -O2 -D_GNU_SOURCE
 LIBS = -lm -lzstd
 
 # Source files and targets
-TARGETS = encoder_tev encoder_tav
+TARGETS = tev tav
 
 # Build all encoders
 all: $(TARGETS)
@@ -33,7 +33,8 @@ clean:
 
 # Install (copy to PATH)
 install: $(TARGETS)
-	cp $(TARGETS) /usr/local/bin/
+	cp encoder_tev /usr/local/bin/
+	cp encoder_tav /usr/local/bin/
 
 # Check for required dependencies
 check-deps:
