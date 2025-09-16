@@ -1,4 +1,4 @@
-// usage: playmov moviefile.mov [/i]
+// usage: playmv1 moviefile.mv1 [/i]
 const SND_BASE_ADDR = audio.getBaseAddr()
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const WIDTH = 560

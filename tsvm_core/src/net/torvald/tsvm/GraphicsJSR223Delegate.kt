@@ -3816,10 +3816,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // DWT-based video codec with ICtCp colour space support
 
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, frameCounter: Int,
-                  debugMotionVectors: Boolean = false, waveletFilter: Int = 1,
-                  decompLevels: Int = 6, enableDeblocking: Boolean = true,
-                  isLossless: Boolean = false, tavVersion: Int = 1) {
+                  width: Int, height: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCounter: Int,
+                  waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
 
         var readPtr = blockDataPtr
 
@@ -3832,14 +3830,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 for (tileX in 0 until tilesX) {
                     
                     // Read tile header (9 bytes: mode + mvX + mvY + rcf)
-                    val mode = vm.peek(readPtr).toInt() and 0xFF
-                    readPtr += 1
-                    val mvX = vm.peekShort(readPtr).toInt()
-                    readPtr += 2
-                    val mvY = vm.peekShort(readPtr).toInt()
-                    readPtr += 2
-                    val rcf = vm.peekFloat(readPtr)
-                    readPtr += 4
+                    val mode = vm.peek(readPtr++).toUint()
+                    val qY = vm.peek(readPtr++).toUint().let { if (it == 0) qYGlobal else it }
+                    val qCo = vm.peek(readPtr++).toUint().let { if (it == 0) qCoGlobal else it }
+                    val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else it }
 
                     // debug print: raw decompressed bytes
                     /*print("TAV Decode raw bytes (Frame $frameCounter, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
@@ -3856,13 +3850,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         0x01 -> { // TAV_MODE_INTRA  
                             // Decode DWT coefficients directly to RGB buffer
                             readPtr = tavDecodeDWTIntraTileRGB(readPtr, tileX, tileY, currentRGBAddr, 
-                                                          width, height, qY, qCo, qCg, rcf,
+                                                          width, height, qY, qCo, qCg,
                                                           waveletFilter, decompLevels, isLossless, tavVersion)
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
                             readPtr = tavDecodeDeltaTileRGB(readPtr, tileX, tileY, currentRGBAddr,
-                                                      width, height, qY, qCo, qCg, rcf,
+                                                      width, height, qY, qCo, qCg,
                                                       waveletFilter, decompLevels, isLossless, tavVersion)
                         }
                     }
@@ -3875,7 +3869,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun tavDecodeDWTIntraTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
-                                         width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, rcf: Float,
+                                         width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                          waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
         // Now reading padded coefficient tiles (344x288) instead of core tiles (280x224)
         val paddedCoeffCount = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
@@ -3914,9 +3908,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val cgPaddedTile = FloatArray(paddedCoeffCount)
         
         for (i in 0 until paddedCoeffCount) {
-            yPaddedTile[i] = quantisedY[i] * qY * rcf
-            coPaddedTile[i] = quantisedCo[i] * qCo * rcf
-            cgPaddedTile[i] = quantisedCg[i] * qCg * rcf
+            yPaddedTile[i] = quantisedY[i] * qY.toFloat()
+            coPaddedTile[i] = quantisedCo[i] * qCo.toFloat()
+            cgPaddedTile[i] = quantisedCg[i] * qCg.toFloat()
         }
         
         // Store coefficients for future delta reference (for P-frames)
@@ -4150,7 +4144,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
-                                      width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, rcf: Float,
+                                      width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                       waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
         
         val tileIdx = tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
@@ -4189,9 +4183,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val currentCg = FloatArray(coeffCount)
         
         for (i in 0 until coeffCount) {
-            currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY * rcf)
-            currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo * rcf)
-            currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg * rcf)
+            currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
+            currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
+            currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
         }
         
         // Store current coefficients as previous for next frame

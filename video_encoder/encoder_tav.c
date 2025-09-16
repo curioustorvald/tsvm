@@ -125,12 +125,6 @@ typedef struct {
     int tile_x, tile_y;
 } dwt_tile_t;
 
-// Motion vector structure
-typedef struct {
-    int16_t mv_x, mv_y;  // 1/4 pixel precision
-    float rate_control_factor;
-} motion_vector_t;
-
 // TAV encoder structure
 typedef struct {
     // Input/output files
@@ -179,8 +173,7 @@ typedef struct {
     // Tile processing
     int tiles_x, tiles_y;
     dwt_tile_t *tiles;
-    motion_vector_t *motion_vectors;
-    
+
     // Audio processing (expanded from TEV)
     size_t audio_remaining;
     uint8_t *mp2_buffer;
@@ -260,7 +253,7 @@ static void show_usage(const char *program_name) {
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
-    printf("  --intra-only            Disable delta encoding (improves quality but larger file)\n");
+    printf("  --delta-code            Enable delta encoding (improved compression but noisy picture)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --help                  Show this help\n\n");
     
@@ -269,21 +262,21 @@ static void show_usage(const char *program_name) {
         printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
     }
     printf("\n\nQuantiser Value by Quality:\n");
-    printf("  Y (Luma):  ");
+    printf("  Y (Luma):    ");
     for (int i = 0; i < 6; i++) {
-        printf("%d: Q%d  ", i, QUALITY_Y[i]);
+        printf("%d: Q %d  \t", i, QUALITY_Y[i]);
     }
     printf("\n  Co (Chroma): ");
     for (int i = 0; i < 6; i++) {
-        printf("%d: Q%d  ", i, QUALITY_CO[i]);
+        printf("%d: Q %d  \t", i, QUALITY_CO[i]);
     }
     printf("\n  Cg (Chroma): ");
     for (int i = 0; i < 6; i++) {
-        printf("%d: Q%d  ", i, QUALITY_CG[i]);
+        printf("%d: Q %d  \t", i, QUALITY_CG[i]);
     }
     
     printf("\n\nFeatures:\n");
-    printf("  - 112x112 DWT tiles with multi-resolution encoding\n");
+    printf("  - 280x224 DWT tiles with multi-resolution encoding\n");
     printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
     printf("  - Lossless and lossy compression modes\n");
     
@@ -310,6 +303,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->quantiser_y = QUALITY_Y[DEFAULT_QUALITY];
     enc->quantiser_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantiser_cg = QUALITY_CG[DEFAULT_QUALITY];
+    enc->intra_only = 1;
 
     return enc;
 }
@@ -336,15 +330,7 @@ static int initialize_encoder(tav_encoder_t *enc) {
     
     // Allocate tile structures
     enc->tiles = malloc(num_tiles * sizeof(dwt_tile_t));
-    enc->motion_vectors = malloc(num_tiles * sizeof(motion_vector_t));
-    
-    // Initialize motion vectors
-    for (int i = 0; i < num_tiles; i++) {
-        enc->motion_vectors[i].mv_x = 0;
-        enc->motion_vectors[i].mv_y = 0;
-        enc->motion_vectors[i].rate_control_factor = 1.0f;  // Initialize to 1.0f
-    }
-    
+
     // Initialize ZSTD compression
     enc->zstd_ctx = ZSTD_createCCtx();
     enc->compressed_buffer_size = ZSTD_compressBound(1024 * 1024); // 1MB max
@@ -366,7 +352,7 @@ static int initialize_encoder(tav_encoder_t *enc) {
     if (!enc->current_frame_rgb || !enc->previous_frame_rgb || 
         !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg ||
         !enc->previous_frame_y || !enc->previous_frame_co || !enc->previous_frame_cg ||
-        !enc->tiles || !enc->motion_vectors || !enc->zstd_ctx || !enc->compressed_buffer ||
+        !enc->tiles || !enc->zstd_ctx || !enc->compressed_buffer ||
         !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg ||
         !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg) {
         return -1;
@@ -622,8 +608,8 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
 
 
 // Quantisation for DWT subbands with rate control
-static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser, float rcf) {
-    float effective_q = quantiser * rcf;
+static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
+    float effective_q = quantiser;
     effective_q = FCLAMP(effective_q, 1.0f, 255.0f);
     
     for (int i = 0; i < size; i++) {
@@ -635,15 +621,17 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
 // Serialize tile data for compression
 static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y, 
                                   const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
-                                  const motion_vector_t *mv, uint8_t mode, uint8_t *buffer) {
+                                  uint8_t mode, uint8_t *buffer) {
     size_t offset = 0;
     
     // Write tile header
     buffer[offset++] = mode;
-    memcpy(buffer + offset, &mv->mv_x, sizeof(int16_t)); offset += sizeof(int16_t);
-    memcpy(buffer + offset, &mv->mv_y, sizeof(int16_t)); offset += sizeof(int16_t);
-    memcpy(buffer + offset, &mv->rate_control_factor, sizeof(float)); offset += sizeof(float);
-    
+
+    // TODO calculate frame complexity and create quantiser overrides
+    buffer[offset++] = 0; // qY  override
+    buffer[offset++] = 0; // qCo override
+    buffer[offset++] = 0; // qCg override
+
     if (mode == TAV_MODE_SKIP) {
         // No coefficient data for SKIP/MOTION modes
         return offset;
@@ -664,14 +652,14 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         }
         printf("\n");
         printf("Encoder Debug: Quantisers - Y=%d, Co=%d, Cg=%d, rcf=%.2f\n", 
-               enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg, mv->rate_control_factor);
+               enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg);
     }*/
     
     if (mode == TAV_MODE_INTRA) {
         // INTRA mode: quantise coefficients directly and store for future reference
-        quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, enc->quantiser_y, mv->rate_control_factor);
-        quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, enc->quantiser_co, mv->rate_control_factor);
-        quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, enc->quantiser_cg, mv->rate_control_factor);
+        quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, enc->quantiser_y);
+        quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, enc->quantiser_co);
+        quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, enc->quantiser_cg);
         
         // Store current coefficients for future delta reference
         int tile_idx = tile_y * enc->tiles_x + tile_x;
@@ -701,15 +689,15 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         }
         
         // Quantise the deltas
-        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, enc->quantiser_y, mv->rate_control_factor);
-        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, enc->quantiser_co, mv->rate_control_factor);
-        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, enc->quantiser_cg, mv->rate_control_factor);
+        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, enc->quantiser_y);
+        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, enc->quantiser_co);
+        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, enc->quantiser_cg);
         
         // Reconstruct coefficients like decoder will (previous + dequantised_delta)
         for (int i = 0; i < tile_size; i++) {
-            float dequant_delta_y = (float)quantised_y[i] * enc->quantiser_y * mv->rate_control_factor;
-            float dequant_delta_co = (float)quantised_co[i] * enc->quantiser_co * mv->rate_control_factor;
-            float dequant_delta_cg = (float)quantised_cg[i] * enc->quantiser_cg * mv->rate_control_factor;
+            float dequant_delta_y = (float)quantised_y[i] * enc->quantiser_y;
+            float dequant_delta_co = (float)quantised_co[i] * enc->quantiser_co;
+            float dequant_delta_cg = (float)quantised_cg[i] * enc->quantiser_cg;
             
             prev_y[i] = prev_y[i] + dequant_delta_y;
             prev_co[i] = prev_co[i] + dequant_delta_co;
@@ -743,7 +731,7 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
     // Calculate total uncompressed size (for padded tile coefficients: 344x288)
-    const size_t max_tile_size = 9 + (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    const size_t max_tile_size = 4 + (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
     
     // Allocate buffer for uncompressed tile data
@@ -789,8 +777,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             // Serialize tile
             size_t tile_size = serialize_tile_data(enc, tile_x, tile_y, 
                                                    tile_y_data, tile_co_data, tile_cg_data,
-                                                   &enc->motion_vectors[tile_idx], mode,
-                                                   uncompressed_buffer + uncompressed_offset);
+                                                   mode, uncompressed_buffer + uncompressed_offset);
             uncompressed_offset += tile_size;
         }
     }
@@ -1781,7 +1768,7 @@ int main(int argc, char *argv[]) {
         {"lossless", no_argument, 0, 1000},
 //        {"enable-progressive", no_argument, 0, 1002},
 //        {"enable-roi", no_argument, 0, 1003},
-        {"intra-only", no_argument, 0, 1006},
+        {"delta-code", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
         {"help", no_argument, 0, 1004},
         {0, 0, 0, 0}
@@ -1809,9 +1796,9 @@ int main(int argc, char *argv[]) {
                     cleanup_encoder(enc);
                     return 1;
                 }
-                enc->quantiser_y = CLAMP(enc->quantiser_y, 1, 100);
-                enc->quantiser_co = CLAMP(enc->quantiser_co, 1, 100);
-                enc->quantiser_cg = CLAMP(enc->quantiser_cg, 1, 100);
+                enc->quantiser_y = CLAMP(enc->quantiser_y, 1, 255);
+                enc->quantiser_co = CLAMP(enc->quantiser_co, 1, 255);
+                enc->quantiser_cg = CLAMP(enc->quantiser_cg, 1, 255);
                 break;
             /*case 'w':
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 1);
@@ -1845,7 +1832,7 @@ int main(int argc, char *argv[]) {
                 enc->ictcp_mode = 1;
                 break;
             case 1006: // --intra-only
-                enc->intra_only = 1;
+                enc->intra_only = 0;
                 break;
             case 1004: // --help
                 show_usage(argv[0]);
@@ -2185,7 +2172,6 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->previous_frame_co);
     free(enc->previous_frame_cg);
     free(enc->tiles);
-    free(enc->motion_vectors);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
     

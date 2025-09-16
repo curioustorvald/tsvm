@@ -557,7 +557,7 @@ let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
 
-let blockDataPtr = sys.malloc(2377764)
+let blockDataPtr = sys.malloc(2377744)
 
 // Playback loop - properly adapted from TEV
 try {
@@ -621,10 +621,8 @@ try {
                         header.width, header.height,
                         header.qualityY, header.qualityCo, header.qualityCg,
                         frameCount,
-                        debugMotionVectors,
                         header.waveletFilter,      // TAV-specific parameter
                         header.decompLevels,       // TAV-specific parameter
-                        enableDeblocking,
                         isLossless,
                         header.version             // TAV version for colour space detection
                     )

@@ -854,16 +854,16 @@ transmission capability, and region-of-interest coding.
     uint32 Compressed Size
     *      Zstd-compressed Block Data
 
-## Block Data (per 112x112 tile)
+## Block Data (per 280x224 tile)
     uint8  Mode: encoding mode
            0x00 = SKIP (copy from previous frame)
            0x01 = INTRA (DWT-coded, no prediction)
            0x02 = INTER (DWT-coded with motion compensation)
            0x03 = MOTION (motion vector only, no residual)
-    int16  Motion Vector X (1/4 pixel precision)
-    int16  Motion Vector Y (1/4 pixel precision)
-    float32 Rate Control Factor (4 bytes, little-endian)
-    
+    uint8  Quantiser override Y  (use 0 to disable overriding)
+    uint8  Quantiser override Co (use 0 to disable overriding)
+    uint8  Quantiser override Cg (use 0 to disable overriding)
+
     ## DWT Coefficient Structure (per tile)
     For each decomposition level L (from highest to lowest):
         uint16 LL_size: size of LL subband coefficients
@@ -886,35 +886,12 @@ transmission capability, and region-of-interest coding.
   * Analysis: Daubechies 9/7 coefficients optimized for image compression
   * Provides better energy compaction than 5/3 but lossy reconstruction
 
-### Decomposition Levels
-- Level 1: 112x112 → 56x56 (LL) + 3×56x56 subbands (LH,HL,HH)
-- Level 2: 56x56 → 28x28 (LL) + 3×28x28 subbands  
-- Level 3: 28x28 → 14x14 (LL) + 3×14x14 subbands
-- Level 4: 14x14 → 7x7 (LL) + 3×7x7 subbands
-- Level 5: 7x7 → 3x3 (LL) + 3×3x3 subbands
-- Level 6: 3x3 → 1x1 (LL) + 3×1x1 subbands (maximum)
-
 ### Quantization Strategy
 TAV uses different quantization steps for each subband based on human visual
 system sensitivity:
 - LL subbands: Fine quantization (preserve DC and low frequencies)
 - LH/HL subbands: Medium quantization (diagonal details less critical)  
 - HH subbands: Coarse quantization (high frequency noise can be discarded)
-
-### Progressive Transmission
-When enabled, coefficients are transmitted in order of visual importance:
-1. LL subband of highest decomposition level (thumbnail)
-2. Lower frequency subbands first
-3. Higher frequency subbands for refinement
-
-## Motion Compensation
-- Search range: ±28 pixels (optimized for 112x112 tiles)
-- Sub-pixel precision: 1/4 pixel with bilinear interpolation
-- Tile size: 112x112 pixels (perfect fit for TSVM 560x448 resolution)
-  * Exactly 5×4 = 20 tiles per frame (560÷112 = 5, 448÷112 = 4)
-  * No partial tiles needed - optimal for processing efficiency
-- Uses Sum of Absolute Differences (SAD) for motion estimation
-- Overlapped block motion compensation (OBMC) for smooth boundaries
 
 ## Colour Space  
 TAV operates in YCoCg-R colour space with full resolution channels:
@@ -923,12 +900,10 @@ TAV operates in YCoCg-R colour space with full resolution channels:
 - Cg: Green-Magenta chroma (full resolution, very aggressive quantization by default)
 
 ## Compression Features
-- 112x112 DWT tiles vs 16x16 DCT blocks in TEV
+- 280x224 DWT tiles vs 16x16 DCT blocks in TEV
 - Multi-resolution representation enables scalable decoding
 - Better frequency localization than DCT
 - Reduced blocking artifacts due to overlapping basis functions
-- Region-of-Interest (ROI) coding for selective quality enhancement
-- Progressive transmission for bandwidth adaptation
 
 ## Performance Comparison  
 Expected improvements over TEV:

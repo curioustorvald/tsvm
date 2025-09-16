@@ -491,8 +491,8 @@ vec4 grading(vec4 col0, vec4 args) {
     return pow(rgb, power);
 }
 
-const vec4 gradLow = vec4(0.05, 0.05, 0.05, 0.8);
-const vec4 gradHigh = vec4(0.2, 0.2, 0.2, 1.0);
+const vec4 gradLow = vec4(0.02, 0.02, 0.02, 1.0);
+const vec4 gradHigh = vec4(0.12, 0.12, 0.12, 1.0);
 const float SQRT_2 = 1.4142135623730950488;
 
 vec4 getRadialGrad(vec2 uv0) {
