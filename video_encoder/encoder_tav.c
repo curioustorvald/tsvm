@@ -197,6 +197,11 @@ typedef struct {
     void *compressed_buffer;
     size_t compressed_buffer_size;
     
+    // OPTIMIZATION: Pre-allocated buffers to avoid malloc/free per tile
+    int16_t *reusable_quantized_y;
+    int16_t *reusable_quantized_co;
+    int16_t *reusable_quantized_cg;
+    
     // Statistics
     size_t total_compressed_size;
     size_t total_uncompressed_size;
@@ -333,10 +338,17 @@ static int initialize_encoder(tav_encoder_t *enc) {
     enc->compressed_buffer_size = ZSTD_compressBound(1024 * 1024); // 1MB max
     enc->compressed_buffer = malloc(enc->compressed_buffer_size);
     
+    // OPTIMIZATION: Allocate reusable quantization buffers for padded tiles (176x176)
+    const int padded_coeff_count = PADDED_TILE_SIZE * PADDED_TILE_SIZE;
+    enc->reusable_quantized_y = malloc(padded_coeff_count * sizeof(int16_t));
+    enc->reusable_quantized_co = malloc(padded_coeff_count * sizeof(int16_t));
+    enc->reusable_quantized_cg = malloc(padded_coeff_count * sizeof(int16_t));
+    
     if (!enc->current_frame_rgb || !enc->previous_frame_rgb || 
         !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg ||
         !enc->previous_frame_y || !enc->previous_frame_co || !enc->previous_frame_cg ||
-        !enc->tiles || !enc->motion_vectors || !enc->zstd_ctx || !enc->compressed_buffer) {
+        !enc->tiles || !enc->motion_vectors || !enc->zstd_ctx || !enc->compressed_buffer ||
+        !enc->reusable_quantized_y || !enc->reusable_quantized_co || !enc->reusable_quantized_cg) {
         return -1;
     }
     
@@ -450,30 +462,85 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
     const int core_start_x = tile_x * TILE_SIZE;
     const int core_start_y = tile_y * TILE_SIZE;
     
-    // Extract padded tile: margin + core + margin  
+    // OPTIMIZATION: Process row by row with bulk copying for core region
     for (int py = 0; py < PADDED_TILE_SIZE; py++) {
-        for (int px = 0; px < PADDED_TILE_SIZE; px++) {
-            // Map padded coordinates to source image coordinates
-            int src_x = core_start_x + px - TILE_MARGIN;
-            int src_y = core_start_y + py - TILE_MARGIN;
+        // Map padded row to source image row
+        int src_y = core_start_y + py - TILE_MARGIN;
+        
+        // Handle vertical boundary conditions with mirroring
+        if (src_y < 0) src_y = -src_y;
+        else if (src_y >= enc->height) src_y = enc->height - 1 - (src_y - enc->height);
+        src_y = CLAMP(src_y, 0, enc->height - 1);
+        
+        // Calculate source and destination row offsets
+        const int padded_row_offset = py * PADDED_TILE_SIZE;
+        const int src_row_offset = src_y * enc->width;
+        
+        // Check if we can do bulk copying for the core region
+        int core_start_px = TILE_MARGIN;
+        int core_end_px = TILE_MARGIN + TILE_SIZE;
+        
+        // Check if core region is entirely within frame bounds
+        int core_src_start_x = core_start_x;
+        int core_src_end_x = core_start_x + TILE_SIZE;
+        
+        if (core_src_start_x >= 0 && core_src_end_x <= enc->width) {
+            // OPTIMIZATION: Bulk copy core region (112 pixels) in one operation
+            const int src_core_offset = src_row_offset + core_src_start_x;
             
-            // Handle boundary conditions with mirroring
-            if (src_x < 0) src_x = -src_x;
-            else if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
+            memcpy(&padded_y[padded_row_offset + core_start_px], 
+                   &enc->current_frame_y[src_core_offset], 
+                   TILE_SIZE * sizeof(float));
+            memcpy(&padded_co[padded_row_offset + core_start_px], 
+                   &enc->current_frame_co[src_core_offset], 
+                   TILE_SIZE * sizeof(float));
+            memcpy(&padded_cg[padded_row_offset + core_start_px], 
+                   &enc->current_frame_cg[src_core_offset], 
+                   TILE_SIZE * sizeof(float));
             
-            if (src_y < 0) src_y = -src_y;
-            else if (src_y >= enc->height) src_y = enc->height - 1 - (src_y - enc->height);
+            // Handle margin pixels individually (left and right margins)
+            for (int px = 0; px < core_start_px; px++) {
+                int src_x = core_start_x + px - TILE_MARGIN;
+                if (src_x < 0) src_x = -src_x;
+                src_x = CLAMP(src_x, 0, enc->width - 1);
+                
+                int src_idx = src_row_offset + src_x;
+                int padded_idx = padded_row_offset + px;
+                
+                padded_y[padded_idx] = enc->current_frame_y[src_idx];
+                padded_co[padded_idx] = enc->current_frame_co[src_idx];
+                padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
+            }
             
-            // Clamp to valid bounds
-            src_x = CLAMP(src_x, 0, enc->width - 1);
-            src_y = CLAMP(src_y, 0, enc->height - 1);
-            
-            int src_idx = src_y * enc->width + src_x;
-            int padded_idx = py * PADDED_TILE_SIZE + px;
-            
-            padded_y[padded_idx] = enc->current_frame_y[src_idx];
-            padded_co[padded_idx] = enc->current_frame_co[src_idx];
-            padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
+            for (int px = core_end_px; px < PADDED_TILE_SIZE; px++) {
+                int src_x = core_start_x + px - TILE_MARGIN;
+                if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
+                src_x = CLAMP(src_x, 0, enc->width - 1);
+                
+                int src_idx = src_row_offset + src_x;
+                int padded_idx = padded_row_offset + px;
+                
+                padded_y[padded_idx] = enc->current_frame_y[src_idx];
+                padded_co[padded_idx] = enc->current_frame_co[src_idx];
+                padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
+            }
+        } else {
+            // Fallback: process entire row pixel by pixel (for edge tiles)
+            for (int px = 0; px < PADDED_TILE_SIZE; px++) {
+                int src_x = core_start_x + px - TILE_MARGIN;
+                
+                // Handle horizontal boundary conditions with mirroring
+                if (src_x < 0) src_x = -src_x;
+                else if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
+                src_x = CLAMP(src_x, 0, enc->width - 1);
+                
+                int src_idx = src_row_offset + src_x;
+                int padded_idx = padded_row_offset + px;
+                
+                padded_y[padded_idx] = enc->current_frame_y[src_idx];
+                padded_co[padded_idx] = enc->current_frame_co[src_idx];
+                padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
+            }
         }
     }
 }
@@ -561,9 +628,10 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     
     // Quantize and serialize DWT coefficients (full padded tile: 176x176)
     const int tile_size = PADDED_TILE_SIZE * PADDED_TILE_SIZE;
-    int16_t *quantized_y = malloc(tile_size * sizeof(int16_t));
-    int16_t *quantized_co = malloc(tile_size * sizeof(int16_t));
-    int16_t *quantized_cg = malloc(tile_size * sizeof(int16_t));
+    // OPTIMIZATION: Use pre-allocated buffers instead of malloc/free per tile
+    int16_t *quantized_y = enc->reusable_quantized_y;
+    int16_t *quantized_co = enc->reusable_quantized_co;
+    int16_t *quantized_cg = enc->reusable_quantized_cg;
     
     // Debug: check DWT coefficients before quantization
     /*if (tile_x == 0 && tile_y == 0) {
@@ -594,9 +662,7 @@ static size_t serialize_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     memcpy(buffer + offset, quantized_co, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
     memcpy(buffer + offset, quantized_cg, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
     
-    free(quantized_y);
-    free(quantized_co);
-    free(quantized_cg);
+    // OPTIMIZATION: No need to free - using pre-allocated reusable buffers
     
     return offset;
 }
@@ -731,16 +797,42 @@ static int estimate_motion_112x112(const float *current, const float *reference,
 
 // RGB to YCoCg color space conversion
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height) {
-    for (int i = 0; i < width * height; i++) {
-        float r = rgb[i * 3 + 0];
-        float g = rgb[i * 3 + 1]; 
-        float b = rgb[i * 3 + 2];
+    const int total_pixels = width * height;
+    
+    // OPTIMIZATION: Process 4 pixels at a time for better cache utilization
+    int i = 0;
+    const int simd_end = (total_pixels / 4) * 4;
+    
+    // Vectorized processing for groups of 4 pixels
+    for (i = 0; i < simd_end; i += 4) {
+        // Load 4 RGB triplets (12 bytes) at once
+        const uint8_t *rgb_ptr = &rgb[i * 3];
         
-        // YCoCg-R transform
+        // Process 4 pixels simultaneously with loop unrolling
+        for (int j = 0; j < 4; j++) {
+            const int idx = i + j;
+            const float r = rgb_ptr[j * 3 + 0];
+            const float g = rgb_ptr[j * 3 + 1]; 
+            const float b = rgb_ptr[j * 3 + 2];
+            
+            // YCoCg-R transform (optimized with fewer temporary variables)
+            co[idx] = r - b;
+            const float tmp = b + co[idx] * 0.5f;
+            cg[idx] = g - tmp;
+            y[idx] = tmp + cg[idx] * 0.5f;
+        }
+    }
+    
+    // Handle remaining pixels (1-3 pixels)
+    for (; i < total_pixels; i++) {
+        const float r = rgb[i * 3 + 0];
+        const float g = rgb[i * 3 + 1]; 
+        const float b = rgb[i * 3 + 2];
+        
         co[i] = r - b;
-        float tmp = b + co[i] / 2;
+        const float tmp = b + co[i] * 0.5f;
         cg[i] = g - tmp;
-        y[i] = tmp + cg[i] / 2;
+        y[i] = tmp + cg[i] * 0.5f;
     }
 }
 
@@ -1910,6 +2002,11 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->motion_vectors);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
+    
+    // OPTIMIZATION: Free reusable quantization buffers
+    free(enc->reusable_quantized_y);
+    free(enc->reusable_quantized_co);
+    free(enc->reusable_quantized_cg);
     
     // Free subtitle list
     if (enc->subtitles) {
