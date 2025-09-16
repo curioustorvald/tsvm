@@ -3879,23 +3879,27 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val quantizedCo = ShortArray(paddedCoeffCount)
         val quantizedCg = ShortArray(paddedCoeffCount)
         
-        // Read Y coefficients (176x176)
+        // OPTIMIZATION: Bulk read all coefficient data (176x176 * 3 channels * 2 bytes = 185,856 bytes)
+        val totalCoeffBytes = paddedCoeffCount * 3 * 2L  // 3 channels, 2 bytes per short
+        val coeffBuffer = ByteArray(totalCoeffBytes.toInt())
+        UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), totalCoeffBytes)
+        
+        // Convert bulk data to coefficient arrays
+        var bufferOffset = 0
         for (i in 0 until paddedCoeffCount) {
-            quantizedY[i] = vm.peekShort(ptr)
-            ptr += 2
+            quantizedY[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
+            bufferOffset += 2
+        }
+        for (i in 0 until paddedCoeffCount) {
+            quantizedCo[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
+            bufferOffset += 2
+        }
+        for (i in 0 until paddedCoeffCount) {
+            quantizedCg[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
+            bufferOffset += 2
         }
         
-        // Read Co coefficients (176x176)
-        for (i in 0 until paddedCoeffCount) {
-            quantizedCo[i] = vm.peekShort(ptr)
-            ptr += 2
-        }
-        
-        // Read Cg coefficients (176x176)
-        for (i in 0 until paddedCoeffCount) {
-            quantizedCg[i] = vm.peekShort(ptr)
-            ptr += 2
-        }
+        ptr += totalCoeffBytes.toInt()
         
         // Dequantize padded coefficient tiles (176x176)
         val yPaddedTile = FloatArray(paddedCoeffCount)
@@ -3951,14 +3955,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val startX = tileX * tileSize
         val startY = tileY * tileSize
         
+        // OPTIMIZATION: Process pixels row by row with bulk copying for better cache locality
         for (y in 0 until tileSize) {
-            for (x in 0 until tileSize) {
-                val frameX = startX + x
-                val frameY = startY + y
+            val frameY = startY + y
+            if (frameY >= height) break
+            
+            // Calculate valid pixel range for this row
+            val validStartX = maxOf(0, startX)
+            val validEndX = minOf(width, startX + tileSize)
+            val validPixelsInRow = validEndX - validStartX
+            
+            if (validPixelsInRow > 0) {
+                // Create row buffer for bulk RGB data
+                val rowRgbBuffer = ByteArray(validPixelsInRow * 3)
+                var bufferIdx = 0
                 
-                if (frameX < width && frameY < height) {
-                    val tileIdx = y * tileSize + x
-                    val pixelIdx = frameY * width + frameX
+                for (x in validStartX until validEndX) {
+                    val tileIdx = y * tileSize + (x - startX)
                     
                     // YCoCg-R to RGB conversion (exact inverse of encoder)
                     val Y = yTile[tileIdx]
@@ -3971,11 +3984,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val b = tmp - Co / 2.0f
                     val r = Co + b
                     
-                    val rgbOffset = pixelIdx * 3L
-                    vm.poke(rgbAddr + rgbOffset, r.toInt().coerceIn(0, 255).toByte())
-                    vm.poke(rgbAddr + rgbOffset + 1, g.toInt().coerceIn(0, 255).toByte())
-                    vm.poke(rgbAddr + rgbOffset + 2, b.toInt().coerceIn(0, 255).toByte())
+                    rowRgbBuffer[bufferIdx++] = r.toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = g.toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = b.toInt().coerceIn(0, 255).toByte()
                 }
+                
+                // OPTIMIZATION: Bulk copy entire row at once
+                val rowStartOffset = (frameY * width + validStartX) * 3L
+                UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
+                                     null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
             }
         }
     }
@@ -3986,14 +4003,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val startX = tileX * tileSize
         val startY = tileY * tileSize
         
+        // OPTIMIZATION: Process pixels row by row with bulk copying for better cache locality
         for (y in 0 until tileSize) {
-            for (x in 0 until tileSize) {
-                val frameX = startX + x
-                val frameY = startY + y
+            val frameY = startY + y
+            if (frameY >= height) break
+            
+            // Calculate valid pixel range for this row
+            val validStartX = maxOf(0, startX)
+            val validEndX = minOf(width, startX + tileSize)
+            val validPixelsInRow = validEndX - validStartX
+            
+            if (validPixelsInRow > 0) {
+                // Create row buffer for bulk RGB data
+                val rowRgbBuffer = ByteArray(validPixelsInRow * 3)
+                var bufferIdx = 0
                 
-                if (frameX < width && frameY < height) {
-                    val tileIdx = y * tileSize + x
-                    val pixelIdx = frameY * width + frameX
+                for (x in validStartX until validEndX) {
+                    val tileIdx = y * tileSize + (x - startX)
                     
                     // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
                     val I = iTile[tileIdx].toDouble() / 255.0
@@ -4020,11 +4046,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val gSrgb = srgbUnlinearize(gLin)
                     val bSrgb = srgbUnlinearize(bLin)
 
-                    val rgbOffset = pixelIdx * 3L
-                    vm.poke(rgbAddr + rgbOffset, (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte())
-                    vm.poke(rgbAddr + rgbOffset + 1, (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte())
-                    vm.poke(rgbAddr + rgbOffset + 2, (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte())
+                    rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
                 }
+                
+                // OPTIMIZATION: Bulk copy entire row at once
+                val rowStartOffset = (frameY * width + validStartX) * 3L
+                UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
+                                     null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
             }
         }
     }
@@ -4081,24 +4111,26 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val startX = tileX * tileSize
         val startY = tileY * tileSize
         
+        // OPTIMIZATION: Copy entire rows at once for maximum performance
         for (y in 0 until tileSize) {
-            for (x in 0 until tileSize) {
-                val frameX = startX + x
-                val frameY = startY + y
+            val frameY = startY + y
+            if (frameY >= height) break
+            
+            // Calculate valid pixel range for this row
+            val validStartX = maxOf(0, startX)
+            val validEndX = minOf(width, startX + tileSize)
+            val validPixelsInRow = validEndX - validStartX
+            
+            if (validPixelsInRow > 0) {
+                val rowStartOffset = (frameY * width + validStartX) * 3L
+                val rowByteCount = validPixelsInRow * 3L
                 
-                if (frameX < width && frameY < height) {
-                    val pixelIdx = frameY * width + frameX
-                    val rgbOffset = pixelIdx * 3L
-                    
-                    // Copy RGB pixel from previous frame
-                    val r = vm.peek(prevRGBAddr + rgbOffset)
-                    val g = vm.peek(prevRGBAddr + rgbOffset + 1)
-                    val b = vm.peek(prevRGBAddr + rgbOffset + 2)
-                    
-                    vm.poke(currentRGBAddr + rgbOffset, r)
-                    vm.poke(currentRGBAddr + rgbOffset + 1, g)
-                    vm.poke(currentRGBAddr + rgbOffset + 2, b)
-                }
+                // OPTIMIZATION: Bulk copy entire row of RGB data in one operation
+                UnsafeHelper.memcpy(
+                    vm.usermem.ptr + prevRGBAddr + rowStartOffset,
+                    vm.usermem.ptr + currentRGBAddr + rowStartOffset,
+                    rowByteCount
+                )
             }
         }
     }
