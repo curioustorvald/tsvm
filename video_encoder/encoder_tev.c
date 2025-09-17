@@ -48,6 +48,20 @@ static inline float FCLAMP(float x, float min, float max) {
 // 56  96 128 192 256  Claude Opus 4.1 (with data analysis)
 // 64  96 128 192 256  ChatGPT-5 (without data analysis)
 static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384, 384};
+
+// Valid MP2 bitrates as per MPEG-1 Layer II specification
+static const int MP2_VALID_BITRATES[] = {32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
+
+// Validate and return closest valid MP2 bitrate, or 0 if invalid
+static int validate_mp2_bitrate(int bitrate) {
+    for (int i = 0; i < sizeof(MP2_VALID_BITRATES) / sizeof(int); i++) {
+        if (MP2_VALID_BITRATES[i] == bitrate) {
+            return bitrate;  // Exact match
+        }
+    }
+    return 0;  // Invalid bitrate
+}
+
 // Which preset should I be using?
 // from dataset of three videos with Q0..Q95: (real life video, low res pixel art, high res pixel art)
 //  5  25  50  75  90  Claude Opus 4.1 (with data analysis)
@@ -191,6 +205,7 @@ typedef struct {
     FILE *mp2_file;
     int mp2_packet_size;
     int mp2_rate_index;
+    int audio_bitrate;  // Custom audio bitrate (0 = use quality table)
     size_t audio_remaining;
     uint8_t *mp2_buffer;
     double audio_frames_in_buffer;
@@ -1899,6 +1914,7 @@ static tev_encoder_t* init_encoder(void) {
     enc->qualityCg = enc->qualityCo / 2;
     enc->mp2_packet_size = 0; // Will be detected from MP2 header
     enc->mp2_rate_index = 0;
+    enc->audio_bitrate = 0;  // 0 = use quality table
     enc->audio_frames_in_buffer = 0;
     enc->target_audio_buffer_size = 4;
     enc->width = DEFAULT_WIDTH;
@@ -2387,9 +2403,10 @@ static int start_audio_conversion(tev_encoder_t *enc) {
     if (!enc->has_audio) return 1;
 
     char command[2048];
+    int bitrate = (enc->audio_bitrate > 0) ? enc->audio_bitrate : MP2_RATE_TABLE[enc->qualityIndex];
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, MP2_RATE_TABLE[enc->qualityIndex], MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
+        enc->input_file, bitrate, MP2_SAMPLE_RATE, TEMP_AUDIO_FILE);
 
     int result = system(command);
     if (result == 0) {
@@ -2540,6 +2557,8 @@ static void show_usage(const char *program_name) {
     printf("  -q, --quality N        Quality level 0-4 (default: 2, only decides audio rate in quantiser/lossless mode)\n");
     printf("  -Q, --quantiser N      Quantiser level 0-100 (100: lossless, 0: potato)\n");
 //    printf("  -b, --bitrate N        Target bitrate in kbps (enables bitrate control mode; DON'T USE - NOT WORKING AS INTENDED)\n");
+    printf("  --arate N              MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
+    printf("                         Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  -p, --progressive      Use progressive scan (default: interlaced)\n");
     printf("  -S, --subtitles FILE   SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose          Verbose output\n");
@@ -2633,6 +2652,7 @@ int main(int argc, char *argv[]) {
         {"quantiser", required_argument, 0, 'Q'},
         {"quantizer", required_argument, 0, 'Q'},
         {"bitrate", required_argument, 0, 'b'},
+        {"arate", required_argument, 0, 1400},
         {"progressive", no_argument, 0, 'p'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
@@ -2715,6 +2735,22 @@ int main(int argc, char *argv[]) {
                 break;
             case 1300: // --ictcp
                 enc->ictcp_mode = 1;
+                break;
+            case 1400: // --arate
+                {
+                    int bitrate = atoi(optarg);
+                    int valid_bitrate = validate_mp2_bitrate(bitrate);
+                    if (valid_bitrate == 0) {
+                        fprintf(stderr, "Error: Invalid MP2 bitrate %d. Valid values are: ", bitrate);
+                        for (int i = 0; i < sizeof(MP2_VALID_BITRATES) / sizeof(int); i++) {
+                            fprintf(stderr, "%d%s", MP2_VALID_BITRATES[i],
+                                    (i < sizeof(MP2_VALID_BITRATES) / sizeof(int) - 1) ? ", " : "\n");
+                        }
+                        cleanup_encoder(enc);
+                        return 1;
+                    }
+                    enc->audio_bitrate = valid_bitrate;
+                }
                 break;
             case 0:
                 if (strcmp(long_options[option_index].name, "help") == 0) {

@@ -125,6 +125,19 @@ static int calculate_max_decomp_levels(int width, int height) {
 // MP2 audio rate table (same as TEV)
 static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384, 384};
 
+// Valid MP2 bitrates as per MPEG-1 Layer II specification
+static const int MP2_VALID_BITRATES[] = {32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
+
+// Validate and return closest valid MP2 bitrate, or 0 if invalid
+static int validate_mp2_bitrate(int bitrate) {
+    for (int i = 0; i < sizeof(MP2_VALID_BITRATES) / sizeof(int); i++) {
+        if (MP2_VALID_BITRATES[i] == bitrate) {
+            return bitrate;  // Exact match
+        }
+    }
+    return 0;  // Invalid bitrate
+}
+
 // Quality level to quantisation mapping for different channels
 static const int QUALITY_Y[] = {60, 42, 25, 12, 6, 2};
 static const int QUALITY_CO[] = {120, 90, 60, 30, 15, 3};
@@ -203,6 +216,7 @@ typedef struct {
     size_t mp2_buffer_size;
     int mp2_packet_size;
     int mp2_rate_index;
+    int audio_bitrate;  // Custom audio bitrate (0 = use quality table)
     int target_audio_buffer_size;
     double audio_frames_in_buffer;
     
@@ -306,9 +320,11 @@ static void show_usage(const char *program_name) {
     printf("  -s, --size WxH          Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("  -f, --fps N             Output frames per second (enables frame rate conversion)\n");
     printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
-    printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 0-255 for each channel (1: lossless, 255: potato)\n");
+    printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 1-255 for each channel (1: lossless, 255: potato)\n");
 //    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
 //    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
+    printf("  --arate N               MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
+    printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
@@ -370,6 +386,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->quantiser_cg = QUALITY_CG[DEFAULT_QUALITY];
     enc->intra_only = 1;
     enc->monoblock = 1;  // Default to monoblock mode
+    enc->audio_bitrate = 0;  // 0 = use quality table
 
     return enc;
 }
@@ -1418,9 +1435,15 @@ static int start_audio_conversion(tav_encoder_t *enc) {
     if (!enc->has_audio) return 1;
 
     char command[2048];
+    int bitrate;
+    if (enc->audio_bitrate > 0) {
+        bitrate = enc->audio_bitrate;
+    } else {
+        bitrate = enc->lossless ? 384 : MP2_RATE_TABLE[enc->quality_level];
+    }
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar 32000 -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, enc->lossless ? 384 : MP2_RATE_TABLE[enc->quality_level], TEMP_AUDIO_FILE);
+        enc->input_file, bitrate, TEMP_AUDIO_FILE);
 
     int result = system(command);
     if (result == 0) {
@@ -2200,6 +2223,7 @@ int main(int argc, char *argv[]) {
         {"quantizer", required_argument, 0, 'Q'},
 //        {"wavelet", required_argument, 0, 'w'},
         {"bitrate", required_argument, 0, 'b'},
+        {"arate", required_argument, 0, 1400},
         {"subtitle", required_argument, 0, 'S'},
         {"subtitles", required_argument, 0, 'S'},
         {"verbose", no_argument, 0, 'v'},
@@ -2276,6 +2300,22 @@ int main(int argc, char *argv[]) {
                 break;
             case 1006: // --intra-only
                 enc->intra_only = 0;
+                break;
+            case 1400: // --arate
+                {
+                    int bitrate = atoi(optarg);
+                    int valid_bitrate = validate_mp2_bitrate(bitrate);
+                    if (valid_bitrate == 0) {
+                        fprintf(stderr, "Error: Invalid MP2 bitrate %d. Valid values are: ", bitrate);
+                        for (int i = 0; i < sizeof(MP2_VALID_BITRATES) / sizeof(int); i++) {
+                            fprintf(stderr, "%d%s", MP2_VALID_BITRATES[i],
+                                    (i < sizeof(MP2_VALID_BITRATES) / sizeof(int) - 1) ? ", " : "\n");
+                        }
+                        cleanup_encoder(enc);
+                        return 1;
+                    }
+                    enc->audio_bitrate = valid_bitrate;
+                }
                 break;
             case 1004: // --help
                 show_usage(argv[0]);
