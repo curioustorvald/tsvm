@@ -184,12 +184,15 @@ typedef struct {
     int intra_only;       // Force all tiles to use INTRA mode (disable delta encoding)
     int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
     
-    // Frame buffers
+    // Frame buffers - ping-pong implementation
+    uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
+    int frame_buffer_index;     // 0 or 1, indicates which set is "current"
+    float *current_frame_y, *current_frame_co, *current_frame_cg;
+
+    // Convenience pointers (updated each frame to point to current ping-pong buffers)
     uint8_t *current_frame_rgb;
     uint8_t *previous_frame_rgb;
-    float *current_frame_y, *current_frame_co, *current_frame_cg;
-    float *previous_frame_y, *previous_frame_co, *previous_frame_cg;
-    
+
     // Tile processing
     int tiles_x, tiles_y;
     dwt_tile_t *tiles;
@@ -234,6 +237,16 @@ typedef struct {
 } tav_encoder_t;
 
 // Wavelet filter constants removed - using lifting scheme implementation instead
+
+// Swap ping-pong frame buffers (eliminates need for memcpy)
+static void swap_frame_buffers(tav_encoder_t *enc) {
+    // Flip the buffer index
+    enc->frame_buffer_index = 1 - enc->frame_buffer_index;
+
+    // Update convenience pointers to point to the new current/previous buffers
+    enc->current_frame_rgb = enc->frame_rgb[enc->frame_buffer_index];
+    enc->previous_frame_rgb = enc->frame_rgb[1 - enc->frame_buffer_index];
+}
 
 // Parse resolution string like "1024x768" with keyword recognition
 static int parse_resolution(const char *res_str, int *width, int *height) {
@@ -293,14 +306,14 @@ static void show_usage(const char *program_name) {
     printf("  -s, --size WxH          Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("  -f, --fps N             Output frames per second (enables frame rate conversion)\n");
     printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
-    printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 0-100 for each channel\n");
+    printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 0-255 for each channel (1: lossless, 255: potato)\n");
 //    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
 //    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
-    printf("  --delta-code            Enable delta encoding (improved compression but noisy picture)\n");
+    printf("  --delta                 Enable delta encoding (improved compression but noisy picture)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --help                  Show this help\n\n");
     
@@ -321,15 +334,20 @@ static void show_usage(const char *program_name) {
     for (int i = 0; i < 6; i++) {
         printf("%d: Q %d  \t", i, QUALITY_CG[i]);
     }
-    
-    printf("\n\nFeatures:\n");
+    printf("\n\nVideo Size Keywords:");
+    printf("\n  -s cif: equal to 352x288");
+    printf("\n  -s qcif: equal to 176x144");
+    printf("\n  -s half: equal to %dx%d", DEFAULT_WIDTH >> 1, DEFAULT_HEIGHT >> 1);
+    printf("\n  -s default: equal to %dx%d", DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    printf("\n\n");
+    printf("Features:\n");
     printf("  - Single DWT tile (monoblock) encoding for optimal quality\n");
     printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
     printf("  - Lossless and lossy compression modes\n");
     
     printf("\nExamples:\n");
     printf("  %s -i input.mp4 -o output.mv3               # Default settings\n", program_name);
-    printf("  %s -i input.mkv -q 4 -w 1 -o output.mv3     # Maximum quality with 9/7 wavelet\n", program_name);
+    printf("  %s -i input.mkv -q 4 -o output.mv3          # At maximum quality\n", program_name);
     printf("  %s -i input.avi --lossless -o output.mv3    # Lossless encoding\n", program_name);
 //    printf("  %s -i input.mp4 -b 800 -o output.mv3        # 800 kbps bitrate target\n", program_name);
     printf("  %s -i input.webm -S subs.srt -o output.mv3  # With subtitles\n", program_name);
@@ -377,16 +395,18 @@ static int initialize_encoder(tav_encoder_t *enc) {
     }
     int num_tiles = enc->tiles_x * enc->tiles_y;
     
-    // Allocate frame buffers
+    // Allocate ping-pong frame buffers
     size_t frame_size = enc->width * enc->height;
-    enc->current_frame_rgb = malloc(frame_size * 3);
-    enc->previous_frame_rgb = malloc(frame_size * 3);
+    enc->frame_rgb[0] = malloc(frame_size * 3);
+    enc->frame_rgb[1] = malloc(frame_size * 3);
+
+    // Initialize ping-pong buffer index and convenience pointers
+    enc->frame_buffer_index = 0;
+    enc->current_frame_rgb = enc->frame_rgb[0];
+    enc->previous_frame_rgb = enc->frame_rgb[1];
     enc->current_frame_y = malloc(frame_size * sizeof(float));
     enc->current_frame_co = malloc(frame_size * sizeof(float));
     enc->current_frame_cg = malloc(frame_size * sizeof(float));
-    enc->previous_frame_y = malloc(frame_size * sizeof(float));
-    enc->previous_frame_co = malloc(frame_size * sizeof(float));
-    enc->previous_frame_cg = malloc(frame_size * sizeof(float));
     
     // Allocate tile structures
     enc->tiles = malloc(num_tiles * sizeof(dwt_tile_t));
@@ -423,9 +443,8 @@ static int initialize_encoder(tav_encoder_t *enc) {
     enc->previous_coeffs_cg = malloc(total_coeff_size);
     enc->previous_coeffs_allocated = 0; // Will be set to 1 after first I-frame
     
-    if (!enc->current_frame_rgb || !enc->previous_frame_rgb || 
+    if (!enc->frame_rgb[0] || !enc->frame_rgb[1] ||
         !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg ||
-        !enc->previous_frame_y || !enc->previous_frame_co || !enc->previous_frame_cg ||
         !enc->tiles || !enc->zstd_ctx || !enc->compressed_buffer ||
         !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg ||
         !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg) {
@@ -2180,13 +2199,14 @@ int main(int argc, char *argv[]) {
         {"quantizer", required_argument, 0, 'Q'},
 //        {"wavelet", required_argument, 0, 'w'},
         {"bitrate", required_argument, 0, 'b'},
+        {"subtitle", required_argument, 0, 'S'},
         {"subtitles", required_argument, 0, 'S'},
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"lossless", no_argument, 0, 1000},
-        {"delta-code", no_argument, 0, 1006},
+        {"delta", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
-        {"help", no_argument, 0, 1004},
+        {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
     
@@ -2509,13 +2529,8 @@ int main(int argc, char *argv[]) {
                 count_pframe++;
         }
         
-        // Copy current frame to previous frame buffer
-        size_t float_frame_size = enc->width * enc->height * sizeof(float);
-        size_t rgb_frame_size = enc->width * enc->height * 3;
-        memcpy(enc->previous_frame_y, enc->current_frame_y, float_frame_size);
-        memcpy(enc->previous_frame_co, enc->current_frame_co, float_frame_size);
-        memcpy(enc->previous_frame_cg, enc->current_frame_cg, float_frame_size);
-        memcpy(enc->previous_frame_rgb, enc->current_frame_rgb, rgb_frame_size);
+        // Swap ping-pong buffers (eliminates memcpy operations)
+        swap_frame_buffers(enc);
         
         frame_count++;
         enc->frame_count = frame_count;
@@ -2586,14 +2601,8 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->input_file);
     free(enc->output_file);
     free(enc->subtitle_file);
-    free(enc->current_frame_rgb);
-    free(enc->previous_frame_rgb);
-    free(enc->current_frame_y);
-    free(enc->current_frame_co);
-    free(enc->current_frame_cg);
-    free(enc->previous_frame_y);
-    free(enc->previous_frame_co);
-    free(enc->previous_frame_cg);
+    free(enc->frame_rgb[0]);
+    free(enc->frame_rgb[1]);
     free(enc->tiles);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);

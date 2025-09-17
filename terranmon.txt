@@ -806,12 +806,6 @@ similar to JPEG2000, providing superior compression efficiency and scalability c
 to DCT-based codecs like TEV. Features include multi-resolution encoding, progressive
 transmission capability, and region-of-interest coding.
 
-## Version History
-- Version 1.0: Initial DWT-based implementation with 5/3 reversible filter
-- Version 1.1: Added 9/7 irreversible filter for higher compression
-- Version 1.2: Multi-resolution pyramid encoding with up to 4 decomposition levels
-- Version 1.3: Optimized 112x112 tiles for TSVM resolution with up to 6 decomposition levels
-
 # File Structure
 \x1F T S V M T A V
 [HEADER]

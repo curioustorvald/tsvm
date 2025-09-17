@@ -2626,6 +2626,7 @@ int main(int argc, char *argv[]) {
         {"input", required_argument, 0, 'i'},
         {"output", required_argument, 0, 'o'},
         {"size", required_argument, 0, 's'},
+        {"subtitle", required_argument, 0, 'S'},
         {"subtitles", required_argument, 0, 'S'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
