@@ -14,58 +14,6 @@
 #include <sys/time.h>
 #include <time.h>
 
-// Float16 conversion functions (adapted from Float16.kt)
-static inline uint16_t float_to_float16(float fval) {
-    uint32_t fbits = *(uint32_t*)&fval;
-    uint16_t sign = (fbits >> 16) & 0x8000;  // sign only
-    uint32_t val = (fbits & 0x7fffffff) + 0x1000; // rounded value
-
-    if (val >= 0x47800000) { // might be or become NaN/Inf
-        if ((fbits & 0x7fffffff) >= 0x47800000) { // is or must become NaN/Inf
-            if (val < 0x7f800000) // was value but too large
-                return sign | 0x7c00; // make it +/-Inf
-            return sign | 0x7c00 | // remains +/-Inf or NaN
-                   ((fbits & 0x007fffff) >> 13); // keep NaN (and Inf) bits
-        }
-        return sign | 0x7bff; // unrounded not quite Inf
-    }
-    if (val >= 0x38800000) // remains normalized value
-        return sign | ((val - 0x38000000) >> 13); // exp - 127 + 15
-    if (val < 0x33000000) // too small for subnormal
-        return sign; // becomes +/-0
-    val = (fbits & 0x7fffffff) >> 23;  // tmp exp for subnormal calc
-
-    return sign | (((fbits & 0x7fffff) | 0x800000) + // add subnormal bit
-                   (0x800000 >> (val - 102)) // round depending on cut off
-                  ) >> (126 - val); // div by 2^(1-(exp-127+15)) and >> 13 | exp=0
-}
-
-static inline float float16_to_float(uint16_t hbits) {
-    uint32_t mant = hbits & 0x03ff;            // 10 bits mantissa
-    uint32_t exp = hbits & 0x7c00;             // 5 bits exponent
-    
-    if (exp == 0x7c00) // NaN/Inf
-        exp = 0x3fc00; // -> NaN/Inf
-    else if (exp != 0) { // normalized value
-        exp += 0x1c000; // exp - 15 + 127
-        if (mant == 0 && exp > 0x1c400) { // smooth transition
-            uint32_t fbits = ((hbits & 0x8000) << 16) | (exp << 13) | 0x3ff;
-            return *(float*)&fbits;
-        }
-    }
-    else if (mant != 0) { // && exp==0 -> subnormal
-        exp = 0x1c400; // make it normal
-        do {
-            mant <<= 1; // mantissa * 2
-            exp -= 0x400; // decrease exp by 1
-        } while ((mant & 0x400) == 0); // while not normal
-        mant &= 0x3ff; // discard subnormal bit
-    } // else +/-0 -> +/-0
-    
-    uint32_t fbits = ((hbits & 0x8000) << 16) | ((exp | mant) << 13);
-    return *(float*)&fbits;
-}
-
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"
 // TEV version - dynamic based on colour space mode
@@ -1804,19 +1752,19 @@ static int detect_subtitle_format(const char *filename) {
             return 1; // SAMI format
         }
         if (strcasecmp(ext, "srt") == 0) {
-            return 0; // SubRip format
+            return 2; // SubRip format
         }
     }
-    
+
     // If extension is unclear, try to detect from content
     FILE *file = fopen(filename, "r");
     if (!file) return 0; // Default to SRT
-    
+
     char line[1024];
     int has_sami_tags = 0;
     int has_srt_format = 0;
     int lines_checked = 0;
-    
+
     while (fgets(line, sizeof(line), file) && lines_checked < 20) {
         // Convert to lowercase for checking
         char *lower_line = malloc(strlen(line) + 1);
@@ -1825,41 +1773,40 @@ static int detect_subtitle_format(const char *filename) {
                 lower_line[i] = tolower(line[i]);
             }
             lower_line[strlen(line)] = '\0';
-            
+
             // Check for SAMI indicators
-            if (strstr(lower_line, "<sami>") || strstr(lower_line, "<sync") || 
+            if (strstr(lower_line, "<sami>") || strstr(lower_line, "<sync") ||
                 strstr(lower_line, "<body>") || strstr(lower_line, "start=")) {
                 has_sami_tags = 1;
                 free(lower_line);
                 break;
             }
-            
+
             // Check for SRT indicators (time format)
             if (strstr(lower_line, "-->")) {
                 has_srt_format = 1;
             }
-            
+
             free(lower_line);
         }
         lines_checked++;
     }
-    
+
     fclose(file);
-    
+
     // Return format based on detection
     if (has_sami_tags) return 1; // SAMI
-    return 0; // Default to SRT
+    if (has_srt_format) return 2; // SRT
+    return 0; // Unknown
 }
 
 // Parse subtitle file (auto-detect format)
 static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps) {
     int format = detect_subtitle_format(filename);
-    
-    if (format == 1) {
-        return parse_smi_file(filename, fps);
-    } else {
-        return parse_srt_file(filename, fps);
-    }
+
+    if (format == 1) return parse_smi_file(filename, fps);
+    else if (format == 2) return parse_srt_file(filename, fps);
+    else return NULL;
 }
 
 // Free subtitle list
