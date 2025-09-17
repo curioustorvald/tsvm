@@ -1385,6 +1385,7 @@ static int start_video_conversion(tav_encoder_t *enc) {
     // Use simple FFmpeg command like TEV encoder for reliable EOF detection
     if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
         // Frame rate conversion requested
+        enc->is_ntsc_framerate = 0;
         snprintf(command, sizeof(command),
             "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
             "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
@@ -2248,7 +2249,6 @@ int main(int argc, char *argv[]) {
                 break;*/
             case 'f':
                 enc->output_fps = atoi(optarg);
-                enc->is_ntsc_framerate = 0;
                 if (enc->output_fps <= 0) {
                     fprintf(stderr, "Invalid FPS: %d\n", enc->output_fps);
                     cleanup_encoder(enc);
