@@ -3822,8 +3822,21 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         var readPtr = blockDataPtr
 
         try {
-            val tilesX = (width + TILE_SIZE_X - 1) / TILE_SIZE_X  // 280x224 tiles
-            val tilesY = (height + TILE_SIZE_Y - 1) / TILE_SIZE_Y
+            // Determine if monoblock mode based on TAV version
+            val isMonoblock = (tavVersion == 3 || tavVersion == 4)
+
+            val tilesX: Int
+            val tilesY: Int
+
+            if (isMonoblock) {
+                // Monoblock mode: single tile covering entire frame
+                tilesX = 1
+                tilesY = 1
+            } else {
+                // Standard mode: multiple 280x224 tiles
+                tilesX = (width + TILE_SIZE_X - 1) / TILE_SIZE_X
+                tilesY = (height + TILE_SIZE_Y - 1) / TILE_SIZE_Y
+            }
             
             // Process each tile
             for (tileY in 0 until tilesY) {
@@ -3847,17 +3860,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             // Copy 280x224 tile from previous frame to current frame
                             tavCopyTileRGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
                         }
-                        0x01 -> { // TAV_MODE_INTRA  
+                        0x01 -> { // TAV_MODE_INTRA
                             // Decode DWT coefficients directly to RGB buffer
-                            readPtr = tavDecodeDWTIntraTileRGB(readPtr, tileX, tileY, currentRGBAddr, 
+                            readPtr = tavDecodeDWTIntraTileRGB(readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
-                                                          waveletFilter, decompLevels, isLossless, tavVersion)
+                                                          waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
                             readPtr = tavDecodeDeltaTileRGB(readPtr, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
-                                                      waveletFilter, decompLevels, isLossless, tavVersion)
+                                                      waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
                     }
                 }
@@ -3870,92 +3883,130 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavDecodeDWTIntraTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                          width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
-                                         waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
-        // Now reading padded coefficient tiles (344x288) instead of core tiles (280x224)
-        val paddedCoeffCount = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+                                         waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
+        // Determine coefficient count based on mode
+        val coeffCount = if (isMonoblock) {
+            // Monoblock mode: entire frame
+            width * height
+        } else {
+            // Standard mode: padded tiles (344x288)
+            PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+        }
+
         var ptr = readPtr
+
+        // Read quantised DWT coefficients for Y, Co, Cg channels
+        val quantisedY = ShortArray(coeffCount)
+        val quantisedCo = ShortArray(coeffCount)
+        val quantisedCg = ShortArray(coeffCount)
         
-        // Read quantised DWT coefficients for padded tile Y, Co, Cg channels (344x288)
-        val quantisedY = ShortArray(paddedCoeffCount)
-        val quantisedCo = ShortArray(paddedCoeffCount)
-        val quantisedCg = ShortArray(paddedCoeffCount)
-        
-        // OPTIMIZATION: Bulk read all coefficient data (344x288 * 3 channels * 2 bytes = 594,432 bytes)
-        val totalCoeffBytes = paddedCoeffCount * 3 * 2L  // 3 channels, 2 bytes per short
+        // OPTIMIZATION: Bulk read all coefficient data
+        val totalCoeffBytes = coeffCount * 3 * 2L  // 3 channels, 2 bytes per short
         val coeffBuffer = ByteArray(totalCoeffBytes.toInt())
         UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), totalCoeffBytes)
         
         // Convert bulk data to coefficient arrays
         var bufferOffset = 0
-        for (i in 0 until paddedCoeffCount) {
+        for (i in 0 until coeffCount) {
             quantisedY[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
             bufferOffset += 2
         }
-        for (i in 0 until paddedCoeffCount) {
+        for (i in 0 until coeffCount) {
             quantisedCo[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
             bufferOffset += 2
         }
-        for (i in 0 until paddedCoeffCount) {
+        for (i in 0 until coeffCount) {
             quantisedCg[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
             bufferOffset += 2
         }
         
         ptr += totalCoeffBytes.toInt()
         
-        // Dequantise padded coefficient tiles (344x288)
-        val yPaddedTile = FloatArray(paddedCoeffCount)
-        val coPaddedTile = FloatArray(paddedCoeffCount)
-        val cgPaddedTile = FloatArray(paddedCoeffCount)
-        
-        for (i in 0 until paddedCoeffCount) {
-            yPaddedTile[i] = quantisedY[i] * qY.toFloat()
-            coPaddedTile[i] = quantisedCo[i] * qCo.toFloat()
-            cgPaddedTile[i] = quantisedCg[i] * qCg.toFloat()
+        // Dequantise coefficient data
+        val yTile = FloatArray(coeffCount)
+        val coTile = FloatArray(coeffCount)
+        val cgTile = FloatArray(coeffCount)
+
+        for (i in 0 until coeffCount) {
+            yTile[i] = quantisedY[i] * qY.toFloat()
+            coTile[i] = quantisedCo[i] * qCo.toFloat()
+            cgTile[i] = quantisedCg[i] * qCg.toFloat()
         }
         
         // Store coefficients for future delta reference (for P-frames)
-        val tileIdx = tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+        val tileIdx = if (isMonoblock) {
+            0  // Single tile index for monoblock
+        } else {
+            tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+        }
+
         if (tavPreviousCoeffsY == null) {
             tavPreviousCoeffsY = mutableMapOf()
             tavPreviousCoeffsCo = mutableMapOf()
             tavPreviousCoeffsCg = mutableMapOf()
         }
-        tavPreviousCoeffsY!![tileIdx] = yPaddedTile.clone()
-        tavPreviousCoeffsCo!![tileIdx] = coPaddedTile.clone()
-        tavPreviousCoeffsCg!![tileIdx] = cgPaddedTile.clone()
+        tavPreviousCoeffsY!![tileIdx] = yTile.clone()
+        tavPreviousCoeffsCo!![tileIdx] = coTile.clone()
+        tavPreviousCoeffsCg!![tileIdx] = cgTile.clone()
         
-        // Apply inverse DWT on full padded tiles (344x288)
+        // Apply inverse DWT
+        val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
+        val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(yPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(coPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(cgPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0)
         } else {
-            tavApplyDWTInverseMultiLevel(yPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(coPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(cgPaddedTile, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter)
         }
         
-        // Extract core 280x224 pixels from reconstructed padded tiles (344x288)
-        val yTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-        val coTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-        val cgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-        
-        for (y in 0 until TILE_SIZE_Y) {
-            for (x in 0 until TILE_SIZE_X) {
-                val coreIdx = y * TILE_SIZE_X + x
-                val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
-                
-                yTile[coreIdx] = yPaddedTile[paddedIdx]
-                coTile[coreIdx] = coPaddedTile[paddedIdx]
-                cgTile[coreIdx] = cgPaddedTile[paddedIdx]
+        // Extract final tile data
+        val finalYTile: FloatArray
+        val finalCoTile: FloatArray
+        val finalCgTile: FloatArray
+
+        if (isMonoblock) {
+            // Monoblock mode: use full frame data directly (no padding to extract)
+            finalYTile = yTile
+            finalCoTile = coTile
+            finalCgTile = cgTile
+        } else {
+            // Standard mode: extract core 280x224 pixels from reconstructed padded tiles (344x288)
+            finalYTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+            finalCoTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+            finalCgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+
+            for (y in 0 until TILE_SIZE_Y) {
+                for (x in 0 until TILE_SIZE_X) {
+                    val coreIdx = y * TILE_SIZE_X + x
+                    val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
+
+                    finalYTile[coreIdx] = yTile[paddedIdx]
+                    finalCoTile[coreIdx] = coTile[paddedIdx]
+                    finalCgTile[coreIdx] = cgTile[paddedIdx]
+                }
             }
         }
         
-        // Convert to RGB based on TAV version (YCoCg-R for v1, ICtCp for v2)
-        if (tavVersion == 2) {
-            tavConvertICtCpTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+        // Convert to RGB based on TAV version and mode
+        // v1,v3 = YCoCg-R, v2,v4 = ICtCp
+        if (tavVersion == 2 || tavVersion == 4) {
+            // ICtCp color space
+            if (isMonoblock) {
+                tavConvertICtCpMonoblockToRGB(finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            } else {
+                tavConvertICtCpTileToRGB(tileX, tileY, finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            }
         } else {
-            tavConvertYCoCgTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+            // YCoCg-R color space (v1, v3)
+            if (isMonoblock) {
+                tavConvertYCoCgMonoblockToRGB(finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            } else {
+                tavConvertYCoCgTileToRGB(tileX, tileY, finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            }
         }
         
         return ptr
@@ -4069,6 +4120,79 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    // Monoblock conversion functions (full frame processing)
+    private fun tavConvertYCoCgMonoblockToRGB(yData: FloatArray, coData: FloatArray, cgData: FloatArray,
+                                              rgbAddr: Long, width: Int, height: Int) {
+        // Process entire frame at once for monoblock mode
+        for (y in 0 until height) {
+            // Create row buffer for bulk RGB data
+            val rowRgbBuffer = ByteArray(width * 3)
+            var bufferIdx = 0
+
+            for (x in 0 until width) {
+                val idx = y * width + x
+
+                // YCoCg-R to RGB conversion (exact inverse of encoder)
+                val Y = yData[idx]
+                val Co = coData[idx]
+                val Cg = cgData[idx]
+
+                // Inverse of encoder's YCoCg-R transform:
+                val tmp = Y - Cg / 2.0f
+                val g = Cg + tmp
+                val b = tmp - Co / 2.0f
+                val r = Co + b
+
+                rowRgbBuffer[bufferIdx++] = r.toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = g.toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = b.toInt().coerceIn(0, 255).toByte()
+            }
+
+            // OPTIMIZATION: Bulk copy entire row at once
+            val rowStartOffset = y * width * 3L
+            UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer),
+                                 null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
+        }
+    }
+
+    private fun tavConvertICtCpMonoblockToRGB(iData: FloatArray, ctData: FloatArray, cpData: FloatArray,
+                                              rgbAddr: Long, width: Int, height: Int) {
+        // Process entire frame at once for monoblock mode
+        for (y in 0 until height) {
+            // Create row buffer for bulk RGB data
+            val rowRgbBuffer = ByteArray(width * 3)
+            var bufferIdx = 0
+
+            for (x in 0 until width) {
+                val idx = y * width + x
+
+                // ICtCp to RGB conversion (BT.2100 -> sRGB)
+                val I = iData[idx]
+                val Ct = ctData[idx]
+                val Cp = cpData[idx]
+
+                // ICtCp to LMS
+                val L = I + 0.00975f * Ct + 0.20524f * Cp
+                val M = I - 0.11387f * Ct + 0.13321f * Cp
+                val S = I + 0.03259f * Ct - 0.67851f * Cp
+
+                // LMS to RGB (simplified conversion)
+                val r = 3.2406f * L - 1.5372f * M - 0.4986f * S
+                val g = -0.9689f * L + 1.8758f * M + 0.0415f * S
+                val b = 0.0557f * L - 0.2040f * M + 1.0570f * S
+
+                rowRgbBuffer[bufferIdx++] = (r * 255f).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (g * 255f).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (b * 255f).toInt().coerceIn(0, 255).toByte()
+            }
+
+            // OPTIMIZATION: Bulk copy entire row at once
+            val rowStartOffset = y * width * 3L
+            UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer),
+                                 null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
+        }
+    }
+
     private fun tavAddYCoCgResidualToRGBTile(tileX: Int, tileY: Int, yRes: FloatArray, coRes: FloatArray, cgRes: FloatArray,
                                              rgbAddr: Long, width: Int, height: Int) {
         val startX = tileX * TILE_SIZE_X
@@ -4145,20 +4269,30 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
-                                      waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int): Long {
+                                      waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         
-        val tileIdx = tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+        val tileIdx = if (isMonoblock) {
+            0  // Single tile index for monoblock
+        } else {
+            tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+        }
         var ptr = readPtr
-        
+
         // Initialize coefficient storage if needed
         if (tavPreviousCoeffsY == null) {
             tavPreviousCoeffsY = mutableMapOf()
             tavPreviousCoeffsCo = mutableMapOf()
             tavPreviousCoeffsCg = mutableMapOf()
         }
-        
-        // Coefficient count for padded tiles: 344x288 = 99,072 coefficients per channel
-        val coeffCount = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+
+        // Determine coefficient count based on mode
+        val coeffCount = if (isMonoblock) {
+            // Monoblock mode: entire frame
+            width * height
+        } else {
+            // Standard mode: padded tiles (344x288)
+            PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+        }
         
         // Read delta coefficients (same format as intra: quantised int16 -> float)
         val deltaY = ShortArray(coeffCount)
@@ -4194,37 +4328,63 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         tavPreviousCoeffsCg!![tileIdx] = currentCg.clone()
         
         // Apply inverse DWT
+        val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
+        val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(currentY, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(currentCo, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(currentCg, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0)
         } else {
-            tavApplyDWTInverseMultiLevel(currentY, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(currentCo, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(currentCg, PADDED_TILE_SIZE_X, PADDED_TILE_SIZE_Y, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter)
         }
         
-        // Extract core 280x224 pixels and convert to RGB (same as intra)
-        val yTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-        val coTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-        val cgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-        
-        for (y in 0 until TILE_SIZE_Y) {
-            for (x in 0 until TILE_SIZE_X) {
-                val coreIdx = y * TILE_SIZE_X + x
-                val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
-                
-                yTile[coreIdx] = currentY[paddedIdx]
-                coTile[coreIdx] = currentCo[paddedIdx]
-                cgTile[coreIdx] = currentCg[paddedIdx]
+        // Extract final tile data
+        val finalYTile: FloatArray
+        val finalCoTile: FloatArray
+        val finalCgTile: FloatArray
+
+        if (isMonoblock) {
+            // Monoblock mode: use full frame data directly (no padding to extract)
+            finalYTile = currentY
+            finalCoTile = currentCo
+            finalCgTile = currentCg
+        } else {
+            // Standard mode: extract core 280x224 pixels from reconstructed padded tiles (344x288)
+            finalYTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+            finalCoTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+            finalCgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+
+            for (y in 0 until TILE_SIZE_Y) {
+                for (x in 0 until TILE_SIZE_X) {
+                    val coreIdx = y * TILE_SIZE_X + x
+                    val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
+
+                    finalYTile[coreIdx] = currentY[paddedIdx]
+                    finalCoTile[coreIdx] = currentCo[paddedIdx]
+                    finalCgTile[coreIdx] = currentCg[paddedIdx]
+                }
             }
         }
-        
-        // Convert to RGB based on TAV version
-        if (tavVersion == 2) {
-            tavConvertICtCpTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+
+        // Convert to RGB based on TAV version and mode
+        // v1,v3 = YCoCg-R, v2,v4 = ICtCp
+        if (tavVersion == 2 || tavVersion == 4) {
+            // ICtCp color space
+            if (isMonoblock) {
+                tavConvertICtCpMonoblockToRGB(finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            } else {
+                tavConvertICtCpTileToRGB(tileX, tileY, finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            }
         } else {
-            tavConvertYCoCgTileToRGB(tileX, tileY, yTile, coTile, cgTile, currentRGBAddr, width, height)
+            // YCoCg-R color space (v1, v3)
+            if (isMonoblock) {
+                tavConvertYCoCgMonoblockToRGB(finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            } else {
+                tavConvertYCoCgTileToRGB(tileX, tileY, finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
+            }
         }
         
         return ptr

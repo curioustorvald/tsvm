@@ -695,7 +695,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 
 ## Header (24 bytes)
     uint8  Magic[8]: "\x1FTSVM TEV"
-    uint8  Version: 2 or 3
+    uint8  Version: 2 (YCoCg-R) or 3 (ICtCp)
     uint16 Width: video width in pixels
     uint16 Height: video height in pixels
     uint8 FPS: frames per second
@@ -709,7 +709,6 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     uint8  Video Flags
             - bit 0 = is interlaced (should be default for most non-archival TEV videos)
             - bit 1 = is NTSC framerate (repeat every 1000th frame)
-            - bit 2 = is lossless mode
     uint8  Reserved, fill with zero
 
 ## Packet Types
@@ -823,7 +822,7 @@ transmission capability, and region-of-interest coding.
 
 ## Header (32 bytes)
     uint8  Magic[8]: "\x1FTSVM TAV"
-    uint8  Version: 1
+    uint8  Version: 3 (YCoCg-R) or 4 (ICtCp)
     uint16 Width: video width in pixels  
     uint16 Height: video height in pixels
     uint8  FPS: frames per second
@@ -854,12 +853,11 @@ transmission capability, and region-of-interest coding.
     uint32 Compressed Size
     *      Zstd-compressed Block Data
 
-## Block Data (per 280x224 tile)
+## Block Data (per frame)
     uint8  Mode: encoding mode
            0x00 = SKIP (copy from previous frame)
-           0x01 = INTRA (DWT-coded, no prediction)
-           0x02 = INTER (DWT-coded with motion compensation)
-           0x03 = MOTION (motion vector only, no residual)
+           0x01 = INTRA (DWT-coded)
+           0x02 = DELTA (DWT delta)
     uint8  Quantiser override Y  (use 0 to disable overriding)
     uint8  Quantiser override Co (use 0 to disable overriding)
     uint8  Quantiser override Cg (use 0 to disable overriding)
@@ -900,7 +898,7 @@ TAV operates in YCoCg-R colour space with full resolution channels:
 - Cg: Green-Magenta chroma (full resolution, very aggressive quantization by default)
 
 ## Compression Features
-- 280x224 DWT tiles vs 16x16 DCT blocks in TEV
+- Single DWT tiles vs 16x16 DCT blocks in TEV
 - Multi-resolution representation enables scalable decoding
 - Better frequency localization than DCT
 - Reduced blocking artifacts due to overlapping basis functions

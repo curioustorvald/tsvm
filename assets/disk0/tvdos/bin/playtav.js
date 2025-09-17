@@ -402,7 +402,7 @@ for (let i = 0; i < 8; i++) {
 }
 
 if (!magicValid) {
-    con.puts("Error: Invalid TAV file format")
+    printerrln("Error: Invalid TAV file format")
     errorlevel = 1
     return
 }
@@ -425,8 +425,8 @@ for (let i = 0; i < 7; i++) {
     seqread.readOneByte()
 }
 
-if (header.version < 1 || header.version > 2) {
-    con.puts(`Error: Unsupported TAV version ${header.version}`)
+if (header.version < 1 || header.version > 4) {
+    printerrln(`Error: Unsupported TAV version ${header.version}`)
     errorlevel = 1
     return
 }
@@ -637,7 +637,7 @@ try {
 
                     // Upload RGB buffer to display framebuffer (like TEV)
                     let uploadStart = sys.nanoTime()
-                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, frameCount, true)
+                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, frameCount, false)
                     uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
 
                     // Defer audio playback until a first frame is sent

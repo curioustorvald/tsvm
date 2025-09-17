@@ -23,8 +23,11 @@
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
 // TAV version - dynamic based on colour space mode
-// Version 1: YCoCg-R (default) 
-// Version 2: ICtCp (--ictcp flag)
+// Version 3: YCoCg-R monoblock (default)
+// Version 4: ICtCp monoblock (--ictcp flag)
+// Legacy versions (4-tile mode, code preserved but not accessible):
+// Version 1: YCoCg-R 4-tile
+// Version 2: ICtCp 4-tile
 
 // Tile encoding modes (280x224 tiles)
 #define TAV_MODE_SKIP      0x00  // Skip tile (copy from reference)
@@ -104,6 +107,21 @@ static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
 }
 
+// Calculate maximum decomposition levels for a given frame size
+static int calculate_max_decomp_levels(int width, int height) {
+    int levels = 0;
+    int min_size = width < height ? width : height;
+
+    // Keep halving until we reach a minimum size (at least 4 pixels)
+    while (min_size >= 8) {  // Need at least 8 pixels to safely halve to 4
+        min_size /= 2;
+        levels++;
+    }
+
+    // Cap at a reasonable maximum to avoid going too deep
+    return levels > 10 ? 10 : levels;
+}
+
 // MP2 audio rate table (same as TEV)
 static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384, 384};
 
@@ -164,6 +182,7 @@ typedef struct {
     int test_mode;
     int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp colour space
     int intra_only;       // Force all tiles to use INTRA mode (disable delta encoding)
+    int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
     
     // Frame buffers
     uint8_t *current_frame_rgb;
@@ -216,12 +235,39 @@ typedef struct {
 
 // Wavelet filter constants removed - using lifting scheme implementation instead
 
+// Parse resolution string like "1024x768" with keyword recognition
+static int parse_resolution(const char *res_str, int *width, int *height) {
+    if (!res_str) return 0;
+    if (strcmp(res_str, "cif") == 0 || strcmp(res_str, "CIF") == 0) {
+        *width = 352;
+        *height = 288;
+        return 1;
+    }
+    if (strcmp(res_str, "qcif") == 0 || strcmp(res_str, "QCIF") == 0) {
+        *width = 176;
+        *height = 144;
+        return 1;
+    }
+    if (strcmp(res_str, "half") == 0 || strcmp(res_str, "HALF") == 0) {
+        *width = DEFAULT_WIDTH >> 1;
+        *height = DEFAULT_HEIGHT >> 1;
+        return 1;
+    }
+    if (strcmp(res_str, "default") == 0 || strcmp(res_str, "DEFAULT") == 0) {
+        *width = DEFAULT_WIDTH;
+        *height = DEFAULT_HEIGHT;
+        return 1;
+    }
+    return sscanf(res_str, "%dx%d", width, height) == 2;
+}
+
 // Function prototypes
 static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialize_encoder(tav_encoder_t *enc);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
+static int calculate_max_decomp_levels(int width, int height);
 
 // Audio and subtitle processing prototypes (from TEV)
 static int start_audio_conversion(tav_encoder_t *enc);
@@ -277,7 +323,7 @@ static void show_usage(const char *program_name) {
     }
     
     printf("\n\nFeatures:\n");
-    printf("  - 280x224 DWT tiles with multi-resolution encoding\n");
+    printf("  - Single DWT tile (monoblock) encoding for optimal quality\n");
     printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
     printf("  - Lossless and lossy compression modes\n");
     
@@ -305,6 +351,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->quantiser_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantiser_cg = QUALITY_CG[DEFAULT_QUALITY];
     enc->intra_only = 1;
+    enc->monoblock = 1;  // Default to monoblock mode
 
     return enc;
 }
@@ -312,10 +359,22 @@ static tav_encoder_t* create_encoder(void) {
 // Initialize encoder resources
 static int initialize_encoder(tav_encoder_t *enc) {
     if (!enc) return -1;
-    
+
+    // Automatic decomposition levels for monoblock mode
+    if (enc->monoblock) {
+        enc->decomp_levels = calculate_max_decomp_levels(enc->width, enc->height);
+    }
+
     // Calculate tile dimensions
-    enc->tiles_x = (enc->width + TILE_SIZE_X - 1) / TILE_SIZE_X;
-    enc->tiles_y = (enc->height + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
+    if (enc->monoblock) {
+        // Monoblock mode: single tile covering entire frame
+        enc->tiles_x = 1;
+        enc->tiles_y = 1;
+    } else {
+        // Standard mode: multiple 280x224 tiles
+        enc->tiles_x = (enc->width + TILE_SIZE_X - 1) / TILE_SIZE_X;
+        enc->tiles_y = (enc->height + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
+    }
     int num_tiles = enc->tiles_x * enc->tiles_y;
     
     // Allocate frame buffers
@@ -334,17 +393,31 @@ static int initialize_encoder(tav_encoder_t *enc) {
 
     // Initialize ZSTD compression
     enc->zstd_ctx = ZSTD_createCCtx();
-    enc->compressed_buffer_size = ZSTD_compressBound(1024 * 1024); // 1MB max
+
+    // Calculate maximum possible frame size for ZSTD buffer
+    const size_t max_frame_coeff_count = enc->monoblock ?
+        (enc->width * enc->height) :
+        (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);
+    const size_t max_frame_size = num_tiles * (4 + max_frame_coeff_count * 3 * sizeof(int16_t));
+    enc->compressed_buffer_size = ZSTD_compressBound(max_frame_size);
     enc->compressed_buffer = malloc(enc->compressed_buffer_size);
     
-    // OPTIMIZATION: Allocate reusable quantisation buffers for padded tiles (344x288)
-    const int padded_coeff_count = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
-    enc->reusable_quantised_y = malloc(padded_coeff_count * sizeof(int16_t));
-    enc->reusable_quantised_co = malloc(padded_coeff_count * sizeof(int16_t));
-    enc->reusable_quantised_cg = malloc(padded_coeff_count * sizeof(int16_t));
-    
+    // OPTIMIZATION: Allocate reusable quantisation buffers
+    int coeff_count_per_tile;
+    if (enc->monoblock) {
+        // Monoblock mode: entire frame
+        coeff_count_per_tile = enc->width * enc->height;
+    } else {
+        // Standard mode: padded tiles (344x288)
+        coeff_count_per_tile = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
+    }
+
+    enc->reusable_quantised_y = malloc(coeff_count_per_tile * sizeof(int16_t));
+    enc->reusable_quantised_co = malloc(coeff_count_per_tile * sizeof(int16_t));
+    enc->reusable_quantised_cg = malloc(coeff_count_per_tile * sizeof(int16_t));
+
     // Allocate coefficient delta storage for P-frames (per-tile coefficient storage)
-    size_t total_coeff_size = num_tiles * padded_coeff_count * sizeof(float);
+    size_t total_coeff_size = num_tiles * coeff_count_per_tile * sizeof(float);
     enc->previous_coeffs_y = malloc(total_coeff_size);
     enc->previous_coeffs_co = malloc(total_coeff_size);
     enc->previous_coeffs_cg = malloc(total_coeff_size);
@@ -605,8 +678,55 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
     free(temp_col);
 }
 
+// 2D DWT forward transform for arbitrary dimensions
+static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int levels, int filter_type) {
+    const int max_size = (width > height) ? width : height;
+    float *temp_row = malloc(max_size * sizeof(float));
+    float *temp_col = malloc(max_size * sizeof(float));
 
+    for (int level = 0; level < levels; level++) {
+        int current_width = width >> level;
+        int current_height = height >> level;
+        if (current_width < 1 || current_height < 1) break;
 
+        // Row transform (horizontal)
+        for (int y = 0; y < current_height; y++) {
+            for (int x = 0; x < current_width; x++) {
+                temp_row[x] = tile_data[y * width + x];
+            }
+
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_row, current_width);
+            } else {
+                dwt_97_forward_1d(temp_row, current_width);
+            }
+
+            for (int x = 0; x < current_width; x++) {
+                tile_data[y * width + x] = temp_row[x];
+            }
+        }
+
+        // Column transform (vertical)
+        for (int x = 0; x < current_width; x++) {
+            for (int y = 0; y < current_height; y++) {
+                temp_col[y] = tile_data[y * width + x];
+            }
+
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_col, current_height);
+            } else {
+                dwt_97_forward_1d(temp_col, current_height);
+            }
+
+            for (int y = 0; y < current_height; y++) {
+                tile_data[y * width + x] = temp_col[y];
+            }
+        }
+    }
+
+    free(temp_row);
+    free(temp_col);
+}
 
 // Quantisation for DWT subbands with rate control
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
@@ -642,8 +762,10 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         return offset;
     }
     
-    // Quantise and serialise DWT coefficients (full padded tile: 344x288)
-    const int tile_size = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
+    // Quantise and serialise DWT coefficients
+    const int tile_size = enc->monoblock ?
+        (enc->width * enc->height) :  // Monoblock mode: full frame
+        (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);  // Standard mode: padded tiles
     // OPTIMIZATION: Use pre-allocated buffers instead of malloc/free per tile
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
@@ -735,8 +857,11 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
-    // Calculate total uncompressed size (for padded tile coefficients: 344x288)
-    const size_t max_tile_size = 4 + (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    // Calculate total uncompressed size
+    const size_t coeff_count = enc->monoblock ?
+        (enc->width * enc->height) :
+        (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);
+    const size_t max_tile_size = 4 + (coeff_count * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
     
     // Allocate buffer for uncompressed tile data
@@ -756,13 +881,29 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 mode = TAV_MODE_DELTA;  // P-frames use coefficient delta encoding
             }
             
-            // Extract padded tile data (344x288) with neighbour context for overlapping tiles
-            float tile_y_data[PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y];
-            float tile_co_data[PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y];
-            float tile_cg_data[PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y];
-            
-            // Extract padded tiles using context from neighbours
-            extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
+            // Determine tile data size and allocate buffers
+            int tile_data_size;
+            if (enc->monoblock) {
+                // Monoblock mode: entire frame
+                tile_data_size = enc->width * enc->height;
+            } else {
+                // Standard mode: padded tiles (344x288)
+                tile_data_size = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
+            }
+
+            float *tile_y_data = malloc(tile_data_size * sizeof(float));
+            float *tile_co_data = malloc(tile_data_size * sizeof(float));
+            float *tile_cg_data = malloc(tile_data_size * sizeof(float));
+
+            if (enc->monoblock) {
+                // Extract entire frame (no padding)
+                memcpy(tile_y_data, enc->current_frame_y, tile_data_size * sizeof(float));
+                memcpy(tile_co_data, enc->current_frame_co, tile_data_size * sizeof(float));
+                memcpy(tile_cg_data, enc->current_frame_cg, tile_data_size * sizeof(float));
+            } else {
+                // Extract padded tiles using context from neighbours
+                extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
+            }
             
             // Debug: check input data before DWT
             /*if (tile_x == 0 && tile_y == 0) {
@@ -773,16 +914,29 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 printf("\n");
             }*/
             
-            // Apply DWT transform to each padded channel (176x176)
-            dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
-            dwt_2d_forward_padded(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
-            dwt_2d_forward_padded(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+            // Apply DWT transform to each channel
+            if (enc->monoblock) {
+                // Monoblock mode: transform entire frame
+                dwt_2d_forward_flexible(tile_y_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                dwt_2d_forward_flexible(tile_co_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                dwt_2d_forward_flexible(tile_cg_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+            } else {
+                // Standard mode: transform padded tiles (344x288)
+                dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
+                dwt_2d_forward_padded(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
+                dwt_2d_forward_padded(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+            }
             
             // Serialise tile
-            size_t tile_size = serialise_tile_data(enc, tile_x, tile_y, 
+            size_t tile_size = serialise_tile_data(enc, tile_x, tile_y,
                                                    tile_y_data, tile_co_data, tile_cg_data,
                                                    mode, uncompressed_buffer + uncompressed_offset);
             uncompressed_offset += tile_size;
+
+            // Free allocated tile data
+            free(tile_y_data);
+            free(tile_co_data);
+            free(tile_cg_data);
         }
     }
     
@@ -1055,8 +1209,13 @@ static int write_tav_header(tav_encoder_t *enc) {
     // Magic number
     fwrite(TAV_MAGIC, 1, 8, enc->output_fp);
     
-    // Version (dynamic based on colour space)
-    uint8_t version = enc->ictcp_mode ? 2 : 1;  // Version 2 for ICtCp, 1 for YCoCg-R
+    // Version (dynamic based on colour space and monoblock mode)
+    uint8_t version;
+    if (enc->monoblock) {
+        version = enc->ictcp_mode ? 4 : 3;  // Version 4 for ICtCp monoblock, 3 for YCoCg-R monoblock
+    } else {
+        version = enc->ictcp_mode ? 2 : 1;  // Version 2 for ICtCp, 1 for YCoCg-R
+    }
     fputc(version, enc->output_fp);
     
     // Video parameters
@@ -2039,6 +2198,13 @@ int main(int argc, char *argv[]) {
                 break;
             case 'o':
                 enc->output_file = strdup(optarg);
+                break;
+            case 's':
+                if (!parse_resolution(optarg, &enc->width, &enc->height)) {
+                    fprintf(stderr, "Invalid resolution format: %s\n", optarg);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
                 break;
             case 'q':
                 enc->quality_level = CLAMP(atoi(optarg), 0, 5);
