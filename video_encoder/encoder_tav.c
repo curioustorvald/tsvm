@@ -1240,7 +1240,7 @@ static int write_tav_header(tav_encoder_t *enc) {
     // Video parameters
     fwrite(&enc->width, sizeof(uint16_t), 1, enc->output_fp);
     fwrite(&enc->height, sizeof(uint16_t), 1, enc->output_fp);
-    fputc(enc->fps, enc->output_fp);
+    fputc(enc->output_fps, enc->output_fp);
     fwrite(&enc->total_frames, sizeof(uint32_t), 1, enc->output_fp);
     
     // Encoder parameters
@@ -1368,7 +1368,7 @@ static int get_video_metadata(tav_encoder_t *config) {
 
     fprintf(stderr, "Video metadata:\n");
     fprintf(stderr, "  Frames: (will be determined during encoding)\n");
-    fprintf(stderr, "  FPS: %.2f\n", inputFramerate);
+    fprintf(stderr, "  FPS: %.2f input, %d output\n", inputFramerate, config->output_fps);
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
 //    fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height,
@@ -1994,7 +1994,7 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     }
 
     // Calculate how much audio time each frame represents (in seconds)
-    double frame_audio_time = 1.0 / enc->fps;
+    double frame_audio_time = 1.0 / enc->output_fps;
 
     // Calculate how much audio time each MP2 packet represents
     // MP2 frame contains 1152 samples at 32kHz = 0.036 seconds
@@ -2309,7 +2309,7 @@ int main(int argc, char *argv[]) {
     printf("TAV Encoder - DWT-based video compression\n");
     printf("Input: %s\n", enc->input_file);
     printf("Output: %s\n", enc->output_file);
-    printf("Resolution: %dx%d\n", enc->width, enc->height);
+    printf("Resolution: %dx%d @ %dfps\n", enc->width, enc->height, enc->output_fps);
     printf("Wavelet: %s\n", enc->wavelet_filter ? "9/7 irreversible" : "5/3 reversible");
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Colour space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
@@ -2365,7 +2365,7 @@ int main(int argc, char *argv[]) {
     // Parse subtitles if provided
     if (enc->subtitle_file) {
         printf("Parsing subtitles: %s\n", enc->subtitle_file);
-        enc->subtitles = parse_subtitle_file(enc->subtitle_file, enc->fps);
+        enc->subtitles = parse_subtitle_file(enc->subtitle_file, enc->output_fps);
         if (NULL == enc->subtitles) {
             fprintf(stderr, "Warning: Failed to parse subtitle file\n");
         } else {
