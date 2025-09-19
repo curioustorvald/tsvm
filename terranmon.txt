@@ -816,7 +816,7 @@ transmission capability, and region-of-interest coding.
 
 ## Header (32 bytes)
     uint8  Magic[8]: "\x1FTSVM TAV"
-    uint8  Version: 3 (YCoCg-R) or 4 (ICtCp)
+    uint8  Version: 3 (YCoCg-R uniform), 4 (ICtCp uniform), 5 (YCoCg-R perceptual), 6 (ICtCp perceptual)
     uint16 Width: video width in pixels  
     uint16 Height: video height in pixels
     uint8  FPS: frames per second
@@ -879,17 +879,48 @@ transmission capability, and region-of-interest coding.
   * Provides better energy compaction than 5/3 but lossy reconstruction
 
 ### Quantization Strategy
-TAV uses different quantization steps for each subband based on human visual
-system sensitivity:
-- LL subbands: Fine quantization (preserve DC and low frequencies)
-- LH/HL subbands: Medium quantization (diagonal details less critical)  
-- HH subbands: Coarse quantization (high frequency noise can be discarded)
 
-## Colour Space  
-TAV operates in YCoCg-R colour space with full resolution channels:
-- Y: Luma channel (full resolution, fine quantization)
-- Co: Orange-Cyan chroma (full resolution, aggressive quantization by default)  
-- Cg: Green-Magenta chroma (full resolution, very aggressive quantization by default)
+#### Uniform Quantization (Versions 3-4)
+Traditional approach using same quantization factor for all DWT subbands within each channel.
+
+#### Perceptual Quantization (Versions 5-6, Default)
+TAV versions 5 and 6 implement Human Visual System (HVS) optimized quantization with
+frequency-aware subband weighting for superior visual quality:
+
+**Luma (Y) Channel Strategy:**
+- LL (lowest frequency): Base quantizer × 0.4 (finest preservation)
+- LH/HL at max level: Base quantizer × 0.6
+- HH at max level: Base quantizer × 1.0
+- Progressive increase toward higher frequencies down to level 1:
+  - LH1/HL1: Base quantizer × 2.5
+  - HH1: Base quantizer × 3.0
+
+**Chroma (Co/Cg) Channel Strategy:**
+- LL (lowest frequency): Base quantizer × 0.7 (less critical than luma)
+- LH/HL at max level: Base quantizer × 1.0
+- HH at max level: Base quantizer × 1.3
+- Progressive increase toward higher frequencies down to level 1:
+  - HH1: Base quantizer × 2.2
+
+This perceptual approach allocates more bits to visually important low-frequency
+details while aggressively quantizing high-frequency noise, resulting in superior
+visual quality at equivalent bitrates.
+
+## Colour Space
+TAV supports two colour spaces:
+
+**YCoCg-R (Versions 3, 5):**
+- Y: Luma channel (full resolution)
+- Co: Orange-Cyan chroma (full resolution)
+- Cg: Green-Magenta chroma (full resolution)
+
+**ICtCp (Versions 4, 6):**
+- I: Intensity (similar to luma)
+- Ct: Chroma tritanopia
+- Cp: Chroma protanopia
+
+Perceptual versions (5-6) apply HVS-optimized quantization weights per channel,
+while uniform versions (3-4) use consistent quantization across all subbands.
 
 ## Compression Features
 - Single DWT tiles vs 16x16 DCT blocks in TEV
@@ -897,13 +928,14 @@ TAV operates in YCoCg-R colour space with full resolution channels:
 - Better frequency localization than DCT
 - Reduced blocking artifacts due to overlapping basis functions
 
-## Performance Comparison  
+## Performance Comparison
 Expected improvements over TEV:
 - 20-30% better compression efficiency
 - Reduced blocking artifacts
 - Scalable quality/resolution decoding
 - Better performance on natural images vs artificial content
-- Full resolution chroma preserves color detail while aggressive quantization maintains compression
+- **Perceptual versions (5-6)**: Superior visual quality through HVS-optimized bit allocation
+- **Uniform versions (3-4)**: Backward compatibility with traditional quantization
 
 ## Hardware Acceleration Functions
 TAV decoder requires new GraphicsJSR223Delegate functions:

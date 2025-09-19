@@ -425,7 +425,7 @@ for (let i = 0; i < 7; i++) {
     seqread.readOneByte()
 }
 
-if (header.version < 1 || header.version > 4) {
+if (header.version < 1 || header.version > 6) {
     printerrln(`Error: Unsupported TAV version ${header.version}`)
     errorlevel = 1
     return

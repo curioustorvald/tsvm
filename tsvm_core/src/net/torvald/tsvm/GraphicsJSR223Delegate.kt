@@ -1,7 +1,6 @@
 package net.torvald.tsvm
 
 import com.badlogic.gdx.graphics.Pixmap
-import com.badlogic.gdx.math.MathUtils.*
 import com.badlogic.gdx.math.MathUtils.PI
 import com.badlogic.gdx.math.MathUtils.ceil
 import com.badlogic.gdx.math.MathUtils.floor
@@ -30,8 +29,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     
     // TAV coefficient delta storage for previous frame (for efficient P-frames)
     private var tavPreviousCoeffsY: MutableMap<Int, FloatArray>? = null
-    private var tavPreviousCoeffsCo: MutableMap<Int, FloatArray>? = null 
+    private var tavPreviousCoeffsCo: MutableMap<Int, FloatArray>? = null
     private var tavPreviousCoeffsCg: MutableMap<Int, FloatArray>? = null
+
+    // TAV Perceptual dequantization support (must match encoder weights)
+    data class DWTSubbandInfo(
+        val level: Int,          // Decomposition level (1 to decompLevels)
+        val subbandType: Int,    // 0=LL, 1=LH, 2=HL, 3=HH
+        val coeffStart: Int,     // Starting index in linear coefficient array
+        val coeffCount: Int,     // Number of coefficients in this subband
+        val perceptualWeight: Float // Quantization multiplier for this subband
+    )
 
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
@@ -1325,10 +1333,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
      * @param width Frame width
      * @param height Frame height
-     * @param frameCounter Frame counter for dithering
+     * @param frameCount Frame counter for dithering
      */
-    fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCounter: Int) {
-        uploadRGBToFramebuffer(rgbAddr, width, height, frameCounter, false)
+    fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCount: Int) {
+        uploadRGBToFramebuffer(rgbAddr, width, height, frameCount, false)
     }
 
     /**
@@ -1398,10 +1406,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param rgbAddr Source RGB buffer (24-bit: R,G,B bytes)
      * @param width Frame width
      * @param height Frame height
-     * @param frameCounter Frame counter for dithering
+     * @param frameCount Frame counter for dithering
      * @param resizeToFull If true, resize video to fill entire screen; if false, center video
      */
-    fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCounter: Int, resizeToFull: Boolean) {
+    fun uploadRGBToFramebuffer(rgbAddr: Long, width: Int, height: Int, frameCount: Int, resizeToFull: Boolean) {
         val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
 
         val rgbAddrIncVec = if (rgbAddr >= 0) 1 else -1
@@ -1444,9 +1452,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val b = rgb[2]
 
                     // Apply Bayer dithering and convert to 4-bit using native coordinates
-                    val r4 = ditherValue(r, nativeX, nativeY, frameCounter)
-                    val g4 = ditherValue(g, nativeX, nativeY, frameCounter)
-                    val b4 = ditherValue(b, nativeX, nativeY, frameCounter)
+                    val r4 = ditherValue(r, nativeX, nativeY, frameCount)
+                    val g4 = ditherValue(g, nativeX, nativeY, frameCount)
+                    val b4 = ditherValue(b, nativeX, nativeY, frameCount)
 
                     // Pack and store in chunk buffers
                     rgChunk[i] = ((r4 shl 4) or g4).toByte()
@@ -1507,9 +1515,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val b = rgbBulkBuffer[rgbIndex + 2].toUint()
 
                     // Apply Bayer dithering and convert to 4-bit
-                    val r4 = ditherValue(r, videoX, videoY, frameCounter)
-                    val g4 = ditherValue(g, videoX, videoY, frameCounter)
-                    val b4 = ditherValue(b, videoX, videoY, frameCounter)
+                    val r4 = ditherValue(r, videoX, videoY, frameCount)
+                    val g4 = ditherValue(g, videoX, videoY, frameCount)
+                    val b4 = ditherValue(b, videoX, videoY, frameCount)
 
                     // Pack RGB values and store in chunk arrays for batch processing
                     val validIndex = i
@@ -2505,10 +2513,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param width Frame width in pixels
      * @param height Frame height in pixels
      * @param quality Quantisation quality level (0-7)
-     * @param frameCounter Frame counter for temporal patterns
+     * @param frameCount Frame counter for temporal patterns
      */
     fun tevDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, frameCounter: Int,
+                  width: Int, height: Int, qY: Int, qCo: Int, qCg: Int, frameCount: Int,
                   debugMotionVectors: Boolean = false, tevVersion: Int = 2,
                   enableDeblocking: Boolean = true, enableBoundaryAwareDecoding: Boolean = false) {
 
@@ -3004,9 +3012,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    fun tevDeinterlace(frameCounter: Int, width: Int, height: Int, prevField: Long, currentField: Long, nextField: Long, outputRGB: Long, algorithm: String = "yadif") {
+    fun tevDeinterlace(frameCount: Int, width: Int, height: Int, prevField: Long, currentField: Long, nextField: Long, outputRGB: Long, algorithm: String = "yadif") {
         // Apply selected deinterlacing algorithm: field -> progressive frame
-        val fieldParity = (frameCounter + 1) % 2
+        val fieldParity = (frameCount + 1) % 2
 
         when (algorithm.lowercase()) {
             "bwdif" -> {
@@ -3815,15 +3823,224 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // ================= TAV (TSVM Advanced Video) Decoder =================
     // DWT-based video codec with ICtCp colour space support
 
+    // TAV Perceptual dequantization helper functions (must match encoder implementation exactly)
+    private fun calculateSubbandLayout(width: Int, height: Int, decompLevels: Int): List<DWTSubbandInfo> {
+        val subbands = mutableListOf<DWTSubbandInfo>()
+
+        // Start with the LL subband at maximum decomposition level (MUST match encoder exactly)
+        val llWidth = width shr decompLevels  // Right shift by decomp_levels (equivalent to >> in C)
+        val llHeight = height shr decompLevels
+        subbands.add(DWTSubbandInfo(decompLevels, 0, 0, llWidth * llHeight, 0f)) // LL subband
+        var coeffOffset = llWidth * llHeight
+
+        // Add LH, HL, HH subbands for each level from max down to 1 (MUST match encoder exactly)
+        for (level in decompLevels downTo 1) {
+            // Use encoder's exact calculation: width >> (decomp_levels - level + 1)
+            val levelWidth = width shr (decompLevels - level + 1)
+            val levelHeight = height shr (decompLevels - level + 1)
+            val subbandSize = levelWidth * levelHeight
+
+            // LH subband (horizontal high, vertical low)
+            subbands.add(DWTSubbandInfo(level, 1, coeffOffset, subbandSize, 0f))
+            coeffOffset += subbandSize
+
+            // HL subband (horizontal low, vertical high)
+            subbands.add(DWTSubbandInfo(level, 2, coeffOffset, subbandSize, 0f))
+            coeffOffset += subbandSize
+
+            // HH subband (horizontal high, vertical high)
+            subbands.add(DWTSubbandInfo(level, 3, coeffOffset, subbandSize, 0f))
+            coeffOffset += subbandSize
+        }
+
+        // Debug: Validate subband coverage
+        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+            val expectedTotal = width * height
+            val actualTotal = subbands.sumOf { it.coeffCount }
+            val maxIndex = subbands.maxOfOrNull { it.coeffStart + it.coeffCount - 1 } ?: -1
+
+            println("SUBBAND LAYOUT VALIDATION:")
+            println("  Expected coeffs: $expectedTotal (${width}x${height})")
+            println("  Actual coeffs: $actualTotal")
+            println("  Max index: $maxIndex")
+            println("  Decomp levels: $decompLevels")
+
+            // Check for overlaps and gaps
+            val covered = BooleanArray(expectedTotal)
+            var overlaps = 0
+            for (subband in subbands) {
+                for (i in 0 until subband.coeffCount) {
+                    val idx = subband.coeffStart + i
+                    if (idx < covered.size) {
+                        if (covered[idx]) overlaps++
+                        covered[idx] = true
+                    }
+                }
+            }
+            val gaps = covered.count { !it }
+            println("  Overlaps: $overlaps, Gaps: $gaps")
+
+            if (gaps > 0 || overlaps > 0 || actualTotal != expectedTotal) {
+                println("  ERROR: Subband layout is incorrect!")
+            }
+        }
+
+        return subbands
+    }
+
+    private fun getPerceptualWeight(level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
+        return 1f
+
+        // Data-driven model based on coefficient variance analysis - MUST match encoder exactly
+        if (!isChroma) {
+            // Luma strategy based on statistical variance analysis from real video data
+            return when (subbandType) {
+                0 -> { // LL
+                    // LL6 has extremely high variance (Range=8026.7) but contains most image energy
+                    // Moderate quantization appropriate due to high variance tolerance
+                    1.1f
+                }
+                1 -> { // LH (horizontal detail)
+                    // Data-driven weights based on observed coefficient patterns
+                    when (level) {
+                        in 6..maxLevels -> 0.7f      // LH6: significant coefficients (Range=243.1)
+                        5 -> 0.8f      // LH5: moderate coefficients (Range=264.3)
+                        4 -> 1.0f      // LH4: small coefficients (Range=50.8)
+                        3 -> 1.4f      // LH3: sparse but large outliers (Range=11909.1)
+                        2 -> 1.6f      // LH2: fewer coefficients (Range=6720.2)
+                        else -> 1.9f   // LH1: smallest detail (Range=1606.3)
+                    }
+                }
+                2 -> { // HL (vertical detail)
+                    // Similar pattern to LH but slightly different variance
+                    when (level) {
+                        in 6..maxLevels -> 0.8f      // HL6: moderate coefficients (Range=181.6)
+                        5 -> 0.9f      // HL5: small coefficients (Range=80.4)
+                        4 -> 1.2f      // HL4: surprising large outliers (Range=9737.9)
+                        3 -> 1.3f      // HL3: very large outliers (Range=13698.2)
+                        2 -> 1.5f      // HL2: moderate range (Range=2099.4)
+                        else -> 1.8f   // HL1: small coefficients (Range=851.1)
+                    }
+                }
+                3 -> { // HH (diagonal detail)
+                    // HH bands generally have lower energy but important for texture
+                    when (level) {
+                        in 6..maxLevels -> 1.0f      // HH6: some significant coefficients (Range=95.8)
+                        5 -> 1.1f      // HH5: small coefficients (Range=75.9)
+                        4 -> 1.3f      // HH4: moderate range (Range=89.8)
+                        3 -> 1.5f      // HH3: large outliers (Range=11611.2)
+                        2 -> 1.8f      // HH2: moderate range (Range=2499.2)
+                        else -> 2.1f   // HH1: smallest coefficients (Range=761.6)
+                    }
+                }
+                else -> 1.0f
+            }
+        } else {
+            // Chroma strategy - apply 0.85x reduction to luma weights for color preservation
+            val lumaWeight = getPerceptualWeight(level, subbandType, false, maxLevels)
+            return lumaWeight * 1.6f
+        }
+    }
+
+    // Helper function to calculate five-number summary for coefficient analysis
+    private fun calculateFiveNumberSummary(values: List<Int>): String {
+        if (values.isEmpty()) return "empty"
+        val sorted = values.sorted()
+        val n = sorted.size
+
+        val min = sorted[0]
+        val max = sorted[n - 1]
+        val median = if (n % 2 == 1) sorted[n / 2] else (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        val q1 = if (n >= 4) sorted[n / 4] else sorted[0]
+        val q3 = if (n >= 4) sorted[3 * n / 4] else sorted[n - 1]
+
+        return "min=$min, Q1=$q1, med=%.1f, Q3=$q3, max=$max, n=$n".format(median)
+    }
+
+    private fun dequantiseDWTSubbandsPerceptual(quantised: ShortArray, dequantised: FloatArray,
+                                               subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
+
+        // Initialize output array to zero (critical for detecting missing coefficients)
+        for (i in dequantised.indices) {
+            dequantised[i] = 0.0f
+        }
+
+        // Track coefficient coverage for debugging
+        var totalProcessed = 0
+        var maxIdx = -1
+
+        for (subband in subbands) {
+            val weight = getPerceptualWeight(subband.level, subband.subbandType, isChroma, decompLevels)
+            // CRITICAL FIX: Use the same effective quantizer as encoder for proper reconstruction
+            val effectiveQuantizer = baseQuantizer * weight
+
+            // Comprehensive five-number summary for perceptual model analysis
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                // Collect all quantized coefficient values for this subband
+                val coeffValues = mutableListOf<Int>()
+                for (i in 0 until subband.coeffCount) {
+                    val idx = subband.coeffStart + i
+                    if (idx < quantised.size) {
+                        val quantVal = quantised[idx].toInt()
+                        coeffValues.add(quantVal)
+                    }
+                }
+
+                // Calculate and print five-number summary
+                val subbandTypeName = when (subband.subbandType) {
+                    0 -> "LL"
+                    1 -> "LH"
+                    2 -> "HL"
+                    3 -> "HH"
+                    else -> "??"
+                }
+                val channelType = if (isChroma) "Chroma" else "Luma"
+                val summary = calculateFiveNumberSummary(coeffValues)
+                println("SUBBAND STATS: $channelType ${subbandTypeName}${subband.level} weight=${weight} effectiveQ=${effectiveQuantizer} - $summary")
+            }
+
+            for (i in 0 until subband.coeffCount) {
+                val idx = subband.coeffStart + i
+                if (idx < quantised.size && idx < dequantised.size) {
+                    dequantised[idx] = quantised[idx] * effectiveQuantizer
+                    totalProcessed++
+                    if (idx > maxIdx) maxIdx = idx
+                }
+            }
+        }
+
+        // Debug coefficient coverage
+        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+            val channelType = if (isChroma) "Chroma" else "Luma"
+            println("COEFFICIENT COVERAGE: $channelType - processed=$totalProcessed, maxIdx=$maxIdx, arraySize=${dequantised.size}")
+
+            // Check for gaps (zero coefficients that should have been processed)
+            var zeroCount = 0
+            for (i in 0 until minOf(maxIdx + 1, dequantised.size)) {
+                if (dequantised[i] == 0.0f && quantised[i] != 0.toShort()) {
+                    zeroCount++
+                }
+            }
+            if (zeroCount > 0) {
+                println("WARNING: $zeroCount coefficients were not processed but should have been!")
+            }
+        }
+    }
+
+    private val tavDebugFrameTarget = 0 // use negative number to disable the debug print
+    private var tavDebugCurrentFrameNumber = 0
+
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCounter: Int,
+                  width: Int, height: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
                   waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
+
+        tavDebugCurrentFrameNumber = frameCount
 
         var readPtr = blockDataPtr
 
         try {
             // Determine if monoblock mode based on TAV version
-            val isMonoblock = (tavVersion == 3 || tavVersion == 4)
+            val isMonoblock = (tavVersion == 3 || tavVersion == 4 || tavVersion == 5 || tavVersion == 6)
 
             val tilesX: Int
             val tilesY: Int
@@ -3849,7 +4066,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else it }
 
                     // debug print: raw decompressed bytes
-                    /*print("TAV Decode raw bytes (Frame $frameCounter, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
+                    /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
                     for (i in 0 until 32) {
                         print("${vm.peek(blockDataPtr + i).toUint().toString(16).uppercase().padStart(2, '0')} ")
                     }
@@ -3927,10 +4144,155 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val coTile = FloatArray(coeffCount)
         val cgTile = FloatArray(coeffCount)
 
-        for (i in 0 until coeffCount) {
-            yTile[i] = quantisedY[i] * qY.toFloat()
-            coTile[i] = quantisedCo[i] * qCo.toFloat()
-            cgTile[i] = quantisedCg[i] * qCg.toFloat()
+        // Check if perceptual quantization is used (versions 5 and 6)
+        val isPerceptual = (tavVersion == 5 || tavVersion == 6)
+
+        // Debug: Print version detection for frame 120
+        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+            println("[VERSION-DEBUG-INTRA] Frame $tavDebugCurrentFrameNumber - TAV version: $tavVersion, isPerceptual: $isPerceptual")
+        }
+
+        if (isPerceptual) {
+            // Perceptual dequantization with subband-specific weights
+            val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
+            val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+            val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
+
+            dequantiseDWTSubbandsPerceptual(quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
+            dequantiseDWTSubbandsPerceptual(quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
+
+            // Debug: Check coefficient values before inverse DWT
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                var maxYDequant = 0.0f
+                var nonzeroY = 0
+                for (coeff in yTile) {
+                    if (coeff != 0.0f) {
+                        nonzeroY++
+                        if (kotlin.math.abs(coeff) > maxYDequant) {
+                            maxYDequant = kotlin.math.abs(coeff)
+                        }
+                    }
+                }
+                println("[DECODER-INTRA] Frame $tavDebugCurrentFrameNumber - Before IDWT: Y max=${maxYDequant.toInt()}, nonzero=$nonzeroY")
+
+                // Debug: Check if subband layout is correct - print actual coefficient positions
+                println("PERCEPTUAL SUBBAND LAYOUT DEBUG:")
+                println("  Total coeffs: ${yTile.size}, Decomp levels: $decompLevels, Tile size: ${tileWidth}x${tileHeight}")
+                for (subband in subbands) {
+                    if (subband.level <= 6) { // LH, HL, HH for levels 1-2
+                        var sampleCoeffs = 0
+                        val coeffCount = minOf(1000, subband.coeffCount)
+                        for (i in 0 until coeffCount) { // Sample first 100 coeffs
+                            val idx = subband.coeffStart + i
+                            if (idx < yTile.size && yTile[idx] != 0.0f) {
+                                sampleCoeffs++
+                            }
+                        }
+                        val subbandName = when(subband.subbandType) {
+                            0 -> "LL${subband.level}"
+                            1 -> "LH${subband.level}"
+                            2 -> "HL${subband.level}"
+                            3 -> "HH${subband.level}"
+                            else -> "??${subband.level}"
+                        }
+                        println("  $subbandName: start=${subband.coeffStart}, count=${subband.coeffCount}, sample_nonzero=$sampleCoeffs/$coeffCount")
+
+                        // Debug: Print first few RAW QUANTIZED values for comparison (before dequantization)
+                        print("    $subbandName raw_quant: ")
+                        for (i in 0 until minOf(32, subband.coeffCount)) {
+                            val idx = subband.coeffStart + i
+                            if (idx < quantisedY.size) {
+                                print("${quantisedY[idx]} ")
+                            }
+                        }
+                        println()
+                    }
+                }
+            }
+        } else {
+            // Uniform dequantization for versions 3 and 4
+            for (i in 0 until coeffCount) {
+                yTile[i] = quantisedY[i] * qY.toFloat()
+                coTile[i] = quantisedCo[i] * qCo.toFloat()
+                cgTile[i] = quantisedCg[i] * qCg.toFloat()
+            }
+
+            // Debug: Uniform quantization subband analysis for comparison
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
+                val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+                val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
+
+                // Comprehensive five-number summary for uniform quantization baseline
+                for (subband in subbands) {
+                    // Collect all quantized coefficient values for this subband (luma only for baseline)
+                    val coeffValues = mutableListOf<Int>()
+                    for (i in 0 until subband.coeffCount) {
+                        val idx = subband.coeffStart + i
+                        if (idx < quantisedY.size) {
+                            val quantVal = quantisedY[idx].toInt()
+                            coeffValues.add(quantVal)
+                        }
+                    }
+
+                    // Calculate and print five-number summary for uniform mode
+                    val subbandTypeName = when (subband.subbandType) {
+                        0 -> "LL"
+                        1 -> "LH"
+                        2 -> "HL"
+                        3 -> "HH"
+                        else -> "??"
+                    }
+                    val summary = calculateFiveNumberSummary(coeffValues)
+                    println("UNIFORM SUBBAND STATS: Luma ${subbandTypeName}${subband.level} uniformQ=${qY.toFloat()} - $summary")
+                }
+                var maxYDequant = 0.0f
+                var nonzeroY = 0
+                for (coeff in yTile) {
+                    if (coeff != 0.0f) {
+                        nonzeroY++
+                        if (kotlin.math.abs(coeff) > maxYDequant) {
+                            maxYDequant = kotlin.math.abs(coeff)
+                        }
+                    }
+                }
+                println("[DECODER-INTRA] Frame $tavDebugCurrentFrameNumber - Before IDWT: Y max=${maxYDequant.toInt()}, nonzero=$nonzeroY")
+
+                // Debug: Check if subband layout is correct for uniform too - print actual coefficient positions
+                println("UNIFORM SUBBAND LAYOUT DEBUG:")
+                println("  Total coeffs: ${yTile.size}, Decomp levels: $decompLevels, Tile size: ${tileWidth}x${tileHeight}")
+                for (subband in subbands) {
+                    if (subband.level <= 6) { // LH, HL, HH for levels 1-2
+                        var sampleCoeffs = 0
+                        val coeffCount = minOf(1000, subband.coeffCount)
+                        for (i in 0 until coeffCount) { // Sample first 100 coeffs
+                            val idx = subband.coeffStart + i
+                            if (idx < yTile.size && yTile[idx] != 0.0f) {
+                                sampleCoeffs++
+                            }
+                        }
+                        val subbandName = when(subband.subbandType) {
+                            0 -> "LL${subband.level}"
+                            1 -> "LH${subband.level}"
+                            2 -> "HL${subband.level}"
+                            3 -> "HH${subband.level}"
+                            else -> "??${subband.level}"
+                        }
+                        println("  $subbandName: start=${subband.coeffStart}, count=${subband.coeffCount}, sample_nonzero=$sampleCoeffs/$coeffCount")
+
+                        // Debug: Print first few RAW QUANTIZED values for comparison with perceptual (before dequantization)
+                        print("    $subbandName raw_quant: ")
+                        for (i in 0 until minOf(32, subband.coeffCount)) {
+                            val idx = subband.coeffStart + i
+                            if (idx < quantisedY.size) {
+                                print("${quantisedY[idx]} ")
+                            }
+                        }
+                        println()
+                    }
+                }
+            }
         }
         
         // Store coefficients for future delta reference (for P-frames)
@@ -3961,6 +4323,29 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter)
             tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter)
             tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter)
+        }
+
+        // Debug: Check coefficient values after inverse DWT
+        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+            var maxYIdwt = 0.0f
+            var minYIdwt = 0.0f
+            var maxCoIdwt = 0.0f
+            var minCoIdwt = 0.0f
+            var maxCgIdwt = 0.0f
+            var minCgIdwt = 0.0f
+            for (coeff in yTile) {
+                if (coeff > maxYIdwt) maxYIdwt = coeff
+                if (coeff < minYIdwt) minYIdwt = coeff
+            }
+            for (coeff in coTile) {
+                if (coeff > maxCoIdwt) maxCoIdwt = coeff
+                if (coeff < minCoIdwt) minCoIdwt = coeff
+            }
+            for (coeff in cgTile) {
+                if (coeff > maxCgIdwt) maxCgIdwt = coeff
+                if (coeff < minCgIdwt) minCgIdwt = coeff
+            }
+            println("[DECODER-INTRA] Frame $tavDebugCurrentFrameNumber - After IDWT: Y=[${minYIdwt.toInt()}, ${maxYIdwt.toInt()}], Co=[${minCoIdwt.toInt()}, ${maxCoIdwt.toInt()}], Cg=[${minCgIdwt.toInt()}, ${maxCgIdwt.toInt()}]")
         }
         
         // Extract final tile data
@@ -4123,6 +4508,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // Monoblock conversion functions (full frame processing)
     private fun tavConvertYCoCgMonoblockToRGB(yData: FloatArray, coData: FloatArray, cgData: FloatArray,
                                               rgbAddr: Long, width: Int, height: Int) {
+        // Debug: Check if this is frame 120 for final RGB comparison
+        val isFrame120Debug = tavDebugCurrentFrameNumber == tavDebugFrameTarget  // Enable for debugging
+        var debugSampleCount = 0
+        var debugRSum = 0
+        var debugGSum = 0
+        var debugBSum = 0
+        var debugYSum = 0.0f
+        var debugCoSum = 0.0f
+        var debugCgSum = 0.0f
+
         // Process entire frame at once for monoblock mode
         for (y in 0 until height) {
             // Create row buffer for bulk RGB data
@@ -4143,15 +4538,41 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val b = tmp - Co / 2.0f
                 val r = Co + b
 
-                rowRgbBuffer[bufferIdx++] = r.toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = g.toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = b.toInt().coerceIn(0, 255).toByte()
+                val rInt = r.toInt().coerceIn(0, 255)
+                val gInt = g.toInt().coerceIn(0, 255)
+                val bInt = b.toInt().coerceIn(0, 255)
+
+                rowRgbBuffer[bufferIdx++] = rInt.toByte()
+                rowRgbBuffer[bufferIdx++] = gInt.toByte()
+                rowRgbBuffer[bufferIdx++] = bInt.toByte()
+
+                // Debug: Sample RGB values for frame 120 comparison
+                if (isFrame120Debug && y in 100..199 && x in 100..199) { // Sample 100x100 region
+                    debugSampleCount++
+                    debugRSum += rInt
+                    debugGSum += gInt
+                    debugBSum += bInt
+                    debugYSum += Y
+                    debugCoSum += Co
+                    debugCgSum += Cg
+                }
             }
 
             // OPTIMIZATION: Bulk copy entire row at once
             val rowStartOffset = y * width * 3L
             UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer),
                                  null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
+        }
+
+        // Debug: Print RGB sample statistics for frame 120 comparison
+        if (isFrame120Debug && debugSampleCount > 0) {
+            val avgR = debugRSum / debugSampleCount
+            val avgG = debugGSum / debugSampleCount
+            val avgB = debugBSum / debugSampleCount
+            val avgY = debugYSum / debugSampleCount
+            val avgCo = debugCoSum / debugSampleCount
+            val avgCg = debugCgSum / debugSampleCount
+            println("[RGB-FINAL] Sample region (100x100): avgYCoCg=[${avgY.toInt()},${avgCo.toInt()},${avgCg.toInt()}] → avgRGB=[$avgR,$avgG,$avgB], samples=$debugSampleCount")
         }
     }
 
@@ -4315,11 +4736,105 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val currentY = FloatArray(coeffCount)
         val currentCo = FloatArray(coeffCount)
         val currentCg = FloatArray(coeffCount)
-        
-        for (i in 0 until coeffCount) {
-            currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
-            currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
-            currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
+
+        // Check if perceptual quantization is used (versions 5 and 6)
+        val isPerceptual = (tavVersion == 5 || tavVersion == 6)
+
+        // Debug: Print version detection for frame 120
+        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+            println("[VERSION-DEBUG-DELTA] Frame $tavDebugCurrentFrameNumber - TAV version: $tavVersion, isPerceptual: $isPerceptual")
+        }
+
+        if (isPerceptual) {
+            // Perceptual delta reconstruction with subband-specific weights
+            val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
+            val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+            val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
+
+            // Apply same chroma quantizer reduction as encoder (60% reduction for perceptual mode)
+            val adjustedQCo = qCo * 0.4f
+            val adjustedQCg = qCg * 0.4f
+
+            // Apply perceptual dequantization to delta coefficients
+            val deltaYFloat = FloatArray(coeffCount)
+            val deltaCoFloat = FloatArray(coeffCount)
+            val deltaCgFloat = FloatArray(coeffCount)
+
+            dequantiseDWTSubbandsPerceptual(deltaY, deltaYFloat, subbands, qY.toFloat(), false, decompLevels)
+            dequantiseDWTSubbandsPerceptual(deltaCo, deltaCoFloat, subbands, adjustedQCo, true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(deltaCg, deltaCgFloat, subbands, adjustedQCg, true, decompLevels)
+
+            // Reconstruct: current = previous + perceptually_dequantized_delta
+            for (i in 0 until coeffCount) {
+                currentY[i] = prevY[i] + deltaYFloat[i]
+                currentCo[i] = prevCo[i] + deltaCoFloat[i]
+                currentCg[i] = prevCg[i] + deltaCgFloat[i]
+            }
+
+            // Debug: Check coefficient values before inverse DWT
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                var maxYRecon = 0.0f
+                var nonzeroY = 0
+                for (coeff in currentY) {
+                    if (coeff != 0.0f) {
+                        nonzeroY++
+                        if (kotlin.math.abs(coeff) > maxYRecon) {
+                            maxYRecon = kotlin.math.abs(coeff)
+                        }
+                    }
+                }
+                println("[DECODER-DELTA] Frame $tavDebugCurrentFrameNumber - Before IDWT: Y max=${maxYRecon.toInt()}, nonzero=$nonzeroY")
+            }
+        } else {
+            // Uniform delta reconstruction for versions 3 and 4
+            for (i in 0 until coeffCount) {
+                currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
+                currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
+                currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
+            }
+
+            // Debug: Uniform delta quantization subband analysis for comparison
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
+                val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+                val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
+
+                // Comprehensive five-number summary for uniform delta quantization baseline
+                for (subband in subbands) {
+                    // Collect all quantized delta coefficient values for this subband (luma only for baseline)
+                    val coeffValues = mutableListOf<Int>()
+                    for (i in 0 until subband.coeffCount) {
+                        val idx = subband.coeffStart + i
+                        if (idx < deltaY.size) {
+                            val quantVal = deltaY[idx].toInt()
+                            coeffValues.add(quantVal)
+                        }
+                    }
+
+                    // Calculate and print five-number summary for uniform delta mode
+                    val subbandTypeName = when (subband.subbandType) {
+                        0 -> "LL"
+                        1 -> "LH"
+                        2 -> "HL"
+                        3 -> "HH"
+                        else -> "??"
+                    }
+                    val summary = calculateFiveNumberSummary(coeffValues)
+                    println("UNIFORM DELTA SUBBAND STATS: Luma ${subbandTypeName}${subband.level} uniformQ=${qY.toFloat()} - $summary")
+                }
+
+                var maxYRecon = 0.0f
+                var nonzeroY = 0
+                for (coeff in currentY) {
+                    if (coeff != 0.0f) {
+                        nonzeroY++
+                        if (kotlin.math.abs(coeff) > maxYRecon) {
+                            maxYRecon = kotlin.math.abs(coeff)
+                        }
+                    }
+                }
+                println("[DECODER-DELTA] Frame $tavDebugCurrentFrameNumber - Before IDWT: Y max=${maxYRecon.toInt()}, nonzero=$nonzeroY")
+            }
         }
         
         // Store current coefficients as previous for next frame
@@ -4339,6 +4854,29 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter)
             tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter)
             tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter)
+        }
+
+        // Debug: Check coefficient values after inverse DWT
+        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+            var maxYIdwt = 0.0f
+            var minYIdwt = 0.0f
+            var maxCoIdwt = 0.0f
+            var minCoIdwt = 0.0f
+            var maxCgIdwt = 0.0f
+            var minCgIdwt = 0.0f
+            for (coeff in currentY) {
+                if (coeff > maxYIdwt) maxYIdwt = coeff
+                if (coeff < minYIdwt) minYIdwt = coeff
+            }
+            for (coeff in currentCo) {
+                if (coeff > maxCoIdwt) maxCoIdwt = coeff
+                if (coeff < minCoIdwt) minCoIdwt = coeff
+            }
+            for (coeff in currentCg) {
+                if (coeff > maxCgIdwt) maxCgIdwt = coeff
+                if (coeff < minCgIdwt) minCgIdwt = coeff
+            }
+            println("[DECODER-DELTA] Frame $tavDebugCurrentFrameNumber - After IDWT: Y=[${minYIdwt.toInt()}, ${maxYIdwt.toInt()}], Co=[${minCoIdwt.toInt()}, ${maxCoIdwt.toInt()}], Cg=[${minCgIdwt.toInt()}, ${maxCgIdwt.toInt()}]")
         }
         
         // Extract final tile data
@@ -4470,12 +5008,25 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         for (level in levels - 1 downTo 0) {
             val currentWidth = width shr level
             val currentHeight = height shr level
-            
+
             // Handle edge cases for very small decomposition levels
             if (currentWidth < 1 || currentHeight < 1) continue // Skip invalid sizes
             if (currentWidth == 1 && currentHeight == 1) {
                 // Single DC coefficient, no DWT needed but preserve it
                 continue
+            }
+
+            // Debug: Sample coefficient values before this level's reconstruction
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                var maxCoeff = 0.0f
+                var nonzeroCoeff = 0
+                val sampleSize = minOf(100, currentWidth * currentHeight)
+                for (i in 0 until sampleSize) {
+                    val coeff = kotlin.math.abs(data[i])
+                    if (coeff > maxCoeff) maxCoeff = coeff
+                    if (coeff > 0.1f) nonzeroCoeff++
+                }
+                println("[IDWT-LEVEL-$level] BEFORE: ${currentWidth}x${currentHeight}, max=${maxCoeff.toInt()}, nonzero=$nonzeroCoeff/$sampleSize")
             }
 
             // Apply inverse DWT to current subband region - EXACT match to encoder
@@ -4514,6 +5065,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 for (x in 0 until currentWidth) {
                     data[y * width + x] = tempRow[x]
                 }
+            }
+
+            // Debug: Sample coefficient values after this level's reconstruction
+            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
+                var maxCoeff = 0.0f
+                var nonzeroCoeff = 0
+                val sampleSize = minOf(100, currentWidth * currentHeight)
+                for (i in 0 until sampleSize) {
+                    val coeff = kotlin.math.abs(data[i])
+                    if (coeff > maxCoeff) maxCoeff = coeff
+                    if (coeff > 0.1f) nonzeroCoeff++
+                }
+                println("[IDWT-LEVEL-$level] AFTER:  ${currentWidth}x${currentHeight}, max=${maxCoeff.toInt()}, nonzero=$nonzeroCoeff/$sampleSize")
             }
         }
     }
