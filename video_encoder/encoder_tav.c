@@ -799,51 +799,108 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
 
 // Get perceptual weight for specific subband - Data-driven model based on coefficient variance analysis
 static float get_perceptual_weight(int level, int subband_type, int is_chroma, int max_levels) {
-    // TEMPORARY: Test with uniform weights to verify linear layout works correctly
-    return 1.0f;
-
+    // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
     if (!is_chroma) {
-        // Luma strategy based on statistical variance analysis from real video data
-        if (subband_type == 0) { // LL
-            // LL6 has extremely high variance (Range=8026.7) but contains most image energy
-            // Moderate quantization appropriate due to high variance tolerance
-            return 1.1f;
-        } else if (subband_type == 1) { // LH (horizontal detail)
-            // Data-driven weights based on observed coefficient patterns
-            if (level >= 6) return 0.7f;      // LH6: significant coefficients (Range=243.1)
-            else if (level == 5) return 0.8f; // LH5: moderate coefficients (Range=264.3)
-            else if (level == 4) return 1.0f; // LH4: small coefficients (Range=50.8)
-            else if (level == 3) return 1.4f; // LH3: sparse but large outliers (Range=11909.1)
-            else if (level == 2) return 1.6f; // LH2: fewer coefficients (Range=6720.2)
-            else return 1.9f;                 // LH1: smallest detail (Range=1606.3)
-        } else if (subband_type == 2) { // HL (vertical detail)
-            // Similar pattern to LH but slightly different variance
-            if (level >= 6) return 0.8f;      // HL6: moderate coefficients (Range=181.6)
-            else if (level == 5) return 0.9f; // HL5: small coefficients (Range=80.4)
-            else if (level == 4) return 1.2f; // HL4: surprising large outliers (Range=9737.9)
-            else if (level == 3) return 1.3f; // HL3: very large outliers (Range=13698.2)
-            else if (level == 2) return 1.5f; // HL2: moderate range (Range=2099.4)
-            else return 1.8f;                 // HL1: small coefficients (Range=851.1)
-        } else { // HH (diagonal detail)
-            // HH bands generally have lower energy but important for texture
-            if (level >= 6) return 1.0f;      // HH6: some significant coefficients (Range=95.8)
-            else if (level == 5) return 1.1f; // HH5: small coefficients (Range=75.9)
-            else if (level == 4) return 1.3f; // HH4: moderate range (Range=89.8)
-            else if (level == 3) return 1.5f; // HH3: large outliers (Range=11611.2)
-            else if (level == 2) return 1.8f; // HH2: moderate range (Range=2499.2)
-            else return 2.1f;                 // HH1: smallest coefficients (Range=761.6)
+        // LUMA CHANNEL: Based on statistical analysis from real video content
+        if (subband_type == 0) { // LL subband - contains most image energy, preserve carefully
+            if (level >= 6) return 0.6f;  // LL6: High energy but can tolerate moderate quantization (range up to 22K)
+            if (level >= 5) return 0.7f;  // LL5: Good preservation
+            return 0.8f;                   // Lower LL levels: Fine preservation
+        } else if (subband_type == 1) { // LH subband - horizontal details (human eyes more sensitive)
+            if (level >= 6) return 0.7f;  // LH6: Significant coefficients (max ~500), preserve well
+            if (level >= 5) return 0.8f;  // LH5: Moderate coefficients (max ~600)
+            if (level >= 4) return 1.0f;  // LH4: Small coefficients (max ~50)
+            if (level >= 3) return 1.2f;  // LH3: Very small coefficients, can quantize more
+            if (level >= 2) return 1.4f;  // LH2: Minimal impact
+            return 1.6f;                   // LH1: Least important
+        } else if (subband_type == 2) { // HL subband - vertical details (less sensitive due to HVS characteristics)
+            if (level >= 6) return 0.9f;  // HL6: Can quantize more aggressively than LH6
+            if (level >= 5) return 1.0f;  // HL5: Standard quantization
+            if (level >= 4) return 1.3f;  // HL4: Notable range but less critical
+            if (level >= 3) return 1.5f;  // HL3: Can tolerate more quantization
+            if (level >= 2) return 1.7f;  // HL2: Less important
+            return 2.0f;                   // HL1: Most aggressive for vertical details
+        } else { // HH subband - diagonal details (least important for HVS)
+            if (level >= 6) return 1.1f;  // HH6: Preserve some diagonal detail
+            if (level >= 5) return 1.3f;  // HH5: Can quantize aggressively
+            if (level >= 4) return 1.6f;  // HH4: Very aggressive
+            if (level >= 3) return 2.0f;  // HH3: Minimal preservation
+            if (level >= 2) return 2.2f;  // HH2: Maximum compression
+            return 2.5f;                   // HH1: Most aggressive quantization
         }
     } else {
-        // Chroma strategy - apply 0.85x reduction to luma weights for color preservation
-        float luma_weight = get_perceptual_weight(level, subband_type, 0, max_levels);
-        return luma_weight * 0.85f;
+        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+        if (subband_type == 0) { // LL chroma - still important but less than luma
+            if (level >= 6) return 0.8f;  // Chroma LL6: Less critical than luma LL
+            if (level >= 5) return 0.9f;
+            return 1.0f;
+        } else if (subband_type == 1) { // LH chroma - horizontal chroma details
+            if (level >= 6) return 1.0f;
+            if (level >= 5) return 1.2f;
+            if (level >= 4) return 1.4f;
+            if (level >= 3) return 1.6f;
+            if (level >= 2) return 1.8f;
+            return 2.0f;
+        } else if (subband_type == 2) { // HL chroma - vertical chroma details (even less critical)
+            if (level >= 6) return 1.2f;
+            if (level >= 5) return 1.4f;
+            if (level >= 4) return 1.6f;
+            if (level >= 3) return 1.8f;
+            if (level >= 2) return 2.0f;
+            return 2.2f;
+        } else { // HH chroma - diagonal chroma details (most aggressive)
+            if (level >= 6) return 1.4f;
+            if (level >= 5) return 1.6f;
+            if (level >= 4) return 1.8f;
+            if (level >= 3) return 2.1f;
+            if (level >= 2) return 2.3f;
+            return 2.5f;
+        }
     }
 }
 
 // Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
 static float get_perceptual_weight_for_position(int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
-    // For now, return uniform weight while we figure out the actual DWT layout
-    // TODO: Map linear_idx to correct DWT subband and return appropriate weight
+    // Map linear coefficient index to DWT subband using same layout as decoder
+    int offset = 0;
+
+    // First: LL subband at maximum decomposition level
+    int ll_width = width >> decomp_levels;
+    int ll_height = height >> decomp_levels;
+    int ll_size = ll_width * ll_height;
+
+    if (linear_idx < offset + ll_size) {
+        // LL subband at maximum level - use get_perceptual_weight for consistency
+        return get_perceptual_weight(decomp_levels, 0, is_chroma, decomp_levels);
+    }
+    offset += ll_size;
+
+    // Then: LH, HL, HH subbands for each level from max down to 1
+    for (int level = decomp_levels; level >= 1; level--) {
+        int level_width = width >> (decomp_levels - level + 1);
+        int level_height = height >> (decomp_levels - level + 1);
+        int subband_size = level_width * level_height;
+
+        // LH subband (horizontal details)
+        if (linear_idx < offset + subband_size) {
+            return get_perceptual_weight(level, 1, is_chroma, decomp_levels);
+        }
+        offset += subband_size;
+
+        // HL subband (vertical details)
+        if (linear_idx < offset + subband_size) {
+            return get_perceptual_weight(level, 2, is_chroma, decomp_levels);
+        }
+        offset += subband_size;
+
+        // HH subband (diagonal details)
+        if (linear_idx < offset + subband_size) {
+            return get_perceptual_weight(level, 3, is_chroma, decomp_levels);
+        }
+        offset += subband_size;
+    }
+
+    // Fallback for out-of-bounds indices
     return 1.0f;
 }
 
@@ -2668,12 +2725,7 @@ int main(int argc, char *argv[]) {
         printf("Base quantiser: Y=%d, Co=%d, Cg=%d\n", enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg);
     }
     if (enc->perceptual_tuning) {
-        printf("Perceptual weights: LL=%.1fx, LH/HL=%.1f-%.1fx, HH=%.1f-%.1fx (varies by level)\n",
-               get_perceptual_weight(enc->decomp_levels, 0, 0, enc->decomp_levels),
-               get_perceptual_weight(enc->decomp_levels, 1, 0, enc->decomp_levels),
-               get_perceptual_weight(1, 1, 0, enc->decomp_levels),
-               get_perceptual_weight(enc->decomp_levels, 3, 0, enc->decomp_levels),
-               get_perceptual_weight(1, 3, 0, enc->decomp_levels));
+        printf("Perceptual tuning enabled\n");
     }
 
     // Open output file
