@@ -3896,47 +3896,47 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             when (subbandType) {
                 0 -> { // LL subband - contains most image energy, preserve carefully
                     return when {
-                        level >= 6 -> 0.6f  // LL6: High energy but can tolerate moderate quantization (range up to 22K)
+                        level >= 6 -> 0.5f  // LL6: High energy but can tolerate moderate quantization (range up to 22K)
                         level >= 5 -> 0.7f  // LL5: Good preservation
-                        else -> 0.8f        // Lower LL levels: Fine preservation
+                        else -> 0.9f        // Lower LL levels: Fine preservation
                     }
                 }
                 1 -> { // LH subband - horizontal details (human eyes more sensitive)
                     return when {
-                        level >= 6 -> 0.7f  // LH6: Significant coefficients (max ~500), preserve well
-                        level >= 5 -> 0.8f  // LH5: Moderate coefficients (max ~600)
-                        level >= 4 -> 1.0f  // LH4: Small coefficients (max ~50)
-                        level >= 3 -> 1.2f  // LH3: Very small coefficients, can quantize more
-                        level >= 2 -> 1.4f  // LH2: Minimal impact
-                        else -> 1.6f        // LH1: Least important
+                        level >= 6 -> 0.8f  // LH6: Significant coefficients (max ~500), preserve well
+                        level >= 5 -> 1.0f  // LH5: Moderate coefficients (max ~600)
+                        level >= 4 -> 1.2f  // LH4: Small coefficients (max ~50)
+                        level >= 3 -> 1.6f  // LH3: Very small coefficients, can quantize more
+                        level >= 2 -> 2.0f  // LH2: Minimal impact
+                        else -> 2.5f        // LH1: Least important
                     }
                 }
                 2 -> { // HL subband - vertical details (less sensitive due to HVS characteristics)
                     return when {
-                        level >= 6 -> 0.9f  // HL6: Can quantize more aggressively than LH6
-                        level >= 5 -> 1.0f  // HL5: Standard quantization
-                        level >= 4 -> 1.3f  // HL4: Notable range but less critical
-                        level >= 3 -> 1.5f  // HL3: Can tolerate more quantization
-                        level >= 2 -> 1.7f  // HL2: Less important
-                        else -> 2.0f        // HL1: Most aggressive for vertical details
+                        level >= 6 -> 1.0f  // HL6: Can quantize more aggressively than LH6
+                        level >= 5 -> 1.2f  // HL5: Standard quantization
+                        level >= 4 -> 1.5f  // HL4: Notable range but less critical
+                        level >= 3 -> 2.0f  // HL3: Can tolerate more quantization
+                        level >= 2 -> 2.5f  // HL2: Less important
+                        else -> 3.5f        // HL1: Most aggressive for vertical details
                     }
                 }
                 3 -> { // HH subband - diagonal details (least important for HVS)
                     return when {
-                        level >= 6 -> 1.1f  // HH6: Preserve some diagonal detail
-                        level >= 5 -> 1.3f  // HH5: Can quantize aggressively
-                        level >= 4 -> 1.6f  // HH4: Very aggressive
-                        level >= 3 -> 2.0f  // HH3: Minimal preservation
-                        level >= 2 -> 2.2f  // HH2: Maximum compression
-                        else -> 2.5f        // HH1: Most aggressive quantization
+                        level >= 6 -> 1.2f  // HH6: Preserve some diagonal detail
+                        level >= 5 -> 1.6f  // HH5: Can quantize aggressively
+                        level >= 4 -> 2.0f  // HH4: Very aggressive
+                        level >= 3 -> 2.8f  // HH3: Minimal preservation
+                        level >= 2 -> 3.5f  // HH2: Maximum compression
+                        else -> 5.0f        // HH1: Most aggressive quantization
                     }
                 }
-                else -> 1.0f
             }
         } else {
             // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
             when (subbandType) {
                 0 -> { // LL chroma - still important but less than luma
+                    return 1f
                     return when {
                         level >= 6 -> 0.8f  // Chroma LL6: Less critical than luma LL
                         level >= 5 -> 0.9f
@@ -3944,6 +3944,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                 }
                 1 -> { // LH chroma - horizontal chroma details
+                    return 1.8f
                     return when {
                         level >= 6 -> 1.0f
                         level >= 5 -> 1.2f
@@ -3954,6 +3955,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                 }
                 2 -> { // HL chroma - vertical chroma details (even less critical)
+                    return 1.3f;
                     return when {
                         level >= 6 -> 1.2f
                         level >= 5 -> 1.4f
@@ -3964,6 +3966,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                 }
                 3 -> { // HH chroma - diagonal chroma details (most aggressive)
+                    return 2.5f
                     return when {
                         level >= 6 -> 1.4f
                         level >= 5 -> 1.6f
@@ -3973,7 +3976,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         else -> 2.5f
                     }
                 }
-                else -> 1.0f
             }
         }
         return 1.0f
