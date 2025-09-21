@@ -4143,14 +4143,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // LUMA CHANNEL: Based on statistical analysis from real video content
             
             // LL subband - contains most image energy, preserve carefully
-            if (subbandType == 0) return perceptual_model3_LL(qualityLevel, level)
+            if (subbandType == 0) return perceptual_model3_LL(qualityLevel, level + 1)
             
             // LH subband - horizontal details (human eyes more sensitive)
-            val LH: Float = perceptual_model3_LH(qualityLevel, level)
+            val LH: Float = perceptual_model3_LH(qualityLevel, level + 1)
             if (subbandType == 1) return LH
             
             // HL subband - vertical details
-            val HL: Float = perceptual_model3_HL(qualityLevel, LH)
+            val HL: Float = perceptual_model3_HL(qualityLevel, LH + 1)
             if (subbandType == 2) return HL * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
 
             // HH subband - diagonal details
@@ -4158,7 +4158,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             
         } else {
             // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
-            val base = perceptual_model3_chroma_basecurve(qualityLevel, level)
+            val base = perceptual_model3_chroma_basecurve(qualityLevel, level - 1)
 
             if (subbandType == 0) { // LL chroma - still important but less than luma
                 return 1.0f
@@ -4284,7 +4284,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 tilesX = 1
                 tilesY = 1
             } else {
-                // Standard mode: multiple 280x224 tiles
+                // Standard mode: multiple 280x224 tiles (supported for backwards compatibility only)
                 tilesX = (width + TILE_SIZE_X - 1) / TILE_SIZE_X
                 tilesY = (height + TILE_SIZE_Y - 1) / TILE_SIZE_Y
             }

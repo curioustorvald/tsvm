@@ -694,7 +694,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 ...
 
 ## Header (24 bytes)
-    uint8  Magic[8]: "\x1FTSVM TEV"
+    uint8  Magic[8]: "\x1F TSVM TEV"
     uint8  Version: 2 (YCoCg-R) or 3 (ICtCp)
     uint16 Width: video width in pixels
     uint16 Height: video height in pixels
@@ -815,7 +815,7 @@ transmission capability, and region-of-interest coding.
 ...
 
 ## Header (32 bytes)
-    uint8  Magic[8]: "\x1FTSVM TAV"
+    uint8  Magic[8]: "\x1F TSVM TAV"
     uint8  Version: 3 (YCoCg-R uniform), 4 (ICtCp uniform), 5 (YCoCg-R perceptual), 6 (ICtCp perceptual)
     uint16 Width: video width in pixels  
     uint16 Height: video height in pixels
@@ -837,7 +837,7 @@ transmission capability, and region-of-interest coding.
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
-    0x11: P-frame (predicted frame with motion compensation)
+    0x11: P-frame (delta-coded frame)
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format  
     0xFF: sync packet
@@ -942,7 +942,6 @@ TAV decoder requires new GraphicsJSR223Delegate functions:
 - tavDecode(): Main DWT decoding function
 - tavDWT2D(): 2D DWT/IDWT transforms  
 - tavQuantize(): Multi-band quantization
-- tavMotionCompensate(): 64x64 tile motion compensation
 
 ## Audio Support
 Reuses existing MP2 audio infrastructure from TEV/MOV formats for compatibility.
@@ -951,8 +950,7 @@ Reuses existing MP2 audio infrastructure from TEV/MOV formats for compatibility.
 Uses same Simple Subtitle Format (SSF) as TEV for text overlay functionality.
 
 ## NTSC Framerate handling
-Unlike the TEV format, TAV emits extra sync packet for every 1000th frames. Decoder can just play the video
-without any special treatment.
+Unlike the TEV format, TAV encoder emits extra sync packet for every 1000th frames. Decoder can just play the video without any special treatment.
 
 --------------------------------------------------------------------------------
 

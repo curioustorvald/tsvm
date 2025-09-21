@@ -911,15 +911,15 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
     if (!is_chroma) {
         // LL subband - contains most image energy, preserve carefully
         if (subband_type == 0)
-            return perceptual_model3_LL(enc->quality_level, level);
+            return perceptual_model3_LL(enc->quality_level, level + 1);
 
         // LH subband - horizontal details (human eyes more sensitive)
-        float LH = perceptual_model3_LH(enc->quality_level, level);
+        float LH = perceptual_model3_LH(enc->quality_level, level + 1);
         if (subband_type == 1)
             return LH;
 
         // HL subband - vertical details
-        float HL = perceptual_model3_HL(enc->quality_level, LH);
+        float HL = perceptual_model3_HL(enc->quality_level, LH + 1);
         if (subband_type == 2)
             return HL * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
 
@@ -931,7 +931,7 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
         //// mimic 4:4:0 (you heard that right!) chroma subsampling (4:4:4 for higher q, 4:2:0 for lower q)
         //// because our eyes are apparently sensitive to horizontal chroma diff as well?
 
-        float base = perceptual_model3_chroma_basecurve(enc->quality_level, level);
+        float base = perceptual_model3_chroma_basecurve(enc->quality_level, level - 1);
 
         if (subband_type == 0) { // LL chroma - still important but less than luma
             return 1.0f;
