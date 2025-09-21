@@ -11,7 +11,65 @@ import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.fmod
+import java.util.*
+import kotlin.Any
+import kotlin.Array
+import kotlin.Boolean
+import kotlin.BooleanArray
+import kotlin.Byte
+import kotlin.ByteArray
+import kotlin.Double
+import kotlin.Exception
+import kotlin.Float
+import kotlin.FloatArray
+import kotlin.IllegalArgumentException
+import kotlin.IllegalStateException
+import kotlin.Int
+import kotlin.IntArray
+import kotlin.Long
+import kotlin.LongArray
+import kotlin.Pair
+import kotlin.Short
+import kotlin.ShortArray
+import kotlin.String
+import kotlin.Triple
+import kotlin.arrayOf
+import kotlin.byteArrayOf
+import kotlin.collections.ArrayList
+import kotlin.collections.List
+import kotlin.collections.MutableMap
+import kotlin.collections.component1
+import kotlin.collections.component2
+import kotlin.collections.component3
+import kotlin.collections.component4
+import kotlin.collections.copyOf
+import kotlin.collections.count
+import kotlin.collections.fill
+import kotlin.collections.forEach
+import kotlin.collections.forEachIndexed
+import kotlin.collections.indices
+import kotlin.collections.isNotEmpty
+import kotlin.collections.listOf
+import kotlin.collections.map
+import kotlin.collections.maxOfOrNull
+import kotlin.collections.mutableListOf
+import kotlin.collections.mutableMapOf
+import kotlin.collections.set
+import kotlin.collections.sliceArray
+import kotlin.collections.sorted
+import kotlin.collections.sumOf
+import kotlin.collections.toFloatArray
+import kotlin.error
+import kotlin.floatArrayOf
+import kotlin.fromBits
+import kotlin.intArrayOf
+import kotlin.let
+import kotlin.longArrayOf
 import kotlin.math.*
+import kotlin.repeat
+import kotlin.text.format
+import kotlin.text.lowercase
+import kotlin.text.toString
 
 class GraphicsJSR223Delegate(private val vm: VM) {
     
@@ -3888,7 +3946,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return subbands
     }
 
-    private fun getPerceptualWeight(level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
+    private fun getPerceptualWeightModel2(level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
         // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
 
         if (!isChroma) {
@@ -4031,6 +4089,116 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }*/
     }
 
+    var ANISOTROPY_MULT = floatArrayOf(1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
+    var ANISOTROPY_BIAS = floatArrayOf(0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
+
+
+
+    private fun perceptual_model3_LH(quality: Int, level: Int): Float {
+        val H4 = 1.2f
+        val Lx = H4 - ((quality + 1f) / 15f) * (level - 4f)
+        val Ld = (quality + 1f) / -15f
+        val C = H4 - 4f * Ld - ((-16f * (quality - 5f)) / (15f))
+        val Gx = (Ld * level) - (((quality - 5f) * (level - 8f) * level) / (15f)) + C
+
+        return if (level >= 4) Lx else Gx
+    }
+
+    private fun perceptual_model3_HL(quality: Int, LH: Float): Float {
+        return LH * ANISOTROPY_MULT[quality] + ANISOTROPY_BIAS[quality]
+    }
+
+    private fun perceptual_model3_HH(LH: Float, HL: Float): Float {
+        return 2f * (LH + HL) / 3f
+    }
+
+    fun perceptual_model3_LL(quality: Int, level: Int): Float {
+        val n = perceptual_model3_LH(quality, level)
+        val m = perceptual_model3_LH(quality, level - 1) / n
+
+        return n / m
+    }
+
+    private val FOUR_PIXEL_DETAILER = 0.88f
+
+    private fun getPerceptualWeight(qYGlobal: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
+        // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
+
+        val qualityLevel = if (qYGlobal >= 60) 0
+            else if (qYGlobal >= 42) 1
+            else if (qYGlobal >= 25) 2
+            else if (qYGlobal >= 12) 3
+            else if (qYGlobal >= 6) 4
+            else if (qYGlobal >= 2) 5
+            else 5
+
+        if (!isChroma) {
+            // LUMA CHANNEL: Based on statistical analysis from real video content
+            
+            // LL subband - contains most image energy, preserve carefully
+            if (subbandType == 0) return perceptual_model3_LL(qualityLevel, level)
+            
+            // LH subband - horizontal details (human eyes more sensitive)
+            val LH: Float = perceptual_model3_LH(qualityLevel, level)
+            if (subbandType == 1) return LH
+            
+            // HL subband - vertical details
+            val HL: Float = perceptual_model3_HL(qualityLevel, LH)
+            if (subbandType == 2) return HL * (if (level == 3) FOUR_PIXEL_DETAILER else 1f)
+
+            // HH subband - diagonal details
+            else return perceptual_model3_HH(LH, HL) * (if (level == 3) FOUR_PIXEL_DETAILER else 1f)
+            
+        } else {
+            // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+            when (subbandType) {
+                0 -> { // LL chroma - still important but less than luma
+                    return 1f
+                    return when {
+                        level >= 6 -> 0.8f  // Chroma LL6: Less critical than luma LL
+                        level >= 5 -> 0.9f
+                        else -> 1.0f
+                    }
+                }
+                1 -> { // LH chroma - horizontal chroma details
+                    return 1.8f
+                    return when {
+                        level >= 6 -> 1.0f
+                        level >= 5 -> 1.2f
+                        level >= 4 -> 1.4f
+                        level >= 3 -> 1.6f
+                        level >= 2 -> 1.8f
+                        else -> 2.0f
+                    }
+                }
+                2 -> { // HL chroma - vertical chroma details (even less critical)
+                    return 1.3f;
+                    return when {
+                        level >= 6 -> 1.2f
+                        level >= 5 -> 1.4f
+                        level >= 4 -> 1.6f
+                        level >= 3 -> 1.8f
+                        level >= 2 -> 2.0f
+                        else -> 2.2f
+                    }
+                }
+                3 -> { // HH chroma - diagonal chroma details (most aggressive)
+                    return 2.5f
+                    return when {
+                        level >= 6 -> 1.4f
+                        level >= 5 -> 1.6f
+                        level >= 4 -> 1.8f
+                        level >= 3 -> 2.1f
+                        level >= 2 -> 2.3f
+                        else -> 2.5f
+                    }
+                }
+            }
+        }
+        return 1.0f
+    }
+
+
     // Helper function to calculate five-number summary for coefficient analysis
     private fun calculateFiveNumberSummary(values: List<Int>): String {
         if (values.isEmpty()) return "empty"
@@ -4046,20 +4214,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return "min=$min, Q1=$q1, med=%.1f, Q3=$q3, max=$max, n=$n".format(median)
     }
 
-    private fun dequantiseDWTSubbandsPerceptual(quantised: ShortArray, dequantised: FloatArray,
+    private fun dequantiseDWTSubbandsPerceptual(qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
                                                subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
 
         // Initialize output array to zero (critical for detecting missing coefficients)
-        for (i in dequantised.indices) {
-            dequantised[i] = 0.0f
-        }
+        Arrays.fill(dequantised, 0.0f)
 
         // Track coefficient coverage for debugging
         var totalProcessed = 0
         var maxIdx = -1
 
         for (subband in subbands) {
-            val weight = getPerceptualWeight(subband.level, subband.subbandType, isChroma, decompLevels)
+            val weight = getPerceptualWeight(qYGlobal, subband.level, subband.subbandType, isChroma, decompLevels)
             // CRITICAL FIX: Use the same effective quantizer as encoder for proper reconstruction
             val effectiveQuantizer = baseQuantizer * weight
 
@@ -4129,7 +4295,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         try {
             // Determine if monoblock mode based on TAV version
-            val isMonoblock = (tavVersion == 3 || tavVersion == 4 || tavVersion == 5 || tavVersion == 6)
+            val isMonoblock = (tavVersion >= 3)
 
             val tilesX: Int
             val tilesY: Int
@@ -4168,13 +4334,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         0x01 -> { // TAV_MODE_INTRA
                             // Decode DWT coefficients directly to RGB buffer
-                            readPtr = tavDecodeDWTIntraTileRGB(readPtr, tileX, tileY, currentRGBAddr,
+                            readPtr = tavDecodeDWTIntraTileRGB(qYGlobal, readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
                                                           waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
-                            readPtr = tavDecodeDeltaTileRGB(readPtr, tileX, tileY, currentRGBAddr,
+                            readPtr = tavDecodeDeltaTileRGB(qYGlobal, readPtr, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
                                                       waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
@@ -4187,7 +4353,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tavDecodeDWTIntraTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+    private fun tavDecodeDWTIntraTileRGB(qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                          width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                          waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         // Determine coefficient count based on mode
@@ -4247,9 +4413,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
             val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
 
-            dequantiseDWTSubbandsPerceptual(quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
-            dequantiseDWTSubbandsPerceptual(quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
-            dequantiseDWTSubbandsPerceptual(quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qYGlobal, quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
 
             // Debug: Check coefficient values before inverse DWT
             if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
@@ -4777,7 +4943,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+    private fun tavDecodeDeltaTileRGB(qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                       waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         
@@ -4849,9 +5015,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val deltaCoFloat = FloatArray(coeffCount)
             val deltaCgFloat = FloatArray(coeffCount)
 
-            dequantiseDWTSubbandsPerceptual(deltaY, deltaYFloat, subbands, qY.toFloat(), false, decompLevels)
-            dequantiseDWTSubbandsPerceptual(deltaCo, deltaCoFloat, subbands, adjustedQCo, true, decompLevels)
-            dequantiseDWTSubbandsPerceptual(deltaCg, deltaCgFloat, subbands, adjustedQCg, true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qYGlobal, deltaY, deltaYFloat, subbands, qY.toFloat(), false, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qYGlobal, deltaCo, deltaCoFloat, subbands, adjustedQCo, true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qYGlobal, deltaCg, deltaCgFloat, subbands, adjustedQCg, true, decompLevels)
 
             // Reconstruct: current = previous + perceptually_dequantized_delta
             for (i in 0 until coeffCount) {

@@ -148,6 +148,10 @@ static const int QUALITY_CG[] = {240, 180, 120, 60, 30, 5};
 //static const int QUALITY_CO[] =  {60, 30, 15,  7,  5, 2};
 //static const int QUALITY_CG[] = {120, 60, 30, 15, 10, 4};
 
+// psychovisual tuning parameters
+static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
+static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+
 // DWT coefficient structure for each subband
 typedef struct {
     int16_t *coeffs;
@@ -797,8 +801,35 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
     }
 }
 
+// https://www.desmos.com/calculator/mjlpwqm8ge
+// where Q=quality, x=level
+static float perceptual_model3_LH(int quality, int level) {
+    float H4 = 1.2f;
+    float Lx = H4 - ((quality + 1.f) / 15.f) * (level - 4.f);
+    float Ld = (quality + 1.f) / -15.f;
+    float C = H4 - 4.f * Ld - ((-16.f*(quality - 5.f))/(15.f));
+    float Gx = (Ld * level) - (((quality - 5.f)*(level - 8.f)*level)/(15.f)) + C;
+
+    return (level >= 4) ? Lx : Gx;
+}
+
+static float perceptual_model3_HL(int quality, float LH) {
+    return fmaf(LH, ANISOTROPY_MULT[quality], ANISOTROPY_BIAS[quality]);
+}
+
+static float perceptual_model3_HH(float LH, float HL) {
+    return 2.f * (LH + HL) / 3.f;
+}
+
+static float perceptual_model3_LL(int quality, int level) {
+    float n = perceptual_model3_LH(quality, level);
+    float m = perceptual_model3_LH(quality, level - 1) / n;
+
+    return n / m;
+}
+
 // Get perceptual weight for specific subband - Data-driven model based on coefficient variance analysis
-static float get_perceptual_weight(int level, int subband_type, int is_chroma, int max_levels) {
+static float get_perceptual_weight_model2(int level, int subband_type, int is_chroma, int max_levels) {
     // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
     // strategy: JPEG quantisation table + real-world statistics from the encoded videos
     if (!is_chroma) {
@@ -865,8 +896,67 @@ static float get_perceptual_weight(int level, int subband_type, int is_chroma, i
     }
 }
 
+#define FOUR_PIXEL_DETAILER 0.88f
+
+static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_type, int is_chroma, int max_levels) {
+    // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
+    // strategy: JPEG quantisation table + real-world statistics from the encoded videos
+    if (!is_chroma) {
+        // LL subband - contains most image energy, preserve carefully
+        if (subband_type == 0)
+            return perceptual_model3_LL(enc->quality_level, level);
+
+        // LH subband - horizontal details (human eyes more sensitive)
+        float LH = perceptual_model3_LH(enc->quality_level, level);
+        if (subband_type == 1)
+            return LH;
+
+        // HL subband - vertical details
+        float HL = perceptual_model3_HL(enc->quality_level, LH);
+        if (subband_type == 2)
+            return HL * (level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
+
+        // HH subband - diagonal details
+        else return perceptual_model3_HH(LH, HL) * (level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
+    } else {
+        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+        // strategy: mimic 4:2:2 chroma subsampling
+        if (subband_type == 0) { // LL chroma - still important but less than luma
+            return 1.0f;
+            if (level >= 6) return 0.8f;  // Chroma LL6: Less critical than luma LL
+            if (level >= 5) return 0.9f;
+            return 1.0f;
+        } else if (subband_type == 1) { // LH chroma - horizontal chroma details
+            return 1.8f;
+            if (level >= 6) return 1.0f;
+            if (level >= 5) return 1.2f;
+            if (level >= 4) return 1.4f;
+            if (level >= 3) return 1.6f;
+            if (level >= 2) return 1.8f;
+            return 2.0f;
+        } else if (subband_type == 2) { // HL chroma - vertical chroma details (even less critical)
+            return 1.3f;
+            if (level >= 6) return 1.2f;
+            if (level >= 5) return 1.4f;
+            if (level >= 4) return 1.6f;
+            if (level >= 3) return 1.8f;
+            if (level >= 2) return 2.0f;
+            return 2.2f;
+        } else { // HH chroma - diagonal chroma details (most aggressive)
+            return 2.5f;
+            if (level >= 6) return 1.4f;
+            if (level >= 5) return 1.6f;
+            if (level >= 4) return 1.8f;
+            if (level >= 3) return 2.1f;
+            if (level >= 2) return 2.3f;
+            return 2.5f;
+        }
+    }
+}
+
+
 // Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
-static float get_perceptual_weight_for_position(int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
+static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
     // Map linear coefficient index to DWT subband using same layout as decoder
     int offset = 0;
 
@@ -877,7 +967,7 @@ static float get_perceptual_weight_for_position(int linear_idx, int width, int h
 
     if (linear_idx < offset + ll_size) {
         // LL subband at maximum level - use get_perceptual_weight for consistency
-        return get_perceptual_weight(decomp_levels, 0, is_chroma, decomp_levels);
+        return get_perceptual_weight(enc, decomp_levels, 0, is_chroma, decomp_levels);
     }
     offset += ll_size;
 
@@ -889,19 +979,19 @@ static float get_perceptual_weight_for_position(int linear_idx, int width, int h
 
         // LH subband (horizontal details)
         if (linear_idx < offset + subband_size) {
-            return get_perceptual_weight(level, 1, is_chroma, decomp_levels);
+            return get_perceptual_weight(enc, level, 1, is_chroma, decomp_levels);
         }
         offset += subband_size;
 
         // HL subband (vertical details)
         if (linear_idx < offset + subband_size) {
-            return get_perceptual_weight(level, 2, is_chroma, decomp_levels);
+            return get_perceptual_weight(enc, level, 2, is_chroma, decomp_levels);
         }
         offset += subband_size;
 
         // HH subband (diagonal details)
         if (linear_idx < offset + subband_size) {
-            return get_perceptual_weight(level, 3, is_chroma, decomp_levels);
+            return get_perceptual_weight(enc, level, 3, is_chroma, decomp_levels);
         }
         offset += subband_size;
     }
@@ -911,7 +1001,8 @@ static float get_perceptual_weight_for_position(int linear_idx, int width, int h
 }
 
 // Apply perceptual quantization per-coefficient (same loop as uniform but with spatial weights)
-static void quantise_dwt_coefficients_perceptual_per_coeff(float *coeffs, int16_t *quantised, int size,
+static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
+                                                          float *coeffs, int16_t *quantised, int size,
                                                           int base_quantizer, int width, int height,
                                                           int decomp_levels, int is_chroma, int frame_count) {
     // EXACTLY the same approach as uniform quantization but apply weight per coefficient
@@ -923,7 +1014,7 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(float *coeffs, int16_
         int nonzero = 0;
         for (int i = 0; i < size; i++) {
             // Apply perceptual weight based on coefficient's position in DWT layout
-            float weight = get_perceptual_weight_for_position(i, width, height, decomp_levels, is_chroma);
+            float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
             float effective_q = effective_base_q * weight;
             float quantised_val = coeffs[i] / effective_q;
             quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
@@ -935,7 +1026,7 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(float *coeffs, int16_
         // Normal quantization loop
         for (int i = 0; i < size; i++) {
             // Apply perceptual weight based on coefficient's position in DWT layout
-            float weight = get_perceptual_weight_for_position(i, width, height, decomp_levels, is_chroma);
+            float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
             float effective_q = effective_base_q * weight;
             float quantised_val = coeffs[i] / effective_q;
             quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
@@ -1044,9 +1135,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         // INTRA mode: quantise coefficients directly and store for future reference
         if (enc->perceptual_tuning) {
             // Perceptual quantization: EXACTLY like uniform but with per-coefficient weights
-            quantise_dwt_coefficients_perceptual_per_coeff((float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
         } else {
             // Legacy uniform quantization
             quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, this_frame_qY);
@@ -1083,9 +1174,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         
         // Quantise the deltas with per-coefficient perceptual quantization
         if (enc->perceptual_tuning) {
-            quantise_dwt_coefficients_perceptual_per_coeff(delta_y, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, 0);
-            quantise_dwt_coefficients_perceptual_per_coeff(delta_co, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, 0);
-            quantise_dwt_coefficients_perceptual_per_coeff(delta_cg, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, 0);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, delta_y, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, 0);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, delta_co, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, 0);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, delta_cg, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, 0);
         } else {
             // Legacy uniform delta quantization
             quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY);
@@ -1113,12 +1204,12 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                 if (level_width < 1 || level_height < 1) continue;
 
                 // Get perceptual weights for this level
-                float lh_weight_y = get_perceptual_weight(level, 1, 0, enc->decomp_levels);
-                float hl_weight_y = get_perceptual_weight(level, 2, 0, enc->decomp_levels);
-                float hh_weight_y = get_perceptual_weight(level, 3, 0, enc->decomp_levels);
-                float lh_weight_co = get_perceptual_weight(level, 1, 1, enc->decomp_levels);
-                float hl_weight_co = get_perceptual_weight(level, 2, 1, enc->decomp_levels);
-                float hh_weight_co = get_perceptual_weight(level, 3, 1, enc->decomp_levels);
+                float lh_weight_y = get_perceptual_weight(enc, level, 1, 0, enc->decomp_levels);
+                float hl_weight_y = get_perceptual_weight(enc, level, 2, 0, enc->decomp_levels);
+                float hh_weight_y = get_perceptual_weight(enc, level, 3, 0, enc->decomp_levels);
+                float lh_weight_co = get_perceptual_weight(enc, level, 1, 1, enc->decomp_levels);
+                float hl_weight_co = get_perceptual_weight(enc, level, 2, 1, enc->decomp_levels);
+                float hh_weight_co = get_perceptual_weight(enc, level, 3, 1, enc->decomp_levels);
 
                 // Correct LH subband (top-right quadrant)
                 for (int y = 0; y < level_height; y++) {
@@ -1170,8 +1261,8 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             // Finally, correct LL subband (top-left corner at finest level)
             int ll_width = enc->width >> enc->decomp_levels;
             int ll_height = enc->height >> enc->decomp_levels;
-            float ll_weight_y = get_perceptual_weight(enc->decomp_levels, 0, 0, enc->decomp_levels);
-            float ll_weight_co = get_perceptual_weight(enc->decomp_levels, 0, 1, enc->decomp_levels);
+            float ll_weight_y = get_perceptual_weight(enc, enc->decomp_levels, 0, 0, enc->decomp_levels);
+            float ll_weight_co = get_perceptual_weight(enc, enc->decomp_levels, 0, 1, enc->decomp_levels);
             for (int y = 0; y < ll_height; y++) {
                 for (int x = 0; x < ll_width; x++) {
                     if (y < enc->height && x < enc->width) {
