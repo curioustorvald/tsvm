@@ -4091,6 +4091,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     var ANISOTROPY_MULT = floatArrayOf(1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
     var ANISOTROPY_BIAS = floatArrayOf(0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
+    var ANISOTROPY_BIAS_CHROMA = floatArrayOf(0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f)
 
 
 
@@ -4119,8 +4120,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return n / m
     }
 
-    private val FOUR_PIXEL_DETAILER = 0.88f
+    fun perceptual_model3_chroma_basecurve(quality: Int, level: Int): Float {
+        return 1.0f - (1.0f / (0.5f * quality * quality + 1.0f)) * (level - 4f) // just a line that passes (4,1)
+    }
 
+    private val FOUR_PIXEL_DETAILER = 0.88f
+    private val TWO_PIXEL_DETAILER = 0.92f
+
+    // level is one-based index
     private fun getPerceptualWeight(qYGlobal: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
         // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
 
@@ -4144,58 +4151,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             
             // HL subband - vertical details
             val HL: Float = perceptual_model3_HL(qualityLevel, LH)
-            if (subbandType == 2) return HL * (if (level == 3) FOUR_PIXEL_DETAILER else 1f)
+            if (subbandType == 2) return HL * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
 
             // HH subband - diagonal details
-            else return perceptual_model3_HH(LH, HL) * (if (level == 3) FOUR_PIXEL_DETAILER else 1f)
+            else return perceptual_model3_HH(LH, HL) * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
             
         } else {
             // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
-            when (subbandType) {
-                0 -> { // LL chroma - still important but less than luma
-                    return 1f
-                    return when {
-                        level >= 6 -> 0.8f  // Chroma LL6: Less critical than luma LL
-                        level >= 5 -> 0.9f
-                        else -> 1.0f
-                    }
-                }
-                1 -> { // LH chroma - horizontal chroma details
-                    return 1.8f
-                    return when {
-                        level >= 6 -> 1.0f
-                        level >= 5 -> 1.2f
-                        level >= 4 -> 1.4f
-                        level >= 3 -> 1.6f
-                        level >= 2 -> 1.8f
-                        else -> 2.0f
-                    }
-                }
-                2 -> { // HL chroma - vertical chroma details (even less critical)
-                    return 1.3f;
-                    return when {
-                        level >= 6 -> 1.2f
-                        level >= 5 -> 1.4f
-                        level >= 4 -> 1.6f
-                        level >= 3 -> 1.8f
-                        level >= 2 -> 2.0f
-                        else -> 2.2f
-                    }
-                }
-                3 -> { // HH chroma - diagonal chroma details (most aggressive)
-                    return 2.5f
-                    return when {
-                        level >= 6 -> 1.4f
-                        level >= 5 -> 1.6f
-                        level >= 4 -> 1.8f
-                        level >= 3 -> 2.1f
-                        level >= 2 -> 2.3f
-                        else -> 2.5f
-                    }
-                }
+            val base = perceptual_model3_chroma_basecurve(qualityLevel, level)
+
+            if (subbandType == 0) { // LL chroma - still important but less than luma
+                return 1.0f
+            }
+            else if (subbandType == 1) { // LH chroma - horizontal chroma details
+                return base.coerceAtLeast(1.0f)
+            }
+            else if (subbandType == 2) { // HL chroma - vertical chroma details (even less critical)
+                return (base * ANISOTROPY_MULT[qualityLevel]).coerceAtLeast(1.0f)
+            }
+            else { // HH chroma - diagonal chroma details (most aggressive)
+                return (base * ANISOTROPY_MULT[qualityLevel] + ANISOTROPY_BIAS_CHROMA[qualityLevel]).coerceAtLeast(1.0f)
             }
         }
-        return 1.0f
     }
 
 
@@ -4218,7 +4195,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                                subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
 
         // Initialize output array to zero (critical for detecting missing coefficients)
+        if (tavDebugFrameTarget >= 0) {
         Arrays.fill(dequantised, 0.0f)
+            }
 
         // Track coefficient coverage for debugging
         var totalProcessed = 0

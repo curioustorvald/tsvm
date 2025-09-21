@@ -151,6 +151,7 @@ static const int QUALITY_CG[] = {240, 180, 120, 60, 30, 5};
 // psychovisual tuning parameters
 static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
 static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+static const float ANISOTROPY_BIAS_CHROMA[] = {0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f};
 
 // DWT coefficient structure for each subband
 typedef struct {
@@ -828,6 +829,10 @@ static float perceptual_model3_LL(int quality, int level) {
     return n / m;
 }
 
+static float perceptual_model3_chroma_basecurve(int quality, int level) {
+    return 1.0f - (1.0f / (0.5f * quality * quality + 1.0f)) * (level - 4.0f); // just a line that passes (4,1)
+}
+
 // Get perceptual weight for specific subband - Data-driven model based on coefficient variance analysis
 static float get_perceptual_weight_model2(int level, int subband_type, int is_chroma, int max_levels) {
     // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
@@ -897,10 +902,12 @@ static float get_perceptual_weight_model2(int level, int subband_type, int is_ch
 }
 
 #define FOUR_PIXEL_DETAILER 0.88f
+#define TWO_PIXEL_DETAILER  0.92f
 
+// level is one-based index
 static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_type, int is_chroma, int max_levels) {
     // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
-    // strategy: JPEG quantisation table + real-world statistics from the encoded videos
+    // strategy: more horizontal detail
     if (!is_chroma) {
         // LL subband - contains most image energy, preserve carefully
         if (subband_type == 0)
@@ -914,42 +921,26 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
         // HL subband - vertical details
         float HL = perceptual_model3_HL(enc->quality_level, LH);
         if (subband_type == 2)
-            return HL * (level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
+            return HL * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
 
         // HH subband - diagonal details
-        else return perceptual_model3_HH(LH, HL) * (level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
+        else return perceptual_model3_HH(LH, HL) * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
     } else {
         // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
-        // strategy: mimic 4:2:2 chroma subsampling
+        // strategy: more horizontal detail
+        //// mimic 4:4:0 (you heard that right!) chroma subsampling (4:4:4 for higher q, 4:2:0 for lower q)
+        //// because our eyes are apparently sensitive to horizontal chroma diff as well?
+
+        float base = perceptual_model3_chroma_basecurve(enc->quality_level, level);
+
         if (subband_type == 0) { // LL chroma - still important but less than luma
             return 1.0f;
-            if (level >= 6) return 0.8f;  // Chroma LL6: Less critical than luma LL
-            if (level >= 5) return 0.9f;
-            return 1.0f;
         } else if (subband_type == 1) { // LH chroma - horizontal chroma details
-            return 1.8f;
-            if (level >= 6) return 1.0f;
-            if (level >= 5) return 1.2f;
-            if (level >= 4) return 1.4f;
-            if (level >= 3) return 1.6f;
-            if (level >= 2) return 1.8f;
-            return 2.0f;
+            return FCLAMP(base, 1.0f, 100.0f);
         } else if (subband_type == 2) { // HL chroma - vertical chroma details (even less critical)
-            return 1.3f;
-            if (level >= 6) return 1.2f;
-            if (level >= 5) return 1.4f;
-            if (level >= 4) return 1.6f;
-            if (level >= 3) return 1.8f;
-            if (level >= 2) return 2.0f;
-            return 2.2f;
+            return FCLAMP(base * ANISOTROPY_MULT[enc->quality_level], 1.0f, 100.0f);
         } else { // HH chroma - diagonal chroma details (most aggressive)
-            return 2.5f;
-            if (level >= 6) return 1.4f;
-            if (level >= 5) return 1.6f;
-            if (level >= 4) return 1.8f;
-            if (level >= 3) return 2.1f;
-            if (level >= 2) return 2.3f;
-            return 2.5f;
+            return FCLAMP(base * ANISOTROPY_MULT[enc->quality_level] + ANISOTROPY_BIAS_CHROMA[enc->quality_level], 1.0f, 100.0f);
         }
     }
 }
@@ -1009,28 +1000,12 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
     float effective_base_q = base_quantizer;
     effective_base_q = FCLAMP(effective_base_q, 1.0f, 255.0f);
 
-    // Debug coefficient analysis
-    if (frame_count == 1 || frame_count == 120) {
-        int nonzero = 0;
-        for (int i = 0; i < size; i++) {
-            // Apply perceptual weight based on coefficient's position in DWT layout
-            float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
-            float effective_q = effective_base_q * weight;
-            float quantised_val = coeffs[i] / effective_q;
-            quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
-            if (quantised[i] != 0) nonzero++;
-        }
-        printf("DEBUG: Frame 120 - %s channel: %d/%d nonzero coeffs after perceptual per-coeff quantization\n",
-               is_chroma ? "Chroma" : "Luma", nonzero, size);
-    } else {
-        // Normal quantization loop
-        for (int i = 0; i < size; i++) {
-            // Apply perceptual weight based on coefficient's position in DWT layout
-            float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
-            float effective_q = effective_base_q * weight;
-            float quantised_val = coeffs[i] / effective_q;
-            quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
-        }
+    for (int i = 0; i < size; i++) {
+        // Apply perceptual weight based on coefficient's position in DWT layout
+        float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
+        float effective_q = effective_base_q * weight;
+        float quantised_val = coeffs[i] / effective_q;
+        quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
     }
 }
 
@@ -1373,7 +1348,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             }*/
             
             // Debug: Check Y data before DWT transform
-            if (enc->frame_count == 120 && enc->verbose) {
+            /*if (enc->frame_count == 120 && enc->verbose) {
                 float max_y_before = 0.0f;
                 int nonzero_before = 0;
                 int total_pixels = enc->monoblock ? (enc->width * enc->height) : (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);
@@ -1383,7 +1358,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                     if (abs_val > 0.1f) nonzero_before++;
                 }
                 printf("DEBUG: Y data before DWT: max=%.2f, nonzero=%d/%d\n", max_y_before, nonzero_before, total_pixels);
-            }
+            }*/
 
             // Apply DWT transform to each channel
             if (enc->monoblock) {
@@ -1399,14 +1374,14 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             }
 
             // Debug: Check Y data after DWT transform for high-frequency content
-            if (enc->frame_count == 120 && enc->verbose) {
+            /*if (enc->frame_count == 120 && enc->verbose) {
                 printf("DEBUG: Y data after DWT (some high-freq samples): ");
                 int sample_indices[] = {47034, 47035, 47036, 47037, 47038}; // HH1 start + some samples
                 for (int i = 0; i < 5; i++) {
                     printf("%.3f ", tile_y_data[sample_indices[i]]);
                 }
                 printf("\n");
-            }
+            }*/
             
             // Serialise tile
             size_t tile_size = serialise_tile_data(enc, tile_x, tile_y,
