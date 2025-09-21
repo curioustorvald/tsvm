@@ -23,9 +23,9 @@
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
 // TAV version - dynamic based on colour space and perceptual tuning
-// Version 5: YCoCg-R monoblock with perceptual quantization (default)
-// Version 6: ICtCp monoblock with perceptual quantization (--ictcp flag)
-// Legacy versions (uniform quantization):
+// Version 5: YCoCg-R monoblock with perceptual quantisation (default)
+// Version 6: ICtCp monoblock with perceptual quantisation (--ictcp flag)
+// Legacy versions (uniform quantisation):
 // Version 3: YCoCg-R monoblock uniform (--no-perceptual-tuning)
 // Version 4: ICtCp monoblock uniform (--ictcp --no-perceptual-tuning)
 // Version 1: YCoCg-R 4-tile (legacy, code preserved but not accessible)
@@ -45,7 +45,7 @@
 
 // DWT settings
 #define TILE_SIZE_X 280  // 280x224 tiles - better compression efficiency  
-#define TILE_SIZE_Y 224  // Optimized for TSVM 560x448 (2×2 tiles exactly)
+#define TILE_SIZE_Y 224  // Optimised for TSVM 560x448 (2×2 tiles exactly)
 #define MAX_DECOMP_LEVELS 6  // Can go deeper: 280→140→70→35→17→8→4, 224→112→56→28→14→7→3
 
 // Simulated overlapping tiles settings for seamless DWT processing
@@ -64,7 +64,7 @@
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 2
-int KEYFRAME_INTERVAL = 60;
+int KEYFRAME_INTERVAL = 7; // refresh often because deltas in DWT are more visible than DCT
 #define ZSTD_COMPRESSON_LEVEL 15
 
 // Audio/subtitle constants (reused from TEV)
@@ -167,13 +167,13 @@ typedef struct {
     int tile_x, tile_y;
 } dwt_tile_t;
 
-// DWT subband information for perceptual quantization
+// DWT subband information for perceptual quantisation
 typedef struct {
     int level;              // Decomposition level (1 to enc->decomp_levels)
     int subband_type;       // 0=LL, 1=LH, 2=HL, 3=HH
     int coeff_start;        // Starting index in linear coefficient array
     int coeff_count;        // Number of coefficients in this subband
-    float perceptual_weight; // Quantization multiplier for this subband
+    float perceptual_weight; // Quantisation multiplier for this subband
 } dwt_subband_info_t;
 
 // TAV encoder structure
@@ -215,7 +215,7 @@ typedef struct {
     int ictcp_mode;       // 0 = YCoCg-R (default), 1 = ICtCp colour space
     int intra_only;       // Force all tiles to use INTRA mode (disable delta encoding)
     int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
-    int perceptual_tuning; // 1 = perceptual quantization (default), 0 = uniform quantization
+    int perceptual_tuning; // 1 = perceptual quantisation (default), 0 = uniform quantisation
     
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -250,7 +250,7 @@ typedef struct {
     void *compressed_buffer;
     size_t compressed_buffer_size;
     
-    // OPTIMIZATION: Pre-allocated buffers to avoid malloc/free per tile
+    // OPTIMISATION: Pre-allocated buffers to avoid malloc/free per tile
     int16_t *reusable_quantised_y;
     int16_t *reusable_quantised_co;
     int16_t *reusable_quantised_cg;
@@ -313,7 +313,7 @@ static int parse_resolution(const char *res_str, int *width, int *height) {
 static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
-static int initialize_encoder(tav_encoder_t *enc);
+static int initialise_encoder(tav_encoder_t *enc);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
 static int calculate_max_decomp_levels(int width, int height);
 
@@ -350,9 +350,9 @@ static void show_usage(const char *program_name) {
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
-    printf("  --delta                 Enable delta encoding (improved compression but noisy picture)\n");
+    printf("  --no-delta              Disable delta encoding (less noisy picture at the cost of larger file)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
-    printf("  --no-perceptual-tuning  Disable perceptual quantization (uniform quantization like versions 3/4)\n");
+    printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
     printf("  --help                  Show this help\n\n");
     
@@ -381,10 +381,10 @@ static void show_usage(const char *program_name) {
     printf("\n\n");
     printf("Features:\n");
     printf("  - Single DWT tile (monoblock) encoding for optimal quality\n");
-    printf("  - Perceptual quantization optimized for human visual system (default)\n");
+    printf("  - Perceptual quantisation optimised for human visual system (default)\n");
     printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
     printf("  - Lossless and lossy compression modes\n");
-    printf("  - Versions 5/6: Perceptual quantization, Versions 3/4: Uniform quantization\n");
+    printf("  - Versions 5/6: Perceptual quantisation, Versions 3/4: Uniform quantisation\n");
     
     printf("\nExamples:\n");
     printf("  %s -i input.mp4 -o output.mv3               # Default settings\n", program_name);
@@ -409,17 +409,17 @@ static tav_encoder_t* create_encoder(void) {
     enc->quantiser_y = QUALITY_Y[DEFAULT_QUALITY];
     enc->quantiser_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantiser_cg = QUALITY_CG[DEFAULT_QUALITY];
-    enc->intra_only = 1;
+    enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
-    enc->perceptual_tuning = 1;  // Default to perceptual quantization (versions 5/6)
+    enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
 
     return enc;
 }
 
-// Initialize encoder resources
-static int initialize_encoder(tav_encoder_t *enc) {
+// Initialise encoder resources
+static int initialise_encoder(tav_encoder_t *enc) {
     if (!enc) return -1;
 
     // Automatic decomposition levels for monoblock mode
@@ -444,7 +444,7 @@ static int initialize_encoder(tav_encoder_t *enc) {
     enc->frame_rgb[0] = malloc(frame_size * 3);
     enc->frame_rgb[1] = malloc(frame_size * 3);
 
-    // Initialize ping-pong buffer index and convenience pointers
+    // Initialise ping-pong buffer index and convenience pointers
     enc->frame_buffer_index = 0;
     enc->current_frame_rgb = enc->frame_rgb[0];
     enc->previous_frame_rgb = enc->frame_rgb[1];
@@ -455,7 +455,7 @@ static int initialize_encoder(tav_encoder_t *enc) {
     // Allocate tile structures
     enc->tiles = malloc(num_tiles * sizeof(dwt_tile_t));
 
-    // Initialize ZSTD compression
+    // Initialise ZSTD compression
     enc->zstd_ctx = ZSTD_createCCtx();
 
     // Calculate maximum possible frame size for ZSTD buffer
@@ -466,7 +466,7 @@ static int initialize_encoder(tav_encoder_t *enc) {
     enc->compressed_buffer_size = ZSTD_compressBound(max_frame_size);
     enc->compressed_buffer = malloc(enc->compressed_buffer_size);
     
-    // OPTIMIZATION: Allocate reusable quantisation buffers
+    // OPTIMISATION: Allocate reusable quantisation buffers
     int coeff_count_per_tile;
     if (enc->monoblock) {
         // Monoblock mode: entire frame
@@ -605,7 +605,7 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
     const int core_start_x = tile_x * TILE_SIZE_X;
     const int core_start_y = tile_y * TILE_SIZE_Y;
     
-    // OPTIMIZATION: Process row by row with bulk copying for core region
+    // OPTIMISATION: Process row by row with bulk copying for core region
     for (int py = 0; py < PADDED_TILE_SIZE_Y; py++) {
         // Map padded row to source image row
         int src_y = core_start_y + py - TILE_MARGIN;
@@ -628,7 +628,7 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
         int core_src_end_x = core_start_x + TILE_SIZE_X;
         
         if (core_src_start_x >= 0 && core_src_end_x <= enc->width) {
-            // OPTIMIZATION: Bulk copy core region (280 pixels) in one operation
+            // OPTIMISATION: Bulk copy core region (280 pixels) in one operation
             const int src_core_offset = src_row_offset + core_src_start_x;
             
             memcpy(&padded_y[padded_row_offset + core_start_px], 
@@ -840,33 +840,33 @@ static float get_perceptual_weight_model2(int level, int subband_type, int is_ch
     if (!is_chroma) {
         // LUMA CHANNEL: Based on statistical analysis from real video content
         if (subband_type == 0) { // LL subband - contains most image energy, preserve carefully
-            if (level >= 6) return 0.5f;  // LL6: High energy but can tolerate moderate quantization (range up to 22K)
+            if (level >= 6) return 0.5f;  // LL6: High energy but can tolerate moderate quantisation (range up to 22K)
             if (level >= 5) return 0.7f;  // LL5: Good preservation
             return 0.9f;                   // Lower LL levels: Fine preservation
         } else if (subband_type == 1) { // LH subband - horizontal details (human eyes more sensitive)
             if (level >= 6) return 0.8f;  // LH6: Significant coefficients (max ~500), preserve well
             if (level >= 5) return 1.0f;  // LH5: Moderate coefficients (max ~600)
             if (level >= 4) return 1.2f;  // LH4: Small coefficients (max ~50)
-            if (level >= 3) return 1.6f;  // LH3: Very small coefficients, can quantize more
+            if (level >= 3) return 1.6f;  // LH3: Very small coefficients, can quantise more
             if (level >= 2) return 2.0f;  // LH2: Minimal impact
             return 2.5f;                   // LH1: Least important
         } else if (subband_type == 2) { // HL subband - vertical details (less sensitive due to HVS characteristics)
-            if (level >= 6) return 1.0f;  // HL6: Can quantize more aggressively than LH6
-            if (level >= 5) return 1.2f;  // HL5: Standard quantization
+            if (level >= 6) return 1.0f;  // HL6: Can quantise more aggressively than LH6
+            if (level >= 5) return 1.2f;  // HL5: Standard quantisation
             if (level >= 4) return 1.5f;  // HL4: Notable range but less critical
-            if (level >= 3) return 2.0f;  // HL3: Can tolerate more quantization
+            if (level >= 3) return 2.0f;  // HL3: Can tolerate more quantisation
             if (level >= 2) return 2.5f;  // HL2: Less important
             return 3.5f;                   // HL1: Most aggressive for vertical details
         } else { // HH subband - diagonal details (least important for HVS)
             if (level >= 6) return 1.2f;  // HH6: Preserve some diagonal detail
-            if (level >= 5) return 1.6f;  // HH5: Can quantize aggressively
+            if (level >= 5) return 1.6f;  // HH5: Can quantise aggressively
             if (level >= 4) return 2.0f;  // HH4: Very aggressive
             if (level >= 3) return 2.8f;  // HH3: Minimal preservation
             if (level >= 2) return 3.5f;  // HH2: Maximum compression
-            return 5.0f;                   // HH1: Most aggressive quantization
+            return 5.0f;                   // HH1: Most aggressive quantisation
         }
     } else {
-        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
         // strategy: mimic 4:2:2 chroma subsampling
         if (subband_type == 0) { // LL chroma - still important but less than luma
             return 1.0f;
@@ -926,7 +926,7 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
         // HH subband - diagonal details
         else return perceptual_model3_HH(LH, HL) * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
     } else {
-        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
         // strategy: more horizontal detail
         //// mimic 4:4:0 (you heard that right!) chroma subsampling (4:4:4 for higher q, 4:2:0 for lower q)
         //// because our eyes are apparently sensitive to horizontal chroma diff as well?
@@ -991,13 +991,13 @@ static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_i
     return 1.0f;
 }
 
-// Apply perceptual quantization per-coefficient (same loop as uniform but with spatial weights)
+// Apply perceptual quantisation per-coefficient (same loop as uniform but with spatial weights)
 static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                           float *coeffs, int16_t *quantised, int size,
-                                                          int base_quantizer, int width, int height,
+                                                          int base_quantiser, int width, int height,
                                                           int decomp_levels, int is_chroma, int frame_count) {
-    // EXACTLY the same approach as uniform quantization but apply weight per coefficient
-    float effective_base_q = base_quantizer;
+    // EXACTLY the same approach as uniform quantisation but apply weight per coefficient
+    float effective_base_q = base_quantiser;
     effective_base_q = FCLAMP(effective_base_q, 1.0f, 255.0f);
 
     for (int i = 0; i < size; i++) {
@@ -1090,7 +1090,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     const int tile_size = enc->monoblock ?
         (enc->width * enc->height) :  // Monoblock mode: full frame
         (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);  // Standard mode: padded tiles
-    // OPTIMIZATION: Use pre-allocated buffers instead of malloc/free per tile
+    // OPTIMISATION: Use pre-allocated buffers instead of malloc/free per tile
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
@@ -1109,12 +1109,12 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     if (mode == TAV_MODE_INTRA) {
         // INTRA mode: quantise coefficients directly and store for future reference
         if (enc->perceptual_tuning) {
-            // Perceptual quantization: EXACTLY like uniform but with per-coefficient weights
+            // Perceptual quantisation: EXACTLY like uniform but with per-coefficient weights
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
         } else {
-            // Legacy uniform quantization
+            // Legacy uniform quantisation
             quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, this_frame_qY);
             quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo);
             quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg);
@@ -1147,123 +1147,22 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             delta_cg[i] = tile_cg_data[i] - prev_cg[i];
         }
         
-        // Quantise the deltas with per-coefficient perceptual quantization
-        if (enc->perceptual_tuning) {
-            quantise_dwt_coefficients_perceptual_per_coeff(enc, delta_y, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, 0);
-            quantise_dwt_coefficients_perceptual_per_coeff(enc, delta_co, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, 0);
-            quantise_dwt_coefficients_perceptual_per_coeff(enc, delta_cg, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, 0);
-        } else {
-            // Legacy uniform delta quantization
-            quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY);
-            quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo);
-            quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, this_frame_qCg);
+        // Quantise the deltas with uniform quantisation (perceptual tuning is for original coefficients, not deltas)
+        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY);
+        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo);
+        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, this_frame_qCg);
+
+        // Reconstruct coefficients like decoder will (previous + uniform_dequantised_delta)
+        for (int i = 0; i < tile_size; i++) {
+            float dequant_delta_y = (float)quantised_y[i] * this_frame_qY;
+            float dequant_delta_co = (float)quantised_co[i] * this_frame_qCo;
+            float dequant_delta_cg = (float)quantised_cg[i] * this_frame_qCg;
+
+            prev_y[i] = prev_y[i] + dequant_delta_y;
+            prev_co[i] = prev_co[i] + dequant_delta_co;
+            prev_cg[i] = prev_cg[i] + dequant_delta_cg;
         }
-        
-        // Reconstruct coefficients like decoder will (previous + dequantised_delta)
-        if (enc->perceptual_tuning) {
-            // Apply 2D perceptual dequantization using same logic as quantization
 
-            // First, apply uniform dequantization baseline
-            for (int i = 0; i < tile_size; i++) {
-                prev_y[i] = prev_y[i] + ((float)quantised_y[i] * (float)this_frame_qY);
-                prev_co[i] = prev_co[i] + ((float)quantised_co[i] * (float)this_frame_qCo);
-                prev_cg[i] = prev_cg[i] + ((float)quantised_cg[i] * (float)this_frame_qCg);
-            }
-
-            // Then apply perceptual correction by re-dequantizing specific subbands
-            for (int level = 1; level <= enc->decomp_levels; level++) {
-                int level_width = enc->width >> (enc->decomp_levels - level + 1);
-                int level_height = enc->height >> (enc->decomp_levels - level + 1);
-
-                // Skip if subband is too small
-                if (level_width < 1 || level_height < 1) continue;
-
-                // Get perceptual weights for this level
-                float lh_weight_y = get_perceptual_weight(enc, level, 1, 0, enc->decomp_levels);
-                float hl_weight_y = get_perceptual_weight(enc, level, 2, 0, enc->decomp_levels);
-                float hh_weight_y = get_perceptual_weight(enc, level, 3, 0, enc->decomp_levels);
-                float lh_weight_co = get_perceptual_weight(enc, level, 1, 1, enc->decomp_levels);
-                float hl_weight_co = get_perceptual_weight(enc, level, 2, 1, enc->decomp_levels);
-                float hh_weight_co = get_perceptual_weight(enc, level, 3, 1, enc->decomp_levels);
-
-                // Correct LH subband (top-right quadrant)
-                for (int y = 0; y < level_height; y++) {
-                    for (int x = level_width; x < level_width * 2; x++) {
-                        if (y < enc->height && x < enc->width) {
-                            int idx = y * enc->width + x;
-                            // Remove uniform dequantization and apply perceptual
-                            prev_y[idx] -= ((float)quantised_y[idx] * (float)this_frame_qY);
-                            prev_y[idx] += ((float)quantised_y[idx] * ((float)this_frame_qY * lh_weight_y));
-                            prev_co[idx] -= ((float)quantised_co[idx] * (float)this_frame_qCo);
-                            prev_co[idx] += ((float)quantised_co[idx] * ((float)this_frame_qCo * lh_weight_co));
-                            prev_cg[idx] -= ((float)quantised_cg[idx] * (float)this_frame_qCg);
-                            prev_cg[idx] += ((float)quantised_cg[idx] * ((float)this_frame_qCg * lh_weight_co));
-                        }
-                    }
-                }
-
-                // Correct HL subband (bottom-left quadrant)
-                for (int y = level_height; y < level_height * 2; y++) {
-                    for (int x = 0; x < level_width; x++) {
-                        if (y < enc->height && x < enc->width) {
-                            int idx = y * enc->width + x;
-                            prev_y[idx] -= ((float)quantised_y[idx] * (float)this_frame_qY);
-                            prev_y[idx] += ((float)quantised_y[idx] * ((float)this_frame_qY * hl_weight_y));
-                            prev_co[idx] -= ((float)quantised_co[idx] * (float)this_frame_qCo);
-                            prev_co[idx] += ((float)quantised_co[idx] * ((float)this_frame_qCo * hl_weight_co));
-                            prev_cg[idx] -= ((float)quantised_cg[idx] * (float)this_frame_qCg);
-                            prev_cg[idx] += ((float)quantised_cg[idx] * ((float)this_frame_qCg * hl_weight_co));
-                        }
-                    }
-                }
-
-                // Correct HH subband (bottom-right quadrant)
-                for (int y = level_height; y < level_height * 2; y++) {
-                    for (int x = level_width; x < level_width * 2; x++) {
-                        if (y < enc->height && x < enc->width) {
-                            int idx = y * enc->width + x;
-                            prev_y[idx] -= ((float)quantised_y[idx] * (float)this_frame_qY);
-                            prev_y[idx] += ((float)quantised_y[idx] * ((float)this_frame_qY * hh_weight_y));
-                            prev_co[idx] -= ((float)quantised_co[idx] * (float)this_frame_qCo);
-                            prev_co[idx] += ((float)quantised_co[idx] * ((float)this_frame_qCo * hh_weight_co));
-                            prev_cg[idx] -= ((float)quantised_cg[idx] * (float)this_frame_qCg);
-                            prev_cg[idx] += ((float)quantised_cg[idx] * ((float)this_frame_qCg * hh_weight_co));
-                        }
-                    }
-                }
-            }
-
-            // Finally, correct LL subband (top-left corner at finest level)
-            int ll_width = enc->width >> enc->decomp_levels;
-            int ll_height = enc->height >> enc->decomp_levels;
-            float ll_weight_y = get_perceptual_weight(enc, enc->decomp_levels, 0, 0, enc->decomp_levels);
-            float ll_weight_co = get_perceptual_weight(enc, enc->decomp_levels, 0, 1, enc->decomp_levels);
-            for (int y = 0; y < ll_height; y++) {
-                for (int x = 0; x < ll_width; x++) {
-                    if (y < enc->height && x < enc->width) {
-                        int idx = y * enc->width + x;
-                        prev_y[idx] -= ((float)quantised_y[idx] * (float)this_frame_qY);
-                        prev_y[idx] += ((float)quantised_y[idx] * ((float)this_frame_qY * ll_weight_y));
-                        prev_co[idx] -= ((float)quantised_co[idx] * (float)this_frame_qCo);
-                        prev_co[idx] += ((float)quantised_co[idx] * ((float)this_frame_qCo * ll_weight_co));
-                        prev_cg[idx] -= ((float)quantised_cg[idx] * (float)this_frame_qCg);
-                        prev_cg[idx] += ((float)quantised_cg[idx] * ((float)this_frame_qCg * ll_weight_co));
-                    }
-                }
-            }
-        } else {
-            // Legacy uniform dequantization
-            for (int i = 0; i < tile_size; i++) {
-                float dequant_delta_y = (float)quantised_y[i] * this_frame_qY;
-                float dequant_delta_co = (float)quantised_co[i] * this_frame_qCo;
-                float dequant_delta_cg = (float)quantised_cg[i] * this_frame_qCg;
-
-                prev_y[i] = prev_y[i] + dequant_delta_y;
-                prev_co[i] = prev_co[i] + dequant_delta_co;
-                prev_cg[i] = prev_cg[i] + dequant_delta_cg;
-            }
-        }
-        
         free(delta_y);
         free(delta_co);
         free(delta_cg);
@@ -1283,7 +1182,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     memcpy(buffer + offset, quantised_co, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
     memcpy(buffer + offset, quantised_cg, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
     
-    // OPTIMIZATION: No need to free - using pre-allocated reusable buffers
+    // OPTIMISATION: No need to free - using pre-allocated reusable buffers
     
     return offset;
 }
@@ -1429,11 +1328,11 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height) {
     const int total_pixels = width * height;
     
-    // OPTIMIZATION: Process 4 pixels at a time for better cache utilization
+    // OPTIMISATION: Process 4 pixels at a time for better cache utilisation
     int i = 0;
     const int simd_end = (total_pixels / 4) * 4;
     
-    // Vectorized processing for groups of 4 pixels
+    // Vectorised processing for groups of 4 pixels
     for (i = 0; i < simd_end; i += 4) {
         // Load 4 RGB triplets (12 bytes) at once
         const uint8_t *rgb_ptr = &rgb[i * 3];
@@ -1471,12 +1370,12 @@ static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int
 static inline int iround(double v) { return (int)floor(v + 0.5); }
 
 // ---------------------- sRGB gamma helpers ----------------------
-static inline double srgb_linearize(double val) {
+static inline double srgb_linearise(double val) {
     if (val <= 0.04045) return val / 12.92;
     return pow((val + 0.055) / 1.055, 2.4);
 }
 
-static inline double srgb_unlinearize(double val) {
+static inline double srgb_unlinearise(double val) {
     if (val <= 0.0031308) return 12.92 * val;
     return 1.055 * pow(val, 1.0/2.4) - 0.055;
 }
@@ -1541,10 +1440,10 @@ static const double M_ICTCP_TO_LMSPRIME[3][3] = {
 void srgb8_to_ictcp_hlg(uint8_t r8, uint8_t g8, uint8_t b8,
                        double *out_I, double *out_Ct, double *out_Cp)
 {
-    // 1) linearize sRGB to 0..1
-    double r = srgb_linearize((double)r8 / 255.0);
-    double g = srgb_linearize((double)g8 / 255.0);
-    double b = srgb_linearize((double)b8 / 255.0);
+    // 1) linearise sRGB to 0..1
+    double r = srgb_linearise((double)r8 / 255.0);
+    double g = srgb_linearise((double)g8 / 255.0);
+    double b = srgb_linearise((double)b8 / 255.0);
 
     // 2) linear RGB -> LMS (single 3x3 multiply)
     double L = M_RGB_TO_LMS[0][0]*r + M_RGB_TO_LMS[0][1]*g + M_RGB_TO_LMS[0][2]*b;
@@ -1590,9 +1489,9 @@ void ictcp_hlg_to_srgb8(double I8, double Ct8, double Cp8,
     double b_lin = M_LMS_TO_RGB[2][0]*L + M_LMS_TO_RGB[2][1]*M + M_LMS_TO_RGB[2][2]*S;
 
     // 4) gamma encode and convert to 0..255 with center-of-bin rounding
-    double r = srgb_unlinearize(r_lin);
-    double g = srgb_unlinearize(g_lin);
-    double b = srgb_unlinearize(b_lin);
+    double r = srgb_unlinearise(r_lin);
+    double g = srgb_unlinearise(g_lin);
+    double b = srgb_unlinearise(b_lin);
 
     *r8 = (uint8_t)iround(FCLAMP(r * 255.0, 0.0, 255.0));
     *g8 = (uint8_t)iround(FCLAMP(g * 255.0, 0.0, 255.0));
@@ -1975,7 +1874,7 @@ static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
                     continue;
                 }
 
-                // Initialize text buffer
+                // Initialise text buffer
                 text_buffer_size = 256;
                 text_buffer = malloc(text_buffer_size);
                 if (!text_buffer) {
@@ -2429,7 +2328,7 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
         return 1;
     }
 
-    // Initialize packet size on first frame
+    // Initialise packet size on first frame
     if (frame_num == 0) {
         uint8_t header[4];
         if (fread(header, 1, 4, enc->mp2_file) != 4) return 1;
@@ -2644,7 +2543,7 @@ int main(int argc, char *argv[]) {
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
         {"quantiser", required_argument, 0, 'Q'},
-        {"quantizer", required_argument, 0, 'Q'},
+        {"quantiser", required_argument, 0, 'Q'},
 //        {"wavelet", required_argument, 0, 'w'},
         {"bitrate", required_argument, 0, 'b'},
         {"arate", required_argument, 0, 1400},
@@ -2653,7 +2552,7 @@ int main(int argc, char *argv[]) {
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"lossless", no_argument, 0, 1000},
-        {"delta", no_argument, 0, 1006},
+        {"no-delta", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
         {"no-perceptual-tuning", no_argument, 0, 1007},
         {"encode-limit", required_argument, 0, 1008},
@@ -2725,7 +2624,7 @@ int main(int argc, char *argv[]) {
                 enc->ictcp_mode = 1;
                 break;
             case 1006: // --intra-only
-                enc->intra_only = 0;
+                enc->intra_only = 1;
                 break;
             case 1007: // --no-perceptual-tuning
                 enc->perceptual_tuning = 0;
@@ -2777,8 +2676,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    if (initialize_encoder(enc) != 0) {
-        fprintf(stderr, "Error: Failed to initialize encoder\n");
+    if (initialise_encoder(enc) != 0) {
+        fprintf(stderr, "Error: Failed to initialise encoder\n");
         cleanup_encoder(enc);
         return 1;
     }
@@ -2790,7 +2689,7 @@ int main(int argc, char *argv[]) {
     printf("Wavelet: %s\n", enc->wavelet_filter ? "9/7 irreversible" : "5/3 reversible");
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Colour space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
-    printf("Quantization: %s\n", enc->perceptual_tuning ? "Perceptual (HVS-optimized)" : "Uniform (legacy)");
+    printf("Quantisation: %s\n", enc->perceptual_tuning ? "Perceptual (HVS-optimised)" : "Uniform (legacy)");
     if (enc->ictcp_mode) {
         printf("Base quantiser: I=%d, Ct=%d, Cp=%d\n", enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg);
     } else {
@@ -2875,11 +2774,13 @@ int main(int argc, char *argv[]) {
 
     int count_iframe = 0;
     int count_pframe = 0;
-    
+
+    KEYFRAME_INTERVAL = enc->output_fps >> 2; // refresh often because deltas in DWT are more visible than DCT
+
     while (continue_encoding) {
         // Check encode limit if specified
         if (enc->encode_limit > 0 && frame_count >= enc->encode_limit) {
-            printf("Reached encode limit of %d frames, finalizing...\n", enc->encode_limit);
+            printf("Reached encode limit of %d frames, finalising...\n", enc->encode_limit);
             continue_encoding = 0;
             break;
         }
@@ -3095,7 +2996,7 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
     
-    // OPTIMIZATION: Free reusable quantisation buffers
+    // OPTIMISATION: Free reusable quantisation buffers
     free(enc->reusable_quantised_y);
     free(enc->reusable_quantised_co);
     free(enc->reusable_quantised_cg);

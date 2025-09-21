@@ -90,13 +90,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private var tavPreviousCoeffsCo: MutableMap<Int, FloatArray>? = null
     private var tavPreviousCoeffsCg: MutableMap<Int, FloatArray>? = null
 
-    // TAV Perceptual dequantization support (must match encoder weights)
+    // TAV Perceptual dequantisation support (must match encoder weights)
     data class DWTSubbandInfo(
         val level: Int,          // Decomposition level (1 to decompLevels)
         val subbandType: Int,    // 0=LL, 1=LH, 2=HL, 3=HH
         val coeffStart: Int,     // Starting index in linear coefficient array
         val coeffCount: Int,     // Number of coefficients in this subband
-        val perceptualWeight: Float // Quantization multiplier for this subband
+        val perceptualWeight: Float // Quantisation multiplier for this subband
     )
 
     private fun getFirstGPU(): GraphicsAdapter? {
@@ -1900,7 +1900,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     }
                 }
                 
-                // Interpolate missing lines using vectorized YADIF
+                // Interpolate missing lines using vectorised YADIF
                 if (globalY > 0 && globalY < fieldHeight - 1) {
                     val interpLine = globalY * 2 + (1 - fieldParity)
                     
@@ -1943,7 +1943,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Process YADIF interpolation for a single row using vectorized operations
+     * Process YADIF interpolation for a single row using vectorised operations
      */
     private fun processYadifInterpolation(
         fieldBuffer: ByteArray, prevBuffer: ByteArray, nextBuffer: ByteArray, outputBuffer: ByteArray,
@@ -2191,9 +2191,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
 
                 // Gamma encode to sRGB
-                val rSrgb = srgbUnlinearize(rLin)
-                val gSrgb = srgbUnlinearize(gLin)
-                val bSrgb = srgbUnlinearize(bLin)
+                val rSrgb = srgbUnlinearise(rLin)
+                val gSrgb = srgbUnlinearise(gLin)
+                val bSrgb = srgbUnlinearise(bLin)
 
                 // Convert to 8-bit and store
                 val baseIdx = (py * 16 + px) * 3
@@ -2221,7 +2221,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // sRGB gamma decode: nonlinear -> linear
-    private fun srgbLinearize(value: Double): Double {
+    private fun srgbLinearise(value: Double): Double {
         return if (value <= 0.04045) {
             value / 12.92
         } else {
@@ -2230,7 +2230,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // sRGB gamma encode: linear -> nonlinear
-    private fun srgbUnlinearize(value: Double): Double {
+    private fun srgbUnlinearise(value: Double): Double {
         return if (value <= 0.0031308) {
             value * 12.92
         } else {
@@ -2778,7 +2778,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                         0x03 -> { // TEV_MODE_MOTION - motion compensation with RGB (optimised with memcpy)
                             if (debugMotionVectors) {
-                                // Debug mode: use original pixel-by-pixel for motion vector visualization
+                                // Debug mode: use original pixel-by-pixel for motion vector visualisation
                                 for (dy in 0 until 16) {
                                     for (dx in 0 until 16) {
                                         val x = startX + dx
@@ -3016,7 +3016,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                             // Step 5: Store final RGB data to frame buffer
                             if (debugMotionVectors) {
-                                // Debug mode: individual pokes for motion vector visualization
+                                // Debug mode: individual pokes for motion vector visualisation
                                 for (dy in 0 until 16) {
                                     for (dx in 0 until 16) {
                                         val x = startX + dx
@@ -3314,7 +3314,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val coeffsSize = 256 // 16x16 = 256
         val numBlocks = blocksX * blocksY
 
-        // OPTIMIZATION 1: Pre-compute quantisation values to avoid repeated calculations
+        // OPTIMISATION 1: Pre-compute quantisation values to avoid repeated calculations
         val quantValues = Array(numBlocks) { IntArray(coeffsSize) }
         val quantHalfValues = Array(numBlocks) { IntArray(coeffsSize) }
 
@@ -3336,11 +3336,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
 
-        // OPTIMIZATION 2: Use single-allocation arrays with block-stride access
+        // OPTIMISATION 2: Use single-allocation arrays with block-stride access
         val blocksMid = Array(numBlocks) { IntArray(coeffsSize) }
         val blocksOff = Array(numBlocks) { LongArray(coeffsSize) } // Keep Long for accumulation
 
-        // Step 1: Setup dequantised values and initialize adjustments (BULK OPTIMIZED)
+        // Step 1: Setup dequantised values and initialise adjustments (BULK OPTIMIZED)
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
@@ -3348,15 +3348,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val off = blocksOff[blockIndex]
                 val quantVals = quantValues[blockIndex]
 
-                // OPTIMIZATION 9: Bulk dequantisation using vectorized operations
+                // OPTIMISATION 9: Bulk dequantisation using vectorised operations
                 tevBulkDequantiseCoefficients(block, mid, quantVals, coeffsSize)
 
-                // OPTIMIZATION 10: Bulk zero initialization of adjustments
+                // OPTIMISATION 10: Bulk zero initialisation of adjustments
                 off.fill(0L)
             }
         }
 
-        // OPTIMIZATION 7: Combined boundary analysis loops for better cache locality
+        // OPTIMISATION 7: Combined boundary analysis loops for better cache locality
         // Process horizontal and vertical boundaries in interleaved pattern
         for (by in 0 until blocksY) {
             for (bx in 0 until blocksX) {
@@ -3390,7 +3390,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         for (blockIndex in 0 until numBlocks) {
             val block = blocks[blockIndex]
             if (block != null) {
-                // OPTIMIZATION 11: Bulk apply corrections and quantisation clamping
+                // OPTIMISATION 11: Bulk apply corrections and quantisation clamping
                 tevBulkApplyCorrectionsAndClamp(
                     block, blocksMid[blockIndex], blocksOff[blockIndex],
                     quantValues[blockIndex], quantHalfValues[blockIndex],
@@ -3403,13 +3403,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // BULK MEMORY ACCESS HELPER FUNCTIONS FOR KNUSPERLI
 
     /**
-     * OPTIMIZATION 9: Bulk dequantisation using vectorized operations
+     * OPTIMISATION 9: Bulk dequantisation using vectorised operations
      * Performs coefficient * quantisation in optimised chunks
      */
     private fun tevBulkDequantiseCoefficients(
         coeffs: ShortArray, result: IntArray, quantVals: IntArray, size: Int
     ) {
-        // Process in chunks of 16 for better vectorization (CPU can process multiple values per instruction)
+        // Process in chunks of 16 for better vectorisation (CPU can process multiple values per instruction)
         var i = 0
         val chunks = size and 0xFFFFFFF0.toInt() // Round down to nearest 16
 
@@ -3443,8 +3443,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * OPTIMIZATION 11: Bulk apply corrections and quantisation clamping
-     * Vectorized correction application with proper bounds checking
+     * OPTIMISATION 11: Bulk apply corrections and quantisation clamping
+     * Vectorised correction application with proper bounds checking
      */
     private fun tevBulkApplyCorrectionsAndClamp(
         block: ShortArray, mid: IntArray, off: LongArray,
@@ -3454,7 +3454,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         var i = 0
         val chunks = size and 0xFFFFFFF0.toInt() // Process in chunks of 16
 
-        // Bulk process corrections in chunks for better CPU pipeline utilization
+        // Bulk process corrections in chunks for better CPU pipeline utilisation
         while (i < chunks) {
             // Apply corrections with sqrt(2)/2 weighting - bulk operations
             val corr0 = ((off[i] * kHalfSqrt2) shr 31).toInt()
@@ -3532,7 +3532,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val leftOff = blocksOff[leftBlockIndex]
         val rightOff = blocksOff[rightBlockIndex]
 
-        // OPTIMIZATION 4: Process multiple frequencies in single loop for better cache locality
+        // OPTIMISATION 4: Process multiple frequencies in single loop for better cache locality
         for (v in 0 until 8) { // Only low-to-mid frequencies
             var deltaV = 0L
             var hfPenalty = 0L
@@ -3550,10 +3550,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 hfPenalty += (u * u) * (gi * gi + gj * gj)
             }
 
-            // OPTIMIZATION 8: Early exit for very small adjustments
+            // OPTIMISATION 8: Early exit for very small adjustments
             if (kotlin.math.abs(deltaV) < 100) continue
 
-            // OPTIMIZATION 5: Apply high-frequency damping once per frequency band
+            // OPTIMISATION 5: Apply high-frequency damping once per frequency band
             if (hfPenalty > 1600) deltaV /= 2
 
             // Second pass: Apply corrections (BULK OPTIMIZED with unrolling)
@@ -3605,7 +3605,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val topOff = blocksOff[topBlockIndex]
         val bottomOff = blocksOff[bottomBlockIndex]
 
-        // OPTIMIZATION 6: Optimised vertical analysis with better cache access pattern
+        // OPTIMISATION 6: Optimised vertical analysis with better cache access pattern
         for (u in 0 until 16) { // Only low-to-mid frequencies
             var deltaU = 0L
             var hfPenalty = 0L
@@ -3706,7 +3706,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         blocksMax[blockIndex][i] = blocksMid[blockIndex][i] + halfQuant
                     }
 
-                    // Initialize adjustment accumulator
+                    // Initialise adjustment accumulator
                     blocksOff[blockIndex][i] = 0L
                 }
             }
@@ -3776,7 +3776,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val leftOff = blocksOff[leftBlockIndex]
         val rightOff = blocksOff[rightBlockIndex]
 
-        // OPTIMIZATION 12: Process 8x8 boundaries with bulk operations (v < 4 for low-to-mid frequencies)
+        // OPTIMISATION 12: Process 8x8 boundaries with bulk operations (v < 4 for low-to-mid frequencies)
         for (v in 0 until 4) { // Only low-to-mid frequencies for 8x8
             var deltaV = 0L
             var hfPenalty = 0L
@@ -3833,7 +3833,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val topOff = blocksOff[topBlockIndex]
         val bottomOff = blocksOff[bottomBlockIndex]
         
-        // OPTIMIZATION 13: Optimised vertical analysis for 8x8 with better cache access pattern
+        // OPTIMISATION 13: Optimised vertical analysis for 8x8 with better cache access pattern
         for (u in 0 until 4) { // Only low-to-mid frequencies for 8x8
             var deltaU = 0L
             var hfPenalty = 0L
@@ -3881,7 +3881,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // ================= TAV (TSVM Advanced Video) Decoder =================
     // DWT-based video codec with ICtCp colour space support
 
-    // TAV Perceptual dequantization helper functions (must match encoder implementation exactly)
+    // TAV Perceptual dequantisation helper functions (must match encoder implementation exactly)
     private fun calculateSubbandLayout(width: Int, height: Int, decompLevels: Int): List<DWTSubbandInfo> {
         val subbands = mutableListOf<DWTSubbandInfo>()
 
@@ -3954,7 +3954,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             when (subbandType) {
                 0 -> { // LL subband - contains most image energy, preserve carefully
                     return when {
-                        level >= 6 -> 0.5f  // LL6: High energy but can tolerate moderate quantization (range up to 22K)
+                        level >= 6 -> 0.5f  // LL6: High energy but can tolerate moderate quantisation (range up to 22K)
                         level >= 5 -> 0.7f  // LL5: Good preservation
                         else -> 0.9f        // Lower LL levels: Fine preservation
                     }
@@ -3972,9 +3972,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 2 -> { // HL subband - vertical details (less sensitive due to HVS characteristics)
                     return when {
                         level >= 6 -> 1.0f  // HL6: Can quantize more aggressively than LH6
-                        level >= 5 -> 1.2f  // HL5: Standard quantization
+                        level >= 5 -> 1.2f  // HL5: Standard quantisation
                         level >= 4 -> 1.5f  // HL4: Notable range but less critical
-                        level >= 3 -> 2.0f  // HL3: Can tolerate more quantization
+                        level >= 3 -> 2.0f  // HL3: Can tolerate more quantisation
                         level >= 2 -> 2.5f  // HL2: Less important
                         else -> 3.5f        // HL1: Most aggressive for vertical details
                     }
@@ -3986,12 +3986,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         level >= 4 -> 2.0f  // HH4: Very aggressive
                         level >= 3 -> 2.8f  // HH3: Minimal preservation
                         level >= 2 -> 3.5f  // HH2: Maximum compression
-                        else -> 5.0f        // HH1: Most aggressive quantization
+                        else -> 5.0f        // HH1: Most aggressive quantisation
                     }
                 }
             }
         } else {
-            // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+            // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
             when (subbandType) {
                 0 -> { // LL chroma - still important but less than luma
                     return 1f
@@ -4044,7 +4044,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return when (subbandType) {
                 0 -> { // LL
                     // LL6 has extremely high variance (Range=8026.7) but contains most image energy
-                    // Moderate quantization appropriate due to high variance tolerance
+                    // Moderate quantisation appropriate due to high variance tolerance
                     1.1f
                 }
                 1 -> { // LH (horizontal detail)
@@ -4157,7 +4157,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             else return perceptual_model3_HH(LH, HL) * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
             
         } else {
-            // CHROMA CHANNELS: Less critical for human perception, more aggressive quantization
+            // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
             val base = perceptual_model3_chroma_basecurve(qualityLevel, level - 1)
 
             if (subbandType == 0) { // LL chroma - still important but less than luma
@@ -4194,7 +4194,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun dequantiseDWTSubbandsPerceptual(qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
                                                subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
 
-        // Initialize output array to zero (critical for detecting missing coefficients)
+        // Initialise output array to zero (critical for detecting missing coefficients)
         if (tavDebugFrameTarget >= 0) {
         Arrays.fill(dequantised, 0.0f)
             }
@@ -4351,7 +4351,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val quantisedCo = ShortArray(coeffCount)
         val quantisedCg = ShortArray(coeffCount)
         
-        // OPTIMIZATION: Bulk read all coefficient data
+        // OPTIMISATION: Bulk read all coefficient data
         val totalCoeffBytes = coeffCount * 3 * 2L  // 3 channels, 2 bytes per short
         val coeffBuffer = ByteArray(totalCoeffBytes.toInt())
         UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), totalCoeffBytes)
@@ -4378,7 +4378,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val coTile = FloatArray(coeffCount)
         val cgTile = FloatArray(coeffCount)
 
-        // Check if perceptual quantization is used (versions 5 and 6)
+        // Check if perceptual quantisation is used (versions 5 and 6)
         val isPerceptual = (tavVersion == 5 || tavVersion == 6)
 
         // Debug: Print version detection for frame 120
@@ -4387,7 +4387,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         if (isPerceptual) {
-            // Perceptual dequantization with subband-specific weights
+            // Perceptual dequantisation with subband-specific weights
             val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
             val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
             val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
@@ -4432,7 +4432,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         println("  $subbandName: start=${subband.coeffStart}, count=${subband.coeffCount}, sample_nonzero=$sampleCoeffs/$coeffCount")
 
-                        // Debug: Print first few RAW QUANTIZED values for comparison (before dequantization)
+                        // Debug: Print first few RAW QUANTIZED values for comparison (before dequantisation)
                         print("    $subbandName raw_quant: ")
                         for (i in 0 until minOf(32, subband.coeffCount)) {
                             val idx = subband.coeffStart + i
@@ -4445,20 +4445,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         } else {
-            // Uniform dequantization for versions 3 and 4
+            // Uniform dequantisation for versions 3 and 4
             for (i in 0 until coeffCount) {
                 yTile[i] = quantisedY[i] * qY.toFloat()
                 coTile[i] = quantisedCo[i] * qCo.toFloat()
                 cgTile[i] = quantisedCg[i] * qCg.toFloat()
             }
 
-            // Debug: Uniform quantization subband analysis for comparison
+            // Debug: Uniform quantisation subband analysis for comparison
             if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
                 val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
                 val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
                 val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
 
-                // Comprehensive five-number summary for uniform quantization baseline
+                // Comprehensive five-number summary for uniform quantisation baseline
                 for (subband in subbands) {
                     // Collect all quantized coefficient values for this subband (luma only for baseline)
                     val coeffValues = mutableListOf<Int>()
@@ -4515,7 +4515,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         println("  $subbandName: start=${subband.coeffStart}, count=${subband.coeffCount}, sample_nonzero=$sampleCoeffs/$coeffCount")
 
-                        // Debug: Print first few RAW QUANTIZED values for comparison with perceptual (before dequantization)
+                        // Debug: Print first few RAW QUANTIZED values for comparison with perceptual (before dequantisation)
                         print("    $subbandName raw_quant: ")
                         for (i in 0 until minOf(32, subband.coeffCount)) {
                             val idx = subband.coeffStart + i
@@ -4636,7 +4636,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val startX = tileX * TILE_SIZE_X
         val startY = tileY * TILE_SIZE_Y
         
-        // OPTIMIZATION: Process pixels row by row with bulk copying for better cache locality
+        // OPTIMISATION: Process pixels row by row with bulk copying for better cache locality
         for (y in 0 until TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
@@ -4670,7 +4670,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     rowRgbBuffer[bufferIdx++] = b.toInt().coerceIn(0, 255).toByte()
                 }
                 
-                // OPTIMIZATION: Bulk copy entire row at once
+                // OPTIMISATION: Bulk copy entire row at once
                 val rowStartOffset = (frameY * width + validStartX) * 3L
                 UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
                                      null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
@@ -4683,7 +4683,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val startX = tileX * TILE_SIZE_X
         val startY = tileY * TILE_SIZE_Y
         
-        // OPTIMIZATION: Process pixels row by row with bulk copying for better cache locality
+        // OPTIMISATION: Process pixels row by row with bulk copying for better cache locality
         for (y in 0 until TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
@@ -4722,16 +4722,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
 
                     // Gamma encode to sRGB
-                    val rSrgb = srgbUnlinearize(rLin)
-                    val gSrgb = srgbUnlinearize(gLin)
-                    val bSrgb = srgbUnlinearize(bLin)
+                    val rSrgb = srgbUnlinearise(rLin)
+                    val gSrgb = srgbUnlinearise(gLin)
+                    val bSrgb = srgbUnlinearise(bLin)
 
                     rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
                     rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
                     rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
                 }
                 
-                // OPTIMIZATION: Bulk copy entire row at once
+                // OPTIMISATION: Bulk copy entire row at once
                 val rowStartOffset = (frameY * width + validStartX) * 3L
                 UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
                                      null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
@@ -4792,7 +4792,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
 
-            // OPTIMIZATION: Bulk copy entire row at once
+            // OPTIMISATION: Bulk copy entire row at once
             val rowStartOffset = y * width * 3L
             UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer),
                                  null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
@@ -4841,7 +4841,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 rowRgbBuffer[bufferIdx++] = (b * 255f).toInt().coerceIn(0, 255).toByte()
             }
 
-            // OPTIMIZATION: Bulk copy entire row at once
+            // OPTIMISATION: Bulk copy entire row at once
             val rowStartOffset = y * width * 3L
             UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer),
                                  null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
@@ -4898,7 +4898,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val startX = tileX * TILE_SIZE_X
         val startY = tileY * TILE_SIZE_Y
         
-        // OPTIMIZATION: Copy entire rows at once for maximum performance
+        // OPTIMISATION: Copy entire rows at once for maximum performance
         for (y in 0 until TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
@@ -4912,7 +4912,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val rowStartOffset = (frameY * width + validStartX) * 3L
                 val rowByteCount = validPixelsInRow * 3L
                 
-                // OPTIMIZATION: Bulk copy entire row of RGB data in one operation
+                // OPTIMISATION: Bulk copy entire row of RGB data in one operation
                 UnsafeHelper.memcpy(
                     vm.usermem.ptr + prevRGBAddr + rowStartOffset,
                     vm.usermem.ptr + currentRGBAddr + rowStartOffset,
@@ -4933,7 +4933,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         var ptr = readPtr
 
-        // Initialize coefficient storage if needed
+        // Initialise coefficient storage if needed
         if (tavPreviousCoeffsY == null) {
             tavPreviousCoeffsY = mutableMapOf()
             tavPreviousCoeffsCo = mutableMapOf()
@@ -4961,7 +4961,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         vm.bulkPeekShort(ptr.toInt(), deltaCg, coeffCount * 2)
         ptr += coeffCount * 2
         
-        // Get or initialize previous coefficients for this tile
+        // Get or initialise previous coefficients for this tile
         val prevY = tavPreviousCoeffsY!![tileIdx] ?: FloatArray(coeffCount)
         val prevCo = tavPreviousCoeffsCo!![tileIdx] ?: FloatArray(coeffCount)
         val prevCg = tavPreviousCoeffsCg!![tileIdx] ?: FloatArray(coeffCount)
@@ -4971,106 +4971,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val currentCo = FloatArray(coeffCount)
         val currentCg = FloatArray(coeffCount)
 
-        // Check if perceptual quantization is used (versions 5 and 6)
-        val isPerceptual = (tavVersion == 5 || tavVersion == 6)
-
-        // Debug: Print version detection for frame 120
-        if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
-            println("[VERSION-DEBUG-DELTA] Frame $tavDebugCurrentFrameNumber - TAV version: $tavVersion, isPerceptual: $isPerceptual")
+        // Uniform delta reconstruction because coefficient deltas cannot be perceptually coded
+        for (i in 0 until coeffCount) {
+            currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
+            currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
+            currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
         }
 
-        if (isPerceptual) {
-            // Perceptual delta reconstruction with subband-specific weights
-            val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
-            val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
-            val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
-
-            // Apply same chroma quantizer reduction as encoder (60% reduction for perceptual mode)
-            val adjustedQCo = qCo * 0.4f
-            val adjustedQCg = qCg * 0.4f
-
-            // Apply perceptual dequantization to delta coefficients
-            val deltaYFloat = FloatArray(coeffCount)
-            val deltaCoFloat = FloatArray(coeffCount)
-            val deltaCgFloat = FloatArray(coeffCount)
-
-            dequantiseDWTSubbandsPerceptual(qYGlobal, deltaY, deltaYFloat, subbands, qY.toFloat(), false, decompLevels)
-            dequantiseDWTSubbandsPerceptual(qYGlobal, deltaCo, deltaCoFloat, subbands, adjustedQCo, true, decompLevels)
-            dequantiseDWTSubbandsPerceptual(qYGlobal, deltaCg, deltaCgFloat, subbands, adjustedQCg, true, decompLevels)
-
-            // Reconstruct: current = previous + perceptually_dequantized_delta
-            for (i in 0 until coeffCount) {
-                currentY[i] = prevY[i] + deltaYFloat[i]
-                currentCo[i] = prevCo[i] + deltaCoFloat[i]
-                currentCg[i] = prevCg[i] + deltaCgFloat[i]
-            }
-
-            // Debug: Check coefficient values before inverse DWT
-            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
-                var maxYRecon = 0.0f
-                var nonzeroY = 0
-                for (coeff in currentY) {
-                    if (coeff != 0.0f) {
-                        nonzeroY++
-                        if (kotlin.math.abs(coeff) > maxYRecon) {
-                            maxYRecon = kotlin.math.abs(coeff)
-                        }
-                    }
-                }
-                println("[DECODER-DELTA] Frame $tavDebugCurrentFrameNumber - Before IDWT: Y max=${maxYRecon.toInt()}, nonzero=$nonzeroY")
-            }
-        } else {
-            // Uniform delta reconstruction for versions 3 and 4
-            for (i in 0 until coeffCount) {
-                currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
-                currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
-                currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
-            }
-
-            // Debug: Uniform delta quantization subband analysis for comparison
-            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
-                val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
-                val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
-                val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
-
-                // Comprehensive five-number summary for uniform delta quantization baseline
-                for (subband in subbands) {
-                    // Collect all quantized delta coefficient values for this subband (luma only for baseline)
-                    val coeffValues = mutableListOf<Int>()
-                    for (i in 0 until subband.coeffCount) {
-                        val idx = subband.coeffStart + i
-                        if (idx < deltaY.size) {
-                            val quantVal = deltaY[idx].toInt()
-                            coeffValues.add(quantVal)
-                        }
-                    }
-
-                    // Calculate and print five-number summary for uniform delta mode
-                    val subbandTypeName = when (subband.subbandType) {
-                        0 -> "LL"
-                        1 -> "LH"
-                        2 -> "HL"
-                        3 -> "HH"
-                        else -> "??"
-                    }
-                    val summary = calculateFiveNumberSummary(coeffValues)
-                    println("UNIFORM DELTA SUBBAND STATS: Luma ${subbandTypeName}${subband.level} uniformQ=${qY.toFloat()} - $summary")
-                }
-
-                var maxYRecon = 0.0f
-                var nonzeroY = 0
-                for (coeff in currentY) {
-                    if (coeff != 0.0f) {
-                        nonzeroY++
-                        if (kotlin.math.abs(coeff) > maxYRecon) {
-                            maxYRecon = kotlin.math.abs(coeff)
-                        }
-                    }
-                }
-                println("[DECODER-DELTA] Frame $tavDebugCurrentFrameNumber - Before IDWT: Y max=${maxYRecon.toInt()}, nonzero=$nonzeroY")
-            }
-        }
-        
         // Store current coefficients as previous for next frame
         tavPreviousCoeffsY!![tileIdx] = currentY.clone()
         tavPreviousCoeffsCo!![tileIdx] = currentCo.clone()
