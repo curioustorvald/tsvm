@@ -151,6 +151,8 @@ static const int QUALITY_CG[] = {240, 180, 120, 60, 30, 5};
 // psychovisual tuning parameters
 static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
 static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+static const float ANISOTROPY_MULT_CHROMA[] = {2.4f, 2.2f, 2.0f, 1.7f, 1.4f, 1.0f};
 static const float ANISOTROPY_BIAS_CHROMA[] = {0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f};
 
 // DWT coefficient structure for each subband
@@ -350,7 +352,7 @@ static void show_usage(const char *program_name) {
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
-    printf("  --no-delta              Disable delta encoding (less noisy picture at the cost of larger file)\n");
+    printf("  --intra-only            Disable delta encoding (less noisy picture at the cost of larger file)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
@@ -938,9 +940,9 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
         } else if (subband_type == 1) { // LH chroma - horizontal chroma details
             return FCLAMP(base, 1.0f, 100.0f);
         } else if (subband_type == 2) { // HL chroma - vertical chroma details (even less critical)
-            return FCLAMP(base * ANISOTROPY_MULT[enc->quality_level], 1.0f, 100.0f);
+            return FCLAMP(base * ANISOTROPY_MULT_CHROMA[enc->quality_level], 1.0f, 100.0f);
         } else { // HH chroma - diagonal chroma details (most aggressive)
-            return FCLAMP(base * ANISOTROPY_MULT[enc->quality_level] + ANISOTROPY_BIAS_CHROMA[enc->quality_level], 1.0f, 100.0f);
+            return FCLAMP(base * ANISOTROPY_MULT_CHROMA[enc->quality_level] + ANISOTROPY_BIAS_CHROMA[enc->quality_level], 1.0f, 100.0f);
         }
     }
 }
@@ -2552,7 +2554,7 @@ int main(int argc, char *argv[]) {
         {"verbose", no_argument, 0, 'v'},
         {"test", no_argument, 0, 't'},
         {"lossless", no_argument, 0, 1000},
-        {"no-delta", no_argument, 0, 1006},
+        {"intra-only", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
         {"no-perceptual-tuning", no_argument, 0, 1007},
         {"encode-limit", required_argument, 0, 1008},

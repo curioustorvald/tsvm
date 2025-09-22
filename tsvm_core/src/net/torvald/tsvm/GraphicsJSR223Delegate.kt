@@ -4091,6 +4091,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     var ANISOTROPY_MULT = floatArrayOf(1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
     var ANISOTROPY_BIAS = floatArrayOf(0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
+    var ANISOTROPY_MULT_CHROMA = floatArrayOf(2.4f, 2.2f, 2.0f, 1.7f, 1.4f, 1.0f)
     var ANISOTROPY_BIAS_CHROMA = floatArrayOf(0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f)
 
 
@@ -4167,10 +4168,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 return base.coerceAtLeast(1.0f)
             }
             else if (subbandType == 2) { // HL chroma - vertical chroma details (even less critical)
-                return (base * ANISOTROPY_MULT[qualityLevel]).coerceAtLeast(1.0f)
+                return (base * ANISOTROPY_MULT_CHROMA[qualityLevel]).coerceAtLeast(1.0f)
             }
             else { // HH chroma - diagonal chroma details (most aggressive)
-                return (base * ANISOTROPY_MULT[qualityLevel] + ANISOTROPY_BIAS_CHROMA[qualityLevel]).coerceAtLeast(1.0f)
+                return (base * ANISOTROPY_MULT_CHROMA[qualityLevel] + ANISOTROPY_BIAS_CHROMA[qualityLevel]).coerceAtLeast(1.0f)
             }
         }
     }
