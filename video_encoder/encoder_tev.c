@@ -2994,11 +2994,6 @@ int main(int argc, char *argv[]) {
     
     // Update actual frame count in encoder struct  
     enc->total_frames = frame_count;
-    
-    // Write final sync packet
-    uint8_t sync_packet = TEV_PACKET_SYNC;
-    fwrite(&sync_packet, 1, 1, output);
-    sync_packet_count++;
 
     // Update header with actual frame count (seek back to header position)
     if (!enc->output_to_stdout) {

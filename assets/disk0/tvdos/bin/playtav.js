@@ -562,13 +562,117 @@ let trueFrameCount = 0
 let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
+let currentFileIndex = 1  // Track which file we're playing in concatenated stream
 
 let blockDataPtr = sys.malloc(2377744)
 
-// Playback loop - properly adapted from TEV
+// Function to try reading next TAV file header at current position
+function tryReadNextTAVHeader() {
+    // Save current position
+    let currentPos = seqread.getReadCount()
+
+    // Try to read magic number
+    let newMagic = new Array(8)
+    try {
+        for (let i = 0; i < 8; i++) {
+            newMagic[i] = seqread.readOneByte()
+        }
+
+        // compensating the old encoder emitting extra sync packets
+        while (newMagic[0] == 255) {
+            newMagic.shift(); newMagic[7] = seqread.readOneByte()
+        }
+
+        // Check if it matches TAV magic
+        let isValidTAV = true
+        for (let i = 0; i < 8; i++) {
+            if (newMagic[i] !== TAV_MAGIC[i]) {
+                isValidTAV = false
+                serial.printerr("Header mismatch: got "+newMagic.join())
+                break
+            }
+        }
+
+        if (isValidTAV) {
+            // Read the rest of the header
+            let newHeader = {
+                magic: newMagic,
+                version: seqread.readOneByte(),
+                width: seqread.readShort(),
+                height: seqread.readShort(),
+                fps: seqread.readOneByte(),
+                totalFrames: seqread.readInt(),
+                waveletFilter: seqread.readOneByte(),
+                decompLevels: seqread.readOneByte(),
+                qualityY: seqread.readOneByte(),
+                qualityCo: seqread.readOneByte(),
+                qualityCg: seqread.readOneByte(),
+                extraFlags: seqread.readOneByte(),
+                videoFlags: seqread.readOneByte(),
+                reserved: new Array(7)
+            }
+
+            // Skip reserved bytes
+            for (let i = 0; i < 7; i++) {
+                seqread.readOneByte()
+            }
+
+            return newHeader
+        }
+    } catch (e) {
+        serial.printerr(e)
+        // EOF or read error - restore position and return null
+        // Note: seqread doesn't have seek, so we can't restore position
+        // This is okay since we're at EOF anyway
+    }
+
+    return null
+}
+
+// Playback loop - properly adapted from TEV with multi-file support
 try {
     let t1 = sys.nanoTime()
-    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH && (header.totalFrames == 0 || header.totalFrames > 0 && frameCount < header.totalFrames)) {
+    let totalFilesProcessed = 0
+
+    while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
+        // Check if we've finished the current file
+        if (header.totalFrames > 0 && frameCount >= header.totalFrames) {
+            console.log(`Completed file ${currentFileIndex}: ${frameCount} frames`)
+
+            // Try to read next TAV file header
+            let nextHeader = tryReadNextTAVHeader()
+            if (nextHeader) {
+                // Found another TAV file - update header and reset counters
+                header = nextHeader
+                frameCount = 0
+                currentFileIndex++
+                totalFilesProcessed++
+
+                console.log(`\nStarting file ${currentFileIndex}:`)
+                console.log(`Resolution: ${header.width}x${header.height}`)
+                console.log(`FPS: ${header.fps}`)
+                console.log(`Total frames: ${header.totalFrames}`)
+                console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : "9/7 irreversible"}`)
+                console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
+
+                // Reset motion vectors for new file
+                for (let i = 0; i < numTiles; i++) {
+                    motionVectors[i] = { mvX: 0, mvY: 0, rcf: 1.0 }
+                }
+
+                // Continue with new file
+                continue
+            } else {
+                // No more TAV files found
+                console.log(`\nNo more TAV files found. Total files processed: ${currentFileIndex}`)
+                break
+            }
+        }
+
+        // Original playback loop condition (but without totalFrames check since we handle it above)
+        if (seqread.getReadCount() >= FILE_LENGTH) {
+            break
+        }
 
         // Handle interactive controls
         if (interactive) {
@@ -713,7 +817,11 @@ try {
             if (!hasSubtitles) {
                 con.move(31, 1)
                 con.color_pair(253, 0)
-                print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                if (currentFileIndex > 1) {
+                    print(`File ${currentFileIndex}: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                } else {
+                    print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                }
                 con.move(32, 1)
                 con.color_pair(253, 0)
                 print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
@@ -738,7 +846,11 @@ finally {
     con.clear()
 
     if (errorlevel === 0) {
-        console.log(`Playback completed: ${frameCount} frames`)
+        if (currentFileIndex > 1) {
+            console.log(`Playback completed: ${currentFileIndex} files processed`)
+        } else {
+            console.log(`Playback completed: ${frameCount} frames`)
+        }
     } else {
         console.log(`Playback failed with error ${errorlevel}`)
     }

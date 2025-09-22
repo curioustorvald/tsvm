@@ -971,12 +971,17 @@ A universal, simle cue designed to work as both playlist to cue up external file
     uint8  Magic[8]: "\x1F TSVM UCF"
     uint8  Version: 1
     uint16 Number of cue elements
-    unit8  Reserved[5]
+    uint32 (Optional) Size of the cue file, useful for allocating fixed length for future expansion; 0 when not used
+    unit8  Reserved
 
 ## Cue Element
-    uint8  Addressing Mode
+    uint8  Addressing Mode (low nybble) and Role Flags (high nybble)
             - 0x01: External
             - 0x02: Internal
+            - 0x10: Intended for machine interaction (GOP indices, frame indices, etc.)
+            - 0x20: Intended for human interaction (playlist, chapter markers, etc.)
+            - 0x30: Intended for both machine and human interaction
+            Role flags must be unset to assign no roles
     uint16 String Length for name
     *       Name of the element in UTF-8
 

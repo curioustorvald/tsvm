@@ -2940,10 +2940,6 @@ int main(int argc, char *argv[]) {
     // Update actual frame count in encoder struct  
     enc->total_frames = frame_count;
 
-    // Write final sync packet
-    uint8_t sync_packet = TAV_PACKET_SYNC;
-    fwrite(&sync_packet, 1, 1, enc->output_fp);
-
     // Update header with actual frame count (seek back to header position)
     if (enc->output_fp != stdout) {
         long current_pos = ftell(enc->output_fp);
