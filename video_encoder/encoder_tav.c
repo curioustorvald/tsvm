@@ -152,8 +152,8 @@ static const int QUALITY_CG[] = {240, 180, 120, 60, 30, 5};
 static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
 static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-static const float ANISOTROPY_MULT_CHROMA[] = {2.4f, 2.2f, 2.0f, 1.7f, 1.4f, 1.0f};
-static const float ANISOTROPY_BIAS_CHROMA[] = {0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f};
+static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f};
+static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f};
 
 // DWT coefficient structure for each subband
 typedef struct {
@@ -821,7 +821,7 @@ static float perceptual_model3_HL(int quality, float LH) {
 }
 
 static float perceptual_model3_HH(float LH, float HL) {
-    return 2.f * (LH + HL) / 3.f;
+    return (HL / LH) * 1.44f;
 }
 
 static float perceptual_model3_LL(int quality, int level) {
@@ -913,15 +913,15 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
     if (!is_chroma) {
         // LL subband - contains most image energy, preserve carefully
         if (subband_type == 0)
-            return perceptual_model3_LL(enc->quality_level, level + 1);
+            return perceptual_model3_LL(enc->quality_level, level);
 
         // LH subband - horizontal details (human eyes more sensitive)
-        float LH = perceptual_model3_LH(enc->quality_level, level + 1);
+        float LH = perceptual_model3_LH(enc->quality_level, level);
         if (subband_type == 1)
             return LH;
 
         // HL subband - vertical details
-        float HL = perceptual_model3_HL(enc->quality_level, LH + 1);
+        float HL = perceptual_model3_HL(enc->quality_level, LH);
         if (subband_type == 2)
             return HL * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
 

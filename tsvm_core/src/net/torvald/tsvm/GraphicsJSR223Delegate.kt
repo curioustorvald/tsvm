@@ -4091,8 +4091,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     var ANISOTROPY_MULT = floatArrayOf(1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
     var ANISOTROPY_BIAS = floatArrayOf(0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
-    var ANISOTROPY_MULT_CHROMA = floatArrayOf(2.4f, 2.2f, 2.0f, 1.7f, 1.4f, 1.0f)
-    var ANISOTROPY_BIAS_CHROMA = floatArrayOf(0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f)
+    var ANISOTROPY_MULT_CHROMA = floatArrayOf(6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f)
+    var ANISOTROPY_BIAS_CHROMA = floatArrayOf(1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f)
 
 
 
@@ -4111,7 +4111,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun perceptual_model3_HH(LH: Float, HL: Float): Float {
-        return 2f * (LH + HL) / 3f
+        return (HL / LH) * 1.44f;
     }
 
     fun perceptual_model3_LL(quality: Int, level: Int): Float {
@@ -4144,14 +4144,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // LUMA CHANNEL: Based on statistical analysis from real video content
             
             // LL subband - contains most image energy, preserve carefully
-            if (subbandType == 0) return perceptual_model3_LL(qualityLevel, level + 1)
+            if (subbandType == 0) return perceptual_model3_LL(qualityLevel, level)
             
             // LH subband - horizontal details (human eyes more sensitive)
-            val LH: Float = perceptual_model3_LH(qualityLevel, level + 1)
+            val LH: Float = perceptual_model3_LH(qualityLevel, level)
             if (subbandType == 1) return LH
             
             // HL subband - vertical details
-            val HL: Float = perceptual_model3_HL(qualityLevel, LH + 1)
+            val HL: Float = perceptual_model3_HL(qualityLevel, LH)
             if (subbandType == 2) return HL * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
 
             // HH subband - diagonal details
