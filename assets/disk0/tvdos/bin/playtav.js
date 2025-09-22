@@ -645,6 +645,9 @@ try {
                 // Found another TAV file - update header and reset counters
                 header = nextHeader
                 frameCount = 0
+                akku = 0.0
+                akku2 = 0.0
+                FRAME_TIME = 1.0 / header.fps
                 currentFileIndex++
                 totalFilesProcessed++
 

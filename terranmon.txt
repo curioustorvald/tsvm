@@ -957,7 +957,7 @@ Unlike the TEV format, TAV encoder emits extra sync packet for every 1000th fram
 TSVM Universal Cue format
 Created by CuriousTorvald on 2025-09-22
 
-A universal, simle cue designed to work as both playlist to cue up external files and lookup table for internal bytes.
+A universal, simple cue designed to work as both playlist to cue up external files and lookup table for internal bytes.
 
 # File Structure
 \x1F T S V M U C F
