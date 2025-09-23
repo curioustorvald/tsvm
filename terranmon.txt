@@ -707,18 +707,35 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     uint8  Extra Feature Flags
             - bit 0 = has audio
             - bit 1 = has subtitle
+            - bit 2 = infinite loop (must be ignored when File Role is 1)
+            - bit 7 = has no actual packets, this file is header-only without an Intro Movie
     uint8  Video Flags
             - bit 0 = is interlaced (should be default for most non-archival TEV videos)
             - bit 1 = is NTSC framerate (repeat every 1000th frame)
-    uint8  Reserved, fill with zero
+    uint8  File Role
+            - 0 = generic
+            - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
+                   When header-only file contain video packets, they should be presented as an Intro Movie
+                   before the user-interactable selector (served by the UCF payoad)
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (predicted frame)
+    0x1F: prohibited
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
+    0x31: Subtitle in "Karaoke" format
+    0xE0: EXIF packet
+    0xE1: ID3 packet
+    0xE2: Vorbis Comment packet
     0xFF: sync packet
-    0x1F: prohibited
+
+## EXIF/ID3/Vorbis Comment packet structure
+    uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
+    uint32 Length of the payload
+    *      Standard payload
+
+note: metadata packets must precede any non-metadata packets
 
 ## Video Packet Structure
     uint8  Packet Type
@@ -821,20 +838,22 @@ transmission capability, and region-of-interest coding.
     uint8  Version: 3 (YCoCg-R uniform), 4 (ICtCp uniform), 5 (YCoCg-R perceptual), 6 (ICtCp perceptual)
     uint16 Width: video width in pixels  
     uint16 Height: video height in pixels
-    uint8  FPS: frames per second
-    uint32 Total Frames: number of video frames
+    uint8  FPS: frames per second. Use 0x00 for still images
+    uint32 Total Frames: number of video frames. Use 0xFFFFFFFF to denote still image (.im3 file)
     uint8  Wavelet Filter Type/File Role:
             - 0 = 5/3 reversible
             - 1 = 9/7 irreversible
-    uint8  Decomposition Levels: number of DWT levels (1-4)
+    uint8  Decomposition Levels: number of DWT levels (1-6+)
     uint8  Quantiser Index for Y channel (1: lossless, 255: potato)
     uint8  Quantiser Index for Co channel (1: lossless, 255: potato)
     uint8  Quantiser Index for Cg channel (1: lossless, 255: potato)
-    uint8  Extra Feature Flags
+    uint8  Extra Feature Flags (must be ignored for still images)
             - bit 0 = has audio
             - bit 1 = has subtitle
+            - bit 2 = infinite loop (must be ignored when File Role is 1)
+            - bit 7 = has no actual packets, this file is header-only without an Intro Movie
     uint8  Video Flags
-            - bit 0 = has no actual packets, this file is header-only without an Intro Movie
+            - bit 0 = has alpha channel
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
     uint8  File Role
@@ -842,15 +861,26 @@ transmission capability, and region-of-interest coding.
             - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
-    uint8  Reserved[7]: fill with zeros
+    uint8  Reserved[6]: fill with zeros
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (delta-coded frame)
-    0x20: MP2 audio packet
-    0x30: Subtitle in "Simple" format  
-    0xFF: sync packet
     0x1F: prohibited
+    0x20: MP2 audio packet
+    0x30: Subtitle in "Simple" format
+    0x31: Subtitle in "Karaoke" format
+    0xE0: EXIF packet
+    0xE1: ID3 packet
+    0xE2: Vorbis Comment packet
+    0xFF: sync packet
+
+## EXIF/ID3/Vorbis Comment packet structure
+    uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
+    uint32 Length of the payload
+    *      Standard payload
+
+note: metadata packets must precede any non-metadata packets
 
 ## Video Packet Structure
     uint8  Packet Type
@@ -897,20 +927,9 @@ Traditional approach using same quantization factor for all DWT subbands within 
 TAV versions 5 and 6 implement Human Visual System (HVS) optimized quantization with
 frequency-aware subband weighting for superior visual quality:
 
-**Luma (Y) Channel Strategy:**
-- LL (lowest frequency): Base quantizer × 0.4 (finest preservation)
-- LH/HL at max level: Base quantizer × 0.6
-- HH at max level: Base quantizer × 1.0
-- Progressive increase toward higher frequencies down to level 1:
-  - LH1/HL1: Base quantizer × 2.5
-  - HH1: Base quantizer × 3.0
-
-**Chroma (Co/Cg) Channel Strategy:**
-- LL (lowest frequency): Base quantizer × 0.7 (less critical than luma)
-- LH/HL at max level: Base quantizer × 1.0
-- HH at max level: Base quantizer × 1.3
-- Progressive increase toward higher frequencies down to level 1:
-  - HH1: Base quantizer × 2.2
+Anisotropic quantisation is applied for both Luma and Chroma channels to preserve horizontal details.
+The anisotropic quantisation is the innovative upgrade to the traditional field-interlacing and
+chroma subsampling.
 
 This perceptual approach allocates more bits to visually important low-frequency
 details while aggressively quantizing high-frequency noise, resulting in superior
@@ -931,6 +950,8 @@ TAV supports two colour spaces:
 
 Perceptual versions (5-6) apply HVS-optimized quantization weights per channel,
 while uniform versions (3-4) use consistent quantization across all subbands.
+
+When Alpha channel is stored, they must be sRGB nonlinearised before DWT and quantisation.
 
 ## Compression Features
 - Single DWT tiles vs 16x16 DCT blocks in TEV
