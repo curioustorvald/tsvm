@@ -8,7 +8,6 @@
 
 const WIDTH = 560
 const HEIGHT = 448
-const TILE_SIZE = 112  // 112x112 tiles for DWT (perfect fit for TSVM 560x448 resolution)
 const TAV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x41, 0x56] // "\x1FTSVM TAV"
 const TAV_VERSION = 1  // Initial DWT version
 const SND_BASE_ADDR = audio.getBaseAddr()
@@ -27,6 +26,7 @@ const TAV_PACKET_PFRAME = 0x11
 const TAV_PACKET_AUDIO_MP2 = 0x20
 const TAV_PACKET_SUBTITLE = 0x30
 const TAV_PACKET_SYNC = 0xFF
+const TAV_FILE_HEADER_FIRST = 0x1F
 
 // Wavelet filter types
 const WAVELET_5_3_REVERSIBLE = 0
@@ -47,21 +47,12 @@ let subtitlePosition = 0  // 0=bottom center (default)
 
 // Parse command line options
 let interactive = false
-let debugMotionVectors = false
-let deinterlaceAlgorithm = "yadif"
-let enableDeblocking = false  // Default: disabled (use -deblock to enable)
 
 if (exec_args.length > 2) {
     for (let i = 2; i < exec_args.length; i++) {
         const arg = exec_args[i].toLowerCase()
         if (arg === "-i") {
             interactive = true
-        } else if (arg === "-debug-mv") {
-            debugMotionVectors = true
-        } else if (arg === "-deblock") {
-            enableDeblocking = true
-        } else if (arg.startsWith("-deinterlace=")) {
-            deinterlaceAlgorithm = arg.substring(13)
         }
     }
 }
@@ -441,9 +432,9 @@ const isNTSC = (header.videoFlags & 0x02) !== 0
 const isLossless = (header.videoFlags & 0x04) !== 0
 
 // Calculate tile dimensions (112x112 vs TEV's 16x16 blocks)
-const tilesX = Math.ceil(header.width / TILE_SIZE)
-const tilesY = Math.ceil(header.height / TILE_SIZE)
-const numTiles = tilesX * tilesY
+const tilesX = Math.ceil(header.width / 2)
+const tilesY = Math.ceil(header.height / 2)
+const numTiles = 4
 
 console.log(`TAV Decoder`)
 console.log(`Resolution: ${header.width}x${header.height}`)
@@ -466,12 +457,6 @@ const RGB_BUFFER_B = sys.malloc(FRAME_SIZE)
 // Ping-pong buffer pointers (swap instead of copy)
 let CURRENT_RGB_ADDR = RGB_BUFFER_A
 let PREV_RGB_ADDR = RGB_BUFFER_B
-
-// Motion vector storage
-let motionVectors = new Array(numTiles)
-for (let i = 0; i < numTiles; i++) {
-    motionVectors[i] = { mvX: 0, mvY: 0, rcf: 1.0 }
-}
 
 // Audio state
 let audioBufferBytesLastFrame = 0
@@ -572,21 +557,21 @@ function tryReadNextTAVHeader() {
     let currentPos = seqread.getReadCount()
 
     // Try to read magic number
-    let newMagic = new Array(8)
+    let newMagic = new Array(7)
     try {
-        for (let i = 0; i < 8; i++) {
+        for (let i = 0; i < newMagic.length; i++) {
             newMagic[i] = seqread.readOneByte()
         }
 
         // compensating the old encoder emitting extra sync packets
         while (newMagic[0] == 255) {
-            newMagic.shift(); newMagic[7] = seqread.readOneByte()
+            newMagic.shift(); newMagic[newMagic.length - 1] = seqread.readOneByte()
         }
 
         // Check if it matches TAV magic
         let isValidTAV = true
-        for (let i = 0; i < 8; i++) {
-            if (newMagic[i] !== TAV_MAGIC[i]) {
+        for (let i = 0; i < newMagic.length; i++) {
+            if (newMagic[i] !== TAV_MAGIC[i+1]) {
                 isValidTAV = false
                 serial.printerr("Header mismatch: got "+newMagic.join())
                 break
@@ -594,6 +579,8 @@ function tryReadNextTAVHeader() {
         }
 
         if (isValidTAV) {
+            serial.println("Got next video file")
+
             // Read the rest of the header
             let newHeader = {
                 magic: newMagic,
@@ -612,6 +599,8 @@ function tryReadNextTAVHeader() {
                 reserved: new Array(7)
             }
 
+            serial.println("File header: " + JSON.stringify(newHeader))
+
             // Skip reserved bytes
             for (let i = 0; i < 7; i++) {
                 seqread.readOneByte()
@@ -621,6 +610,7 @@ function tryReadNextTAVHeader() {
         }
     } catch (e) {
         serial.printerr(e)
+
         // EOF or read error - restore position and return null
         // Note: seqread doesn't have seek, so we can't restore position
         // This is okay since we're at EOF anyway
@@ -635,47 +625,7 @@ try {
     let totalFilesProcessed = 0
 
     while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
-        // Check if we've finished the current file
-        if (header.totalFrames > 0 && frameCount >= header.totalFrames) {
-            console.log(`Completed file ${currentFileIndex}: ${frameCount} frames`)
 
-            // Try to read next TAV file header
-            let nextHeader = tryReadNextTAVHeader()
-            if (nextHeader) {
-                // Found another TAV file - update header and reset counters
-                header = nextHeader
-                frameCount = 0
-                akku = 0.0
-                akku2 = 0.0
-                FRAME_TIME = 1.0 / header.fps
-                currentFileIndex++
-                totalFilesProcessed++
-
-                console.log(`\nStarting file ${currentFileIndex}:`)
-                console.log(`Resolution: ${header.width}x${header.height}`)
-                console.log(`FPS: ${header.fps}`)
-                console.log(`Total frames: ${header.totalFrames}`)
-                console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : "9/7 irreversible"}`)
-                console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
-
-                // Reset motion vectors for new file
-                for (let i = 0; i < numTiles; i++) {
-                    motionVectors[i] = { mvX: 0, mvY: 0, rcf: 1.0 }
-                }
-
-                // Continue with new file
-                continue
-            } else {
-                // No more TAV files found
-                console.log(`\nNo more TAV files found. Total files processed: ${currentFileIndex}`)
-                break
-            }
-        }
-
-        // Original playback loop condition (but without totalFrames check since we handle it above)
-        if (seqread.getReadCount() >= FILE_LENGTH) {
-            break
-        }
 
         // Handle interactive controls
         if (interactive) {
@@ -688,7 +638,34 @@ try {
 
         if (akku >= FRAME_TIME) {
             // Read packet header
-            const packetType = seqread.readOneByte()
+            var packetType = seqread.readOneByte()
+
+            // Try to read next TAV file header
+            if (packetType == TAV_FILE_HEADER_FIRST) {
+                let nextHeader = tryReadNextTAVHeader()
+                if (nextHeader) {
+                    // Found another TAV file - update header and reset counters
+                    header = nextHeader
+                    frameCount = 0
+                    akku = 0.0
+                    akku2 = 0.0
+                    FRAME_TIME = 1.0 / header.fps
+                    currentFileIndex++
+                    totalFilesProcessed++
+
+                    console.log(`\nStarting file ${currentFileIndex}:`)
+                    console.log(`Resolution: ${header.width}x${header.height}`)
+                    console.log(`FPS: ${header.fps}`)
+                    console.log(`Total frames: ${header.totalFrames}`)
+                    console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : "9/7 irreversible"}`)
+                    console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
+
+                    // Continue with new file
+                    packetType = seqread.readOneByte()
+                }
+                else
+                    break
+            }
 
             if (packetType === TAV_PACKET_SYNC) {
                 // Sync packet - no additional data
@@ -701,7 +678,8 @@ try {
                 CURRENT_RGB_ADDR = PREV_RGB_ADDR
                 PREV_RGB_ADDR = temp
 
-            } else if (packetType === TAV_PACKET_IFRAME || packetType === TAV_PACKET_PFRAME) {
+            }
+            else if (packetType === TAV_PACKET_IFRAME || packetType === TAV_PACKET_PFRAME) {
                 // Video packet
                 const compressedSize = seqread.readInt()
                 const isKeyframe = (packetType === TAV_PACKET_IFRAME)
@@ -779,7 +757,8 @@ try {
                     console.log(`Frame ${frameCount}: Decompress=${decompressTime.toFixed(1)}ms, Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms`)
                 }
 
-            } else if (packetType === TAV_PACKET_AUDIO_MP2) {
+            }
+            else if (packetType === TAV_PACKET_AUDIO_MP2) {
                 // MP2 Audio packet
                 let audioLen = seqread.readInt()
 
@@ -792,7 +771,8 @@ try {
                 audio.mp2Decode()
                 audio.mp2UploadDecoded(0)
 
-            } else if (packetType === TAV_PACKET_SUBTITLE) {
+            }
+            else if (packetType === TAV_PACKET_SUBTITLE) {
                 // Subtitle packet - same format as TEV
                 let packetSize = seqread.readInt()
                 processSubtitlePacket(packetSize)

@@ -452,6 +452,7 @@ Packet Types -
     <special>
     255,255: sync packet (wait until the next frame)
     254,255: background colour packet
+     31,84 : prohibited
 
     Packet Type High Byte (iPF Type Numbers)
         0..7: iPF Type 1..8
@@ -717,6 +718,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
     0xFF: sync packet
+    0x1F: prohibited
 
 ## Video Packet Structure
     uint8  Packet Type
@@ -821,7 +823,9 @@ transmission capability, and region-of-interest coding.
     uint16 Height: video height in pixels
     uint8  FPS: frames per second
     uint32 Total Frames: number of video frames
-    uint8  Wavelet Filter Type: 0=5/3 reversible, 1=9/7 irreversible
+    uint8  Wavelet Filter Type/File Role:
+            - 0 = 5/3 reversible
+            - 1 = 9/7 irreversible
     uint8  Decomposition Levels: number of DWT levels (1-4)
     uint8  Quantiser Index for Y channel (1: lossless, 255: potato)
     uint8  Quantiser Index for Co channel (1: lossless, 255: potato)
@@ -830,9 +834,14 @@ transmission capability, and region-of-interest coding.
             - bit 0 = has audio
             - bit 1 = has subtitle
     uint8  Video Flags
-            - bit 0 = is interlaced (unused)
+            - bit 0 = has no actual packets, this file is header-only without an Intro Movie
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
+    uint8  File Role
+            - 0 = generic
+            - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
+                   When header-only file contain video packets, they should be presented as an Intro Movie
+                   before the user-interactable selector (served by the UCF payoad)
     uint8  Reserved[7]: fill with zeros
 
 ## Packet Types
@@ -841,6 +850,7 @@ transmission capability, and region-of-interest coding.
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format  
     0xFF: sync packet
+    0x1F: prohibited
 
 ## Video Packet Structure
     uint8  Packet Type
