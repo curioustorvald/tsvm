@@ -947,6 +947,58 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
     }
 }
 
+// Delta-specific perceptual weight model optimized for temporal coefficient differences
+static float get_perceptual_weight_delta(tav_encoder_t *enc, int level, int subband_type, int is_chroma, int max_levels) {
+    // Delta coefficients have different perceptual characteristics than full-picture coefficients:
+    // 1. Motion edges are more perceptually critical than static edges
+    // 2. Temporal masking allows more aggressive quantization in high-motion areas
+    // 3. Smaller delta magnitudes make relative quantization errors more visible
+    // 4. Frequency distribution is motion-dependent rather than spatial-dependent
+
+    if (!is_chroma) {
+        // LUMA DELTA CHANNEL: Emphasize motion coherence and edge preservation
+        if (subband_type == 0) { // LL subband - DC motion changes, still important
+            // DC motion changes - preserve somewhat but allow coarser quantization than full-picture
+            return 2.0f; // Slightly coarser than full-picture
+        }
+
+        if (subband_type == 1) { // LH subband - horizontal motion edges
+            // Motion boundaries benefit from temporal masking - allow coarser quantization
+            return 0.9f; // More aggressive quantization for deltas
+        }
+
+        if (subband_type == 2) { // HL subband - vertical motion edges
+            // Vertical motion boundaries - equal treatment with horizontal for deltas
+            return 1.2f; // Same aggressiveness as horizontal
+        }
+
+        // HH subband - diagonal motion details
+
+        // Diagonal motion deltas can be quantized most aggressively
+        return 0.5f;
+
+    } else {
+        // CHROMA DELTA CHANNELS: More aggressive quantization allowed due to temporal masking
+        // Motion chroma changes are less perceptually critical than static chroma
+
+        float base = perceptual_model3_chroma_basecurve(enc->quality_level, level - 1);
+
+        if (subband_type == 0) { // LL chroma deltas
+            // Chroma DC motion changes - allow more aggressive quantization
+            return 1.3f; // More aggressive than full-picture chroma
+        } else if (subband_type == 1) { // LH chroma deltas
+            // Horizontal chroma motion - temporal masking allows more quantization
+            return FCLAMP(base * 1.4f, 1.2f, 120.0f);
+        } else if (subband_type == 2) { // HL chroma deltas
+            // Vertical chroma motion - most aggressive
+            return FCLAMP(base * ANISOTROPY_MULT_CHROMA[enc->quality_level] * 1.6f, 1.4f, 140.0f);
+        } else { // HH chroma deltas
+            // Diagonal chroma motion - extremely aggressive quantization
+            return FCLAMP(base * ANISOTROPY_MULT_CHROMA[enc->quality_level] * 1.8f + ANISOTROPY_BIAS_CHROMA[enc->quality_level], 1.6f, 160.0f);
+        }
+    }
+}
+
 
 // Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
 static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
@@ -993,6 +1045,51 @@ static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_i
     return 1.0f;
 }
 
+// Determine delta-specific perceptual weight for coefficient at linear position
+static float get_perceptual_weight_for_position_delta(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
+    // Map linear coefficient index to DWT subband using same layout as decoder
+    int offset = 0;
+
+    // First: LL subband at maximum decomposition level
+    int ll_width = width >> decomp_levels;
+    int ll_height = height >> decomp_levels;
+    int ll_size = ll_width * ll_height;
+
+    if (linear_idx < offset + ll_size) {
+        // LL subband at maximum level - use delta-specific perceptual weight
+        return get_perceptual_weight_delta(enc, decomp_levels, 0, is_chroma, decomp_levels);
+    }
+    offset += ll_size;
+
+    // Then: LH, HL, HH subbands for each level from max down to 1
+    for (int level = decomp_levels; level >= 1; level--) {
+        int level_width = width >> (decomp_levels - level + 1);
+        int level_height = height >> (decomp_levels - level + 1);
+        int subband_size = level_width * level_height;
+
+        // LH subband (horizontal details)
+        if (linear_idx < offset + subband_size) {
+            return get_perceptual_weight_delta(enc, level, 1, is_chroma, decomp_levels);
+        }
+        offset += subband_size;
+
+        // HL subband (vertical details)
+        if (linear_idx < offset + subband_size) {
+            return get_perceptual_weight_delta(enc, level, 2, is_chroma, decomp_levels);
+        }
+        offset += subband_size;
+
+        // HH subband (diagonal details)
+        if (linear_idx < offset + subband_size) {
+            return get_perceptual_weight_delta(enc, level, 3, is_chroma, decomp_levels);
+        }
+        offset += subband_size;
+    }
+
+    // Fallback for out-of-bounds indices
+    return 1.0f;
+}
+
 // Apply perceptual quantisation per-coefficient (same loop as uniform but with spatial weights)
 static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                           float *coeffs, int16_t *quantised, int size,
@@ -1007,6 +1104,38 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
         float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
         float effective_q = effective_base_q * weight;
         float quantised_val = coeffs[i] / effective_q;
+        quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
+    }
+}
+
+// Apply delta-specific perceptual quantisation for temporal coefficients
+static void quantise_dwt_coefficients_perceptual_delta(tav_encoder_t *enc,
+                                                      float *delta_coeffs, int16_t *quantised, int size,
+                                                      int base_quantiser, int width, int height,
+                                                      int decomp_levels, int is_chroma) {
+    // Delta-specific perceptual quantization uses motion-optimized weights
+    // Key differences from full-picture quantization:
+    // 1. Finer quantization steps for deltas (smaller magnitudes)
+    // 2. Motion-coherence emphasis over spatial-detail emphasis
+    // 3. Enhanced temporal masking for chroma channels
+
+    float effective_base_q = base_quantiser;
+    effective_base_q = FCLAMP(effective_base_q, 1.0f, 255.0f);
+
+    // Delta-specific base quantization adjustment
+    // Deltas benefit from temporal masking - allow coarser quantization steps
+    float delta_coarse_tune = 1.2f; // 20% coarser quantization for delta coefficients
+    effective_base_q *= delta_coarse_tune;
+
+    for (int i = 0; i < size; i++) {
+        // Apply delta-specific perceptual weight based on coefficient's position in DWT layout
+        float weight = get_perceptual_weight_for_position_delta(enc, i, width, height, decomp_levels, is_chroma);
+        float effective_q = effective_base_q * weight;
+
+        // Ensure minimum quantization step for very small deltas to prevent over-quantization
+        effective_q = fmaxf(effective_q, 0.5f);
+
+        float quantised_val = delta_coeffs[i] / effective_q;
         quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
     }
 }
@@ -1132,29 +1261,90 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         memcpy(prev_cg, tile_cg_data, tile_size * sizeof(float));
         
     } else if (mode == TAV_MODE_DELTA) {
-        // DELTA mode: compute coefficient deltas and quantise them
+        // DELTA mode with predictive error compensation to mitigate accumulation artifacts
         int tile_idx = tile_y * enc->tiles_x + tile_x;
         float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
         float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
         float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
-        
-        // Compute deltas: delta = current - previous
+
+        // Allocate temporary buffers for error compensation
         float *delta_y = malloc(tile_size * sizeof(float));
         float *delta_co = malloc(tile_size * sizeof(float));
         float *delta_cg = malloc(tile_size * sizeof(float));
-        
+        float *compensated_delta_y = malloc(tile_size * sizeof(float));
+        float *compensated_delta_co = malloc(tile_size * sizeof(float));
+        float *compensated_delta_cg = malloc(tile_size * sizeof(float));
+
+        // Step 1: Compute naive deltas
         for (int i = 0; i < tile_size; i++) {
             delta_y[i] = tile_y_data[i] - prev_y[i];
             delta_co[i] = tile_co_data[i] - prev_co[i];
             delta_cg[i] = tile_cg_data[i] - prev_cg[i];
         }
-        
-        // Quantise the deltas with uniform quantisation (perceptual tuning is for original coefficients, not deltas)
-        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY);
-        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo);
-        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, this_frame_qCg);
 
-        // Reconstruct coefficients like decoder will (previous + uniform_dequantised_delta)
+        // Step 2: Predictive error compensation using iterative refinement
+        // We simulate the quantization-dequantization process to predict decoder behavior
+        for (int iteration = 0; iteration < 2; iteration++) { // 2 iterations for good convergence
+            // Test quantization of current deltas
+            int16_t *test_quant_y = malloc(tile_size * sizeof(int16_t));
+            int16_t *test_quant_co = malloc(tile_size * sizeof(int16_t));
+            int16_t *test_quant_cg = malloc(tile_size * sizeof(int16_t));
+
+            // TEMPORARILY DISABLED: Use uniform quantization in error compensation prediction
+            quantise_dwt_coefficients(iteration == 0 ? delta_y : compensated_delta_y, test_quant_y, tile_size, this_frame_qY);
+            quantise_dwt_coefficients(iteration == 0 ? delta_co : compensated_delta_co, test_quant_co, tile_size, this_frame_qCo);
+            quantise_dwt_coefficients(iteration == 0 ? delta_cg : compensated_delta_cg, test_quant_cg, tile_size, this_frame_qCg);
+
+            // Predict what decoder will reconstruct
+            float predicted_y, predicted_co, predicted_cg;
+            float prediction_error_y, prediction_error_co, prediction_error_cg;
+
+            for (int i = 0; i < tile_size; i++) {
+                // Simulate decoder reconstruction
+                predicted_y = prev_y[i] + ((float)test_quant_y[i] * this_frame_qY);
+                predicted_co = prev_co[i] + ((float)test_quant_co[i] * this_frame_qCo);
+                predicted_cg = prev_cg[i] + ((float)test_quant_cg[i] * this_frame_qCg);
+
+                // Calculate prediction error (difference between true target and predicted reconstruction)
+                prediction_error_y = tile_y_data[i] - predicted_y;
+                prediction_error_co = tile_co_data[i] - predicted_co;
+                prediction_error_cg = tile_cg_data[i] - predicted_cg;
+
+                // Debug: accumulate error statistics for first tile only
+                static float total_error_y = 0, total_error_co = 0, total_error_cg = 0;
+                static int error_samples = 0;
+                if (tile_x == 0 && tile_y == 0 && i < 16) { // First tile, first 16 coeffs
+                    total_error_y += fabs(prediction_error_y);
+                    total_error_co += fabs(prediction_error_co);
+                    total_error_cg += fabs(prediction_error_cg);
+                    error_samples++;
+                    if (error_samples % 160 == 0) { // Print every 10 frames
+                        printf("[ERROR-COMP] Avg errors: Y=%.3f Co=%.3f Cg=%.3f\n",
+                               total_error_y/160, total_error_co/160, total_error_cg/160);
+                        total_error_y = total_error_co = total_error_cg = 0;
+                    }
+                }
+
+                // Compensate delta by adding prediction error
+                // This counteracts the quantization error that will occur
+                compensated_delta_y[i] = delta_y[i] + prediction_error_y;
+                compensated_delta_co[i] = delta_co[i] + prediction_error_co;
+                compensated_delta_cg[i] = delta_cg[i] + prediction_error_cg;
+            }
+
+            free(test_quant_y);
+            free(test_quant_co);
+            free(test_quant_cg);
+        }
+
+        // Step 3: Quantise the error-compensated deltas with delta-specific perceptual weighting
+        // TEMPORARILY DISABLED: Delta-specific perceptual quantization
+        // Use uniform quantization for deltas (same as original implementation)
+        quantise_dwt_coefficients(compensated_delta_y, quantised_y, tile_size, this_frame_qY);
+        quantise_dwt_coefficients(compensated_delta_co, quantised_co, tile_size, this_frame_qCo);
+        quantise_dwt_coefficients(compensated_delta_cg, quantised_cg, tile_size, this_frame_qCg);
+
+        // Step 4: Update reference coefficients exactly as decoder will reconstruct them
         for (int i = 0; i < tile_size; i++) {
             float dequant_delta_y = (float)quantised_y[i] * this_frame_qY;
             float dequant_delta_co = (float)quantised_co[i] * this_frame_qCo;
@@ -1168,6 +1358,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         free(delta_y);
         free(delta_co);
         free(delta_cg);
+        free(compensated_delta_y);
+        free(compensated_delta_co);
+        free(compensated_delta_cg);
     }
     
     // Debug: check quantised coefficients after quantisation
@@ -2777,7 +2970,7 @@ int main(int argc, char *argv[]) {
     int count_iframe = 0;
     int count_pframe = 0;
 
-    KEYFRAME_INTERVAL = enc->output_fps >> 2; // refresh often because deltas in DWT are more visible than DCT
+    KEYFRAME_INTERVAL = enc->output_fps * 2; // Longer intervals for testing error compensation (was >> 2)
 
     while (continue_encoding) {
         // Check encode limit if specified

@@ -4923,6 +4923,119 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    // Delta-specific perceptual weight model for motion-optimized coefficient reconstruction
+    private fun getPerceptualWeightDelta(qualityLevel: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
+        // Delta coefficients have different perceptual characteristics than full-picture coefficients:
+        // 1. Motion edges are more perceptually critical than static edges
+        // 2. Temporal masking allows more aggressive quantization in high-motion areas
+        // 3. Smaller delta magnitudes make relative quantization errors more visible
+        // 4. Frequency distribution is motion-dependent rather than spatial-dependent
+
+        return if (!isChroma) {
+            // LUMA DELTA CHANNEL: Emphasize motion coherence and edge preservation
+            when (subbandType) {
+                0 -> { // LL subband - DC motion changes, still important
+                    // DC motion changes - preserve somewhat but allow coarser quantization than full-picture
+                    2f // Slightly coarser than full-picture
+                }
+                1 -> { // LH subband - horizontal motion edges
+                    // Motion boundaries benefit from temporal masking - allow coarser quantization
+                    0.9f
+                }
+                2 -> { // HL subband - vertical motion edges
+                    // Vertical motion boundaries - equal treatment with horizontal for deltas
+                    1.2f
+                }
+                else -> { // HH subband - diagonal motion details
+                    // Diagonal motion deltas can be quantized most aggressively
+                    0.5f
+                }
+            }
+        } else {
+            // CHROMA DELTA CHANNELS: More aggressive quantization allowed due to temporal masking
+            // Motion chroma changes are less perceptually critical than static chroma
+            val base = getPerceptualModelChromaBase(qualityLevel, level - 1)
+
+            when (subbandType) {
+                0 -> 1.3f // LL chroma deltas - more aggressive than full-picture chroma
+                1 -> kotlin.math.max(1.2f, kotlin.math.min(120.0f, base * 1.4f)) // LH chroma deltas
+                2 -> kotlin.math.max(1.4f, kotlin.math.min(140.0f, base * 1.6f)) // HL chroma deltas
+                else -> kotlin.math.max(1.6f, kotlin.math.min(160.0f, base * 1.8f)) // HH chroma deltas
+            }
+        }
+    }
+
+    // Helper functions for perceptual models (simplified versions of encoder models)
+    private fun getPerceptualModelLL(qualityLevel: Int, level: Int): Float {
+        // Simplified LL model - preserve DC components
+        return 1.0f - (level.toFloat() / 8.0f) * (qualityLevel.toFloat() / 6.0f)
+    }
+
+    private fun getPerceptualModelLH(qualityLevel: Int, level: Int): Float {
+        // Simplified LH model - horizontal details
+        return 1.2f + (level.toFloat() / 4.0f) * (qualityLevel.toFloat() / 3.0f)
+    }
+
+    private fun getPerceptualModelHL(qualityLevel: Int, lhWeight: Float): Float {
+        // Simplified HL model - vertical details
+        return lhWeight * 1.1f
+    }
+
+    private fun getPerceptualModelHH(lhWeight: Float, hlWeight: Float): Float {
+        // Simplified HH model - diagonal details
+        return (lhWeight + hlWeight) * 0.6f
+    }
+
+    private fun getPerceptualModelChromaBase(qualityLevel: Int, level: Int): Float {
+        // Simplified chroma base curve
+        return 1.0f - (1.0f / (0.5f * qualityLevel * qualityLevel + 1.0f)) * (level - 4.0f)
+    }
+
+    // Determine delta-specific perceptual weight for coefficient at linear position
+    private fun getPerceptualWeightForPositionDelta(qualityLevel: Int, linearIdx: Int, width: Int, height: Int, decompLevels: Int, isChroma: Boolean): Float {
+        // Map linear coefficient index to DWT subband using same layout as encoder
+        var offset = 0
+
+        // First: LL subband at maximum decomposition level
+        val llWidth = width shr decompLevels
+        val llHeight = height shr decompLevels
+        val llSize = llWidth * llHeight
+
+        if (linearIdx < offset + llSize) {
+            // LL subband at maximum level - use delta-specific perceptual weight
+            return getPerceptualWeightDelta(qualityLevel, decompLevels, 0, isChroma, decompLevels)
+        }
+        offset += llSize
+
+        // Then: LH, HL, HH subbands for each level from max down to 1
+        for (level in decompLevels downTo 1) {
+            val levelWidth = width shr (decompLevels - level + 1)
+            val levelHeight = height shr (decompLevels - level + 1)
+            val subbandSize = levelWidth * levelHeight
+
+            // LH subband (horizontal details)
+            if (linearIdx < offset + subbandSize) {
+                return getPerceptualWeightDelta(qualityLevel, level, 1, isChroma, decompLevels)
+            }
+            offset += subbandSize
+
+            // HL subband (vertical details)
+            if (linearIdx < offset + subbandSize) {
+                return getPerceptualWeightDelta(qualityLevel, level, 2, isChroma, decompLevels)
+            }
+            offset += subbandSize
+
+            // HH subband (diagonal details)
+            if (linearIdx < offset + subbandSize) {
+                return getPerceptualWeightDelta(qualityLevel, level, 3, isChroma, decompLevels)
+            }
+            offset += subbandSize
+        }
+
+        // Fallback for out-of-bounds indices
+        return 1.0f
+    }
+
     private fun tavDecodeDeltaTileRGB(qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                       waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
@@ -4972,7 +5085,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val currentCo = FloatArray(coeffCount)
         val currentCg = FloatArray(coeffCount)
 
-        // Uniform delta reconstruction because coefficient deltas cannot be perceptually coded
+        // Delta-specific perceptual reconstruction using motion-optimized coefficients
+        // Estimate quality level from quantization parameters for perceptual weighting
+        val estimatedQualityY = when {
+            qY <= 6 -> 4    // High quality
+            qY <= 12 -> 3   // Medium-high quality
+            qY <= 25 -> 2   // Medium quality
+            qY <= 42 -> 1   // Medium-low quality
+            else -> 0       // Low quality
+        }
+
+        // TEMPORARILY DISABLED: Delta-specific perceptual reconstruction
+        // Use uniform delta reconstruction (same as original implementation)
         for (i in 0 until coeffCount) {
             currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
             currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)

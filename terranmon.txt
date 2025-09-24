@@ -687,7 +687,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 - Version 3.0: Additional support of ICtCp Colour space
 
 # File Structure
-\x1F T S V M T E V
+\x1F T S V M T E V (if video), \x1F T S V M T E P (if still picture)
 [HEADER]
 [PACKET 0]
 [PACKET 1] 
@@ -695,7 +695,7 @@ DCT-based compression, motion compensation, and efficient temporal coding.
 ...
 
 ## Header (24 bytes)
-    uint8  Magic[8]: "\x1F TSVM TEV"
+    uint8  Magic[8]: "\x1F TSVM TEV" or "\x1F TSVM TEP"
     uint8  Version: 2 (YCoCg-R) or 3 (ICtCp)
     uint16 Width: video width in pixels
     uint16 Height: video height in pixels
@@ -726,11 +726,13 @@ DCT-based compression, motion compensation, and efficient temporal coding.
     0x30: Subtitle in "Simple" format
     0x31: Subtitle in "Karaoke" format
     0xE0: EXIF packet
-    0xE1: ID3 packet
-    0xE2: Vorbis Comment packet
+    0xE1: ID3v1 packet
+    0xE2: ID3v2 packet
+    0xE3: Vorbis Comment packet
+    0xE4: CD-text packet
     0xFF: sync packet
 
-## EXIF/ID3/Vorbis Comment packet structure
+## Standard metadata payload packet structure
     uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
     uint32 Length of the payload
     *      Standard payload
@@ -792,11 +794,25 @@ to larger block sizes and hardware acceleration.
 Reuses existing MP2 audio infrastructure from TSVM MOV format for seamless
 compatibility with existing audio processing pipeline.
 
-## Simple Subtitle Format
-SSF is a simple subtitle that is intended to use text buffer to display texts.
-The format is designed to be compatible with SubRip and SAMI (without markups).
+## NTSC Framerate handling
+The encoder encodes the frames as-is. The decoder must duplicate every 1000th frame to keep the decoding
+in-sync.
 
-### SSF Packet Structure
+--------------------------------------------------------------------------------
+
+Simple Subtitle Format (SSF)
+
+SSF is a simple subtitle that is intended to use text buffer to display texts.
+The format is designed to be compatible with SubRip and SAMI (without markups) and interoperable with
+TEV and TAV formats.
+
+When SSF is interleaved with MP2 audio, the payload must be inserted in-between MP2 frames.
+
+## Packet Structure
+    uint8  0x30 (packet type)
+    *      SSF Payload (see below)
+
+## SSF Packet Structure
     uint24 index (used to specify target subtitle object)
     uint8 opcode
           0x00 = <argument terminator>, is NOP when used here
@@ -811,9 +827,51 @@ The format is designed to be compatible with SubRip and SAMI (without markups).
             text argument may be terminated by 0x00 BEFORE the entire arguments being terminated by 0x00,
             leaving extra 0x00 on the byte stream. A decoder must be able to handle the extra zeros.
 
-## NTSC Framerate handling
-The encoder encodes the frames as-is. The decoder must duplicate every 1000th frame to keep the decoding
-in-sync.
+--------------------------------------------------------------------------------
+
+Karaoke Subtitle Format (KSF)
+
+KSF is a frame-synced subtitle that is intended to use Karaoke-style subtitles.
+The format is designed to be interoperable with TEV and TAV formats.
+For non-karaoke style synced lyrics, use SSF.
+
+When KSF is interleaved with MP2 audio, the payload must be inserted in-between MP2 frames.
+
+## Packet Structure
+    uint8  0x31 (packet type)
+    *      KSF Payload (see below)
+
+### KSF Packet Structure
+    KSF is line-based: you define an unrevealed line, then subsequent commands reveal words/syllables
+    on appropriate timings.
+
+    uint24 index (used to specify target subtitle object)
+    uint8 opcode
+          <definition opcodes>
+          0x00 = <argument terminator>, is NOP when used here
+          0x01 = define line (arguments: UTF-8 text. Players will also show it in grey)
+          0x02 = delete line (arguments: none)
+          0x03 = move to different nonant (arguments: 0x00-bottom centre; 0x01-bottom left; 0x02-centre left; 0x03-top left; 0x04-top centre; 0x05-top right; 0x06-centre right; 0x07-bottom right; 0x08-centre
+
+          <reveal opcodes>
+          0x30 = reveal text normally (arguments: UTF-8 text. The reveal text must contain spaces when required)
+          0x31 = reveal text slowly (arguments: UTF-8 text. The effect is implementation-dependent)
+
+          0x40 = reveal text normally with emphasize (arguments: UTF-8 text. On TEV/TAV player, the text will be white; otherwise, implementation-dependent)
+          0x41 = reveal text slowly with emphasize (arguments: UTF-8 text)
+
+          0x50 = reveal text normally with target colour (arguments: uint8 target colour; UTF-8 text)
+          0x51 = reveal text slowly with target colour (arguments: uint8 target colour; UTF-8 text)
+
+          <hardware control opcodes>
+          0x80 = upload to low font rom (arguments: uint16 payload length, var bytes)
+          0x81 = upload to high font rom (arguments: uint16 payload length, var bytes)
+            note: changing the font rom will change the appearance of the every subtitle currently being displayed
+    *    arguments separated AND terminated by 0x00
+            text argument may be terminated by 0x00 BEFORE the entire arguments being terminated by 0x00,
+            leaving extra 0x00 on the byte stream. A decoder must be able to handle the extra zeros.
+
+
 
 --------------------------------------------------------------------------------
 
@@ -826,7 +884,7 @@ to DCT-based codecs like TEV. Features include multi-resolution encoding, progre
 transmission capability, and region-of-interest coding.
 
 # File Structure
-\x1F T S V M T A V
+\x1F T S V M T A V (if video), \x1F T S V M T A P (if still picture)
 [HEADER]
 [PACKET 0]
 [PACKET 1]
@@ -834,7 +892,7 @@ transmission capability, and region-of-interest coding.
 ...
 
 ## Header (32 bytes)
-    uint8  Magic[8]: "\x1F TSVM TAV"
+    uint8  Magic[8]: "\x1F TSVM TAV" or "\x1F TSVM TAP"
     uint8  Version: 3 (YCoCg-R uniform), 4 (ICtCp uniform), 5 (YCoCg-R perceptual), 6 (ICtCp perceptual)
     uint16 Width: video width in pixels  
     uint16 Height: video height in pixels
@@ -856,6 +914,7 @@ transmission capability, and region-of-interest coding.
             - bit 0 = has alpha channel
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
+            - bit 3 = has region-of-interest coding (for still images only)
     uint8  File Role
             - 0 = generic
             - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
@@ -871,11 +930,13 @@ transmission capability, and region-of-interest coding.
     0x30: Subtitle in "Simple" format
     0x31: Subtitle in "Karaoke" format
     0xE0: EXIF packet
-    0xE1: ID3 packet
-    0xE2: Vorbis Comment packet
+    0xE1: ID3v1 packet
+    0xE2: ID3v2 packet
+    0xE3: Vorbis Comment packet
+    0xE4: CD-text packet
     0xFF: sync packet
 
-## EXIF/ID3/Vorbis Comment packet structure
+## Standard metadata payload packet structure
     uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
     uint32 Length of the payload
     *      Standard payload

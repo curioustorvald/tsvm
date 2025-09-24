@@ -474,6 +474,7 @@ let filenavOninput = (window, event) => {
 
             firstRunLatch = true
             con.curs_set(0);clearScr()
+            refreshFilePanelCache(windowMode)
             redraw()
         }
     }
