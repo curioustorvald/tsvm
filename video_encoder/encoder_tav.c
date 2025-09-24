@@ -2778,7 +2778,7 @@ int main(int argc, char *argv[]) {
     int count_iframe = 0;
     int count_pframe = 0;
 
-    KEYFRAME_INTERVAL = enc->output_fps >> 2; // refresh often because deltas in DWT are more visible than DCT
+    KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 3, 3, 30); // refresh often because deltas in DWT are more visible than DCT
 
     while (continue_encoding) {
         // Check encode limit if specified

@@ -109,6 +109,8 @@ abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolea
      * @param byteCount Number of bytes being transmitted
      */
     protected fun applyBaudRateDelay(byteCount: Int) {
+        if (baudRate <= 0) return
+
         // Calculate delay in milliseconds
         // Baud rate is bits per second, and we assume 10 bits per byte (8 data bits + start/stop bits)
         val bitsTransmitted = byteCount * 10
