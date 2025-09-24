@@ -257,11 +257,13 @@ typedef struct {
     int16_t *reusable_quantised_co;
     int16_t *reusable_quantised_cg;
     
-    // Coefficient delta storage for P-frames (previous frame's coefficients)
-    float *previous_coeffs_y;   // Previous frame Y coefficients for all tiles
-    float *previous_coeffs_co;  // Previous frame Co coefficients for all tiles 
-    float *previous_coeffs_cg;  // Previous frame Cg coefficients for all tiles
+    // Multi-frame coefficient storage for better temporal prediction
+    float *previous_coeffs_y[3];   // Previous 3 frames Y coefficients for all tiles
+    float *previous_coeffs_co[3];  // Previous 3 frames Co coefficients for all tiles
+    float *previous_coeffs_cg[3];  // Previous 3 frames Cg coefficients for all tiles
     int previous_coeffs_allocated; // Flag to track allocation
+    int reference_frame_count;     // Number of available reference frames (0-3)
+    int last_frame_was_intra;      // 1 if previous frame was INTRA, 0 if DELTA
     
     // Statistics
     size_t total_compressed_size;
@@ -482,18 +484,36 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->reusable_quantised_co = malloc(coeff_count_per_tile * sizeof(int16_t));
     enc->reusable_quantised_cg = malloc(coeff_count_per_tile * sizeof(int16_t));
 
-    // Allocate coefficient delta storage for P-frames (per-tile coefficient storage)
+    // Allocate multi-frame coefficient storage for better temporal prediction
     size_t total_coeff_size = num_tiles * coeff_count_per_tile * sizeof(float);
-    enc->previous_coeffs_y = malloc(total_coeff_size);
-    enc->previous_coeffs_co = malloc(total_coeff_size);
-    enc->previous_coeffs_cg = malloc(total_coeff_size);
+    for (int ref = 0; ref < 3; ref++) {
+        enc->previous_coeffs_y[ref] = malloc(total_coeff_size);
+        enc->previous_coeffs_co[ref] = malloc(total_coeff_size);
+        enc->previous_coeffs_cg[ref] = malloc(total_coeff_size);
+
+        // Initialize to zero
+        memset(enc->previous_coeffs_y[ref], 0, total_coeff_size);
+        memset(enc->previous_coeffs_co[ref], 0, total_coeff_size);
+        memset(enc->previous_coeffs_cg[ref], 0, total_coeff_size);
+    }
     enc->previous_coeffs_allocated = 0; // Will be set to 1 after first I-frame
-    
+    enc->reference_frame_count = 0;
+    enc->last_frame_was_intra = 1;     // First frame is always INTRA
+
+    // Check allocations
+    int allocation_success = 1;
+    for (int ref = 0; ref < 3; ref++) {
+        if (!enc->previous_coeffs_y[ref] || !enc->previous_coeffs_co[ref] || !enc->previous_coeffs_cg[ref]) {
+            allocation_success = 0;
+            break;
+        }
+    }
+
     if (!enc->frame_rgb[0] || !enc->frame_rgb[1] ||
         !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg ||
         !enc->tiles || !enc->zstd_ctx || !enc->compressed_buffer ||
         !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg ||
-        !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg) {
+        !allocation_success) {
         return -1;
     }
     
@@ -1252,22 +1272,30 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg);
         }
         
-        // Store current coefficients for future delta reference
+        // Store current coefficients in multi-frame reference buffer
+        // For INTRA frames, reset the sliding window and store in frame 0
         int tile_idx = tile_y * enc->tiles_x + tile_x;
-        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
-        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
-        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
-        memcpy(prev_y, tile_y_data, tile_size * sizeof(float));
-        memcpy(prev_co, tile_co_data, tile_size * sizeof(float));
-        memcpy(prev_cg, tile_cg_data, tile_size * sizeof(float));
+
+        // Reset reference frame count for INTRA frames (scene change)
+        enc->reference_frame_count = 1;
+        enc->last_frame_was_intra = 1;
+
+        // Store in frame 0
+        float *curr_y = enc->previous_coeffs_y[0] + (tile_idx * tile_size);
+        float *curr_co = enc->previous_coeffs_co[0] + (tile_idx * tile_size);
+        float *curr_cg = enc->previous_coeffs_cg[0] + (tile_idx * tile_size);
+        memcpy(curr_y, tile_y_data, tile_size * sizeof(float));
+        memcpy(curr_co, tile_co_data, tile_size * sizeof(float));
+        memcpy(curr_cg, tile_cg_data, tile_size * sizeof(float));
         
     }
     else if (mode == TAV_MODE_DELTA) {
-        // DELTA mode with predictive error compensation to mitigate accumulation artifacts
+        // DELTA mode with multi-frame temporal prediction
         int tile_idx = tile_y * enc->tiles_x + tile_x;
-        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
-        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
-        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
+        // Use the most recent frame (frame 0) as the primary reference for delta calculation
+        float *prev_y = enc->previous_coeffs_y[0] + (tile_idx * tile_size);
+        float *prev_co = enc->previous_coeffs_co[0] + (tile_idx * tile_size);
+        float *prev_cg = enc->previous_coeffs_cg[0] + (tile_idx * tile_size);
 
         // Allocate temporary buffers for error compensation
         float *delta_y = malloc(tile_size * sizeof(float));
@@ -1284,153 +1312,120 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             delta_cg[i] = tile_cg_data[i] - prev_cg[i];
         }
 
-        // Step 2: Simple predictive error compensation (back to working version)
-        // We simulate the quantization-dequantization process to predict decoder behavior
-        for (int iteration = 0; iteration < 2; iteration++) { // Back to simple 2-iteration approach
-            // Test quantization of current deltas
-            int16_t *test_quant_y = malloc(tile_size * sizeof(int16_t));
-            int16_t *test_quant_co = malloc(tile_size * sizeof(int16_t));
-            int16_t *test_quant_cg = malloc(tile_size * sizeof(int16_t));
+        // Step 2: Multi-frame temporal prediction with INTRA frame detection
+        float *predicted_y = malloc(tile_size * sizeof(float));
+        float *predicted_co = malloc(tile_size * sizeof(float));
+        float *predicted_cg = malloc(tile_size * sizeof(float));
 
-            // TEMPORARILY DISABLED: Use uniform quantization in error compensation prediction
-            quantise_dwt_coefficients(iteration == 0 ? delta_y : compensated_delta_y, test_quant_y, tile_size, this_frame_qY);
-            quantise_dwt_coefficients(iteration == 0 ? delta_co : compensated_delta_co, test_quant_co, tile_size, this_frame_qCo);
-            quantise_dwt_coefficients(iteration == 0 ? delta_cg : compensated_delta_cg, test_quant_cg, tile_size, this_frame_qCg);
-
-            // Predict what decoder will reconstruct
-            float predicted_y, predicted_co, predicted_cg;
-            float prediction_error_y, prediction_error_co, prediction_error_cg;
+        if (enc->last_frame_was_intra || enc->reference_frame_count < 2) {
+            // Scene change detected (previous frame was INTRA) or insufficient reference frames
+            // Use simple single-frame prediction
+            if (enc->verbose && tile_x == 0 && tile_y == 0) {
+                printf("Frame %d: Scene change detected (previous frame was INTRA) - using single-frame prediction\n",
+                       enc->frame_count);
+            }
 
             for (int i = 0; i < tile_size; i++) {
-                // Simulate decoder reconstruction
-                predicted_y = prev_y[i] + ((float)test_quant_y[i] * this_frame_qY);
-                predicted_co = prev_co[i] + ((float)test_quant_co[i] * this_frame_qCo);
-                predicted_cg = prev_cg[i] + ((float)test_quant_cg[i] * this_frame_qCg);
+                predicted_y[i] = prev_y[i];
+                predicted_co[i] = prev_co[i];
+                predicted_cg[i] = prev_cg[i];
+            }
+        } else {
+            // Multi-frame weighted prediction
+            // Weights: [0.6, 0.3, 0.1] for [most recent, 2nd most recent, 3rd most recent]
+            float weights[3] = {0.6f, 0.3f, 0.1f};
 
-                // Calculate prediction error (difference between true target and predicted reconstruction)
-                prediction_error_y = tile_y_data[i] - predicted_y;
-                prediction_error_co = tile_co_data[i] - predicted_co;
-                prediction_error_cg = tile_cg_data[i] - predicted_cg;
-
-                // Damped error compensation to prevent oscillation
-                // Apply different damping factors based on frequency (subband position)
-                float damping_factor = 1.0f;
-                int subband_size = tile_size / 4; // Each subband is 1/4 of tile
-
-                if (i < subband_size) {
-                    // LL subband (low-low): stable, allow full compensation
-                    damping_factor = 0.8f;
-                } else if (i < 2 * subband_size) {
-                    // LH subband (low-high): horizontal edges, moderate damping
-                    damping_factor = 0.5f;
-                } else if (i < 3 * subband_size) {
-                    // HL subband (high-low): vertical edges, moderate damping
-                    damping_factor = 0.5f;
-                } else {
-                    // HH subband (high-high): diagonal details, heavy damping to prevent oscillation
-                    damping_factor = 0.3f;
-                }
-
-                // Further reduce compensation on second iteration to prevent overcorrection
-                if (iteration == 1) {
-                    damping_factor *= 0.5f; // Even more conservative on second iteration
-                }
-
-                compensated_delta_y[i] = delta_y[i] + (prediction_error_y * damping_factor);
-                compensated_delta_co[i] = delta_co[i] + (prediction_error_co * damping_factor);
-                compensated_delta_cg[i] = delta_cg[i] + (prediction_error_cg * damping_factor);
-
-                // Debug: Optional convergence monitoring (commented out for performance)
-                // if (tile_x == 0 && tile_y == 0 && i < 4) {
-                //     printf("[COMP] Frame %d, Coeff %d, Iter %d: error=%.2f, damping=%.2f\n",
-                //            enc->frame_count, i, iteration, prediction_error_y, damping_factor);
-                // }
+            if (enc->verbose && tile_x == 0 && tile_y == 0) {
+                printf("Frame %d: Multi-frame prediction using %d reference frames\n",
+                       enc->frame_count, enc->reference_frame_count);
             }
 
-            free(test_quant_y);
-            free(test_quant_co);
-            free(test_quant_cg);
+            for (int i = 0; i < tile_size; i++) {
+                predicted_y[i] = 0.0f;
+                predicted_co[i] = 0.0f;
+                predicted_cg[i] = 0.0f;
+
+                // Weighted combination of up to 3 reference frames
+                float total_weight = 0.0f;
+                for (int ref = 0; ref < enc->reference_frame_count && ref < 3; ref++) {
+                    float *ref_y = enc->previous_coeffs_y[ref] + (tile_idx * tile_size);
+                    float *ref_co = enc->previous_coeffs_co[ref] + (tile_idx * tile_size);
+                    float *ref_cg = enc->previous_coeffs_cg[ref] + (tile_idx * tile_size);
+
+                    predicted_y[i] += ref_y[i] * weights[ref];
+                    predicted_co[i] += ref_co[i] * weights[ref];
+                    predicted_cg[i] += ref_cg[i] * weights[ref];
+                    total_weight += weights[ref];
+                }
+
+                // Normalize by actual weight (in case we have fewer than 3 frames)
+                if (total_weight > 0.0f) {
+                    predicted_y[i] /= total_weight;
+                    predicted_co[i] /= total_weight;
+                    predicted_cg[i] /= total_weight;
+                }
+            }
         }
 
-        // Step 3: Quantize the error-compensated deltas with error diffusion
-        // Apply Floyd-Steinberg-like error diffusion to distribute quantization errors
-        float *error_buffer_y = calloc(tile_size, sizeof(float));
-        float *error_buffer_co = calloc(tile_size, sizeof(float));
-        float *error_buffer_cg = calloc(tile_size, sizeof(float));
-
-        // Step 3a: Apply error diffusion to compensated deltas (Floyd-Steinberg style)
+        // Calculate improved deltas using multi-frame prediction
         for (int i = 0; i < tile_size; i++) {
-            // Add accumulated error from previous coefficients
-            compensated_delta_y[i] += error_buffer_y[i];
-            compensated_delta_co[i] += error_buffer_co[i];
-            compensated_delta_cg[i] += error_buffer_cg[i];
-
-            // Test quantize to calculate what the error would be
-            int16_t test_quant_y = (int16_t)roundf(compensated_delta_y[i] / this_frame_qY);
-            int16_t test_quant_co = (int16_t)roundf(compensated_delta_co[i] / this_frame_qCo);
-            int16_t test_quant_cg = (int16_t)roundf(compensated_delta_cg[i] / this_frame_qCg);
-
-            // Calculate quantization errors that would occur
-            float quant_error_y = compensated_delta_y[i] - (test_quant_y * this_frame_qY);
-            float quant_error_co = compensated_delta_co[i] - (test_quant_co * this_frame_qCo);
-            float quant_error_cg = compensated_delta_cg[i] - (test_quant_cg * this_frame_qCg);
-
-            // Distribute error to neighboring coefficients (simplified Floyd-Steinberg for 1D)
-            // Apply dithering to high-frequency subbands based on decomposition levels
-            int should_dither = 0;
-//            int ll_size = tile_size / 4; // targeting LH/HL/HH6 subbands
-//            int ll_size = tile_size / 16; // targeting LH/HL/HH5-6 subbands
-            int ll_size = tile_size / 64; // targeting LH/HL/HH4-6 subbands
-
-            // Debug: Optional diagnostic output (commented for performance)
-            // if (i == 0) {
-            //     printf("[DITHER-DEBUG] tile_size=%d, ll_size=%d, will_dither_from_coeff=%d\n",
-            //            tile_size, ll_size, ll_size);
-            // }
-
-            // Dither all coefficients except the LL (lowest frequency) subband
-            if (i >= ll_size) {
-                should_dither = 1;
-            }
-
-            if (should_dither) {
-                if (i + 1 < tile_size) {
-                    error_buffer_y[i + 1] += quant_error_y * 0.5f; // 50% to next coefficient
-                    error_buffer_co[i + 1] += quant_error_co * 0.5f;
-                    error_buffer_cg[i + 1] += quant_error_cg * 0.5f;
-                }
-                if (i + 2 < tile_size) {
-                    error_buffer_y[i + 2] += quant_error_y * 0.3f; // 30% to coefficient +2
-                    error_buffer_co[i + 2] += quant_error_co * 0.3f;
-                    error_buffer_cg[i + 2] += quant_error_cg * 0.3f;
-                }
-                // Remaining 20% is absorbed (prevents error accumulation)
-
-                // Debug: Optional error diffusion monitoring (commented for performance)
-                // static int dither_debug_count = 0;
-                // if (dither_debug_count < 5) {
-                //     printf("[DITHER] Coeff %d: error=%.3f, distributed to [%d]=%.3f [%d]=%.3f\n",
-                //            i, quant_error_y, i+1, quant_error_y * 0.5f, i+2, quant_error_y * 0.3f);
-                //     dither_debug_count++;
-                // }
-            }
+            compensated_delta_y[i] = tile_y_data[i] - predicted_y[i];
+            compensated_delta_co[i] = tile_co_data[i] - predicted_co[i];
+            compensated_delta_cg[i] = tile_cg_data[i] - predicted_cg[i];
         }
 
-        // Step 3b: Now quantize the error-diffused compensated deltas
+        free(predicted_y);
+        free(predicted_co);
+        free(predicted_cg);
+
+        // Step 3: Quantize multi-frame predicted deltas
         quantise_dwt_coefficients(compensated_delta_y, quantised_y, tile_size, this_frame_qY);
         quantise_dwt_coefficients(compensated_delta_co, quantised_co, tile_size, this_frame_qCo);
         quantise_dwt_coefficients(compensated_delta_cg, quantised_cg, tile_size, this_frame_qCg);
 
-        // Step 4: Update reference coefficients exactly as decoder will reconstruct them
+        // Step 4: Update multi-frame reference coefficient sliding window
+        // Shift the sliding window: [0, 1, 2] becomes [new, 0, 1] (2 is discarded)
+        if (enc->reference_frame_count >= 2) {
+            // Shift frame 1 -> frame 2, frame 0 -> frame 1
+            float *temp_y = enc->previous_coeffs_y[2];
+            float *temp_co = enc->previous_coeffs_co[2];
+            float *temp_cg = enc->previous_coeffs_cg[2];
+
+            enc->previous_coeffs_y[2] = enc->previous_coeffs_y[1];
+            enc->previous_coeffs_co[2] = enc->previous_coeffs_co[1];
+            enc->previous_coeffs_cg[2] = enc->previous_coeffs_cg[1];
+
+            enc->previous_coeffs_y[1] = enc->previous_coeffs_y[0];
+            enc->previous_coeffs_co[1] = enc->previous_coeffs_co[0];
+            enc->previous_coeffs_cg[1] = enc->previous_coeffs_cg[0];
+
+            // Reuse the old frame 2 buffer as new frame 0
+            enc->previous_coeffs_y[0] = temp_y;
+            enc->previous_coeffs_co[0] = temp_co;
+            enc->previous_coeffs_cg[0] = temp_cg;
+        }
+
+        // Calculate and store the new reconstructed coefficients in frame 0
+        float *new_y = enc->previous_coeffs_y[0] + (tile_idx * tile_size);
+        float *new_co = enc->previous_coeffs_co[0] + (tile_idx * tile_size);
+        float *new_cg = enc->previous_coeffs_cg[0] + (tile_idx * tile_size);
+
         for (int i = 0; i < tile_size; i++) {
             float dequant_delta_y = (float)quantised_y[i] * this_frame_qY;
             float dequant_delta_co = (float)quantised_co[i] * this_frame_qCo;
             float dequant_delta_cg = (float)quantised_cg[i] * this_frame_qCg;
 
-            prev_y[i] = prev_y[i] + dequant_delta_y;
-            prev_co[i] = prev_co[i] + dequant_delta_co;
-            prev_cg[i] = prev_cg[i] + dequant_delta_cg;
+            // Reconstruct current frame coefficients exactly as decoder will
+            new_y[i] = prev_y[i] + dequant_delta_y;
+            new_co[i] = prev_co[i] + dequant_delta_co;
+            new_cg[i] = prev_cg[i] + dequant_delta_cg;
         }
+
+        // Update reference frame count (up to 3 frames) and frame type
+        if (enc->reference_frame_count < 3) {
+            enc->reference_frame_count++;
+        }
+        enc->last_frame_was_intra = 0;
 
         free(delta_y);
         free(delta_co);
@@ -1438,9 +1433,6 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         free(compensated_delta_y);
         free(compensated_delta_co);
         free(compensated_delta_cg);
-        free(error_buffer_y);
-        free(error_buffer_co);
-        free(error_buffer_cg);
     }
     
     // Debug: check quantised coefficients after quantisation
@@ -3280,9 +3272,12 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->reusable_quantised_cg);
     
     // Free coefficient delta storage
-    free(enc->previous_coeffs_y);
-    free(enc->previous_coeffs_co);
-    free(enc->previous_coeffs_cg);
+    // Free multi-frame coefficient buffers
+    for (int ref = 0; ref < 3; ref++) {
+        free(enc->previous_coeffs_y[ref]);
+        free(enc->previous_coeffs_co[ref]);
+        free(enc->previous_coeffs_cg[ref]);
+    }
     
     // Free subtitle list
     if (enc->subtitles) {
