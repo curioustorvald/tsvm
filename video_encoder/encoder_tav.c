@@ -3045,6 +3045,7 @@ int main(int argc, char *argv[]) {
     
     // Main encoding loop - process frames until EOF or frame limit
     int frame_count = 0;
+    int true_frame_count = 0;
     int continue_encoding = 1;
 
     int count_iframe = 0;
@@ -3172,10 +3173,10 @@ int main(int argc, char *argv[]) {
         }
         else {
             // Process audio for this frame
-            process_audio(enc, frame_count, enc->output_fp);
+            process_audio(enc, true_frame_count, enc->output_fp);
             
             // Process subtitles for this frame
-            process_subtitles(enc, frame_count, enc->output_fp);
+            process_subtitles(enc, true_frame_count, enc->output_fp);
             
             // Write a sync packet only after a video is been coded
             uint8_t sync_packet = TAV_PACKET_SYNC;
@@ -3183,8 +3184,13 @@ int main(int argc, char *argv[]) {
 
             // NTSC frame duplication: emit extra sync packet for every 1000n+500 frames
             if (enc->is_ntsc_framerate && (frame_count % 1000 == 500)) {
+                true_frame_count++;
+                // Process audio and subtitles for the duplicated frame to maintain sync
+                process_audio(enc, true_frame_count, enc->output_fp);
+                process_subtitles(enc, true_frame_count, enc->output_fp);
+
                 fwrite(&sync_packet, 1, 1, enc->output_fp);
-                printf("Frame %d: NTSC duplication - extra sync packet emitted\n", frame_count);
+                printf("Frame %d: NTSC duplication - extra sync packet emitted with audio/subtitle sync\n", frame_count);
             }
 
             if (is_keyframe)
@@ -3197,6 +3203,7 @@ int main(int argc, char *argv[]) {
         swap_frame_buffers(enc);
         
         frame_count++;
+        true_frame_count++;
         enc->frame_count = frame_count;
         
         if (enc->verbose || frame_count % 30 == 0) {
