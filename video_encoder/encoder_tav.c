@@ -1019,6 +1019,112 @@ static float get_perceptual_weight_delta(tav_encoder_t *enc, int level, int subb
     }
 }
 
+// Safe spatial prediction using neighboring DWT coefficients (LL subband only)
+static void apply_spatial_prediction_safe(float *coeffs, float *predicted_coeffs,
+                                        int width, int height, int decomp_levels) {
+    // Apply spatial prediction ONLY to LL subband to avoid addressing issues
+    // This is much safer and still provides benefit for the most important coefficients
+
+    int total_size = width * height;
+
+    // Initialize with input temporal prediction values
+    for (int i = 0; i < total_size; i++) {
+        predicted_coeffs[i] = coeffs[i];
+    }
+
+    // Only process LL subband (DC component) with safe, simple neighbor averaging
+    int ll_width = width >> decomp_levels;
+    int ll_height = height >> decomp_levels;
+
+    // Only process interior pixels to avoid boundary issues
+    for (int y = 1; y < ll_height - 1; y++) {
+        for (int x = 1; x < ll_width - 1; x++) {
+            int idx = y * ll_width + x;
+
+            // Get 4-connected neighbors from the input (not the output being modified)
+            float left = coeffs[y * ll_width + (x-1)];
+            float right = coeffs[y * ll_width + (x+1)];
+            float top = coeffs[(y-1) * ll_width + x];
+            float bottom = coeffs[(y+1) * ll_width + x];
+
+            // Simple neighbor averaging for spatial prediction
+            float spatial_pred = (left + right + top + bottom) * 0.25f;
+
+            // Combine temporal and spatial predictions with conservative weight
+            // 85% temporal, 15% spatial for safety
+            predicted_coeffs[idx] = coeffs[idx] * 0.85f + spatial_pred * 0.15f;
+        }
+    }
+
+    // Leave all detail subbands unchanged - only modify LL subband
+    // This prevents any coefficient addressing corruption
+}
+
+// Spatial prediction using neighboring DWT coefficients within the same subband
+static void apply_spatial_prediction(float *coeffs, float *predicted_coeffs,
+                                   int width, int height, int decomp_levels) {
+    // Apply spatial prediction within each DWT subband
+    // This improves upon temporal prediction by using neighboring coefficients
+
+    int total_size = width * height;
+
+    // Initialize with temporal prediction values
+    for (int i = 0; i < total_size; i++) {
+        predicted_coeffs[i] = coeffs[i];
+    }
+
+    // Map each coefficient to its subband and apply spatial prediction
+    int offset = 0;
+
+    // Process LL subband (DC component) - use simple neighbor averaging
+    int ll_width = width >> decomp_levels;
+    int ll_height = height >> decomp_levels;
+    int ll_size = ll_width * ll_height;
+
+    // don't modify the LL subband
+    offset += ll_size;
+
+    // Process detail subbands (LH, HL, HH) from coarsest to finest
+    for (int level = decomp_levels; level >= 1; level--) {
+        int level_width = width >> (decomp_levels - level + 1);
+        int level_height = height >> (decomp_levels - level + 1);
+        int subband_size = level_width * level_height;
+
+        // Process LH, HL, HH subbands for this level
+        for (int subband = 0; subband < 3; subband++) {
+            for (int y = 1; y < level_height - 1; y++) {
+                for (int x = 1; x < level_width - 1; x++) {
+                    int idx = y * level_width + x;
+
+                    // Get neighboring coefficients in the same subband
+                    float left = predicted_coeffs[offset + y * level_width + (x-1)];
+                    float right = predicted_coeffs[offset + y * level_width + (x+1)];
+                    float top = predicted_coeffs[offset + (y-1) * level_width + x];
+                    float bottom = predicted_coeffs[offset + (y+1) * level_width + x];
+
+                    // Directional prediction based on subband type
+                    float spatial_pred;
+                    if (subband == 0) { // LH (horizontal edges)
+                        // Emphasize vertical neighbors for horizontal edge prediction
+                        spatial_pred = (top + bottom) * 0.4f + (left + right) * 0.1f;
+                    } else if (subband == 1) { // HL (vertical edges)
+                        // Emphasize horizontal neighbors for vertical edge prediction
+                        spatial_pred = (left + right) * 0.4f + (top + bottom) * 0.1f;
+                    } else { // HH (diagonal edges)
+                        // Equal weighting for diagonal prediction
+                        spatial_pred = (left + right + top + bottom) * 0.25f;
+                    }
+
+                    // Combine temporal and spatial predictions with lighter spatial weight for high-frequency
+                    float spatial_weight = 0.2f; // Less spatial influence in detail subbands
+                    predicted_coeffs[offset + idx] = coeffs[offset + idx] * (1.0f - spatial_weight) + spatial_pred * spatial_weight;
+                }
+            }
+            offset += subband_size;
+        }
+    }
+}
+
 
 // Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
 static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
@@ -1367,12 +1473,37 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             }
         }
 
-        // Calculate improved deltas using multi-frame prediction
-        for (int i = 0; i < tile_size; i++) {
-            compensated_delta_y[i] = tile_y_data[i] - predicted_y[i];
-            compensated_delta_co[i] = tile_co_data[i] - predicted_co[i];
-            compensated_delta_cg[i] = tile_cg_data[i] - predicted_cg[i];
+        // Apply spatial prediction on top of temporal prediction
+        float *spatially_enhanced_y = malloc(tile_size * sizeof(float));
+        float *spatially_enhanced_co = malloc(tile_size * sizeof(float));
+        float *spatially_enhanced_cg = malloc(tile_size * sizeof(float));
+
+        // Determine tile dimensions for spatial prediction
+        int tile_width, tile_height;
+        if (enc->monoblock) {
+            tile_width = enc->width;
+            tile_height = enc->height;
+        } else {
+            tile_width = PADDED_TILE_SIZE_X;
+            tile_height = PADDED_TILE_SIZE_Y;
         }
+
+        // Apply safe spatial prediction (LL subband only)
+        apply_spatial_prediction_safe(predicted_y, spatially_enhanced_y, tile_width, tile_height, enc->decomp_levels);
+        apply_spatial_prediction_safe(predicted_co, spatially_enhanced_co, tile_width, tile_height, enc->decomp_levels);
+        apply_spatial_prediction_safe(predicted_cg, spatially_enhanced_cg, tile_width, tile_height, enc->decomp_levels);
+
+        // Calculate improved deltas using temporal + spatial prediction
+        for (int i = 0; i < tile_size; i++) {
+            compensated_delta_y[i] = tile_y_data[i] - spatially_enhanced_y[i];
+            compensated_delta_co[i] = tile_co_data[i] - spatially_enhanced_co[i];
+            compensated_delta_cg[i] = tile_cg_data[i] - spatially_enhanced_cg[i];
+        }
+
+        // Free spatial prediction buffers
+        free(spatially_enhanced_y);
+        free(spatially_enhanced_co);
+        free(spatially_enhanced_cg);
 
         free(predicted_y);
         free(predicted_co);
@@ -3043,7 +3174,7 @@ int main(int argc, char *argv[]) {
     int count_iframe = 0;
     int count_pframe = 0;
 
-    KEYFRAME_INTERVAL = enc->output_fps >> 2; // short interval makes ghosting less noticeable
+    KEYFRAME_INTERVAL = enc->output_fps;// >> 2; // short interval makes ghosting less noticeable
 
     while (continue_encoding) {
         // Check encode limit if specified
