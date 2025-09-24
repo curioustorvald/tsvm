@@ -1222,6 +1222,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         (enc->width * enc->height) :  // Monoblock mode: full frame
         (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);  // Standard mode: padded tiles
     // OPTIMISATION: Use pre-allocated buffers instead of malloc/free per tile
+    // this is the "output" buffer for this function
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
@@ -1260,7 +1261,8 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         memcpy(prev_co, tile_co_data, tile_size * sizeof(float));
         memcpy(prev_cg, tile_cg_data, tile_size * sizeof(float));
         
-    } else if (mode == TAV_MODE_DELTA) {
+    }
+    else if (mode == TAV_MODE_DELTA) {
         // DELTA mode with predictive error compensation to mitigate accumulation artifacts
         int tile_idx = tile_y * enc->tiles_x + tile_x;
         float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
@@ -1282,9 +1284,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             delta_cg[i] = tile_cg_data[i] - prev_cg[i];
         }
 
-        // Step 2: Predictive error compensation using iterative refinement
+        // Step 2: Simple predictive error compensation (back to working version)
         // We simulate the quantization-dequantization process to predict decoder behavior
-        for (int iteration = 0; iteration < 2; iteration++) { // 2 iterations for good convergence
+        for (int iteration = 0; iteration < 2; iteration++) { // Back to simple 2-iteration approach
             // Test quantization of current deltas
             int16_t *test_quant_y = malloc(tile_size * sizeof(int16_t));
             int16_t *test_quant_co = malloc(tile_size * sizeof(int16_t));
@@ -1310,26 +1312,39 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                 prediction_error_co = tile_co_data[i] - predicted_co;
                 prediction_error_cg = tile_cg_data[i] - predicted_cg;
 
-                // Debug: accumulate error statistics for first tile only
-                static float total_error_y = 0, total_error_co = 0, total_error_cg = 0;
-                static int error_samples = 0;
-                if (tile_x == 0 && tile_y == 0 && i < 16) { // First tile, first 16 coeffs
-                    total_error_y += fabs(prediction_error_y);
-                    total_error_co += fabs(prediction_error_co);
-                    total_error_cg += fabs(prediction_error_cg);
-                    error_samples++;
-                    if (error_samples % 160 == 0) { // Print every 10 frames
-                        printf("[ERROR-COMP] Avg errors: Y=%.3f Co=%.3f Cg=%.3f\n",
-                               total_error_y/160, total_error_co/160, total_error_cg/160);
-                        total_error_y = total_error_co = total_error_cg = 0;
-                    }
+                // Damped error compensation to prevent oscillation
+                // Apply different damping factors based on frequency (subband position)
+                float damping_factor = 1.0f;
+                int subband_size = tile_size / 4; // Each subband is 1/4 of tile
+
+                if (i < subband_size) {
+                    // LL subband (low-low): stable, allow full compensation
+                    damping_factor = 0.8f;
+                } else if (i < 2 * subband_size) {
+                    // LH subband (low-high): horizontal edges, moderate damping
+                    damping_factor = 0.5f;
+                } else if (i < 3 * subband_size) {
+                    // HL subband (high-low): vertical edges, moderate damping
+                    damping_factor = 0.5f;
+                } else {
+                    // HH subband (high-high): diagonal details, heavy damping to prevent oscillation
+                    damping_factor = 0.3f;
                 }
 
-                // Compensate delta by adding prediction error
-                // This counteracts the quantization error that will occur
-                compensated_delta_y[i] = delta_y[i] + prediction_error_y;
-                compensated_delta_co[i] = delta_co[i] + prediction_error_co;
-                compensated_delta_cg[i] = delta_cg[i] + prediction_error_cg;
+                // Further reduce compensation on second iteration to prevent overcorrection
+                if (iteration == 1) {
+                    damping_factor *= 0.5f; // Even more conservative on second iteration
+                }
+
+                compensated_delta_y[i] = delta_y[i] + (prediction_error_y * damping_factor);
+                compensated_delta_co[i] = delta_co[i] + (prediction_error_co * damping_factor);
+                compensated_delta_cg[i] = delta_cg[i] + (prediction_error_cg * damping_factor);
+
+                // Debug: Optional convergence monitoring (commented out for performance)
+                // if (tile_x == 0 && tile_y == 0 && i < 4) {
+                //     printf("[COMP] Frame %d, Coeff %d, Iter %d: error=%.2f, damping=%.2f\n",
+                //            enc->frame_count, i, iteration, prediction_error_y, damping_factor);
+                // }
             }
 
             free(test_quant_y);
@@ -1337,9 +1352,71 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             free(test_quant_cg);
         }
 
-        // Step 3: Quantise the error-compensated deltas with delta-specific perceptual weighting
-        // TEMPORARILY DISABLED: Delta-specific perceptual quantization
-        // Use uniform quantization for deltas (same as original implementation)
+        // Step 3: Quantize the error-compensated deltas with error diffusion
+        // Apply Floyd-Steinberg-like error diffusion to distribute quantization errors
+        float *error_buffer_y = calloc(tile_size, sizeof(float));
+        float *error_buffer_co = calloc(tile_size, sizeof(float));
+        float *error_buffer_cg = calloc(tile_size, sizeof(float));
+
+        // Step 3a: Apply error diffusion to compensated deltas (Floyd-Steinberg style)
+        for (int i = 0; i < tile_size; i++) {
+            // Add accumulated error from previous coefficients
+            compensated_delta_y[i] += error_buffer_y[i];
+            compensated_delta_co[i] += error_buffer_co[i];
+            compensated_delta_cg[i] += error_buffer_cg[i];
+
+            // Test quantize to calculate what the error would be
+            int16_t test_quant_y = (int16_t)roundf(compensated_delta_y[i] / this_frame_qY);
+            int16_t test_quant_co = (int16_t)roundf(compensated_delta_co[i] / this_frame_qCo);
+            int16_t test_quant_cg = (int16_t)roundf(compensated_delta_cg[i] / this_frame_qCg);
+
+            // Calculate quantization errors that would occur
+            float quant_error_y = compensated_delta_y[i] - (test_quant_y * this_frame_qY);
+            float quant_error_co = compensated_delta_co[i] - (test_quant_co * this_frame_qCo);
+            float quant_error_cg = compensated_delta_cg[i] - (test_quant_cg * this_frame_qCg);
+
+            // Distribute error to neighboring coefficients (simplified Floyd-Steinberg for 1D)
+            // Apply dithering to high-frequency subbands based on decomposition levels
+            int should_dither = 0;
+//            int ll_size = tile_size / 4; // targeting LH/HL/HH6 subbands
+//            int ll_size = tile_size / 16; // targeting LH/HL/HH5-6 subbands
+            int ll_size = tile_size / 64; // targeting LH/HL/HH4-6 subbands
+
+            // Debug: Optional diagnostic output (commented for performance)
+            // if (i == 0) {
+            //     printf("[DITHER-DEBUG] tile_size=%d, ll_size=%d, will_dither_from_coeff=%d\n",
+            //            tile_size, ll_size, ll_size);
+            // }
+
+            // Dither all coefficients except the LL (lowest frequency) subband
+            if (i >= ll_size) {
+                should_dither = 1;
+            }
+
+            if (should_dither) {
+                if (i + 1 < tile_size) {
+                    error_buffer_y[i + 1] += quant_error_y * 0.5f; // 50% to next coefficient
+                    error_buffer_co[i + 1] += quant_error_co * 0.5f;
+                    error_buffer_cg[i + 1] += quant_error_cg * 0.5f;
+                }
+                if (i + 2 < tile_size) {
+                    error_buffer_y[i + 2] += quant_error_y * 0.3f; // 30% to coefficient +2
+                    error_buffer_co[i + 2] += quant_error_co * 0.3f;
+                    error_buffer_cg[i + 2] += quant_error_cg * 0.3f;
+                }
+                // Remaining 20% is absorbed (prevents error accumulation)
+
+                // Debug: Optional error diffusion monitoring (commented for performance)
+                // static int dither_debug_count = 0;
+                // if (dither_debug_count < 5) {
+                //     printf("[DITHER] Coeff %d: error=%.3f, distributed to [%d]=%.3f [%d]=%.3f\n",
+                //            i, quant_error_y, i+1, quant_error_y * 0.5f, i+2, quant_error_y * 0.3f);
+                //     dither_debug_count++;
+                // }
+            }
+        }
+
+        // Step 3b: Now quantize the error-diffused compensated deltas
         quantise_dwt_coefficients(compensated_delta_y, quantised_y, tile_size, this_frame_qY);
         quantise_dwt_coefficients(compensated_delta_co, quantised_co, tile_size, this_frame_qCo);
         quantise_dwt_coefficients(compensated_delta_cg, quantised_cg, tile_size, this_frame_qCg);
@@ -1361,6 +1438,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         free(compensated_delta_y);
         free(compensated_delta_co);
         free(compensated_delta_cg);
+        free(error_buffer_y);
+        free(error_buffer_co);
+        free(error_buffer_cg);
     }
     
     // Debug: check quantised coefficients after quantisation
@@ -2970,7 +3050,7 @@ int main(int argc, char *argv[]) {
     int count_iframe = 0;
     int count_pframe = 0;
 
-    KEYFRAME_INTERVAL = enc->output_fps * 2; // Longer intervals for testing error compensation (was >> 2)
+    KEYFRAME_INTERVAL = enc->output_fps >> 2; // short interval makes ghosting less noticeable
 
     while (continue_encoding) {
         // Check encode limit if specified
