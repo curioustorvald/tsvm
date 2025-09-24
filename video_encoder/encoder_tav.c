@@ -257,14 +257,12 @@ typedef struct {
     int16_t *reusable_quantised_co;
     int16_t *reusable_quantised_cg;
     
-    // Multi-frame coefficient storage for better temporal prediction
-    float *previous_coeffs_y[3];   // Previous 3 frames Y coefficients for all tiles
-    float *previous_coeffs_co[3];  // Previous 3 frames Co coefficients for all tiles
-    float *previous_coeffs_cg[3];  // Previous 3 frames Cg coefficients for all tiles
+    // Coefficient delta storage for P-frames (previous frame's coefficients)
+    float *previous_coeffs_y;   // Previous frame Y coefficients for all tiles
+    float *previous_coeffs_co;  // Previous frame Co coefficients for all tiles
+    float *previous_coeffs_cg;  // Previous frame Cg coefficients for all tiles
     int previous_coeffs_allocated; // Flag to track allocation
-    int reference_frame_count;     // Number of available reference frames (0-3)
-    int last_frame_was_intra;      // 1 if previous frame was INTRA, 0 if DELTA
-    
+
     // Statistics
     size_t total_compressed_size;
     size_t total_uncompressed_size;
@@ -359,7 +357,7 @@ static void show_usage(const char *program_name) {
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
     printf("  --help                  Show this help\n\n");
-    
+
     printf("Audio Rate by Quality:\n  ");
     for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
         printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
@@ -389,7 +387,7 @@ static void show_usage(const char *program_name) {
     printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
     printf("  - Lossless and lossy compression modes\n");
     printf("  - Versions 5/6: Perceptual quantisation, Versions 3/4: Uniform quantisation\n");
-    
+
     printf("\nExamples:\n");
     printf("  %s -i input.mp4 -o output.mv3               # Default settings\n", program_name);
     printf("  %s -i input.mkv -q 4 -o output.mv3          # At maximum quality\n", program_name);
@@ -402,10 +400,10 @@ static void show_usage(const char *program_name) {
 static tav_encoder_t* create_encoder(void) {
     tav_encoder_t *enc = calloc(1, sizeof(tav_encoder_t));
     if (!enc) return NULL;
-    
+
     // Set defaults
     enc->width = DEFAULT_WIDTH;
-    enc->height = DEFAULT_HEIGHT; 
+    enc->height = DEFAULT_HEIGHT;
     enc->fps = DEFAULT_FPS;
     enc->quality_level = DEFAULT_QUALITY;
     enc->wavelet_filter = WAVELET_9_7_IRREVERSIBLE;
@@ -442,7 +440,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
         enc->tiles_y = (enc->height + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
     }
     int num_tiles = enc->tiles_x * enc->tiles_y;
-    
+
     // Allocate ping-pong frame buffers
     size_t frame_size = enc->width * enc->height;
     enc->frame_rgb[0] = malloc(frame_size * 3);
@@ -455,7 +453,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->current_frame_y = malloc(frame_size * sizeof(float));
     enc->current_frame_co = malloc(frame_size * sizeof(float));
     enc->current_frame_cg = malloc(frame_size * sizeof(float));
-    
+
     // Allocate tile structures
     enc->tiles = malloc(num_tiles * sizeof(dwt_tile_t));
 
@@ -469,7 +467,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
     const size_t max_frame_size = num_tiles * (4 + max_frame_coeff_count * 3 * sizeof(int16_t));
     enc->compressed_buffer_size = ZSTD_compressBound(max_frame_size);
     enc->compressed_buffer = malloc(enc->compressed_buffer_size);
-    
+
     // OPTIMISATION: Allocate reusable quantisation buffers
     int coeff_count_per_tile;
     if (enc->monoblock) {
@@ -484,39 +482,21 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->reusable_quantised_co = malloc(coeff_count_per_tile * sizeof(int16_t));
     enc->reusable_quantised_cg = malloc(coeff_count_per_tile * sizeof(int16_t));
 
-    // Allocate multi-frame coefficient storage for better temporal prediction
+    // Allocate coefficient delta storage for P-frames (per-tile coefficient storage)
     size_t total_coeff_size = num_tiles * coeff_count_per_tile * sizeof(float);
-    for (int ref = 0; ref < 3; ref++) {
-        enc->previous_coeffs_y[ref] = malloc(total_coeff_size);
-        enc->previous_coeffs_co[ref] = malloc(total_coeff_size);
-        enc->previous_coeffs_cg[ref] = malloc(total_coeff_size);
-
-        // Initialize to zero
-        memset(enc->previous_coeffs_y[ref], 0, total_coeff_size);
-        memset(enc->previous_coeffs_co[ref], 0, total_coeff_size);
-        memset(enc->previous_coeffs_cg[ref], 0, total_coeff_size);
-    }
+    enc->previous_coeffs_y = malloc(total_coeff_size);
+    enc->previous_coeffs_co = malloc(total_coeff_size);
+    enc->previous_coeffs_cg = malloc(total_coeff_size);
     enc->previous_coeffs_allocated = 0; // Will be set to 1 after first I-frame
-    enc->reference_frame_count = 0;
-    enc->last_frame_was_intra = 1;     // First frame is always INTRA
-
-    // Check allocations
-    int allocation_success = 1;
-    for (int ref = 0; ref < 3; ref++) {
-        if (!enc->previous_coeffs_y[ref] || !enc->previous_coeffs_co[ref] || !enc->previous_coeffs_cg[ref]) {
-            allocation_success = 0;
-            break;
-        }
-    }
 
     if (!enc->frame_rgb[0] || !enc->frame_rgb[1] ||
         !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg ||
         !enc->tiles || !enc->zstd_ctx || !enc->compressed_buffer ||
         !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg ||
-        !allocation_success) {
+        !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg) {
         return -1;
     }
-    
+
     return 0;
 }
 
@@ -527,10 +507,10 @@ static int initialise_encoder(tav_encoder_t *enc) {
 // 1D DWT using lifting scheme for 5/3 reversible filter
 static void dwt_53_forward_1d(float *data, int length) {
     if (length < 2) return;
-    
+
     float *temp = malloc(length * sizeof(float));
     int half = (length + 1) / 2;  // Handle odd lengths properly
-    
+
     // Predict step (high-pass)
     for (int i = 0; i < half; i++) {
         int idx = 2 * i + 1;
@@ -539,14 +519,14 @@ static void dwt_53_forward_1d(float *data, int length) {
             temp[half + i] = data[idx] - pred;
         }
     }
-    
+
     // Update step (low-pass)
     for (int i = 0; i < half; i++) {
-        float update = 0.25f * ((i > 0 ? temp[half + i - 1] : 0) + 
+        float update = 0.25f * ((i > 0 ? temp[half + i - 1] : 0) +
                                (i < half - 1 ? temp[half + i] : 0));
         temp[i] = data[2 * i] + update;
     }
-    
+
     // Copy back
     memcpy(data, temp, length * sizeof(float));
     free(temp);
@@ -622,69 +602,69 @@ static void dwt_97_forward_1d(float *data, int length) {
 }
 
 // Extract padded tile with margins for seamless DWT processing (correct implementation)
-static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y, 
+static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
                                float *padded_y, float *padded_co, float *padded_cg) {
     const int core_start_x = tile_x * TILE_SIZE_X;
     const int core_start_y = tile_y * TILE_SIZE_Y;
-    
+
     // OPTIMISATION: Process row by row with bulk copying for core region
     for (int py = 0; py < PADDED_TILE_SIZE_Y; py++) {
         // Map padded row to source image row
         int src_y = core_start_y + py - TILE_MARGIN;
-        
+
         // Handle vertical boundary conditions with mirroring
         if (src_y < 0) src_y = -src_y;
         else if (src_y >= enc->height) src_y = enc->height - 1 - (src_y - enc->height);
         src_y = CLAMP(src_y, 0, enc->height - 1);
-        
+
         // Calculate source and destination row offsets
         const int padded_row_offset = py * PADDED_TILE_SIZE_X;
         const int src_row_offset = src_y * enc->width;
-        
+
         // Check if we can do bulk copying for the core region
         int core_start_px = TILE_MARGIN;
         int core_end_px = TILE_MARGIN + TILE_SIZE_X;
-        
+
         // Check if core region is entirely within frame bounds
         int core_src_start_x = core_start_x;
         int core_src_end_x = core_start_x + TILE_SIZE_X;
-        
+
         if (core_src_start_x >= 0 && core_src_end_x <= enc->width) {
             // OPTIMISATION: Bulk copy core region (280 pixels) in one operation
             const int src_core_offset = src_row_offset + core_src_start_x;
-            
-            memcpy(&padded_y[padded_row_offset + core_start_px], 
-                   &enc->current_frame_y[src_core_offset], 
+
+            memcpy(&padded_y[padded_row_offset + core_start_px],
+                   &enc->current_frame_y[src_core_offset],
                    TILE_SIZE_X * sizeof(float));
-            memcpy(&padded_co[padded_row_offset + core_start_px], 
-                   &enc->current_frame_co[src_core_offset], 
+            memcpy(&padded_co[padded_row_offset + core_start_px],
+                   &enc->current_frame_co[src_core_offset],
                    TILE_SIZE_X * sizeof(float));
-            memcpy(&padded_cg[padded_row_offset + core_start_px], 
-                   &enc->current_frame_cg[src_core_offset], 
+            memcpy(&padded_cg[padded_row_offset + core_start_px],
+                   &enc->current_frame_cg[src_core_offset],
                    TILE_SIZE_X * sizeof(float));
-            
+
             // Handle margin pixels individually (left and right margins)
             for (int px = 0; px < core_start_px; px++) {
                 int src_x = core_start_x + px - TILE_MARGIN;
                 if (src_x < 0) src_x = -src_x;
                 src_x = CLAMP(src_x, 0, enc->width - 1);
-                
+
                 int src_idx = src_row_offset + src_x;
                 int padded_idx = padded_row_offset + px;
-                
+
                 padded_y[padded_idx] = enc->current_frame_y[src_idx];
                 padded_co[padded_idx] = enc->current_frame_co[src_idx];
                 padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
             }
-            
+
             for (int px = core_end_px; px < PADDED_TILE_SIZE_X; px++) {
                 int src_x = core_start_x + px - TILE_MARGIN;
                 if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
                 src_x = CLAMP(src_x, 0, enc->width - 1);
-                
+
                 int src_idx = src_row_offset + src_x;
                 int padded_idx = padded_row_offset + px;
-                
+
                 padded_y[padded_idx] = enc->current_frame_y[src_idx];
                 padded_co[padded_idx] = enc->current_frame_co[src_idx];
                 padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
@@ -693,15 +673,15 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
             // Fallback: process entire row pixel by pixel (for edge tiles)
             for (int px = 0; px < PADDED_TILE_SIZE_X; px++) {
                 int src_x = core_start_x + px - TILE_MARGIN;
-                
+
                 // Handle horizontal boundary conditions with mirroring
                 if (src_x < 0) src_x = -src_x;
                 else if (src_x >= enc->width) src_x = enc->width - 1 - (src_x - enc->width);
                 src_x = CLAMP(src_x, 0, enc->width - 1);
-                
+
                 int src_idx = src_row_offset + src_x;
                 int padded_idx = padded_row_offset + px;
-                
+
                 padded_y[padded_idx] = enc->current_frame_y[src_idx];
                 padded_co[padded_idx] = enc->current_frame_co[src_idx];
                 padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
@@ -718,47 +698,47 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
     const int max_size = (width > height) ? width : height;
     float *temp_row = malloc(max_size * sizeof(float));
     float *temp_col = malloc(max_size * sizeof(float));
-    
+
     for (int level = 0; level < levels; level++) {
         int current_width = width >> level;
         int current_height = height >> level;
         if (current_width < 1 || current_height < 1) break;
-        
+
         // Row transform (horizontal)
         for (int y = 0; y < current_height; y++) {
             for (int x = 0; x < current_width; x++) {
                 temp_row[x] = tile_data[y * width + x];
             }
-            
+
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
                 dwt_53_forward_1d(temp_row, current_width);
             } else {
                 dwt_97_forward_1d(temp_row, current_width);
             }
-            
+
             for (int x = 0; x < current_width; x++) {
                 tile_data[y * width + x] = temp_row[x];
             }
         }
-        
+
         // Column transform (vertical)
         for (int x = 0; x < current_width; x++) {
             for (int y = 0; y < current_height; y++) {
                 temp_col[y] = tile_data[y * width + x];
             }
-            
+
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
                 dwt_53_forward_1d(temp_col, current_height);
             } else {
                 dwt_97_forward_1d(temp_col, current_height);
             }
-            
+
             for (int y = 0; y < current_height; y++) {
                 tile_data[y * width + x] = temp_col[y];
             }
         }
     }
-    
+
     free(temp_row);
     free(temp_col);
 }
@@ -817,7 +797,7 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
     float effective_q = quantiser;
     effective_q = FCLAMP(effective_q, 1.0f, 255.0f);
-    
+
     for (int i = 0; i < size; i++) {
         float quantised_val = coeffs[i] / effective_q;
         quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
@@ -967,164 +947,6 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
     }
 }
 
-// Delta-specific perceptual weight model optimized for temporal coefficient differences
-static float get_perceptual_weight_delta(tav_encoder_t *enc, int level, int subband_type, int is_chroma, int max_levels) {
-    // Delta coefficients have different perceptual characteristics than full-picture coefficients:
-    // 1. Motion edges are more perceptually critical than static edges
-    // 2. Temporal masking allows more aggressive quantization in high-motion areas
-    // 3. Smaller delta magnitudes make relative quantization errors more visible
-    // 4. Frequency distribution is motion-dependent rather than spatial-dependent
-
-    if (!is_chroma) {
-        // LUMA DELTA CHANNEL: Emphasize motion coherence and edge preservation
-        if (subband_type == 0) { // LL subband - DC motion changes, still important
-            // DC motion changes - preserve somewhat but allow coarser quantization than full-picture
-            return 2.0f; // Slightly coarser than full-picture
-        }
-
-        if (subband_type == 1) { // LH subband - horizontal motion edges
-            // Motion boundaries benefit from temporal masking - allow coarser quantization
-            return 0.9f; // More aggressive quantization for deltas
-        }
-
-        if (subband_type == 2) { // HL subband - vertical motion edges
-            // Vertical motion boundaries - equal treatment with horizontal for deltas
-            return 1.2f; // Same aggressiveness as horizontal
-        }
-
-        // HH subband - diagonal motion details
-
-        // Diagonal motion deltas can be quantized most aggressively
-        return 0.5f;
-
-    } else {
-        // CHROMA DELTA CHANNELS: More aggressive quantization allowed due to temporal masking
-        // Motion chroma changes are less perceptually critical than static chroma
-
-        float base = perceptual_model3_chroma_basecurve(enc->quality_level, level - 1);
-
-        if (subband_type == 0) { // LL chroma deltas
-            // Chroma DC motion changes - allow more aggressive quantization
-            return 1.3f; // More aggressive than full-picture chroma
-        } else if (subband_type == 1) { // LH chroma deltas
-            // Horizontal chroma motion - temporal masking allows more quantization
-            return FCLAMP(base * 1.4f, 1.2f, 120.0f);
-        } else if (subband_type == 2) { // HL chroma deltas
-            // Vertical chroma motion - most aggressive
-            return FCLAMP(base * ANISOTROPY_MULT_CHROMA[enc->quality_level] * 1.6f, 1.4f, 140.0f);
-        } else { // HH chroma deltas
-            // Diagonal chroma motion - extremely aggressive quantization
-            return FCLAMP(base * ANISOTROPY_MULT_CHROMA[enc->quality_level] * 1.8f + ANISOTROPY_BIAS_CHROMA[enc->quality_level], 1.6f, 160.0f);
-        }
-    }
-}
-
-// Safe spatial prediction using neighboring DWT coefficients (LL subband only)
-static void apply_spatial_prediction_safe(float *coeffs, float *predicted_coeffs,
-                                        int width, int height, int decomp_levels) {
-    // Apply spatial prediction ONLY to LL subband to avoid addressing issues
-    // This is much safer and still provides benefit for the most important coefficients
-
-    int total_size = width * height;
-
-    // Initialize with input temporal prediction values
-    for (int i = 0; i < total_size; i++) {
-        predicted_coeffs[i] = coeffs[i];
-    }
-
-    // Only process LL subband (DC component) with safe, simple neighbor averaging
-    int ll_width = width >> decomp_levels;
-    int ll_height = height >> decomp_levels;
-
-    // Only process interior pixels to avoid boundary issues
-    for (int y = 1; y < ll_height - 1; y++) {
-        for (int x = 1; x < ll_width - 1; x++) {
-            int idx = y * ll_width + x;
-
-            // Get 4-connected neighbors from the input (not the output being modified)
-            float left = coeffs[y * ll_width + (x-1)];
-            float right = coeffs[y * ll_width + (x+1)];
-            float top = coeffs[(y-1) * ll_width + x];
-            float bottom = coeffs[(y+1) * ll_width + x];
-
-            // Simple neighbor averaging for spatial prediction
-            float spatial_pred = (left + right + top + bottom) * 0.25f;
-
-            // Combine temporal and spatial predictions with conservative weight
-            // 85% temporal, 15% spatial for safety
-            predicted_coeffs[idx] = coeffs[idx] * 0.85f + spatial_pred * 0.15f;
-        }
-    }
-
-    // Leave all detail subbands unchanged - only modify LL subband
-    // This prevents any coefficient addressing corruption
-}
-
-// Spatial prediction using neighboring DWT coefficients within the same subband
-static void apply_spatial_prediction(float *coeffs, float *predicted_coeffs,
-                                   int width, int height, int decomp_levels) {
-    // Apply spatial prediction within each DWT subband
-    // This improves upon temporal prediction by using neighboring coefficients
-
-    int total_size = width * height;
-
-    // Initialize with temporal prediction values
-    for (int i = 0; i < total_size; i++) {
-        predicted_coeffs[i] = coeffs[i];
-    }
-
-    // Map each coefficient to its subband and apply spatial prediction
-    int offset = 0;
-
-    // Process LL subband (DC component) - use simple neighbor averaging
-    int ll_width = width >> decomp_levels;
-    int ll_height = height >> decomp_levels;
-    int ll_size = ll_width * ll_height;
-
-    // don't modify the LL subband
-    offset += ll_size;
-
-    // Process detail subbands (LH, HL, HH) from coarsest to finest
-    for (int level = decomp_levels; level >= 1; level--) {
-        int level_width = width >> (decomp_levels - level + 1);
-        int level_height = height >> (decomp_levels - level + 1);
-        int subband_size = level_width * level_height;
-
-        // Process LH, HL, HH subbands for this level
-        for (int subband = 0; subband < 3; subband++) {
-            for (int y = 1; y < level_height - 1; y++) {
-                for (int x = 1; x < level_width - 1; x++) {
-                    int idx = y * level_width + x;
-
-                    // Get neighboring coefficients in the same subband
-                    float left = predicted_coeffs[offset + y * level_width + (x-1)];
-                    float right = predicted_coeffs[offset + y * level_width + (x+1)];
-                    float top = predicted_coeffs[offset + (y-1) * level_width + x];
-                    float bottom = predicted_coeffs[offset + (y+1) * level_width + x];
-
-                    // Directional prediction based on subband type
-                    float spatial_pred;
-                    if (subband == 0) { // LH (horizontal edges)
-                        // Emphasize vertical neighbors for horizontal edge prediction
-                        spatial_pred = (top + bottom) * 0.4f + (left + right) * 0.1f;
-                    } else if (subband == 1) { // HL (vertical edges)
-                        // Emphasize horizontal neighbors for vertical edge prediction
-                        spatial_pred = (left + right) * 0.4f + (top + bottom) * 0.1f;
-                    } else { // HH (diagonal edges)
-                        // Equal weighting for diagonal prediction
-                        spatial_pred = (left + right + top + bottom) * 0.25f;
-                    }
-
-                    // Combine temporal and spatial predictions with lighter spatial weight for high-frequency
-                    float spatial_weight = 0.2f; // Less spatial influence in detail subbands
-                    predicted_coeffs[offset + idx] = coeffs[offset + idx] * (1.0f - spatial_weight) + spatial_pred * spatial_weight;
-                }
-            }
-            offset += subband_size;
-        }
-    }
-}
-
 
 // Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
 static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
@@ -1171,51 +993,6 @@ static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_i
     return 1.0f;
 }
 
-// Determine delta-specific perceptual weight for coefficient at linear position
-static float get_perceptual_weight_for_position_delta(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
-    // Map linear coefficient index to DWT subband using same layout as decoder
-    int offset = 0;
-
-    // First: LL subband at maximum decomposition level
-    int ll_width = width >> decomp_levels;
-    int ll_height = height >> decomp_levels;
-    int ll_size = ll_width * ll_height;
-
-    if (linear_idx < offset + ll_size) {
-        // LL subband at maximum level - use delta-specific perceptual weight
-        return get_perceptual_weight_delta(enc, decomp_levels, 0, is_chroma, decomp_levels);
-    }
-    offset += ll_size;
-
-    // Then: LH, HL, HH subbands for each level from max down to 1
-    for (int level = decomp_levels; level >= 1; level--) {
-        int level_width = width >> (decomp_levels - level + 1);
-        int level_height = height >> (decomp_levels - level + 1);
-        int subband_size = level_width * level_height;
-
-        // LH subband (horizontal details)
-        if (linear_idx < offset + subband_size) {
-            return get_perceptual_weight_delta(enc, level, 1, is_chroma, decomp_levels);
-        }
-        offset += subband_size;
-
-        // HL subband (vertical details)
-        if (linear_idx < offset + subband_size) {
-            return get_perceptual_weight_delta(enc, level, 2, is_chroma, decomp_levels);
-        }
-        offset += subband_size;
-
-        // HH subband (diagonal details)
-        if (linear_idx < offset + subband_size) {
-            return get_perceptual_weight_delta(enc, level, 3, is_chroma, decomp_levels);
-        }
-        offset += subband_size;
-    }
-
-    // Fallback for out-of-bounds indices
-    return 1.0f;
-}
-
 // Apply perceptual quantisation per-coefficient (same loop as uniform but with spatial weights)
 static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                           float *coeffs, int16_t *quantised, int size,
@@ -1230,38 +1007,6 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
         float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
         float effective_q = effective_base_q * weight;
         float quantised_val = coeffs[i] / effective_q;
-        quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
-    }
-}
-
-// Apply delta-specific perceptual quantisation for temporal coefficients
-static void quantise_dwt_coefficients_perceptual_delta(tav_encoder_t *enc,
-                                                      float *delta_coeffs, int16_t *quantised, int size,
-                                                      int base_quantiser, int width, int height,
-                                                      int decomp_levels, int is_chroma) {
-    // Delta-specific perceptual quantization uses motion-optimized weights
-    // Key differences from full-picture quantization:
-    // 1. Finer quantization steps for deltas (smaller magnitudes)
-    // 2. Motion-coherence emphasis over spatial-detail emphasis
-    // 3. Enhanced temporal masking for chroma channels
-
-    float effective_base_q = base_quantiser;
-    effective_base_q = FCLAMP(effective_base_q, 1.0f, 255.0f);
-
-    // Delta-specific base quantization adjustment
-    // Deltas benefit from temporal masking - allow coarser quantization steps
-    float delta_coarse_tune = 1.2f; // 20% coarser quantization for delta coefficients
-    effective_base_q *= delta_coarse_tune;
-
-    for (int i = 0; i < size; i++) {
-        // Apply delta-specific perceptual weight based on coefficient's position in DWT layout
-        float weight = get_perceptual_weight_for_position_delta(enc, i, width, height, decomp_levels, is_chroma);
-        float effective_q = effective_base_q * weight;
-
-        // Ensure minimum quantization step for very small deltas to prevent over-quantization
-        effective_q = fmaxf(effective_q, 0.5f);
-
-        float quantised_val = delta_coeffs[i] / effective_q;
         quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
     }
 }
@@ -1321,11 +1066,11 @@ static void convert_2d_to_linear_layout(const int16_t *spatial_2d, int16_t *line
 }
 
 // Serialise tile data for compression
-static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y, 
+static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                                   const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
                                   uint8_t mode, uint8_t *buffer) {
     size_t offset = 0;
-    
+
     // Write tile header
     buffer[offset++] = mode;
 
@@ -1342,17 +1087,16 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         // No coefficient data for SKIP/MOTION modes
         return offset;
     }
-    
+
     // Quantise and serialise DWT coefficients
     const int tile_size = enc->monoblock ?
         (enc->width * enc->height) :  // Monoblock mode: full frame
         (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);  // Standard mode: padded tiles
     // OPTIMISATION: Use pre-allocated buffers instead of malloc/free per tile
-    // this is the "output" buffer for this function
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
-    
+
     // Debug: check DWT coefficients before quantisation
     /*if (tile_x == 0 && tile_y == 0) {
         printf("Encoder Debug: Tile (0,0) - DWT Y coeffs before quantisation (first 16): ");
@@ -1360,10 +1104,10 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             printf("%.2f ", tile_y_data[i]);
         }
         printf("\n");
-        printf("Encoder Debug: Quantisers - Y=%d, Co=%d, Cg=%d, rcf=%.2f\n", 
+        printf("Encoder Debug: Quantisers - Y=%d, Co=%d, Cg=%d, rcf=%.2f\n",
                this_frame_qY, this_frame_qCo, this_frame_qCg);
     }*/
-    
+
     if (mode == TAV_MODE_INTRA) {
         // INTRA mode: quantise coefficients directly and store for future reference
         if (enc->perceptual_tuning) {
@@ -1377,195 +1121,55 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo);
             quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg);
         }
-        
-        // Store current coefficients in multi-frame reference buffer
-        // For INTRA frames, reset the sliding window and store in frame 0
+
+        // Store current coefficients for future delta reference
         int tile_idx = tile_y * enc->tiles_x + tile_x;
+        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
+        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
+        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
+        memcpy(prev_y, tile_y_data, tile_size * sizeof(float));
+        memcpy(prev_co, tile_co_data, tile_size * sizeof(float));
+        memcpy(prev_cg, tile_cg_data, tile_size * sizeof(float));
 
-        // Reset reference frame count for INTRA frames (scene change)
-        enc->reference_frame_count = 1;
-        enc->last_frame_was_intra = 1;
-
-        // Store in frame 0
-        float *curr_y = enc->previous_coeffs_y[0] + (tile_idx * tile_size);
-        float *curr_co = enc->previous_coeffs_co[0] + (tile_idx * tile_size);
-        float *curr_cg = enc->previous_coeffs_cg[0] + (tile_idx * tile_size);
-        memcpy(curr_y, tile_y_data, tile_size * sizeof(float));
-        memcpy(curr_co, tile_co_data, tile_size * sizeof(float));
-        memcpy(curr_cg, tile_cg_data, tile_size * sizeof(float));
-        
-    }
-    else if (mode == TAV_MODE_DELTA) {
-        // DELTA mode with multi-frame temporal prediction
+    } else if (mode == TAV_MODE_DELTA) {
+        // DELTA mode: compute coefficient deltas and quantise them
         int tile_idx = tile_y * enc->tiles_x + tile_x;
-        // Use the most recent frame (frame 0) as the primary reference for delta calculation
-        float *prev_y = enc->previous_coeffs_y[0] + (tile_idx * tile_size);
-        float *prev_co = enc->previous_coeffs_co[0] + (tile_idx * tile_size);
-        float *prev_cg = enc->previous_coeffs_cg[0] + (tile_idx * tile_size);
+        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
+        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
+        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
 
-        // Allocate temporary buffers for error compensation
+        // Compute deltas: delta = current - previous
         float *delta_y = malloc(tile_size * sizeof(float));
         float *delta_co = malloc(tile_size * sizeof(float));
         float *delta_cg = malloc(tile_size * sizeof(float));
-        float *compensated_delta_y = malloc(tile_size * sizeof(float));
-        float *compensated_delta_co = malloc(tile_size * sizeof(float));
-        float *compensated_delta_cg = malloc(tile_size * sizeof(float));
 
-        // Step 1: Compute naive deltas
         for (int i = 0; i < tile_size; i++) {
             delta_y[i] = tile_y_data[i] - prev_y[i];
             delta_co[i] = tile_co_data[i] - prev_co[i];
             delta_cg[i] = tile_cg_data[i] - prev_cg[i];
         }
 
-        // Step 2: Multi-frame temporal prediction with INTRA frame detection
-        float *predicted_y = malloc(tile_size * sizeof(float));
-        float *predicted_co = malloc(tile_size * sizeof(float));
-        float *predicted_cg = malloc(tile_size * sizeof(float));
+        // Quantise the deltas with uniform quantisation (perceptual tuning is for original coefficients, not deltas)
+        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY);
+        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo);
+        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, this_frame_qCg);
 
-        if (enc->last_frame_was_intra || enc->reference_frame_count < 2) {
-            // Scene change detected (previous frame was INTRA) or insufficient reference frames
-            // Use simple single-frame prediction
-            if (enc->verbose && tile_x == 0 && tile_y == 0) {
-                printf("Frame %d: Scene change detected (previous frame was INTRA) - using single-frame prediction\n",
-                       enc->frame_count);
-            }
-
-            for (int i = 0; i < tile_size; i++) {
-                predicted_y[i] = prev_y[i];
-                predicted_co[i] = prev_co[i];
-                predicted_cg[i] = prev_cg[i];
-            }
-        } else {
-            // Multi-frame weighted prediction
-            // Weights: [0.6, 0.3, 0.1] for [most recent, 2nd most recent, 3rd most recent]
-            float weights[3] = {0.6f, 0.3f, 0.1f};
-
-            if (enc->verbose && tile_x == 0 && tile_y == 0) {
-                printf("Frame %d: Multi-frame prediction using %d reference frames\n",
-                       enc->frame_count, enc->reference_frame_count);
-            }
-
-            for (int i = 0; i < tile_size; i++) {
-                predicted_y[i] = 0.0f;
-                predicted_co[i] = 0.0f;
-                predicted_cg[i] = 0.0f;
-
-                // Weighted combination of up to 3 reference frames
-                float total_weight = 0.0f;
-                for (int ref = 0; ref < enc->reference_frame_count && ref < 3; ref++) {
-                    float *ref_y = enc->previous_coeffs_y[ref] + (tile_idx * tile_size);
-                    float *ref_co = enc->previous_coeffs_co[ref] + (tile_idx * tile_size);
-                    float *ref_cg = enc->previous_coeffs_cg[ref] + (tile_idx * tile_size);
-
-                    predicted_y[i] += ref_y[i] * weights[ref];
-                    predicted_co[i] += ref_co[i] * weights[ref];
-                    predicted_cg[i] += ref_cg[i] * weights[ref];
-                    total_weight += weights[ref];
-                }
-
-                // Normalize by actual weight (in case we have fewer than 3 frames)
-                if (total_weight > 0.0f) {
-                    predicted_y[i] /= total_weight;
-                    predicted_co[i] /= total_weight;
-                    predicted_cg[i] /= total_weight;
-                }
-            }
-        }
-
-        // Apply spatial prediction on top of temporal prediction
-        float *spatially_enhanced_y = malloc(tile_size * sizeof(float));
-        float *spatially_enhanced_co = malloc(tile_size * sizeof(float));
-        float *spatially_enhanced_cg = malloc(tile_size * sizeof(float));
-
-        // Determine tile dimensions for spatial prediction
-        int tile_width, tile_height;
-        if (enc->monoblock) {
-            tile_width = enc->width;
-            tile_height = enc->height;
-        } else {
-            tile_width = PADDED_TILE_SIZE_X;
-            tile_height = PADDED_TILE_SIZE_Y;
-        }
-
-        // Apply safe spatial prediction (LL subband only)
-        apply_spatial_prediction_safe(predicted_y, spatially_enhanced_y, tile_width, tile_height, enc->decomp_levels);
-        apply_spatial_prediction_safe(predicted_co, spatially_enhanced_co, tile_width, tile_height, enc->decomp_levels);
-        apply_spatial_prediction_safe(predicted_cg, spatially_enhanced_cg, tile_width, tile_height, enc->decomp_levels);
-
-        // Calculate improved deltas using temporal + spatial prediction
-        for (int i = 0; i < tile_size; i++) {
-            compensated_delta_y[i] = tile_y_data[i] - spatially_enhanced_y[i];
-            compensated_delta_co[i] = tile_co_data[i] - spatially_enhanced_co[i];
-            compensated_delta_cg[i] = tile_cg_data[i] - spatially_enhanced_cg[i];
-        }
-
-        // Free spatial prediction buffers
-        free(spatially_enhanced_y);
-        free(spatially_enhanced_co);
-        free(spatially_enhanced_cg);
-
-        free(predicted_y);
-        free(predicted_co);
-        free(predicted_cg);
-
-        // Step 3: Quantize multi-frame predicted deltas
-        quantise_dwt_coefficients(compensated_delta_y, quantised_y, tile_size, this_frame_qY);
-        quantise_dwt_coefficients(compensated_delta_co, quantised_co, tile_size, this_frame_qCo);
-        quantise_dwt_coefficients(compensated_delta_cg, quantised_cg, tile_size, this_frame_qCg);
-
-        // Step 4: Update multi-frame reference coefficient sliding window
-        // Shift the sliding window: [0, 1, 2] becomes [new, 0, 1] (2 is discarded)
-        if (enc->reference_frame_count >= 2) {
-            // Shift frame 1 -> frame 2, frame 0 -> frame 1
-            float *temp_y = enc->previous_coeffs_y[2];
-            float *temp_co = enc->previous_coeffs_co[2];
-            float *temp_cg = enc->previous_coeffs_cg[2];
-
-            enc->previous_coeffs_y[2] = enc->previous_coeffs_y[1];
-            enc->previous_coeffs_co[2] = enc->previous_coeffs_co[1];
-            enc->previous_coeffs_cg[2] = enc->previous_coeffs_cg[1];
-
-            enc->previous_coeffs_y[1] = enc->previous_coeffs_y[0];
-            enc->previous_coeffs_co[1] = enc->previous_coeffs_co[0];
-            enc->previous_coeffs_cg[1] = enc->previous_coeffs_cg[0];
-
-            // Reuse the old frame 2 buffer as new frame 0
-            enc->previous_coeffs_y[0] = temp_y;
-            enc->previous_coeffs_co[0] = temp_co;
-            enc->previous_coeffs_cg[0] = temp_cg;
-        }
-
-        // Calculate and store the new reconstructed coefficients in frame 0
-        float *new_y = enc->previous_coeffs_y[0] + (tile_idx * tile_size);
-        float *new_co = enc->previous_coeffs_co[0] + (tile_idx * tile_size);
-        float *new_cg = enc->previous_coeffs_cg[0] + (tile_idx * tile_size);
-
+        // Reconstruct coefficients like decoder will (previous + uniform_dequantised_delta)
         for (int i = 0; i < tile_size; i++) {
             float dequant_delta_y = (float)quantised_y[i] * this_frame_qY;
             float dequant_delta_co = (float)quantised_co[i] * this_frame_qCo;
             float dequant_delta_cg = (float)quantised_cg[i] * this_frame_qCg;
 
-            // Reconstruct current frame coefficients exactly as decoder will
-            new_y[i] = prev_y[i] + dequant_delta_y;
-            new_co[i] = prev_co[i] + dequant_delta_co;
-            new_cg[i] = prev_cg[i] + dequant_delta_cg;
+            prev_y[i] = prev_y[i] + dequant_delta_y;
+            prev_co[i] = prev_co[i] + dequant_delta_co;
+            prev_cg[i] = prev_cg[i] + dequant_delta_cg;
         }
-
-        // Update reference frame count (up to 3 frames) and frame type
-        if (enc->reference_frame_count < 3) {
-            enc->reference_frame_count++;
-        }
-        enc->last_frame_was_intra = 0;
 
         free(delta_y);
         free(delta_co);
         free(delta_cg);
-        free(compensated_delta_y);
-        free(compensated_delta_co);
-        free(compensated_delta_cg);
     }
-    
+
     // Debug: check quantised coefficients after quantisation
     /*if (tile_x == 0 && tile_y == 0) {
         printf("Encoder Debug: Tile (0,0) - Quantised Y coeffs (first 16): ");
@@ -1574,14 +1178,14 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         }
         printf("\n");
     }*/
-    
+
     // Write quantised coefficients (both uniform and perceptual use same linear layout)
     memcpy(buffer + offset, quantised_y, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
     memcpy(buffer + offset, quantised_co, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
     memcpy(buffer + offset, quantised_cg, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
-    
+
     // OPTIMISATION: No need to free - using pre-allocated reusable buffers
-    
+
     return offset;
 }
 
@@ -1593,11 +1197,11 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
         (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);
     const size_t max_tile_size = 4 + (coeff_count * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
-    
+
     // Allocate buffer for uncompressed tile data
     uint8_t *uncompressed_buffer = malloc(total_uncompressed_size);
     size_t uncompressed_offset = 0;
-    
+
     // Serialise all tiles
     for (int tile_y = 0; tile_y < enc->tiles_y; tile_y++) {
         for (int tile_x = 0; tile_x < enc->tiles_x; tile_x++) {
@@ -1610,7 +1214,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             } else {
                 mode = TAV_MODE_DELTA;  // P-frames use coefficient delta encoding
             }
-            
+
             // Determine tile data size and allocate buffers
             int tile_data_size;
             if (enc->monoblock) {
@@ -1634,7 +1238,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 // Extract padded tiles using context from neighbours
                 extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
             }
-            
+
             // Debug: check input data before DWT
             /*if (tile_x == 0 && tile_y == 0) {
                 printf("Encoder Debug: Tile (0,0) - Y data before DWT (first 16): ");
@@ -1643,7 +1247,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 }
                 printf("\n");
             }*/
-            
+
             // Debug: Check Y data before DWT transform
             /*if (enc->frame_count == 120 && enc->verbose) {
                 float max_y_before = 0.0f;
@@ -1679,7 +1283,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 }
                 printf("\n");
             }*/
-            
+
             // Serialise tile
             size_t tile_size = serialise_tile_data(enc, tile_x, tile_y,
                                                    tile_y_data, tile_co_data, tile_cg_data,
@@ -1692,56 +1296,56 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             free(tile_cg_data);
         }
     }
-    
+
     // Compress with zstd
     size_t compressed_size = ZSTD_compress(enc->compressed_buffer, enc->compressed_buffer_size,
                                            uncompressed_buffer, uncompressed_offset, ZSTD_COMPRESSON_LEVEL);
-    
+
     if (ZSTD_isError(compressed_size)) {
         fprintf(stderr, "Error: ZSTD compression failed: %s\n", ZSTD_getErrorName(compressed_size));
         free(uncompressed_buffer);
         return 0;
     }
-    
+
     // Write packet header and compressed data
     fwrite(&packet_type, 1, 1, enc->output_fp);
     uint32_t compressed_size_32 = (uint32_t)compressed_size;
     fwrite(&compressed_size_32, sizeof(uint32_t), 1, enc->output_fp);
     fwrite(enc->compressed_buffer, 1, compressed_size, enc->output_fp);
-    
+
     free(uncompressed_buffer);
-    
+
     enc->total_compressed_size += compressed_size;
     enc->total_uncompressed_size += uncompressed_offset;
-    
+
     // Mark coefficient storage as available after first I-frame
     if (packet_type == TAV_PACKET_IFRAME) {
         enc->previous_coeffs_allocated = 1;
     }
-    
+
     return compressed_size + 5; // packet type + size field + compressed data
 }
 
 // RGB to YCoCg colour space conversion
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height) {
     const int total_pixels = width * height;
-    
+
     // OPTIMISATION: Process 4 pixels at a time for better cache utilisation
     int i = 0;
     const int simd_end = (total_pixels / 4) * 4;
-    
+
     // Vectorised processing for groups of 4 pixels
     for (i = 0; i < simd_end; i += 4) {
         // Load 4 RGB triplets (12 bytes) at once
         const uint8_t *rgb_ptr = &rgb[i * 3];
-        
+
         // Process 4 pixels simultaneously with loop unrolling
         for (int j = 0; j < 4; j++) {
             const int idx = i + j;
             const float r = rgb_ptr[j * 3 + 0];
-            const float g = rgb_ptr[j * 3 + 1]; 
+            const float g = rgb_ptr[j * 3 + 1];
             const float b = rgb_ptr[j * 3 + 2];
-            
+
             // YCoCg-R transform (optimised with fewer temporary variables)
             co[idx] = r - b;
             const float tmp = b + co[idx] * 0.5f;
@@ -1749,13 +1353,13 @@ static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int
             y[idx] = tmp + cg[idx] * 0.5f;
         }
     }
-    
+
     // Handle remaining pixels (1-3 pixels)
     for (; i < total_pixels; i++) {
         const float r = rgb[i * 3 + 0];
-        const float g = rgb[i * 3 + 1]; 
+        const float g = rgb[i * 3 + 1];
         const float b = rgb[i * 3 + 2];
-        
+
         co[i] = r - b;
         const float tmp = b + co[i] * 0.5f;
         cg[i] = g - tmp;
@@ -1783,7 +1387,7 @@ static inline double HLG_OETF(double E) {
     const double a = 0.17883277;
     const double b = 0.28466892;  // 1 - 4*a
     const double c = 0.55991073;  // 0.5 - a*ln(4*a)
-    
+
     if (E <= 1.0/12.0) return sqrt(3.0 * E);
     return a * log(12.0 * E - b) + c;
 }
@@ -1792,7 +1396,7 @@ static inline double HLG_EOTF(double Ep) {
     const double a = 0.17883277;
     const double b = 0.28466892;
     const double c = 0.55991073;
-    
+
     if (Ep <= 0.5) {
         double val = Ep * Ep / 3.0;
         return val;
@@ -1938,7 +1542,7 @@ static void colour_space_to_rgb(tav_encoder_t *enc, double c1, double c2, double
 }
 
 // RGB to colour space conversion for full frames
-static void rgb_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgb, 
+static void rgb_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgb,
                                     float *c1, float *c2, float *c3, int width, int height) {
     if (enc->ictcp_mode) {
         // ICtCp mode
@@ -1958,10 +1562,10 @@ static void rgb_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgb,
 // Write TAV file header
 static int write_tav_header(tav_encoder_t *enc) {
     if (!enc->output_fp) return -1;
-    
+
     // Magic number
     fwrite(TAV_MAGIC, 1, 8, enc->output_fp);
-    
+
     // Version (dynamic based on colour space, monoblock mode, and perceptual tuning)
     uint8_t version;
     if (enc->monoblock) {
@@ -1974,20 +1578,20 @@ static int write_tav_header(tav_encoder_t *enc) {
         version = enc->ictcp_mode ? 2 : 1;  // Legacy 4-tile versions
     }
     fputc(version, enc->output_fp);
-    
+
     // Video parameters
     fwrite(&enc->width, sizeof(uint16_t), 1, enc->output_fp);
     fwrite(&enc->height, sizeof(uint16_t), 1, enc->output_fp);
     fputc(enc->output_fps, enc->output_fp);
     fwrite(&enc->total_frames, sizeof(uint32_t), 1, enc->output_fp);
-    
+
     // Encoder parameters
     fputc(enc->wavelet_filter, enc->output_fp);
     fputc(enc->decomp_levels, enc->output_fp);
     fputc(enc->quantiser_y, enc->output_fp);
     fputc(enc->quantiser_co, enc->output_fp);
     fputc(enc->quantiser_cg, enc->output_fp);
-    
+
     // Feature flags
     uint8_t extra_flags = 0;
     if (enc->has_audio) extra_flags |= 0x01;  // Has audio (placeholder)
@@ -1995,18 +1599,18 @@ static int write_tav_header(tav_encoder_t *enc) {
     if (enc->enable_progressive_transmission) extra_flags |= 0x04;
     if (enc->enable_roi) extra_flags |= 0x08;
     fputc(extra_flags, enc->output_fp);
-    
+
     uint8_t video_flags = 0;
 //    if (!enc->progressive) video_flags |= 0x01;  // Interlaced
     if (enc->is_ntsc_framerate) video_flags |= 0x02;  // NTSC
     if (enc->lossless) video_flags |= 0x04;  // Lossless
     fputc(video_flags, enc->output_fp);
-    
+
     // Reserved bytes (7 bytes)
     for (int i = 0; i < 7; i++) {
         fputc(0, enc->output_fp);
     }
-    
+
     return 0;
 }
 
@@ -2018,12 +1622,12 @@ static int write_tav_header(tav_encoder_t *enc) {
 static char* execute_command(const char* command) {
     FILE* pipe = popen(command, "r");
     if (!pipe) return NULL;
-    
+
     size_t buffer_size = 4096;
     char* buffer = malloc(buffer_size);
     size_t total_size = 0;
     size_t bytes_read;
-    
+
     while ((bytes_read = fread(buffer + total_size, 1, buffer_size - total_size - 1, pipe)) > 0) {
         total_size += bytes_read;
         if (total_size + 1 >= buffer_size) {
@@ -2031,7 +1635,7 @@ static char* execute_command(const char* command) {
             buffer = realloc(buffer, buffer_size);
         }
     }
-    
+
     buffer[total_size] = '\0';
     pclose(pipe);
     return buffer;
@@ -2213,7 +1817,7 @@ static int srt_time_to_frame(const char *time_str, int fps) {
     if (sscanf(time_str, "%d:%d:%d,%d", &hours, &minutes, &seconds, &milliseconds) != 4) {
         return -1;
     }
-    
+
     double total_seconds = hours * 3600.0 + minutes * 60.0 + seconds + milliseconds / 1000.0;
     return (int)(total_seconds * fps + 0.5);  // Round to nearest frame
 }
@@ -2694,13 +2298,13 @@ static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, c
     // Calculate packet size
     size_t text_len = text ? strlen(text) : 0;
     size_t packet_size = 3 + 1 + text_len + 1;  // index (3 bytes) + opcode + text + null terminator
-    
+
     // Write packet type and size
     uint8_t packet_type = TAV_PACKET_SUBTITLE;
     fwrite(&packet_type, 1, 1, output);
     uint32_t size32 = (uint32_t)packet_size;
     fwrite(&size32, 4, 1, output);
-    
+
     // Write subtitle data
     uint8_t index_bytes[3] = {
         (uint8_t)(index & 0xFF),
@@ -2709,14 +2313,14 @@ static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, c
     };
     fwrite(index_bytes, 3, 1, output);
     fwrite(&opcode, 1, 1, output);
-    
+
     if (text && text_len > 0) {
         fwrite(text, 1, text_len, output);
     }
-    
+
     uint8_t null_terminator = 0;
     fwrite(&null_terminator, 1, 1, output);
-    
+
     return 1 + 4 + packet_size;  // Total bytes written
 }
 
@@ -2836,12 +2440,12 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
     }
 
     int bytes_written = 0;
-    
+
     // Check if we need to show a new subtitle
     if (!enc->subtitle_visible) {
         subtitle_entry_t *sub = enc->current_subtitle;
         if (!sub) sub = enc->subtitles;  // Start from beginning if not set
-        
+
         // Find next subtitle to show
         while (sub && sub->start_frame <= frame_num) {
             if (sub->end_frame > frame_num) {
@@ -2851,7 +2455,7 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
                     enc->subtitle_visible = 1;
                     bytes_written += write_subtitle_packet(output, 0, 0x01, sub->text);
                     if (enc->verbose) {
-                        printf("Frame %d: Showing subtitle: %.50s%s\n", 
+                        printf("Frame %d: Showing subtitle: %.50s%s\n",
                                frame_num, sub->text, strlen(sub->text) > 50 ? "..." : "");
                     }
                 }
@@ -2860,7 +2464,7 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
             sub = sub->next;
         }
     }
-    
+
     // Check if we need to hide current subtitle
     if (enc->subtitle_visible && enc->current_subtitle) {
         if (frame_num >= enc->current_subtitle->end_frame) {
@@ -2871,7 +2475,7 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
             }
         }
     }
-    
+
     return bytes_written;
 }
 
@@ -2932,7 +2536,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Failed to create encoder\n");
         return 1;
     }
-    
+
     // Command line option parsing (similar to TEV encoder)
     static struct option long_options[] = {
         {"input", required_argument, 0, 'i'},
@@ -2957,7 +2561,7 @@ int main(int argc, char *argv[]) {
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
-    
+
     int c, option_index = 0;
     while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:w:d:b:pS:vt", long_options, &option_index)) != -1) {
         switch (c) {
@@ -3073,13 +2677,13 @@ int main(int argc, char *argv[]) {
         cleanup_encoder(enc);
         return 1;
     }
-    
+
     if (initialise_encoder(enc) != 0) {
         fprintf(stderr, "Error: Failed to initialise encoder\n");
         cleanup_encoder(enc);
         return 1;
     }
-    
+
     printf("TAV Encoder - DWT-based video compression\n");
     printf("Input: %s\n", enc->input_file);
     printf("Output: %s\n", enc->output_file);
@@ -3108,7 +2712,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
-    
+
     // Start FFmpeg process for video input (using TEV-compatible filtergraphs)
     if (enc->test_mode) {
         // Test mode - generate solid colour frames
@@ -3122,14 +2726,14 @@ int main(int argc, char *argv[]) {
             cleanup_encoder(enc);
             return 1;
         }
-        
+
         // Start video preprocessing pipeline
         if (start_video_conversion(enc) != 1) {
             fprintf(stderr, "Error: Failed to start video conversion\n");
             cleanup_encoder(enc);
             return 1;
         }
-        
+
         // Start audio conversion if needed
         if (enc->has_audio) {
             printf("Starting audio conversion...\n");
@@ -3139,7 +2743,7 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    
+
     // Parse subtitles if provided
     if (enc->subtitle_file) {
         printf("Parsing subtitles: %s\n", enc->subtitle_file);
@@ -3150,7 +2754,7 @@ int main(int argc, char *argv[]) {
             printf("Loaded subtitles successfully\n");
         }
     }
-    
+
     // Write TAV header
     if (write_tav_header(enc) != 0) {
         fprintf(stderr, "Error: Failed to write TAV header\n");
@@ -3163,9 +2767,9 @@ int main(int argc, char *argv[]) {
     if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
-    
+
     printf("Starting encoding...\n");
-    
+
     // Main encoding loop - process frames until EOF or frame limit
     int frame_count = 0;
     int true_frame_count = 0;
@@ -3174,7 +2778,7 @@ int main(int argc, char *argv[]) {
     int count_iframe = 0;
     int count_pframe = 0;
 
-    KEYFRAME_INTERVAL = enc->output_fps;// >> 2; // short interval makes ghosting less noticeable
+    KEYFRAME_INTERVAL = enc->output_fps >> 2; // refresh often because deltas in DWT are more visible than DCT
 
     while (continue_encoding) {
         // Check encode limit if specified
@@ -3190,12 +2794,12 @@ int main(int argc, char *argv[]) {
                 continue_encoding = 0;
                 break;
             }
-            
+
             // Generate test frame with solid colours (TEV-style)
             size_t rgb_size = enc->width * enc->height * 3;
             uint8_t test_r = 0, test_g = 0, test_b = 0;
             const char* colour_name = "unknown";
-            
+
             switch (frame_count) {
                 case 0: test_r = 0; test_g = 0; test_b = 0; colour_name = "black"; break;
                 case 1: test_r = 127; test_g = 127; test_b = 127; colour_name = "grey"; break;
@@ -3213,23 +2817,23 @@ int main(int argc, char *argv[]) {
                 case 13: test_r = 0; test_g = 0; test_b = 255; colour_name = "blue"; break;
                 case 14: test_r = 255; test_g = 0; test_b = 255; colour_name = "magenta"; break;
             }
-            
+
             // Fill frame with test colour
             for (size_t i = 0; i < rgb_size; i += 3) {
                 enc->current_frame_rgb[i] = test_r;
                 enc->current_frame_rgb[i + 1] = test_g;
                 enc->current_frame_rgb[i + 2] = test_b;
             }
-            
+
             printf("Frame %d: %s (%d,%d,%d)\n", frame_count, colour_name, test_r, test_g, test_b);
-            
+
         } else {
             // Real video mode - read frame from FFmpeg
             // height-halving is already done on the encoder initialisation
             int frame_height = enc->height;
             size_t rgb_size = enc->width * frame_height * 3;
             size_t bytes_read = fread(enc->current_frame_rgb, 1, rgb_size, enc->ffmpeg_video_pipe);
-            
+
             if (bytes_read != rgb_size) {
                 if (enc->verbose) {
                     printf("Frame %d: Expected %zu bytes, got %zu bytes\n", frame_count, rgb_size, bytes_read);
@@ -3243,11 +2847,11 @@ int main(int argc, char *argv[]) {
                 continue_encoding = 0;
                 break;
             }
-            
+
             // Each frame from FFmpeg is now a single field at half height (for interlaced)
             // Frame parity: even frames (0,2,4...) = bottom fields, odd frames (1,3,5...) = top fields
         }
-        
+
         // Determine frame type
         int is_scene_change = detect_scene_change(enc);
         int is_time_keyframe = (frame_count % KEYFRAME_INTERVAL) == 0;
@@ -3270,12 +2874,12 @@ int main(int argc, char *argv[]) {
             }
             printf("\n");
         }*/
-        
+
         // Convert RGB to colour space (YCoCg-R or ICtCp)
-        rgb_to_colour_space_frame(enc, enc->current_frame_rgb, 
+        rgb_to_colour_space_frame(enc, enc->current_frame_rgb,
                                 enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
                                 enc->width, enc->height);
-                     
+
         // Debug: check YCoCg conversion result
         /*if (frame_count < 3) {
             printf("Encoder Debug: Frame %d - YCoCg result (first 16): ", frame_count);
@@ -3285,11 +2889,11 @@ int main(int argc, char *argv[]) {
             }
             printf("\n");
         }*/
-        
+
         // Compress and write frame packet
         uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
         size_t packet_size = compress_and_write_frame(enc, packet_type);
-        
+
         if (packet_size == 0) {
             fprintf(stderr, "Error: Failed to compress frame %d\n", frame_count);
             break;
@@ -3297,10 +2901,10 @@ int main(int argc, char *argv[]) {
         else {
             // Process audio for this frame
             process_audio(enc, true_frame_count, enc->output_fp);
-            
+
             // Process subtitles for this frame
             process_subtitles(enc, true_frame_count, enc->output_fp);
-            
+
             // Write a sync packet only after a video is been coded
             uint8_t sync_packet = TAV_PACKET_SYNC;
             fwrite(&sync_packet, 1, 1, enc->output_fp);
@@ -3321,14 +2925,14 @@ int main(int argc, char *argv[]) {
             else
                 count_pframe++;
         }
-        
+
         // Swap ping-pong buffers (eliminates memcpy operations)
         swap_frame_buffers(enc);
-        
+
         frame_count++;
         true_frame_count++;
         enc->frame_count = frame_count;
-        
+
         if (enc->verbose || frame_count % 30 == 0) {
             struct timeval now;
             gettimeofday(&now, NULL);
@@ -3339,8 +2943,8 @@ int main(int argc, char *argv[]) {
                    is_keyframe ? "I-frame" : "P-frame", fps);
         }
     }
-    
-    // Update actual frame count in encoder struct  
+
+    // Update actual frame count in encoder struct
     enc->total_frames = frame_count;
 
     // Update header with actual frame count (seek back to header position)
@@ -3368,7 +2972,7 @@ int main(int argc, char *argv[]) {
     printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
     printf("  Frame statistics: I-Frame=%d, P-Frame=%d\n", count_iframe, count_pframe);
 
-    
+
     cleanup_encoder(enc);
     return 0;
 }
@@ -3376,7 +2980,7 @@ int main(int argc, char *argv[]) {
 // Cleanup encoder resources
 static void cleanup_encoder(tav_encoder_t *enc) {
     if (!enc) return;
-    
+
     if (enc->ffmpeg_video_pipe) {
         pclose(enc->ffmpeg_video_pipe);
     }
@@ -3387,7 +2991,7 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     if (enc->output_fp) {
         fclose(enc->output_fp);
     }
-    
+
     free(enc->input_file);
     free(enc->output_file);
     free(enc->subtitle_file);
@@ -3396,19 +3000,16 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->tiles);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
-    
+
     // OPTIMISATION: Free reusable quantisation buffers
     free(enc->reusable_quantised_y);
     free(enc->reusable_quantised_co);
     free(enc->reusable_quantised_cg);
-    
+
     // Free coefficient delta storage
-    // Free multi-frame coefficient buffers
-    for (int ref = 0; ref < 3; ref++) {
-        free(enc->previous_coeffs_y[ref]);
-        free(enc->previous_coeffs_co[ref]);
-        free(enc->previous_coeffs_cg[ref]);
-    }
+    free(enc->previous_coeffs_y);
+    free(enc->previous_coeffs_co);
+    free(enc->previous_coeffs_cg);
     
     // Free subtitle list
     if (enc->subtitles) {
