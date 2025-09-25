@@ -4551,13 +4551,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
 
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavFilterIntra)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0, TavFilterIntra)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0, TavFilterIntra)
         } else {
-            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterIntra)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterIntra)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterIntra)
         }
 
         // Debug: Check coefficient values after inverse DWT
@@ -5113,13 +5113,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
 
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0)
-            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavFilterDelta)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0, TavFilterDelta)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0, TavFilterDelta)
         } else {
-            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter)
-            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterDelta)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterDelta)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterDelta)
         }
 
         // Debug: Check coefficient values after inverse DWT
@@ -5265,7 +5265,35 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         )
     }
 
-    private fun tavApplyDWTInverseMultiLevel(data: FloatArray, width: Int, height: Int, levels: Int, filterType: Int) {
+    private interface TavWaveletFilter {
+        fun getCoeffMultiplier(level: Int): Float // level 0: finest
+    }
+
+    private object TavFilterDelta : TavWaveletFilter {
+        override fun getCoeffMultiplier(level: Int): Float {
+            //return 1f
+            return when (level) {
+                0 -> 6f/5f
+                1 -> 5f/5f
+                2 -> 5f/6f
+                else -> 1f
+            }
+        }
+    }
+
+    private object TavFilterIntra : TavWaveletFilter {
+        override fun getCoeffMultiplier(level: Int): Float {
+            //return 1f
+            return when (level) {
+                0 -> 6f/5f
+                1 -> 5f/5f
+                2 -> 5f/6f
+                else -> 1f
+            }
+        }
+    }
+
+    private fun tavApplyDWTInverseMultiLevel(data: FloatArray, width: Int, height: Int, levels: Int, filterType: Int, sharpenFilter: TavWaveletFilter) {
         // Multi-level inverse DWT - reconstruct from smallest to largest (reverse of encoder)
         val maxSize = kotlin.math.max(width, height)
         val tempRow = FloatArray(maxSize)
@@ -5302,7 +5330,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Column inverse transform first (vertical)
             for (x in 0 until currentWidth) {
                 for (y in 0 until currentHeight) {
-                    tempCol[y] = data[y * width + x]
+                    tempCol[y] = data[y * width + x] * sharpenFilter.getCoeffMultiplier(level)
                 }
 
                 if (filterType == 0) {
@@ -5319,7 +5347,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Row inverse transform second (horizontal)
             for (y in 0 until currentHeight) {
                 for (x in 0 until currentWidth) {
-                    tempRow[x] = data[y * width + x]
+                    tempRow[x] = data[y * width + x] * sharpenFilter.getCoeffMultiplier(level)
                 }
 
                 if (filterType == 0) {
