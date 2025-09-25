@@ -64,7 +64,7 @@
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 2
-int KEYFRAME_INTERVAL = 7; // refresh often because deltas in DWT are more visible than DCT
+int KEYFRAME_INTERVAL = 2; // refresh often because deltas in DWT are more visible than DCT
 #define ZSTD_COMPRESSON_LEVEL 15
 
 // Audio/subtitle constants (reused from TEV)
@@ -2778,7 +2778,8 @@ int main(int argc, char *argv[]) {
     int count_iframe = 0;
     int count_pframe = 0;
 
-    KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 3, 3, 30); // refresh often because deltas in DWT are more visible than DCT
+    KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
+    // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
 
     while (continue_encoding) {
         // Check encode limit if specified
