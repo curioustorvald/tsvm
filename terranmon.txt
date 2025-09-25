@@ -898,6 +898,7 @@ transmission capability, and region-of-interest coding.
     uint16 Height: video height in pixels
     uint8  FPS: frames per second. Use 0x00 for still images
     uint32 Total Frames: number of video frames. Use 0xFFFFFFFF to denote still image (.im3 file)
+            - frame count of 0 is used to denote not-finalised video stream
     uint8  Wavelet Filter Type/File Role:
             - 0 = 5/3 reversible
             - 1 = 9/7 irreversible
@@ -951,14 +952,24 @@ note: metadata packets must precede any non-metadata packets
 
 ## Block Data (per frame)
     uint8  Mode: encoding mode
-           0x00 = SKIP (copy from previous frame)
-           0x01 = INTRA (DWT-coded)
-           0x02 = DELTA (DWT delta)
-    uint8  Quantiser override Y  (use 0 to disable overriding)
+            0x00 = SKIP (copy from previous frame)
+            0x01 = INTRA (DWT-coded)
+            0x02 = DELTA (DWT delta)
+    uint8  Quantiser override Y  (use 0 to disable overriding; shared with A channel)
     uint8  Quantiser override Co (use 0 to disable overriding)
     uint8  Quantiser override Cg (use 0 to disable overriding)
+    int16  Y channel DWT coefficients[width * height + 4]
+    int16  Co channel DWT coefficients[width * height + 4]
+    int16  Cg channel DWT coefficients[width * height + 4]
+    int16  A channel DWT coefficients[width * height + 4] (only when the video has alpha)
 
-    ## DWT Coefficient Structure (per tile)
+    <for legacy non-monoblock format>
+    int16  Y channel DWT coefficients[tile width * tile height + 4]
+    int16  Co channel DWT coefficients[tile width * tile height + 4]
+    int16  Cg channel DWT coefficients[tile width * tile height + 4]
+    ... (repeated per tile)
+
+### DWT Coefficient Structure (per tile)
     For each decomposition level L (from highest to lowest):
         uint16 LL_size: size of LL subband coefficients
         uint16 LH_size: size of LH subband coefficients  
