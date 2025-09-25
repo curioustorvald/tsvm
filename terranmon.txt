@@ -915,12 +915,13 @@ transmission capability, and region-of-interest coding.
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
             - bit 3 = has region-of-interest coding (for still images only)
+    uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
     uint8  File Role
             - 0 = generic
             - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
-    uint8  Reserved[6]: fill with zeros
+    uint8  Reserved[5]: fill with zeros
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)

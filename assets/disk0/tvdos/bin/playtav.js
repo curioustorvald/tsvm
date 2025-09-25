@@ -375,7 +375,8 @@ let header = {
     qualityCg: 0,         // TAV-specific: Cg channel quality
     extraFlags: 0,
     videoFlags: 0,
-    reserved: new Array(7)
+    qualityLevel: 0,
+    fileRole: 0
 }
 
 // Read and validate header
@@ -410,11 +411,11 @@ header.qualityCo = seqread.readOneByte()
 header.qualityCg = seqread.readOneByte()
 header.extraFlags = seqread.readOneByte()
 header.videoFlags = seqread.readOneByte()
+header.qualityLevel = seqread.readOneByte() // the decoder expects biased value
+header.fileRole = seqread.readOneByte()
 
 // Skip reserved bytes
-for (let i = 0; i < 7; i++) {
-    seqread.readOneByte()
-}
+seqread.skip(5)
 
 if (header.version < 1 || header.version > 6) {
     printerrln(`Error: Unsupported TAV version ${header.version}`)
@@ -710,7 +711,7 @@ try {
                         blockDataPtr,
                         CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers (not float arrays!)
                         header.width, header.height,
-                        header.qualityY, header.qualityCo, header.qualityCg,
+                        header.qualityLevel, header.qualityY, header.qualityCo, header.qualityCg,
                         frameCount,
                         header.waveletFilter,      // TAV-specific parameter
                         header.decompLevels,       // TAV-specific parameter

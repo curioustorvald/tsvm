@@ -1606,8 +1606,10 @@ static int write_tav_header(tav_encoder_t *enc) {
     if (enc->lossless) video_flags |= 0x04;  // Lossless
     fputc(video_flags, enc->output_fp);
 
-    // Reserved bytes (7 bytes)
-    for (int i = 0; i < 7; i++) {
+    fputc(enc->quality_level+1, enc->output_fp);
+
+    // Reserved bytes (6 bytes)
+    for (int i = 0; i < 6; i++) {
         fputc(0, enc->output_fp);
     }
 

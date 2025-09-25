@@ -4128,17 +4128,22 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val FOUR_PIXEL_DETAILER = 0.88f
     private val TWO_PIXEL_DETAILER = 0.92f
 
+    private fun tavDeriveEncoderQindex(qIndex: Int, qYGlobal: Int): Int {
+        if (qIndex > 0) return qIndex - 1
+        return if (qYGlobal >= 60) 0
+        else if (qYGlobal >= 42) 1
+        else if (qYGlobal >= 25) 2
+        else if (qYGlobal >= 12) 3
+        else if (qYGlobal >= 6) 4
+        else if (qYGlobal >= 2) 5
+        else 5
+    }
+
     // level is one-based index
-    private fun getPerceptualWeight(qYGlobal: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
+    private fun getPerceptualWeight(qIndex: Int, qYGlobal: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
         // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
 
-        val qualityLevel = if (qYGlobal >= 60) 0
-            else if (qYGlobal >= 42) 1
-            else if (qYGlobal >= 25) 2
-            else if (qYGlobal >= 12) 3
-            else if (qYGlobal >= 6) 4
-            else if (qYGlobal >= 2) 5
-            else 5
+        val qualityLevel = tavDeriveEncoderQindex(qIndex, qYGlobal)
 
         if (!isChroma) {
             // LUMA CHANNEL: Based on statistical analysis from real video content
@@ -4192,7 +4197,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return "min=$min, Q1=$q1, med=%.1f, Q3=$q3, max=$max, n=$n".format(median)
     }
 
-    private fun dequantiseDWTSubbandsPerceptual(qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
+    private fun dequantiseDWTSubbandsPerceptual(qIndex: Int, qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
                                                subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
 
         // Initialise output array to zero (critical for detecting missing coefficients)
@@ -4205,7 +4210,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         var maxIdx = -1
 
         for (subband in subbands) {
-            val weight = getPerceptualWeight(qYGlobal, subband.level, subband.subbandType, isChroma, decompLevels)
+            val weight = getPerceptualWeight(qIndex, qYGlobal, subband.level, subband.subbandType, isChroma, decompLevels)
             // CRITICAL FIX: Use the same effective quantizer as encoder for proper reconstruction
             val effectiveQuantizer = baseQuantizer * weight
 
@@ -4266,7 +4271,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private var tavDebugCurrentFrameNumber = 0
 
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
+                  width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
                   waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
 
         tavDebugCurrentFrameNumber = frameCount
@@ -4314,13 +4319,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         0x01 -> { // TAV_MODE_INTRA
                             // Decode DWT coefficients directly to RGB buffer
-                            readPtr = tavDecodeDWTIntraTileRGB(qYGlobal, readPtr, tileX, tileY, currentRGBAddr,
+                            readPtr = tavDecodeDWTIntraTileRGB(qIndex, qYGlobal, readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
                                                           waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
-                            readPtr = tavDecodeDeltaTileRGB(qYGlobal, readPtr, tileX, tileY, currentRGBAddr,
+                            readPtr = tavDecodeDeltaTileRGB(readPtr, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
                                                       waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
@@ -4333,7 +4338,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tavDecodeDWTIntraTileRGB(qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+    private fun tavDecodeDWTIntraTileRGB(qIndex: Int, qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                          width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                          waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         // Determine coefficient count based on mode
@@ -4393,9 +4398,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
             val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
 
-            dequantiseDWTSubbandsPerceptual(qYGlobal, quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
-            dequantiseDWTSubbandsPerceptual(qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
-            dequantiseDWTSubbandsPerceptual(qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
 
             // Debug: Check coefficient values before inverse DWT
             if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
@@ -5036,7 +5041,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return 1.0f
     }
 
-    private fun tavDecodeDeltaTileRGB(qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+    private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                       waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         
@@ -5271,11 +5276,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private object TavFilterDelta : TavWaveletFilter {
         override fun getCoeffMultiplier(level: Int): Float {
-            //return 1f
-            return when (level) {
+//            return 1f
+            return when(level) {
                 0 -> 6f/5f
-                1 -> 5f/5f
-                2 -> 5f/6f
+                1 -> 5f/6f
                 else -> 1f
             }
         }
@@ -5283,11 +5287,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private object TavFilterIntra : TavWaveletFilter {
         override fun getCoeffMultiplier(level: Int): Float {
-            //return 1f
+//            return 1f
             return when (level) {
                 0 -> 6f/5f
-                1 -> 5f/5f
-                2 -> 5f/6f
+                1 -> 5f/6f
                 else -> 1f
             }
         }
