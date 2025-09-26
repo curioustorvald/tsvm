@@ -63,6 +63,167 @@ typedef struct {
     int frame_size;
 } tav_decoder_t;
 
+// TAV Perceptual quantization constants (must match Kotlin decoder exactly)
+static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
+static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f};
+static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f};
+static const float FOUR_PIXEL_DETAILER = 0.88f;
+static const float TWO_PIXEL_DETAILER = 0.92f;
+
+// DWT subband information for perceptual quantization
+typedef struct {
+    int level;              // Decomposition level (1 to decompLevels)
+    int subband_type;       // 0=LL, 1=LH, 2=HL, 3=HH
+    int coeff_start;        // Starting index in linear coefficient array
+    int coeff_count;        // Number of coefficients in this subband
+} dwt_subband_info_t;
+
+// Perceptual model functions (must match Kotlin exactly)
+static int tav_derive_encoder_qindex(int q_index, int q_y_global) {
+    if (q_index > 0) return q_index - 1;
+    if (q_y_global >= 60) return 0;
+    else if (q_y_global >= 42) return 1;
+    else if (q_y_global >= 25) return 2;
+    else if (q_y_global >= 12) return 3;
+    else if (q_y_global >= 6) return 4;
+    else if (q_y_global >= 2) return 5;
+    else return 5;
+}
+
+static float perceptual_model3_LH(int quality, float level) {
+    const float H4 = 1.2f;
+    const float Lx = H4 - ((quality + 1.0f) / 15.0f) * (level - 4.0f);
+    const float Ld = (quality + 1.0f) / -15.0f;
+    const float C = H4 - 4.0f * Ld - ((-16.0f * (quality - 5.0f)) / 15.0f);
+    const float Gx = (Ld * level) - (((quality - 5.0f) * (level - 8.0f) * level) / 15.0f) + C;
+    return (level >= 4) ? Lx : Gx;
+}
+
+static float perceptual_model3_HL(int quality, float LH) {
+    return LH * ANISOTROPY_MULT[quality] + ANISOTROPY_BIAS[quality];
+}
+
+static float perceptual_model3_HH(float LH, float HL) {
+    return (HL / LH) * 1.44f;
+}
+
+static float perceptual_model3_LL(int quality, float level) {
+    const float n = perceptual_model3_LH(quality, level);
+    const float m = perceptual_model3_LH(quality, level - 1) / n;
+    return n / m;
+}
+
+static float perceptual_model3_chroma_basecurve(int quality, float level) {
+    return 1.0f - (1.0f / (0.5f * quality * quality + 1.0f)) * (level - 4.0f);
+}
+
+static float get_perceptual_weight(int q_index, int q_y_global, int level0, int subband_type,
+                                  int is_chroma, int max_levels) {
+    // Convert to perceptual level (1-6 scale)
+    const float level = 1.0f + ((level0 - 1.0f) / (max_levels - 1.0f)) * 5.0f;
+    const int quality_level = tav_derive_encoder_qindex(q_index, q_y_global);
+
+    if (!is_chroma) {
+        // LUMA CHANNEL
+        if (subband_type == 0) {
+            return perceptual_model3_LL(quality_level, level);
+        }
+
+        const float LH = perceptual_model3_LH(quality_level, level);
+        if (subband_type == 1) {
+            return LH;
+        }
+
+        const float HL = perceptual_model3_HL(quality_level, LH);
+        if (subband_type == 2) {
+            float detailer = 1.0f;
+            if (level >= 1.8f && level <= 2.2f) detailer = TWO_PIXEL_DETAILER;
+            else if (level >= 2.8f && level <= 3.2f) detailer = FOUR_PIXEL_DETAILER;
+            return HL * detailer;
+        } else {
+            // HH subband
+            float detailer = 1.0f;
+            if (level >= 1.8f && level <= 2.2f) detailer = TWO_PIXEL_DETAILER;
+            else if (level >= 2.8f && level <= 3.2f) detailer = FOUR_PIXEL_DETAILER;
+            return perceptual_model3_HH(LH, HL) * detailer;
+        }
+    } else {
+        // CHROMA CHANNELS
+        const float base = perceptual_model3_chroma_basecurve(quality_level, level - 1);
+        if (subband_type == 0) {
+            return 1.0f;
+        } else if (subband_type == 1) {
+            return fmaxf(base, 1.0f);
+        } else if (subband_type == 2) {
+            return fmaxf(base * ANISOTROPY_MULT_CHROMA[quality_level], 1.0f);
+        } else {
+            return fmaxf(base * ANISOTROPY_MULT_CHROMA[quality_level] + ANISOTROPY_BIAS_CHROMA[quality_level], 1.0f);
+        }
+    }
+}
+
+// Calculate DWT subband layout (must match Kotlin exactly)
+static int calculate_subband_layout(int width, int height, int decomp_levels, dwt_subband_info_t *subbands) {
+    int subband_count = 0;
+
+    // LL subband at maximum decomposition level
+    const int ll_width = width >> decomp_levels;
+    const int ll_height = height >> decomp_levels;
+    subbands[subband_count++] = (dwt_subband_info_t){decomp_levels, 0, 0, ll_width * ll_height};
+    int coeff_offset = ll_width * ll_height;
+
+    // LH, HL, HH subbands for each level from max down to 1
+    for (int level = decomp_levels; level >= 1; level--) {
+        const int level_width = width >> (decomp_levels - level + 1);
+        const int level_height = height >> (decomp_levels - level + 1);
+        const int subband_size = level_width * level_height;
+
+        // LH subband
+        subbands[subband_count++] = (dwt_subband_info_t){level, 1, coeff_offset, subband_size};
+        coeff_offset += subband_size;
+
+        // HL subband
+        subbands[subband_count++] = (dwt_subband_info_t){level, 2, coeff_offset, subband_size};
+        coeff_offset += subband_size;
+
+        // HH subband
+        subbands[subband_count++] = (dwt_subband_info_t){level, 3, coeff_offset, subband_size};
+        coeff_offset += subband_size;
+    }
+
+    return subband_count;
+}
+
+// Apply perceptual dequantization to DWT coefficients
+static void dequantize_dwt_subbands_perceptual(int q_index, int q_y_global, const int16_t *quantized,
+                                              float *dequantized, int width, int height, int decomp_levels,
+                                              float base_quantizer, int is_chroma) {
+    dwt_subband_info_t subbands[32]; // Max possible subbands
+    const int subband_count = calculate_subband_layout(width, height, decomp_levels, subbands);
+
+    // Initialize output array
+    const int coeff_count = width * height;
+    for (int i = 0; i < coeff_count; i++) {
+        dequantized[i] = 0.0f;
+    }
+
+    // Apply perceptual weighting to each subband
+    for (int s = 0; s < subband_count; s++) {
+        const dwt_subband_info_t *subband = &subbands[s];
+        const float weight = get_perceptual_weight(q_index, q_y_global, subband->level,
+                                                  subband->subband_type, is_chroma, decomp_levels);
+        const float effective_quantizer = base_quantizer * weight;
+
+        for (int i = 0; i < subband->coeff_count; i++) {
+            const int idx = subband->coeff_start + i;
+            if (idx < coeff_count) {
+                dequantized[idx] = quantized[idx] * effective_quantizer;
+            }
+        }
+    }
+}
+
 // 9/7 inverse DWT (from TSVM Kotlin code)
 static void dwt_97_inverse_1d(float *data, int length) {
     if (length < 2) return;
@@ -401,22 +562,49 @@ static int decode_frame(tav_decoder_t *decoder) {
         int coeff_count = decoder->frame_size;
         uint8_t *coeff_ptr = ptr;
 
-        // Read and dequantize coefficients (simple version for now)
+        // Read coefficients into temporary arrays
+        int16_t *quantized_y = malloc(coeff_count * sizeof(int16_t));
+        int16_t *quantized_co = malloc(coeff_count * sizeof(int16_t));
+        int16_t *quantized_cg = malloc(coeff_count * sizeof(int16_t));
+
         for (int i = 0; i < coeff_count; i++) {
-            int16_t y_coeff = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
-            decoder->dwt_buffer_y[i] = y_coeff * qy;
+            quantized_y[i] = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
             coeff_ptr += 2;
         }
         for (int i = 0; i < coeff_count; i++) {
-            int16_t co_coeff = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
-            decoder->dwt_buffer_co[i] = co_coeff * qco;
+            quantized_co[i] = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
             coeff_ptr += 2;
         }
         for (int i = 0; i < coeff_count; i++) {
-            int16_t cg_coeff = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
-            decoder->dwt_buffer_cg[i] = cg_coeff * qcg;
+            quantized_cg[i] = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
             coeff_ptr += 2;
         }
+
+        // Apply dequantization (perceptual for version 5, uniform for earlier versions)
+        const int is_perceptual = (decoder->header.version == 5);
+        if (is_perceptual) {
+            // Use perceptual dequantization matching Kotlin decoder
+            dequantize_dwt_subbands_perceptual(0, qy, quantized_y, decoder->dwt_buffer_y,
+                                              decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, qy, 0);
+            dequantize_dwt_subbands_perceptual(0, qy, quantized_co, decoder->dwt_buffer_co,
+                                              decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, qco, 1);
+            dequantize_dwt_subbands_perceptual(0, qy, quantized_cg, decoder->dwt_buffer_cg,
+                                              decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, qcg, 1);
+        } else {
+            // Uniform dequantization for older versions
+            for (int i = 0; i < coeff_count; i++) {
+                decoder->dwt_buffer_y[i] = quantized_y[i] * qy;
+                decoder->dwt_buffer_co[i] = quantized_co[i] * qco;
+                decoder->dwt_buffer_cg[i] = quantized_cg[i] * qcg;
+            }
+        }
+
+        free(quantized_y);
+        free(quantized_co);
+        free(quantized_cg);
 
         // Apply inverse DWT
         apply_inverse_dwt_multilevel(decoder->dwt_buffer_y, decoder->header.width, decoder->header.height,
