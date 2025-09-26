@@ -806,7 +806,7 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
 
 // https://www.desmos.com/calculator/mjlpwqm8ge
 // where Q=quality, x=level
-static float perceptual_model3_LH(int quality, int level) {
+static float perceptual_model3_LH(int quality, float level) {
     float H4 = 1.2f;
     float Lx = H4 - ((quality + 1.f) / 15.f) * (level - 4.f);
     float Ld = (quality + 1.f) / -15.f;
@@ -824,91 +824,26 @@ static float perceptual_model3_HH(float LH, float HL) {
     return (HL / LH) * 1.44f;
 }
 
-static float perceptual_model3_LL(int quality, int level) {
+static float perceptual_model3_LL(int quality, float level) {
     float n = perceptual_model3_LH(quality, level);
     float m = perceptual_model3_LH(quality, level - 1) / n;
 
     return n / m;
 }
 
-static float perceptual_model3_chroma_basecurve(int quality, int level) {
+static float perceptual_model3_chroma_basecurve(int quality, float level) {
     return 1.0f - (1.0f / (0.5f * quality * quality + 1.0f)) * (level - 4.0f); // just a line that passes (4,1)
-}
-
-// Get perceptual weight for specific subband - Data-driven model based on coefficient variance analysis
-static float get_perceptual_weight_model2(int level, int subband_type, int is_chroma, int max_levels) {
-    // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
-    // strategy: JPEG quantisation table + real-world statistics from the encoded videos
-    if (!is_chroma) {
-        // LUMA CHANNEL: Based on statistical analysis from real video content
-        if (subband_type == 0) { // LL subband - contains most image energy, preserve carefully
-            if (level >= 6) return 0.5f;  // LL6: High energy but can tolerate moderate quantisation (range up to 22K)
-            if (level >= 5) return 0.7f;  // LL5: Good preservation
-            return 0.9f;                   // Lower LL levels: Fine preservation
-        } else if (subband_type == 1) { // LH subband - horizontal details (human eyes more sensitive)
-            if (level >= 6) return 0.8f;  // LH6: Significant coefficients (max ~500), preserve well
-            if (level >= 5) return 1.0f;  // LH5: Moderate coefficients (max ~600)
-            if (level >= 4) return 1.2f;  // LH4: Small coefficients (max ~50)
-            if (level >= 3) return 1.6f;  // LH3: Very small coefficients, can quantise more
-            if (level >= 2) return 2.0f;  // LH2: Minimal impact
-            return 2.5f;                   // LH1: Least important
-        } else if (subband_type == 2) { // HL subband - vertical details (less sensitive due to HVS characteristics)
-            if (level >= 6) return 1.0f;  // HL6: Can quantise more aggressively than LH6
-            if (level >= 5) return 1.2f;  // HL5: Standard quantisation
-            if (level >= 4) return 1.5f;  // HL4: Notable range but less critical
-            if (level >= 3) return 2.0f;  // HL3: Can tolerate more quantisation
-            if (level >= 2) return 2.5f;  // HL2: Less important
-            return 3.5f;                   // HL1: Most aggressive for vertical details
-        } else { // HH subband - diagonal details (least important for HVS)
-            if (level >= 6) return 1.2f;  // HH6: Preserve some diagonal detail
-            if (level >= 5) return 1.6f;  // HH5: Can quantise aggressively
-            if (level >= 4) return 2.0f;  // HH4: Very aggressive
-            if (level >= 3) return 2.8f;  // HH3: Minimal preservation
-            if (level >= 2) return 3.5f;  // HH2: Maximum compression
-            return 5.0f;                   // HH1: Most aggressive quantisation
-        }
-    } else {
-        // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
-        // strategy: mimic 4:2:2 chroma subsampling
-        if (subband_type == 0) { // LL chroma - still important but less than luma
-            return 1.0f;
-            if (level >= 6) return 0.8f;  // Chroma LL6: Less critical than luma LL
-            if (level >= 5) return 0.9f;
-            return 1.0f;
-        } else if (subband_type == 1) { // LH chroma - horizontal chroma details
-            return 1.8f;
-            if (level >= 6) return 1.0f;
-            if (level >= 5) return 1.2f;
-            if (level >= 4) return 1.4f;
-            if (level >= 3) return 1.6f;
-            if (level >= 2) return 1.8f;
-            return 2.0f;
-        } else if (subband_type == 2) { // HL chroma - vertical chroma details (even less critical)
-            return 1.3f;
-            if (level >= 6) return 1.2f;
-            if (level >= 5) return 1.4f;
-            if (level >= 4) return 1.6f;
-            if (level >= 3) return 1.8f;
-            if (level >= 2) return 2.0f;
-            return 2.2f;
-        } else { // HH chroma - diagonal chroma details (most aggressive)
-            return 2.5f;
-            if (level >= 6) return 1.4f;
-            if (level >= 5) return 1.6f;
-            if (level >= 4) return 1.8f;
-            if (level >= 3) return 2.1f;
-            if (level >= 2) return 2.3f;
-            return 2.5f;
-        }
-    }
 }
 
 #define FOUR_PIXEL_DETAILER 0.88f
 #define TWO_PIXEL_DETAILER  0.92f
 
 // level is one-based index
-static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_type, int is_chroma, int max_levels) {
+static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_type, int is_chroma, int max_levels) {
     // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
+
+    float level = 1.0f + ((level0 - 1.0f) / (max_levels - 1.0f)) * 5.0f;
+
     // strategy: more horizontal detail
     if (!is_chroma) {
         // LL subband - contains most image energy, preserve carefully
@@ -923,10 +858,10 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level, int subband_ty
         // HL subband - vertical details
         float HL = perceptual_model3_HL(enc->quality_level, LH);
         if (subband_type == 2)
-            return HL * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
+            return HL * (2.2f >= level && level >= 1.8f ? TWO_PIXEL_DETAILER : 3.2f >= level && level >= 2.8f ? FOUR_PIXEL_DETAILER : 1.0f);
 
         // HH subband - diagonal details
-        else return perceptual_model3_HH(LH, HL) * (level == 2 ? TWO_PIXEL_DETAILER : level == 3 ? FOUR_PIXEL_DETAILER : 1.0f);
+        else return perceptual_model3_HH(LH, HL) * (2.2f >= level && level >= 1.8f ? TWO_PIXEL_DETAILER : 3.2f >= level && level >= 2.8f ? FOUR_PIXEL_DETAILER : 1.0f);
     } else {
         // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
         // strategy: more horizontal detail

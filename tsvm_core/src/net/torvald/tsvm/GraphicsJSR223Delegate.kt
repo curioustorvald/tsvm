@@ -52,6 +52,7 @@ import kotlin.collections.isNotEmpty
 import kotlin.collections.listOf
 import kotlin.collections.map
 import kotlin.collections.maxOfOrNull
+import kotlin.collections.minus
 import kotlin.collections.mutableListOf
 import kotlin.collections.mutableMapOf
 import kotlin.collections.set
@@ -67,37 +68,13 @@ import kotlin.let
 import kotlin.longArrayOf
 import kotlin.math.*
 import kotlin.repeat
+import kotlin.sequences.minus
 import kotlin.text.format
 import kotlin.text.lowercase
 import kotlin.text.toString
+import kotlin.times
 
 class GraphicsJSR223Delegate(private val vm: VM) {
-    
-    // TAV Simulated overlapping tiles constants (must match encoder)
-    private val TILE_SIZE_X = 280
-    private val TILE_SIZE_Y = 224
-    private val TAV_TILE_MARGIN = 32  // 32-pixel margin for 3 DWT levels (4 * 2^3 = 32px)
-    private val PADDED_TILE_SIZE_X = TILE_SIZE_X + 2 * TAV_TILE_MARGIN  // 280 + 64 = 344px
-    private val PADDED_TILE_SIZE_Y = TILE_SIZE_Y + 2 * TAV_TILE_MARGIN  // 224 + 64 = 288px
-
-    // Reusable working arrays to reduce allocation overhead
-    private val tevIdct8TempBuffer = FloatArray(64)
-    private val tevIdct16TempBuffer = FloatArray(256) // For 16x16 IDCT
-    private val tevIdct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
-    
-    // TAV coefficient delta storage for previous frame (for efficient P-frames)
-    private var tavPreviousCoeffsY: MutableMap<Int, FloatArray>? = null
-    private var tavPreviousCoeffsCo: MutableMap<Int, FloatArray>? = null
-    private var tavPreviousCoeffsCg: MutableMap<Int, FloatArray>? = null
-
-    // TAV Perceptual dequantisation support (must match encoder weights)
-    data class DWTSubbandInfo(
-        val level: Int,          // Decomposition level (1 to decompLevels)
-        val subbandType: Int,    // 0=LL, 1=LH, 2=HL, 3=HH
-        val coeffStart: Int,     // Starting index in linear coefficient array
-        val coeffCount: Int,     // Number of coefficients in this subband
-        val perceptualWeight: Float // Quantisation multiplier for this subband
-    )
 
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
@@ -1351,6 +1328,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // TEV (TSVM Enhanced Video) format support
     // Created by Claude on 2025-08-17
+
+    // Reusable working arrays to reduce allocation overhead
+    private val tevIdct8TempBuffer = FloatArray(64)
+    private val tevIdct16TempBuffer = FloatArray(256) // For 16x16 IDCT
+    private val tevIdct16SeparableBuffer = FloatArray(256) // For separable 16x16 IDCT
 
     fun jpeg_quality_to_mult(q: Float): Float {
         return (if ((q < 50)) 5000f / q else 200f - 2 * q) / 100f
@@ -3881,6 +3863,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // ================= TAV (TSVM Advanced Video) Decoder =================
     // DWT-based video codec with ICtCp colour space support
 
+    // TAV Simulated overlapping tiles constants (must match encoder)
+    private val TILE_SIZE_X = 280
+    private val TILE_SIZE_Y = 224
+    private val TAV_TILE_MARGIN = 32  // 32-pixel margin for 3 DWT levels (4 * 2^3 = 32px)
+    private val PADDED_TILE_SIZE_X = TILE_SIZE_X + 2 * TAV_TILE_MARGIN  // 280 + 64 = 344px
+    private val PADDED_TILE_SIZE_Y = TILE_SIZE_Y + 2 * TAV_TILE_MARGIN  // 224 + 64 = 288px
+
+    // TAV coefficient delta storage for previous frame (for efficient P-frames)
+    private var tavPreviousCoeffsY: MutableMap<Int, FloatArray>? = null
+    private var tavPreviousCoeffsCo: MutableMap<Int, FloatArray>? = null
+    private var tavPreviousCoeffsCg: MutableMap<Int, FloatArray>? = null
+
+    // TAV Perceptual dequantisation support (must match encoder weights)
+    data class DWTSubbandInfo(
+        val level: Int,          // Decomposition level (1 to decompLevels)
+        val subbandType: Int,    // 0=LL, 1=LH, 2=HL, 3=HH
+        val coeffStart: Int,     // Starting index in linear coefficient array
+        val coeffCount: Int,     // Number of coefficients in this subband
+        val perceptualWeight: Float // Quantisation multiplier for this subband
+    )
+
+
     // TAV Perceptual dequantisation helper functions (must match encoder implementation exactly)
     private fun calculateSubbandLayout(width: Int, height: Int, decompLevels: Int): List<DWTSubbandInfo> {
         val subbands = mutableListOf<DWTSubbandInfo>()
@@ -3946,149 +3950,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return subbands
     }
 
-    private fun getPerceptualWeightModel2(level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
-        // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
-
-        if (!isChroma) {
-            // LUMA CHANNEL: Based on statistical analysis from real video content
-            when (subbandType) {
-                0 -> { // LL subband - contains most image energy, preserve carefully
-                    return when {
-                        level >= 6 -> 0.5f  // LL6: High energy but can tolerate moderate quantisation (range up to 22K)
-                        level >= 5 -> 0.7f  // LL5: Good preservation
-                        else -> 0.9f        // Lower LL levels: Fine preservation
-                    }
-                }
-                1 -> { // LH subband - horizontal details (human eyes more sensitive)
-                    return when {
-                        level >= 6 -> 0.8f  // LH6: Significant coefficients (max ~500), preserve well
-                        level >= 5 -> 1.0f  // LH5: Moderate coefficients (max ~600)
-                        level >= 4 -> 1.2f  // LH4: Small coefficients (max ~50)
-                        level >= 3 -> 1.6f  // LH3: Very small coefficients, can quantize more
-                        level >= 2 -> 2.0f  // LH2: Minimal impact
-                        else -> 2.5f        // LH1: Least important
-                    }
-                }
-                2 -> { // HL subband - vertical details (less sensitive due to HVS characteristics)
-                    return when {
-                        level >= 6 -> 1.0f  // HL6: Can quantize more aggressively than LH6
-                        level >= 5 -> 1.2f  // HL5: Standard quantisation
-                        level >= 4 -> 1.5f  // HL4: Notable range but less critical
-                        level >= 3 -> 2.0f  // HL3: Can tolerate more quantisation
-                        level >= 2 -> 2.5f  // HL2: Less important
-                        else -> 3.5f        // HL1: Most aggressive for vertical details
-                    }
-                }
-                3 -> { // HH subband - diagonal details (least important for HVS)
-                    return when {
-                        level >= 6 -> 1.2f  // HH6: Preserve some diagonal detail
-                        level >= 5 -> 1.6f  // HH5: Can quantize aggressively
-                        level >= 4 -> 2.0f  // HH4: Very aggressive
-                        level >= 3 -> 2.8f  // HH3: Minimal preservation
-                        level >= 2 -> 3.5f  // HH2: Maximum compression
-                        else -> 5.0f        // HH1: Most aggressive quantisation
-                    }
-                }
-            }
-        } else {
-            // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
-            when (subbandType) {
-                0 -> { // LL chroma - still important but less than luma
-                    return 1f
-                    return when {
-                        level >= 6 -> 0.8f  // Chroma LL6: Less critical than luma LL
-                        level >= 5 -> 0.9f
-                        else -> 1.0f
-                    }
-                }
-                1 -> { // LH chroma - horizontal chroma details
-                    return 1.8f
-                    return when {
-                        level >= 6 -> 1.0f
-                        level >= 5 -> 1.2f
-                        level >= 4 -> 1.4f
-                        level >= 3 -> 1.6f
-                        level >= 2 -> 1.8f
-                        else -> 2.0f
-                    }
-                }
-                2 -> { // HL chroma - vertical chroma details (even less critical)
-                    return 1.3f;
-                    return when {
-                        level >= 6 -> 1.2f
-                        level >= 5 -> 1.4f
-                        level >= 4 -> 1.6f
-                        level >= 3 -> 1.8f
-                        level >= 2 -> 2.0f
-                        else -> 2.2f
-                    }
-                }
-                3 -> { // HH chroma - diagonal chroma details (most aggressive)
-                    return 2.5f
-                    return when {
-                        level >= 6 -> 1.4f
-                        level >= 5 -> 1.6f
-                        level >= 4 -> 1.8f
-                        level >= 3 -> 2.1f
-                        level >= 2 -> 2.3f
-                        else -> 2.5f
-                    }
-                }
-            }
-        }
-        return 1.0f
-
-        // Legacy data-driven model (kept for reference but not used)
-        /*if (!isChroma) {
-            // Luma strategy based on statistical variance analysis from real video data
-            return when (subbandType) {
-                0 -> { // LL
-                    // LL6 has extremely high variance (Range=8026.7) but contains most image energy
-                    // Moderate quantisation appropriate due to high variance tolerance
-                    1.1f
-                }
-                1 -> { // LH (horizontal detail)
-                    // Data-driven weights based on observed coefficient patterns
-                    when (level) {
-                        in 6..maxLevels -> 0.7f      // LH6: significant coefficients (Range=243.1)
-                        5 -> 0.8f      // LH5: moderate coefficients (Range=264.3)
-                        4 -> 1.0f      // LH4: small coefficients (Range=50.8)
-                        3 -> 1.4f      // LH3: sparse but large outliers (Range=11909.1)
-                        2 -> 1.6f      // LH2: fewer coefficients (Range=6720.2)
-                        else -> 1.9f   // LH1: smallest detail (Range=1606.3)
-                    }
-                }
-                2 -> { // HL (vertical detail)
-                    // Similar pattern to LH but slightly different variance
-                    when (level) {
-                        in 6..maxLevels -> 0.8f      // HL6: moderate coefficients (Range=181.6)
-                        5 -> 0.9f      // HL5: small coefficients (Range=80.4)
-                        4 -> 1.2f      // HL4: surprising large outliers (Range=9737.9)
-                        3 -> 1.3f      // HL3: very large outliers (Range=13698.2)
-                        2 -> 1.5f      // HL2: moderate range (Range=2099.4)
-                        else -> 1.8f   // HL1: small coefficients (Range=851.1)
-                    }
-                }
-                3 -> { // HH (diagonal detail)
-                    // HH bands generally have lower energy but important for texture
-                    when (level) {
-                        in 6..maxLevels -> 1.0f      // HH6: some significant coefficients (Range=95.8)
-                        5 -> 1.1f      // HH5: small coefficients (Range=75.9)
-                        4 -> 1.3f      // HH4: moderate range (Range=89.8)
-                        3 -> 1.5f      // HH3: large outliers (Range=11611.2)
-                        2 -> 1.8f      // HH2: moderate range (Range=2499.2)
-                        else -> 2.1f   // HH1: smallest coefficients (Range=761.6)
-                    }
-                }
-                else -> 1.0f
-            }
-        } else {
-            // Chroma strategy - apply 0.85x reduction to luma weights for color preservation
-            val lumaWeight = getPerceptualWeight(level, subbandType, false, maxLevels)
-            return lumaWeight * 1.6f
-        }*/
-    }
-
     var ANISOTROPY_MULT = floatArrayOf(1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
     var ANISOTROPY_BIAS = floatArrayOf(0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
     var ANISOTROPY_MULT_CHROMA = floatArrayOf(6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f)
@@ -4096,7 +3957,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
 
 
-    private fun perceptual_model3_LH(quality: Int, level: Int): Float {
+    private fun perceptual_model3_LH(quality: Int, level: Float): Float {
         val H4 = 1.2f
         val Lx = H4 - ((quality + 1f) / 15f) * (level - 4f)
         val Ld = (quality + 1f) / -15f
@@ -4114,14 +3975,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return (HL / LH) * 1.44f;
     }
 
-    fun perceptual_model3_LL(quality: Int, level: Int): Float {
+    fun perceptual_model3_LL(quality: Int, level: Float): Float {
         val n = perceptual_model3_LH(quality, level)
         val m = perceptual_model3_LH(quality, level - 1) / n
 
         return n / m
     }
 
-    fun perceptual_model3_chroma_basecurve(quality: Int, level: Int): Float {
+    fun perceptual_model3_chroma_basecurve(quality: Int, level: Float): Float {
         return 1.0f - (1.0f / (0.5f * quality * quality + 1.0f)) * (level - 4f) // just a line that passes (4,1)
     }
 
@@ -4140,8 +4001,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // level is one-based index
-    private fun getPerceptualWeight(qIndex: Int, qYGlobal: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
+    private fun getPerceptualWeight(qIndex: Int, qYGlobal: Int, level0: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
         // Psychovisual model based on DWT coefficient statistics and Human Visual System sensitivity
+
+        val level = 1.0f + ((level0 - 1.0f) / (maxLevels - 1.0f)) * 5.0f
+
 
         val qualityLevel = tavDeriveEncoderQindex(qIndex, qYGlobal)
 
@@ -4157,10 +4021,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             
             // HL subband - vertical details
             val HL: Float = perceptual_model3_HL(qualityLevel, LH)
-            if (subbandType == 2) return HL * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
+            if (subbandType == 2) return HL * (if (level in 1.8f..2.2f) TWO_PIXEL_DETAILER else if (level in 2.8f..3.2f) FOUR_PIXEL_DETAILER else 1f)
 
             // HH subband - diagonal details
-            else return perceptual_model3_HH(LH, HL) * (if (level == 2) TWO_PIXEL_DETAILER else if (level == 3) FOUR_PIXEL_DETAILER else 1f)
+            else return perceptual_model3_HH(LH, HL) * (if (level in 1.8f..2.2f) TWO_PIXEL_DETAILER else if (level in 2.8f..3.2f) FOUR_PIXEL_DETAILER else 1f)
             
         } else {
             // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
@@ -4854,51 +4718,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tavAddYCoCgResidualToRGBTile(tileX: Int, tileY: Int, yRes: FloatArray, coRes: FloatArray, cgRes: FloatArray,
-                                             rgbAddr: Long, width: Int, height: Int) {
-        val startX = tileX * TILE_SIZE_X
-        val startY = tileY * TILE_SIZE_Y
-
-        for (y in 0 until TILE_SIZE_Y) {
-            for (x in 0 until TILE_SIZE_X) {
-                val frameX = startX + x
-                val frameY = startY + y
-
-                if (frameX < width && frameY < height) {
-                    val tileIdx = y * TILE_SIZE_X + x
-                    val pixelIdx = frameY * width + frameX
-                    val rgbOffset = pixelIdx * 3L
-
-                    // Get current RGB (from motion compensation)
-                    val curR = (vm.peek(rgbAddr + rgbOffset).toInt() and 0xFF).toFloat()
-                    val curG = (vm.peek(rgbAddr + rgbOffset + 1).toInt() and 0xFF).toFloat()
-                    val curB = (vm.peek(rgbAddr + rgbOffset + 2).toInt() and 0xFF).toFloat()
-
-                    // Convert current RGB back to YCoCg
-                    val co = (curR - curB) / 2
-                    val tmp = curB + co
-                    val cg = (curG - tmp) / 2
-                    val yPred = tmp + cg
-
-                    // Add residual
-                    val yFinal = yPred + yRes[tileIdx]
-                    val coFinal = co + coRes[tileIdx]
-                    val cgFinal = cg + cgRes[tileIdx]
-
-                    // Convert back to RGB
-                    val tmpFinal = yFinal - cgFinal
-                    val gFinal = yFinal + cgFinal
-                    val bFinal = tmpFinal - coFinal
-                    val rFinal = tmpFinal + coFinal
-
-                    vm.poke(rgbAddr + rgbOffset, rFinal.toInt().coerceIn(0, 255).toByte())
-                    vm.poke(rgbAddr + rgbOffset + 1, gFinal.toInt().coerceIn(0, 255).toByte())
-                    vm.poke(rgbAddr + rgbOffset + 2, bFinal.toInt().coerceIn(0, 255).toByte())
-                }
-            }
-        }
-    }
-
     // Helper functions (simplified versions of existing DWT functions)
     private fun tavCopyTileRGB(tileX: Int, tileY: Int, currentRGBAddr: Long, prevRGBAddr: Long, width: Int, height: Int) {
         val startX = tileX * TILE_SIZE_X
@@ -4970,75 +4789,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    // Helper functions for perceptual models (simplified versions of encoder models)
-    private fun getPerceptualModelLL(qualityLevel: Int, level: Int): Float {
-        // Simplified LL model - preserve DC components
-        return 1.0f - (level.toFloat() / 8.0f) * (qualityLevel.toFloat() / 6.0f)
-    }
-
-    private fun getPerceptualModelLH(qualityLevel: Int, level: Int): Float {
-        // Simplified LH model - horizontal details
-        return 1.2f + (level.toFloat() / 4.0f) * (qualityLevel.toFloat() / 3.0f)
-    }
-
-    private fun getPerceptualModelHL(qualityLevel: Int, lhWeight: Float): Float {
-        // Simplified HL model - vertical details
-        return lhWeight * 1.1f
-    }
-
-    private fun getPerceptualModelHH(lhWeight: Float, hlWeight: Float): Float {
-        // Simplified HH model - diagonal details
-        return (lhWeight + hlWeight) * 0.6f
-    }
-
     private fun getPerceptualModelChromaBase(qualityLevel: Int, level: Int): Float {
         // Simplified chroma base curve
         return 1.0f - (1.0f / (0.5f * qualityLevel * qualityLevel + 1.0f)) * (level - 4.0f)
-    }
-
-    // Determine delta-specific perceptual weight for coefficient at linear position
-    private fun getPerceptualWeightForPositionDelta(qualityLevel: Int, linearIdx: Int, width: Int, height: Int, decompLevels: Int, isChroma: Boolean): Float {
-        // Map linear coefficient index to DWT subband using same layout as encoder
-        var offset = 0
-
-        // First: LL subband at maximum decomposition level
-        val llWidth = width shr decompLevels
-        val llHeight = height shr decompLevels
-        val llSize = llWidth * llHeight
-
-        if (linearIdx < offset + llSize) {
-            // LL subband at maximum level - use delta-specific perceptual weight
-            return getPerceptualWeightDelta(qualityLevel, decompLevels, 0, isChroma, decompLevels)
-        }
-        offset += llSize
-
-        // Then: LH, HL, HH subbands for each level from max down to 1
-        for (level in decompLevels downTo 1) {
-            val levelWidth = width shr (decompLevels - level + 1)
-            val levelHeight = height shr (decompLevels - level + 1)
-            val subbandSize = levelWidth * levelHeight
-
-            // LH subband (horizontal details)
-            if (linearIdx < offset + subbandSize) {
-                return getPerceptualWeightDelta(qualityLevel, level, 1, isChroma, decompLevels)
-            }
-            offset += subbandSize
-
-            // HL subband (vertical details)
-            if (linearIdx < offset + subbandSize) {
-                return getPerceptualWeightDelta(qualityLevel, level, 2, isChroma, decompLevels)
-            }
-            offset += subbandSize
-
-            // HH subband (diagonal details)
-            if (linearIdx < offset + subbandSize) {
-                return getPerceptualWeightDelta(qualityLevel, level, 3, isChroma, decompLevels)
-            }
-            offset += subbandSize
-        }
-
-        // Fallback for out-of-bounds indices
-        return 1.0f
     }
 
     private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
@@ -5197,68 +4950,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         
         return ptr
-    }
-
-    private fun tavApplyMotionCompensationRGB(tileX: Int, tileY: Int, mvX: Int, mvY: Int,
-                                              currentRGBAddr: Long, prevRGBAddr: Long,
-                                              width: Int, height: Int) {
-        val startX = tileX * TILE_SIZE_X
-        val startY = tileY * TILE_SIZE_Y
-
-        // Motion vectors in quarter-pixel precision
-        val refX = startX + (mvX / 4.0f)
-        val refY = startY + (mvY / 4.0f)
-
-        for (y in 0 until TILE_SIZE_Y) {
-            for (x in 0 until TILE_SIZE_X) {
-                val currentPixelIdx = (startY + y) * width + (startX + x)
-
-                if (currentPixelIdx >= 0 && currentPixelIdx < width * height) {
-                    // Bilinear interpolation for sub-pixel motion vectors
-                    val srcX = refX + x
-                    val srcY = refY + y
-
-                    val interpolatedRGB = tavBilinearInterpolateRGB(prevRGBAddr, width, height, srcX, srcY)
-
-                    val rgbOffset = currentPixelIdx * 3L
-                    vm.poke(currentRGBAddr + rgbOffset, interpolatedRGB[0])
-                    vm.poke(currentRGBAddr + rgbOffset + 1, interpolatedRGB[1])
-                    vm.poke(currentRGBAddr + rgbOffset + 2, interpolatedRGB[2])
-                }
-            }
-        }
-    }
-
-    private fun tavBilinearInterpolateRGB(rgbPtr: Long, width: Int, height: Int, x: Float, y: Float): ByteArray {
-        val x0 = kotlin.math.floor(x).toInt()
-        val y0 = kotlin.math.floor(y).toInt()
-        val x1 = x0 + 1
-        val y1 = y0 + 1
-
-        if (x0 < 0 || y0 < 0 || x1 >= width || y1 >= height) {
-            return byteArrayOf(0, 0, 0)  // Out of bounds - return black
-        }
-
-        val fx = x - x0
-        val fy = y - y0
-
-        // Get 4 corner pixels
-        val rgb00 = getRGBPixel(rgbPtr, y0 * width + x0)
-        val rgb10 = getRGBPixel(rgbPtr, y0 * width + x1)
-        val rgb01 = getRGBPixel(rgbPtr, y1 * width + x0)
-        val rgb11 = getRGBPixel(rgbPtr, y1 * width + x1)
-
-        // Bilinear interpolation
-        val result = ByteArray(3)
-        for (c in 0..2) {
-            val interp = (1 - fx) * (1 - fy) * (rgb00[c].toInt() and 0xFF) +
-                    fx * (1 - fy) * (rgb10[c].toInt() and 0xFF) +
-                    (1 - fx) * fy * (rgb01[c].toInt() and 0xFF) +
-                    fx * fy * (rgb11[c].toInt() and 0xFF)
-            result[c] = interp.toInt().coerceIn(0, 255).toByte()
-        }
-
-        return result
     }
 
     private fun getRGBPixel(rgbPtr: Long, pixelIdx: Int): ByteArray {

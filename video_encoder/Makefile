@@ -6,7 +6,7 @@ CFLAGS = -std=c99 -Wall -Wextra -O2 -D_GNU_SOURCE
 LIBS = -lm -lzstd
 
 # Source files and targets
-TARGETS = tev tav
+TARGETS = tev tav tav_decoder
 
 # Build all encoders
 all: $(TARGETS)
@@ -20,8 +20,9 @@ tav: encoder_tav.c
 	rm -f encoder_tav
 	$(CC) $(CFLAGS) -o encoder_tav $< $(LIBS)
 
-# Default target
-$(TARGETS): all
+tav_decoder: decoder_tav.c
+	rm -f decoder_tav
+	$(CC) $(CFLAGS) -o decoder_tav $< $(LIBS)
 
 # Build with debug symbols
 debug: CFLAGS += -g -DDEBUG
@@ -35,6 +36,7 @@ clean:
 install: $(TARGETS)
 	cp encoder_tev /usr/local/bin/
 	cp encoder_tav /usr/local/bin/
+	cp decoder_tav /usr/local/bin/
 
 # Check for required dependencies
 check-deps:
