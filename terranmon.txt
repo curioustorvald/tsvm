@@ -899,9 +899,12 @@ transmission capability, and region-of-interest coding.
     uint8  FPS: frames per second. Use 0x00 for still images
     uint32 Total Frames: number of video frames. Use 0xFFFFFFFF to denote still image (.im3 file)
             - frame count of 0 is used to denote not-finalised video stream
-    uint8  Wavelet Filter Type/File Role:
-            - 0 = 5/3 reversible
-            - 1 = 9/7 irreversible
+    uint8  Wavelet Filter Type:
+            - 0 = 5/3 reversible (LGT 5/3, JPEG 2000 standard)
+            - 1 = 9/7 irreversible (CDF 9/7, slight modification of JPEG 2000)
+            - 2 = CDF 13/7 (experimental)
+            - 16 = DD-4 (Four-point interpolating Deslauriers-Dubuc; experimental)
+            - 255 = Haar (experimental)
     uint8  Decomposition Levels: number of DWT levels (1-6+)
     uint8  Quantiser Index for Y channel (1: lossless, 255: potato)
     uint8  Quantiser Index for Co channel (1: lossless, 255: potato)

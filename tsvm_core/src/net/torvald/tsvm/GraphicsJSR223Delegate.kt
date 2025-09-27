@@ -4064,70 +4064,47 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun dequantiseDWTSubbandsPerceptual(qIndex: Int, qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
                                                subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
 
-        // Initialise output array to zero (critical for detecting missing coefficients)
-        if (tavDebugFrameTarget >= 0) {
-        Arrays.fill(dequantised, 0.0f)
-            }
+        // CRITICAL FIX: Encoder stores coefficients in LINEAR order, not subband-mapped order!
+        // The subband layout calculation is only used for determining perceptual weights,
+        // but coefficients are stored and read sequentially in memory.
 
-        // Track coefficient coverage for debugging
-        var totalProcessed = 0
-        var maxIdx = -1
+        // Create weight map for linear coefficient array
+        val weights = FloatArray(quantised.size) { 1.0f }
 
+        // Calculate perceptual weight for each coefficient position based on its subband
         for (subband in subbands) {
             val weight = getPerceptualWeight(qIndex, qYGlobal, subband.level, subband.subbandType, isChroma, decompLevels)
-            // CRITICAL FIX: Use the same effective quantizer as encoder for proper reconstruction
-            val effectiveQuantizer = baseQuantizer * weight
 
-            // Comprehensive five-number summary for perceptual model analysis
-            if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
-                // Collect all quantized coefficient values for this subband
-                val coeffValues = mutableListOf<Int>()
-                for (i in 0 until subband.coeffCount) {
-                    val idx = subband.coeffStart + i
-                    if (idx < quantised.size) {
-                        val quantVal = quantised[idx].toInt()
-                        coeffValues.add(quantVal)
-                    }
-                }
-
-                // Calculate and print five-number summary
-                val subbandTypeName = when (subband.subbandType) {
-                    0 -> "LL"
-                    1 -> "LH"
-                    2 -> "HL"
-                    3 -> "HH"
-                    else -> "??"
-                }
-                val channelType = if (isChroma) "Chroma" else "Luma"
-                val summary = calculateFiveNumberSummary(coeffValues)
-                println("SUBBAND STATS: $channelType ${subbandTypeName}${subband.level} weight=${weight} effectiveQ=${effectiveQuantizer} - $summary")
-            }
-
+            // Apply weight to all coefficients in this subband
             for (i in 0 until subband.coeffCount) {
                 val idx = subband.coeffStart + i
-                if (idx < quantised.size && idx < dequantised.size) {
-                    dequantised[idx] = quantised[idx] * effectiveQuantizer
-                    totalProcessed++
-                    if (idx > maxIdx) maxIdx = idx
+                if (idx < weights.size) {
+                    weights[idx] = weight
                 }
             }
         }
 
-        // Debug coefficient coverage
+        // Apply linear dequantization with perceptual weights (matching encoder's linear storage)
+        for (i in quantised.indices) {
+            if (i < dequantised.size) {
+                val effectiveQuantizer = baseQuantizer * weights[i]
+                dequantised[i] = quantised[i] * effectiveQuantizer
+            }
+        }
+
+        // Debug output for verification
         if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
             val channelType = if (isChroma) "Chroma" else "Luma"
-            println("COEFFICIENT COVERAGE: $channelType - processed=$totalProcessed, maxIdx=$maxIdx, arraySize=${dequantised.size}")
+            var nonZeroCoeffs = 0
+            val weightStats = weights.toList().sorted()
+            val weightRange = if (weightStats.isNotEmpty())
+                "weights: ${weightStats.first()}-${weightStats.last()}" else "no weights"
 
-            // Check for gaps (zero coefficients that should have been processed)
-            var zeroCount = 0
-            for (i in 0 until minOf(maxIdx + 1, dequantised.size)) {
-                if (dequantised[i] == 0.0f && quantised[i] != 0.toShort()) {
-                    zeroCount++
-                }
+            for (coeff in quantised) {
+                if (coeff != 0.toShort()) nonZeroCoeffs++
             }
-            if (zeroCount > 0) {
-                println("WARNING: $zeroCount coefficients were not processed but should have been!")
-            }
+
+            println("LINEAR PERCEPTUAL DEQUANT: $channelType - coeffs=${quantised.size}, nonzero=$nonZeroCoeffs, $weightRange")
         }
     }
 
@@ -5029,8 +5006,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 if (filterType == 0) {
                     tavApplyDWT53Inverse1D(tempCol, currentHeight)
-                } else {
+                } else if (filterType == 1) {
                     tavApplyDWT97Inverse1D(tempCol, currentHeight)
+                } else if (filterType == 2) {
+                    tavApplyDWTBior137Inverse1D(tempCol, currentHeight)
+                } else if (filterType == 16) {
+                    tavApplyDWTDD4Inverse1D(tempCol, currentHeight)
+                } else if (filterType == 255) {
+                    tavApplyDWTHaarInverse1D(tempCol, currentHeight)
                 }
 
                 for (y in 0 until currentHeight) {
@@ -5046,8 +5029,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 if (filterType == 0) {
                     tavApplyDWT53Inverse1D(tempRow, currentWidth)
-                } else {
+                } else if (filterType == 1) {
                     tavApplyDWT97Inverse1D(tempRow, currentWidth)
+                } else if (filterType == 2) {
+                    tavApplyDWTBior137Inverse1D(tempRow, currentWidth)
+                } else if (filterType == 16) {
+                    tavApplyDWTDD4Inverse1D(tempRow, currentWidth)
+                } else if (filterType == 255) {
+                    tavApplyDWTHaarInverse1D(tempRow, currentWidth)
                 }
 
                 for (x in 0 until currentWidth) {
@@ -5197,7 +5186,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val left = temp[i]
                 // Symmetric extension for right boundary
                 val right = if (i < half - 1) temp[i + 1] else if (half > 2) temp[half - 2] else temp[half - 1]
-                temp[half + i] -= 0.5f * (left + right)
+                temp[half + i] += 0.5f * (left + right)  // ADD to undo the subtraction in encoder
             }
         }
 
@@ -5220,6 +5209,186 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         data[i] = 0.0f
                     }
                 }
+            }
+        }
+    }
+
+    // Four-point interpolating Deslauriers-Dubuc (DD-4) wavelet inverse 1D transform
+    // Reverses the four-sample prediction kernel: w[-1]=-1/16, w[0]=9/16, w[1]=9/16, w[2]=-1/16
+    private fun tavApplyDWTDD4Inverse1D(data: FloatArray, length: Int) {
+        if (length < 2) return
+
+        val temp = FloatArray(length)
+        val half = (length + 1) / 2  // Handle odd lengths properly
+
+        // Split into low and high frequency components (matching encoder layout)
+        for (i in 0 until half) {
+            temp[i] = data[i]              // Low-pass coefficients (first half)
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length && half + i < data.size) {
+                temp[half + i] = data[half + i] // High-pass coefficients (second half)
+            }
+        }
+
+        // DD-4 inverse lifting (undo forward steps in reverse order)
+
+        // Step 2: Undo update step - s[i] -= 0.25 * (d[i-1] + d[i])
+        for (i in 0 until half) {
+            val d_curr = if (i < length / 2) temp[half + i] else 0.0f
+            val d_prev = if (i > 0 && i - 1 < length / 2) temp[half + i - 1] else 0.0f
+            temp[i] -= 0.25f * (d_prev + d_curr)
+        }
+
+        // Step 1: Undo four-point prediction - add back the four-point prediction
+        // d[i] += prediction where prediction = (-1/16)*s[i-1] + (9/16)*s[i] + (9/16)*s[i+1] + (-1/16)*s[i+2]
+        for (i in 0 until length / 2) {
+            // Get four neighboring even samples with symmetric boundary extension
+            val s_m1: Float
+            val s_0: Float
+            val s_1: Float
+            val s_2: Float
+
+            // s[i-1]
+            s_m1 = if (i > 0) temp[i - 1] else temp[0] // Mirror boundary
+
+            // s[i]
+            s_0 = temp[i]
+
+            // s[i+1]
+            s_1 = if (i + 1 < half) temp[i + 1] else temp[half - 1] // Mirror boundary
+
+            // s[i+2]
+            s_2 = if (i + 2 < half) temp[i + 2]
+                  else if (half > 1) temp[half - 2] // Mirror boundary
+                  else temp[half - 1]
+
+            // Apply four-point prediction kernel (add back what was subtracted)
+            val prediction = (-1.0f/16.0f) * s_m1 + (9.0f/16.0f) * s_0 +
+                           (9.0f/16.0f) * s_1 + (-1.0f/16.0f) * s_2
+
+            temp[half + i] += prediction
+        }
+
+        // Reconstruction - interleave low and high frequency components
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    // Symmetric extension: mirror the last available high-pass coefficient
+                    val lastHighIdx = (length / 2) - 1
+                    if (lastHighIdx >= 0 && half + lastHighIdx < length) {
+                        data[i] = temp[half + lastHighIdx]
+                    } else {
+                        data[i] = 0.0f
+                    }
+                }
+            }
+        }
+    }
+
+    // Biorthogonal 13/7 wavelet inverse 1D transform
+    // Synthesis filters: Low-pass (13 taps), High-pass (7 taps)
+    private fun tavApplyDWTBior137Inverse1D(data: FloatArray, length: Int) {
+        if (length < 2) return
+
+        val temp = FloatArray(length)
+        val half = (length + 1) / 2
+
+        // Split into low and high frequency components
+        for (i in 0 until half) {
+            temp[i] = data[i]              // Low-pass coefficients
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                temp[half + i] = data[half + i] // High-pass coefficients
+            }
+        }
+
+        // Biorthogonal 13/7 inverse lifting (undo forward steps in reverse order)
+        // Must exactly reverse the operations from the forward transform (simplified to match 5/3 structure)
+
+        // Step 2: Undo update step (reverse of encoder step 2)
+        for (i in 0 until half) {
+            val leftIdx = half + i - 1
+            val centerIdx = half + i
+
+            // Same boundary handling as 5/3
+            val left = when {
+                leftIdx >= 0 && leftIdx < length -> temp[leftIdx]
+                centerIdx < length && centerIdx + 1 < length -> temp[centerIdx + 1] // Mirror
+                centerIdx < length -> temp[centerIdx]
+                else -> 0.0f
+            }
+            val right = if (centerIdx < length) temp[centerIdx] else 0.0f
+            temp[i] -= 0.25f * (left + right)
+        }
+
+        // Step 1: Undo predict step (reverse of encoder step 1)
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                // Simple 2-tap prediction (same as encoder)
+                val left = temp[i]
+                val right = if (i + 1 < half) temp[i + 1] else temp[half - 1]
+                val prediction = 0.5f * (left + right)
+
+                temp[half + i] += prediction
+            }
+        }
+
+        // Reconstruction - interleave low and high frequency components
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    data[i] = 0.0f
+                }
+            }
+        }
+    }
+
+    // Haar wavelet inverse 1D transform
+    // The simplest wavelet: reverses averages and differences
+    private fun tavApplyDWTHaarInverse1D(data: FloatArray, length: Int) {
+        if (length < 2) return
+
+        val temp = FloatArray(length)
+        val half = (length + 1) / 2
+
+        // Split into low and high frequency components
+        for (i in 0 until half) {
+            temp[i] = data[i]              // Low-pass coefficients (averages)
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                temp[half + i] = data[half + i] // High-pass coefficients (differences)
+            }
+        }
+
+        // Haar inverse: reconstruct original samples from averages and differences
+        for (i in 0 until half) {
+            if (2 * i + 1 < length) {
+                val avg = temp[i]           // Average (low-pass)
+                val diff = if (half + i < length) temp[half + i] else 0.0f  // Difference (high-pass)
+
+                // Reconstruct original adjacent pair
+                data[2 * i] = avg + diff        // First sample: average + difference
+                data[2 * i + 1] = avg - diff    // Second sample: average - difference
+            } else {
+                // Handle odd length: last sample comes directly from low-pass
+                data[2 * i] = temp[i]
             }
         }
     }

@@ -58,6 +58,9 @@
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
 #define WAVELET_9_7_IRREVERSIBLE 1  // Higher compression
+#define WAVELET_BIORTHOGONAL_13_7 2  // Biorthogonal 13/7 wavelet
+#define WAVELET_DD4 16  // Four-point interpolating Deslauriers-Dubuc (DD-4)
+#define WAVELET_HAAR 255  // Haar wavelet (simplest wavelet transform)
 
 // Default settings
 #define DEFAULT_WIDTH 560
@@ -344,7 +347,7 @@ static void show_usage(const char *program_name) {
     printf("  -f, --fps N             Output frames per second (enables frame rate conversion)\n");
     printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
     printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 1-255 for each channel (1: lossless, 255: potato)\n");
-//    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible (default: 1)\n");
+    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible, 2=DD-4 (default: 1)\n");
 //    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  --arate N               MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
@@ -601,6 +604,127 @@ static void dwt_97_forward_1d(float *data, int length) {
     free(temp);
 }
 
+// Four-point interpolating Deslauriers-Dubuc (DD-4) wavelet forward 1D transform
+// Uses four-sample prediction kernel: w[-1]=-1/16, w[0]=9/16, w[1]=9/16, w[2]=-1/16
+static void dwt_dd4_forward_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(length * sizeof(float));
+    int half = (length + 1) / 2;
+
+    // Split into even/odd samples
+    for (int i = 0; i < half; i++) {
+        temp[i] = data[2 * i];           // Even (low)
+    }
+    for (int i = 0; i < length / 2; i++) {
+        temp[half + i] = data[2 * i + 1]; // Odd (high)
+    }
+
+    // DD-4 forward prediction step with four-point kernel
+    // Predict odd samples using four neighboring even samples
+    // Prediction: P(x) = (-1/16)*s[i-1] + (9/16)*s[i] + (9/16)*s[i+1] + (-1/16)*s[i+2]
+    for (int i = 0; i < length / 2; i++) {
+        // Get four neighboring even samples with symmetric boundary extension
+        float s_m1, s_0, s_1, s_2;
+
+        // s[i-1]
+        if (i > 0) s_m1 = temp[i - 1];
+        else s_m1 = temp[0]; // Mirror boundary
+
+        // s[i]
+        s_0 = temp[i];
+
+        // s[i+1]
+        if (i + 1 < half) s_1 = temp[i + 1];
+        else s_1 = temp[half - 1]; // Mirror boundary
+
+        // s[i+2]
+        if (i + 2 < half) s_2 = temp[i + 2];
+        else if (half > 1) s_2 = temp[half - 2]; // Mirror boundary
+        else s_2 = temp[half - 1];
+
+        // Apply four-point prediction kernel
+        float prediction = (-1.0f/16.0f) * s_m1 + (9.0f/16.0f) * s_0 +
+                          (9.0f/16.0f) * s_1 + (-1.0f/16.0f) * s_2;
+
+        temp[half + i] -= prediction;
+    }
+
+    // DD-4 update step - use simple averaging of adjacent high-pass coefficients
+    // s[i] += 0.25 * (d[i-1] + d[i])
+    for (int i = 0; i < half; i++) {
+        float d_curr = (i < length / 2) ? temp[half + i] : 0.0f;
+        float d_prev = (i > 0 && i - 1 < length / 2) ? temp[half + i - 1] : 0.0f;
+        temp[i] += 0.25f * (d_prev + d_curr);
+    }
+
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
+// Biorthogonal 13/7 wavelet forward 1D transform
+// Analysis filters: Low-pass (13 taps), High-pass (7 taps)
+// Using lifting scheme with predict and update steps (same structure as 5/3)
+static void dwt_bior137_forward_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(length * sizeof(float));
+    int half = (length + 1) / 2;
+
+    // Step 1: Predict step (high-pass) - exactly like 5/3 structure
+    for (int i = 0; i < half; i++) {
+        int idx = 2 * i + 1;
+        if (idx < length) {
+            float prediction = 0.0f;
+
+            // Simple 2-tap prediction for now (will expand to 7-tap later)
+            float left = data[2 * i];
+            float right = (2 * i + 2 < length) ? data[2 * i + 2] : data[2 * i];
+            prediction = 0.5f * (left + right);
+
+            temp[half + i] = data[idx] - prediction;
+        }
+    }
+
+    // Step 2: Update step (low-pass) - exactly like 5/3 structure
+    for (int i = 0; i < half; i++) {
+        float update = 0.25f * ((i > 0 ? temp[half + i - 1] : 0) +
+                               (i < half - 1 ? temp[half + i] : 0));
+        temp[i] = data[2 * i] + update;
+    }
+
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
+// Haar wavelet forward 1D transform
+// The simplest wavelet: averages and differences
+static void dwt_haar_forward_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(length * sizeof(float));
+    int half = (length + 1) / 2;
+
+    // Haar transform: compute averages (low-pass) and differences (high-pass)
+    for (int i = 0; i < half; i++) {
+        if (2 * i + 1 < length) {
+            // Average of adjacent pairs (low-pass)
+            temp[i] = (data[2 * i] + data[2 * i + 1]) / 2.0f;
+            // Difference of adjacent pairs (high-pass)
+            temp[half + i] = (data[2 * i] - data[2 * i + 1]) / 2.0f;
+        } else {
+            // Handle odd length: last sample goes to low-pass
+            temp[i] = data[2 * i];
+            if (half + i < length) {
+                temp[half + i] = 0.0f;
+            }
+        }
+    }
+
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
 // Extract padded tile with margins for seamless DWT processing (correct implementation)
 static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
                                float *padded_y, float *padded_co, float *padded_cg) {
@@ -712,8 +836,14 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
 
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
                 dwt_53_forward_1d(temp_row, current_width);
-            } else {
+            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
                 dwt_97_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
+                dwt_bior137_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_DD4) {
+                dwt_dd4_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_HAAR) {
+                dwt_haar_forward_1d(temp_row, current_width);
             }
 
             for (int x = 0; x < current_width; x++) {
@@ -729,8 +859,14 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
 
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
                 dwt_53_forward_1d(temp_col, current_height);
-            } else {
+            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
                 dwt_97_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
+                dwt_bior137_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_DD4) {
+                dwt_dd4_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_HAAR) {
+                dwt_haar_forward_1d(temp_col, current_height);
             }
 
             for (int y = 0; y < current_height; y++) {
@@ -762,8 +898,14 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
 
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
                 dwt_53_forward_1d(temp_row, current_width);
-            } else {
+            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
                 dwt_97_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
+                dwt_bior137_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_DD4) {
+                dwt_dd4_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_HAAR) {
+                dwt_haar_forward_1d(temp_row, current_width);
             }
 
             for (int x = 0; x < current_width; x++) {
@@ -779,8 +921,14 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
 
             if (filter_type == WAVELET_5_3_REVERSIBLE) {
                 dwt_53_forward_1d(temp_col, current_height);
-            } else {
+            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
                 dwt_97_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
+                dwt_bior137_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_DD4) {
+                dwt_dd4_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_HAAR) {
+                dwt_haar_forward_1d(temp_col, current_height);
             }
 
             for (int y = 0; y < current_height; y++) {
@@ -792,6 +940,7 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
     free(temp_row);
     free(temp_col);
 }
+
 
 // Quantisation for DWT subbands with rate control
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
@@ -2483,7 +2632,7 @@ int main(int argc, char *argv[]) {
         {"quality", required_argument, 0, 'q'},
         {"quantiser", required_argument, 0, 'Q'},
         {"quantiser", required_argument, 0, 'Q'},
-//        {"wavelet", required_argument, 0, 'w'},
+        {"wavelet", required_argument, 0, 'w'},
         {"bitrate", required_argument, 0, 'b'},
         {"arate", required_argument, 0, 1400},
         {"subtitle", required_argument, 0, 'S'},
@@ -2532,9 +2681,9 @@ int main(int argc, char *argv[]) {
                 enc->quantiser_co = CLAMP(enc->quantiser_co, 1, 255);
                 enc->quantiser_cg = CLAMP(enc->quantiser_cg, 1, 255);
                 break;
-            /*case 'w':
-                enc->wavelet_filter = CLAMP(atoi(optarg), 0, 1);
-                break;*/
+            case 'w':
+                enc->wavelet_filter = CLAMP(atoi(optarg), 0, 255);
+                break;
             case 'f':
                 enc->output_fps = atoi(optarg);
                 if (enc->output_fps <= 0) {
@@ -2625,7 +2774,12 @@ int main(int argc, char *argv[]) {
     printf("Input: %s\n", enc->input_file);
     printf("Output: %s\n", enc->output_file);
     printf("Resolution: %dx%d @ %dfps\n", enc->width, enc->height, enc->output_fps);
-    printf("Wavelet: %s\n", enc->wavelet_filter ? "9/7 irreversible" : "5/3 reversible");
+    printf("Wavelet: %s\n",
+           enc->wavelet_filter == WAVELET_5_3_REVERSIBLE ? "CDF 5/3" :
+           enc->wavelet_filter == WAVELET_9_7_IRREVERSIBLE ? "CDF 9/7" :
+           enc->wavelet_filter == WAVELET_BIORTHOGONAL_13_7 ? "CDF 13/7" :
+           enc->wavelet_filter == WAVELET_DD4 ? "DD 4-tap" :
+           enc->wavelet_filter == WAVELET_HAAR ? "Haar" : "unknown");
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Colour space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
     printf("Quantisation: %s\n", enc->perceptual_tuning ? "Perceptual (HVS-optimised)" : "Uniform (legacy)");

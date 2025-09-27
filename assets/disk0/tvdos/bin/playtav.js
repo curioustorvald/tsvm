@@ -31,6 +31,9 @@ const TAV_FILE_HEADER_FIRST = 0x1F
 // Wavelet filter types
 const WAVELET_5_3_REVERSIBLE = 0
 const WAVELET_9_7_IRREVERSIBLE = 1
+const WAVELET_BIORTHOGONAL_13_7 = 2
+const WAVELET_DD4 = 16
+const WAVELET_HAAR = 255
 
 // Subtitle opcodes (SSF format - same as TEV)
 const SSF_OP_NOP = 0x00
@@ -441,7 +444,7 @@ console.log(`TAV Decoder`)
 console.log(`Resolution: ${header.width}x${header.height}`)
 console.log(`FPS: ${header.fps}`)
 console.log(`Total frames: ${header.totalFrames}`)
-console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : "9/7 irreversible"}`)
+console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : header.waveletFilter === WAVELET_9_7_IRREVERSIBLE ? "9/7 irreversible" : header.waveletFilter === WAVELET_BIORTHOGONAL_13_7 ? "Biorthogonal 13/7" : header.waveletFilter === WAVELET_DD4 ? "DD-4" : header.waveletFilter === WAVELET_HAAR ? "Haar" : "unknown"}`)
 console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
@@ -658,7 +661,7 @@ try {
                     console.log(`Resolution: ${header.width}x${header.height}`)
                     console.log(`FPS: ${header.fps}`)
                     console.log(`Total frames: ${header.totalFrames}`)
-                    console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : "9/7 irreversible"}`)
+                    console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : header.waveletFilter === WAVELET_9_7_IRREVERSIBLE ? "9/7 irreversible" : header.waveletFilter === WAVELET_BIORTHOGONAL_13_7 ? "Biorthogonal 13/7" : header.waveletFilter === WAVELET_DD4 ? "DD-4" : header.waveletFilter === WAVELET_HAAR ? "Haar" : "unknown"}`)
                     console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
 
                     // Continue with new file
