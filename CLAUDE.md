@@ -120,6 +120,10 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - JavaScript test programs available in `assets/disk0/`
 - Videotron2K assembly examples in documentation
 
+## Notes
+
+- The 'gzip' namespace in TSVM's JS programs is a misnomer: the actual 'gzip' functions (defined in CompressorDelegate.kt) call Zstd functions.
+
 ## TVDOS
 
 ### TVDOS Movie Formats

@@ -73,6 +73,8 @@ import kotlin.text.format
 import kotlin.text.lowercase
 import kotlin.text.toString
 import kotlin.times
+import io.airlift.compress.zstd.ZstdInputStream
+import java.io.ByteArrayInputStream
 
 class GraphicsJSR223Delegate(private val vm: VM) {
 
@@ -4137,6 +4139,53 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val tavDebugFrameTarget = -1 // use negative number to disable the debug print
     private var tavDebugCurrentFrameNumber = 0
 
+    // New tavDecode function that accepts compressed data and decompresses internally
+    fun tavDecodeCompressed(compressedDataPtr: Long, compressedSize: Int, currentRGBAddr: Long, prevRGBAddr: Long,
+                           width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
+                           waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
+
+        // Read compressed data from VM memory into byte array
+        val compressedData = ByteArray(compressedSize)
+        for (i in 0 until compressedSize) {
+            compressedData[i] = vm.peek(compressedDataPtr + i)!!.toByte()
+        }
+
+        try {
+            // Decompress using Zstd
+            val bais = ByteArrayInputStream(compressedData)
+            val zis = ZstdInputStream(bais)
+            val decompressedData = zis.readBytes()
+            zis.close()
+            bais.close()
+
+            // Allocate buffer for decompressed data
+            val decompressedBuffer = vm.malloc(decompressedData.size)
+
+            try {
+                // Copy decompressed data to unsafe buffer
+                UnsafeHelper.memcpyRaw(
+                    decompressedData, UnsafeHelper.getArrayOffset(decompressedData),
+                    null, vm.usermem.ptr + decompressedBuffer.toLong(),
+                    decompressedData.size.toLong()
+                )
+
+                // Call the existing tavDecode function with decompressed data
+                tavDecode(decompressedBuffer.toLong(), currentRGBAddr, prevRGBAddr,
+                         width, height, qIndex, qYGlobal, qCoGlobal, qCgGlobal, frameCount,
+                         waveletFilter, decompLevels, isLossless, tavVersion)
+
+            } finally {
+                // Clean up allocated buffer
+                vm.free(decompressedBuffer)
+            }
+
+        } catch (e: Exception) {
+            println("TAV Zstd decompression error: ${e.message}")
+            throw e
+        }
+    }
+
+    // Original tavDecode function for backward compatibility (now handles decompressed data)
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
                   waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {

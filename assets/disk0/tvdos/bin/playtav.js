@@ -69,18 +69,17 @@ let notifHideTimer = 0
 const NOTIF_SHOWUPTIME = 3000000000
 let [cy, cx] = con.getyx()
 
-let seqreadserial = require("seqread")
-let seqreadtape = require("seqreadtape")
+//let playgui = require("playgui")
 let seqread = undefined
 let fullFilePathStr = fullFilePath.full
 
 // Select seqread driver to use
-if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\\\TAPE')) {
-    seqread = seqreadtape
+if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAPE')) {
+    seqread = require("seqreadtape")
     seqread.prepare(fullFilePathStr)
     seqread.seek(0)
 } else {
-    seqread = seqreadserial
+    seqread = require("seqread")
     seqread.prepare(fullFilePathStr)
 }
 
@@ -686,33 +685,20 @@ try {
             else if (packetType === TAV_PACKET_IFRAME || packetType === TAV_PACKET_PFRAME) {
                 // Video packet
                 const compressedSize = seqread.readInt()
-                const isKeyframe = (packetType === TAV_PACKET_IFRAME)
 
                 // Read compressed tile data
                 let compressedPtr = seqread.readBytes(compressedSize)
                 updateDataRateBin(compressedSize)
 
-                let actualSize
-                let decompressStart = sys.nanoTime()
                 try {
-                    // Use gzip decompression (only compression format supported in TSVM JS)
-                    actualSize = gzip.decompFromTo(compressedPtr, compressedSize, blockDataPtr)
-                    decompressTime = (sys.nanoTime() - decompressStart) / 1000000.0
-                } catch (e) {
-                    decompressTime = (sys.nanoTime() - decompressStart) / 1000000.0
-                    console.log(`Frame ${frameCount}: Gzip decompression failed, skipping (compressed size: ${compressedSize}, error: ${e})`)
-                    sys.free(compressedPtr)
-                    continue
-                }
-
-                try {
-//                    serial.println(actualSize)
                     let decodeStart = sys.nanoTime()
 
-                    // Call TAV hardware decoder (like TEV's tevDecode but with RGB buffer outputs)
-                    graphics.tavDecode(
-                        blockDataPtr,
-                        CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers (not float arrays!)
+                    // Call new TAV hardware decoder that handles Zstd decompression internally
+                    // Note: No longer using JS gzip.decompFromTo - Kotlin handles Zstd natively
+                    graphics.tavDecodeCompressed(
+                        compressedPtr,             // Pass compressed data directly
+                        compressedSize,            // Size of compressed data
+                        CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers
                         header.width, header.height,
                         header.qualityLevel, header.qualityY, header.qualityCo, header.qualityCg,
                         frameCount,
@@ -723,6 +709,7 @@ try {
                     )
 
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
+                    decompressTime = 0  // Decompression time now included in decode time
 
                     // Upload RGB buffer to display framebuffer (like TEV)
                     let uploadStart = sys.nanoTime()
