@@ -3863,6 +3863,32 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // ================= TAV (TSVM Advanced Video) Decoder =================
     // DWT-based video codec with ICtCp colour space support
 
+    // Postprocess coefficients from significance map format
+    private fun postprocessCoefficients(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int, outputCoeffs: ShortArray) {
+        val mapBytes = (coeffCount + 7) / 8
+
+        // Clear output array
+        outputCoeffs.fill(0)
+
+        // Extract significance map and values
+        var valueIdx = 0
+        val valuesOffset = compressedOffset + mapBytes
+
+        for (i in 0 until coeffCount) {
+            val byteIdx = i / 8
+            val bitIdx = i % 8
+            val mapByte = compressedData[compressedOffset + byteIdx].toInt() and 0xFF
+
+            if ((mapByte and (1 shl bitIdx)) != 0) {
+                // Non-zero coefficient - read the value
+                val valueOffset = valuesOffset + valueIdx * 2
+                outputCoeffs[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
+                                  (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+                valueIdx++
+            }
+        }
+    }
+
     // TAV Simulated overlapping tiles constants (must match encoder)
     private val TILE_SIZE_X = 280
     private val TILE_SIZE_Y = 224
@@ -4197,28 +4223,46 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val quantisedY = ShortArray(coeffCount)
         val quantisedCo = ShortArray(coeffCount)
         val quantisedCg = ShortArray(coeffCount)
-        
-        // OPTIMISATION: Bulk read all coefficient data
-        val totalCoeffBytes = coeffCount * 3 * 2L  // 3 channels, 2 bytes per short
-        val coeffBuffer = ByteArray(totalCoeffBytes.toInt())
-        UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), totalCoeffBytes)
-        
-        // Convert bulk data to coefficient arrays
-        var bufferOffset = 0
-        for (i in 0 until coeffCount) {
-            quantisedY[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
-            bufferOffset += 2
+
+        // First, we need to determine the size of compressed data for each channel
+        // Read a large buffer to work with significance map format
+        val maxPossibleSize = coeffCount * 3 * 2 + (coeffCount + 7) / 8 * 3  // Worst case: original size + maps
+        val coeffBuffer = ByteArray(maxPossibleSize)
+        UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), maxPossibleSize.toLong())
+
+        // Calculate significance map size
+        val mapBytes = (coeffCount + 7) / 8
+
+        // Find sizes of each channel's compressed data by counting non-zeros in significance maps
+        fun countNonZerosInMap(offset: Int): Int {
+            var count = 0
+            for (i in 0 until mapBytes) {
+                val byte = coeffBuffer[offset + i].toInt() and 0xFF
+                for (bit in 0 until 8) {
+                    if (i * 8 + bit < coeffCount && (byte and (1 shl bit)) != 0) {
+                        count++
+                    }
+                }
+            }
+            return count
         }
-        for (i in 0 until coeffCount) {
-            quantisedCo[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
-            bufferOffset += 2
-        }
-        for (i in 0 until coeffCount) {
-            quantisedCg[i] = (((coeffBuffer[bufferOffset + 1].toInt() and 0xFF) shl 8) or (coeffBuffer[bufferOffset].toInt() and 0xFF)).toShort()
-            bufferOffset += 2
-        }
-        
-        ptr += totalCoeffBytes.toInt()
+
+        // Calculate channel data sizes
+        val yNonZeros = countNonZerosInMap(0)
+        val yDataSize = mapBytes + yNonZeros * 2
+
+        val coOffset = yDataSize
+        val coNonZeros = countNonZerosInMap(coOffset)
+        val coDataSize = mapBytes + coNonZeros * 2
+
+        val cgOffset = coOffset + coDataSize
+
+        // Postprocess each channel using significance map
+        postprocessCoefficients(coeffBuffer, 0, coeffCount, quantisedY)
+        postprocessCoefficients(coeffBuffer, coOffset, coeffCount, quantisedCo)
+        postprocessCoefficients(coeffBuffer, cgOffset, coeffCount, quantisedCg)
+
+        ptr += (yDataSize + coDataSize + mapBytes + countNonZerosInMap(cgOffset) * 2)
         
         // Dequantise coefficient data
         val yTile = FloatArray(coeffCount)
@@ -4798,17 +4842,48 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
         }
         
-        // Read delta coefficients (same format as intra: quantised int16 -> float)
+        // Read delta coefficients using significance map format (same as intra but with deltas)
         val deltaY = ShortArray(coeffCount)
-        val deltaCo = ShortArray(coeffCount) 
+        val deltaCo = ShortArray(coeffCount)
         val deltaCg = ShortArray(coeffCount)
-        
-        vm.bulkPeekShort(ptr.toInt(), deltaY, coeffCount * 2)
-        ptr += coeffCount * 2
-        vm.bulkPeekShort(ptr.toInt(), deltaCo, coeffCount * 2)
-        ptr += coeffCount * 2
-        vm.bulkPeekShort(ptr.toInt(), deltaCg, coeffCount * 2)
-        ptr += coeffCount * 2
+
+        // Read using significance map format for deltas too
+        val maxPossibleSize = coeffCount * 3 * 2 + (coeffCount + 7) / 8 * 3  // Worst case
+        val coeffBuffer = ByteArray(maxPossibleSize)
+        UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), maxPossibleSize.toLong())
+
+        val mapBytes = (coeffCount + 7) / 8
+
+        // Helper function for counting non-zeros (same as in intra)
+        fun countNonZerosInMap(offset: Int): Int {
+            var count = 0
+            for (i in 0 until mapBytes) {
+                val byte = coeffBuffer[offset + i].toInt() and 0xFF
+                for (bit in 0 until 8) {
+                    if (i * 8 + bit < coeffCount && (byte and (1 shl bit)) != 0) {
+                        count++
+                    }
+                }
+            }
+            return count
+        }
+
+        // Calculate channel data sizes for deltas
+        val yNonZeros = countNonZerosInMap(0)
+        val yDataSize = mapBytes + yNonZeros * 2
+
+        val coOffset = yDataSize
+        val coNonZeros = countNonZerosInMap(coOffset)
+        val coDataSize = mapBytes + coNonZeros * 2
+
+        val cgOffset = coOffset + coDataSize
+
+        // Postprocess delta coefficients using significance map
+        postprocessCoefficients(coeffBuffer, 0, coeffCount, deltaY)
+        postprocessCoefficients(coeffBuffer, coOffset, coeffCount, deltaCo)
+        postprocessCoefficients(coeffBuffer, cgOffset, coeffCount, deltaCg)
+
+        ptr += (yDataSize + coDataSize + mapBytes + countNonZerosInMap(cgOffset) * 2)
         
         // Get or initialise previous coefficients for this tile
         val prevY = tavPreviousCoeffsY!![tileIdx] ?: FloatArray(coeffCount)

@@ -74,6 +74,9 @@ int KEYFRAME_INTERVAL = 2; // refresh often because deltas in DWT are more visib
 #define MP2_DEFAULT_PACKET_SIZE 1152
 #define MAX_SUBTITLE_LENGTH 2048
 
+const int makeDebugDump = -100; // enter a frame number
+int debugDumpMade = 0;
+
 // Subtitle structure
 typedef struct subtitle_entry {
     int start_frame;
@@ -954,6 +957,38 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
     free(temp_col);
 }
 
+// Preprocess coefficients using significance map for better compression
+static size_t preprocess_coefficients(int16_t *coeffs, int coeff_count, uint8_t *output_buffer) {
+    // Count non-zero coefficients
+    int nonzero_count = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        if (coeffs[i] != 0) nonzero_count++;
+    }
+
+    // Create significance map (1 bit per coefficient, packed into bytes)
+    int map_bytes = (coeff_count + 7) / 8;  // Round up to nearest byte
+    uint8_t *sig_map = output_buffer;
+    int16_t *values = (int16_t *)(output_buffer + map_bytes);
+
+    // Clear significance map
+    memset(sig_map, 0, map_bytes);
+
+    // Fill significance map and extract non-zero values
+    int value_idx = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        if (coeffs[i] != 0) {
+            // Set bit in significance map
+            int byte_idx = i / 8;
+            int bit_idx = i % 8;
+            sig_map[byte_idx] |= (1 << bit_idx);
+
+            // Store the value
+            values[value_idx++] = coeffs[i];
+        }
+    }
+
+    return map_bytes + (nonzero_count * sizeof(int16_t));
+}
 
 // Quantisation for DWT subbands with rate control
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
@@ -1276,10 +1311,56 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         printf("\n");
     }*/
 
-    // Write quantised coefficients (both uniform and perceptual use same linear layout)
-    memcpy(buffer + offset, quantised_y, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
-    memcpy(buffer + offset, quantised_co, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
-    memcpy(buffer + offset, quantised_cg, tile_size * sizeof(int16_t)); offset += tile_size * sizeof(int16_t);
+    // Preprocess and write quantised coefficients using significance mapping for better compression
+    size_t y_compressed_size = preprocess_coefficients(quantised_y, tile_size, buffer + offset);
+    offset += y_compressed_size;
+
+    size_t co_compressed_size = preprocess_coefficients(quantised_co, tile_size, buffer + offset);
+    offset += co_compressed_size;
+
+    size_t cg_compressed_size = preprocess_coefficients(quantised_cg, tile_size, buffer + offset);
+    offset += cg_compressed_size;
+
+    // DEBUG: Dump raw DWT coefficients for frame ~60 when it's an intra-frame
+    if (!debugDumpMade && enc->frame_count >= makeDebugDump - 1 && enc->frame_count <= makeDebugDump + 2 &&
+        (mode == TAV_MODE_INTRA)) {
+
+        char filename[256];
+        size_t data_size = tile_size * sizeof(int16_t);
+
+        // Dump Y channel coefficients
+        snprintf(filename, sizeof(filename), "frame_%03d.tavframe.y.bin", enc->frame_count);
+        FILE *debug_fp = fopen(filename, "wb");
+        if (debug_fp) {
+            fwrite(quantised_y, 1, data_size, debug_fp);
+            fclose(debug_fp);
+            printf("DEBUG: Dumped Y coefficients to %s (%zu bytes)\n", filename, data_size);
+        }
+
+        // Dump Co channel coefficients
+        snprintf(filename, sizeof(filename), "frame_%03d.tavframe.co.bin", enc->frame_count);
+        debug_fp = fopen(filename, "wb");
+        if (debug_fp) {
+            fwrite(quantised_co, 1, data_size, debug_fp);
+            fclose(debug_fp);
+            printf("DEBUG: Dumped Co coefficients to %s (%zu bytes)\n", filename, data_size);
+        }
+
+        // Dump Cg channel coefficients
+        snprintf(filename, sizeof(filename), "frame_%03d.tavframe.cg.bin", enc->frame_count);
+        debug_fp = fopen(filename, "wb");
+        if (debug_fp) {
+            fwrite(quantised_cg, 1, data_size, debug_fp);
+            fclose(debug_fp);
+            printf("DEBUG: Dumped Cg coefficients to %s (%zu bytes)\n", filename, data_size);
+        }
+
+        printf("DEBUG: Frame %d - Dumped all %zu coefficient bytes per channel (total: %zu bytes)\n",
+               enc->frame_count, data_size, data_size * 3);
+
+        debugDumpMade = 1;
+    }
+
 
     // OPTIMISATION: No need to free - using pre-allocated reusable buffers
 

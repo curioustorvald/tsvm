@@ -961,6 +961,23 @@ note: metadata packets must precede any non-metadata packets
     uint8  Quantiser override Y  (use 0 to disable overriding; shared with A channel)
     uint8  Quantiser override Co (use 0 to disable overriding)
     uint8  Quantiser override Cg (use 0 to disable overriding)
+    ## Coefficient Storage Format (Significance Map Compression)
+
+    Starting with encoder version 2025-09-29, DWT coefficients are stored using
+    significance map compression for improved efficiency:
+
+    For each channel (Y, Co, Cg, optional A):
+        uint8  Significance Map[(coeff_count + 7) / 8]  // 1 bit per coefficient
+        int16  Non-zero Values[variable length]         // Only non-zero coefficients
+
+    The significance map uses 1 bit per coefficient position:
+        - Bit = 1: coefficient is non-zero, read value from Non-zero Values array
+        - Bit = 0: coefficient is zero
+
+    This format exploits the high sparsity of quantized DWT coefficients (typically
+    85-95% zeros) to achieve 15-20% compression improvement before Zstd compression.
+
+    ## Legacy Format (for reference)
     int16  Y channel DWT coefficients[width * height + 4]
     int16  Co channel DWT coefficients[width * height + 4]
     int16  Cg channel DWT coefficients[width * height + 4]

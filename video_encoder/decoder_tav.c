@@ -26,6 +26,27 @@ static inline int CLAMP(int x, int min, int max) {
     return x < min ? min : (x > max ? max : x);
 }
 
+// Decoder: reconstruct coefficients from significance map
+static void postprocess_coefficients(uint8_t *compressed_data, int coeff_count, int16_t *output_coeffs) {
+    int map_bytes = (coeff_count + 7) / 8;
+    uint8_t *sig_map = compressed_data;
+    int16_t *values = (int16_t *)(compressed_data + map_bytes);
+
+    // Clear output
+    memset(output_coeffs, 0, coeff_count * sizeof(int16_t));
+
+    // Reconstruct coefficients
+    int value_idx = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+
+        if (sig_map[byte_idx] & (1 << bit_idx)) {
+            output_coeffs[i] = values[value_idx++];
+        }
+    }
+}
+
 // TAV header structure (32 bytes)
 typedef struct {
     uint8_t magic[8];
@@ -558,27 +579,46 @@ static int decode_frame(tav_decoder_t *decoder) {
         // Copy from reference frame
         memcpy(decoder->current_frame_rgb, decoder->reference_frame_rgb, decoder->frame_size * 3);
     } else {
-        // Read coefficients in TSVM order: all Y, then all Co, then all Cg
+        // Read coefficients with significance map postprocessing
         int coeff_count = decoder->frame_size;
         uint8_t *coeff_ptr = ptr;
 
-        // Read coefficients into temporary arrays
+        // Allocate arrays for decompressed coefficients
         int16_t *quantized_y = malloc(coeff_count * sizeof(int16_t));
         int16_t *quantized_co = malloc(coeff_count * sizeof(int16_t));
         int16_t *quantized_cg = malloc(coeff_count * sizeof(int16_t));
 
-        for (int i = 0; i < coeff_count; i++) {
-            quantized_y[i] = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
-            coeff_ptr += 2;
+        // Postprocess coefficients from significance map format
+        // First find where each channel's data starts by reading the preprocessing output
+        size_t y_map_bytes = (coeff_count + 7) / 8;
+
+        // Count non-zeros in Y significance map to find Y data size
+        int y_nonzeros = 0;
+        for (int i = 0; i < y_map_bytes; i++) {
+            uint8_t byte = coeff_ptr[i];
+            for (int bit = 0; bit < 8 && i*8+bit < coeff_count; bit++) {
+                if (byte & (1 << bit)) y_nonzeros++;
+            }
         }
-        for (int i = 0; i < coeff_count; i++) {
-            quantized_co[i] = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
-            coeff_ptr += 2;
+        size_t y_data_size = y_map_bytes + y_nonzeros * sizeof(int16_t);
+
+        // Count non-zeros in Co significance map
+        uint8_t *co_ptr = coeff_ptr + y_data_size;
+        int co_nonzeros = 0;
+        for (int i = 0; i < y_map_bytes; i++) {
+            uint8_t byte = co_ptr[i];
+            for (int bit = 0; bit < 8 && i*8+bit < coeff_count; bit++) {
+                if (byte & (1 << bit)) co_nonzeros++;
+            }
         }
-        for (int i = 0; i < coeff_count; i++) {
-            quantized_cg[i] = (int16_t)((coeff_ptr[1] << 8) | coeff_ptr[0]);
-            coeff_ptr += 2;
-        }
+        size_t co_data_size = y_map_bytes + co_nonzeros * sizeof(int16_t);
+
+        uint8_t *cg_ptr = co_ptr + co_data_size;
+
+        // Decompress each channel
+        postprocess_coefficients(coeff_ptr, coeff_count, quantized_y);
+        postprocess_coefficients(co_ptr, coeff_count, quantized_co);
+        postprocess_coefficients(cg_ptr, coeff_count, quantized_cg);
 
         // Apply dequantization (perceptual for version 5, uniform for earlier versions)
         const int is_perceptual = (decoder->header.version == 5);
