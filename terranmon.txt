@@ -901,10 +901,10 @@ transmission capability, and region-of-interest coding.
             - frame count of 0 is used to denote not-finalised video stream
     uint8  Wavelet Filter Type:
             - 0 = 5/3 reversible (LGT 5/3, JPEG 2000 standard)
-            - 1 = 9/7 irreversible (CDF 9/7, slight modification of JPEG 2000)
+            - 1 = 9/7 irreversible (CDF 9/7, slight modification of JPEG 2000, default choice)
             - 2 = CDF 13/7 (experimental)
             - 16 = DD-4 (Four-point interpolating Deslauriers-Dubuc; experimental)
-            - 255 = Haar (experimental)
+            - 255 = Haar (demonstration purpose only)
     uint8  Decomposition Levels: number of DWT levels (1-6+)
     uint8  Quantiser Index for Y channel (1: lossless, 255: potato)
     uint8  Quantiser Index for Co channel (1: lossless, 255: potato)
@@ -917,7 +917,7 @@ transmission capability, and region-of-interest coding.
     uint8  Video Flags
             - bit 0 = has alpha channel
             - bit 1 = is NTSC framerate
-            - bit 2 = is lossless mode
+            - bit 2 = is lossless mode (shorthand for `-q 5 -Q1,1,1 -w 0`)
             - bit 3 = has region-of-interest coding (for still images only)
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
     uint8  File Role

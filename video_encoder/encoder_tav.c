@@ -152,8 +152,8 @@ static const int QUALITY_CG[] = {240, 180, 120, 60, 30, 5};
 //static const int QUALITY_CG[] = {120, 60, 30, 15, 10, 4};
 
 // psychovisual tuning parameters
-static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
-static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
+static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f};
 
 static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f};
 static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f};
@@ -668,6 +668,9 @@ static void dwt_dd4_forward_1d(float *data, int length) {
 static void dwt_bior137_forward_1d(float *data, int length) {
     if (length < 2) return;
 
+    const float K = 1.230174105f;
+
+
     float *temp = malloc(length * sizeof(float));
     int half = (length + 1) / 2;
 
@@ -691,6 +694,16 @@ static void dwt_bior137_forward_1d(float *data, int length) {
         float update = 0.25f * ((i > 0 ? temp[half + i - 1] : 0) +
                                (i < half - 1 ? temp[half + i] : 0));
         temp[i] = data[2 * i] + update;
+    }
+
+    // Step 5: Scaling - s[i] *= K, d[i] /= K
+    for (int i = 0; i < half; i++) {
+        temp[i] *= K;  // Low-pass coefficients
+    }
+    for (int i = 0; i < length / 2; i++) {
+        if (half + i < length) {
+            temp[half + i] /= K;  // High-pass coefficients
+        }
     }
 
     memcpy(data, temp, length * sizeof(float));
@@ -2755,6 +2768,18 @@ int main(int argc, char *argv[]) {
     // adjust encoding parameters for ICtCp
     if (enc->ictcp_mode) {
         enc->quantiser_cg = enc->quantiser_co;
+    }
+
+    // disable perceptual tuning if wavelet filter is not CDF 9/7
+    if (enc->wavelet_filter != WAVELET_9_7_IRREVERSIBLE) {
+        enc->perceptual_tuning = 0;
+
+        // halve the quantiser if wavelet filter is not CDF 9/7 && not CDF 13/7
+        if (enc->wavelet_filter != WAVELET_BIORTHOGONAL_13_7) {
+            enc->quantiser_y = CLAMP(enc->quantiser_y >> 1, 1, 255);
+            enc->quantiser_co = CLAMP(enc->quantiser_co >> 1, 1, 255);
+            enc->quantiser_cg = CLAMP(enc->quantiser_cg >> 1, 1, 255);
+        }
     }
 
     if ((!enc->input_file && !enc->test_mode) || !enc->output_file) {

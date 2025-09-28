@@ -3950,8 +3950,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return subbands
     }
 
-    var ANISOTROPY_MULT = floatArrayOf(1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
-    var ANISOTROPY_BIAS = floatArrayOf(0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
+    var ANISOTROPY_MULT = floatArrayOf(2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f)
+    var ANISOTROPY_BIAS = floatArrayOf(0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f)
     var ANISOTROPY_MULT_CHROMA = floatArrayOf(6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f)
     var ANISOTROPY_BIAS_CHROMA = floatArrayOf(1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f)
 
@@ -5313,6 +5313,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Biorthogonal 13/7 inverse lifting (undo forward steps in reverse order)
         // Must exactly reverse the operations from the forward transform (simplified to match 5/3 structure)
+
+        val K = 1.230174105f
+
+        // Step 1: Undo scaling - s[i] /= K, d[i] *= K
+        for (i in 0 until half) {
+            temp[i] /= K  // Low-pass coefficients
+        }
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                temp[half + i] *= K  // High-pass coefficients
+            }
+        }
 
         // Step 2: Undo update step (reverse of encoder step 2)
         for (i in 0 until half) {
