@@ -1459,10 +1459,61 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Get native resolution
         val nativeWidth = gpu.config.width
         val nativeHeight = gpu.config.height
-        
-        val totalNativePixels = (nativeWidth * nativeHeight).toLong()
+        val totalNativePixels = (nativeWidth * nativeHeight)
 
-        if (resizeToFull && (width / 2 != nativeWidth / 2 || height / 2 != nativeHeight / 2)) {
+        if (width == nativeWidth && height == nativeHeight) {
+            val chunkSize = 32768 // Larger chunks for bulk processing
+
+            var pixelsProcessed = 0
+
+            // Pre-allocate RGB buffer for bulk reads
+            val rgbBulkBuffer = ByteArray(chunkSize * 3)
+            val rgChunk = ByteArray(chunkSize)
+            val baChunk = ByteArray(chunkSize)
+
+            while (pixelsProcessed < totalNativePixels) {
+                val pixelsInChunk = kotlin.math.min(chunkSize, totalNativePixels - pixelsProcessed)
+                val rgbStartAddr = rgbAddr + (pixelsProcessed.toLong() * 3) * rgbAddrIncVec
+
+                // Bulk read RGB data for this chunk
+                bulkPeekRGB(rgbStartAddr, pixelsInChunk, rgbAddrIncVec, rgbBulkBuffer)
+
+                // Process pixels using bulk-read data
+                for (i in 0 until pixelsInChunk) {
+                    val pixelIndex = pixelsProcessed + i
+                    val videoY = pixelIndex / width
+                    val videoX = pixelIndex % width
+
+                    // Read RGB values from bulk buffer
+                    val r = rgbBulkBuffer[i*3].toUint()
+                    val g = rgbBulkBuffer[i*3 + 1].toUint()
+                    val b = rgbBulkBuffer[i*3 + 2].toUint()
+
+                    // Apply Bayer dithering and convert to 4-bit
+                    val r4 = ditherValue(r, videoX, videoY, frameCount)
+                    val g4 = ditherValue(g, videoX, videoY, frameCount)
+                    val b4 = ditherValue(b, videoX, videoY, frameCount)
+
+                    // Pack RGB values and store in chunk arrays for batch processing
+                    rgChunk[i] = ((r4 shl 4) or g4).toByte()
+                    baChunk[i] = ((b4 shl 4) or 15).toByte()
+
+                    // Write directly to framebuffer position
+                    val nativePos = videoY * nativeWidth + videoX
+                    UnsafeHelper.memcpyRaw(
+                        rgChunk, UnsafeHelper.getArrayOffset(rgChunk) + i,
+                        null, gpu.framebuffer.ptr + nativePos, 1L
+                    )
+                    UnsafeHelper.memcpyRaw(
+                        baChunk, UnsafeHelper.getArrayOffset(baChunk) + i,
+                        null, gpu.framebuffer2!!.ptr + nativePos, 1L
+                    )
+                }
+
+                pixelsProcessed += pixelsInChunk
+            }
+        }
+        else if (resizeToFull && (width / 2 != nativeWidth / 2 || height / 2 != nativeHeight / 2)) {
             // Calculate scaling factors for resize-to-full (source to native mapping)
             val scaleX = width.toFloat() / nativeWidth.toFloat()
             val scaleY = height.toFloat() / nativeHeight.toFloat()
@@ -3865,7 +3916,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // ================= TAV (TSVM Advanced Video) Decoder =================
     // DWT-based video codec with ICtCp colour space support
 
-    // Postprocess coefficients from significance map format
+    // Postprocess coefficients from significance map format (legacy - single channel)
     private fun postprocessCoefficients(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int, outputCoeffs: ShortArray) {
         val mapBytes = (coeffCount + 7) / 8
 
@@ -3887,6 +3938,75 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 outputCoeffs[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
                                   (compressedData[valueOffset].toInt() and 0xFF)).toShort()
                 valueIdx++
+            }
+        }
+    }
+
+    // Postprocess coefficients from concatenated significance maps format (current - optimal)
+    private fun postprocessCoefficientsConcatenated(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int,
+                                                   outputY: ShortArray, outputCo: ShortArray, outputCg: ShortArray) {
+        val mapBytes = (coeffCount + 7) / 8
+
+        // Clear output arrays
+        outputY.fill(0)
+        outputCo.fill(0)
+        outputCg.fill(0)
+
+        // Extract significance maps: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+        val yMapOffset = compressedOffset
+        val coMapOffset = compressedOffset + mapBytes
+        val cgMapOffset = compressedOffset + mapBytes * 2
+
+        // Count non-zeros in each channel to determine value array boundaries
+        var yNonZeros = 0
+        var coNonZeros = 0
+        var cgNonZeros = 0
+
+        for (i in 0 until coeffCount) {
+            val byteIdx = i / 8
+            val bitIdx = i % 8
+
+            if ((compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) yNonZeros++
+            if ((compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) coNonZeros++
+            if ((compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) cgNonZeros++
+        }
+
+        // Calculate value array offsets
+        val yValuesOffset = compressedOffset + mapBytes * 3
+        val coValuesOffset = yValuesOffset + yNonZeros * 2
+        val cgValuesOffset = coValuesOffset + coNonZeros * 2
+
+        // Extract coefficients using significance maps
+        var yValueIdx = 0
+        var coValueIdx = 0
+        var cgValueIdx = 0
+
+        for (i in 0 until coeffCount) {
+            val byteIdx = i / 8
+            val bitIdx = i % 8
+
+            // Y channel
+            if ((compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valueOffset = yValuesOffset + yValueIdx * 2
+                outputY[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
+                             (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+                yValueIdx++
+            }
+
+            // Co channel
+            if ((compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valueOffset = coValuesOffset + coValueIdx * 2
+                outputCo[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
+                              (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+                coValueIdx++
+            }
+
+            // Cg channel
+            if ((compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valueOffset = cgValuesOffset + cgValueIdx * 2
+                outputCg[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
+                              (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+                cgValueIdx++
             }
         }
     }
@@ -4296,22 +4416,31 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return count
         }
 
-        // Calculate channel data sizes
-        val yNonZeros = countNonZerosInMap(0)
-        val yDataSize = mapBytes + yNonZeros * 2
+        // Helper function for concatenated maps format
+        fun countNonZerosInMapConcatenated(mapOffset: Int, mapSize: Int): Int {
+            var count = 0
+            for (i in 0 until mapSize) {
+                val byte = coeffBuffer[mapOffset + i].toInt() and 0xFF
+                for (bit in 0 until 8) {
+                    if (i * 8 + bit < coeffCount && (byte and (1 shl bit)) != 0) {
+                        count++
+                    }
+                }
+            }
+            return count
+        }
 
-        val coOffset = yDataSize
-        val coNonZeros = countNonZerosInMap(coOffset)
-        val coDataSize = mapBytes + coNonZeros * 2
+        // Use concatenated maps format: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+        postprocessCoefficientsConcatenated(coeffBuffer, 0, coeffCount, quantisedY, quantisedCo, quantisedCg)
 
-        val cgOffset = coOffset + coDataSize
+        // Calculate total size for concatenated format
+        val totalMapSize = mapBytes * 3
+        val yNonZeros = countNonZerosInMapConcatenated(0, mapBytes)
+        val coNonZeros = countNonZerosInMapConcatenated(mapBytes, mapBytes)
+        val cgNonZeros = countNonZerosInMapConcatenated(mapBytes * 2, mapBytes)
+        val totalValueSize = (yNonZeros + coNonZeros + cgNonZeros) * 2
 
-        // Postprocess each channel using significance map
-        postprocessCoefficients(coeffBuffer, 0, coeffCount, quantisedY)
-        postprocessCoefficients(coeffBuffer, coOffset, coeffCount, quantisedCo)
-        postprocessCoefficients(coeffBuffer, cgOffset, coeffCount, quantisedCg)
-
-        ptr += (yDataSize + coDataSize + mapBytes + countNonZerosInMap(cgOffset) * 2)
+        ptr += (totalMapSize + totalValueSize)
         
         // Dequantise coefficient data
         val yTile = FloatArray(coeffCount)
@@ -4917,22 +5046,31 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return count
         }
 
-        // Calculate channel data sizes for deltas
-        val yNonZeros = countNonZerosInMap(0)
-        val yDataSize = mapBytes + yNonZeros * 2
+        // Helper function for concatenated maps format
+        fun countNonZerosInMapConcatenated(mapOffset: Int, mapSize: Int): Int {
+            var count = 0
+            for (i in 0 until mapSize) {
+                val byte = coeffBuffer[mapOffset + i].toInt() and 0xFF
+                for (bit in 0 until 8) {
+                    if (i * 8 + bit < coeffCount && (byte and (1 shl bit)) != 0) {
+                        count++
+                    }
+                }
+            }
+            return count
+        }
 
-        val coOffset = yDataSize
-        val coNonZeros = countNonZerosInMap(coOffset)
-        val coDataSize = mapBytes + coNonZeros * 2
+        // Use concatenated maps format for deltas: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+        postprocessCoefficientsConcatenated(coeffBuffer, 0, coeffCount, deltaY, deltaCo, deltaCg)
 
-        val cgOffset = coOffset + coDataSize
+        // Calculate total size for concatenated format
+        val totalMapSize = mapBytes * 3
+        val yNonZeros = countNonZerosInMapConcatenated(0, mapBytes)
+        val coNonZeros = countNonZerosInMapConcatenated(mapBytes, mapBytes)
+        val cgNonZeros = countNonZerosInMapConcatenated(mapBytes * 2, mapBytes)
+        val totalValueSize = (yNonZeros + coNonZeros + cgNonZeros) * 2
 
-        // Postprocess delta coefficients using significance map
-        postprocessCoefficients(coeffBuffer, 0, coeffCount, deltaY)
-        postprocessCoefficients(coeffBuffer, coOffset, coeffCount, deltaCo)
-        postprocessCoefficients(coeffBuffer, cgOffset, coeffCount, deltaCg)
-
-        ptr += (yDataSize + coDataSize + mapBytes + countNonZerosInMap(cgOffset) * 2)
+        ptr += (totalMapSize + totalValueSize)
         
         // Get or initialise previous coefficients for this tile
         val prevY = tavPreviousCoeffsY!![tileIdx] ?: FloatArray(coeffCount)

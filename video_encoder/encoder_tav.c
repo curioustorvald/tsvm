@@ -990,6 +990,57 @@ static size_t preprocess_coefficients(int16_t *coeffs, int coeff_count, uint8_t 
     return map_bytes + (nonzero_count * sizeof(int16_t));
 }
 
+// Preprocess coefficients using concatenated significance maps for optimal cross-channel compression
+static size_t preprocess_coefficients_concatenated(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg,
+                                                   int coeff_count, uint8_t *output_buffer) {
+    int map_bytes = (coeff_count + 7) / 8;
+
+    // Count non-zeros per channel
+    int nonzero_y = 0, nonzero_co = 0, nonzero_cg = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        if (coeffs_y[i] != 0) nonzero_y++;
+        if (coeffs_co[i] != 0) nonzero_co++;
+        if (coeffs_cg[i] != 0) nonzero_cg++;
+    }
+
+    // Layout: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+    uint8_t *y_map = output_buffer;
+    uint8_t *co_map = output_buffer + map_bytes;
+    uint8_t *cg_map = output_buffer + map_bytes * 2;
+    int16_t *y_values = (int16_t *)(output_buffer + map_bytes * 3);
+    int16_t *co_values = y_values + nonzero_y;
+    int16_t *cg_values = co_values + nonzero_co;
+
+    // Clear significance maps
+    memset(y_map, 0, map_bytes);
+    memset(co_map, 0, map_bytes);
+    memset(cg_map, 0, map_bytes);
+
+    // Fill significance maps and extract values
+    int y_idx = 0, co_idx = 0, cg_idx = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+
+        if (coeffs_y[i] != 0) {
+            y_map[byte_idx] |= (1 << bit_idx);
+            y_values[y_idx++] = coeffs_y[i];
+        }
+
+        if (coeffs_co[i] != 0) {
+            co_map[byte_idx] |= (1 << bit_idx);
+            co_values[co_idx++] = coeffs_co[i];
+        }
+
+        if (coeffs_cg[i] != 0) {
+            cg_map[byte_idx] |= (1 << bit_idx);
+            cg_values[cg_idx++] = coeffs_cg[i];
+        }
+    }
+
+    return map_bytes * 3 + (nonzero_y + nonzero_co + nonzero_cg) * sizeof(int16_t);
+}
+
 // Quantisation for DWT subbands with rate control
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
     float effective_q = quantiser;
@@ -1311,15 +1362,10 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         printf("\n");
     }*/
 
-    // Preprocess and write quantised coefficients using significance mapping for better compression
-    size_t y_compressed_size = preprocess_coefficients(quantised_y, tile_size, buffer + offset);
-    offset += y_compressed_size;
-
-    size_t co_compressed_size = preprocess_coefficients(quantised_co, tile_size, buffer + offset);
-    offset += co_compressed_size;
-
-    size_t cg_compressed_size = preprocess_coefficients(quantised_cg, tile_size, buffer + offset);
-    offset += cg_compressed_size;
+    // Preprocess and write quantised coefficients using concatenated significance maps for optimal compression
+    size_t total_compressed_size = preprocess_coefficients_concatenated(quantised_y, quantised_co, quantised_cg,
+                                                                        tile_size, buffer + offset);
+    offset += total_compressed_size;
 
     // DEBUG: Dump raw DWT coefficients for frame ~60 when it's an intra-frame
     if (!debugDumpMade && enc->frame_count >= makeDebugDump - 1 && enc->frame_count <= makeDebugDump + 2 &&

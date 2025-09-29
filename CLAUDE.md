@@ -174,7 +174,8 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
   - **Perceptual quantization**: HVS-optimized coefficient scaling
   - **YCoCg-R color space**: Efficient chroma representation with "simulated" subsampling using anisotropic quantization (search for "ANISOTROPY_MULT_CHROMA" on the encoder)
   - **6-level DWT decomposition**: Deep frequency analysis for better compression (deeper levels possible but 6 is the maximum for the default TSVM size)
-  - **Significance Map Compression**: Improved coefficient storage format exploiting sparsity for 15-20% additional compression (2025-09-29 update)
+  - **Significance Map Compression**: Improved coefficient storage format exploiting sparsity for 16-18% additional compression (2025-09-29 update)
+  - **Concatenated Maps Layout**: Cross-channel compression optimization for additional 1.6% improvement (2025-09-29 enhanced)
 - **Usage Examples**:
   ```bash
   # Different wavelets
@@ -240,10 +241,19 @@ The significance map compression technique implemented on 2025-09-29 provides su
 
 **Technical Approach**:
 ```
-Original: [coeff_array] → [significance_bits + nonzero_values]
+Original: [coeff_array] → [concatenated_significance_maps + nonzero_values]
+
+Concatenated Maps Layout:
+[Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+
 - Significance map: 1 bit per coefficient (0=zero, 1=non-zero)
-- Value array: Only non-zero coefficients in sequence
-- Result: 15-20% compression improvement on typical video content
+- Value arrays: Only non-zero coefficients in sequence per channel
+- Cross-channel optimization: Zstd finds patterns across similar significance maps
+- Result: 16-18% compression improvement + 1.6% additional from concatenation
 ```
 
-**Performance**: Tested on quantized DWT coefficients with 86.9% sparsity, achieving 16.4% compression improvement before Zstd compression. The technique is particularly effective on high-frequency subbands where sparsity often exceeds 95%.
+**Performance**:
+- **Sparsity exploitation**: Tested on quantized DWT coefficients with 86.9% sparsity (Y), 97.8% (Co), 99.5% (Cg)
+- **Compression improvement**: 16.4% from significance maps + 1.6% from concatenated layout
+- **Real-world impact**: 559 bytes saved per frame (5.59 MB per 10k frames)
+- **Cross-channel benefit**: Concatenated maps allow Zstd to exploit similarity between significance patterns

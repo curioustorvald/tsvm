@@ -934,11 +934,14 @@ transmission capability, and region-of-interest coding.
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
     0x31: Subtitle in "Karaoke" format
+    <Standard metadata payloads>
+    (it's called "standard" because you're expected to just copy-paste the metadata bytes verbatim)
     0xE0: EXIF packet
     0xE1: ID3v1 packet
     0xE2: ID3v2 packet
     0xE3: Vorbis Comment packet
     0xE4: CD-text packet
+    <End of Standard metadata>
     0xFF: sync packet
 
 ## Standard metadata payload packet structure
@@ -946,7 +949,11 @@ transmission capability, and region-of-interest coding.
     uint32 Length of the payload
     *      Standard payload
 
-note: metadata packets must precede any non-metadata packets
+    Notes:
+    - metadata packets must precede any non-metadata packets
+    - when multiple metadata packets are present (e.g. ID3v2 and Vorbis Comment both present),
+      which gets precedence is implementation-dependent. ONE EXCEPTION is ID3v1 and ID3v2 where ID3v2 gets
+      precedence.
 
 ## Video Packet Structure
     uint8  Packet Type
@@ -964,18 +971,36 @@ note: metadata packets must precede any non-metadata packets
     ## Coefficient Storage Format (Significance Map Compression)
 
     Starting with encoder version 2025-09-29, DWT coefficients are stored using
-    significance map compression for improved efficiency:
+    significance map compression with concatenated maps layout for optimal efficiency:
+
+    ### Concatenated Maps Format (Current)
+    All channels are processed together to maximize Zstd compression:
+
+        uint8  Y Significance Map[(coeff_count + 7) / 8]    // 1 bit per Y coefficient
+        uint8  Co Significance Map[(coeff_count + 7) / 8]   // 1 bit per Co coefficient
+        uint8  Cg Significance Map[(coeff_count + 7) / 8]   // 1 bit per Cg coefficient
+        uint8  A Significance Map[(coeff_count + 7) / 8]    // 1 bit per A coefficient (if alpha present)
+        int16  Y Non-zero Values[variable length]           // Only non-zero Y coefficients
+        int16  Co Non-zero Values[variable length]          // Only non-zero Co coefficients
+        int16  Cg Non-zero Values[variable length]          // Only non-zero Cg coefficients
+        int16  A Non-zero Values[variable length]           // Only non-zero A coefficients (if alpha present)
+
+    ### Significance Map Encoding
+    Each significance map uses 1 bit per coefficient position:
+        - Bit = 1: coefficient is non-zero, read value from corresponding Non-zero Values array
+        - Bit = 0: coefficient is zero
+
+    ### Compression Benefits
+    - **Sparsity exploitation**: Typically 85-95% zeros in quantized DWT coefficients
+    - **Cross-channel patterns**: Concatenated maps allow Zstd to find patterns across similar significance maps
+    - **Overall improvement**: 16-18% compression improvement before Zstd compression
+
+    ### Legacy Separate Format (2025-09-29 initial)
+    Early significance map implementation processed channels separately:
 
     For each channel (Y, Co, Cg, optional A):
         uint8  Significance Map[(coeff_count + 7) / 8]  // 1 bit per coefficient
         int16  Non-zero Values[variable length]         // Only non-zero coefficients
-
-    The significance map uses 1 bit per coefficient position:
-        - Bit = 1: coefficient is non-zero, read value from Non-zero Values array
-        - Bit = 0: coefficient is zero
-
-    This format exploits the high sparsity of quantized DWT coefficients (typically
-    85-95% zeros) to achieve 15-20% compression improvement before Zstd compression.
 
     ## Legacy Format (for reference)
     int16  Y channel DWT coefficients[width * height + 4]

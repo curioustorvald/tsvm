@@ -47,6 +47,57 @@ static void postprocess_coefficients(uint8_t *compressed_data, int coeff_count, 
     }
 }
 
+// Decoder: reconstruct coefficients from concatenated significance maps
+// Layout: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+static void postprocess_coefficients_concatenated(uint8_t *compressed_data, int coeff_count,
+                                                 int16_t *output_y, int16_t *output_co, int16_t *output_cg) {
+    int map_bytes = (coeff_count + 7) / 8;
+
+    // Pointers to each section
+    uint8_t *y_map = compressed_data;
+    uint8_t *co_map = compressed_data + map_bytes;
+    uint8_t *cg_map = compressed_data + map_bytes * 2;
+
+    // Count non-zeros for each channel to find value arrays
+    int y_nonzeros = 0, co_nonzeros = 0, cg_nonzeros = 0;
+
+    for (int i = 0; i < coeff_count; i++) {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+
+        if (y_map[byte_idx] & (1 << bit_idx)) y_nonzeros++;
+        if (co_map[byte_idx] & (1 << bit_idx)) co_nonzeros++;
+        if (cg_map[byte_idx] & (1 << bit_idx)) cg_nonzeros++;
+    }
+
+    // Pointers to value arrays
+    int16_t *y_values = (int16_t *)(compressed_data + map_bytes * 3);
+    int16_t *co_values = y_values + y_nonzeros;
+    int16_t *cg_values = co_values + co_nonzeros;
+
+    // Clear outputs
+    memset(output_y, 0, coeff_count * sizeof(int16_t));
+    memset(output_co, 0, coeff_count * sizeof(int16_t));
+    memset(output_cg, 0, coeff_count * sizeof(int16_t));
+
+    // Reconstruct coefficients for each channel
+    int y_idx = 0, co_idx = 0, cg_idx = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+
+        if (y_map[byte_idx] & (1 << bit_idx)) {
+            output_y[i] = y_values[y_idx++];
+        }
+        if (co_map[byte_idx] & (1 << bit_idx)) {
+            output_co[i] = co_values[co_idx++];
+        }
+        if (cg_map[byte_idx] & (1 << bit_idx)) {
+            output_cg[i] = cg_values[cg_idx++];
+        }
+    }
+}
+
 // TAV header structure (32 bytes)
 typedef struct {
     uint8_t magic[8];
@@ -588,37 +639,25 @@ static int decode_frame(tav_decoder_t *decoder) {
         int16_t *quantized_co = malloc(coeff_count * sizeof(int16_t));
         int16_t *quantized_cg = malloc(coeff_count * sizeof(int16_t));
 
-        // Postprocess coefficients from significance map format
-        // First find where each channel's data starts by reading the preprocessing output
-        size_t y_map_bytes = (coeff_count + 7) / 8;
+        // Use concatenated maps format: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
+        postprocess_coefficients_concatenated(coeff_ptr, coeff_count, quantized_y, quantized_co, quantized_cg);
 
-        // Count non-zeros in Y significance map to find Y data size
-        int y_nonzeros = 0;
-        for (int i = 0; i < y_map_bytes; i++) {
-            uint8_t byte = coeff_ptr[i];
-            for (int bit = 0; bit < 8 && i*8+bit < coeff_count; bit++) {
-                if (byte & (1 << bit)) y_nonzeros++;
-            }
+        // Calculate total processed data size for concatenated format
+        int map_bytes = (coeff_count + 7) / 8;
+        int y_nonzeros = 0, co_nonzeros = 0, cg_nonzeros = 0;
+
+        // Count non-zeros in each channel's significance map
+        for (int i = 0; i < coeff_count; i++) {
+            int byte_idx = i / 8;
+            int bit_idx = i % 8;
+
+            if (coeff_ptr[byte_idx] & (1 << bit_idx)) y_nonzeros++;                    // Y map
+            if (coeff_ptr[map_bytes + byte_idx] & (1 << bit_idx)) co_nonzeros++;      // Co map
+            if (coeff_ptr[map_bytes * 2 + byte_idx] & (1 << bit_idx)) cg_nonzeros++; // Cg map
         }
-        size_t y_data_size = y_map_bytes + y_nonzeros * sizeof(int16_t);
 
-        // Count non-zeros in Co significance map
-        uint8_t *co_ptr = coeff_ptr + y_data_size;
-        int co_nonzeros = 0;
-        for (int i = 0; i < y_map_bytes; i++) {
-            uint8_t byte = co_ptr[i];
-            for (int bit = 0; bit < 8 && i*8+bit < coeff_count; bit++) {
-                if (byte & (1 << bit)) co_nonzeros++;
-            }
-        }
-        size_t co_data_size = y_map_bytes + co_nonzeros * sizeof(int16_t);
-
-        uint8_t *cg_ptr = co_ptr + co_data_size;
-
-        // Decompress each channel
-        postprocess_coefficients(coeff_ptr, coeff_count, quantized_y);
-        postprocess_coefficients(co_ptr, coeff_count, quantized_co);
-        postprocess_coefficients(cg_ptr, coeff_count, quantized_cg);
+        // Total size consumed: 3 maps + all non-zero values
+        size_t total_processed_size = map_bytes * 3 + (y_nonzeros + co_nonzeros + cg_nonzeros) * sizeof(int16_t);
 
         // Apply dequantization (perceptual for version 5, uniform for earlier versions)
         const int is_perceptual = (decoder->header.version == 5);
