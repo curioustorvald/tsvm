@@ -183,10 +183,10 @@ static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
 
 // Quality level to quantisation mapping for different channels
 // the values are indices to the QLUT
-static const int QUALITY_Y[] = {59, 41, 24, 11, 5, 1}; // 60, 42, 25, 12, 6, 2
+static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
 static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29}; // 240, 180, 120, 90, 60, 30
-static const int QUALITY_CG[] = {132, 119, 100, 87, 68, 37}; // 296, 224, 148, 112, 74, 38
-static const int QUALITY_ALPHA[] = {59, 41, 24, 11, 5, 1};
+static const int QUALITY_CG[] = {132, 130, 127, 122, 109, 83}; // 296, 280, 256, 236, 184, 104
+static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
 
 // psychovisual tuning parameters
 static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
@@ -407,17 +407,17 @@ static void show_usage(const char *program_name) {
         printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
     }
     printf("\n\nQuantiser Value by Quality:\n");
-    printf("  Y (Luma):    ");
+    printf("   Y - ");
     for (int i = 0; i < 6; i++) {
-        printf("%d: Q %d  \t", i, QUALITY_Y[i]);
+        printf("%d: Q %d%s(→%d) \t", i, QUALITY_Y[i], QUALITY_Y[i] < 10 ? "  " : QUALITY_Y[i] < 100 ? " " : "", QLUT[QUALITY_Y[i]]);
     }
-    printf("\n  Co (Chroma): ");
+    printf("\n  Co - ");
     for (int i = 0; i < 6; i++) {
-        printf("%d: Q %d  \t", i, QUALITY_CO[i]);
+        printf("%d: Q %d%s(→%d) \t", i, QUALITY_CO[i], QUALITY_CO[i] < 10 ? "  " : QUALITY_CO[i] < 100 ? " " : "", QLUT[QUALITY_CO[i]]);
     }
-    printf("\n  Cg (Chroma): ");
+    printf("\n  Cg - ");
     for (int i = 0; i < 6; i++) {
-        printf("%d: Q %d  \t", i, QUALITY_CG[i]);
+        printf("%d: Q %d%s(→%d) \t", i, QUALITY_CG[i], QUALITY_CG[i] < 10 ? "  " : QUALITY_CG[i] < 100 ? " " : "", QLUT[QUALITY_CG[i]]);
     }
     printf("\n\nVideo Size Keywords:");
     printf("\n  -s cif: equal to 352x288");
