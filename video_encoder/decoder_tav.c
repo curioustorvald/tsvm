@@ -21,9 +21,22 @@
 #define TAV_PACKET_SUBTITLE    0x30
 #define TAV_PACKET_SYNC        0xFF
 
+// Channel layout constants (bit-field design)
+#define CHANNEL_LAYOUT_YCOCG     0  // Y-Co-Cg (000: no alpha, has chroma, has luma)
+#define CHANNEL_LAYOUT_YCOCG_A   1  // Y-Co-Cg-A (001: has alpha, has chroma, has luma)
+#define CHANNEL_LAYOUT_Y_ONLY    2  // Y only (010: no alpha, no chroma, has luma)
+#define CHANNEL_LAYOUT_Y_A       3  // Y-A (011: has alpha, no chroma, has luma)
+#define CHANNEL_LAYOUT_COCG      4  // Co-Cg (100: no alpha, has chroma, no luma)
+#define CHANNEL_LAYOUT_COCG_A    5  // Co-Cg-A (101: has alpha, has chroma, no luma)
+
 // Utility macros
 static inline int CLAMP(int x, int min, int max) {
     return x < min ? min : (x > max ? max : x);
+}
+
+// Helper function to check if alpha channel is needed for given channel layout
+static inline int needs_alpha_channel(int channel_layout) {
+    return (channel_layout & 1) != 0; // bit 0: 1 means has alpha
 }
 
 // Decoder: reconstruct coefficients from significance map
@@ -137,8 +150,9 @@ typedef struct {
 } tav_decoder_t;
 
 // TAV Perceptual quantization constants (must match Kotlin decoder exactly)
-static const float ANISOTROPY_MULT[] = {1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
-static const float ANISOTROPY_BIAS[] = {0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,66,68,70,72,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104,106,108,110,112,114,116,118,120,122,124,126,128,132,136,140,144,148,152,156,160,164,168,172,176,180,184,188,192,196,200,204,208,212,216,220,224,228,232,236,240,244,248,252,256,264,272,280,288,296,304,312,320,328,336,344,352,360,368,376,384,392,400,408,416,424,432,440,448,456,464,472,480,488,496,504,512,528,544,560,576,592,608,624,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1056,1088,1120,1152,1184,1216,1248,1280,1312,1344,1376,1408,1440,1472,1504,1536,1568,1600,1632,1664,1696,1728,1760,1792,1824,1856,1888,1920,1952,1984,2016,2048,2112,2176,2240,2304,2368,2432,2496,2560,2624,2688,2752,2816,2880,2944,3008,3072,3136,3200,3264,3328,3392,3456,3520,3584,3648,3712,3776,3840,3904,3968,4032,4096};
+static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
+static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f};
 static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f};
 static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f};
 static const float FOUR_PIXEL_DETAILER = 0.88f;
@@ -623,9 +637,9 @@ static int decode_frame(tav_decoder_t *decoder) {
     uint8_t qco_override = *ptr++;
     uint8_t qcg_override = *ptr++;
 
-    int qy = qy_override ? qy_override : decoder->header.quantiser_y;
-    int qco = qco_override ? qco_override : decoder->header.quantiser_co;
-    int qcg = qcg_override ? qcg_override : decoder->header.quantiser_cg;
+    int qy = QLUT[qy_override ? qy_override : decoder->header.quantiser_y];
+    int qco = QLUT[qco_override ? qco_override : decoder->header.quantiser_co];
+    int qcg = QLUT[qcg_override ? qcg_override : decoder->header.quantiser_cg];
 
     if (mode == TAV_MODE_SKIP) {
         // Copy from reference frame

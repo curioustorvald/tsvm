@@ -89,6 +89,12 @@ static const channel_layout_config_t channel_layouts[] = {
     {CHANNEL_LAYOUT_COCG_A,  3, {NULL, "Co", "Cg", "A"}, 0, 1, 1, 1}    // 5: Co-Cg-A
 };
 
+// Helper function to check if alpha channel is needed for given channel layout
+static int needs_alpha_channel(int channel_layout) {
+    if (channel_layout < 0 || channel_layout >= 6) return 0;
+    return channel_layouts[channel_layout].has_alpha;
+}
+
 // Default settings
 #define DEFAULT_WIDTH 560
 #define DEFAULT_HEIGHT 448
@@ -173,13 +179,14 @@ static int validate_mp2_bitrate(int bitrate) {
     return 0;  // Invalid bitrate
 }
 
+static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,66,68,70,72,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104,106,108,110,112,114,116,118,120,122,124,126,128,132,136,140,144,148,152,156,160,164,168,172,176,180,184,188,192,196,200,204,208,212,216,220,224,228,232,236,240,244,248,252,256,264,272,280,288,296,304,312,320,328,336,344,352,360,368,376,384,392,400,408,416,424,432,440,448,456,464,472,480,488,496,504,512,528,544,560,576,592,608,624,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1056,1088,1120,1152,1184,1216,1248,1280,1312,1344,1376,1408,1440,1472,1504,1536,1568,1600,1632,1664,1696,1728,1760,1792,1824,1856,1888,1920,1952,1984,2016,2048,2112,2176,2240,2304,2368,2432,2496,2560,2624,2688,2752,2816,2880,2944,3008,3072,3136,3200,3264,3328,3392,3456,3520,3584,3648,3712,3776,3840,3904,3968,4032,4096};
+
 // Quality level to quantisation mapping for different channels
-static const int QUALITY_Y[] = {60, 42, 25, 12, 6, 2};
-static const int QUALITY_CO[] = {120, 90, 60, 30, 15, 3};
-static const int QUALITY_CG[] = {240, 180, 120, 60, 30, 5};
-//static const int QUALITY_Y[] =  { 25, 12,  6,   3,  2, 1};
-//static const int QUALITY_CO[] =  {60, 30, 15,  7,  5, 2};
-//static const int QUALITY_CG[] = {120, 60, 30, 15, 10, 4};
+// the values are indices to the QLUT
+static const int QUALITY_Y[] = {59, 41, 24, 11, 5, 1}; // 60, 42, 25, 12, 6, 2
+static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29}; // 240, 180, 120, 90, 60, 30
+static const int QUALITY_CG[] = {132, 119, 100, 87, 68, 37}; // 296, 224, 148, 112, 74, 38
+static const int QUALITY_ALPHA[] = {59, 41, 24, 11, 5, 1};
 
 // psychovisual tuning parameters
 static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
@@ -256,7 +263,7 @@ typedef struct {
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
     int frame_buffer_index;     // 0 or 1, indicates which set is "current"
-    float *current_frame_y, *current_frame_co, *current_frame_cg;
+    float *current_frame_y, *current_frame_co, *current_frame_cg, *current_frame_alpha;
 
     // Convenience pointers (updated each frame to point to current ping-pong buffers)
     uint8_t *current_frame_rgb;
@@ -290,11 +297,13 @@ typedef struct {
     int16_t *reusable_quantised_y;
     int16_t *reusable_quantised_co;
     int16_t *reusable_quantised_cg;
-    
+    int16_t *reusable_quantised_alpha;
+
     // Coefficient delta storage for P-frames (previous frame's coefficients)
-    float *previous_coeffs_y;   // Previous frame Y coefficients for all tiles
-    float *previous_coeffs_co;  // Previous frame Co coefficients for all tiles
-    float *previous_coeffs_cg;  // Previous frame Cg coefficients for all tiles
+    float *previous_coeffs_y;      // Previous frame Y coefficients for all tiles
+    float *previous_coeffs_co;     // Previous frame Co coefficients for all tiles
+    float *previous_coeffs_cg;     // Previous frame Cg coefficients for all tiles
+    float *previous_coeffs_alpha;  // Previous frame Alpha coefficients for all tiles
     int previous_coeffs_allocated; // Flag to track allocation
 
     // Statistics
@@ -489,6 +498,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->current_frame_y = malloc(frame_size * sizeof(float));
     enc->current_frame_co = malloc(frame_size * sizeof(float));
     enc->current_frame_cg = malloc(frame_size * sizeof(float));
+    enc->current_frame_alpha = malloc(frame_size * sizeof(float));
 
     // Allocate tile structures
     enc->tiles = malloc(num_tiles * sizeof(dwt_tile_t));
@@ -517,19 +527,21 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->reusable_quantised_y = malloc(coeff_count_per_tile * sizeof(int16_t));
     enc->reusable_quantised_co = malloc(coeff_count_per_tile * sizeof(int16_t));
     enc->reusable_quantised_cg = malloc(coeff_count_per_tile * sizeof(int16_t));
+    enc->reusable_quantised_alpha = malloc(coeff_count_per_tile * sizeof(int16_t));
 
     // Allocate coefficient delta storage for P-frames (per-tile coefficient storage)
     size_t total_coeff_size = num_tiles * coeff_count_per_tile * sizeof(float);
     enc->previous_coeffs_y = malloc(total_coeff_size);
     enc->previous_coeffs_co = malloc(total_coeff_size);
     enc->previous_coeffs_cg = malloc(total_coeff_size);
+    enc->previous_coeffs_alpha = malloc(total_coeff_size);
     enc->previous_coeffs_allocated = 0; // Will be set to 1 after first I-frame
 
     if (!enc->frame_rgb[0] || !enc->frame_rgb[1] ||
-        !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg ||
+        !enc->current_frame_y || !enc->current_frame_co || !enc->current_frame_cg || !enc->current_frame_alpha ||
         !enc->tiles || !enc->zstd_ctx || !enc->compressed_buffer ||
-        !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg ||
-        !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg) {
+        !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg || !enc->reusable_quantised_alpha ||
+        !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg || !enc->previous_coeffs_alpha) {
         return -1;
     }
 
@@ -1360,9 +1372,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     buffer[offset++] = 0; // qCo override
     buffer[offset++] = 0; // qCg override
     // technically, putting this in here would create three redundant copies of the same value, but it's much easier to code this way :v
-    int this_frame_qY = enc->quantiser_y;
-    int this_frame_qCo = enc->quantiser_co;
-    int this_frame_qCg = enc->quantiser_cg;
+    int this_frame_qY =  QLUT[enc->quantiser_y];
+    int this_frame_qCo = QLUT[enc->quantiser_co];
+    int this_frame_qCg = QLUT[enc->quantiser_cg];
 
     if (mode == TAV_MODE_SKIP) {
         // No coefficient data for SKIP/MOTION modes
@@ -1377,6 +1389,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
+    int16_t *quantised_alpha = enc->reusable_quantised_alpha;
 
     // Debug: check DWT coefficients before quantisation
     /*if (tile_x == 0 && tile_y == 0) {
@@ -1878,6 +1891,36 @@ static void rgb_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgb,
     } else {
         // Use existing YCoCg function
         rgb_to_ycocg(rgb, c1, c2, c3, width, height);
+    }
+}
+
+// RGBA to colour space conversion for full frames with alpha channel
+static void rgba_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgba,
+                                     float *c1, float *c2, float *c3, float *alpha,
+                                     int width, int height) {
+    const int total_pixels = width * height;
+
+    if (enc->ictcp_mode) {
+        // ICtCp mode with alpha
+        for (int i = 0; i < total_pixels; i++) {
+            double I, Ct, Cp;
+            srgb8_to_ictcp_hlg(rgba[i*4], rgba[i*4+1], rgba[i*4+2], &I, &Ct, &Cp);
+            c1[i] = (float)I;
+            c2[i] = (float)Ct;
+            c3[i] = (float)Cp;
+            alpha[i] = (float)rgba[i*4+3] / 255.0f; // Normalize alpha to [0,1]
+        }
+    } else {
+        // YCoCg mode with alpha - extract RGB first, then convert
+        uint8_t *temp_rgb = malloc(total_pixels * 3);
+        for (int i = 0; i < total_pixels; i++) {
+            temp_rgb[i*3] = rgba[i*4];     // R
+            temp_rgb[i*3+1] = rgba[i*4+1]; // G
+            temp_rgb[i*3+2] = rgba[i*4+2]; // B
+            alpha[i] = (float)rgba[i*4+3] / 255.0f; // Normalize alpha to [0,1]
+        }
+        rgb_to_ycocg(temp_rgb, c1, c2, c3, width, height);
+        free(temp_rgb);
     }
 }
 
@@ -2917,9 +2960,9 @@ int main(int argc, char *argv[]) {
                     cleanup_encoder(enc);
                     return 1;
                 }
-                enc->quantiser_y = CLAMP(enc->quantiser_y, 1, 255);
-                enc->quantiser_co = CLAMP(enc->quantiser_co, 1, 255);
-                enc->quantiser_cg = CLAMP(enc->quantiser_cg, 1, 255);
+                enc->quantiser_y = CLAMP(enc->quantiser_y, 0, 255);
+                enc->quantiser_co = CLAMP(enc->quantiser_co, 0, 255);
+                enc->quantiser_cg = CLAMP(enc->quantiser_cg, 0, 255);
                 break;
             case 'w':
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 255);
@@ -3051,9 +3094,9 @@ int main(int argc, char *argv[]) {
     printf("Colour space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
     printf("Quantisation: %s\n", enc->perceptual_tuning ? "Perceptual (HVS-optimised)" : "Uniform (legacy)");
     if (enc->ictcp_mode) {
-        printf("Base quantiser: I=%d, Ct=%d, Cp=%d\n", enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg);
+        printf("Base quantiser: I=%d, Ct=%d, Cp=%d\n", QLUT[enc->quantiser_y], QLUT[enc->quantiser_co], QLUT[enc->quantiser_cg]);
     } else {
-        printf("Base quantiser: Y=%d, Co=%d, Cg=%d\n", enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg);
+        printf("Base quantiser: Y=%d, Co=%d, Cg=%d\n", QLUT[enc->quantiser_y], QLUT[enc->quantiser_co], QLUT[enc->quantiser_cg]);
     }
     if (enc->perceptual_tuning) {
         printf("Perceptual tuning enabled\n");
@@ -3357,6 +3400,10 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->subtitle_file);
     free(enc->frame_rgb[0]);
     free(enc->frame_rgb[1]);
+    free(enc->current_frame_y);
+    free(enc->current_frame_co);
+    free(enc->current_frame_cg);
+    free(enc->current_frame_alpha);
     free(enc->tiles);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
@@ -3365,11 +3412,13 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->reusable_quantised_y);
     free(enc->reusable_quantised_co);
     free(enc->reusable_quantised_cg);
+    free(enc->reusable_quantised_alpha);
 
     // Free coefficient delta storage
     free(enc->previous_coeffs_y);
     free(enc->previous_coeffs_co);
     free(enc->previous_coeffs_cg);
+    free(enc->previous_coeffs_alpha);
     
     // Free subtitle list
     if (enc->subtitles) {

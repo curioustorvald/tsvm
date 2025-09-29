@@ -906,9 +906,9 @@ transmission capability, and region-of-interest coding.
             - 16 = DD-4 (Four-point interpolating Deslauriers-Dubuc; experimental)
             - 255 = Haar (demonstration purpose only)
     uint8  Decomposition Levels: number of DWT levels (1-6+)
-    uint8  Quantiser Index for Y channel (1: lossless, 255: potato)
-    uint8  Quantiser Index for Co channel (1: lossless, 255: potato)
-    uint8  Quantiser Index for Cg channel (1: lossless, 255: potato)
+    uint8  Quantiser Index for Y channel (uses exponential numeric system; 0: lossless, 255: potato)
+    uint8  Quantiser Index for Co channel (uses exponential numeric system; 0: lossless, 255: potato)
+    uint8  Quantiser Index for Cg channel (uses exponential numeric system; 0: lossless, 255: potato)
     uint8  Extra Feature Flags (must be ignored for still images)
             - bit 0 = has audio
             - bit 1 = has subtitle
@@ -976,9 +976,9 @@ transmission capability, and region-of-interest coding.
             0x00 = SKIP (copy from previous frame)
             0x01 = INTRA (DWT-coded)
             0x02 = DELTA (DWT delta)
-    uint8  Quantiser override Y  (use 0 to disable overriding; shared with A channel)
-    uint8  Quantiser override Co (use 0 to disable overriding)
-    uint8  Quantiser override Cg (use 0 to disable overriding)
+    uint8  Quantiser override Y  (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding; shared with A channel)
+    uint8  Quantiser override Co (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
+    uint8  Quantiser override Cg (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
     - note: quantiser overrides are always present regardless of the channel layout
     ## Coefficient Storage Format (Significance Map Compression)
 
@@ -1081,7 +1081,7 @@ TAV supports two colour spaces:
 Perceptual versions (5-6) apply HVS-optimized quantization weights per channel,
 while uniform versions (3-4) use consistent quantization across all subbands.
 
-When Alpha channel is stored, they must be sRGB nonlinearised before DWT and quantisation.
+The encoder expects linear alpha.
 
 ## Compression Features
 - Single DWT tiles vs 16x16 DCT blocks in TEV
@@ -1112,6 +1112,269 @@ Uses same Simple Subtitle Format (SSF) as TEV for text overlay functionality.
 
 ## NTSC Framerate handling
 Unlike the TEV format, TAV encoder emits extra sync packet for every 1000th frames. Decoder can just play the video without any special treatment.
+
+## Exponential Numeric System
+This system maps [0..255] to [1..4096]
+
+Number|Index
+------+-----
+1|0
+2|1
+3|2
+4|3
+5|4
+6|5
+7|6
+8|7
+9|8
+10|9
+11|10
+12|11
+13|12
+14|13
+15|14
+16|15
+17|16
+18|17
+19|18
+20|19
+21|20
+22|21
+23|22
+24|23
+25|24
+26|25
+27|26
+28|27
+29|28
+30|29
+31|30
+32|31
+33|32
+34|33
+35|34
+36|35
+37|36
+38|37
+39|38
+40|39
+41|40
+42|41
+43|42
+44|43
+45|44
+46|45
+47|46
+48|47
+49|48
+50|49
+51|50
+52|51
+53|52
+54|53
+55|54
+56|55
+57|56
+58|57
+59|58
+60|59
+61|60
+62|61
+63|62
+64|63
+66|64
+68|65
+70|66
+72|67
+74|68
+76|69
+78|70
+80|71
+82|72
+84|73
+86|74
+88|75
+90|76
+92|77
+94|78
+96|79
+98|80
+100|81
+102|82
+104|83
+106|84
+108|85
+110|86
+112|87
+114|88
+116|89
+118|90
+120|91
+122|92
+124|93
+126|94
+128|95
+132|96
+136|97
+140|98
+144|99
+148|100
+152|101
+156|102
+160|103
+164|104
+168|105
+172|106
+176|107
+180|108
+184|109
+188|110
+192|111
+196|112
+200|113
+204|114
+208|115
+212|116
+216|117
+220|118
+224|119
+228|120
+232|121
+236|122
+240|123
+244|124
+248|125
+252|126
+256|127
+264|128
+272|129
+280|130
+288|131
+296|132
+304|133
+312|134
+320|135
+328|136
+336|137
+344|138
+352|139
+360|140
+368|141
+376|142
+384|143
+392|144
+400|145
+408|146
+416|147
+424|148
+432|149
+440|150
+448|151
+456|152
+464|153
+472|154
+480|155
+488|156
+496|157
+504|158
+512|159
+528|160
+544|161
+560|162
+576|163
+592|164
+608|165
+624|166
+640|167
+656|168
+672|169
+688|170
+704|171
+720|172
+736|173
+752|174
+768|175
+784|176
+800|177
+816|178
+832|179
+848|180
+864|181
+880|182
+896|183
+912|184
+928|185
+944|186
+960|187
+976|188
+992|189
+1008|190
+1024|191
+1056|192
+1088|193
+1120|194
+1152|195
+1184|196
+1216|197
+1248|198
+1280|199
+1312|200
+1344|201
+1376|202
+1408|203
+1440|204
+1472|205
+1504|206
+1536|207
+1568|208
+1600|209
+1632|210
+1664|211
+1696|212
+1728|213
+1760|214
+1792|215
+1824|216
+1856|217
+1888|218
+1920|219
+1952|220
+1984|221
+2016|222
+2048|223
+2112|224
+2176|225
+2240|226
+2304|227
+2368|228
+2432|229
+2496|230
+2560|231
+2624|232
+2688|233
+2752|234
+2816|235
+2880|236
+2944|237
+3008|238
+3072|239
+3136|240
+3200|241
+3264|242
+3328|243
+3392|244
+3456|245
+3520|246
+3584|247
+3648|248
+3712|249
+3776|250
+3840|251
+3904|252
+3968|253
+4032|254
+4096|255
+
 
 --------------------------------------------------------------------------------
 

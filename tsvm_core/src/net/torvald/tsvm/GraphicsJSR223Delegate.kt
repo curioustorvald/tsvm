@@ -4298,6 +4298,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private val tavDebugFrameTarget = -1 // use negative number to disable the debug print
     private var tavDebugCurrentFrameNumber = 0
+    private val TAV_QLUT = intArrayOf(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,66,68,70,72,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104,106,108,110,112,114,116,118,120,122,124,126,128,132,136,140,144,148,152,156,160,164,168,172,176,180,184,188,192,196,200,204,208,212,216,220,224,228,232,236,240,244,248,252,256,264,272,280,288,296,304,312,320,328,336,344,352,360,368,376,384,392,400,408,416,424,432,440,448,456,464,472,480,488,496,504,512,528,544,560,576,592,608,624,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1056,1088,1120,1152,1184,1216,1248,1280,1312,1344,1376,1408,1440,1472,1504,1536,1568,1600,1632,1664,1696,1728,1760,1792,1824,1856,1888,1920,1952,1984,2016,2048,2112,2176,2240,2304,2368,2432,2496,2560,2624,2688,2752,2816,2880,2944,3008,3072,3136,3200,3264,3328,3392,3456,3520,3584,3648,3712,3776,3840,3904,3968,4032,4096)
 
     // New tavDecode function that accepts compressed data and decompresses internally
     fun tavDecodeCompressed(compressedDataPtr: Long, compressedSize: Int, currentRGBAddr: Long, prevRGBAddr: Long,
@@ -4375,11 +4376,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (tileY in 0 until tilesY) {
                 for (tileX in 0 until tilesX) {
                     
-                    // Read tile header (9 bytes: mode + mvX + mvY + rcf)
+                    // Read tile header (4 bytes: mode + qY + qCo + qCg)
                     val mode = vm.peek(readPtr++).toUint()
-                    val qY = vm.peek(readPtr++).toUint().let { if (it == 0) qYGlobal else it }
-                    val qCo = vm.peek(readPtr++).toUint().let { if (it == 0) qCoGlobal else it }
-                    val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else it }
+                    val qY = vm.peek(readPtr++).toUint().let { if (it == 0) qYGlobal else TAV_QLUT[it - 1] }
+                    val qCo = vm.peek(readPtr++).toUint().let { if (it == 0) qCoGlobal else TAV_QLUT[it - 1] }
+                    val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else TAV_QLUT[it - 1] }
 
                     // debug print: raw decompressed bytes
                     /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
@@ -4428,10 +4429,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         var ptr = readPtr
 
-        // Read quantised DWT coefficients for Y, Co, Cg channels
+        // Read quantised DWT coefficients for Y, Co, Cg, and Alpha channels
         val quantisedY = ShortArray(coeffCount)
         val quantisedCo = ShortArray(coeffCount)
         val quantisedCg = ShortArray(coeffCount)
+        val quantisedAlpha = ShortArray(coeffCount)
 
         // First, we need to determine the size of compressed data for each channel
         // Read a large buffer to work with significance map format
@@ -4471,7 +4473,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Use variable channel layout concatenated maps format
-        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, quantisedY, quantisedCo, quantisedCg, null)
+        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, quantisedY, quantisedCo, quantisedCg, quantisedAlpha)
 
         // Calculate total size for variable channel layout format
         val numChannels = when (channelLayout) {
@@ -4671,12 +4673,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         if (isLossless) {
             tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
         } else {
             tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
         }
 
         // Debug: Check coefficient values after inverse DWT
@@ -4706,6 +4708,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val finalYTile: FloatArray
         val finalCoTile: FloatArray
         val finalCgTile: FloatArray
+        val finalAlphaTile: FloatArray
 
         if (isMonoblock) {
             // Monoblock mode: use full frame data directly (no padding to extract)
@@ -5080,6 +5083,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val deltaY = ShortArray(coeffCount)
         val deltaCo = ShortArray(coeffCount)
         val deltaCg = ShortArray(coeffCount)
+        val deltaAlpha = ShortArray(coeffCount)
 
         // Read using significance map format for deltas too
         val maxPossibleSize = coeffCount * 3 * 2 + (coeffCount + 7) / 8 * 3  // Worst case
@@ -5117,7 +5121,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Use variable channel layout concatenated maps format for deltas
-        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, deltaY, deltaCo, deltaCg, null)
+        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, deltaY, deltaCo, deltaCg, deltaAlpha)
 
         // Calculate total size for variable channel layout format (deltas)
         val numChannels = when (channelLayout) {
@@ -5178,12 +5182,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         if (isLossless) {
             tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
         } else {
             tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
-            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
         }
 
         // Debug: Check coefficient values after inverse DWT
@@ -5213,6 +5217,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val finalYTile: FloatArray
         val finalCoTile: FloatArray
         val finalCgTile: FloatArray
+        val finalAlphaTile: FloatArray
 
         if (isMonoblock) {
             // Monoblock mode: use full frame data directly (no padding to extract)
@@ -5316,6 +5321,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 else -> 1f
             }
         }
+    }
+
+    private object TavNullFilter : TavWaveletFilter {
+        override fun getCoeffMultiplier(level: Int): Float = 1.0f
     }
 
     private fun tavApplyDWTInverseMultiLevel(data: FloatArray, width: Int, height: Int, levels: Int, filterType: Int, sharpenFilter: TavWaveletFilter) {
