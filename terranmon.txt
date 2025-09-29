@@ -938,7 +938,14 @@ transmission capability, and region-of-interest coding.
 ## Packet Types
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (delta-coded frame)
-    0x1F: prohibited
+    0x12/13: Video channel 2 I/P-frame
+    0x14/15: Video channel 3 I/P-frame
+    0x16/17: Video channel 4 I/P-frame
+    0x18/19: Video channel 5 I/P-frame
+    0x1A/1B: Video channel 6 I/P-frame
+    0x1C/1D: Video channel 7 I/P-frame
+    0x1E: Video channel 8 I-frame
+    0x1F: (prohibited)
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
     0x31: Subtitle in "Karaoke" format
