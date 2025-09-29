@@ -41,6 +41,7 @@
 #define TAV_PACKET_PFRAME      0x11  // Predicted frame  
 #define TAV_PACKET_AUDIO_MP2   0x20  // MP2 audio
 #define TAV_PACKET_SUBTITLE    0x30  // Subtitle packet
+#define TAV_PACKET_SYNC_NTSC   0xFE  // NTSC Sync packet
 #define TAV_PACKET_SYNC        0xFF  // Sync packet
 
 // DWT settings
@@ -61,6 +62,32 @@
 #define WAVELET_BIORTHOGONAL_13_7 2  // Biorthogonal 13/7 wavelet
 #define WAVELET_DD4 16  // Four-point interpolating Deslauriers-Dubuc (DD-4)
 #define WAVELET_HAAR 255  // Haar wavelet (simplest wavelet transform)
+
+// Channel layout definitions (bit-field design)
+// Bit 0: has alpha, Bit 1: has chroma (inverted), Bit 2: has luma (inverted)
+#define CHANNEL_LAYOUT_YCOCG     0  // Y-Co-Cg/I-Ct-Cp (000: no alpha, has chroma, has luma)
+#define CHANNEL_LAYOUT_YCOCG_A   1  // Y-Co-Cg-A/I-Ct-Cp-A (001: has alpha, has chroma, has luma)
+#define CHANNEL_LAYOUT_Y_ONLY    2  // Y/I only (010: no alpha, no chroma, has luma)
+#define CHANNEL_LAYOUT_Y_A       3  // Y-A/I-A (011: has alpha, no chroma, has luma)
+#define CHANNEL_LAYOUT_COCG      4  // Co-Cg/Ct-Cp (100: no alpha, has chroma, no luma)
+#define CHANNEL_LAYOUT_COCG_A    5  // Co-Cg-A/Ct-Cp-A (101: has alpha, has chroma, no luma)
+
+// Channel layout configuration structure
+typedef struct {
+    int layout_id;
+    int num_channels;
+    const char* channels[4];  // channel names for display
+    int has_y, has_co, has_cg, has_alpha;
+} channel_layout_config_t;
+
+static const channel_layout_config_t channel_layouts[] = {
+    {CHANNEL_LAYOUT_YCOCG,   3, {"Y",  "Co", "Cg", NULL}, 1, 1, 1, 0},  // 0: Y-Co-Cg
+    {CHANNEL_LAYOUT_YCOCG_A, 4, {"Y",  "Co", "Cg", "A"}, 1, 1, 1, 1},   // 1: Y-Co-Cg-A
+    {CHANNEL_LAYOUT_Y_ONLY,  1, {"Y",  NULL, NULL, NULL}, 1, 0, 0, 0},  // 2: Y only
+    {CHANNEL_LAYOUT_Y_A,     2, {"Y",  NULL, NULL, "A"}, 1, 0, 0, 1},   // 3: Y-A
+    {CHANNEL_LAYOUT_COCG,    2, {NULL, "Co", "Cg", NULL}, 0, 1, 1, 0},  // 4: Co-Cg
+    {CHANNEL_LAYOUT_COCG_A,  3, {NULL, "Co", "Cg", "A"}, 0, 1, 1, 1}    // 5: Co-Cg-A
+};
 
 // Default settings
 #define DEFAULT_WIDTH 560
@@ -224,6 +251,7 @@ typedef struct {
     int intra_only;       // Force all tiles to use INTRA mode (disable delta encoding)
     int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
     int perceptual_tuning; // 1 = perceptual quantisation (default), 0 = uniform quantisation
+    int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
     
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -352,6 +380,7 @@ static void show_usage(const char *program_name) {
     printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 1-255 for each channel (1: lossless, 255: potato)\n");
     printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible, 2=DD-4 (default: 1)\n");
 //    printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
+    printf("  -c, --channel-layout N  Channel layout: 0=Y-Co-Cg, 1=Y-Co-Cg-A, 2=Y-only, 3=Y-A, 4=Co-Cg, 5=Co-Cg-A (default: 0)\n");
     printf("  --arate N               MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
@@ -420,6 +449,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
+    enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
 
@@ -1041,6 +1071,74 @@ static size_t preprocess_coefficients_concatenated(int16_t *coeffs_y, int16_t *c
     return map_bytes * 3 + (nonzero_y + nonzero_co + nonzero_cg) * sizeof(int16_t);
 }
 
+// Variable channel layout preprocessing for concatenated maps
+static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                                     int coeff_count, int channel_layout, uint8_t *output_buffer) {
+    const channel_layout_config_t *config = &channel_layouts[channel_layout];
+    int map_bytes = (coeff_count + 7) / 8;
+    int total_maps = config->num_channels;
+
+    // Count non-zeros per active channel
+    int nonzero_counts[4] = {0}; // Y, Co, Cg, Alpha
+    for (int i = 0; i < coeff_count; i++) {
+        if (config->has_y && coeffs_y && coeffs_y[i] != 0) nonzero_counts[0]++;
+        if (config->has_co && coeffs_co && coeffs_co[i] != 0) nonzero_counts[1]++;
+        if (config->has_cg && coeffs_cg && coeffs_cg[i] != 0) nonzero_counts[2]++;
+        if (config->has_alpha && coeffs_alpha && coeffs_alpha[i] != 0) nonzero_counts[3]++;
+    }
+
+    // Layout maps in order based on channel layout
+    uint8_t *maps[4];
+    int map_idx = 0;
+    if (config->has_y) maps[0] = output_buffer + map_bytes * map_idx++;
+    if (config->has_co) maps[1] = output_buffer + map_bytes * map_idx++;
+    if (config->has_cg) maps[2] = output_buffer + map_bytes * map_idx++;
+    if (config->has_alpha) maps[3] = output_buffer + map_bytes * map_idx++;
+
+    // Calculate value array positions
+    int16_t *values[4];
+    int16_t *value_start = (int16_t *)(output_buffer + map_bytes * total_maps);
+    int value_offset = 0;
+    if (config->has_y) { values[0] = value_start + value_offset; value_offset += nonzero_counts[0]; }
+    if (config->has_co) { values[1] = value_start + value_offset; value_offset += nonzero_counts[1]; }
+    if (config->has_cg) { values[2] = value_start + value_offset; value_offset += nonzero_counts[2]; }
+    if (config->has_alpha) { values[3] = value_start + value_offset; value_offset += nonzero_counts[3]; }
+
+    // Clear significance maps
+    memset(output_buffer, 0, map_bytes * total_maps);
+
+    // Fill significance maps and extract values
+    int value_indices[4] = {0};
+    for (int i = 0; i < coeff_count; i++) {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+
+        if (config->has_y && coeffs_y && coeffs_y[i] != 0) {
+            maps[0][byte_idx] |= (1 << bit_idx);
+            values[0][value_indices[0]++] = coeffs_y[i];
+        }
+
+        if (config->has_co && coeffs_co && coeffs_co[i] != 0) {
+            maps[1][byte_idx] |= (1 << bit_idx);
+            values[1][value_indices[1]++] = coeffs_co[i];
+        }
+
+        if (config->has_cg && coeffs_cg && coeffs_cg[i] != 0) {
+            maps[2][byte_idx] |= (1 << bit_idx);
+            values[2][value_indices[2]++] = coeffs_cg[i];
+        }
+
+        if (config->has_alpha && coeffs_alpha && coeffs_alpha[i] != 0) {
+            maps[3][byte_idx] |= (1 << bit_idx);
+            values[3][value_indices[3]++] = coeffs_alpha[i];
+        }
+    }
+
+    // Return total size: maps + all non-zero values
+    int total_nonzeros = nonzero_counts[0] + nonzero_counts[1] + nonzero_counts[2] + nonzero_counts[3];
+    return map_bytes * total_maps + total_nonzeros * sizeof(int16_t);
+}
+
 // Quantisation for DWT subbands with rate control
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
     float effective_q = quantiser;
@@ -1362,9 +1460,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         printf("\n");
     }*/
 
-    // Preprocess and write quantised coefficients using concatenated significance maps for optimal compression
-    size_t total_compressed_size = preprocess_coefficients_concatenated(quantised_y, quantised_co, quantised_cg,
-                                                                        tile_size, buffer + offset);
+    // Preprocess and write quantised coefficients using variable channel layout concatenated significance maps
+    size_t total_compressed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg, NULL,
+                                                                          tile_size, enc->channel_layout, buffer + offset);
     offset += total_compressed_size;
 
     // DEBUG: Dump raw DWT coefficients for frame ~60 when it's an intra-frame
@@ -1831,9 +1929,10 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(video_flags, enc->output_fp);
 
     fputc(enc->quality_level+1, enc->output_fp);
+    fputc(enc->channel_layout, enc->output_fp);
 
-    // Reserved bytes (6 bytes)
-    for (int i = 0; i < 6; i++) {
+    // Reserved bytes (5 bytes - one used for channel layout)
+    for (int i = 0; i < 5; i++) {
         fputc(0, enc->output_fp);
     }
 
@@ -2773,6 +2872,7 @@ int main(int argc, char *argv[]) {
         {"quantiser", required_argument, 0, 'Q'},
         {"quantiser", required_argument, 0, 'Q'},
         {"wavelet", required_argument, 0, 'w'},
+        {"channel-layout", required_argument, 0, 'c'},
         {"bitrate", required_argument, 0, 'b'},
         {"arate", required_argument, 0, 1400},
         {"subtitle", required_argument, 0, 'S'},
@@ -2789,7 +2889,7 @@ int main(int argc, char *argv[]) {
     };
 
     int c, option_index = 0;
-    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:w:d:b:pS:vt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:w:c:d:b:pS:vt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -2824,6 +2924,21 @@ int main(int argc, char *argv[]) {
             case 'w':
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 255);
                 break;
+            case 'c': {
+                int layout = atoi(optarg);
+                if (layout < 0 || layout > 5) {
+                    fprintf(stderr, "Error: Invalid channel layout %d. Valid range: 0-5\n", layout);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                enc->channel_layout = layout;
+                if (enc->verbose) {
+                    printf("Channel layout set to %d (%s)\n", enc->channel_layout,
+                           channel_layouts[enc->channel_layout].channels[0] ?
+                           channel_layouts[enc->channel_layout].channels[0] : "unknown");
+                }
+                break;
+            }
             case 'f':
                 enc->output_fps = atoi(optarg);
                 if (enc->output_fps <= 0) {
@@ -3160,7 +3275,8 @@ int main(int argc, char *argv[]) {
                 process_audio(enc, true_frame_count, enc->output_fp);
                 process_subtitles(enc, true_frame_count, enc->output_fp);
 
-                fwrite(&sync_packet, 1, 1, enc->output_fp);
+                uint8_t sync_packet_ntsc = TAV_PACKET_SYNC_NTSC;
+                fwrite(&sync_packet_ntsc, 1, 1, enc->output_fp);
                 printf("Frame %d: NTSC duplication - extra sync packet emitted with audio/subtitle sync\n", frame_count);
             }
 

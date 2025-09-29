@@ -3943,70 +3943,110 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // Postprocess coefficients from concatenated significance maps format (current - optimal)
-    private fun postprocessCoefficientsConcatenated(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int,
-                                                   outputY: ShortArray, outputCo: ShortArray, outputCg: ShortArray) {
+    // Channel layout constants (bit-field design)
+    companion object {
+        const val CHANNEL_LAYOUT_YCOCG = 0     // Y-Co-Cg (000: no alpha, has chroma, has luma)
+        const val CHANNEL_LAYOUT_YCOCG_A = 1   // Y-Co-Cg-A (001: has alpha, has chroma, has luma)
+        const val CHANNEL_LAYOUT_Y_ONLY = 2    // Y only (010: no alpha, no chroma, has luma)
+        const val CHANNEL_LAYOUT_Y_A = 3       // Y-A (011: has alpha, no chroma, has luma)
+        const val CHANNEL_LAYOUT_COCG = 4      // Co-Cg (100: no alpha, has chroma, no luma)
+        const val CHANNEL_LAYOUT_COCG_A = 5    // Co-Cg-A (101: has alpha, has chroma, no luma)
+    }
+
+    // Variable channel layout postprocessing for concatenated maps
+    private fun postprocessCoefficientsVariableLayout(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int,
+                                                     channelLayout: Int, outputY: ShortArray?, outputCo: ShortArray?,
+                                                     outputCg: ShortArray?, outputAlpha: ShortArray?) {
         val mapBytes = (coeffCount + 7) / 8
 
+        // Determine active channels based on layout (bit-field design)
+        val hasY = channelLayout and 4 == 0      // bit 2 inverted: 0 means has luma
+        val hasCo = channelLayout and 2 == 0     // bit 1 inverted: 0 means has chroma
+        val hasCg = channelLayout and 2 == 0     // bit 1 inverted: 0 means has chroma (same as Co)
+        val hasAlpha = channelLayout and 1 != 0  // bit 0: 1 means has alpha
+
         // Clear output arrays
-        outputY.fill(0)
-        outputCo.fill(0)
-        outputCg.fill(0)
+        outputY?.fill(0)
+        outputCo?.fill(0)
+        outputCg?.fill(0)
+        outputAlpha?.fill(0)
 
-        // Extract significance maps: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
-        val yMapOffset = compressedOffset
-        val coMapOffset = compressedOffset + mapBytes
-        val cgMapOffset = compressedOffset + mapBytes * 2
+        var mapOffset = compressedOffset
+        var mapIndex = 0
 
-        // Count non-zeros in each channel to determine value array boundaries
+        // Map offsets for active channels
+        val yMapOffset = if (hasY) { val offset = mapOffset; mapOffset += mapBytes; offset } else -1
+        val coMapOffset = if (hasCo) { val offset = mapOffset; mapOffset += mapBytes; offset } else -1
+        val cgMapOffset = if (hasCg) { val offset = mapOffset; mapOffset += mapBytes; offset } else -1
+        val alphaMapOffset = if (hasAlpha) { val offset = mapOffset; mapOffset += mapBytes; offset } else -1
+
+        // Count non-zeros for each active channel
         var yNonZeros = 0
         var coNonZeros = 0
         var cgNonZeros = 0
+        var alphaNonZeros = 0
 
         for (i in 0 until coeffCount) {
             val byteIdx = i / 8
             val bitIdx = i % 8
 
-            if ((compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) yNonZeros++
-            if ((compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) coNonZeros++
-            if ((compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) cgNonZeros++
+            if (hasY && yMapOffset >= 0 && (compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) yNonZeros++
+            if (hasCo && coMapOffset >= 0 && (compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) coNonZeros++
+            if (hasCg && cgMapOffset >= 0 && (compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) cgNonZeros++
+            if (hasAlpha && alphaMapOffset >= 0 && (compressedData[alphaMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) alphaNonZeros++
         }
 
         // Calculate value array offsets
-        val yValuesOffset = compressedOffset + mapBytes * 3
-        val coValuesOffset = yValuesOffset + yNonZeros * 2
-        val cgValuesOffset = coValuesOffset + coNonZeros * 2
+        var valueOffset = mapOffset
+        val yValuesOffset = if (hasY) { val offset = valueOffset; valueOffset += yNonZeros * 2; offset } else -1
+        val coValuesOffset = if (hasCo) { val offset = valueOffset; valueOffset += coNonZeros * 2; offset } else -1
+        val cgValuesOffset = if (hasCg) { val offset = valueOffset; valueOffset += cgNonZeros * 2; offset } else -1
+        val alphaValuesOffset = if (hasAlpha) { val offset = valueOffset; valueOffset += alphaNonZeros * 2; offset } else -1
 
-        // Extract coefficients using significance maps
+        // Reconstruct coefficients
         var yValueIdx = 0
         var coValueIdx = 0
         var cgValueIdx = 0
+        var alphaValueIdx = 0
 
         for (i in 0 until coeffCount) {
             val byteIdx = i / 8
             val bitIdx = i % 8
 
             // Y channel
-            if ((compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valueOffset = yValuesOffset + yValueIdx * 2
-                outputY[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
-                             (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+            if (hasY && yMapOffset >= 0 && outputY != null &&
+                (compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valuePos = yValuesOffset + yValueIdx * 2
+                outputY[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                             (compressedData[valuePos].toInt() and 0xFF)).toShort()
                 yValueIdx++
             }
 
             // Co channel
-            if ((compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valueOffset = coValuesOffset + coValueIdx * 2
-                outputCo[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
-                              (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+            if (hasCo && coMapOffset >= 0 && outputCo != null &&
+                (compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valuePos = coValuesOffset + coValueIdx * 2
+                outputCo[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                              (compressedData[valuePos].toInt() and 0xFF)).toShort()
                 coValueIdx++
             }
 
             // Cg channel
-            if ((compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valueOffset = cgValuesOffset + cgValueIdx * 2
-                outputCg[i] = (((compressedData[valueOffset + 1].toInt() and 0xFF) shl 8) or
-                              (compressedData[valueOffset].toInt() and 0xFF)).toShort()
+            if (hasCg && cgMapOffset >= 0 && outputCg != null &&
+                (compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valuePos = cgValuesOffset + cgValueIdx * 2
+                outputCg[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                              (compressedData[valuePos].toInt() and 0xFF)).toShort()
                 cgValueIdx++
+            }
+
+            // Alpha channel
+            if (hasAlpha && alphaMapOffset >= 0 && outputAlpha != null &&
+                (compressedData[alphaMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
+                val valuePos = alphaValuesOffset + alphaValueIdx * 2
+                outputAlpha[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                                 (compressedData[valuePos].toInt() and 0xFF)).toShort()
+                alphaValueIdx++
             }
         }
     }
@@ -4261,8 +4301,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // New tavDecode function that accepts compressed data and decompresses internally
     fun tavDecodeCompressed(compressedDataPtr: Long, compressedSize: Int, currentRGBAddr: Long, prevRGBAddr: Long,
-                           width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
-                           waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
+                           width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
+                            frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
 
         // Read compressed data from VM memory into byte array
         val compressedData = ByteArray(compressedSize)
@@ -4291,8 +4331,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 // Call the existing tavDecode function with decompressed data
                 tavDecode(decompressedBuffer.toLong(), currentRGBAddr, prevRGBAddr,
-                         width, height, qIndex, qYGlobal, qCoGlobal, qCgGlobal, frameCount,
-                         waveletFilter, decompLevels, isLossless, tavVersion)
+                    width, height, qIndex, qYGlobal, qCoGlobal, qCgGlobal, channelLayout,
+                    frameCount, waveletFilter, decompLevels, isLossless, tavVersion)
 
             } finally {
                 // Clean up allocated buffer
@@ -4307,8 +4347,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // Original tavDecode function for backward compatibility (now handles decompressed data)
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
-                  width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, frameCount: Int,
-                  waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
+                  width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
+                  frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
 
         tavDebugCurrentFrameNumber = frameCount
 
@@ -4355,13 +4395,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         0x01 -> { // TAV_MODE_INTRA
                             // Decode DWT coefficients directly to RGB buffer
-                            readPtr = tavDecodeDWTIntraTileRGB(qIndex, qYGlobal, readPtr, tileX, tileY, currentRGBAddr,
+                            readPtr = tavDecodeDWTIntraTileRGB(qIndex, qYGlobal, channelLayout, readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
                                                           waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
-                            readPtr = tavDecodeDeltaTileRGB(readPtr, tileX, tileY, currentRGBAddr,
+                            readPtr = tavDecodeDeltaTileRGB(readPtr, channelLayout, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
                                                       waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
                         }
@@ -4374,7 +4414,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    private fun tavDecodeDWTIntraTileRGB(qIndex: Int, qYGlobal: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+    private fun tavDecodeDWTIntraTileRGB(qIndex: Int, qYGlobal: Int, channelLayout: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                          width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                          waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         // Determine coefficient count based on mode
@@ -4430,15 +4470,26 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return count
         }
 
-        // Use concatenated maps format: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
-        postprocessCoefficientsConcatenated(coeffBuffer, 0, coeffCount, quantisedY, quantisedCo, quantisedCg)
+        // Use variable channel layout concatenated maps format
+        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, quantisedY, quantisedCo, quantisedCg, null)
 
-        // Calculate total size for concatenated format
-        val totalMapSize = mapBytes * 3
-        val yNonZeros = countNonZerosInMapConcatenated(0, mapBytes)
-        val coNonZeros = countNonZerosInMapConcatenated(mapBytes, mapBytes)
-        val cgNonZeros = countNonZerosInMapConcatenated(mapBytes * 2, mapBytes)
-        val totalValueSize = (yNonZeros + coNonZeros + cgNonZeros) * 2
+        // Calculate total size for variable channel layout format
+        val numChannels = when (channelLayout) {
+            CHANNEL_LAYOUT_YCOCG -> 3    // Y-Co-Cg
+            CHANNEL_LAYOUT_YCOCG_A -> 4  // Y-Co-Cg-A
+            CHANNEL_LAYOUT_Y_ONLY -> 1   // Y only
+            CHANNEL_LAYOUT_Y_A -> 2      // Y-A
+            CHANNEL_LAYOUT_COCG -> 2     // Co-Cg
+            CHANNEL_LAYOUT_COCG_A -> 3   // Co-Cg-A
+            else -> 3  // fallback to Y-Co-Cg
+        }
+
+        val totalMapSize = mapBytes * numChannels
+        var totalNonZeros = 0
+        for (ch in 0 until numChannels) {
+            totalNonZeros += countNonZerosInMapConcatenated(mapBytes * ch, mapBytes)
+        }
+        val totalValueSize = totalNonZeros * 2
 
         ptr += (totalMapSize + totalValueSize)
         
@@ -4993,7 +5044,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return 1.0f - (1.0f / (0.5f * qualityLevel * qualityLevel + 1.0f)) * (level - 4.0f)
     }
 
-    private fun tavDecodeDeltaTileRGB(readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
+    private fun tavDecodeDeltaTileRGB(readPtr: Long, channelLayout: Int, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
                                       waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
         
@@ -5060,15 +5111,26 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return count
         }
 
-        // Use concatenated maps format for deltas: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
-        postprocessCoefficientsConcatenated(coeffBuffer, 0, coeffCount, deltaY, deltaCo, deltaCg)
+        // Use variable channel layout concatenated maps format for deltas
+        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, deltaY, deltaCo, deltaCg, null)
 
-        // Calculate total size for concatenated format
-        val totalMapSize = mapBytes * 3
-        val yNonZeros = countNonZerosInMapConcatenated(0, mapBytes)
-        val coNonZeros = countNonZerosInMapConcatenated(mapBytes, mapBytes)
-        val cgNonZeros = countNonZerosInMapConcatenated(mapBytes * 2, mapBytes)
-        val totalValueSize = (yNonZeros + coNonZeros + cgNonZeros) * 2
+        // Calculate total size for variable channel layout format (deltas)
+        val numChannels = when (channelLayout) {
+            CHANNEL_LAYOUT_YCOCG -> 3    // Y-Co-Cg
+            CHANNEL_LAYOUT_YCOCG_A -> 4  // Y-Co-Cg-A
+            CHANNEL_LAYOUT_Y_ONLY -> 1   // Y only
+            CHANNEL_LAYOUT_Y_A -> 2      // Y-A
+            CHANNEL_LAYOUT_COCG -> 2     // Co-Cg
+            CHANNEL_LAYOUT_COCG_A -> 3   // Co-Cg-A
+            else -> 3  // fallback to Y-Co-Cg
+        }
+
+        val totalMapSize = mapBytes * numChannels
+        var totalNonZeros = 0
+        for (ch in 0 until numChannels) {
+            totalNonZeros += countNonZerosInMapConcatenated(mapBytes * ch, mapBytes)
+        }
+        val totalValueSize = totalNonZeros * 2
 
         ptr += (totalMapSize + totalValueSize)
         

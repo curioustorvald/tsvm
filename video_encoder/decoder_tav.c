@@ -114,8 +114,9 @@ typedef struct {
     uint8_t extra_flags;
     uint8_t video_flags;
     uint8_t encoder_quality;
+    uint8_t channel_layout;
     uint8_t file_role;
-    uint8_t reserved[5];
+    uint8_t reserved[4];
 } __attribute__((packed)) tav_header_t;
 
 // Decoder state

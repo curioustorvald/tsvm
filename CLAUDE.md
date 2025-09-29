@@ -245,10 +245,11 @@ Original: [coeff_array] → [concatenated_significance_maps + nonzero_values]
 
 Concatenated Maps Layout:
 [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals] (channel layout 0)
-[Y_map][Y_vals] (channel layout 1)
-[Y_map][Co_map][Cg_map][A_map][Y_vals][Co_vals][Cg_vals][A_map] (channel layout 2)
-[Y_map][A_map][Y_vals][A_map] (channel layout 3)
-[Co_map][Cg_map][Co_vals][Cg_map] (channel layout 4)
+[Y_map][Co_map][Cg_map][A_map][Y_vals][Co_vals][Cg_vals][A_vals] (channel layout 1)
+[Y_map][Y_vals] (channel layout 2)
+[Y_map][A_map][Y_vals][A_vals] (channel layout 3)
+[Co_map][Cg_map][Co_vals][Cg_vals] (channel layout 4)
+[Co_map][Cg_map][A_map][Co_vals][Cg_vals][A_vals] (channel layout 5)
 
 (replace Y->I, Co->Ct, Cg->Cp for ICtCp colour space)
 

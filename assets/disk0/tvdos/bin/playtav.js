@@ -25,6 +25,7 @@ const TAV_PACKET_IFRAME = 0x10
 const TAV_PACKET_PFRAME = 0x11
 const TAV_PACKET_AUDIO_MP2 = 0x20
 const TAV_PACKET_SUBTITLE = 0x30
+const TAV_PACKET_SYNC_NTSC = 0xFE
 const TAV_PACKET_SYNC = 0xFF
 const TAV_FILE_HEADER_FIRST = 0x1F
 
@@ -378,6 +379,7 @@ let header = {
     extraFlags: 0,
     videoFlags: 0,
     qualityLevel: 0,
+    channelLayout: 0,
     fileRole: 0
 }
 
@@ -414,15 +416,29 @@ header.qualityCg = seqread.readOneByte()
 header.extraFlags = seqread.readOneByte()
 header.videoFlags = seqread.readOneByte()
 header.qualityLevel = seqread.readOneByte() // the decoder expects biased value
+header.channelLayout = seqread.readOneByte()
 header.fileRole = seqread.readOneByte()
 
 // Skip reserved bytes
-seqread.skip(5)
+seqread.skip(4)
 
 if (header.version < 1 || header.version > 6) {
     printerrln(`Error: Unsupported TAV version ${header.version}`)
     errorlevel = 1
     return
+}
+
+// Helper function to decode channel layout name
+function getChannelLayoutName(layout) {
+    switch (layout) {
+        case 0: return "Y-Co-Cg"
+        case 1: return "Y-Co-Cg-A"
+        case 2: return "Y-only"
+        case 3: return "Y-A"
+        case 4: return "Co-Cg"
+        case 5: return "Co-Cg-A"
+        default: return `Unknown (${layout})`
+    }
 }
 
 const hasAudio = (header.extraFlags & 0x01) !== 0
@@ -446,6 +462,7 @@ console.log(`Total frames: ${header.totalFrames}`)
 console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : header.waveletFilter === WAVELET_9_7_IRREVERSIBLE ? "9/7 irreversible" : header.waveletFilter === WAVELET_BIORTHOGONAL_13_7 ? "Biorthogonal 13/7" : header.waveletFilter === WAVELET_DD4 ? "DD-4" : header.waveletFilter === WAVELET_HAAR ? "Haar" : "unknown"}`)
 console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
+console.log(`Channel layout: ${getChannelLayoutName(header.channelLayout)}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
 console.log(`Colour space: ${header.version === 2 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
@@ -599,13 +616,16 @@ function tryReadNextTAVHeader() {
                 qualityCg: seqread.readOneByte(),
                 extraFlags: seqread.readOneByte(),
                 videoFlags: seqread.readOneByte(),
-                reserved: new Array(7)
+                qualityLevel: seqread.readOneByte(),
+                channelLayout: seqread.readOneByte(),
+                fileRole: seqread.readOneByte(),
+                reserved: new Array(4)
             }
 
             serial.println("File header: " + JSON.stringify(newHeader))
 
             // Skip reserved bytes
-            for (let i = 0; i < 7; i++) {
+            for (let i = 0; i < 4; i++) {
                 seqread.readOneByte()
             }
 
@@ -670,10 +690,13 @@ try {
                     break
             }
 
-            if (packetType === TAV_PACKET_SYNC) {
+            if (packetType === TAV_PACKET_SYNC || packetType == TAV_PACKET_SYNC_NTSC) {
                 // Sync packet - no additional data
                 akku -= FRAME_TIME
-                frameCount++
+                if (packetType == TAV_PACKET_SYNC) {
+                    frameCount++
+                }
+
                 trueFrameCount++
 
                 // Swap ping-pong buffers instead of expensive memcpy (752KB copy eliminated!)
@@ -701,7 +724,8 @@ try {
                         CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers
                         header.width, header.height,
                         header.qualityLevel, header.qualityY, header.qualityCo, header.qualityCg,
-                        frameCount,
+                        header.channelLayout,      // Channel layout for variable processing
+                        trueFrameCount,
                         header.waveletFilter,      // TAV-specific parameter
                         header.decompLevels,       // TAV-specific parameter
                         isLossless,
@@ -713,7 +737,7 @@ try {
 
                     // Upload RGB buffer to display framebuffer (like TEV)
                     let uploadStart = sys.nanoTime()
-                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, frameCount, false)
+                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, trueFrameCount, false)
                     uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
 
                     // Defer audio playback until a first frame is sent

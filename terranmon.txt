@@ -920,12 +920,14 @@ transmission capability, and region-of-interest coding.
             - bit 2 = is lossless mode (shorthand for `-q 5 -Q1,1,1 -w 0`)
             - bit 3 = has region-of-interest coding (for still images only)
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
-    uint8  Channel layout
-            - 0 = Y-Co-Cg/I-Ct-Cp
-            - 1 = Y/I only
-            - 2 = Y-Co-Cg-A/I-Ct-Cp-A
-            - 3 = Y-A/I-A
-            - 4 = Co-Cg/Ct-Cp
+    uint8  Channel layout (bit-field: bit 0=has alpha, bit 1=has chroma inverted, bit 2=has luma inverted)
+            - 0 = Y-Co-Cg/I-Ct-Cp (000: no alpha, has chroma, has luma)
+            - 1 = Y-Co-Cg-A/I-Ct-Cp-A (001: has alpha, has chroma, has luma)
+            - 2 = Y/I only (010: no alpha, no chroma, has luma)
+            - 3 = Y-A/I-A (011: has alpha, no chroma, has luma)
+            - 4 = Co-Cg/Ct-Cp (100: no alpha, has chroma, no luma)
+            - 5 = Co-Cg-A/Ct-Cp-A (101: has alpha, has chroma, no luma)
+            - 6-7 = Reserved/invalid (would indicate no luma and no chroma)
     uint8  Reserved[4]: fill with zeros
     uint8  File Role
             - 0 = generic
