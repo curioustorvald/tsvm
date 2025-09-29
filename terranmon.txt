@@ -915,17 +915,23 @@ transmission capability, and region-of-interest coding.
             - bit 2 = infinite loop (must be ignored when File Role is 1)
             - bit 7 = has no actual packets, this file is header-only without an Intro Movie
     uint8  Video Flags
-            - bit 0 = has alpha channel
+            - bit 0 = unused
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode (shorthand for `-q 5 -Q1,1,1 -w 0`)
             - bit 3 = has region-of-interest coding (for still images only)
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
+    uint8  Channel layout
+            - 0 = Y-Co-Cg/I-Ct-Cp
+            - 1 = Y/I only
+            - 2 = Y-Co-Cg-A/I-Ct-Cp-A
+            - 3 = Y-A/I-A
+            - 4 = Co-Cg/Ct-Cp
+    uint8  Reserved[4]: fill with zeros
     uint8  File Role
             - 0 = generic
             - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
-    uint8  Reserved[5]: fill with zeros
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
@@ -942,7 +948,10 @@ transmission capability, and region-of-interest coding.
     0xE3: Vorbis Comment packet
     0xE4: CD-text packet
     <End of Standard metadata>
-    0xFF: sync packet
+    0xF0: Loop point start
+    0xF1: Loop point end
+    0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance)
+    0xFF: Sync packet
 
 ## Standard metadata payload packet structure
     uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
@@ -968,6 +977,7 @@ transmission capability, and region-of-interest coding.
     uint8  Quantiser override Y  (use 0 to disable overriding; shared with A channel)
     uint8  Quantiser override Co (use 0 to disable overriding)
     uint8  Quantiser override Cg (use 0 to disable overriding)
+    - note: quantiser overrides are always present regardless of the channel layout
     ## Coefficient Storage Format (Significance Map Compression)
 
     Starting with encoder version 2025-09-29, DWT coefficients are stored using
