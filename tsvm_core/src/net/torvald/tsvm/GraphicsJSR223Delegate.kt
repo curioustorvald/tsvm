@@ -4729,6 +4729,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
             }
         }
+
+        // write Y=127 if there's no luma channel
+        if (channelLayout == CHANNEL_LAYOUT_COCG || channelLayout == CHANNEL_LAYOUT_COCG_A) {
+            Arrays.fill(finalYTile, 127f)
+        }
         
         // Convert to RGB based on TAV version and mode
         // v1,v3 = YCoCg-R, v2,v4 = ICtCp
@@ -5230,6 +5235,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     finalCgTile[coreIdx] = currentCg[paddedIdx]
                 }
             }
+        }
+
+        // write Y=127 if there's no luma channel
+        if (channelLayout == CHANNEL_LAYOUT_COCG || channelLayout == CHANNEL_LAYOUT_COCG_A) {
+            Arrays.fill(finalYTile, 127f)
         }
 
         // Convert to RGB based on TAV version and mode
