@@ -4670,13 +4670,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
 
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavFilterIntra)
-            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0, TavFilterIntra)
-            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0, TavFilterIntra)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
         } else {
-            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterIntra)
-            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterIntra)
-            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterIntra)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
         }
 
         // Debug: Check coefficient values after inverse DWT
@@ -5172,13 +5172,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
 
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavFilterDelta)
-            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0, TavFilterDelta)
-            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0, TavFilterDelta)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
         } else {
-            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterDelta)
-            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterDelta)
-            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter, TavFilterDelta)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
         }
 
         // Debug: Check coefficient values after inverse DWT
@@ -5264,25 +5264,45 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private interface TavWaveletFilter {
         fun getCoeffMultiplier(level: Int): Float // level 0: finest
+
+        fun applyGain(level: Int, c: Float): Float {
+            val T = 2f
+            val gain = getCoeffMultiplier(level)
+            return if (c.absoluteValue < T)
+                c * (1f + (gain - 1f) * c.absoluteValue / T)
+            else
+                c * gain
+        }
     }
 
-    private object TavFilterDelta : TavWaveletFilter {
+    private object TavSharpenNormal : TavWaveletFilter {
         override fun getCoeffMultiplier(level: Int): Float {
-//            return 1f
-            return when(level) {
-                0 -> 6f/5f
-                1 -> 5f/6f
+            return when (level) {
+                0 -> 1.18f
+                1 -> 1.02f
+                2 -> 0.85f
                 else -> 1f
             }
         }
     }
 
-    private object TavFilterIntra : TavWaveletFilter {
+    private object TavSharpenWeak : TavWaveletFilter {
         override fun getCoeffMultiplier(level: Int): Float {
-//            return 1f
             return when (level) {
-                0 -> 6f/5f
-                1 -> 5f/6f
+                0 -> 1.08f
+                1 -> 1.01f
+                2 -> 0.93f
+                else -> 1f
+            }
+        }
+    }
+
+    private object TavSharpenStrong : TavWaveletFilter {
+        override fun getCoeffMultiplier(level: Int): Float {
+            return when (level) {
+                0 -> 1.30f
+                1 -> 1.05f
+                2 -> 0.77f
                 else -> 1f
             }
         }
@@ -5325,7 +5345,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Column inverse transform first (vertical)
             for (x in 0 until currentWidth) {
                 for (y in 0 until currentHeight) {
-                    tempCol[y] = data[y * width + x] * sharpenFilter.getCoeffMultiplier(level)
+                    tempCol[y] = sharpenFilter.applyGain(level, data[y * width + x])
                 }
 
                 if (filterType == 0) {
@@ -5348,7 +5368,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Row inverse transform second (horizontal)
             for (y in 0 until currentHeight) {
                 for (x in 0 until currentWidth) {
-                    tempRow[x] = data[y * width + x] * sharpenFilter.getCoeffMultiplier(level)
+                    tempRow[x] = sharpenFilter.applyGain(level, data[y * width + x])
                 }
 
                 if (filterType == 0) {
