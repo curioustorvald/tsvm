@@ -5,12 +5,14 @@ import com.badlogic.gdx.math.MathUtils.PI
 import com.badlogic.gdx.math.MathUtils.ceil
 import com.badlogic.gdx.math.MathUtils.floor
 import com.badlogic.gdx.math.MathUtils.round
+import io.airlift.compress.zstd.ZstdInputStream
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.peripheral.GraphicsAdapter
 import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.fmod
+import java.io.ByteArrayInputStream
 import java.util.*
 import kotlin.Any
 import kotlin.Array
@@ -36,6 +38,7 @@ import kotlin.Triple
 import kotlin.arrayOf
 import kotlin.byteArrayOf
 import kotlin.collections.ArrayList
+import kotlin.collections.HashMap
 import kotlin.collections.List
 import kotlin.collections.MutableMap
 import kotlin.collections.component1
@@ -45,21 +48,25 @@ import kotlin.collections.component4
 import kotlin.collections.copyOf
 import kotlin.collections.count
 import kotlin.collections.fill
+import kotlin.collections.first
 import kotlin.collections.forEach
 import kotlin.collections.forEachIndexed
 import kotlin.collections.indices
 import kotlin.collections.isNotEmpty
+import kotlin.collections.last
 import kotlin.collections.listOf
 import kotlin.collections.map
 import kotlin.collections.maxOfOrNull
 import kotlin.collections.minus
 import kotlin.collections.mutableListOf
 import kotlin.collections.mutableMapOf
+import kotlin.collections.plus
 import kotlin.collections.set
 import kotlin.collections.sliceArray
 import kotlin.collections.sorted
 import kotlin.collections.sumOf
 import kotlin.collections.toFloatArray
+import kotlin.collections.toList
 import kotlin.error
 import kotlin.floatArrayOf
 import kotlin.fromBits
@@ -67,14 +74,14 @@ import kotlin.intArrayOf
 import kotlin.let
 import kotlin.longArrayOf
 import kotlin.math.*
+import kotlin.plus
 import kotlin.repeat
 import kotlin.sequences.minus
+import kotlin.sequences.plus
 import kotlin.text.format
 import kotlin.text.lowercase
 import kotlin.text.toString
 import kotlin.times
-import io.airlift.compress.zstd.ZstdInputStream
-import java.io.ByteArrayInputStream
 
 class GraphicsJSR223Delegate(private val vm: VM) {
 
@@ -4159,8 +4166,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return LH * ANISOTROPY_MULT[quality] + ANISOTROPY_BIAS[quality]
     }
 
-    private fun perceptual_model3_HH(LH: Float, HL: Float): Float {
-        return (HL / LH) * 1.44f;
+    fun lerp(x: Float, y: Float, a: Float): Float {
+        return x * (1f - a) + y * a
+    }
+
+    fun perceptual_model3_HH(LH: Float, HL: Float, level: Float): Float {
+        val Kx: Float = (sqrt(level) - 1f) * 0.5f + 0.5f
+        return lerp(LH, HL, Kx)
     }
 
     fun perceptual_model3_LL(quality: Int, level: Float): Float {
@@ -4212,7 +4224,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             if (subbandType == 2) return HL * (if (level in 1.8f..2.2f) TWO_PIXEL_DETAILER else if (level in 2.8f..3.2f) FOUR_PIXEL_DETAILER else 1f)
 
             // HH subband - diagonal details
-            else return perceptual_model3_HH(LH, HL) * (if (level in 1.8f..2.2f) TWO_PIXEL_DETAILER else if (level in 2.8f..3.2f) FOUR_PIXEL_DETAILER else 1f)
+            else return perceptual_model3_HH(LH, HL, level) * (if (level in 1.8f..2.2f) TWO_PIXEL_DETAILER else if (level in 2.8f..3.2f) FOUR_PIXEL_DETAILER else 1f)
             
         } else {
             // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
@@ -4250,7 +4262,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun dequantiseDWTSubbandsPerceptual(qIndex: Int, qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
-                                               subbands: List<DWTSubbandInfo>, baseQuantizer: Float, isChroma: Boolean, decompLevels: Int) {
+                                               subbands: List<DWTSubbandInfo>, baseQuantiser: Float, isChroma: Boolean, decompLevels: Int) {
 
         // CRITICAL FIX: Encoder stores coefficients in LINEAR order, not subband-mapped order!
         // The subband layout calculation is only used for determining perceptual weights,
@@ -4272,11 +4284,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
 
-        // Apply linear dequantization with perceptual weights (matching encoder's linear storage)
+        // Apply linear dequantisation with perceptual weights (matching encoder's linear storage)
         for (i in quantised.indices) {
             if (i < dequantised.size) {
-                val effectiveQuantizer = baseQuantizer * weights[i]
-                dequantised[i] = quantised[i] * effectiveQuantizer
+                val effectiveQuantiser = baseQuantiser * weights[i]
+                dequantised[i] = quantised[i] * effectiveQuantiser
             }
         }
 
@@ -4560,7 +4572,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         println("  $subbandName: start=${subband.coeffStart}, count=${subband.coeffCount}, sample_nonzero=$sampleCoeffs/$coeffCount")
 
-                        // Debug: Print first few RAW QUANTIZED values for comparison (before dequantisation)
+                        // Debug: Print first few RAW QUANTISED values for comparison (before dequantisation)
                         print("    $subbandName raw_quant: ")
                         for (i in 0 until minOf(32, subband.coeffCount)) {
                             val idx = subband.coeffStart + i
@@ -4588,7 +4600,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 // Comprehensive five-number summary for uniform quantisation baseline
                 for (subband in subbands) {
-                    // Collect all quantized coefficient values for this subband (luma only for baseline)
+                    // Collect all quantised coefficient values for this subband (luma only for baseline)
                     val coeffValues = mutableListOf<Int>()
                     for (i in 0 until subband.coeffCount) {
                         val idx = subband.coeffStart + i
@@ -4643,7 +4655,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         }
                         println("  $subbandName: start=${subband.coeffStart}, count=${subband.coeffCount}, sample_nonzero=$sampleCoeffs/$coeffCount")
 
-                        // Debug: Print first few RAW QUANTIZED values for comparison with perceptual (before dequantisation)
+                        // Debug: Print first few RAW QUANTISED values for comparison with perceptual (before dequantisation)
                         print("    $subbandName raw_quant: ")
                         for (i in 0 until minOf(32, subband.coeffCount)) {
                             val idx = subband.coeffStart + i
@@ -5015,19 +5027,19 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun getPerceptualWeightDelta(qualityLevel: Int, level: Int, subbandType: Int, isChroma: Boolean, maxLevels: Int): Float {
         // Delta coefficients have different perceptual characteristics than full-picture coefficients:
         // 1. Motion edges are more perceptually critical than static edges
-        // 2. Temporal masking allows more aggressive quantization in high-motion areas
-        // 3. Smaller delta magnitudes make relative quantization errors more visible
+        // 2. Temporal masking allows more aggressive quantisation in high-motion areas
+        // 3. Smaller delta magnitudes make relative quantisation errors more visible
         // 4. Frequency distribution is motion-dependent rather than spatial-dependent
 
         return if (!isChroma) {
             // LUMA DELTA CHANNEL: Emphasize motion coherence and edge preservation
             when (subbandType) {
                 0 -> { // LL subband - DC motion changes, still important
-                    // DC motion changes - preserve somewhat but allow coarser quantization than full-picture
+                    // DC motion changes - preserve somewhat but allow coarser quantisation than full-picture
                     2f // Slightly coarser than full-picture
                 }
                 1 -> { // LH subband - horizontal motion edges
-                    // Motion boundaries benefit from temporal masking - allow coarser quantization
+                    // Motion boundaries benefit from temporal masking - allow coarser quantisation
                     0.9f
                 }
                 2 -> { // HL subband - vertical motion edges
@@ -5035,12 +5047,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     1.2f
                 }
                 else -> { // HH subband - diagonal motion details
-                    // Diagonal motion deltas can be quantized most aggressively
+                    // Diagonal motion deltas can be quantised most aggressively
                     0.5f
                 }
             }
         } else {
-            // CHROMA DELTA CHANNELS: More aggressive quantization allowed due to temporal masking
+            // CHROMA DELTA CHANNELS: More aggressive quantisation allowed due to temporal masking
             // Motion chroma changes are less perceptually critical than static chroma
             val base = getPerceptualModelChromaBase(qualityLevel, level - 1)
 
@@ -5160,7 +5172,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val currentCg = FloatArray(coeffCount)
 
         // Delta-specific perceptual reconstruction using motion-optimized coefficients
-        // Estimate quality level from quantization parameters for perceptual weighting
+        // Estimate quality level from quantisation parameters for perceptual weighting
         val estimatedQualityY = when {
             qY <= 6 -> 4    // High quality
             qY <= 12 -> 3   // Medium-high quality

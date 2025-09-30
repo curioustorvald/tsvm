@@ -457,7 +457,7 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
         max_change = 0.6f;
     }
 
-    // Calculate float adjustment (no integer quantization yet)
+    // Calculate float adjustment (no integer quantisation yet)
     float adjustment_float = pid_output / scale_factor;
 
     // Limit maximum change per frame to prevent wild swings (adaptive limit)
@@ -491,7 +491,7 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
 
     adjustment_float *= log_scale;
 
-    // Update float quantiser value (no integer quantization, keeps full precision)
+    // Update float quantiser value (no integer quantisation, keeps full precision)
     float new_quantiser_y_float = enc->adjusted_quantiser_y_float + adjustment_float;
 
     // Avoid extremely low qY values where QLUT is exponential and causes wild swings
@@ -518,10 +518,10 @@ static int quantiser_float_to_int_dithered(tav_encoder_t *enc) {
     // Round to nearest integer
     int qy_int = (int)(qy_with_error + 0.5f);
 
-    // Calculate quantization error and accumulate for next frame
+    // Calculate quantisation error and accumulate for next frame
     // This is Floyd-Steinberg style error diffusion
-    float quantization_error = qy_with_error - (float)qy_int;
-    enc->dither_accumulator = quantization_error * 0.5f; // Diffuse 50% of error to next frame
+    float quantisation_error = qy_with_error - (float)qy_int;
+    enc->dither_accumulator = quantisation_error * 0.5f; // Diffuse 50% of error to next frame
 
     // Clamp to valid range
     qy_int = CLAMP(qy_int, 0, 254);
@@ -1407,9 +1407,19 @@ static float perceptual_model3_HL(int quality, float LH) {
     return fmaf(LH, ANISOTROPY_MULT[quality], ANISOTROPY_BIAS[quality]);
 }
 
-static float perceptual_model3_HH(float LH, float HL) {
-    return (HL / LH) * 1.44f;
+static float lerp(float x, float y, float a) {
+    return x * (1.f - a) + y * a;
 }
+
+static float perceptual_model3_HH(float LH, float HL, float level) {
+    float Kx = (sqrtf(level) - 1.f) * 0.5f + 0.5f;
+    return lerp(LH, HL, Kx);
+}
+
+
+/*static float perceptual_model3_HH(float LH, float HL, float level) {
+    return (HL / LH) * 1.44f;
+}*/
 
 static float perceptual_model3_LL(int quality, float level) {
     float n = perceptual_model3_LH(quality, level);
@@ -1448,7 +1458,7 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_t
             return HL * (2.2f >= level && level >= 1.8f ? TWO_PIXEL_DETAILER : 3.2f >= level && level >= 2.8f ? FOUR_PIXEL_DETAILER : 1.0f);
 
         // HH subband - diagonal details
-        else return perceptual_model3_HH(LH, HL) * (2.2f >= level && level >= 1.8f ? TWO_PIXEL_DETAILER : 3.2f >= level && level >= 2.8f ? FOUR_PIXEL_DETAILER : 1.0f);
+        else return perceptual_model3_HH(LH, HL, level) * (2.2f >= level && level >= 1.8f ? TWO_PIXEL_DETAILER : 3.2f >= level && level >= 2.8f ? FOUR_PIXEL_DETAILER : 1.0f);
     } else {
         // CHROMA CHANNELS: Less critical for human perception, more aggressive quantisation
         // strategy: more horizontal detail
