@@ -3328,13 +3328,6 @@ int main(int argc, char *argv[]) {
     // disable perceptual tuning if wavelet filter is not CDF 9/7
     if (enc->wavelet_filter != WAVELET_9_7_IRREVERSIBLE) {
         enc->perceptual_tuning = 0;
-
-        // halve the quantiser if wavelet filter is not CDF 9/7 && not CDF 13/7
-        if (enc->wavelet_filter != WAVELET_BIORTHOGONAL_13_7) {
-            enc->quantiser_y = CLAMP(enc->quantiser_y >> 1, 1, 255);
-            enc->quantiser_co = CLAMP(enc->quantiser_co >> 1, 1, 255);
-            enc->quantiser_cg = CLAMP(enc->quantiser_cg >> 1, 1, 255);
-        }
     }
 
     if (enc->lossless) {
