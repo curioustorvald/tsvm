@@ -252,9 +252,10 @@ typedef struct tav_encoder_s {
     float pid_integral;          // PID integral term
     float pid_prev_error;        // PID previous error for derivative
     float pid_filtered_derivative; // Low-pass filtered derivative for smoothing
-    int adjusted_quantiser_y;    // PID-adjusted qY value for current frame
+    float adjusted_quantiser_y_float; // Float precision qY for smooth control
     size_t prev_frame_size;      // Previous frame compressed size for scene change detection
     int scene_change_cooldown;   // Frames to wait after scene change before responding
+    float dither_accumulator;    // Accumulated dithering error for error diffusion
     
     // Flags
 //    int progressive; // no interlaced mode for TAV
@@ -365,14 +366,14 @@ static float get_video_rate_kbps(tav_encoder_t *enc) {
 static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
     if (!enc->bitrate_mode) {
         // Not in bitrate mode, use base quantiser
-        enc->adjusted_quantiser_y = enc->quantiser_y;
+        enc->adjusted_quantiser_y_float = (float)enc->quantiser_y;
         return;
     }
 
     // Need at least a few frames to measure bitrate
     if (enc->video_rate_bin_size < (enc->video_rate_bin_capacity / 2)) {
         // Not enough data yet, use base quantiser
-        enc->adjusted_quantiser_y = enc->quantiser_y;
+        enc->adjusted_quantiser_y_float = (float)enc->quantiser_y;
         return;
     }
 
@@ -434,17 +435,17 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
     float scale_factor = 50.0f; // Base: ~50 kbps error = 1 quantiser step
     int max_change = MAX_QY_CHANGE;
 
-    if (enc->adjusted_quantiser_y < 5) {
+    if (enc->adjusted_quantiser_y_float < 5.0f) {
         // Extreme lossless (qY 0-4) - be very conservative but still responsive
         // At qY=0, QLUT[0]=1, which is essentially lossless and bitrate is huge
         // Use fixed scale factor to ensure controller can actually respond
         scale_factor = 150.0f; // ~150 kbps error = 1 step
         max_change = 1;
-    } else if (enc->adjusted_quantiser_y < 15) {
+    } else if (enc->adjusted_quantiser_y_float < 15.0f) {
         // Very near lossless (qY 5-14) - very conservative
         scale_factor = 300.0f; // ~300 kbps error = 1 step
         max_change = 1;
-    } else if (enc->adjusted_quantiser_y < 30) {
+    } else if (enc->adjusted_quantiser_y_float < 30.0f) {
         // Near lossless range (qY 15-29) - be conservative
         scale_factor = 120.0f; // ~120 kbps error = 1 step
         max_change = 2;
@@ -453,21 +454,22 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
         scale_factor = 30.0f;
     }
 
-    int adjustment = (int)(pid_output / scale_factor);
+    // Calculate float adjustment (no integer quantization yet)
+    float adjustment_float = pid_output / scale_factor;
 
     // Limit maximum change per frame to prevent wild swings (adaptive limit)
-    adjustment = CLAMP(adjustment, -max_change, max_change);
+    adjustment_float = FCLAMP(adjustment_float, -(float)max_change, (float)max_change);
 
     // Apply logarithmic scaling to adjustment based on current qY
     // At low qY (0-10), QLUT is exponential so we need much smaller steps
     // At high qY (40+), bitrate changes are small so we can take larger steps
     // This makes it "hard to reach towards 1, easy to reach towards large value"
     float log_scale = 1.0f;
-    int current_qy = enc->adjusted_quantiser_y;
+    float current_qy = enc->adjusted_quantiser_y_float;
 
     // Only apply log scaling when moving deeper into low qY region
     // If we're at low qY and want to move up (increase qY), use faster response
-    int wants_to_increase = (adjustment > 0);
+    int wants_to_increase = (adjustment_float > 0);
 
     if (current_qy < 10 && !wants_to_increase) {
         // Moving down into very near lossless - be very careful
@@ -484,27 +486,44 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
     }
     // else: qY >= 40, use full scale (1.0)
 
-    adjustment = (int)(adjustment * log_scale);
+    adjustment_float *= log_scale;
 
-    // Ensure at least ±1 step if PID wants to move strongly (prevent sticking)
-    if (adjustment == 0 && fabsf(pid_output / scale_factor) > 0.8f) {
-        adjustment = (pid_output > 0) ? 1 : -1;
-    }
-
-    // Calculate adjusted quantiser (but don't modify base quantiser)
-    int new_quantiser_y = enc->adjusted_quantiser_y + adjustment;
+    // Update float quantiser value (no integer quantization, keeps full precision)
+    float new_quantiser_y_float = enc->adjusted_quantiser_y_float + adjustment_float;
 
     // Avoid extremely low qY values where QLUT is exponential and causes wild swings
     // For 5000 kbps target, qY < 3 is usually too low and causes oscillation
-    int min_qy = (target_bitrate >= 8000) ? 0 : (target_bitrate >= 4000) ? 3 : 5;
-    new_quantiser_y = CLAMP(new_quantiser_y, min_qy, 254); // Max index is 254
+    float min_qy = (target_bitrate >= 8000) ? 0.0f : (target_bitrate >= 4000) ? 3.0f : 5.0f;
+    new_quantiser_y_float = FCLAMP(new_quantiser_y_float, min_qy, 254.0f); // Max index is 254
+
+    enc->adjusted_quantiser_y_float = new_quantiser_y_float;
 
     if (enc->verbose) {
-        printf("Bitrate control: %.1f kbps (target: %.1f kbps) -> qY %d->%d (adj: %d, err: %.1f%%)\n",
-               current_bitrate, target_bitrate, enc->adjusted_quantiser_y, new_quantiser_y, adjustment, error_percent * 100);
+        printf("Bitrate control: %.1f kbps (target: %.1f kbps) -> qY %.2f->%.2f (adj: %.3f, err: %.1f%%)\n",
+               current_bitrate, target_bitrate, current_qy, new_quantiser_y_float, adjustment_float, error_percent * 100);
     }
+}
 
-    enc->adjusted_quantiser_y = new_quantiser_y;
+// Convert float qY to integer with error diffusion dithering
+// This prevents the controller from getting stuck at integer boundaries
+static int quantiser_float_to_int_dithered(tav_encoder_t *enc) {
+    float qy_float = enc->adjusted_quantiser_y_float;
+
+    // Add accumulated dithering error
+    float qy_with_error = qy_float + enc->dither_accumulator;
+
+    // Round to nearest integer
+    int qy_int = (int)(qy_with_error + 0.5f);
+
+    // Calculate quantization error and accumulate for next frame
+    // This is Floyd-Steinberg style error diffusion
+    float quantization_error = qy_with_error - (float)qy_int;
+    enc->dither_accumulator = quantization_error * 0.5f; // Diffuse 50% of error to next frame
+
+    // Clamp to valid range
+    qy_int = CLAMP(qy_int, 0, 254);
+
+    return qy_int;
 }
 
 // Swap ping-pong frame buffers (eliminates need for memcpy)
@@ -733,7 +752,8 @@ static int initialise_encoder(tav_encoder_t *enc) {
         enc->video_rate_bin_size = 0;
         enc->pid_integral = 0.0f;
         enc->pid_prev_error = 0.0f;
-        enc->adjusted_quantiser_y = enc->quantiser_y; // Start with base quantiser
+        enc->adjusted_quantiser_y_float = (float)enc->quantiser_y; // Start with base quantiser
+        enc->dither_accumulator = 0.0f;
 
         if (!enc->video_rate_bin) {
             return -1;
@@ -1574,7 +1594,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     buffer[offset++] = mode;
 
     // Use adjusted quantiser from bitrate control, or base quantiser if not in bitrate mode
-    int qY_override = enc->bitrate_mode ? enc->adjusted_quantiser_y : enc->quantiser_y;
+    int qY_override = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
 
     buffer[offset++] = (!enc->bitrate_mode) ? 0 : qY_override + 1; // qY override; must be stored with bias of 1
     buffer[offset++] = 0; // qCo override, currently unused
@@ -3596,8 +3616,9 @@ int main(int argc, char *argv[]) {
                            (now.tv_usec - enc->start_time.tv_usec) / 1000000.0;
             double fps = frame_count / elapsed;
 
+            int display_qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
             printf("Encoded frame %d (%s, %.1f fps, qY=%d)\n", frame_count,
-                   is_keyframe ? "I-frame" : "P-frame", fps, QLUT[enc->bitrate_mode ? enc->adjusted_quantiser_y : enc->quantiser_y]);
+                   is_keyframe ? "I-frame" : "P-frame", fps, QLUT[display_qY]);
         }
     }
 
