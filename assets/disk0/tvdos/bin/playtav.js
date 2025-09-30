@@ -647,6 +647,7 @@ function tryReadNextTAVHeader() {
 try {
     let t1 = sys.nanoTime()
     let totalFilesProcessed = 0
+    let decoderDbgInfo = {}
 
     while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
@@ -719,7 +720,7 @@ try {
 
                     // Call new TAV hardware decoder that handles Zstd decompression internally
                     // Note: No longer using JS gzip.decompFromTo - Kotlin handles Zstd natively
-                    graphics.tavDecodeCompressed(
+                    decoderDbgInfo = graphics.tavDecodeCompressed(
                         compressedPtr,             // Pass compressed data directly
                         compressedSize,            // Size of compressed data
                         CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers
@@ -817,9 +818,9 @@ try {
                 con.move(31, 1)
                 con.color_pair(253, 0)
                 if (currentFileIndex > 1) {
-                    print(`File ${currentFileIndex}: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                    print(`File ${currentFileIndex}: ${frameCount}/${header.totalFrames} (qY=${decoderDbgInfo.qY}, ${((frameCount / akku2 * 100)|0) / 100}f)         `)
                 } else {
-                    print(`Frame: ${frameCount}/${header.totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
+                    print(`Frame: ${frameCount}/${header.totalFrames} (qY=${decoderDbgInfo.qY}, ${((frameCount / akku2 * 100)|0) / 100}f)         `)
                 }
                 con.move(32, 1)
                 con.color_pair(253, 0)

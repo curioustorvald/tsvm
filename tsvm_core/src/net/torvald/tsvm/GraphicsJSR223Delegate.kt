@@ -4303,7 +4303,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // New tavDecode function that accepts compressed data and decompresses internally
     fun tavDecodeCompressed(compressedDataPtr: Long, compressedSize: Int, currentRGBAddr: Long, prevRGBAddr: Long,
                            width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
-                            frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
+                            frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1): HashMap<String, Any> {
 
         // Read compressed data from VM memory into byte array
         val compressedData = ByteArray(compressedSize)
@@ -4311,7 +4311,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             compressedData[i] = vm.peek(compressedDataPtr + i)!!.toByte()
         }
 
-        try {
+        return try {
             // Decompress using Zstd
             val bais = ByteArrayInputStream(compressedData)
             val zis = ZstdInputStream(bais)
@@ -4349,7 +4349,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // Original tavDecode function for backward compatibility (now handles decompressed data)
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
-                  frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1) {
+                  frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1): HashMap<String, Any> {
+
+        val dbgOut = HashMap<String, Any>()
 
         tavDebugCurrentFrameNumber = frameCount
 
@@ -4382,6 +4384,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val qCo = vm.peek(readPtr++).toUint().let { if (it == 0) qCoGlobal else TAV_QLUT[it - 1] }
                     val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else TAV_QLUT[it - 1] }
 
+                    dbgOut["qY"] = qY
+
                     // debug print: raw decompressed bytes
                     /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
                     for (i in 0 until 32) {
@@ -4413,6 +4417,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         } catch (e: Exception) {
             println("TAV decode error: ${e.message}")
         }
+
+        return dbgOut
     }
 
     private fun tavDecodeDWTIntraTileRGB(qIndex: Int, qYGlobal: Int, channelLayout: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
