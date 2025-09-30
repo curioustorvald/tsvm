@@ -356,12 +356,13 @@ static float get_video_rate_kbps(tav_encoder_t *enc) {
 }
 
 // PID controller parameters - heavily damped to prevent oscillation
-#define PID_KP 0.15f    // Proportional gain - very conservative
-#define PID_KI 0.01f    // Integral gain - slow convergence
-#define PID_KD 0.6f     // Derivative gain - heavy damping to resist changes
-#define MAX_QY_CHANGE 1 // Maximum quantiser change per frame - very conservative
-#define DERIVATIVE_FILTER 0.75f // Heavy low-pass filter for derivative
-#define INTEGRAL_DEADBAND 0.10f // Don't accumulate integral within ±10% of target
+#define PID_KP 0.08f    // Proportional gain - extremely conservative
+#define PID_KI 0.002f   // Integral gain - very slow to prevent windup
+#define PID_KD 0.4f     // Derivative gain - moderate damping
+#define MAX_QY_CHANGE 0.5f // Maximum quantiser change per frame - extremely conservative
+#define DERIVATIVE_FILTER 0.85f // Very heavy low-pass filter for derivative
+#define INTEGRAL_DEADBAND 0.05f // Don't accumulate integral within ±5% of target
+#define INTEGRAL_CLAMP 500.0f   // Clamp integral term to prevent windup
 
 static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
     if (!enc->bitrate_mode) {
@@ -411,9 +412,13 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
     if (error_percent > INTEGRAL_DEADBAND && enc->scene_change_cooldown == 0) {
         enc->pid_integral += error;
     } else {
-        // Decay integral when within deadband or during scene changes
-        enc->pid_integral *= 0.95f;
+        // Aggressively decay integral when within deadband or during scene changes
+        // This prevents integral windup that causes qY drift
+        enc->pid_integral *= 0.90f;
     }
+
+    // Clamp integral immediately to prevent windup
+    enc->pid_integral = FCLAMP(enc->pid_integral, -INTEGRAL_CLAMP, INTEGRAL_CLAMP);
 
     float derivative = error - enc->pid_prev_error;
     enc->pid_prev_error = error;
@@ -423,42 +428,40 @@ static void adjust_quantiser_for_bitrate(tav_encoder_t *enc) {
     enc->pid_filtered_derivative = (DERIVATIVE_FILTER * enc->pid_filtered_derivative) +
                                     ((1.0f - DERIVATIVE_FILTER) * derivative);
 
-    // Clamp integral to prevent windup (tighter bounds)
-    enc->pid_integral = FCLAMP(enc->pid_integral, -200.0f, 200.0f);
-
     // Calculate adjustment using filtered derivative for smoother response
     float pid_output = (PID_KP * proportional) + (PID_KI * enc->pid_integral) +
                        (PID_KD * enc->pid_filtered_derivative);
 
     // Adaptive scaling based on error magnitude and current quantiser position
     // At low quantisers (0-10), QLUT is exponential and small changes cause huge bitrate swings
-    float scale_factor = 50.0f; // Base: ~50 kbps error = 1 quantiser step
-    int max_change = MAX_QY_CHANGE;
+    float scale_factor = 100.0f; // Base: ~100 kbps error = 1 quantiser step
+    float max_change = MAX_QY_CHANGE;
 
     if (enc->adjusted_quantiser_y_float < 5.0f) {
         // Extreme lossless (qY 0-4) - be very conservative but still responsive
         // At qY=0, QLUT[0]=1, which is essentially lossless and bitrate is huge
         // Use fixed scale factor to ensure controller can actually respond
-        scale_factor = 150.0f; // ~150 kbps error = 1 step
-        max_change = 1;
+        scale_factor = 200.0f; // ~200 kbps error = 1 step
+        max_change = 0.3f;
     } else if (enc->adjusted_quantiser_y_float < 15.0f) {
         // Very near lossless (qY 5-14) - very conservative
-        scale_factor = 300.0f; // ~300 kbps error = 1 step
-        max_change = 1;
+        scale_factor = 400.0f; // ~400 kbps error = 1 step
+        max_change = 0.4f;
     } else if (enc->adjusted_quantiser_y_float < 30.0f) {
         // Near lossless range (qY 15-29) - be conservative
-        scale_factor = 120.0f; // ~120 kbps error = 1 step
-        max_change = 2;
+        scale_factor = 200.0f; // ~200 kbps error = 1 step
+        max_change = 0.5f;
     } else if (error_percent > 0.5f) {
-        // Large error - be more aggressive
-        scale_factor = 30.0f;
+        // Large error - be slightly more aggressive
+        scale_factor = 150.0f;
+        max_change = 0.6f;
     }
 
     // Calculate float adjustment (no integer quantization yet)
     float adjustment_float = pid_output / scale_factor;
 
     // Limit maximum change per frame to prevent wild swings (adaptive limit)
-    adjustment_float = FCLAMP(adjustment_float, -(float)max_change, (float)max_change);
+    adjustment_float = FCLAMP(adjustment_float, -max_change, max_change);
 
     // Apply logarithmic scaling to adjustment based on current qY
     // At low qY (0-10), QLUT is exponential so we need much smaller steps
