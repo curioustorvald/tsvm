@@ -3219,15 +3219,15 @@ int main(int argc, char *argv[]) {
                 enc->target_bitrate = bitrate;
 
                 // Choose initial q-index based on target bitrate
-                if (bitrate >= 64000) {
+                if (bitrate >= 32000) {
                     enc->quality_level = 5;
-                } else if (bitrate >= 32000) {
-                    enc->quality_level = 4;
                 } else if (bitrate >= 16000) {
-                    enc->quality_level = 3;
+                    enc->quality_level = 4;
                 } else if (bitrate >= 8000) {
-                    enc->quality_level = 2;
+                    enc->quality_level = 3;
                 } else if (bitrate >= 4000) {
+                    enc->quality_level = 2;
+                } else if (bitrate >= 2000) {
                     enc->quality_level = 1;
                 } else {
                     enc->quality_level = 0;
