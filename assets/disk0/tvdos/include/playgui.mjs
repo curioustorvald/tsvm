@@ -172,7 +172,121 @@ function displaySubtitle(text, position = 0) {
     con.color_pair(oldFgColour, oldBgColour)
 }
 
+function emit(c) {
+    return "\x84"+c+"u"
+}
+
+function formatTime(seconds) {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = Math.floor(seconds % 60)
+
+    return [hours, minutes, secs]
+        .map(val => val.toString().padStart(2, '0'))
+        .join(':')
+}
+
+function drawProgressBar(progress, width) {
+    // Clamp progress between 0 and 1
+    progress = Math.max(0, Math.min(1, progress));
+
+    // Calculate position in "half-character" resolution
+    const position = progress * width * 2;
+    const charIndex = Math.floor(position / 2);
+    const isRightHalf = (position % 2) >= 1;
+
+    let bar = '';
+
+    for (let i = 0; i < width; i++) {
+        if (i == charIndex) {
+            bar += isRightHalf ? '\xDE' : '\xDD';
+        } else {
+            bar += '\xC4';
+        }
+    }
+
+    return bar;
+}
+
+/*
+status = {
+    videoRate: int,
+    frameCount: int,
+    totalFrames: int,
+    fps: int,
+    qY: int,
+    akku: float,
+    fileName: String,
+    fileOrd: int,
+    currentStatus: int (0: stop/init, 1: play, 2: pause)
+}
+
+*/
+function printBottomBar(status) {
+    con.color_pair(253, 0)
+    con.move(32, 1)
+
+    const fullTimeInSec = status.totalFrames / status.fps
+    const progress = status.frameCount / (status.totalFrames - 1)
+    const elapsed = progress * fullTimeInSec
+    const remaining = (1 - progress) * fullTimeInSec
+
+    const BAR = '\xB3'
+    const statIcon = [emit(0xFE), emit(0x10), emit(0x13)]
+    let sLeft = `${emit(0x1E)}${status.fileOrd}${emit(0x1F)}${BAR}${statIcon[status.currentStatus]} `
+    let sRate = `${BAR}${(''+((status.videoRate/128)|0)).padStart(6, ' ')}`
+    let timeElapsed = formatTime(elapsed)
+    let timeRemaining = formatTime(remaining)
+    let barWidth = 80 - (sLeft.length - 8 - ((status.currentStatus == 0) ? 1 : 0) + timeElapsed.length + timeRemaining.length + sRate.length) - 2
+    let bar = drawProgressBar(progress, barWidth)
+
+    let s = sLeft + timeElapsed + ' ' + bar + ' ' + timeRemaining + sRate
+    print(s);con.addch(0x4B)
+
+    con.move(1, 1)
+}
+
+function printTopBar(status, moreInfo) {
+    con.color_pair(253, 0)
+    con.move(1)
+
+    const BAR = '\xB3'
+
+    if (moreInfo) {
+        let filename = status.fileName.split("\\").pop()
+
+        let sF = `F ${(''+status.frameCount).padStart((''+status.totalFrames).length, ' ')}/${status.totalFrames}`
+        let sQ = `Q${(''+status.qY).padStart(4,' ')},${(''+status.qCo).padStart(2,' ')},${(''+status.qCg).padStart(2,' ')}`
+        let sFPS = `${(status.frameCount / status.akku).toFixed(2)}f`
+
+        let sLeft = sF + BAR + sQ + BAR + sFPS + BAR
+        let filenameSpace = 80 - sLeft.length
+        if (filename.length > filenameSpace) {
+            filename = filename.slice(0, filenameSpace - 1) + '~'
+        }
+        let remainingSpc = filenameSpace - status.fileName.length
+        let sRight = (remainingSpc > 0) ? ' '.repeat(filenameSpace - status.fileName.length + 3) : ''
+
+        print(sLeft + filename + sRight)
+    } else {
+        let s = status.fileName
+        if (s.length > 80) {
+            s = s.slice(0, 79) + '~'
+        }
+        let spcs = 80 - s.length
+        let spcsLeft = (spcs / 2)|0
+        let spcsRight = spcs - spcsLeft
+        print(' '.repeat(spcsLeft))
+        print(s)
+        print(' '.repeat(spcsRight))
+    }
+
+    con.move(1, 1)
+}
+
 exports = {
     clearSubtitleArea,
-    displaySubtitle
+    displaySubtitle,
+    printTopBar,
+    printBottomBar
 }

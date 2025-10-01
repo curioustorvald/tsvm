@@ -644,11 +644,23 @@ try {
                 notifHidden = true
             }
 
-            con.move(32, 1)
+
             con.color_pair(253, 0)
-            print(`B=${(getVideoRate() / 1024 * 8)|0}k F=${frameCount}/${header.totalFrames} qY=${decoderDbgInfo.qY} f=${(frameCount / akku2).toFixed(2)}`)
-                con.color_pair(255, 255);print("     ")
-            con.move(1, 1)
+            let guiStatus = {
+                fps: header.fps,
+                videoRate: getVideoRate(),
+                frameCount: frameCount,
+                totalFrames: header.totalFrames,
+                qY: decoderDbgInfo.qY,
+                qCo: decoderDbgInfo.qCo,
+                qCg: decoderDbgInfo.qCg,
+                akku: akku2,
+                fileName: fullFilePathStr,
+                fileOrd: currentFileIndex,
+                currentStatus: 1
+            }
+            gui.printBottomBar(guiStatus)
+            gui.printTopBar(guiStatus, 1)
         }
 
         t1 = t2

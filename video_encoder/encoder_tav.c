@@ -2375,6 +2375,7 @@ static int start_audio_conversion(tav_encoder_t *enc) {
     } else {
         bitrate = enc->lossless ? 384 : MP2_RATE_TABLE[enc->quality_level];
     }
+    printf("  Audio format: MP2 %dkbps (via libtwolame)\n", bitrate);
     snprintf(command, sizeof(command),
         "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar 32000 -ac 2 -y \"%s\" 2>/dev/null",
         enc->input_file, bitrate, TEMP_AUDIO_FILE);
@@ -3366,14 +3367,11 @@ int main(int argc, char *argv[]) {
            enc->wavelet_filter == WAVELET_HAAR ? "Haar" : "unknown");
     printf("Decomposition levels: %d\n", enc->decomp_levels);
     printf("Colour space: %s\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
-    printf("Quantisation: %s\n", enc->perceptual_tuning ? "Perceptual (HVS-optimised)" : "Uniform (legacy)");
+    printf("Quantisation: %s\n", enc->perceptual_tuning ? "Perceptual (HVS-optimised)" : "Uniform");
     if (enc->ictcp_mode) {
         printf("Base quantiser: I=%d, Ct=%d, Cp=%d\n", QLUT[enc->quantiser_y], QLUT[enc->quantiser_co], QLUT[enc->quantiser_cg]);
     } else {
         printf("Base quantiser: Y=%d, Co=%d, Cg=%d\n", QLUT[enc->quantiser_y], QLUT[enc->quantiser_co], QLUT[enc->quantiser_cg]);
-    }
-    if (enc->perceptual_tuning) {
-        printf("Perceptual tuning enabled\n");
     }
 
     // Open output file

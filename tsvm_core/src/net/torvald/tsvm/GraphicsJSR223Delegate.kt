@@ -4394,6 +4394,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else TAV_QLUT[it - 1] }
 
                     dbgOut["qY"] = qY
+                    dbgOut["qCo"] = qCo
+                    dbgOut["qCg"] = qCg
 
                     // debug print: raw decompressed bytes
                     /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
