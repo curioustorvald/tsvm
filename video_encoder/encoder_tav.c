@@ -16,22 +16,19 @@
 #include <limits.h>
 #include <float.h>
 
-#ifndef PI
-#define PI 3.14159265358979323846f
-#endif
-
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
 // TAV version - dynamic based on colour space and perceptual tuning
-// Version 5: YCoCg-R monoblock with perceptual quantisation (default)
+// Version 8: ICtCp multi-tile with perceptual quantisation (--ictcp flag)
+// Version 7: YCoCg-R multi-tile with perceptual quantisation (default if width > 640 or height > 540)
 // Version 6: ICtCp monoblock with perceptual quantisation (--ictcp flag)
-// Legacy versions (uniform quantisation):
-// Version 3: YCoCg-R monoblock uniform (--no-perceptual-tuning)
+// Version 5: YCoCg-R monoblock with perceptual quantisation (default if width <= 640 and height <= 540)
 // Version 4: ICtCp monoblock uniform (--ictcp --no-perceptual-tuning)
-// Version 1: YCoCg-R 4-tile (legacy, code preserved but not accessible)
-// Version 2: ICtCp 4-tile (legacy, code preserved but not accessible)
+// Version 3: YCoCg-R monoblock uniform (--no-perceptual-tuning)
+// Version 2: ICtCp multi-tile uniform (--ictcp --no-perceptual-tuning)
+// Version 1: YCoCg-R multi-tile uniform (--no-perceptual-tuning)
 
-// Tile encoding modes (280x224 tiles)
+// Tile encoding modes
 #define TAV_MODE_SKIP      0x00  // Skip tile (copy from reference)
 #define TAV_MODE_INTRA     0x01  // Intra DWT coding (I-frame tiles)
 #define TAV_MODE_DELTA     0x02  // Coefficient delta encoding (efficient P-frames)
@@ -45,16 +42,15 @@
 #define TAV_PACKET_SYNC        0xFF  // Sync packet
 
 // DWT settings
-#define TILE_SIZE_X 280  // 280x224 tiles - better compression efficiency  
-#define TILE_SIZE_Y 224  // Optimised for TSVM 560x448 (2×2 tiles exactly)
-#define MAX_DECOMP_LEVELS 6  // Can go deeper: 280→140→70→35→17→8→4, 224→112→56→28→14→7→3
+#define TILE_SIZE_X 640
+#define TILE_SIZE_Y 540
 
 // Simulated overlapping tiles settings for seamless DWT processing
 #define DWT_FILTER_HALF_SUPPORT 4  // For 9/7 filter (filter lengths 9,7 → L=4)
 #define TILE_MARGIN_LEVELS 3       // Use margin for 3 levels: 4 * (2^3) = 4 * 8 = 32px
 #define TILE_MARGIN (DWT_FILTER_HALF_SUPPORT * (1 << TILE_MARGIN_LEVELS))  // 4 * 8 = 32px
-#define PADDED_TILE_SIZE_X (TILE_SIZE_X + 2 * TILE_MARGIN)  // 280 + 64 = 344px
-#define PADDED_TILE_SIZE_Y (TILE_SIZE_Y + 2 * TILE_MARGIN)  // 224 + 64 = 288px
+#define PADDED_TILE_SIZE_X (TILE_SIZE_X + 2 * TILE_MARGIN)
+#define PADDED_TILE_SIZE_Y (TILE_SIZE_Y + 2 * TILE_MARGIN)
 
 // Wavelet filter types
 #define WAVELET_5_3_REVERSIBLE 0  // Lossless capable
@@ -662,7 +658,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->fps = DEFAULT_FPS;
     enc->quality_level = DEFAULT_QUALITY;
     enc->wavelet_filter = WAVELET_9_7_IRREVERSIBLE;
-    enc->decomp_levels = MAX_DECOMP_LEVELS;
+    enc->decomp_levels = 6;
     enc->quantiser_y = QUALITY_Y[DEFAULT_QUALITY];
     enc->quantiser_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantiser_cg = QUALITY_CG[DEFAULT_QUALITY];
@@ -681,9 +677,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
     if (!enc) return -1;
 
     // Automatic decomposition levels for monoblock mode
-    if (enc->monoblock) {
-        enc->decomp_levels = calculate_max_decomp_levels(enc->width, enc->height);
-    }
+    enc->decomp_levels = calculate_max_decomp_levels(enc->width, enc->height);
 
     // Calculate tile dimensions
     if (enc->monoblock) {
@@ -691,7 +685,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
         enc->tiles_x = 1;
         enc->tiles_y = 1;
     } else {
-        // Standard mode: multiple 280x224 tiles
+        // Standard mode: multiple tiles
         enc->tiles_x = (enc->width + TILE_SIZE_X - 1) / TILE_SIZE_X;
         enc->tiles_y = (enc->height + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
     }
@@ -1041,7 +1035,7 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
         int core_src_end_x = core_start_x + TILE_SIZE_X;
 
         if (core_src_start_x >= 0 && core_src_end_x <= enc->width) {
-            // OPTIMISATION: Bulk copy core region (280 pixels) in one operation
+            // OPTIMISATION: Bulk copy core region in one operation
             const int src_core_offset = src_row_offset + core_src_start_x;
 
             memcpy(&padded_y[padded_row_offset + core_start_px],
@@ -2181,7 +2175,11 @@ static int write_tav_header(tav_encoder_t *enc) {
             version = enc->ictcp_mode ? 4 : 3;  // Version 4 for ICtCp uniform, 3 for YCoCg-R uniform
         }
     } else {
-        version = enc->ictcp_mode ? 2 : 1;  // Legacy 4-tile versions
+        if (enc->perceptual_tuning) {
+            version = enc->ictcp_mode ? 8 : 7;
+        } else {
+            version = enc->ictcp_mode ? 2 : 1;
+        }
     }
     fputc(version, enc->output_fp);
 
@@ -3260,9 +3258,6 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
                 break;
-            /*case 'd':
-                enc->decomp_levels = CLAMP(atoi(optarg), 1, MAX_DECOMP_LEVELS);
-                break;*/
             case 'v':
                 enc->verbose = 1;
                 break;
@@ -3328,6 +3323,11 @@ int main(int argc, char *argv[]) {
     // disable perceptual tuning if wavelet filter is not CDF 9/7
     if (enc->wavelet_filter != WAVELET_9_7_IRREVERSIBLE) {
         enc->perceptual_tuning = 0;
+    }
+
+    // disable monoblock mode if either width or height exceeds tie size
+    if (enc->width > TILE_SIZE_X || enc->height > TILE_SIZE_Y) {
+        enc->monoblock = 0;
     }
 
     if (enc->lossless) {

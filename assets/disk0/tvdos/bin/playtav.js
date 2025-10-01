@@ -254,7 +254,7 @@ header.fileRole = seqread.readOneByte()
 // Skip reserved bytes
 seqread.skip(4)
 
-if (header.version < 1 || header.version > 6) {
+if (header.version < 1 || header.version > 8) {
     printerrln(`Error: Unsupported TAV version ${header.version}`)
     errorlevel = 1
     return
@@ -296,7 +296,7 @@ console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${QLUT[header.qualityY]}, Co=${QLUT[header.qualityCo]}, Cg=${QLUT[header.qualityCg]}`)
 console.log(`Channel layout: ${getChannelLayoutName(header.channelLayout)}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
-console.log(`Colour space: ${header.version === 2 ? "ICtCp" : "YCoCg-R"}`)
+console.log(`Colour space: ${header.version % 2 == 0 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
 
 // Frame buffer addresses - same as TEV

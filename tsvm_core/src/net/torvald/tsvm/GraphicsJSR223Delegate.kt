@@ -57,10 +57,8 @@ import kotlin.collections.last
 import kotlin.collections.listOf
 import kotlin.collections.map
 import kotlin.collections.maxOfOrNull
-import kotlin.collections.minus
 import kotlin.collections.mutableListOf
 import kotlin.collections.mutableMapOf
-import kotlin.collections.plus
 import kotlin.collections.set
 import kotlin.collections.sliceArray
 import kotlin.collections.sorted
@@ -74,14 +72,10 @@ import kotlin.intArrayOf
 import kotlin.let
 import kotlin.longArrayOf
 import kotlin.math.*
-import kotlin.plus
 import kotlin.repeat
-import kotlin.sequences.minus
-import kotlin.sequences.plus
 import kotlin.text.format
 import kotlin.text.lowercase
 import kotlin.text.toString
-import kotlin.times
 
 class GraphicsJSR223Delegate(private val vm: VM) {
 
@@ -4059,11 +4053,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // TAV Simulated overlapping tiles constants (must match encoder)
-    private val TILE_SIZE_X = 280
-    private val TILE_SIZE_Y = 224
+    private val TAV_TILE_SIZE_X = 640
+    private val TAV_TILE_SIZE_Y = 540
     private val TAV_TILE_MARGIN = 32  // 32-pixel margin for 3 DWT levels (4 * 2^3 = 32px)
-    private val PADDED_TILE_SIZE_X = TILE_SIZE_X + 2 * TAV_TILE_MARGIN  // 280 + 64 = 344px
-    private val PADDED_TILE_SIZE_Y = TILE_SIZE_Y + 2 * TAV_TILE_MARGIN  // 224 + 64 = 288px
+    private val TAV_PADDED_TILE_SIZE_X = TAV_TILE_SIZE_X + 2 * TAV_TILE_MARGIN
+    private val TAV_PADDED_TILE_SIZE_Y = TAV_TILE_SIZE_Y + 2 * TAV_TILE_MARGIN
 
     // TAV coefficient delta storage for previous frame (for efficient P-frames)
     private var tavPreviousCoeffsY: MutableMap<Int, FloatArray>? = null
@@ -4371,7 +4365,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         try {
             // Determine if monoblock mode based on TAV version
-            val isMonoblock = (tavVersion >= 3)
+            val isMonoblock = (tavVersion in 3..6)
 
             val tilesX: Int
             val tilesY: Int
@@ -4381,9 +4375,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 tilesX = 1
                 tilesY = 1
             } else {
-                // Standard mode: multiple 280x224 tiles (supported for backwards compatibility only)
-                tilesX = (width + TILE_SIZE_X - 1) / TILE_SIZE_X
-                tilesY = (height + TILE_SIZE_Y - 1) / TILE_SIZE_Y
+                // Standard mode: multiple 720x720 tiles
+                tilesX = (width + TAV_TILE_SIZE_X - 1) / TAV_TILE_SIZE_X
+                tilesY = (height + TAV_TILE_SIZE_Y - 1) / TAV_TILE_SIZE_Y
             }
             
             // Process each tile
@@ -4442,7 +4436,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             width * height
         } else {
             // Standard mode: padded tiles (344x288)
-            PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+            TAV_PADDED_TILE_SIZE_X * TAV_PADDED_TILE_SIZE_Y
         }
 
         var ptr = readPtr
@@ -4519,7 +4513,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val cgTile = FloatArray(coeffCount)
 
         // Check if perceptual quantisation is used (versions 5 and 6)
-        val isPerceptual = (tavVersion == 5 || tavVersion == 6)
+        val isPerceptual = (tavVersion in 5..8)
 
         // Debug: Print version detection for frame 120
         if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
@@ -4528,8 +4522,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         if (isPerceptual) {
             // Perceptual dequantisation with subband-specific weights
-            val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
-            val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+            val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
+            val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
             val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
 
             dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
@@ -4594,8 +4588,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
             // Debug: Uniform quantisation subband analysis for comparison
             if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
-                val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
-                val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+                val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
+                val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
                 val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
 
                 // Comprehensive five-number summary for uniform quantisation baseline
@@ -4673,7 +4667,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileIdx = if (isMonoblock) {
             0  // Single tile index for monoblock
         } else {
-            tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+            tileY * ((width + TAV_TILE_SIZE_X - 1) / TAV_TILE_SIZE_X) + tileX
         }
 
         if (tavPreviousCoeffsY == null) {
@@ -4686,8 +4680,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         tavPreviousCoeffsCg!![tileIdx] = cgTile.clone()
         
         // Apply inverse DWT
-        val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
-        val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+        val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
+        val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
 
         if (isLossless) {
             tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
@@ -4735,14 +4729,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             finalCgTile = cgTile
         } else {
             // Standard mode: extract core 280x224 pixels from reconstructed padded tiles (344x288)
-            finalYTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-            finalCoTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-            finalCgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+            finalYTile = FloatArray(TAV_TILE_SIZE_X * TAV_TILE_SIZE_Y)
+            finalCoTile = FloatArray(TAV_TILE_SIZE_X * TAV_TILE_SIZE_Y)
+            finalCgTile = FloatArray(TAV_TILE_SIZE_X * TAV_TILE_SIZE_Y)
 
-            for (y in 0 until TILE_SIZE_Y) {
-                for (x in 0 until TILE_SIZE_X) {
-                    val coreIdx = y * TILE_SIZE_X + x
-                    val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
+            for (y in 0 until TAV_TILE_SIZE_Y) {
+                for (x in 0 until TAV_TILE_SIZE_X) {
+                    val coreIdx = y * TAV_TILE_SIZE_X + x
+                    val paddedIdx = (y + TAV_TILE_MARGIN) * TAV_PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
 
                     finalYTile[coreIdx] = yTile[paddedIdx]
                     finalCoTile[coreIdx] = coTile[paddedIdx]
@@ -4757,8 +4751,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
         
         // Convert to RGB based on TAV version and mode
-        // v1,v3 = YCoCg-R, v2,v4 = ICtCp
-        if (tavVersion == 2 || tavVersion == 4) {
+        if (tavVersion % 2 == 0) {
             // ICtCp color space
             if (isMonoblock) {
                 tavConvertICtCpMonoblockToRGB(finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)
@@ -4779,17 +4772,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavConvertYCoCgTileToRGB(tileX: Int, tileY: Int, yTile: FloatArray, coTile: FloatArray, cgTile: FloatArray,
                                          rgbAddr: Long, width: Int, height: Int) {
-        val startX = tileX * TILE_SIZE_X
-        val startY = tileY * TILE_SIZE_Y
+        val startX = tileX * TAV_TILE_SIZE_X
+        val startY = tileY * TAV_TILE_SIZE_Y
         
         // OPTIMISATION: Process pixels row by row with bulk copying for better cache locality
-        for (y in 0 until TILE_SIZE_Y) {
+        for (y in 0 until TAV_TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
             
             // Calculate valid pixel range for this row
             val validStartX = maxOf(0, startX)
-            val validEndX = minOf(width, startX + TILE_SIZE_X)
+            val validEndX = minOf(width, startX + TAV_TILE_SIZE_X)
             val validPixelsInRow = validEndX - validStartX
             
             if (validPixelsInRow > 0) {
@@ -4798,7 +4791,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 var bufferIdx = 0
                 
                 for (x in validStartX until validEndX) {
-                    val tileIdx = y * TILE_SIZE_X + (x - startX)
+                    val tileIdx = y * TAV_TILE_SIZE_X + (x - startX)
                     
                     // YCoCg-R to RGB conversion (exact inverse of encoder)
                     val Y = yTile[tileIdx]
@@ -4826,17 +4819,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavConvertICtCpTileToRGB(tileX: Int, tileY: Int, iTile: FloatArray, ctTile: FloatArray, cpTile: FloatArray,
                                          rgbAddr: Long, width: Int, height: Int) {
-        val startX = tileX * TILE_SIZE_X
-        val startY = tileY * TILE_SIZE_Y
+        val startX = tileX * TAV_TILE_SIZE_X
+        val startY = tileY * TAV_TILE_SIZE_Y
         
         // OPTIMISATION: Process pixels row by row with bulk copying for better cache locality
-        for (y in 0 until TILE_SIZE_Y) {
+        for (y in 0 until TAV_TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
             
             // Calculate valid pixel range for this row
             val validStartX = maxOf(0, startX)
-            val validEndX = minOf(width, startX + TILE_SIZE_X)
+            val validEndX = minOf(width, startX + TAV_TILE_SIZE_X)
             val validPixelsInRow = validEndX - validStartX
             
             if (validPixelsInRow > 0) {
@@ -4845,7 +4838,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 var bufferIdx = 0
                 
                 for (x in validStartX until validEndX) {
-                    val tileIdx = y * TILE_SIZE_X + (x - startX)
+                    val tileIdx = y * TAV_TILE_SIZE_X + (x - startX)
                     
                     // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
                     val I = iTile[tileIdx].toDouble() / 255.0
@@ -4996,17 +4989,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // Helper functions (simplified versions of existing DWT functions)
     private fun tavCopyTileRGB(tileX: Int, tileY: Int, currentRGBAddr: Long, prevRGBAddr: Long, width: Int, height: Int) {
-        val startX = tileX * TILE_SIZE_X
-        val startY = tileY * TILE_SIZE_Y
+        val startX = tileX * TAV_TILE_SIZE_X
+        val startY = tileY * TAV_TILE_SIZE_Y
         
         // OPTIMISATION: Copy entire rows at once for maximum performance
-        for (y in 0 until TILE_SIZE_Y) {
+        for (y in 0 until TAV_TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
             
             // Calculate valid pixel range for this row
             val validStartX = maxOf(0, startX)
-            val validEndX = minOf(width, startX + TILE_SIZE_X)
+            val validEndX = minOf(width, startX + TAV_TILE_SIZE_X)
             val validPixelsInRow = validEndX - validStartX
             
             if (validPixelsInRow > 0) {
@@ -5077,7 +5070,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileIdx = if (isMonoblock) {
             0  // Single tile index for monoblock
         } else {
-            tileY * ((width + TILE_SIZE_X - 1) / TILE_SIZE_X) + tileX
+            tileY * ((width + TAV_TILE_SIZE_X - 1) / TAV_TILE_SIZE_X) + tileX
         }
         var ptr = readPtr
 
@@ -5094,7 +5087,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             width * height
         } else {
             // Standard mode: padded tiles (344x288)
-            PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y
+            TAV_PADDED_TILE_SIZE_X * TAV_PADDED_TILE_SIZE_Y
         }
         
         // Read delta coefficients using significance map format (same as intra but with deltas)
@@ -5195,8 +5188,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         tavPreviousCoeffsCg!![tileIdx] = currentCg.clone()
         
         // Apply inverse DWT
-        val tileWidth = if (isMonoblock) width else PADDED_TILE_SIZE_X
-        val tileHeight = if (isMonoblock) height else PADDED_TILE_SIZE_Y
+        val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
+        val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
 
         if (isLossless) {
             tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
@@ -5244,14 +5237,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             finalCgTile = currentCg
         } else {
             // Standard mode: extract core 280x224 pixels from reconstructed padded tiles (344x288)
-            finalYTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-            finalCoTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
-            finalCgTile = FloatArray(TILE_SIZE_X * TILE_SIZE_Y)
+            finalYTile = FloatArray(TAV_TILE_SIZE_X * TAV_TILE_SIZE_Y)
+            finalCoTile = FloatArray(TAV_TILE_SIZE_X * TAV_TILE_SIZE_Y)
+            finalCgTile = FloatArray(TAV_TILE_SIZE_X * TAV_TILE_SIZE_Y)
 
-            for (y in 0 until TILE_SIZE_Y) {
-                for (x in 0 until TILE_SIZE_X) {
-                    val coreIdx = y * TILE_SIZE_X + x
-                    val paddedIdx = (y + TAV_TILE_MARGIN) * PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
+            for (y in 0 until TAV_TILE_SIZE_Y) {
+                for (x in 0 until TAV_TILE_SIZE_X) {
+                    val coreIdx = y * TAV_TILE_SIZE_X + x
+                    val paddedIdx = (y + TAV_TILE_MARGIN) * TAV_PADDED_TILE_SIZE_X + (x + TAV_TILE_MARGIN)
 
                     finalYTile[coreIdx] = currentY[paddedIdx]
                     finalCoTile[coreIdx] = currentCo[paddedIdx]
@@ -5267,7 +5260,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Convert to RGB based on TAV version and mode
         // v1,v3 = YCoCg-R, v2,v4 = ICtCp
-        if (tavVersion == 2 || tavVersion == 4) {
+        if (tavVersion % 2 == 0) {
             // ICtCp color space
             if (isMonoblock) {
                 tavConvertICtCpMonoblockToRGB(finalYTile, finalCoTile, finalCgTile, currentRGBAddr, width, height)

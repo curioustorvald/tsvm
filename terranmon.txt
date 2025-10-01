@@ -987,13 +987,15 @@ transmission capability, and region-of-interest coding.
     uint8  Quantiser override Y  (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding; shared with A channel)
     uint8  Quantiser override Co (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
     uint8  Quantiser override Cg (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
-    - note: quantiser overrides are always present regardless of the channel layout
-    ## Coefficient Storage Format (Significance Map Compression)
+        - note: quantiser overrides are always present regardless of the channel layout
+    *       Tile data (one compressed payload per tile)
+
+    ### Coefficient Storage Format (Significance Map Compression)
 
     Starting with encoder version 2025-09-29, DWT coefficients are stored using
     significance map compression with concatenated maps layout for optimal efficiency:
 
-    ### Concatenated Maps Format (Current)
+    #### Concatenated Maps Format
     All channels are processed together to maximize Zstd compression:
 
         uint8  Y Significance Map[(coeff_count + 7) / 8]    // 1 bit per Y coefficient
@@ -1005,44 +1007,27 @@ transmission capability, and region-of-interest coding.
         int16  Cg Non-zero Values[variable length]          // Only non-zero Cg coefficients
         int16  A Non-zero Values[variable length]           // Only non-zero A coefficients (if alpha present)
 
-    ### Significance Map Encoding
+    #### Significance Map Encoding
     Each significance map uses 1 bit per coefficient position:
         - Bit = 1: coefficient is non-zero, read value from corresponding Non-zero Values array
         - Bit = 0: coefficient is zero
 
-    ### Compression Benefits
+    #### Compression Benefits
     - **Sparsity exploitation**: Typically 85-95% zeros in quantized DWT coefficients
     - **Cross-channel patterns**: Concatenated maps allow Zstd to find patterns across similar significance maps
     - **Overall improvement**: 16-18% compression improvement before Zstd compression
 
-    ### Legacy Separate Format (2025-09-29 initial)
-    Early significance map implementation processed channels separately:
 
-    For each channel (Y, Co, Cg, optional A):
-        uint8  Significance Map[(coeff_count + 7) / 8]  // 1 bit per coefficient
-        int16  Non-zero Values[variable length]         // Only non-zero coefficients
+    ### DWT Coefficient Structure (per tile)
 
-    ## Legacy Format (for reference)
-    int16  Y channel DWT coefficients[width * height + 4]
-    int16  Co channel DWT coefficients[width * height + 4]
-    int16  Cg channel DWT coefficients[width * height + 4]
-    int16  A channel DWT coefficients[width * height + 4] (only when the video has alpha)
-
-    <for legacy non-monoblock format>
-    int16  Y channel DWT coefficients[tile width * tile height + 4]
-    int16  Co channel DWT coefficients[tile width * tile height + 4]
-    int16  Cg channel DWT coefficients[tile width * tile height + 4]
-    ... (repeated per tile)
-
-### DWT Coefficient Structure (per tile)
     For each decomposition level L (from highest to lowest):
         uint16 LL_size: size of LL subband coefficients
-        uint16 LH_size: size of LH subband coefficients  
+        uint16 LH_size: size of LH subband coefficients
         uint16 HL_size: size of HL subband coefficients
         uint16 HH_size: size of HH subband coefficients
         int16[] LL_coeffs: quantized LL subband (low-low frequencies)
         int16[] LH_coeffs: quantized LH subband (low-high frequencies)
-        int16[] HL_coeffs: quantized HL subband (high-low frequencies)  
+        int16[] HL_coeffs: quantized HL subband (high-low frequencies)
         int16[] HH_coeffs: quantized HH subband (high-high frequencies)
 
 ## DWT Implementation Details
