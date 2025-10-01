@@ -1386,15 +1386,17 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
 }
 
 // https://www.desmos.com/calculator/mjlpwqm8ge
-// where Q=quality, x=level
 static float perceptual_model3_LH(int quality, float level) {
     float H4 = 1.2f;
-    float Lx = H4 - ((quality + 1.f) / 15.f) * (level - 4.f);
-    float Ld = (quality + 1.f) / -15.f;
-    float C = H4 - 4.f * Ld - ((-16.f*(quality - 5.f))/(15.f));
-    float Gx = (Ld * level) - (((quality - 5.f)*(level - 8.f)*level)/(15.f)) + C;
+    float Q = 2.f; // using fixed value for fixed curve; quantiser will scale it up anyway
+    float Q12 = Q * 12.f;
+    float x = level;
 
-    return (level >= 4) ? Lx : Gx;
+    float Lx = H4 - ((Q + 1.f) / 15.f) * (x - 4.f);
+    float C3 = -1.f / 45.f * (Q12 + 92);
+    float G3x = (-x / 180.f) * (Q12 + 5*x*x - 60*x + 252) - C3 + H4;
+
+    return (level >= 4) ? Lx : G3x;
 }
 
 static float perceptual_model3_HL(int quality, float LH) {
@@ -1406,7 +1408,7 @@ static float lerp(float x, float y, float a) {
 }
 
 static float perceptual_model3_HH(float LH, float HL, float level) {
-    float Kx = (sqrtf(level) - 1.f) * 0.5f + 0.5f;
+    float Kx = fmaf((sqrtf(level) - 1.f), 0.5f, 0.5f);
     return lerp(LH, HL, Kx);
 }
 
