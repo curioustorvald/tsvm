@@ -16,6 +16,9 @@
 #include <limits.h>
 #include <float.h>
 
+// Debug dump frame target moved to command-line argument --dump-frame
+
+
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
 // TAV version - dynamic based on colour space and perceptual tuning
@@ -103,8 +106,8 @@ int KEYFRAME_INTERVAL = 2; // refresh often because deltas in DWT are more visib
 #define MP2_DEFAULT_PACKET_SIZE 1152
 #define MAX_SUBTITLE_LENGTH 2048
 
-const int makeDebugDump = -100; // enter a frame number
 int debugDumpMade = 0;
+int debugDumpFrameTarget = -1;  // -1 means disabled
 
 // Subtitle structure
 typedef struct subtitle_entry {
@@ -607,6 +610,7 @@ static void show_usage(const char *program_name) {
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
+    printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -1715,8 +1719,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                                                                           tile_size, enc->channel_layout, buffer + offset);
     offset += total_compressed_size;
 
-    // DEBUG: Dump raw DWT coefficients for frame ~60 when it's an intra-frame
-    if (!debugDumpMade && enc->frame_count >= makeDebugDump - 1 && enc->frame_count <= makeDebugDump + 2 &&
+    // DEBUG: Dump raw DWT coefficients for specified frame when it's an intra-frame
+    if (!debugDumpMade && debugDumpFrameTarget >= 0 &&
+        enc->frame_count >= debugDumpFrameTarget - 1 && enc->frame_count <= debugDumpFrameTarget + 2 &&
         (mode == TAV_MODE_INTRA)) {
 
         char filename[256];
@@ -3169,6 +3174,7 @@ int main(int argc, char *argv[]) {
         {"ictcp", no_argument, 0, 1005},
         {"no-perceptual-tuning", no_argument, 0, 1007},
         {"encode-limit", required_argument, 0, 1008},
+        {"dump-frame", required_argument, 0, 1009},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3290,6 +3296,9 @@ int main(int argc, char *argv[]) {
                     cleanup_encoder(enc);
                     return 1;
                 }
+                break;
+            case 1009: // --dump-frame
+                debugDumpFrameTarget = atoi(optarg);
                 break;
             case 1400: // --arate
                 {
