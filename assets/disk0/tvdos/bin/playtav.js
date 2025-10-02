@@ -407,8 +407,6 @@ let currentFileIndex = 1  // Track which file we're playing in concatenated stre
 let totalFilesProcessed = 0
 let decoderDbgInfo = {}
 
-let blockDataPtr = sys.malloc(2377744)
-
 let cueElements = []
 
 // Function to try reading next TAV file header at current position
@@ -753,7 +751,6 @@ catch (e) {
 }
 finally {
     // Cleanup
-    sys.free(blockDataPtr)
     sys.free(RGB_BUFFER_A)
     sys.free(RGB_BUFFER_B)
 

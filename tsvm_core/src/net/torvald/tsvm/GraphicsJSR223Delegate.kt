@@ -2197,24 +2197,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         for (py in 0 until 16) {
             for (px in 0 until 16) {
                 val iIdx = py * 16 + px
-                val i = iBlock[iIdx].toDouble()
+                val i = iBlock[iIdx]
 
                 // Get Ct/Cp from 8x8 chroma blocks (4:2:0 upsampling)
                 val ctIdx = (py / 2) * 8 + (px / 2)
-                val ct = ctBlock[ctIdx].toDouble()
-                val cp = cpBlock[ctIdx].toDouble()
+                val ct = ctBlock[ctIdx]
+                val cp = cpBlock[ctIdx]
 
                 // Convert scaled values back to ICtCp range
                 // I channel: IDCT already added 128, so i is in [0,255]. Reverse encoder: (c1*255-128)+128 = c1*255
-                val I = i / 255.0
+                val I = i / 255.0f
                 // Ct/Cp were scaled: c2/c3 * 255.0, so reverse: ct/cp / 255.0
-                val Ct = (ct / 255.0)
-                val Cp = (cp / 255.0)
+                val Ct = (ct / 255.0f)
+                val Cp = (cp / 255.0f)
 
                 // ICtCp -> L'M'S' (inverse matrix)
-                val Lp = I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp
-                val Mp = I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp
-                val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
+                val Lp = I + 0.015718580108730416f * Ct + 0.2095810681164055f * Cp
+                val Mp = I - 0.015718580108730416f * Ct - 0.20958106811640548f * Cp
+                val Sp = I + 1.0212710798422344f * Ct - 0.6052744909924316f * Cp
 
                 // HLG decode: L'M'S' -> linear LMS
                 val L = HLG_EOTF(Lp)
@@ -2222,9 +2222,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val S = HLG_EOTF(Sp)
 
                 // LMS -> linear sRGB (inverse matrix)
-                val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
-                val gLin = -1.3243428148026244 * L + 2.560286104841917 * M -0.2359203727576164 * S
-                val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
+                val rLin = 6.1723815689243215f * L -5.319534979827695f * M + 0.14699442094633924f * S
+                val gLin = -1.3243428148026244f * L + 2.560286104841917f * M -0.2359203727576164f * S
+                val bLin = -0.011819739235953752f * L -0.26473549971186555f * M + 1.2767952602537955f * S
 
                 // Gamma encode to sRGB
                 val rSrgb = srgbUnlinearise(rLin)
@@ -2233,9 +2233,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 // Convert to 8-bit and store
                 val baseIdx = (py * 16 + px) * 3
-                rgbData[baseIdx] = (rSrgb * 255.0).toInt().coerceIn(0, 255)     // R
-                rgbData[baseIdx + 1] = (gSrgb * 255.0).toInt().coerceIn(0, 255) // G
-                rgbData[baseIdx + 2] = (bSrgb * 255.0).toInt().coerceIn(0, 255) // B
+                rgbData[baseIdx] = (rSrgb * 255.0f).toInt().coerceIn(0, 255)     // R
+                rgbData[baseIdx + 1] = (gSrgb * 255.0f).toInt().coerceIn(0, 255) // G
+                rgbData[baseIdx + 2] = (bSrgb * 255.0f).toInt().coerceIn(0, 255) // B
             }
         }
 
@@ -2245,15 +2245,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // Helper functions for ICtCp decoding
 
     // Inverse HLG OETF (HLG -> linear)
-    fun HLG_EOTF(V: Double): Double {
-        val a = 0.17883277
-        val b = 1.0 - 4.0 * a
-        val c = 0.5 - a * ln(4.0 * a)
+    fun HLG_EOTF(V: Float): Float {
+        val a = 0.17883277f
+        val b = 1.0f - 4.0f * a
+        val c = 0.5f - a * ln(4.0f * a)
 
-        if (V <= 0.5)
-            return (V * V) / 3.0
+        if (V <= 0.5f)
+            return (V * V) / 3.0f
         else
-            return (exp((V - c)/a) + b) / 12.0
+            return (exp((V - c)/a) + b) / 12.0f
     }
 
     // sRGB gamma decode: nonlinear -> linear
@@ -2266,11 +2266,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // sRGB gamma encode: linear -> nonlinear
-    private fun srgbUnlinearise(value: Double): Double {
-        return if (value <= 0.0031308) {
-            value * 12.92
+    private fun srgbUnlinearise(value: Float): Float {
+        return if (value <= 0.0031308f) {
+            value * 12.92f
         } else {
-            1.055 * value.pow(1.0 / 2.4) - 0.055
+            1.055f * value.pow(1.0f / 2.4f) - 0.055f
         }
     }
 
@@ -4846,14 +4846,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val tileIdx = y * TAV_TILE_SIZE_X + (x - startX)
                     
                     // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
-                    val I = iTile[tileIdx].toDouble() / 255.0
-                    val Ct = (ctTile[tileIdx].toDouble() - 127.5) / 255.0
-                    val Cp = (cpTile[tileIdx].toDouble() - 127.5) / 255.0
+                    val I = iTile[tileIdx] / 255.0f
+                    val Ct = (ctTile[tileIdx] - 127.5f) / 255.0f
+                    val Cp = (cpTile[tileIdx] - 127.5f) / 255.0f
 
                     // ICtCp -> L'M'S' (inverse matrix)
-                    val Lp = I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp
-                    val Mp = I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp
-                    val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
+                    val Lp = I + 0.015718580108730416f * Ct + 0.2095810681164055f * Cp
+                    val Mp = I - 0.015718580108730416f * Ct - 0.20958106811640548f * Cp
+                    val Sp = I + 1.0212710798422344f * Ct - 0.6052744909924316f * Cp
 
                     // HLG decode: L'M'S' -> linear LMS
                     val L = HLG_EOTF(Lp)
@@ -4861,18 +4861,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val S = HLG_EOTF(Sp)
 
                     // LMS -> linear sRGB (inverse matrix)
-                    val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
-                    val gLin = -1.3243428148026244 * L + 2.560286104841917 * M -0.2359203727576164 * S
-                    val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
+                    val rLin = 6.1723815689243215f * L -5.319534979827695f * M + 0.14699442094633924f * S
+                    val gLin = -1.3243428148026244f * L + 2.560286104841917f * M -0.2359203727576164f * S
+                    val bLin = -0.011819739235953752f * L -0.26473549971186555f * M + 1.2767952602537955f * S
 
                     // Gamma encode to sRGB
                     val rSrgb = srgbUnlinearise(rLin)
                     val gSrgb = srgbUnlinearise(gLin)
                     val bSrgb = srgbUnlinearise(bLin)
 
-                    rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
-                    rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
-                    rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
                 }
                 
                 // OPTIMISATION: Bulk copy entire row at once
@@ -4966,14 +4966,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val idx = y * width + x
 
                 // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
-                val I = iData[idx].toDouble() / 255.0
-                val Ct = (ctData[idx].toDouble() - 127.5) / 255.0
-                val Cp = (cpData[idx].toDouble() - 127.5) / 255.0
+                val I = iData[idx] / 255.0f
+                val Ct = (ctData[idx] - 127.5f) / 255.0f
+                val Cp = (cpData[idx] - 127.5f) / 255.0f
 
                 // ICtCp -> L'M'S' (inverse matrix)
-                val Lp = I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp
-                val Mp = I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp
-                val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
+                val Lp = I + 0.015718580108730416f * Ct + 0.2095810681164055f * Cp
+                val Mp = I - 0.015718580108730416f * Ct - 0.20958106811640548f * Cp
+                val Sp = I + 1.0212710798422344f * Ct - 0.6052744909924316f * Cp
 
                 // HLG decode: L'M'S' -> linear LMS
                 val L = HLG_EOTF(Lp)
@@ -4981,18 +4981,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val S = HLG_EOTF(Sp)
 
                 // LMS -> linear sRGB (inverse matrix)
-                val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
-                val gLin = -1.3243428148026244 * L + 2.560286104841917 * M -0.2359203727576164 * S
-                val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
+                val rLin = 6.1723815689243215f * L -5.319534979827695f * M + 0.14699442094633924f * S
+                val gLin = -1.3243428148026244f * L + 2.560286104841917f * M -0.2359203727576164f * S
+                val bLin = -0.011819739235953752f * L -0.26473549971186555f * M + 1.2767952602537955f * S
 
                 // Gamma encode to sRGB
                 val rSrgb = srgbUnlinearise(rLin)
                 val gSrgb = srgbUnlinearise(gLin)
                 val bSrgb = srgbUnlinearise(bLin)
 
-                rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
             }
 
             // OPTIMISATION: Bulk copy entire row at once
