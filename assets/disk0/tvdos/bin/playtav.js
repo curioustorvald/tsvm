@@ -7,7 +7,11 @@
 const WIDTH = 560
 const HEIGHT = 448
 const TAV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x41, 0x56] // "\x1FTSVM TAV"
+const UCF_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x55, 0x43, 0x46] // "\x1FTSVM UCF"
 const TAV_VERSION = 1  // Initial DWT version
+const UCF_VERSION = 1
+const ADDRESSING_EXTERNAL = 0x01
+const ADDRESSING_INTERNAL = 0x02
 const SND_BASE_ADDR = audio.getBaseAddr()
 const pcm = require("pcm")
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
@@ -400,8 +404,12 @@ let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
 let currentFileIndex = 1  // Track which file we're playing in concatenated stream
+let totalFilesProcessed = 0
+let decoderDbgInfo = {}
 
 let blockDataPtr = sys.malloc(2377744)
+
+let cueElements = []
 
 // Function to try reading next TAV file header at current position
 function tryReadNextTAVHeader() {
@@ -422,13 +430,23 @@ function tryReadNextTAVHeader() {
 
         // Check if it matches TAV magic
         let isValidTAV = true
+        let isValidUCF = true
         for (let i = 0; i < newMagic.length; i++) {
             if (newMagic[i] !== TAV_MAGIC[i+1]) {
                 isValidTAV = false
-                serial.printerr("Header mismatch: got "+newMagic.join())
-                break
             }
         }
+        for (let i = 0; i < newMagic.length; i++) {
+            if (newMagic[i] !== UCF_MAGIC[i+1]) {
+                isValidUCF = false
+            }
+        }
+
+        if (!isValidTAV && !isValidUCF) {
+            serial.printerr("Header mismatch: got "+newMagic.join())
+            return 1
+        }
+
 
         if (isValidTAV) {
             serial.println("Got next video file")
@@ -463,6 +481,67 @@ function tryReadNextTAVHeader() {
 
             return newHeader
         }
+        else if (isValidUCF) {
+            serial.println("Got Universal Cue Format")
+
+            // TODO read and store the cue, then proceed to read next TAV packet (should be 0x1F)
+            let version = seqread.readOneByte()
+            if (version !== UCF_VERSION) {
+                serial.println(`Error: Unsupported UCF version: ${version} (expected ${UCF_VERSION})`)
+                return 2
+            }
+
+            let numElements = seqread.readShort()
+            let cueSize = seqread.readInt()
+            seqread.skip(1)
+
+            serial.println(`UCF Version: ${version}, Elements: ${numElements}`)
+
+            // Parse cue elements
+            for (let i = 0; i < numElements; i++) {
+                let element = {}
+
+                element.addressingModeAndIntent = seqread.readOneByte()
+                element.addressingMode = element.addressingModeAndIntent & 15
+                let nameLength = seqread.readShort()
+                element.name = seqread.readString(nameLength)
+
+                if (element.addressingMode === ADDRESSING_EXTERNAL) {
+                    let pathLength = seqread.readShort()
+                    element.path = seqread.readString(pathLength)
+                    serial.println(`Element ${i + 1}: ${element.name} -> ${element.path} (external)`)
+                } else if (element.addressingMode === ADDRESSING_INTERNAL) {
+                    // Read 48-bit offset (6 bytes, little endian)
+                    let offsetBytes = []
+                    for (let j = 0; j < 6; j++) {
+                        offsetBytes.push(seqread.readOneByte())
+                    }
+
+                    element.offset = 0
+                    for (let j = 0; j < 6; j++) {
+                        element.offset |= (offsetBytes[j] << (j * 8))
+                    }
+
+                    serial.println(`Element ${i + 1}: ${element.name} -> offset ${element.offset} (internal)`)
+                } else {
+                    serial.println(`Error: Unknown addressing mode: ${element.addressingMode}`)
+                    return 5
+                }
+
+                cueElements.push(element)
+            }
+
+            // skip zeros
+            let readCount = seqread.getReadCount()
+            serial.println(`Skip to first video (${readCount} -> ${cueSize})`)
+            seqread.skip(cueSize - readCount + 1)
+            currentFileIndex -= 1
+            return tryReadNextTAVHeader()
+        }
+        else {
+            serial.printerr("File not TAV/UCF. Magic: " + newMagic.join())
+            return 7
+        }
     } catch (e) {
         serial.printerr(e)
 
@@ -477,8 +556,6 @@ function tryReadNextTAVHeader() {
 // Playback loop - properly adapted from TEV with multi-file support
 try {
     let t1 = sys.nanoTime()
-    let totalFilesProcessed = 0
-    let decoderDbgInfo = {}
 
     while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
@@ -519,8 +596,10 @@ try {
                     // Continue with new file
                     packetType = seqread.readOneByte()
                 }
-                else
+                else {
+                    serial.printerr("Header read failed: " + JSON.stringify(nextHeader))
                     break
+                }
             }
 
             if (packetType === TAV_PACKET_SYNC || packetType == TAV_PACKET_SYNC_NTSC) {

@@ -12,7 +12,7 @@ if (!exec_args[1]) {
 const interactive = exec_args[2] && exec_args[2].toLowerCase() == "-i"
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 
-if (!files.exists(fullFilePath.full)) {
+if (!files.open(fullFilePath.full).exists) {
     serial.println(`Error: File not found: ${fullFilePath.full}`)
     return 2
 }
@@ -147,7 +147,8 @@ let cueElements = []
 for (let i = 0; i < numElements; i++) {
     let element = {}
 
-    element.addressingMode = reader.readOneByte()
+    element.addressingModeAndIntent = reader.readOneByte()
+    element.addressingMode = element.addressingModeAndIntent & 15
     let nameLength = reader.readShort()
     element.name = reader.readString(nameLength)
 
@@ -234,7 +235,7 @@ for (let i = 0; i < cueElements.length; i++) {
             targetPath = elementPath
         }
 
-        if (!files.exists(targetPath)) {
+        if (!files.open(targetPath).exists) {
             serial.println(`Warning: External file not found: ${targetPath}`)
             continue
         }
@@ -307,7 +308,7 @@ for (let i = 0; i < cueElements.length; i++) {
             exec_args[1] = targetPath
             if (playerFile) {
                 let playerPath = `A:\\tvdos\\bin\\${playerFile}.js`
-                if (files.exists(playerPath)) {
+                if (files.open(playerPath).exists) {
                     eval(files.readText(playerPath))
                 } else {
                     serial.println(`Warning: Player not found: ${playerFile}`)
@@ -334,7 +335,7 @@ for (let i = 0; i < cueElements.length; i++) {
 
     // Execute the appropriate player
     let playerPath = `A:\\tvdos\\bin\\${playerFile}.js`
-    if (!files.exists(playerPath)) {
+    if (!files.open(playerPath).exists) {
         serial.println(`Warning: Player script not found: ${playerPath}`)
         continue
     }
