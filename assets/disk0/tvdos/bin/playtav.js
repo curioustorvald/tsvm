@@ -657,6 +657,8 @@ try {
                 akku: akku2,
                 fileName: fullFilePathStr,
                 fileOrd: currentFileIndex,
+                resolution: `${header.width}x${header.height}`,
+                colourSpace: header.version % 2 == 0 ? "ICtCp" : "YCoCg",
                 currentStatus: 1
             }
             gui.printBottomBar(guiStatus)

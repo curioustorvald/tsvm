@@ -4965,24 +4965,34 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (x in 0 until width) {
                 val idx = y * width + x
 
-                // ICtCp to RGB conversion (BT.2100 -> sRGB)
-                val I = iData[idx]
-                val Ct = ctData[idx]
-                val Cp = cpData[idx]
+                // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
+                val I = iData[idx].toDouble() / 255.0
+                val Ct = (ctData[idx].toDouble() - 127.5) / 255.0
+                val Cp = (cpData[idx].toDouble() - 127.5) / 255.0
 
-                // ICtCp to LMS
-                val L = I + 0.00975f * Ct + 0.20524f * Cp
-                val M = I - 0.11387f * Ct + 0.13321f * Cp
-                val S = I + 0.03259f * Ct - 0.67851f * Cp
+                // ICtCp -> L'M'S' (inverse matrix)
+                val Lp = I + 0.015718580108730416 * Ct + 0.2095810681164055 * Cp
+                val Mp = I - 0.015718580108730416 * Ct - 0.20958106811640548 * Cp
+                val Sp = I + 1.0212710798422344 * Ct - 0.6052744909924316 * Cp
 
-                // LMS to RGB (simplified conversion)
-                val r = 3.2406f * L - 1.5372f * M - 0.4986f * S
-                val g = -0.9689f * L + 1.8758f * M + 0.0415f * S
-                val b = 0.0557f * L - 0.2040f * M + 1.0570f * S
+                // HLG decode: L'M'S' -> linear LMS
+                val L = HLG_EOTF(Lp)
+                val M = HLG_EOTF(Mp)
+                val S = HLG_EOTF(Sp)
 
-                rowRgbBuffer[bufferIdx++] = (r * 255f).toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = (g * 255f).toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = (b * 255f).toInt().coerceIn(0, 255).toByte()
+                // LMS -> linear sRGB (inverse matrix)
+                val rLin = 6.1723815689243215 * L -5.319534979827695 * M + 0.14699442094633924 * S
+                val gLin = -1.3243428148026244 * L + 2.560286104841917 * M -0.2359203727576164 * S
+                val bLin = -0.011819739235953752 * L -0.26473549971186555 * M + 1.2767952602537955 * S
+
+                // Gamma encode to sRGB
+                val rSrgb = srgbUnlinearise(rLin)
+                val gSrgb = srgbUnlinearise(gLin)
+                val bSrgb = srgbUnlinearise(bLin)
+
+                rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
+                rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0).toInt().coerceIn(0, 255).toByte()
             }
 
             // OPTIMISATION: Bulk copy entire row at once

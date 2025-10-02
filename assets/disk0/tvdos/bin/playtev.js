@@ -74,18 +74,17 @@ let notifHideTimer = 0
 const NOTIF_SHOWUPTIME = 3000000000
 let [cy, cx] = con.getyx()
 
-let seqreadserial = require("seqread")
-let seqreadtape = require("seqreadtape")
+let gui = require("playgui")
 let seqread = undefined
 let fullFilePathStr = fullFilePath.full
 
 // Select seqread driver to use
 if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAPE')) {
-    seqread = seqreadtape
+    seqread = require("seqreadtape")
     seqread.prepare(fullFilePathStr)
     seqread.seek(0)
 } else {
-    seqread = seqreadserial
+    seqread = require("seqread")
     seqread.prepare(fullFilePathStr)
 }
 
@@ -746,20 +745,29 @@ try {
         if (interactive) {
             notifHideTimer += (t2 - t1)
             if (!notifHidden && notifHideTimer > (NOTIF_SHOWUPTIME + FRAME_TIME)) {
-                con.move(1, 1)
-                print(' '.repeat(79))
+                // clearing function here
                 notifHidden = true
             }
 
-            if (!hasSubtitle) {
-                con.move(31, 1)
-                con.color_pair(253, 0)
-                print(`Frame: ${frameCount}/${totalFrames} (${((frameCount / akku2 * 100)|0) / 100}f)         `)
-                con.move(32, 1)
-                con.color_pair(253, 0)
-                print(`VRate: ${(getVideoRate() / 1024 * 8)|0} kbps                               `)
-                con.move(1, 1)
+
+            con.color_pair(253, 0)
+            let guiStatus = {
+                fps: fps,
+                videoRate: getVideoRate(),
+                frameCount: frameCount,
+                totalFrames: totalFrames,
+                qY: qualityY,
+                qCo: qualityCo,
+                qCg: qualityCg,
+                akku: akku2,
+                fileName: fullFilePathStr,
+                fileOrd: 1,
+                resolution: `${width}x${height}${(isInterlaced) ? 'i' : ''}`,
+                colourSpace: colorSpace,
+                currentStatus: 1
             }
+            gui.printBottomBar(guiStatus)
+            gui.printTopBar(guiStatus, 1)
         }
 
         t1 = t2

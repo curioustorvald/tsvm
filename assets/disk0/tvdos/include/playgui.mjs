@@ -218,7 +218,9 @@ status = {
     akku: float,
     fileName: String,
     fileOrd: int,
-    currentStatus: int (0: stop/init, 1: play, 2: pause)
+    currentStatus: int (0: stop/init, 1: play, 2: pause),
+    resolution: string,
+    colourSpace: string
 }
 
 */
@@ -258,8 +260,10 @@ function printTopBar(status, moreInfo) {
         let sF = `F ${(''+status.frameCount).padStart((''+status.totalFrames).length, ' ')}/${status.totalFrames}`
         let sQ = `Q${(''+status.qY).padStart(4,' ')},${(''+status.qCo).padStart(2,' ')},${(''+status.qCg).padStart(2,' ')}`
         let sFPS = `${(status.frameCount / status.akku).toFixed(2)}f`
+        let sRes = `${status.resolution}`
+        let sCol = `${status.colourSpace}`
 
-        let sLeft = sF + BAR + sQ + BAR + sFPS + BAR
+        let sLeft = sF + BAR + sQ + BAR + sFPS + BAR + sRes + BAR + sCol + BAR
         let filenameSpace = 80 - sLeft.length
         if (filename.length > filenameSpace) {
             filename = filename.slice(0, filenameSpace - 1) + '~'
