@@ -155,7 +155,9 @@ let printHangul = (char) => {
         if (i % 2 == 0)
             con.curs_down()
         else
-           cursReturn()
+            cursReturn()
+
+        //if (graphics.getCursorYX()[1] == 1) con.curs_down();
     })
 }
 
@@ -183,9 +185,17 @@ if (unicode.uniprint) {
                 let f = (c - 0xAC00) % 28
                 let char = toLineChar(i,p,f)
                 let w = Math.ceil(char.length / 2.0)|0
-                if (con.getyx()[1] + w > termw) println()
+                if (con.getyx()[1] + w > termw) print('\n\n');
                 printHangul(char)
             }
+        }
+    ])
+
+    unicode.uniprint.unshift([
+        c => 0x20 == c,
+        c => {
+            if (con.getyx()[1] >= termw) print('\n\n');
+            else print(' ')
         }
     ])
 }
