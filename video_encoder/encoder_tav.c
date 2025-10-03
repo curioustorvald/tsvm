@@ -183,7 +183,7 @@ static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
 // the values are indices to the QLUT
 static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
 static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29}; // 240, 180, 120, 90, 60, 30
-static const int QUALITY_CG[] = {132, 130, 127, 122, 109, 83}; // 296, 280, 256, 236, 184, 104
+static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39}; // 424, 304, 200, 144, 90, 40
 static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
 
 // psychovisual tuning parameters
@@ -597,10 +597,9 @@ static void show_usage(const char *program_name) {
     printf("  -f, --fps N             Output frames per second (enables frame rate conversion)\n");
     printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
     printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 1-255 for each channel (1: lossless, 255: potato)\n");
-    printf("  -w, --wavelet N         Wavelet filter: 0=5/3 reversible, 1=9/7 irreversible, 2=DD-4 (default: 1)\n");
     printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  -c, --channel-layout N  Channel layout: 0=Y-Co-Cg, 1=Y-Co-Cg-A, 2=Y-only, 3=Y-A, 4=Co-Cg, 5=Co-Cg-A (default: 0)\n");
-    printf("  --arate N               MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
+    printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  -v, --verbose           Verbose output\n");
@@ -611,6 +610,7 @@ static void show_usage(const char *program_name) {
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
+    printf("  --wavelet N             Wavelet filter: 0=CDF 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -3159,12 +3159,12 @@ int main(int argc, char *argv[]) {
         {"size", required_argument, 0, 's'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
+        {"quantizer", required_argument, 0, 'Q'},
         {"quantiser", required_argument, 0, 'Q'},
-        {"quantiser", required_argument, 0, 'Q'},
-        {"wavelet", required_argument, 0, 'w'},
+        {"wavelet", required_argument, 0, 1010},
         {"channel-layout", required_argument, 0, 'c'},
         {"bitrate", required_argument, 0, 'b'},
-        {"arate", required_argument, 0, 1400},
+        {"arate", required_argument, 0, 'a'},
         {"subtitle", required_argument, 0, 'S'},
         {"subtitles", required_argument, 0, 'S'},
         {"verbose", no_argument, 0, 'v'},
@@ -3212,7 +3212,7 @@ int main(int argc, char *argv[]) {
                 enc->quantiser_co = CLAMP(enc->quantiser_co, 0, 255);
                 enc->quantiser_cg = CLAMP(enc->quantiser_cg, 0, 255);
                 break;
-            case 'w':
+            case 1010: // --wavelet
                 enc->wavelet_filter = CLAMP(atoi(optarg), 0, 255);
                 break;
             case 'b': {
@@ -3300,7 +3300,7 @@ int main(int argc, char *argv[]) {
             case 1009: // --dump-frame
                 debugDumpFrameTarget = atoi(optarg);
                 break;
-            case 1400: // --arate
+            case 'a':
                 {
                     int bitrate = atoi(optarg);
                     int valid_bitrate = validate_mp2_bitrate(bitrate);
