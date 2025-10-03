@@ -675,7 +675,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             for (line in 0 until ch) {
                 val word = mappedFontRom[char.toLong() * ch + line].toInt()
                 for (bm in scanline.indices step 4) {
-                    val pixel = 255 * ((word shr (cw - 1 - bm)) and 1)
+                    val pixel = 255 * ((word shr (cw - 1 - bm/4)) and 1)
                     val matte = (if (pixel == 0) 0 else 255).toByte()
                     scanline[bm+0] = matte
                     scanline[bm+1] = matte
