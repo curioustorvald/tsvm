@@ -3952,6 +3952,102 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         const val CHANNEL_LAYOUT_Y_A = 3       // Y-A (011: has alpha, no chroma, has luma)
         const val CHANNEL_LAYOUT_COCG = 4      // Co-Cg (100: no alpha, has chroma, no luma)
         const val CHANNEL_LAYOUT_COCG_A = 5    // Co-Cg-A (101: has alpha, has chroma, no luma)
+
+        // ICtCp→RGB LUT (256×256×256 × 3 bytes = 48 MB)
+        // Layout: lut[I * 256 * 256 * 3 + Ct * 256 * 3 + Cp * 3 + channel]
+        // where I ∈ [0,255], Ct ∈ [0,511], Cp ∈ [0,511], channel ∈ {0=R, 1=G, 2=B}
+        private val ICTCP_LUT_SIZE = 256L * 256L * 256L * 3L  // 201,326,592 bytes
+        private var ictcpLUT: UnsafePtr? = null
+
+        init {
+            println("[ICtCp LUT] Initializing 256×256×256 lookup table (48 MB)...")
+            val startTime = System.currentTimeMillis()
+
+            // Allocate native memory
+            ictcpLUT = UnsafeHelper.allocate(ICTCP_LUT_SIZE, this)
+
+            // Precompute all possible ICtCp→RGB conversions
+            for (i in 0..255) {
+                for (ct in 0..255) {
+                    for (cp in 0..255) {
+                        // Convert index to ICtCp values (matching decoder range)
+                        val I = i / 255.0f
+                        val Ct = (ct - 127.5f) / 255.0f  // Center at 127.5 for symmetric range
+                        val Cp = (cp - 127.5f) / 255.0f
+
+                        // ICtCp → L'M'S' (inverse matrix)
+                        val Lp = I + 0.015718580108730416f * Ct + 0.2095810681164055f * Cp
+                        val Mp = I - 0.015718580108730416f * Ct - 0.20958106811640548f * Cp
+                        val Sp = I + 1.0212710798422344f * Ct - 0.6052744909924316f * Cp
+
+                        // HLG decode: L'M'S' → linear LMS
+                        val L = HLG_EOTF_static(Lp)
+                        val M = HLG_EOTF_static(Mp)
+                        val S = HLG_EOTF_static(Sp)
+
+                        // LMS → linear sRGB (inverse matrix)
+                        val rLin = 6.1723815689243215f * L - 5.319534979827695f * M + 0.14699442094633924f * S
+                        val gLin = -1.3243428148026244f * L + 2.560286104841917f * M - 0.2359203727576164f * S
+                        val bLin = -0.011819739235953752f * L - 0.26473549971186555f * M + 1.2767952602537955f * S
+
+                        // Gamma encode to sRGB
+                        val rSrgb = srgbUnlinearise_static(rLin)
+                        val gSrgb = srgbUnlinearise_static(gLin)
+                        val bSrgb = srgbUnlinearise_static(bLin)
+
+                        // Store RGB bytes in LUT
+                        val lutIndex = (i.toLong() * 256L * 256L * 3L) + (ct.toLong() * 256L * 3L) + (cp.toLong() * 3L)
+                        ictcpLUT!!.set(lutIndex + 0, (rSrgb * 255.0f).toInt().coerceIn(0, 255).toByte())
+                        ictcpLUT!!.set(lutIndex + 1, (gSrgb * 255.0f).toInt().coerceIn(0, 255).toByte())
+                        ictcpLUT!!.set(lutIndex + 2, (bSrgb * 255.0f).toInt().coerceIn(0, 255).toByte())
+                    }
+                }
+
+                // Progress indicator every 32 I values
+                if (i % 32 == 0) {
+                    print(".")
+                }
+            }
+
+            val elapsedMs = System.currentTimeMillis() - startTime
+            println("\n[ICtCp LUT] Initialized in ${elapsedMs}ms")
+
+            // Register shutdown hook to free native memory
+            Runtime.getRuntime().addShutdownHook(Thread {
+                println("[ICtCp LUT] Freeing native memory...")
+                ictcpLUT?.destroy()
+                ictcpLUT = null
+            })
+        }
+
+        // Static helper functions for LUT initialization (must match instance methods)
+        private fun HLG_EOTF_static(V: Float): Float {
+            val a = 0.17883277f
+            val b = 1.0f - 4.0f * a
+            val c = 0.5f - a * ln(4.0f * a)
+
+            return if (V <= 0.5f)
+                (V * V) / 3.0f
+            else
+                (exp((V - c) / a) + b) / 12.0f
+        }
+
+        private fun srgbUnlinearise_static(value: Float): Float {
+            return if (value <= 0.0031308f) {
+                value * 12.92f
+            } else {
+                1.055f * value.pow(1.0f / 2.4f) - 0.055f
+            }
+        }
+
+        // Fast LUT lookup function (no bounds checking with UnsafePtr)
+        fun lookupICtCpToRGB(I: Int, Ct: Int, Cp: Int): Triple<Byte, Byte, Byte> {
+            val lutIndex = (I.toLong() * 256L * 256L * 3L) + (Ct.toLong() * 256L * 3L) + (Cp.toLong() * 3L)
+            val r = ictcpLUT!!.get(lutIndex + 0)
+            val g = ictcpLUT!!.get(lutIndex + 1)
+            val b = ictcpLUT!!.get(lutIndex + 2)
+            return Triple(r, g, b)
+        }
     }
 
     // Variable channel layout postprocessing for concatenated maps
@@ -4826,58 +4922,41 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                          rgbAddr: Long, width: Int, height: Int) {
         val startX = tileX * TAV_TILE_SIZE_X
         val startY = tileY * TAV_TILE_SIZE_Y
-        
+
         // OPTIMISATION: Process pixels row by row with bulk copying for better cache locality
         for (y in 0 until TAV_TILE_SIZE_Y) {
             val frameY = startY + y
             if (frameY >= height) break
-            
+
             // Calculate valid pixel range for this row
             val validStartX = maxOf(0, startX)
             val validEndX = minOf(width, startX + TAV_TILE_SIZE_X)
             val validPixelsInRow = validEndX - validStartX
-            
+
             if (validPixelsInRow > 0) {
                 // Create row buffer for bulk RGB data
                 val rowRgbBuffer = ByteArray(validPixelsInRow * 3)
                 var bufferIdx = 0
-                
+
                 for (x in validStartX until validEndX) {
                     val tileIdx = y * TAV_TILE_SIZE_X + (x - startX)
-                    
-                    // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
-                    val I = iTile[tileIdx] / 255.0f
-                    val Ct = (ctTile[tileIdx] - 127.5f) / 255.0f
-                    val Cp = (cpTile[tileIdx] - 127.5f) / 255.0f
 
-                    // ICtCp -> L'M'S' (inverse matrix)
-                    val Lp = I + 0.015718580108730416f * Ct + 0.2095810681164055f * Cp
-                    val Mp = I - 0.015718580108730416f * Ct - 0.20958106811640548f * Cp
-                    val Sp = I + 1.0212710798422344f * Ct - 0.6052744909924316f * Cp
+                    // ICtCp to RGB conversion via LUT
+                    // Convert float values to LUT indices (values already in [0,255] from IDWT)
+                    val iIdx = iTile[tileIdx].toInt().coerceIn(0, 255)
+                    val ctIdx = ctTile[tileIdx].toInt().coerceIn(0, 255)
+                    val cpIdx = cpTile[tileIdx].toInt().coerceIn(0, 255)
 
-                    // HLG decode: L'M'S' -> linear LMS
-                    val L = HLG_EOTF(Lp)
-                    val M = HLG_EOTF(Mp) 
-                    val S = HLG_EOTF(Sp)
-
-                    // LMS -> linear sRGB (inverse matrix)
-                    val rLin = 6.1723815689243215f * L -5.319534979827695f * M + 0.14699442094633924f * S
-                    val gLin = -1.3243428148026244f * L + 2.560286104841917f * M -0.2359203727576164f * S
-                    val bLin = -0.011819739235953752f * L -0.26473549971186555f * M + 1.2767952602537955f * S
-
-                    // Gamma encode to sRGB
-                    val rSrgb = srgbUnlinearise(rLin)
-                    val gSrgb = srgbUnlinearise(gLin)
-                    val bSrgb = srgbUnlinearise(bLin)
-
-                    rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
-                    rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
-                    rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
+                    // Direct LUT lookup (no bounds checking with UnsafePtr)
+                    val lutIndex = (iIdx.toLong() * 256L * 256L * 3L) + (ctIdx.toLong() * 256L * 3L) + (cpIdx.toLong() * 3L)
+                    rowRgbBuffer[bufferIdx++] = ictcpLUT!!.get(lutIndex + 0)
+                    rowRgbBuffer[bufferIdx++] = ictcpLUT!!.get(lutIndex + 1)
+                    rowRgbBuffer[bufferIdx++] = ictcpLUT!!.get(lutIndex + 2)
                 }
-                
+
                 // OPTIMISATION: Bulk copy entire row at once
                 val rowStartOffset = (frameY * width + validStartX) * 3L
-                UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer), 
+                UnsafeHelper.memcpyRaw(rowRgbBuffer, UnsafeHelper.getArrayOffset(rowRgbBuffer),
                                      null, vm.usermem.ptr + rgbAddr + rowStartOffset, rowRgbBuffer.size.toLong())
             }
         }
@@ -4965,34 +5044,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             for (x in 0 until width) {
                 val idx = y * width + x
 
-                // ICtCp to sRGB conversion (adapted from encoder ICtCp functions)
-                val I = iData[idx] / 255.0f
-                val Ct = (ctData[idx] - 127.5f) / 255.0f
-                val Cp = (cpData[idx] - 127.5f) / 255.0f
+                // ICtCp to RGB conversion via LUT
+                // Convert float values to LUT indices (values already in [0,255] from IDWT)
+                val iIdx = iData[idx].toInt().coerceIn(0, 255)
+                val ctIdx = ctData[idx].toInt().coerceIn(0, 255)
+                val cpIdx = cpData[idx].toInt().coerceIn(0, 255)
 
-                // ICtCp -> L'M'S' (inverse matrix)
-                val Lp = I + 0.015718580108730416f * Ct + 0.2095810681164055f * Cp
-                val Mp = I - 0.015718580108730416f * Ct - 0.20958106811640548f * Cp
-                val Sp = I + 1.0212710798422344f * Ct - 0.6052744909924316f * Cp
-
-                // HLG decode: L'M'S' -> linear LMS
-                val L = HLG_EOTF(Lp)
-                val M = HLG_EOTF(Mp)
-                val S = HLG_EOTF(Sp)
-
-                // LMS -> linear sRGB (inverse matrix)
-                val rLin = 6.1723815689243215f * L -5.319534979827695f * M + 0.14699442094633924f * S
-                val gLin = -1.3243428148026244f * L + 2.560286104841917f * M -0.2359203727576164f * S
-                val bLin = -0.011819739235953752f * L -0.26473549971186555f * M + 1.2767952602537955f * S
-
-                // Gamma encode to sRGB
-                val rSrgb = srgbUnlinearise(rLin)
-                val gSrgb = srgbUnlinearise(gLin)
-                val bSrgb = srgbUnlinearise(bLin)
-
-                rowRgbBuffer[bufferIdx++] = (rSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = (gSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
-                rowRgbBuffer[bufferIdx++] = (bSrgb * 255.0f).toInt().coerceIn(0, 255).toByte()
+                // Direct LUT lookup (no bounds checking with UnsafePtr)
+                val lutIndex = (iIdx.toLong() * 256L * 256L * 3L) + (ctIdx.toLong() * 256L * 3L) + (cpIdx.toLong() * 3L)
+                rowRgbBuffer[bufferIdx++] = ictcpLUT!!.get(lutIndex + 0)
+                rowRgbBuffer[bufferIdx++] = ictcpLUT!!.get(lutIndex + 1)
+                rowRgbBuffer[bufferIdx++] = ictcpLUT!!.get(lutIndex + 2)
             }
 
             // OPTIMISATION: Bulk copy entire row at once
