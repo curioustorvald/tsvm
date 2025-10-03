@@ -1,37 +1,3 @@
-let status = 0
-let workarea = sys.malloc(1920)
-
-// install LOCHRROM
-let hangulRomL = files.open("A:/tvdos/i18n/hang_lo.chr")
-if (!hangulRomL.exists) {
-    printerrln("hang_lo.chr not found")
-    sys.free(workarea)
-    return status
-}
-//dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
-hangulRomL.pread(workarea, 1920, 0)
-for (let i = 0; i < 1920; i++) sys.poke(-1300607 - i, sys.peek(workarea + i))
-sys.poke(-1299460, 18)
-
-
-// install HICHRROM
-let hangulRomH = files.open("A:/tvdos/i18n/hang_hi.chr")
-if (!hangulRomH.exists) {
-    printerrln("hang_hi.chr not found")
-    sys.free(workarea)
-    sys.poke(-1299460, 20) // clean up the crap
-    return status
-}
-//dma.comToRam(filesystem._toPorts("A")[0], 0, workarea, 1920)
-hangulRomH.pread(workarea, 1920, 0)
-for (let i = 0; i < 1920; i++) sys.poke(-1300607 - i, sys.peek(workarea + i))
-sys.poke(-1299460, 19)
-
-
-
-sys.free(workarea)
-
-graphics.setHalfrowMode(true)
 /*
  * A character is defined as one of:
  * 1. [I,x] (Initial only)
@@ -222,12 +188,5 @@ if (unicode.uniprint) {
             }
         }
     ])
-
-    println("조합한글 커널모듈이 로드되었습니다.")
-    return 0
-}
-else {
-    println("Failed to load Assembly Hangul kernel module: incompatible DOS version")
-    return 1
 }
 

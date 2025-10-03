@@ -810,6 +810,7 @@ When SSF is interleaved with MP2 audio, the payload must be inserted in-between 
 
 ## Packet Structure
     uint8  0x30 (packet type)
+    uint32 Packet Size
     *      SSF Payload (see below)
 
 ## SSF Packet Structure

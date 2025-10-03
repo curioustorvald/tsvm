@@ -57,6 +57,15 @@ function displayFormattedLine(line) {
 
     let i = 0
     let inBoldOrItalic = false
+    let buffer = ""  // Accumulate characters for batch printing
+
+    // Helper function to flush the buffer
+    function flushBuffer() {
+        if (buffer.length > 0) {
+            unicode.print(buffer)
+            buffer = ""
+        }
+    }
 
     // insert initial padding block
     con.color_pair(0, 255)
@@ -68,26 +77,31 @@ function displayFormattedLine(line) {
             // Check for opening tags
             if (line.substring(i, i + 3).toLowerCase() === '<b>' ||
                 line.substring(i, i + 3).toLowerCase() === '<i>') {
+                flushBuffer()  // Flush before color change
                 con.color_pair(254, 0)  // Switch to white for formatted text
                 inBoldOrItalic = true
                 i += 3
             } else if (i < line.length - 3 &&
                       (line.substring(i, i + 4).toLowerCase() === '</b>' ||
                        line.substring(i, i + 4).toLowerCase() === '</i>')) {
+                flushBuffer()  // Flush before color change
                 con.color_pair(231, 0)  // Switch back to yellow for normal text
                 inBoldOrItalic = false
                 i += 4
             } else {
-                // Not a formatting tag, print the character
-                print(line[i])
+                // Not a formatting tag, add to buffer
+                buffer += line[i]
                 i++
             }
         } else {
-            // Regular character, print it
-            print(line[i])
+            // Regular character, add to buffer
+            buffer += line[i]
             i++
         }
     }
+
+    // Flush any remaining buffered text
+    flushBuffer()
 
     // insert final padding block
     con.color_pair(0, 255)

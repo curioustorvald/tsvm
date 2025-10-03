@@ -103,6 +103,7 @@ graphics.setPalette(0, 0, 0, 0, 9)
 
 
 function processSubtitlePacket(packetSize) {
+
     // Read subtitle packet data according to SSF format
     // uint24 index + uint8 opcode + variable arguments
 
@@ -168,11 +169,14 @@ function processSubtitlePacket(packetSize) {
             // Font upload - read payload length and font data
             if (remainingBytes >= 3) {  // uint16 length + at least 1 byte data
                 let payloadLen = seqread.readShort()
+
+                serial.println(`Uploading ${(opcode == SSF_OP_UPLOAD_LOW_FONT) ? 'low' : 'high'} font rom (${payloadLen} bytes)`)
+
                 if (remainingBytes >= payloadLen + 2) {
                     let fontData = seqread.readBytes(payloadLen)
 
                     // upload font data
-                    for (let i = 0; i < Math.min(payloadLen, 1920); i++) sys.poke(-1300607 - i, sys.peek(fontData + i))
+                    for (let i = 0; i < Math.min(payloadLen, 1920); i++) sys.poke(-133121 - i, sys.peek(fontData + i))
                     sys.poke(-1299460, (opcode == SSF_OP_UPLOAD_LOW_FONT) ? 18 : 19)
 
                     sys.free(fontData)
@@ -571,6 +575,8 @@ try {
             // Read packet header
             var packetType = seqread.readOneByte()
 
+//            serial.println(`Packet ${packetType} at offset ${seqread.getReadCount() - 1}`)
+
             // Try to read next TAV file header
             if (packetType == TAV_FILE_HEADER_FIRST) {
                 let nextHeader = tryReadNextTAVHeader()
@@ -766,6 +772,9 @@ finally {
     } else {
         console.log(`Playback failed with error ${errorlevel}`)
     }
+
+    sys.poke(-1299460, 20)
+    sys.poke(-1299460, 21)
 }
 
 graphics.setPalette(0, 0, 0, 0, 0)

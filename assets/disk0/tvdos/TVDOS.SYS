@@ -1366,12 +1366,12 @@ unicode.getUniprint = (c) => {
             return unicode.uniprint[k]
 }}
 
-print = function(str) {
+unicode.print = (str) => {
     if ((typeof str === 'string' || str instanceof String) && str.length > 0) {
+
         let cp = unicode.utf8toCodepoints(str)
         cp.forEach(c => {
             let q = unicode.getUniprint(c)
-
             if (q == undefined || !q[0](c)) {
                 con.addch(4)
                 con.curs_right()
@@ -1381,6 +1381,13 @@ print = function(str) {
             }
         })
     }
+    else {
+        sys.print(str)
+    }
+}
+
+unicode.println = (str) => {
+    unicode.print(str+'\n\n')
 }
 
 Object.freeze(unicode);

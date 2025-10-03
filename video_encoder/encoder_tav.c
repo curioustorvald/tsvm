@@ -222,6 +222,8 @@ typedef struct tav_encoder_s {
     char *input_file;
     char *output_file;
     char *subtitle_file;
+    char *fontrom_lo_file;
+    char *fontrom_hi_file;
     FILE *output_fp;
     FILE *mp2_file;
     FILE *ffmpeg_video_pipe;
@@ -602,6 +604,8 @@ static void show_usage(const char *program_name) {
     printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
+    printf("  --fontrom-lo FILE       Low font ROM file (max 1920 bytes) for internationalized subtitles\n");
+    printf("  --fontrom-hi FILE       High font ROM file (max 1920 bytes) for internationalized subtitles\n");
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
@@ -2165,6 +2169,82 @@ static void rgba_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgba,
         free(temp_rgb);
     }
 }
+// Write font ROM upload packet (SSF format)
+static int write_fontrom_packet(FILE *fp, const char *filename, uint8_t opcode) {
+    if (!filename || !fp) return 0;
+
+    FILE *rom_file = fopen(filename, "rb");
+    if (!rom_file) {
+        fprintf(stderr, "Warning: Could not open font ROM file: %s\n", filename);
+        return -1;
+    }
+
+    // Get file size
+    fseek(rom_file, 0, SEEK_END);
+    long file_size = ftell(rom_file);
+    fseek(rom_file, 0, SEEK_SET);
+
+    if (file_size > 1920) {
+        fprintf(stderr, "Warning: Font ROM file too large (max 1920 bytes): %s\n", filename);
+        fclose(rom_file);
+        return -1;
+    }
+
+    // Read font data
+    uint8_t *font_data = malloc(file_size);
+    if (!font_data) {
+        fprintf(stderr, "Error: Could not allocate memory for font ROM\n");
+        fclose(rom_file);
+        return -1;
+    }
+
+    size_t bytes_read = fread(font_data, 1, file_size, rom_file);
+    fclose(rom_file);
+
+    if (bytes_read != file_size) {
+        fprintf(stderr, "Warning: Could not read entire font ROM file: %s\n", filename);
+        free(font_data);
+        return -1;
+    }
+
+    // Write SSF packet
+    // Packet type: 0x30 (subtitle/SSF)
+    fputc(0x30, fp);
+
+    // Calculate packet size: 3 (index) + 1 (opcode) + 2 (length) + file_size + 1 (terminator)
+    uint32_t packet_size = 3 + 1 + 2 + file_size + 1;
+
+    // Write packet size (uint32, little-endian)
+    fputc(packet_size & 0xFF, fp);
+    fputc((packet_size >> 8) & 0xFF, fp);
+    fputc((packet_size >> 16) & 0xFF, fp);
+    fputc((packet_size >> 24) & 0xFF, fp);
+
+    // SSF payload:
+    // uint24 index (3 bytes) - use 0 for font ROM uploads
+    fputc(0, fp);
+    fputc(0, fp);
+    fputc(0, fp);
+
+    // uint8 opcode (0x80 = low font ROM, 0x81 = high font ROM)
+    fputc(opcode, fp);
+
+    // uint16 payload length (little-endian)
+    uint16_t payload_len = (uint16_t)file_size;
+    fputc(payload_len & 0xFF, fp);
+    fputc((payload_len >> 8) & 0xFF, fp);
+
+    // Font data
+    fwrite(font_data, 1, file_size, fp);
+
+    // Terminator
+    fputc(0x00, fp);
+
+    free(font_data);
+
+    printf("Font ROM uploaded: %s (%ld bytes, opcode 0x%02X)\n", filename, file_size, opcode);
+    return 0;
+}
 
 // Write TAV file header
 static int write_tav_header(tav_encoder_t *enc) {
@@ -3175,6 +3255,8 @@ int main(int argc, char *argv[]) {
         {"no-perceptual-tuning", no_argument, 0, 1007},
         {"encode-limit", required_argument, 0, 1008},
         {"dump-frame", required_argument, 0, 1009},
+        {"fontrom-lo", required_argument, 0, 1011},
+        {"fontrom-hi", required_argument, 0, 1012},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3299,6 +3381,12 @@ int main(int argc, char *argv[]) {
                 break;
             case 1009: // --dump-frame
                 debugDumpFrameTarget = atoi(optarg);
+                break;
+            case 1011: // --fontrom-lo
+                enc->fontrom_lo_file = strdup(optarg);
+                break;
+            case 1012: // --fontrom-hi
+                enc->fontrom_hi_file = strdup(optarg);
                 break;
             case 'a':
                 {
@@ -3442,6 +3530,18 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Failed to write TAV header\n");
         cleanup_encoder(enc);
         return 1;
+    }
+
+    // Write font ROM packets if provided
+    if (enc->fontrom_lo_file) {
+        if (write_fontrom_packet(enc->output_fp, enc->fontrom_lo_file, 0x80) != 0) {
+            fprintf(stderr, "Warning: Failed to write low font ROM, continuing without it\n");
+        }
+    }
+    if (enc->fontrom_hi_file) {
+        if (write_fontrom_packet(enc->output_fp, enc->fontrom_hi_file, 0x81) != 0) {
+            fprintf(stderr, "Warning: Failed to write high font ROM, continuing without it\n");
+        }
     }
 
     gettimeofday(&enc->start_time, NULL);
@@ -3688,6 +3788,8 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->input_file);
     free(enc->output_file);
     free(enc->subtitle_file);
+    free(enc->fontrom_lo_file);
+    free(enc->fontrom_hi_file);
     free(enc->frame_rgb[0]);
     free(enc->frame_rgb[1]);
     free(enc->current_frame_y);
