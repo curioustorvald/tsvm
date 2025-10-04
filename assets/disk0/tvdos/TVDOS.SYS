@@ -1390,6 +1390,27 @@ unicode.println = (str) => {
     unicode.print(str+'\n\n')
 }
 
+unicode.strlen = (str) => {
+    // Convert string to an array of codepoints using spread operator
+    // This correctly handles surrogate pairs and counts each codepoint as one
+    return unicode.utf8toCodepoints(str).length
+}
+
+unicode.visualStrlen = (str) => {
+    function isTripleWidth(c) {
+        return (0xAC00 <= c && c <= 0xD7FF) && [1,4,8,10,13].includes(((c - 0xAC00) / 588)|0)
+    }
+
+    function isDoubleWidth(c) {
+        return (0x3000 <= c && c <= 0x303f) || (0x3100 <= c && c <= 0x312f) || (0x3200 <= c && c <= 0x33ff) ||
+        (0xAC00 <= c && c <= 0xD7FF) || (0xFE30 <= c && c <= 0xFE4F) || (0xFF00 <= c && c <= 0xff60)
+    }
+
+    // Convert string to an array of codepoints using spread operator
+    // This correctly handles surrogate pairs and counts each codepoint as one
+    return unicode.utf8toCodepoints(str).reduce((acc, c) => acc + (isTripleWidth(c) ? 3 : isDoubleWidth(c) ? 2 : 1), 0)
+}
+
 Object.freeze(unicode);
 
 ///////////////////////////////////////////////////////////////////////////////

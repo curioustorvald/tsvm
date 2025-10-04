@@ -22,33 +22,9 @@ function clearSubtitleArea() {
 }
 
 function getVisualLength(line) {
-    // Calculate the visual length of a line excluding formatting tags
-    let visualLength = 0
-    let i = 0
-
-    while (i < line.length) {
-        if (i < line.length - 2 && line[i] === '<') {
-            // Check for formatting tags and skip them
-            if (line.substring(i, i + 3).toLowerCase() === '<b>' ||
-                line.substring(i, i + 3).toLowerCase() === '<i>') {
-                i += 3  // Skip tag
-            } else if (i < line.length - 3 &&
-                      (line.substring(i, i + 4).toLowerCase() === '</b>' ||
-                       line.substring(i, i + 4).toLowerCase() === '</i>')) {
-                i += 4  // Skip closing tag
-            } else {
-                // Not a formatting tag, count the character
-                visualLength++
-                i++
-            }
-        } else {
-            // Regular character, count it
-            visualLength++
-            i++
-        }
-    }
-
-    return visualLength
+    // Remove HTML tags and count the remaining text using unicode.strlen()
+    const withoutTags = line.replace(/<\/?[bi]>/gi, '')
+    return unicode.visualStrlen(withoutTags)
 }
 
 function displayFormattedLine(line) {
