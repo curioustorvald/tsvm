@@ -186,6 +186,15 @@ static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29}; // 240, 180, 120, 90
 static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39}; // 424, 304, 200, 144, 90, 40
 static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
 
+// Dead-zone quantization thresholds per quality level
+// Higher values = more aggressive (more coefficients set to zero)
+static const float DEAD_ZONE_THRESHOLD[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
+
+// Dead-zone scaling factors for different subband levels
+#define DEAD_ZONE_FINEST_SCALE 1.0f      // Full dead-zone for finest level (level 6)
+#define DEAD_ZONE_FINE_SCALE 0.5f        // Reduced dead-zone for second-finest level (level 5)
+// Coarser levels (0-4) use 0.0f (no dead-zone) to preserve structural information
+
 // psychovisual tuning parameters
 static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
 static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f};
@@ -243,6 +252,7 @@ typedef struct tav_encoder_s {
     int quantiser_y, quantiser_co, quantiser_cg;
     int wavelet_filter;
     int decomp_levels;
+    float dead_zone_threshold;  // Dead-zone quantization threshold (0 = disabled)
     int bitrate_mode;
     int target_bitrate;
 
@@ -571,6 +581,7 @@ static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialise_encoder(tav_encoder_t *enc);
+static int get_subband_level(int linear_idx, int width, int height, int decomp_levels);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
 static int calculate_max_decomp_levels(int width, int height);
 
@@ -612,6 +623,7 @@ static void show_usage(const char *program_name) {
     printf("  --intra-only            Disable delta encoding (less noisy picture at the cost of larger file)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
+    printf("  --no-dead-zone          Disable dead-zone quantization (for comparison/testing)\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --wavelet N             Wavelet filter: 0=CDF 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
@@ -670,6 +682,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->quantiser_y = QUALITY_Y[DEFAULT_QUALITY];
     enc->quantiser_co = QUALITY_CO[DEFAULT_QUALITY];
     enc->quantiser_cg = QUALITY_CG[DEFAULT_QUALITY];
+    enc->dead_zone_threshold = DEAD_ZONE_THRESHOLD[DEFAULT_QUALITY];
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
@@ -1383,12 +1396,33 @@ static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t
 }
 
 // Quantisation for DWT subbands with rate control
-static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser) {
+static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser, float dead_zone_threshold, int width, int height, int decomp_levels, int is_chroma) {
     float effective_q = quantiser;
     effective_q = FCLAMP(effective_q, 1.0f, 255.0f);
 
     for (int i = 0; i < size; i++) {
         float quantised_val = coeffs[i] / effective_q;
+
+        // Apply dead-zone quantization ONLY to luma channel and finest subbands
+        // Chroma channels skip dead-zone (already heavily quantized, avoid color banding)
+        if (dead_zone_threshold > 0.0f && !is_chroma) {
+            int level = get_subband_level(i, width, height, decomp_levels);
+            float level_threshold = 0.0f;
+
+            if (level == decomp_levels) {
+                // Finest level (level 6): full dead-zone
+                level_threshold = dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
+            } else if (level == decomp_levels - 1) {
+                // Second-finest level (level 5): reduced dead-zone
+                level_threshold = dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+            }
+            // Coarser levels (0-4): no dead-zone to preserve structural information
+
+            if (fabsf(quantised_val) <= level_threshold) {
+                quantised_val = 0.0f;
+            }
+        }
+
         quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
     }
 }
@@ -1485,6 +1519,38 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_t
 
 
 // Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
+// Get decomposition level for a coefficient at linear index
+// Returns: 0 for LL subband, 1-decomp_levels for detail subbands
+static int get_subband_level(int linear_idx, int width, int height, int decomp_levels) {
+    int offset = 0;
+
+    // First: LL subband at maximum decomposition level
+    int ll_width = width >> decomp_levels;
+    int ll_height = height >> decomp_levels;
+    int ll_size = ll_width * ll_height;
+
+    if (linear_idx < offset + ll_size) {
+        return 0; // LL subband (coarsest)
+    }
+    offset += ll_size;
+
+    // Then: LH, HL, HH subbands for each level from max down to 1
+    for (int level = decomp_levels; level >= 1; level--) {
+        int level_width = width >> (decomp_levels - level + 1);
+        int level_height = height >> (decomp_levels - level + 1);
+        int subband_size = level_width * level_height;
+
+        // Check all three subbands (LH, HL, HH) at this level
+        if (linear_idx < offset + (subband_size * 3)) {
+            return level; // Return decomposition level (1-6)
+        }
+        offset += subband_size * 3;
+    }
+
+    // Fallback for out-of-bounds indices
+    return 0;
+}
+
 static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
     // Map linear coefficient index to DWT subband using same layout as decoder
     int offset = 0;
@@ -1543,6 +1609,27 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
         float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
         float effective_q = effective_base_q * weight;
         float quantised_val = coeffs[i] / effective_q;
+
+        // Apply dead-zone quantization ONLY to luma channel and finest subbands
+        // Chroma channels skip dead-zone (already heavily quantized, avoid color banding)
+        if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
+            int level = get_subband_level(i, width, height, decomp_levels);
+            float level_threshold = 0.0f;
+
+            if (level == decomp_levels) {
+                // Finest level (level 6): full dead-zone
+                level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
+            } else if (level == decomp_levels - 1) {
+                // Second-finest level (level 5): reduced dead-zone
+                level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+            }
+            // Coarser levels (0-4): no dead-zone to preserve structural information
+
+            if (fabsf(quantised_val) <= level_threshold) {
+                quantised_val = 0.0f;
+            }
+        }
+
         quantised[i] = (int16_t)CLAMP((int)(quantised_val + (quantised_val >= 0 ? 0.5f : -0.5f)), -32768, 32767);
     }
 }
@@ -1656,9 +1743,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
         } else {
             // Legacy uniform quantisation
-            quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, this_frame_qY);
-            quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo);
-            quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg);
+            quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
+            quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+            quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
         }
 
         // Store current coefficients for future delta reference
@@ -1689,9 +1776,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         }
 
         // Quantise the deltas with uniform quantisation (perceptual tuning is for original coefficients, not deltas)
-        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY);
-        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo);
-        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, this_frame_qCg);
+        quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
+        quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+        quantise_dwt_coefficients(delta_cg, quantised_cg, tile_size, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
 
         // Reconstruct coefficients like decoder will (previous + uniform_dequantised_delta)
         for (int i = 0; i < tile_size; i++) {
@@ -2292,7 +2379,7 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(extra_flags, enc->output_fp);
 
     uint8_t video_flags = 0;
-//    if (!enc->progressive) video_flags |= 0x01;  // Interlaced
+//    if (!enc->progressive) video_flags |= 0x01;  // Interlaced (deprecated, reserved for future use)
     if (enc->is_ntsc_framerate) video_flags |= 0x02;  // NTSC
     if (enc->lossless) video_flags |= 0x04;  // Lossless
     fputc(video_flags, enc->output_fp);
@@ -3253,6 +3340,7 @@ int main(int argc, char *argv[]) {
         {"intra-only", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
         {"no-perceptual-tuning", no_argument, 0, 1007},
+        {"no-dead-zone", no_argument, 0, 1013},
         {"encode-limit", required_argument, 0, 1008},
         {"dump-frame", required_argument, 0, 1009},
         {"fontrom-lo", required_argument, 0, 1011},
@@ -3262,7 +3350,7 @@ int main(int argc, char *argv[]) {
     };
 
     int c, option_index = 0;
-    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:w:c:d:b:pS:vt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:a:w:c:d:b:pS:vt", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -3282,6 +3370,7 @@ int main(int argc, char *argv[]) {
                 enc->quantiser_y = QUALITY_Y[enc->quality_level];
                 enc->quantiser_co = QUALITY_CO[enc->quality_level];
                 enc->quantiser_cg = QUALITY_CG[enc->quality_level];
+                enc->dead_zone_threshold = DEAD_ZONE_THRESHOLD[enc->quality_level];
                 break;
             case 'Q':
                 // Parse quantiser values Y,Co,Cg
@@ -3324,6 +3413,7 @@ int main(int argc, char *argv[]) {
                 enc->quantiser_y = QUALITY_Y[enc->quality_level];
                 enc->quantiser_co = QUALITY_CO[enc->quality_level];
                 enc->quantiser_cg = QUALITY_CG[enc->quality_level];
+                enc->dead_zone_threshold = DEAD_ZONE_THRESHOLD[enc->quality_level];
                 break;
             }
             case 'c': {
@@ -3371,6 +3461,9 @@ int main(int argc, char *argv[]) {
             case 1007: // --no-perceptual-tuning
                 enc->perceptual_tuning = 0;
                 break;
+            case 1013: // --no-dead-zone
+                enc->dead_zone_threshold = 0.0f;
+                break;
             case 1008: // --encode-limit
                 enc->encode_limit = atoi(optarg);
                 if (enc->encode_limit < 0) {
@@ -3389,20 +3482,18 @@ int main(int argc, char *argv[]) {
                 enc->fontrom_hi_file = strdup(optarg);
                 break;
             case 'a':
-                {
-                    int bitrate = atoi(optarg);
-                    int valid_bitrate = validate_mp2_bitrate(bitrate);
-                    if (valid_bitrate == 0) {
-                        fprintf(stderr, "Error: Invalid MP2 bitrate %d. Valid values are: ", bitrate);
-                        for (int i = 0; i < sizeof(MP2_VALID_BITRATES) / sizeof(int); i++) {
-                            fprintf(stderr, "%d%s", MP2_VALID_BITRATES[i],
-                                    (i < sizeof(MP2_VALID_BITRATES) / sizeof(int) - 1) ? ", " : "\n");
-                        }
-                        cleanup_encoder(enc);
-                        return 1;
+                int bitrate = atoi(optarg);
+                int valid_bitrate = validate_mp2_bitrate(bitrate);
+                if (valid_bitrate == 0) {
+                    fprintf(stderr, "Error: Invalid MP2 bitrate %d. Valid values are: ", bitrate);
+                    for (int i = 0; i < sizeof(MP2_VALID_BITRATES) / sizeof(int); i++) {
+                        fprintf(stderr, "%d%s", MP2_VALID_BITRATES[i],
+                                (i < sizeof(MP2_VALID_BITRATES) / sizeof(int) - 1) ? ", " : "\n");
                     }
-                    enc->audio_bitrate = valid_bitrate;
+                    cleanup_encoder(enc);
+                    return 1;
                 }
+                enc->audio_bitrate = valid_bitrate;
                 break;
             case 1004: // --help
                 show_usage(argv[0]);

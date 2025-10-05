@@ -916,7 +916,7 @@ transmission capability, and region-of-interest coding.
             - bit 2 = infinite loop (must be ignored when File Role is 1)
             - bit 7 = has no actual packets, this file is header-only without an Intro Movie
     uint8  Video Flags
-            - bit 0 = unused
+            - bit 0 = reserved
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
                 (shorthand for `-Q1,1,1 -w 0 --intra-only --no-perceptual-tuning --arate 384`)
