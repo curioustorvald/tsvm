@@ -4785,11 +4785,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
 
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, 0, TavSharpenLuma)
             tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
             tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
         } else {
-            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(yTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenLuma)
             tavApplyDWTInverseMultiLevel(coTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
             tavApplyDWTInverseMultiLevel(cgTile, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
         }
@@ -5269,11 +5269,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
 
         if (isLossless) {
-            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 0, TavSharpenLuma)
             tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
             tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 0, TavNullFilter)
         } else {
-            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenNormal)
+            tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, waveletFilter, TavSharpenLuma)
             tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
             tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, waveletFilter, TavNullFilter)
         }
@@ -5410,6 +5410,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
     }
+    // normal/strong sharpen filters make horizontal/vertical hairline artefacts
+
+    private val TavSharpenLuma = TavSharpenWeak
 
     private object TavNullFilter : TavWaveletFilter {
         override fun getCoeffMultiplier(level: Int): Float = 1.0f
