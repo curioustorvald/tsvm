@@ -759,10 +759,10 @@ note: metadata packets must precede any non-metadata packets
     int16[64]  DCT Coefficients Cg (subsampled by two, aggressively quantised)
         For SKIP and MOTION mode, DCT coefficients are filled with zero
 
-## DCT Quantization and Rate Control
-TEV uses 5 quality levels (0=lowest, 4=highest) with progressive quantization
+## DCT Quantisation and Rate Control
+TEV uses 5 quality levels (0=lowest, 4=highest) with progressive quantisation
 tables optimized for perceptual quality. DC coefficients are encoded losslessly,
-while AC coefficients are quantized according to quality tables.
+while AC coefficients are quantised according to quality tables.
 
 ### Rate Control Factor
 Each block includes a Rate Control Factor that modifies quality level for that specific block.
@@ -940,17 +940,19 @@ transmission capability, and region-of-interest coding.
 ## Packet Types
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (delta-coded frame)
-    0x12/13: Video channel 2 I/P-frame
-    0x14/15: Video channel 3 I/P-frame
-    0x16/17: Video channel 4 I/P-frame
-    0x18/19: Video channel 5 I/P-frame
-    0x1A/1B: Video channel 6 I/P-frame
-    0x1C/1D: Video channel 7 I/P-frame
-    0x1E: Video channel 8 I-frame
     0x1F: (prohibited)
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
     0x31: Subtitle in "Karaoke" format
+    <multiplexed video>
+    0x70/71: Video channel 2 I/P-frame
+    0x72/73: Video channel 3 I/P-frame
+    0x74/75: Video channel 4 I/P-frame
+    0x76/77: Video channel 5 I/P-frame
+    0x78/79: Video channel 6 I/P-frame
+    0x7A/7B: Video channel 7 I/P-frame
+    0x7C/7D: Video channel 8 I/P-frame
+    0x7E/7F: Video channel 9 I/P-frame
     <Standard metadata payloads>
     (it's called "standard" because you're expected to just copy-paste the metadata bytes verbatim)
     0xE0: EXIF packet
@@ -963,6 +965,22 @@ transmission capability, and region-of-interest coding.
     0xF1: Loop point end
     0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance)
     0xFF: Sync packet
+
+    ### Packet Precedence
+
+        Before the first frame group:
+        1. Standard metadata payloads
+
+        Frame group:
+        1. File packet (0x1F)
+        2. Audio packets
+        3. Subtitle packets
+        4. Main video packets (0x10-0x1E)
+        5. Multiplexed video packets (0x70-7F)
+        6. Loop point packets
+
+        After a frame group:
+        1. Sync packet
 
 ## Standard metadata payload packet structure
     uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
@@ -982,10 +1000,9 @@ transmission capability, and region-of-interest coding.
 
 ## Block Data (per frame)
     uint8  Mode: encoding mode
-            0x00 = SKIP (copy from previous frame)
             0x01 = INTRA (DWT-coded)
             0x02 = DELTA (DWT delta)
-    uint8  Quantiser override Y  (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding; shared with A channel)
+    uint8  Quantiser override Y  (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
     uint8  Quantiser override Co (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
     uint8  Quantiser override Cg (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
         - note: quantiser overrides are always present regardless of the channel layout
@@ -1014,22 +1031,9 @@ transmission capability, and region-of-interest coding.
         - Bit = 0: coefficient is zero
 
     #### Compression Benefits
-    - **Sparsity exploitation**: Typically 85-95% zeros in quantized DWT coefficients
+    - **Sparsity exploitation**: Typically 85-95% zeros in quantised DWT coefficients
     - **Cross-channel patterns**: Concatenated maps allow Zstd to find patterns across similar significance maps
     - **Overall improvement**: 16-18% compression improvement before Zstd compression
-
-
-    ### DWT Coefficient Structure (per tile)
-
-    For each decomposition level L (from highest to lowest):
-        uint16 LL_size: size of LL subband coefficients
-        uint16 LH_size: size of LH subband coefficients
-        uint16 HL_size: size of HL subband coefficients
-        uint16 HH_size: size of HH subband coefficients
-        int16[] LL_coeffs: quantized LL subband (low-low frequencies)
-        int16[] LH_coeffs: quantized LH subband (low-high frequencies)
-        int16[] HL_coeffs: quantized HL subband (high-low frequencies)
-        int16[] HH_coeffs: quantized HH subband (high-high frequencies)
 
 ## DWT Implementation Details
 
@@ -1039,16 +1043,16 @@ transmission capability, and region-of-interest coding.
   * Synthesis: Low-pass [1/4, 1/2, 1/4], High-pass [-1/16, -1/8, 3/8, -1/8, -1/16]
 
 - 9/7 Irreversible Filter (higher compression):
-  * Analysis: Daubechies 9/7 coefficients optimized for image compression
+  * Analysis: CDF 9/7 coefficients optimized for image compression
   * Provides better energy compaction than 5/3 but lossy reconstruction
 
-### Quantization Strategy
+### Quantisation Strategy
 
-#### Uniform Quantization (Versions 3-4)
-Traditional approach using same quantization factor for all DWT subbands within each channel.
+#### Uniform Quantisation (Versions 3-4)
+Traditional approach using same quantisation factor for all DWT subbands within each channel.
 
-#### Perceptual Quantization (Versions 5-6, Default)
-TAV versions 5 and 6 implement Human Visual System (HVS) optimized quantization with
+#### Perceptual Quantisation (Versions 5-6, Default)
+TAV versions 5 and 6 implement Human Visual System (HVS) optimized quantisation with
 frequency-aware subband weighting for superior visual quality:
 
 Anisotropic quantisation is applied for both Luma and Chroma channels to preserve horizontal details.
@@ -1056,7 +1060,7 @@ The anisotropic quantisation is the innovative upgrade to the traditional field-
 chroma subsampling.
 
 This perceptual approach allocates more bits to visually important low-frequency
-details while aggressively quantizing high-frequency noise, resulting in superior
+details while aggressively quantising high-frequency noise, resulting in superior
 visual quality at equivalent bitrates.
 
 ## Colour Space
@@ -1072,8 +1076,8 @@ TAV supports two colour spaces:
 - Ct: Chroma tritanopia
 - Cp: Chroma protanopia
 
-Perceptual versions (5-6) apply HVS-optimized quantization weights per channel,
-while uniform versions (3-4) use consistent quantization across all subbands.
+Perceptual versions (5-6) apply HVS-optimized quantisation weights per channel,
+while uniform versions (3-4) use consistent quantisation across all subbands.
 
 The encoder expects linear alpha.
 
@@ -1083,20 +1087,11 @@ The encoder expects linear alpha.
 - Better frequency localization than DCT
 - Reduced blocking artifacts due to overlapping basis functions
 
-## Performance Comparison
-Expected improvements over TEV:
-- 20-30% better compression efficiency
-- Reduced blocking artifacts
-- Scalable quality/resolution decoding
-- Better performance on natural images vs artificial content
-- **Perceptual versions (5-6)**: Superior visual quality through HVS-optimized bit allocation
-- **Uniform versions (3-4)**: Backward compatibility with traditional quantization
-
 ## Hardware Acceleration Functions
 TAV decoder requires new GraphicsJSR223Delegate functions:
 - tavDecode(): Main DWT decoding function
 - tavDWT2D(): 2D DWT/IDWT transforms  
-- tavQuantize(): Multi-band quantization
+- tavQuantise(): Multi-band quantisation
 
 ## Audio Support
 Reuses existing MP2 audio infrastructure from TEV/MOV formats for compatibility.
