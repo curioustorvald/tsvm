@@ -66,7 +66,37 @@ i:{ // Cell Indices: [c0,c2]
 18:[5,0],
 19:[5,11],
 20:[0,14]
-},f:{ // Cell Indices: [c3,c5]
+},fvert:{ // Cell Indices: [c3,c5] for non-horizontal vowels (ㅏ,ㅐ,ㅑ,ㅒ and compound vowels)
+// c3,c5:[null,ㄱ,ㄴ,ㄷ,...]
+0:[0,0],
+1:[0,1],
+2:[1,1],
+3:[1,7],
+4:[0,2],
+5:[2,9],
+6:[2,14],
+7:[0,3],
+8:[0,4],
+9:[4,1],
+10:[4,5],
+11:[4,6],
+12:[4,7],
+13:[4,12],
+14:[4,13],
+15:[4,14],
+16:[0,5],
+17:[0,6],
+18:[6,7],
+19:[0,7],
+20:[7,7],
+21:[0,8],
+22:[0,9],
+23:[0,10],
+24:[0,11],
+25:[0,12],
+26:[0,13],
+27:[0,14]
+},fhorz:{ // Cell Indices: [c3,c5] for horizontal vowels (ㅗ,ㅛ,ㅜ,ㅠ,ㅡ)
 // c3,c5:[null,ㄱ,ㄴ,ㄷ,...]
 0:[0,0],
 1:[1,0],
@@ -117,7 +147,7 @@ function toLineChar(i,p,f) {
     let out = []
     let ibuf = charmap.i[i]
     let pbuf = charmap.p[p]
-    let fbuf = charmap.f[f]
+    let fbuf = ([8,12,13,17,18].includes(p)) ? charmap.fhorz[f] : charmap.fvert[f]
     let dbl = 2*(ibuf.length == 2) // 0 or 2
     /* 0 | 0 */out[0] = ibuf[0]
     /* x | 2 */out[2] = ibuf[1]
