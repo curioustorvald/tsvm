@@ -4273,9 +4273,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return subbands
     }
 
-    var ANISOTROPY_MULT = floatArrayOf(2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
-    var ANISOTROPY_BIAS = floatArrayOf(0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
-    var ANISOTROPY_MULT_CHROMA = floatArrayOf(6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f, 1.0f)
+    var ANISOTROPY_MULT = floatArrayOf(5.1f, 3.8f, 2.7f, 2.0f, 1.5f, 1.2f, 1.0f)
+    var ANISOTROPY_BIAS = floatArrayOf(0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f)
+    var ANISOTROPY_MULT_CHROMA = floatArrayOf(7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f)
     var ANISOTROPY_BIAS_CHROMA = floatArrayOf(1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f, 0.0f)
 
 

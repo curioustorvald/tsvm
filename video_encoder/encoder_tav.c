@@ -196,10 +196,10 @@ static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.0f, 0.8f, 0.6f, 
 // Coarser levels (0-4) use 0.0f (no dead-zone) to preserve structural information
 
 // psychovisual tuning parameters
-static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
-static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
+static const float ANISOTROPY_MULT[] = {5.1f, 3.8f, 2.7f, 2.0f, 1.5f, 1.2f, 1.0f};
+static const float ANISOTROPY_BIAS[] = {0.4f, 0.3f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f};
 
-static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f, 1.0f};
+static const float ANISOTROPY_MULT_CHROMA[] = {7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f};
 static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f, 0.0f};
 
 // DWT coefficient structure for each subband
