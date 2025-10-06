@@ -181,14 +181,14 @@ static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
 
 // Quality level to quantisation mapping for different channels
 // the values are indices to the QLUT
-static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2, 0}; // 96, 48, 24, 12, 6, 3, 1
+static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2, 1}; // 96, 48, 24, 12, 6, 3, 2
 static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29, 4}; // 240, 180, 120, 90, 60, 30, 5
 static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39, 7}; // 424, 304, 200, 144, 90, 40, 8
-static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2, 0}; // 96, 48, 24, 12, 6, 3, 1
+static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2, 1}; // 96, 48, 24, 12, 6, 3, 2
 
 // Dead-zone quantisation thresholds per quality level
 // Higher values = more aggressive (more coefficients set to zero)
-static const float DEAD_ZONE_THRESHOLD[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 0.0f};
+static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.0f, 0.8f, 0.6f, 0.0f};
 
 // Dead-zone scaling factors for different subband levels
 #define DEAD_ZONE_FINEST_SCALE 1.0f      // Full dead-zone for finest level (level 6)

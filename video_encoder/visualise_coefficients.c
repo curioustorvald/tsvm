@@ -104,10 +104,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Analyse coefficient distribution
+    // Analyse coefficient distribution - Overall and per-subband
     size_t zeros = 0, positives = 0, negatives = 0;
     int16_t min_val = INT16_MAX, max_val = INT16_MIN;
 
+    // Calculate overall statistics
     for (size_t i = 0; i < expected_count; i++) {
         if (coeffs[i] == 0) zeros++;
         else if (coeffs[i] > 0) positives++;
@@ -117,12 +118,109 @@ int main(int argc, char *argv[]) {
         if (coeffs[i] > max_val) max_val = coeffs[i];
     }
 
-    printf("Coefficient statistics:\n");
+    printf("Overall coefficient statistics:\n");
     printf("  Total: %zu\n", expected_count);
     printf("  Zeros: %zu (%.1f%%)\n", zeros, 100.0 * zeros / expected_count);
     printf("  Positives: %zu (%.1f%%)\n", positives, 100.0 * positives / expected_count);
     printf("  Negatives: %zu (%.1f%%)\n", negatives, 100.0 * negatives / expected_count);
-    printf("  Range: [%d, %d]\n", min_val, max_val);
+    printf("  Range: [%d, %d]\n\n", min_val, max_val);
+
+    // Per-subband statistics
+    // Linear layout: [LL1, LH1, HL1, HH1, LH2, HL2, HH2, ..., LH6, HL6, HH6]
+    size_t offset = 0;
+
+    // Determine number of DWT levels (assuming standard 6-level for 560x448)
+    int num_levels = 6;
+    int w = width, h = height;
+
+    // LL subband (deepest level, smallest)
+    int ll_divisor = 1 << num_levels;  // 2^6 = 64
+    int ll_w = w / ll_divisor;
+    int ll_h = h / ll_divisor;
+    size_t ll_size = ll_w * ll_h;
+
+    if (offset + ll_size <= expected_count) {
+        size_t ll_zeros = 0, ll_pos = 0, ll_neg = 0;
+        int16_t ll_min = INT16_MAX, ll_max = INT16_MIN;
+
+        for (size_t i = 0; i < ll_size; i++) {
+            int16_t val = coeffs[offset + i];
+            if (val == 0) ll_zeros++;
+            else if (val > 0) ll_pos++;
+            else ll_neg++;
+            if (val < ll_min) ll_min = val;
+            if (val > ll_max) ll_max = val;
+        }
+
+        printf("LL%d subband:\n", num_levels);
+        printf("  Total: %zu\n", ll_size);
+        printf("  Zeros: %zu (%.1f%%)\n", ll_zeros, 100.0 * ll_zeros / ll_size);
+        printf("  Positives: %zu (%.1f%%)\n", ll_pos, 100.0 * ll_pos / ll_size);
+        printf("  Negatives: %zu (%.1f%%)\n", ll_neg, 100.0 * ll_neg / ll_size);
+        printf("  Range: [%d, %d]\n\n", ll_min, ll_max);
+
+        offset += ll_size;
+    }
+
+    // LH, HL, HH subbands for each level (from deepest to finest)
+    for (int level = num_levels; level >= 1; level--) {
+        int divisor = 1 << level;  // 2^level
+        int sub_w = w / divisor;
+        int sub_h = h / divisor;
+        size_t sub_size = sub_w * sub_h;
+
+        if (offset + 3 * sub_size > expected_count) break;
+
+        // LH subband
+        size_t lh_zeros = 0, lh_pos = 0, lh_neg = 0;
+        int16_t lh_min = INT16_MAX, lh_max = INT16_MIN;
+        for (size_t i = 0; i < sub_size; i++) {
+            int16_t val = coeffs[offset + i];
+            if (val == 0) lh_zeros++;
+            else if (val > 0) lh_pos++;
+            else lh_neg++;
+            if (val < lh_min) lh_min = val;
+            if (val > lh_max) lh_max = val;
+        }
+        offset += sub_size;
+
+        // HL subband
+        size_t hl_zeros = 0, hl_pos = 0, hl_neg = 0;
+        int16_t hl_min = INT16_MAX, hl_max = INT16_MIN;
+        for (size_t i = 0; i < sub_size; i++) {
+            int16_t val = coeffs[offset + i];
+            if (val == 0) hl_zeros++;
+            else if (val > 0) hl_pos++;
+            else hl_neg++;
+            if (val < hl_min) hl_min = val;
+            if (val > hl_max) hl_max = val;
+        }
+        offset += sub_size;
+
+        // HH subband
+        size_t hh_zeros = 0, hh_pos = 0, hh_neg = 0;
+        int16_t hh_min = INT16_MAX, hh_max = INT16_MIN;
+        for (size_t i = 0; i < sub_size; i++) {
+            int16_t val = coeffs[offset + i];
+            if (val == 0) hh_zeros++;
+            else if (val > 0) hh_pos++;
+            else hh_neg++;
+            if (val < hh_min) hh_min = val;
+            if (val > hh_max) hh_max = val;
+        }
+        offset += sub_size;
+
+        printf("Level %d subbands (%dx%d each):\n", level, sub_w, sub_h);
+        printf("  LH%d: Total=%zu, Zeros=%zu (%.1f%%), Pos=%zu (%.1f%%), Neg=%zu (%.1f%%), Range=[%d,%d]\n",
+               level, sub_size, lh_zeros, 100.0*lh_zeros/sub_size,
+               lh_pos, 100.0*lh_pos/sub_size, lh_neg, 100.0*lh_neg/sub_size, lh_min, lh_max);
+        printf("  HL%d: Total=%zu, Zeros=%zu (%.1f%%), Pos=%zu (%.1f%%), Neg=%zu (%.1f%%), Range=[%d,%d]\n",
+               level, sub_size, hl_zeros, 100.0*hl_zeros/sub_size,
+               hl_pos, 100.0*hl_pos/sub_size, hl_neg, 100.0*hl_neg/sub_size, hl_min, hl_max);
+        printf("  HH%d: Total=%zu, Zeros=%zu (%.1f%%), Pos=%zu (%.1f%%), Neg=%zu (%.1f%%), Range=[%d,%d]\n\n",
+               level, sub_size, hh_zeros, 100.0*hh_zeros/sub_size,
+               hh_pos, 100.0*hh_pos/sub_size, hh_neg, 100.0*hh_neg/sub_size, hh_min, hh_max);
+    }
 
     // Write PPM image
     FILE *fp_out = fopen(output_file, "wb");

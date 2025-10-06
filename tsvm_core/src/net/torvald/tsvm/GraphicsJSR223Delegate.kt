@@ -4235,14 +4235,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return subbands
     }
 
-    var ANISOTROPY_MULT = floatArrayOf(2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f)
-    var ANISOTROPY_BIAS = floatArrayOf(0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f)
-    var ANISOTROPY_MULT_CHROMA = floatArrayOf(6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f)
-    var ANISOTROPY_BIAS_CHROMA = floatArrayOf(1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f)
+    var ANISOTROPY_MULT = floatArrayOf(2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f)
+    var ANISOTROPY_BIAS = floatArrayOf(0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f)
+    var ANISOTROPY_MULT_CHROMA = floatArrayOf(6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f, 1.0f)
+    var ANISOTROPY_BIAS_CHROMA = floatArrayOf(1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f, 0.0f)
 
 
 
-    private fun perceptual_model3_LH(quality: Int, level: Float): Float {
+    private fun perceptual_model3_LH(level: Float): Float {
         val H4 = 1.2f
         val Q = 2f // using fixed value for fixed curve; quantiser will scale it up anyway
         val Q12 = Q * 12f
@@ -4268,9 +4268,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         return lerp(LH, HL, Kx)
     }
 
-    fun perceptual_model3_LL(quality: Int, level: Float): Float {
-        val n = perceptual_model3_LH(quality, level)
-        val m = perceptual_model3_LH(quality, level - 1) / n
+    fun perceptual_model3_LL(level: Float): Float {
+        val n = perceptual_model3_LH(level)
+        val m = perceptual_model3_LH(level - 1) / n
 
         return n / m
     }
@@ -4284,13 +4284,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavDeriveEncoderQindex(qIndex: Int, qYGlobal: Int): Int {
         if (qIndex > 0) return qIndex - 1
-        return if (qYGlobal >= 60) 0
-        else if (qYGlobal >= 42) 1
-        else if (qYGlobal >= 25) 2
-        else if (qYGlobal >= 12) 3
-        else if (qYGlobal >= 6) 4
+        return if (qYGlobal >= 79) 0
+        else if (qYGlobal >= 47) 1
+        else if (qYGlobal >= 23) 2
+        else if (qYGlobal >= 11) 3
+        else if (qYGlobal >= 5) 4
         else if (qYGlobal >= 2) 5
-        else 5
+        else 6
     }
 
     // level is one-based index
@@ -4306,10 +4306,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // LUMA CHANNEL: Based on statistical analysis from real video content
             
             // LL subband - contains most image energy, preserve carefully
-            if (subbandType == 0) return perceptual_model3_LL(qualityLevel, level)
+            if (subbandType == 0) return perceptual_model3_LL(level)
             
             // LH subband - horizontal details (human eyes more sensitive)
-            val LH: Float = perceptual_model3_LH(qualityLevel, level)
+            val LH: Float = perceptual_model3_LH(level)
             if (subbandType == 1) return LH
             
             // HL subband - vertical details
