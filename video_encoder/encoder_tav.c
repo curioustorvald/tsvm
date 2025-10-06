@@ -98,9 +98,8 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_WIDTH 560
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
-#define DEFAULT_QUALITY 2
+#define DEFAULT_QUALITY 3
 int KEYFRAME_INTERVAL = 2; // refresh often because deltas in DWT are more visible than DCT
-#define ZSTD_COMPRESSON_LEVEL 15
 
 // Audio/subtitle constants (reused from TEV)
 #define MP2_DEFAULT_PACKET_SIZE 1152
@@ -162,7 +161,7 @@ static int calculate_max_decomp_levels(int width, int height) {
 }
 
 // MP2 audio rate table (same as TEV)
-static const int MP2_RATE_TABLE[] = {128, 160, 224, 320, 384, 384};
+static const int MP2_RATE_TABLE[] = {96, 128, 160, 224, 320, 384, 384};
 
 // Valid MP2 bitrates as per MPEG-1 Layer II specification
 static const int MP2_VALID_BITRATES[] = {32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
@@ -181,14 +180,14 @@ static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
 
 // Quality level to quantisation mapping for different channels
 // the values are indices to the QLUT
-static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
-static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29}; // 240, 180, 120, 90, 60, 30
-static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39}; // 424, 304, 200, 144, 90, 40
-static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2}; // 96, 48, 24, 12, 6, 3
+static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2, 0}; // 96, 48, 24, 12, 6, 3, 1
+static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29, 4}; // 240, 180, 120, 90, 60, 30, 5
+static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39, 7}; // 424, 304, 200, 144, 90, 40, 8
+static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2, 0}; // 96, 48, 24, 12, 6, 3, 1
 
-// Dead-zone quantization thresholds per quality level
+// Dead-zone quantisation thresholds per quality level
 // Higher values = more aggressive (more coefficients set to zero)
-static const float DEAD_ZONE_THRESHOLD[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
+static const float DEAD_ZONE_THRESHOLD[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 0.0f};
 
 // Dead-zone scaling factors for different subband levels
 #define DEAD_ZONE_FINEST_SCALE 1.0f      // Full dead-zone for finest level (level 6)
@@ -196,11 +195,11 @@ static const float DEAD_ZONE_THRESHOLD[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
 // Coarser levels (0-4) use 0.0f (no dead-zone) to preserve structural information
 
 // psychovisual tuning parameters
-static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
-static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f};
+static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f};
+static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f};
-static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f};
+static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f, 1.0f};
+static const float ANISOTROPY_BIAS_CHROMA[] = {1.0f, 0.8f, 0.6f, 0.4f, 0.2f, 0.0f, 0.0f};
 
 // DWT coefficient structure for each subband
 typedef struct {
@@ -252,7 +251,7 @@ typedef struct tav_encoder_s {
     int quantiser_y, quantiser_co, quantiser_cg;
     int wavelet_filter;
     int decomp_levels;
-    float dead_zone_threshold;  // Dead-zone quantization threshold (0 = disabled)
+    float dead_zone_threshold;  // Dead-zone quantisation threshold (0 = disabled)
     int bitrate_mode;
     int target_bitrate;
 
@@ -314,6 +313,7 @@ typedef struct tav_encoder_s {
     ZSTD_CCtx *zstd_ctx;
     void *compressed_buffer;
     size_t compressed_buffer_size;
+    int zstd_level;  // Zstd compression level (default: 15)
     
     // OPTIMISATION: Pre-allocated buffers to avoid malloc/free per tile
     int16_t *reusable_quantised_y;
@@ -601,6 +601,8 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output);
 
 // Show usage information
 static void show_usage(const char *program_name) {
+    int qtsize = sizeof(MP2_RATE_TABLE) / sizeof(int);
+
     printf("TAV DWT-based Video Encoder\n");
     printf("Usage: %s [options] -i input.mp4 -o output.mv3\n\n", program_name);
     printf("Options:\n");
@@ -608,42 +610,43 @@ static void show_usage(const char *program_name) {
     printf("  -o, --output FILE       Output video file (use '-' for stdout)\n");
     printf("  -s, --size WxH          Video size (default: %dx%d)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("  -f, --fps N             Output frames per second (enables frame rate conversion)\n");
-    printf("  -q, --quality N         Quality level 0-5 (default: 2)\n");
-    printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 1-255 for each channel (1: lossless, 255: potato)\n");
+    printf("  -q, --quality N         Quality level 0-5 (default: 3)\n");
+    printf("  -Q, --quantiser Y,Co,Cg Quantiser levels 0-255 for each channel (0: lossless, 255: potato)\n");
     printf("  -b, --bitrate N         Target bitrate in kbps (enables bitrate control mode)\n");
     printf("  -c, --channel-layout N  Channel layout: 0=Y-Co-Cg, 1=Y-Co-Cg-A, 2=Y-only, 3=Y-A, 4=Co-Cg, 5=Co-Cg-A (default: 0)\n");
     printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
-    printf("  --fontrom-lo FILE       Low font ROM file (max 1920 bytes) for internationalized subtitles\n");
-    printf("  --fontrom-hi FILE       High font ROM file (max 1920 bytes) for internationalized subtitles\n");
+    printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
+    printf("  --fontrom-hi FILE       High font ROM file for internationalised subtitles\n");
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
-    printf("  --lossless              Lossless mode: use 5/3 reversible wavelet\n");
-    printf("  --intra-only            Disable delta encoding (less noisy picture at the cost of larger file)\n");
+    printf("  --lossless              Lossless mode (-q %d -Q1,1,1 -w 0 --intra-only --no-perceptual-tuning --no-dead-zone --arate 384)\n", qtsize);
+    printf("  --intra-only            Disable delta encoding\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
-    printf("  --no-dead-zone          Disable dead-zone quantization (for comparison/testing)\n");
+    printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
-    printf("  --wavelet N             Wavelet filter: 0=CDF 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
+    printf("  --wavelet N             Wavelet filter: 0=LGT 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
+    printf("  --zstd-level N          Zstd compression level 1-22 (default: 19, higher = better compression but slower)\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
-    for (int i = 0; i < sizeof(MP2_RATE_TABLE) / sizeof(int); i++) {
+    for (int i = 0; i < qtsize; i++) {
         printf("%d: %d kbps\t", i, MP2_RATE_TABLE[i]);
     }
     printf("\n\nQuantiser Value by Quality:\n");
     printf("   Y - ");
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < qtsize; i++) {
         printf("%d: Q %d%s(→%d) \t", i, QUALITY_Y[i], QUALITY_Y[i] < 10 ? "  " : QUALITY_Y[i] < 100 ? " " : "", QLUT[QUALITY_Y[i]]);
     }
     printf("\n  Co - ");
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < qtsize; i++) {
         printf("%d: Q %d%s(→%d) \t", i, QUALITY_CO[i], QUALITY_CO[i] < 10 ? "  " : QUALITY_CO[i] < 100 ? " " : "", QLUT[QUALITY_CO[i]]);
     }
     printf("\n  Cg - ");
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < qtsize; i++) {
         printf("%d: Q %d%s(→%d) \t", i, QUALITY_CG[i], QUALITY_CG[i] < 10 ? "  " : QUALITY_CG[i] < 100 ? " " : "", QLUT[QUALITY_CG[i]]);
     }
     printf("\n\nVideo Size Keywords:");
@@ -657,7 +660,6 @@ static void show_usage(const char *program_name) {
     printf("  - Perceptual quantisation optimised for human visual system (default)\n");
     printf("  - Full resolution YCoCg-R/ICtCp colour space\n");
     printf("  - Lossless and lossy compression modes\n");
-    printf("  - Versions 5/6: Perceptual quantisation, Versions 3/4: Uniform quantisation\n");
 
     printf("\nExamples:\n");
     printf("  %s -i input.mp4 -o output.mv3               # Default settings\n", program_name);
@@ -689,6 +691,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
+    enc->zstd_level = 19;  // Default Zstd compression level
 
     return enc;
 }
@@ -763,7 +766,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->previous_coeffs_alpha = malloc(total_coeff_size);
     enc->previous_coeffs_allocated = 0; // Will be set to 1 after first I-frame
 
-    // Initialize bitrate control if in bitrate mode
+    // Initialise bitrate control if in bitrate mode
     if (enc->bitrate_mode) {
         enc->video_rate_bin_capacity = enc->output_fps > 0 ? enc->output_fps : enc->fps;
         enc->video_rate_bin = calloc(enc->video_rate_bin_capacity, sizeof(size_t));
@@ -1403,8 +1406,8 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
     for (int i = 0; i < size; i++) {
         float quantised_val = coeffs[i] / effective_q;
 
-        // Apply dead-zone quantization ONLY to luma channel and finest subbands
-        // Chroma channels skip dead-zone (already heavily quantized, avoid color banding)
+        // Apply dead-zone quantisation ONLY to luma channel and finest subbands
+        // Chroma channels skip dead-zone (already heavily quantised, avoid colour banding)
         if (dead_zone_threshold > 0.0f && !is_chroma) {
             int level = get_subband_level(i, width, height, decomp_levels);
             float level_threshold = 0.0f;
@@ -1610,8 +1613,8 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
         float effective_q = effective_base_q * weight;
         float quantised_val = coeffs[i] / effective_q;
 
-        // Apply dead-zone quantization ONLY to luma channel and finest subbands
-        // Chroma channels skip dead-zone (already heavily quantized, avoid color banding)
+        // Apply dead-zone quantisation ONLY to luma channel and finest subbands
+        // Chroma channels skip dead-zone (already heavily quantised, avoid colour banding)
         if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
             int level = get_subband_level(i, width, height, decomp_levels);
             float level_threshold = 0.0f;
@@ -1967,7 +1970,7 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
 
     // Compress with zstd
     size_t compressed_size = ZSTD_compress(enc->compressed_buffer, enc->compressed_buffer_size,
-                                           uncompressed_buffer, uncompressed_offset, ZSTD_COMPRESSON_LEVEL);
+                                           uncompressed_buffer, uncompressed_offset, enc->zstd_level);
 
     if (ZSTD_isError(compressed_size)) {
         fprintf(stderr, "Error: ZSTD compression failed: %s\n", ZSTD_getErrorName(compressed_size));
@@ -2241,7 +2244,7 @@ static void rgba_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgba,
             c1[i] = (float)I;
             c2[i] = (float)Ct;
             c3[i] = (float)Cp;
-            alpha[i] = (float)rgba[i*4+3] / 255.0f; // Normalize alpha to [0,1]
+            alpha[i] = (float)rgba[i*4+3] / 255.0f; // Normalise alpha to [0,1]
         }
     } else {
         // YCoCg mode with alpha - extract RGB first, then convert
@@ -2250,7 +2253,7 @@ static void rgba_to_colour_space_frame(tav_encoder_t *enc, const uint8_t *rgba,
             temp_rgb[i*3] = rgba[i*4];     // R
             temp_rgb[i*3+1] = rgba[i*4+1]; // G
             temp_rgb[i*3+2] = rgba[i*4+2]; // B
-            alpha[i] = (float)rgba[i*4+3] / 255.0f; // Normalize alpha to [0,1]
+            alpha[i] = (float)rgba[i*4+3] / 255.0f; // Normalise alpha to [0,1]
         }
         rgb_to_ycocg(temp_rgb, c1, c2, c3, width, height);
         free(temp_rgb);
@@ -3277,7 +3280,7 @@ static int detect_scene_change(tav_encoder_t *enc) {
         for (int x = 0; x < enc->width; x += 2) {
             int offset = (y * enc->width + x) * 3;
 
-            // Calculate color difference
+            // Calculate colour difference
             int r_diff = abs(enc->current_frame_rgb[offset] - comparison_buffer[offset]);
             int g_diff = abs(enc->current_frame_rgb[offset + 1] - comparison_buffer[offset + 1]);
             int b_diff = abs(enc->current_frame_rgb[offset + 2] - comparison_buffer[offset + 2]);
@@ -3345,6 +3348,7 @@ int main(int argc, char *argv[]) {
         {"dump-frame", required_argument, 0, 1009},
         {"fontrom-lo", required_argument, 0, 1011},
         {"fontrom-hi", required_argument, 0, 1012},
+        {"zstd-level", required_argument, 0, 1014},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3366,7 +3370,7 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'q':
-                enc->quality_level = CLAMP(atoi(optarg), 0, 5);
+                enc->quality_level = CLAMP(atoi(optarg), 0, 6);
                 enc->quantiser_y = QUALITY_Y[enc->quality_level];
                 enc->quantiser_co = QUALITY_CO[enc->quality_level];
                 enc->quantiser_cg = QUALITY_CG[enc->quality_level];
@@ -3397,7 +3401,9 @@ int main(int argc, char *argv[]) {
                 enc->target_bitrate = bitrate;
 
                 // Choose initial q-index based on target bitrate
-                if (bitrate >= 32000) {
+                if (bitrate >= 64000) {
+                    enc->quality_level = 6;
+                } else if (bitrate >= 32000) {
                     enc->quality_level = 5;
                 } else if (bitrate >= 16000) {
                     enc->quality_level = 4;
@@ -3481,6 +3487,14 @@ int main(int argc, char *argv[]) {
             case 1012: // --fontrom-hi
                 enc->fontrom_hi_file = strdup(optarg);
                 break;
+            case 1014: // --zstd-level
+                enc->zstd_level = atoi(optarg);
+                if (enc->zstd_level < 1 || enc->zstd_level > 22) {
+                    fprintf(stderr, "Error: Zstd compression level must be between 1 and 22 (got %d)\n", enc->zstd_level);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                break;
             case 'a':
                 int bitrate = atoi(optarg);
                 int valid_bitrate = validate_mp2_bitrate(bitrate);
@@ -3522,12 +3536,22 @@ int main(int argc, char *argv[]) {
     }
 
     if (enc->lossless) {
+        enc->quality_level = sizeof(MP2_RATE_TABLE) / sizeof(int); // use maximum quality table to disable anisotropy
         enc->perceptual_tuning = 0;
         enc->quantiser_y = 0; // will be resolved to 1
         enc->quantiser_co = 0; // ditto
         enc->quantiser_cg = 0; // do.
         enc->intra_only = 1;
+        enc->dead_zone_threshold = 0.0f;
         enc->audio_bitrate = 384;
+    }
+
+    // if user made `-q 6 -Q0,0,0 -w 0 --intra-only --no-perceptual-tuning --arate 384` manually, mark the video as lossless
+    int qtsize = sizeof(MP2_RATE_TABLE) / sizeof(int);
+    if (enc->quality_level == qtsize && enc->quantiser_y == 0 && enc->quantiser_co == 0 && enc->quantiser_cg == 0 &&
+        enc->perceptual_tuning == 0 && enc->intra_only == 1 && enc->dead_zone_threshold == 0.0f && enc->audio_bitrate == 384
+    ) {
+        enc->lossless = 1;
     }
 
     if ((!enc->input_file && !enc->test_mode) || !enc->output_file) {

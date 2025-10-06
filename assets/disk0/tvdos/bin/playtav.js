@@ -389,7 +389,7 @@ function setBiasLighting() {
 
 function updateDataRateBin(rate) {
     videoRateBin.push(rate)
-    if (videoRateBin.length > header.fps) {
+    if (videoRateBin.length > 10) {
         videoRateBin.shift()
     }
 }

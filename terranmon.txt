@@ -919,7 +919,7 @@ transmission capability, and region-of-interest coding.
             - bit 0 = reserved
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
-                (shorthand for `-Q1,1,1 -w 0 --intra-only --no-perceptual-tuning --arate 384`)
+                (shorthand for `-q 6 -Q0,0,0 -w 0 --intra-only --no-perceptual-tuning --arate 384`)
             - bit 3 = has region-of-interest coding (for still images only)
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
     uint8  Channel layout (bit-field: bit 0=has alpha, bit 1=has chroma inverted, bit 2=has luma inverted)
