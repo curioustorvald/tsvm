@@ -99,6 +99,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
+#define DEFAULT_ZSTD_LEVEL 9
 int KEYFRAME_INTERVAL = 2; // refresh often because deltas in DWT are more visible than DCT
 
 // Audio/subtitle constants (reused from TEV)
@@ -629,7 +630,7 @@ static void show_usage(const char *program_name) {
     printf("  --encode-limit N        Encode only first N frames (useful for testing/analysis)\n");
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --wavelet N             Wavelet filter: 0=LGT 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
-    printf("  --zstd-level N          Zstd compression level 1-22 (default: 19, higher = better compression but slower)\n");
+    printf("  --zstd-level N          Zstd compression level 1-22 (default: %d, higher = better compression but slower)\n", DEFAULT_ZSTD_LEVEL);
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -691,7 +692,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
-    enc->zstd_level = 19;  // Default Zstd compression level
+    enc->zstd_level = DEFAULT_ZSTD_LEVEL;  // Default Zstd compression level
 
     return enc;
 }
