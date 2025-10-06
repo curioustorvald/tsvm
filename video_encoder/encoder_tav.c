@@ -1247,104 +1247,34 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
     free(temp_col);
 }
 
-// Preprocess coefficients using significance map for better compression
-static size_t preprocess_coefficients(int16_t *coeffs, int coeff_count, uint8_t *output_buffer) {
-    // Count non-zero coefficients
-    int nonzero_count = 0;
-    for (int i = 0; i < coeff_count; i++) {
-        if (coeffs[i] != 0) nonzero_count++;
-    }
-
-    // Create significance map (1 bit per coefficient, packed into bytes)
-    int map_bytes = (coeff_count + 7) / 8;  // Round up to nearest byte
-    uint8_t *sig_map = output_buffer;
-    int16_t *values = (int16_t *)(output_buffer + map_bytes);
-
-    // Clear significance map
-    memset(sig_map, 0, map_bytes);
-
-    // Fill significance map and extract non-zero values
-    int value_idx = 0;
-    for (int i = 0; i < coeff_count; i++) {
-        if (coeffs[i] != 0) {
-            // Set bit in significance map
-            int byte_idx = i / 8;
-            int bit_idx = i % 8;
-            sig_map[byte_idx] |= (1 << bit_idx);
-
-            // Store the value
-            values[value_idx++] = coeffs[i];
-        }
-    }
-
-    return map_bytes + (nonzero_count * sizeof(int16_t));
-}
-
-// Preprocess coefficients using concatenated significance maps for optimal cross-channel compression
-static size_t preprocess_coefficients_concatenated(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg,
-                                                   int coeff_count, uint8_t *output_buffer) {
-    int map_bytes = (coeff_count + 7) / 8;
-
-    // Count non-zeros per channel
-    int nonzero_y = 0, nonzero_co = 0, nonzero_cg = 0;
-    for (int i = 0; i < coeff_count; i++) {
-        if (coeffs_y[i] != 0) nonzero_y++;
-        if (coeffs_co[i] != 0) nonzero_co++;
-        if (coeffs_cg[i] != 0) nonzero_cg++;
-    }
-
-    // Layout: [Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals]
-    uint8_t *y_map = output_buffer;
-    uint8_t *co_map = output_buffer + map_bytes;
-    uint8_t *cg_map = output_buffer + map_bytes * 2;
-    int16_t *y_values = (int16_t *)(output_buffer + map_bytes * 3);
-    int16_t *co_values = y_values + nonzero_y;
-    int16_t *cg_values = co_values + nonzero_co;
-
-    // Clear significance maps
-    memset(y_map, 0, map_bytes);
-    memset(co_map, 0, map_bytes);
-    memset(cg_map, 0, map_bytes);
-
-    // Fill significance maps and extract values
-    int y_idx = 0, co_idx = 0, cg_idx = 0;
-    for (int i = 0; i < coeff_count; i++) {
-        int byte_idx = i / 8;
-        int bit_idx = i % 8;
-
-        if (coeffs_y[i] != 0) {
-            y_map[byte_idx] |= (1 << bit_idx);
-            y_values[y_idx++] = coeffs_y[i];
-        }
-
-        if (coeffs_co[i] != 0) {
-            co_map[byte_idx] |= (1 << bit_idx);
-            co_values[co_idx++] = coeffs_co[i];
-        }
-
-        if (coeffs_cg[i] != 0) {
-            cg_map[byte_idx] |= (1 << bit_idx);
-            cg_values[cg_idx++] = coeffs_cg[i];
-        }
-    }
-
-    return map_bytes * 3 + (nonzero_y + nonzero_co + nonzero_cg) * sizeof(int16_t);
-}
-
 // Variable channel layout preprocessing for concatenated maps
+// Significance Map v2.1 (twobit-map): 2 bits per coefficient
+// 00=zero, 01=+1, 10=-1, 11=other (stored as int16)
 static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
                                                      int coeff_count, int channel_layout, uint8_t *output_buffer) {
     const channel_layout_config_t *config = &channel_layouts[channel_layout];
-    int map_bytes = (coeff_count + 7) / 8;
+    int map_bytes = (coeff_count * 2 + 7) / 8;  // 2 bits per coefficient
     int total_maps = config->num_channels;
 
-    // Count non-zeros per active channel
-    int nonzero_counts[4] = {0}; // Y, Co, Cg, Alpha
+    // Count "other" values (not 0, +1, or -1) per active channel
+    int other_counts[4] = {0}; // Y, Co, Cg, Alpha
     for (int i = 0; i < coeff_count; i++) {
-        if (config->has_y && coeffs_y && coeffs_y[i] != 0) nonzero_counts[0]++;
-        if (config->has_co && coeffs_co && coeffs_co[i] != 0) nonzero_counts[1]++;
-        if (config->has_cg && coeffs_cg && coeffs_cg[i] != 0) nonzero_counts[2]++;
-        if (config->has_alpha && coeffs_alpha && coeffs_alpha[i] != 0) nonzero_counts[3]++;
+        if (config->has_y && coeffs_y) {
+            int16_t val = coeffs_y[i];
+            if (val != 0 && val != 1 && val != -1) other_counts[0]++;
+        }
+        if (config->has_co && coeffs_co) {
+            int16_t val = coeffs_co[i];
+            if (val != 0 && val != 1 && val != -1) other_counts[1]++;
+        }
+        if (config->has_cg && coeffs_cg) {
+            int16_t val = coeffs_cg[i];
+            if (val != 0 && val != 1 && val != -1) other_counts[2]++;
+        }
+        if (config->has_alpha && coeffs_alpha) {
+            int16_t val = coeffs_alpha[i];
+            if (val != 0 && val != 1 && val != -1) other_counts[3]++;
+        }
     }
 
     // Layout maps in order based on channel layout
@@ -1355,48 +1285,58 @@ static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t
     if (config->has_cg) maps[2] = output_buffer + map_bytes * map_idx++;
     if (config->has_alpha) maps[3] = output_buffer + map_bytes * map_idx++;
 
-    // Calculate value array positions
+    // Calculate value array positions (only for "other" values)
     int16_t *values[4];
     int16_t *value_start = (int16_t *)(output_buffer + map_bytes * total_maps);
     int value_offset = 0;
-    if (config->has_y) { values[0] = value_start + value_offset; value_offset += nonzero_counts[0]; }
-    if (config->has_co) { values[1] = value_start + value_offset; value_offset += nonzero_counts[1]; }
-    if (config->has_cg) { values[2] = value_start + value_offset; value_offset += nonzero_counts[2]; }
-    if (config->has_alpha) { values[3] = value_start + value_offset; value_offset += nonzero_counts[3]; }
+    if (config->has_y) { values[0] = value_start + value_offset; value_offset += other_counts[0]; }
+    if (config->has_co) { values[1] = value_start + value_offset; value_offset += other_counts[1]; }
+    if (config->has_cg) { values[2] = value_start + value_offset; value_offset += other_counts[2]; }
+    if (config->has_alpha) { values[3] = value_start + value_offset; value_offset += other_counts[3]; }
 
     // Clear significance maps
     memset(output_buffer, 0, map_bytes * total_maps);
 
-    // Fill significance maps and extract values
+    // Fill twobit-maps and extract "other" values
     int value_indices[4] = {0};
+    int16_t *channel_coeffs[4] = {coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha};
+    int channel_active[4] = {config->has_y, config->has_co, config->has_cg, config->has_alpha};
+
     for (int i = 0; i < coeff_count; i++) {
-        int byte_idx = i / 8;
-        int bit_idx = i % 8;
+        for (int ch = 0; ch < 4; ch++) {
+            if (!channel_active[ch] || !channel_coeffs[ch]) continue;
 
-        if (config->has_y && coeffs_y && coeffs_y[i] != 0) {
-            maps[0][byte_idx] |= (1 << bit_idx);
-            values[0][value_indices[0]++] = coeffs_y[i];
-        }
+            int16_t val = channel_coeffs[ch][i];
+            uint8_t code;
 
-        if (config->has_co && coeffs_co && coeffs_co[i] != 0) {
-            maps[1][byte_idx] |= (1 << bit_idx);
-            values[1][value_indices[1]++] = coeffs_co[i];
-        }
+            if (val == 0) {
+                code = 0;  // 00
+            } else if (val == 1) {
+                code = 1;  // 01
+            } else if (val == -1) {
+                code = 2;  // 10
+            } else {
+                code = 3;  // 11
+                values[ch][value_indices[ch]++] = val;
+            }
 
-        if (config->has_cg && coeffs_cg && coeffs_cg[i] != 0) {
-            maps[2][byte_idx] |= (1 << bit_idx);
-            values[2][value_indices[2]++] = coeffs_cg[i];
-        }
+            // Store 2-bit code (interleaved)
+            size_t bit_pos = i * 2;
+            size_t byte_idx = bit_pos / 8;
+            size_t bit_offset = bit_pos % 8;
 
-        if (config->has_alpha && coeffs_alpha && coeffs_alpha[i] != 0) {
-            maps[3][byte_idx] |= (1 << bit_idx);
-            values[3][value_indices[3]++] = coeffs_alpha[i];
+            maps[ch][byte_idx] |= (code << bit_offset);
+
+            // Handle byte boundary crossing
+            if (bit_offset == 7 && byte_idx + 1 < map_bytes) {
+                maps[ch][byte_idx + 1] |= (code >> 1);
+            }
         }
     }
 
-    // Return total size: maps + all non-zero values
-    int total_nonzeros = nonzero_counts[0] + nonzero_counts[1] + nonzero_counts[2] + nonzero_counts[3];
-    return map_bytes * total_maps + total_nonzeros * sizeof(int16_t);
+    // Return total size: maps + all "other" values
+    int total_others = other_counts[0] + other_counts[1] + other_counts[2] + other_counts[3];
+    return map_bytes * total_maps + total_others * sizeof(int16_t);
 }
 
 // Quantisation for DWT subbands with rate control

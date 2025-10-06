@@ -99,8 +99,7 @@ audio.setPcmMode(0)
 audio.setMasterVolume(0, 255)
 
 // set colour zero as half-opaque black
-graphics.setPalette(0, 0, 0, 0, 9)
-
+graphics.setPalette(0, 0, 0, 0, 7)
 
 function processSubtitlePacket(packetSize) {
 

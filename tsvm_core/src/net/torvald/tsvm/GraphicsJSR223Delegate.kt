@@ -4051,10 +4051,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     // Variable channel layout postprocessing for concatenated maps
+    // Significance Map v2.1 (twobit-map): 2 bits per coefficient
+    // 00=zero, 01=+1, 10=-1, 11=other (stored as int16)
     private fun postprocessCoefficientsVariableLayout(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int,
                                                      channelLayout: Int, outputY: ShortArray?, outputCo: ShortArray?,
                                                      outputCg: ShortArray?, outputAlpha: ShortArray?) {
-        val mapBytes = (coeffCount + 7) / 8
+        val mapBytes = (coeffCount * 2 + 7) / 8  // 2 bits per coefficient
 
         // Determine active channels based on layout (bit-field design)
         val hasY = channelLayout and 4 == 0      // bit 2 inverted: 0 means has luma
@@ -4077,28 +4079,43 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val cgMapOffset = if (hasCg) { val offset = mapOffset; mapOffset += mapBytes; offset } else -1
         val alphaMapOffset = if (hasAlpha) { val offset = mapOffset; mapOffset += mapBytes; offset } else -1
 
-        // Count non-zeros for each active channel
-        var yNonZeros = 0
-        var coNonZeros = 0
-        var cgNonZeros = 0
-        var alphaNonZeros = 0
+        // Helper function to extract 2-bit code
+        fun getTwoBitCode(mapStart: Int, coeffIdx: Int): Int {
+            val bitPos = coeffIdx * 2
+            val byteIdx = bitPos / 8
+            val bitOffset = bitPos % 8
 
-        for (i in 0 until coeffCount) {
-            val byteIdx = i / 8
-            val bitIdx = i % 8
+            val byte0 = compressedData[mapStart + byteIdx].toInt() and 0xFF
+            val code = (byte0 shr bitOffset) and 0x03
 
-            if (hasY && yMapOffset >= 0 && (compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) yNonZeros++
-            if (hasCo && coMapOffset >= 0 && (compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) coNonZeros++
-            if (hasCg && cgMapOffset >= 0 && (compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) cgNonZeros++
-            if (hasAlpha && alphaMapOffset >= 0 && (compressedData[alphaMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) alphaNonZeros++
+            // Handle byte boundary crossing
+            return if (bitOffset == 7 && byteIdx + 1 < mapBytes) {
+                val byte1 = compressedData[mapStart + byteIdx + 1].toInt() and 0xFF
+                ((byte0 shr 7) and 0x01) or ((byte1 shl 1) and 0x02)
+            } else {
+                code
+            }
         }
 
-        // Calculate value array offsets
+        // Count "other" values (code 11) for each active channel
+        var yOthers = 0
+        var coOthers = 0
+        var cgOthers = 0
+        var alphaOthers = 0
+
+        for (i in 0 until coeffCount) {
+            if (hasY && yMapOffset >= 0 && getTwoBitCode(yMapOffset, i) == 3) yOthers++
+            if (hasCo && coMapOffset >= 0 && getTwoBitCode(coMapOffset, i) == 3) coOthers++
+            if (hasCg && cgMapOffset >= 0 && getTwoBitCode(cgMapOffset, i) == 3) cgOthers++
+            if (hasAlpha && alphaMapOffset >= 0 && getTwoBitCode(alphaMapOffset, i) == 3) alphaOthers++
+        }
+
+        // Calculate value array offsets (only for "other" values)
         var valueOffset = mapOffset
-        val yValuesOffset = if (hasY) { val offset = valueOffset; valueOffset += yNonZeros * 2; offset } else -1
-        val coValuesOffset = if (hasCo) { val offset = valueOffset; valueOffset += coNonZeros * 2; offset } else -1
-        val cgValuesOffset = if (hasCg) { val offset = valueOffset; valueOffset += cgNonZeros * 2; offset } else -1
-        val alphaValuesOffset = if (hasAlpha) { val offset = valueOffset; valueOffset += alphaNonZeros * 2; offset } else -1
+        val yValuesOffset = if (hasY) { val offset = valueOffset; valueOffset += yOthers * 2; offset } else -1
+        val coValuesOffset = if (hasCo) { val offset = valueOffset; valueOffset += coOthers * 2; offset } else -1
+        val cgValuesOffset = if (hasCg) { val offset = valueOffset; valueOffset += cgOthers * 2; offset } else -1
+        val alphaValuesOffset = if (hasAlpha) { val offset = valueOffset; valueOffset += alphaOthers * 2; offset } else -1
 
         // Reconstruct coefficients
         var yValueIdx = 0
@@ -4107,43 +4124,64 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         var alphaValueIdx = 0
 
         for (i in 0 until coeffCount) {
-            val byteIdx = i / 8
-            val bitIdx = i % 8
-
             // Y channel
-            if (hasY && yMapOffset >= 0 && outputY != null &&
-                (compressedData[yMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valuePos = yValuesOffset + yValueIdx * 2
-                outputY[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
-                             (compressedData[valuePos].toInt() and 0xFF)).toShort()
-                yValueIdx++
+            if (hasY && yMapOffset >= 0 && outputY != null) {
+                when (getTwoBitCode(yMapOffset, i)) {
+                    0 -> outputY[i] = 0     // 00 = zero
+                    1 -> outputY[i] = 1     // 01 = +1
+                    2 -> outputY[i] = -1    // 10 = -1
+                    3 -> {                  // 11 = other (read int16)
+                        val valuePos = yValuesOffset + yValueIdx * 2
+                        outputY[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                                     (compressedData[valuePos].toInt() and 0xFF)).toShort()
+                        yValueIdx++
+                    }
+                }
             }
 
             // Co channel
-            if (hasCo && coMapOffset >= 0 && outputCo != null &&
-                (compressedData[coMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valuePos = coValuesOffset + coValueIdx * 2
-                outputCo[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
-                              (compressedData[valuePos].toInt() and 0xFF)).toShort()
-                coValueIdx++
+            if (hasCo && coMapOffset >= 0 && outputCo != null) {
+                when (getTwoBitCode(coMapOffset, i)) {
+                    0 -> outputCo[i] = 0
+                    1 -> outputCo[i] = 1
+                    2 -> outputCo[i] = -1
+                    3 -> {
+                        val valuePos = coValuesOffset + coValueIdx * 2
+                        outputCo[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                                      (compressedData[valuePos].toInt() and 0xFF)).toShort()
+                        coValueIdx++
+                    }
+                }
             }
 
             // Cg channel
-            if (hasCg && cgMapOffset >= 0 && outputCg != null &&
-                (compressedData[cgMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valuePos = cgValuesOffset + cgValueIdx * 2
-                outputCg[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
-                              (compressedData[valuePos].toInt() and 0xFF)).toShort()
-                cgValueIdx++
+            if (hasCg && cgMapOffset >= 0 && outputCg != null) {
+                when (getTwoBitCode(cgMapOffset, i)) {
+                    0 -> outputCg[i] = 0
+                    1 -> outputCg[i] = 1
+                    2 -> outputCg[i] = -1
+                    3 -> {
+                        val valuePos = cgValuesOffset + cgValueIdx * 2
+                        outputCg[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                                      (compressedData[valuePos].toInt() and 0xFF)).toShort()
+                        cgValueIdx++
+                    }
+                }
             }
 
             // Alpha channel
-            if (hasAlpha && alphaMapOffset >= 0 && outputAlpha != null &&
-                (compressedData[alphaMapOffset + byteIdx].toInt() and 0xFF) and (1 shl bitIdx) != 0) {
-                val valuePos = alphaValuesOffset + alphaValueIdx * 2
-                outputAlpha[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
-                                 (compressedData[valuePos].toInt() and 0xFF)).toShort()
-                alphaValueIdx++
+            if (hasAlpha && alphaMapOffset >= 0 && outputAlpha != null) {
+                when (getTwoBitCode(alphaMapOffset, i)) {
+                    0 -> outputAlpha[i] = 0
+                    1 -> outputAlpha[i] = 1
+                    2 -> outputAlpha[i] = -1
+                    3 -> {
+                        val valuePos = alphaValuesOffset + alphaValueIdx * 2
+                        outputAlpha[i] = (((compressedData[valuePos + 1].toInt() and 0xFF) shl 8) or
+                                         (compressedData[valuePos].toInt() and 0xFF)).toShort()
+                        alphaValueIdx++
+                    }
+                }
             }
         }
     }
