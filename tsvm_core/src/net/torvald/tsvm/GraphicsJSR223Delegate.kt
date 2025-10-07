@@ -4450,8 +4450,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     // New tavDecode function that accepts compressed data and decompresses internally
     fun tavDecodeCompressed(compressedDataPtr: Long, compressedSize: Int, currentRGBAddr: Long, prevRGBAddr: Long,
-                           width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
-                            frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1): HashMap<String, Any> {
+                            width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
+                            frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1, filmGrainLevel: Int = 0): HashMap<String, Any> {
 
         // Read compressed data from VM memory into byte array
         val compressedData = ByteArray(compressedSize)
@@ -4481,7 +4481,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 // Call the existing tavDecode function with decompressed data
                 tavDecode(decompressedBuffer.toLong(), currentRGBAddr, prevRGBAddr,
                     width, height, qIndex, qYGlobal, qCoGlobal, qCgGlobal, channelLayout,
-                    frameCount, waveletFilter, decompLevels, isLossless, tavVersion)
+                    frameCount, waveletFilter, decompLevels, isLossless, tavVersion, filmGrainLevel)
 
             } finally {
                 // Clean up allocated buffer
@@ -4497,7 +4497,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // Original tavDecode function for backward compatibility (now handles decompressed data)
     fun tavDecode(blockDataPtr: Long, currentRGBAddr: Long, prevRGBAddr: Long,
                   width: Int, height: Int, qIndex: Int, qYGlobal: Int, qCoGlobal: Int, qCgGlobal: Int, channelLayout: Int,
-                  frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1): HashMap<String, Any> {
+                  frameCount: Int, waveletFilter: Int = 1, decompLevels: Int = 6, isLossless: Boolean = false, tavVersion: Int = 1, filmGrainLevel: Int = 0): HashMap<String, Any> {
 
         val dbgOut = HashMap<String, Any>()
 
@@ -4552,13 +4552,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             // Decode DWT coefficients directly to RGB buffer
                             readPtr = tavDecodeDWTIntraTileRGB(qIndex, qYGlobal, channelLayout, readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
-                                                          waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
+                                                          waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock, filmGrainLevel)
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
                             readPtr = tavDecodeDeltaTileRGB(readPtr, channelLayout, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
-                                                      waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock)
+                                                      waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock, filmGrainLevel)
                         }
                     }
                 }
@@ -4573,7 +4573,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavDecodeDWTIntraTileRGB(qIndex: Int, qYGlobal: Int, channelLayout: Int, readPtr: Long, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                          width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
-                                         waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
+                                         waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false, filmGrainLevel: Int = 0): Long {
         // Determine coefficient count based on mode
         val coeffCount = if (isMonoblock) {
             // Monoblock mode: entire frame
@@ -4674,6 +4674,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
             dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
 
+            // Apply spooky noise filter if enabled
+            if (filmGrainLevel > 0) {
+                val random = java.util.Random()
+                for (i in 0 until coeffCount) {
+                    yTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                    coTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                    cgTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                }
+            }
+
             // Debug: Check coefficient values before inverse DWT
             if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
                 var maxYDequant = 0.0f
@@ -4728,6 +4738,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 yTile[i] = quantisedY[i] * qY.toFloat()
                 coTile[i] = quantisedCo[i] * qCo.toFloat()
                 cgTile[i] = quantisedCg[i] * qCg.toFloat()
+            }
+
+            // Apply spooky noise filter if enabled
+            if (filmGrainLevel > 0) {
+                val random = java.util.Random()
+                for (i in 0 until coeffCount) {
+                    yTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                    coTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                    cgTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                }
             }
 
             // Debug: Uniform quantisation subband analysis for comparison
@@ -5185,7 +5205,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavDecodeDeltaTileRGB(readPtr: Long, channelLayout: Int, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
-                                      waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false): Long {
+                                      waveletFilter: Int, decompLevels: Int, isLossless: Boolean, tavVersion: Int, isMonoblock: Boolean = false, filmGrainLevel: Int = 0): Long {
         
         val tileIdx = if (isMonoblock) {
             0  // Single tile index for monoblock
@@ -5300,6 +5320,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
             currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
             currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
+        }
+
+        // Apply spooky noise filter if enabled
+        if (filmGrainLevel > 0) {
+            val random = java.util.Random()
+            for (i in 0 until coeffCount) {
+                currentY[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                currentCo[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+                currentCg[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+            }
         }
 
         // Store current coefficients as previous for next frame
