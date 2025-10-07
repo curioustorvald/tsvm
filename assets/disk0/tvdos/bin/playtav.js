@@ -548,10 +548,19 @@ function tryReadNextTAVHeader() {
                         offsetBytes.push(seqread.readOneByte())
                     }
 
-                    element.offset = 0
-                    for (let j = 0; j < 6; j++) {
-                        element.offset |= (offsetBytes[j] << (j * 8))
+                    // Split into low 32 bits and high 16 bits
+                    let low32 = 0
+                    for (let j = 0; j < 4; j++) {
+                        low32 |= (offsetBytes[j] << (j * 8))
                     }
+
+                    let high16 = 0
+                    for (let j = 4; j < 6; j++) {
+                        high16 |= (offsetBytes[j] << ((j - 4) * 8))
+                    }
+
+                    // Combine using multiplication (avoids bitwise 32-bit limit)
+                    element.offset = (high16 * 0x100000000) + (low32 >>> 0)
 
                     serial.println(`Element ${i + 1}: ${element.name} -> offset ${element.offset} (internal)`)
                 } else {
@@ -585,6 +594,7 @@ function tryReadNextTAVHeader() {
 }
 
 let lastKey = 0
+let skipped = false
 
 // Playback loop - properly adapted from TEV with multi-file support
 try {
@@ -614,6 +624,7 @@ try {
                         akku = FRAME_TIME
                         akku2 = 0.0
                         audio.purgeQueue(0)
+                        skipped = true
                     }
                 }
                 else if (keyCode == 20 && cueElements.length > 0) { // Down arrow - next cue
@@ -627,6 +638,7 @@ try {
                         akku = FRAME_TIME
                         akku2 = 0.0
                         audio.purgeQueue(0)
+                        skipped = true
                     }
                 }
             }
@@ -652,6 +664,11 @@ try {
                     FRAME_TIME = 1.0 / header.fps
                     audio.purgeQueue(0)
                     currentFileIndex++
+                    if (skipped) {
+                        skipped = false
+                    } else {
+                        currentCueIndex++
+                    }
                     totalFilesProcessed++
 
                     console.log(`\nStarting file ${currentFileIndex}:`)
@@ -834,7 +851,6 @@ try {
                 notifHidden = true
             }
 
-
             con.color_pair(253, 0)
             let guiStatus = {
                 fps: header.fps,
@@ -845,8 +861,8 @@ try {
                 qCo: decoderDbgInfo.qCo,
                 qCg: decoderDbgInfo.qCg,
                 akku: akku2,
-                fileName: fullFilePathStr,
-                fileOrd: currentFileIndex,
+                fileName: (cueElements.length > 0) ? `${cueElements[currentCueIndex].name}` : fullFilePathStr,
+                fileOrd: (cueElements.length > 0) ? currentCueIndex+1 : currentFileIndex,
                 resolution: `${header.width}x${header.height}${(isInterlaced) ? 'i' : ''}`,
                 colourSpace: header.version % 2 == 0 ? "ICtCp" : "YCoCg",
                 currentStatus: 1

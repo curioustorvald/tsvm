@@ -117,8 +117,9 @@ for (let tapeIndex = 0; tapeIndex < 4; tapeIndex++) {
     
     // Get file size - for HSDPA tapes, we don't know the size ahead of time
     // So we return a very large number to indicate it's available
+    // Using Number.MAX_SAFE_INTEGER to support files >2GB
     driver.getFileLen = (fd) => {
-        return 0x7FFFFFFF // Return max positive 32-bit integer
+        return Number.MAX_SAFE_INTEGER // 2^53 - 1 (9007199254740991) - safe for JS arithmetic
     }
     
     // Sequential read from tape

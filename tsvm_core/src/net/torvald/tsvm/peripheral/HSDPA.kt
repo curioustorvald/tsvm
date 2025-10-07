@@ -78,8 +78,8 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
     }
 
     private var opcodeBuf = 0
-    private var arg1 = 0
-    private var arg2 = 0
+    private var arg1 = 0L  // Long to support >2GB sequential I/O position accumulation
+    private var arg2 = 0L  // Long to support >2GB memory addressing
 
     /**
      * Reads a value from the MMIO register
@@ -167,18 +167,18 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
                 val byteOffset = (address - REG_SEQ_IO_ARG1)
                 if (byteOffset == 0) {
                     // Reset arg1 when writing to LSB
-                    arg1 = value.toUint()
+                    arg1 = value.toUint().toLong()
                 } else {
-                    arg1 = arg1 or (value.toUint() shl (byteOffset * 8))
+                    arg1 = arg1 or ((value.toUint().toLong()) shl (byteOffset * 8))
                 }
             }
             in REG_SEQ_IO_ARG2..REG_SEQ_IO_ARG2+2 -> {
                 val byteOffset = (address - REG_SEQ_IO_ARG2)
                 if (byteOffset == 0) {
                     // Reset arg2 when writing to LSB
-                    arg2 = value.toUint()
+                    arg2 = value.toUint().toLong()
                 } else {
-                    arg2 = arg2 or (value.toUint() shl (byteOffset * 8))
+                    arg2 = arg2 or ((value.toUint().toLong()) shl (byteOffset * 8))
                 }
             }
             else -> null
@@ -390,23 +390,23 @@ open class HSDPA(val vm: VM, val baudRate: Long = 133_333_333L): PeriBase("hsdpa
     /**
      * Skip bytes in sequential I/O mode
      */
-    protected open fun sequentialIOSkip(bytes: Int) {
+    protected open fun sequentialIOSkip(bytes: Long) {
         sequentialIOPosition += bytes
     }
-    
+
     /**
      * Read bytes from disk to VM memory in sequential I/O mode
      */
-    protected open fun sequentialIORead(bytes: Int, vmMemoryPointer: Int) {
+    protected open fun sequentialIORead(bytes: Long, vmMemoryPointer: Long) {
         // Default implementation - subclasses should override
         // For now, just advance the position
         sequentialIOPosition += bytes
     }
-    
+
     /**
      * Write bytes from VM memory to disk in sequential I/O mode
      */
-    protected open fun sequentialIOWrite(bytes: Int, vmMemoryPointer: Int) {
+    protected open fun sequentialIOWrite(bytes: Long, vmMemoryPointer: Long) {
         // Default implementation - subclasses should override
         // For now, just advance the position
         sequentialIOPosition += bytes

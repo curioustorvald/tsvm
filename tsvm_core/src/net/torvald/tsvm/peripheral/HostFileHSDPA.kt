@@ -2,7 +2,9 @@ package net.torvald.tsvm.peripheral
 
 import net.torvald.tsvm.VM
 import java.io.File
-import java.io.RandomAccessFile
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 
 /**
  * Host File High Speed Disk Peripheral Adapter (HostFileHSDPA)
@@ -25,7 +27,8 @@ class HostFileHSDPA : HSDPA {
     }
 
     // Host files for each disk slot
-    private val hostFiles = Array<RandomAccessFile?>(MAX_DISKS) { null }
+    private val hostFileStreams = Array<FileInputStream?>(MAX_DISKS) { null }
+    private val hostFileChannels = Array<FileChannel?>(MAX_DISKS) { null }
     private val hostFilePaths = Array<String?>(MAX_DISKS) { null }
 
     private fun initializeHostFiles(hostFilePathsList: List<String>) {
@@ -33,7 +36,9 @@ class HostFileHSDPA : HSDPA {
             for (i in 0 until minOf(hostFilePathsList.size, MAX_DISKS)) {
                 val file = File(hostFilePathsList[i])
                 if (file.exists() && file.isFile) {
-                    this.hostFiles[i] = RandomAccessFile(file, "r")
+                    val stream = FileInputStream(file)
+                    this.hostFileStreams[i] = stream
+                    this.hostFileChannels[i] = stream.channel
                     this.hostFilePaths[i] = hostFilePathsList[i]
                     println("HostFileHSDPA: Attached file '${hostFilePathsList[i]}' to disk $i")
                 } else {
@@ -50,15 +55,18 @@ class HostFileHSDPA : HSDPA {
      */
     fun attachHostFile(diskIndex: Int, filePath: String) {
         if (diskIndex < 0 || diskIndex >= MAX_DISKS) return
-        
+
         try {
             // Close existing file if any
-            hostFiles[diskIndex]?.close()
-            
+            hostFileChannels[diskIndex]?.close()
+            hostFileStreams[diskIndex]?.close()
+
             // Open new file
             val file = File(filePath)
             if (file.exists() && file.isFile) {
-                hostFiles[diskIndex] = RandomAccessFile(file, "r")
+                val stream = FileInputStream(file)
+                hostFileStreams[diskIndex] = stream
+                hostFileChannels[diskIndex] = stream.channel
                 hostFilePaths[diskIndex] = filePath
                 println("HSDPA: Attached file '$filePath' to disk $diskIndex")
             } else {
@@ -75,10 +83,12 @@ class HostFileHSDPA : HSDPA {
      */
     fun detachHostFile(diskIndex: Int) {
         if (diskIndex < 0 || diskIndex >= MAX_DISKS) return
-        
+
         try {
-            hostFiles[diskIndex]?.close()
-            hostFiles[diskIndex] = null
+            hostFileChannels[diskIndex]?.close()
+            hostFileStreams[diskIndex]?.close()
+            hostFileChannels[diskIndex] = null
+            hostFileStreams[diskIndex] = null
             hostFilePaths[diskIndex] = null
             println("HSDPA: Detached file from disk $diskIndex")
         } catch (e: Exception) {
@@ -93,15 +103,15 @@ class HostFileHSDPA : HSDPA {
      */
     fun getAttachedFileSize(diskIndex: Int): Long {
         if (diskIndex < 0 || diskIndex >= MAX_DISKS) return 0L
-        
+
         return try {
-            hostFiles[diskIndex]?.length() ?: 0L
+            hostFileChannels[diskIndex]?.size() ?: 0L
         } catch (e: Exception) {
             0L
         }
     }
     
-    override fun sequentialIOSkip(bytes: Int) {
+    override fun sequentialIOSkip(bytes: Long) {
         sequentialIOPosition += bytes
         // Clamp position to file bounds if needed
         val activeDiskIndex = getActiveDiskIndex()
@@ -113,34 +123,36 @@ class HostFileHSDPA : HSDPA {
         }
     }
     
-    override fun sequentialIORead(bytes: Int, vmMemoryPointer0: Int) {
+    override fun sequentialIORead(bytes: Long, vmMemoryPointer0: Long) {
         val activeDiskIndex = getActiveDiskIndex()
-        if (activeDiskIndex < 0 || hostFiles[activeDiskIndex] == null) {
+        if (activeDiskIndex < 0 || hostFileChannels[activeDiskIndex] == null) {
             // No file attached, just advance position
             sequentialIOPosition += bytes
             return
         }
 
-        // convert Uint24 to Int32
-        val vmMemoryPointer = if (vmMemoryPointer0 and 0x800000 != 0)
-            (0xFF000000.toInt() or vmMemoryPointer0)
+        // convert Int24 memory pointer to Int32
+        val vmMemoryPointer = if (vmMemoryPointer0 and 0x800000 != 0L)
+            (0xFF000000.toInt().toLong() or vmMemoryPointer0)
         else
             vmMemoryPointer0
 
         try {
-            val file = hostFiles[activeDiskIndex]!!
-            val readPosition = sequentialIOPosition
-            file.seek(sequentialIOPosition)
-            
-            // Read data into a temporary buffer
-            val readBuffer = ByteArray(bytes)
-            val bytesRead = file.read(readBuffer)
-            
+            val channel = hostFileChannels[activeDiskIndex]!!
+
+            // Read data using positional read (supports >2GB positions)
+            val buffer = ByteBuffer.allocate(bytes.toInt())
+            val bytesRead = channel.read(buffer, sequentialIOPosition)
+
             if (bytesRead > 0) {
+                buffer.flip()
+                val readBuffer = ByteArray(bytesRead)
+                buffer.get(readBuffer)
+
                 // Copy data to VM memory
                 // Handle negative addresses (backwards addressing) vs positive addresses
                 if (vmMemoryPointer < 0) {
-                    // Negative addresses use backwards addressing  
+                    // Negative addresses use backwards addressing
                     for (i in 0 until bytesRead) {
                         vm.poke(vmMemoryPointer - i.toLong(), readBuffer[i])
                     }
@@ -151,42 +163,43 @@ class HostFileHSDPA : HSDPA {
                     }
                 }
                 sequentialIOPosition += bytesRead
-                
+
             }
-            
+
             // Fill remaining bytes with zeros if we read less than requested
-            if (bytesRead < bytes) {
+            val actualBytesRead = if (bytesRead > 0) bytesRead else 0
+            if (actualBytesRead < bytes) {
                 if (vmMemoryPointer < 0) {
                     // Negative addresses use backwards addressing
-                    for (i in bytesRead until bytes) {
+                    for (i in actualBytesRead until bytes.toInt()) {
                         vm.poke(vmMemoryPointer - i.toLong(), 0)
                     }
                 } else {
                     // Positive addresses use forward addressing
-                    for (i in bytesRead until bytes) {
+                    for (i in actualBytesRead until bytes.toInt()) {
                         vm.poke(vmMemoryPointer + i.toLong(), 0)
                     }
                 }
-                sequentialIOPosition += (bytes - bytesRead)
+                sequentialIOPosition += (bytes - actualBytesRead)
             }
-            
+
         } catch (e: Exception) {
             // Just advance position on error
             sequentialIOPosition += bytes
         }
     }
     
-    override fun sequentialIOWrite(bytes: Int, vmMemoryPointer0: Int) {
+    override fun sequentialIOWrite(bytes: Long, vmMemoryPointer0: Long) {
         val activeDiskIndex = getActiveDiskIndex()
-        if (activeDiskIndex < 0 || hostFiles[activeDiskIndex] == null) {
+        if (activeDiskIndex < 0 || hostFileChannels[activeDiskIndex] == null) {
             // No file attached, just advance position
             sequentialIOPosition += bytes
             return
         }
 
-        // convert Uint24 to Int32
-        val vmMemoryPointer = if (vmMemoryPointer0 and 0x800000 != 0)
-            (0xFF000000.toInt() or vmMemoryPointer0)
+        // convert Int24 memory pointer to Int32
+        val vmMemoryPointer = if (vmMemoryPointer0 and 0x800000 != 0L)
+            (0xFF000000.toInt().toLong() or vmMemoryPointer0)
         else
             vmMemoryPointer0
 
@@ -207,11 +220,12 @@ class HostFileHSDPA : HSDPA {
     
     override fun dispose() {
         super.dispose()
-        
+
         // Close all open files
         for (i in 0 until MAX_DISKS) {
             try {
-                hostFiles[i]?.close()
+                hostFileChannels[i]?.close()
+                hostFileStreams[i]?.close()
             } catch (e: Exception) {
                 // Ignore errors during cleanup
             }

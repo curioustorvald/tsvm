@@ -203,7 +203,7 @@ function skip(n0) {
     let n = n0
     while (n > 0) {
         let skiplen = Math.min(n, 16777215)
-        serial.println(`skip ${skiplen}; remaining: ${n}`)
+//         serial.println(`skip ${skiplen}; remaining: ${n}`)
         hsdpaSkip(skiplen)
         n -= skiplen
     }
@@ -237,14 +237,23 @@ function isReady() {
 }
 
 function seek(position) {
+    if (position < 0) {
+        throw Error("seek: position must be non-negative")
+    }
+
     let relPos = position - readCount
-    if (position == 0) {
-        return
-    } else if (position > 0) {
-        skip(relPos)
+
+    if (relPos == 0) {
+        return  // Already at target position
+    } else if (relPos < 0) {
+        // Seeking backward - must rewind and skip forward
+        hsdpaRewind()  // This resets readCount to 0
+        if (position > 0) {
+            skip(position)
+        }
     } else {
-        hsdpaRewind()
-        skip(position)
+        // Seeking forward - skip the difference
+        skip(relPos)
     }
 }
 
