@@ -937,6 +937,11 @@ transmission capability, and region-of-interest coding.
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
 
+## Packet Structure (all packets EXCEPT sync packets follow this structure; sync packets are one-byte packet)
+    uint8  Packet Type
+    uint32 Payload Size
+    *      Payload
+
 ## Packet Types
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (delta-coded frame)
