@@ -27,7 +27,7 @@ function getVisualLength(line) {
     return unicode.visualStrlen(withoutTags)
 }
 
-function displayFormattedLine(line) {
+function displayFormattedLine(line, useUnicode) {
     // Parse line and handle <b> and <i> tags with colour changes
     // Default subtitle colour: yellow (231), formatted text: white (254)
 
@@ -38,7 +38,7 @@ function displayFormattedLine(line) {
     // Helper function to flush the buffer
     function flushBuffer() {
         if (buffer.length > 0) {
-            unicode.print(buffer)
+            useUnicode ? unicode.print(buffer) : print(buffer)
             buffer = ""
         }
     }
@@ -85,7 +85,7 @@ function displayFormattedLine(line) {
     con.color_pair(231, 0)
 }
 
-function displaySubtitle(text, position = 0) {
+function displaySubtitle(text, useUnicode = false, position = 0) {
     if (!text || text.length === 0) {
         clearSubtitleArea()
         return
@@ -156,7 +156,7 @@ function displaySubtitle(text, position = 0) {
         con.move(row, startCol)
 
         // Parse and display line with formatting tag support
-        displayFormattedLine(line)
+        displayFormattedLine(line, useUnicode)
     }
 
     con.color_pair(oldFgColour, oldBgColour)

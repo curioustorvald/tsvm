@@ -76,6 +76,8 @@ let gui = require("playgui")
 let seqread = undefined
 let fullFilePathStr = fullFilePath.full
 
+let fontUploaded = false
+
 // Select seqread driver to use
 if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAPE')) {
     seqread = require("seqreadtape")
@@ -133,7 +135,7 @@ function processSubtitlePacket(packetSize) {
                 sys.free(textBytes)
                 subtitleText = textStr
                 subtitleVisible = true
-                gui.displaySubtitle(subtitleText, subtitlePosition)
+                gui.displaySubtitle(subtitleText, fontUploaded, subtitlePosition)
             }
             break
         }
@@ -156,7 +158,7 @@ function processSubtitlePacket(packetSize) {
                     // Re-display current subtitle at new position if visible
                     if (subtitleVisible && subtitleText.length > 0) {
                         gui.clearSubtitleArea()
-                        gui.displaySubtitle(subtitleText, subtitlePosition)
+                        gui.displaySubtitle(subtitleText, fontUploaded, subtitlePosition)
                     }
                 }
             }
@@ -180,6 +182,8 @@ function processSubtitlePacket(packetSize) {
 
                     sys.free(fontData)
                 }
+
+                fontUploaded = true
             }
             break
         }
