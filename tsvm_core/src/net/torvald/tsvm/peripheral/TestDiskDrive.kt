@@ -395,6 +395,27 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 fileOpenMode = -1
                 statusCode.set(STATE_CODE_STANDBY)
             }
+            else if (inputString.startsWith("REWIND")) {
+                // Rewind the stream to beginning for seeking
+                if (readStreamActive && file.isFile) {
+                    try {
+                        closeReadStream()
+                        // Reopen the file at position 0
+                        readInputStream = FileInputStream(file)
+                        readStreamActive = true
+                        readFileSize = file.length()
+                        blockSendCount = 0
+                        statusCode.set(STATE_CODE_STANDBY)
+                    }
+                    catch (e: IOException) {
+                        closeReadStream()
+                        statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
+                    }
+                }
+                else {
+                    statusCode.set(STATE_CODE_NO_FILE_OPENED)
+                }
+            }
             else if (inputString.startsWith("READ")) {
                 //readModeLength = inputString.substring(4 until inputString.length).toInt()
 

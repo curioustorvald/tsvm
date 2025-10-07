@@ -155,4 +155,35 @@ function getReadCount() {
     return readCount
 }
 
-exports = {fileHeader, prepare, readBytes, readInt, readShort, readFourCC, readOneByte, readString, skip, getReadCount}
+function rewind() {
+    // Send REWIND command to reset stream position
+    com.sendMessage(port, "REWIND")
+    let statusCode = com.getStatusCode(port)
+    if (statusCode != 0) {
+        throw Error("REWIND failed with "+statusCode)
+    }
+    readCount = 0
+}
+
+function seek(position) {
+    if (position < 0) {
+        throw Error("seek: position must be non-negative")
+    }
+
+    let relPos = position - readCount
+
+    if (relPos == 0) {
+        return  // Already at target position
+    } else if (relPos < 0) {
+        // Seeking backward - must rewind and skip forward
+        rewind()
+        if (position > 0) {
+            skip(position)
+        }
+    } else {
+        // Seeking forward - skip the difference
+        skip(relPos)
+    }
+}
+
+exports = {fileHeader, prepare, readBytes, readInt, readShort, readFourCC, readOneByte, readString, skip, getReadCount, seek, rewind}

@@ -104,6 +104,13 @@ Description: reads one block of file. Any subsequent read attempts will return n
              than a single block, rest of the bytes will be filled with zero, and size-of-the-block (see terranmon.txt)
              will be set accordingly.
 
+    REWIND
+
+Description: resets the read position to the beginning of the file for the currently open file. This allows seeking
+             backwards in streaming read mode without closing and reopening the file. Only applicable for files opened
+             with OPENR. If no file is open or the file is not in read mode, returns error status code 135
+             (NO_FILE_OPENED).
+
     CLOSE
 
 Description: closes any file that is open.
