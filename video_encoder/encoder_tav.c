@@ -188,7 +188,7 @@ static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2, 1}; // 96, 48, 24, 12,
 
 // Dead-zone quantisation thresholds per quality level
 // Higher values = more aggressive (more coefficients set to zero)
-static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.0f, 0.8f, 0.6f, 0.0f};
+static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.1f, 0.8f, 0.6f, 0.0f};
 
 // Dead-zone scaling factors for different subband levels
 #define DEAD_ZONE_FINEST_SCALE 1.0f      // Full dead-zone for finest level (level 6)
@@ -582,7 +582,10 @@ static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialise_encoder(tav_encoder_t *enc);
+static int get_subband_level_2d(int x, int y, int width, int height, int decomp_levels);
+static int get_subband_type_2d(int x, int y, int width, int height, int decomp_levels);
 static int get_subband_level(int linear_idx, int width, int height, int decomp_levels);
+static int get_subband_type(int linear_idx, int width, int height, int decomp_levels);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
 static int calculate_max_decomp_levels(int width, int height);
 
@@ -1348,20 +1351,33 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
     for (int i = 0; i < size; i++) {
         float quantised_val = coeffs[i] / effective_q;
 
-        // Apply dead-zone quantisation ONLY to luma channel and finest subbands
+        // Apply dead-zone quantisation ONLY to luma channel and specific subbands
         // Chroma channels skip dead-zone (already heavily quantised, avoid colour banding)
+        // Pattern: HH1 (full), LH1/HL1/HH2 (half), LH2/HL2 (none), others (none)
+        // Note: Level 1 is finest (280x224), Level 6 is coarsest (8x7)
         if (dead_zone_threshold > 0.0f && !is_chroma) {
             int level = get_subband_level(i, width, height, decomp_levels);
+            int subband_type = get_subband_type(i, width, height, decomp_levels);
             float level_threshold = 0.0f;
 
-            if (level == decomp_levels) {
-                // Finest level (level 6): full dead-zone
-                level_threshold = dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
-            } else if (level == decomp_levels - 1) {
-                // Second-finest level (level 5): reduced dead-zone
-                level_threshold = dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+            if (level == 1) {
+                // Finest level (level 1: 280x224)
+                if (subband_type == 3) {
+                    // HH1: full dead-zone
+                    level_threshold = dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
+                } else if (subband_type == 1 || subband_type == 2) {
+                    // LH1, HL1: half dead-zone
+                    level_threshold = dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                }
+            } else if (level == 2) {
+                // Second-finest level (level 2: 140x112)
+                if (subband_type == 3) {
+                    // HH2: half dead-zone
+                    level_threshold = dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                }
+                // LH2, HL2: no dead-zone
             }
-            // Coarser levels (0-4): no dead-zone to preserve structural information
+            // Coarser levels (3-6): no dead-zone to preserve structural information
 
             if (fabsf(quantised_val) <= level_threshold) {
                 quantised_val = 0.0f;
@@ -1463,37 +1479,75 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_t
 }
 
 
-// Determine perceptual weight for coefficient at linear position (matches actual DWT layout)
-// Get decomposition level for a coefficient at linear index
-// Returns: 0 for LL subband, 1-decomp_levels for detail subbands
-static int get_subband_level(int linear_idx, int width, int height, int decomp_levels) {
-    int offset = 0;
+// Get decomposition level and subband type for coefficient at 2D spatial position
+// Coefficients are stored in 2D spatial (quad-tree) layout, not linear subband layout
+// Returns: level (1=finest to decomp_levels=coarsest, 0 for LL)
+static int get_subband_level_2d(int x, int y, int width, int height, int decomp_levels) {
+    // Recursively determine which level this coefficient belongs to
+    // by checking which quadrant it's in at each level
 
-    // First: LL subband at maximum decomposition level
-    int ll_width = width >> decomp_levels;
-    int ll_height = height >> decomp_levels;
-    int ll_size = ll_width * ll_height;
+    for (int level = 1; level <= decomp_levels; level++) {
+        int half_w = width >> 1;
+        int half_h = height >> 1;
 
-    if (linear_idx < offset + ll_size) {
-        return 0; // LL subband (coarsest)
-    }
-    offset += ll_size;
-
-    // Then: LH, HL, HH subbands for each level from max down to 1
-    for (int level = decomp_levels; level >= 1; level--) {
-        int level_width = width >> (decomp_levels - level + 1);
-        int level_height = height >> (decomp_levels - level + 1);
-        int subband_size = level_width * level_height;
-
-        // Check all three subbands (LH, HL, HH) at this level
-        if (linear_idx < offset + (subband_size * 3)) {
-            return level; // Return decomposition level (1-6)
+        // Check if in top-left quadrant (LL - contains finer levels)
+        if (x < half_w && y < half_h) {
+            // Continue to finer level
+            width = half_w;
+            height = half_h;
+            continue;
         }
-        offset += subband_size * 3;
+
+        // In one of the detail bands (LH, HL, HH) at this level
+        return level;
     }
 
-    // Fallback for out-of-bounds indices
+    // Reached LL subband at coarsest level
     return 0;
+}
+
+// Get subband type for coefficient at 2D spatial position
+// Returns: 0=LL, 1=LH, 2=HL, 3=HH
+static int get_subband_type_2d(int x, int y, int width, int height, int decomp_levels) {
+    // Recursively determine which subband this coefficient belongs to
+
+    for (int level = 1; level <= decomp_levels; level++) {
+        int half_w = width >> 1;
+        int half_h = height >> 1;
+
+        // Check if in top-left quadrant (LL - contains finer levels)
+        if (x < half_w && y < half_h) {
+            // Continue to finer level
+            width = half_w;
+            height = half_h;
+            continue;
+        }
+
+        // Determine which detail band at this level
+        if (x >= half_w && y < half_h) {
+            return 1; // LH (top-right)
+        } else if (x < half_w && y >= half_h) {
+            return 2; // HL (bottom-left)
+        } else {
+            return 3; // HH (bottom-right)
+        }
+    }
+
+    // Reached LL subband at coarsest level
+    return 0;
+}
+
+// Legacy functions kept for compatibility - convert linear index to 2D coords
+static int get_subband_level(int linear_idx, int width, int height, int decomp_levels) {
+    int x = linear_idx % width;
+    int y = linear_idx / width;
+    return get_subband_level_2d(x, y, width, height, decomp_levels);
+}
+
+static int get_subband_type(int linear_idx, int width, int height, int decomp_levels) {
+    int x = linear_idx % width;
+    int y = linear_idx / width;
+    return get_subband_type_2d(x, y, width, height, decomp_levels);
 }
 
 static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
@@ -1555,20 +1609,33 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
         float effective_q = effective_base_q * weight;
         float quantised_val = coeffs[i] / effective_q;
 
-        // Apply dead-zone quantisation ONLY to luma channel and finest subbands
+        // Apply dead-zone quantisation ONLY to luma channel and specific subbands
         // Chroma channels skip dead-zone (already heavily quantised, avoid colour banding)
+        // Pattern: HH1 (full), LH1/HL1/HH2 (half), LH2/HL2 (none), others (none)
+        // Note: Level 1 is finest (280x224), Level 6 is coarsest (8x7)
         if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
             int level = get_subband_level(i, width, height, decomp_levels);
+            int subband_type = get_subband_type(i, width, height, decomp_levels);
             float level_threshold = 0.0f;
 
-            if (level == decomp_levels) {
-                // Finest level (level 6): full dead-zone
-                level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
-            } else if (level == decomp_levels - 1) {
-                // Second-finest level (level 5): reduced dead-zone
-                level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+            if (level == 1) {
+                // Finest level (level 1: 280x224)
+                if (subband_type == 3) {
+                    // HH1: full dead-zone
+                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
+                } else if (subband_type == 1 || subband_type == 2) {
+                    // LH1, HL1: half dead-zone
+                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                }
+            } else if (level == 2) {
+                // Second-finest level (level 2: 140x112)
+                if (subband_type == 3) {
+                    // HH2: half dead-zone
+                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                }
+                // LH2, HL2: no dead-zone
             }
-            // Coarser levels (0-4): no dead-zone to preserve structural information
+            // Coarser levels (3-6): no dead-zone to preserve structural information
 
             if (fabsf(quantised_val) <= level_threshold) {
                 quantised_val = 0.0f;

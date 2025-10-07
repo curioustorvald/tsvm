@@ -196,10 +196,10 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 **CRITICAL IMPLEMENTATION NOTES**:
 
 **Wavelet Coefficient Layout**:
-- TAV uses **linear subband layout** in memory: `[LL, LH, HL, HH, LH, HL, HH, ...]` for each decomposition level
+- TAV uses **2D Spatial Layout** in memory: `[LL, LH, HL, HH, LH, HL, HH, ...]` for each decomposition level
 - **Forward transform must output**: `temp[0...half-1] = low-pass`, `temp[half...length-1] = high-pass`
-- **Inverse transform must expect**: Same linear layout and exactly reverse forward operations
-- **Common mistake**: Assuming interleaved or 2D spatial layout leads to grid/checkerboard artifacts
+- **Inverse transform must expect**: Same 2D spatial layout and exactly reverse forward operations
+- **Common mistake**: Assuming linear layout leads to grid/checkerboard artifacts
 
 **Wavelet Implementation Pattern**:
 - All wavelets must follow the **exact same structure** as the working 5/3 implementation:
