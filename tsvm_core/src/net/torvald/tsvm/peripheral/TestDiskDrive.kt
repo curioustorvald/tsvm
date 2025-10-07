@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.*
 
 /**
@@ -88,6 +89,11 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             field = value
         }*/
 
+    // Streaming read mode fields
+    private var readInputStream: InputStream? = null
+    private var readStreamActive = false
+    private var readFileSize = -1L
+
 
     init {
         statusCode.set(STATE_CODE_STANDBY)
@@ -101,12 +107,24 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
     private fun resetBuf() {
         blockSendCount = 0
         messageComposeBuffer.reset()
+        closeReadStream()
+    }
+
+    private fun closeReadStream() {
+        readInputStream?.close()
+        readInputStream = null
+        readStreamActive = false
+        readFileSize = -1L
     }
 
 
     override fun hasNext(): Boolean {
+        // For streaming read mode, check if stream has more data
+        if (readStreamActive) {
+            return readInputStream?.available() ?: 0 > 0
+        }
 
-
+        // For buffered messages, check buffer position
         return (blockSendCount * BLOCK_SIZE < blockSendBuffer.size)
     }
 
@@ -115,6 +133,40 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
      * Disk drive must send prepared message (or file transfer packet) to the computer.
      */
     override fun startSendImpl(recipient: BlockTransferInterface): Int {
+        // Handle streaming read mode
+        if (readStreamActive) {
+            val stream = readInputStream ?: return 0
+
+            try {
+                val buffer = ByteArray(BLOCK_SIZE)
+                val bytesRead = stream.read(buffer)
+
+                if (bytesRead <= 0) {
+                    // End of file
+                    closeReadStream()
+                    return 0
+                }
+
+                // Send only the bytes that were actually read
+                val sendBuffer = if (bytesRead < BLOCK_SIZE) {
+                    buffer.copyOf(bytesRead)
+                } else {
+                    buffer
+                }
+
+                recipient.writeout(sendBuffer)
+                blockSendCount += 1
+
+                return bytesRead
+            }
+            catch (e: IOException) {
+                closeReadStream()
+                statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
+                return 0
+            }
+        }
+
+        // Handle buffered message mode (for LIST, GETLEN, etc.)
         if (blockSendCount == 0) {
             blockSendBuffer = messageComposeBuffer.toByteArray()
         }
@@ -203,6 +255,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             if (inputString.startsWith("DEVRST\u0017")) {
                 printdbg("Device Reset")
                 //readModeLength = -1
+                closeReadStream()
                 fileOpen = false
                 fileOpenMode = -1
                 file = File(rootPath.toURI())
@@ -337,6 +390,7 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("CLOSE")) {
+                closeReadStream()
                 fileOpen = false
                 fileOpenMode = -1
                 statusCode.set(STATE_CODE_STANDBY)
@@ -347,10 +401,15 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 resetBuf()
                 if (file.isFile) {
                     try {
-                        messageComposeBuffer.write(file.readBytes())
+                        // Open file for streaming reads instead of loading entire file
+                        readInputStream = FileInputStream(file)
+                        readStreamActive = true
+                        readFileSize = file.length()
+                        blockSendCount = 0
                         statusCode.set(STATE_CODE_STANDBY)
                     }
                     catch (e: IOException) {
+                        closeReadStream()
                         statusCode.set(STATE_CODE_SYSTEM_IO_ERROR)
                     }
                 }
