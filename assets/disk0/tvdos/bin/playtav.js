@@ -440,6 +440,7 @@ let totalFilesProcessed = 0
 let decoderDbgInfo = {}
 
 let cueElements = []
+let currentCueIndex = -1  // Track current cue position
 
 // Function to try reading next TAV file header at current position
 function tryReadNextTAVHeader() {
@@ -583,6 +584,8 @@ function tryReadNextTAVHeader() {
     return null
 }
 
+let lastKey = 0
+
 // Playback loop - properly adapted from TEV with multi-file support
 try {
     let t1 = sys.nanoTime()
@@ -593,10 +596,42 @@ try {
         // Handle interactive controls
         if (interactive) {
             sys.poke(-40, 1)
-            if (sys.peek(-41) == 67) { // Backspace
-                stopPlay = true
-                break
+            let keyCode = sys.peek(-41)
+
+            if (!lastKey) {
+                if (keyCode == 67) { // Backspace
+                    stopPlay = true
+                    break
+                }
+                else if (keyCode == 19 && cueElements.length > 0) { // Up arrow - previous cue
+                    currentCueIndex = (currentCueIndex <= 0) ? cueElements.length - 1 : currentCueIndex - 1
+                    let cue = cueElements[currentCueIndex]
+
+                    if (cue.addressingMode === ADDRESSING_INTERNAL) {
+                        serial.println(`Seeking to cue: ${cue.name} (offset ${cue.offset})`)
+                        seqread.seek(cue.offset)
+                        frameCount = 0
+                        akku = FRAME_TIME
+                        akku2 = 0.0
+                        audio.purgeQueue(0)
+                    }
+                }
+                else if (keyCode == 20 && cueElements.length > 0) { // Down arrow - next cue
+                    currentCueIndex = (currentCueIndex >= cueElements.length - 1) ? 0 : currentCueIndex + 1
+                    let cue = cueElements[currentCueIndex]
+
+                    if (cue.addressingMode === ADDRESSING_INTERNAL) {
+                        serial.println(`Seeking to cue: ${cue.name} (offset ${cue.offset})`)
+                        seqread.seek(cue.offset)
+                        frameCount = 0
+                        akku = FRAME_TIME
+                        akku2 = 0.0
+                        audio.purgeQueue(0)
+                    }
+                }
             }
+
+            lastKey = keyCode
         }
 
         if (akku >= FRAME_TIME) {
@@ -615,6 +650,7 @@ try {
                     akku = 0.0
                     akku2 = 0.0
                     FRAME_TIME = 1.0 / header.fps
+                    audio.purgeQueue(0)
                     currentFileIndex++
                     totalFilesProcessed++
 
@@ -851,8 +887,12 @@ finally {
         console.log(`Playback failed with error ${errorlevel}`)
     }
 
+    // reset font rom
     sys.poke(-1299460, 20)
     sys.poke(-1299460, 21)
+
+    audio.stop(0)
+    audio.purgeQueue(0)
 }
 
 graphics.setPalette(0, 0, 0, 0, 0)
