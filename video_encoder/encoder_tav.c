@@ -2370,6 +2370,7 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(version, enc->output_fp);
 
     // Video parameters
+    // For interlaced: enc->height is already halved internally, so double it back for display height
     uint16_t height = enc->progressive_mode ? enc->height : enc->height * 2;
     fwrite(&enc->width, sizeof(uint16_t), 1, enc->output_fp);
     fwrite(&height, sizeof(uint16_t), 1, enc->output_fp);
@@ -3367,6 +3368,7 @@ int main(int argc, char *argv[]) {
         {"input", required_argument, 0, 'i'},
         {"output", required_argument, 0, 'o'},
         {"size", required_argument, 0, 's'},
+        {"dimension", required_argument, 0, 's'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
         {"quantizer", required_argument, 0, 'Q'},
@@ -3381,13 +3383,17 @@ int main(int argc, char *argv[]) {
         {"test", no_argument, 0, 't'},
         {"lossless", no_argument, 0, 1000},
         {"intra-only", no_argument, 0, 1006},
+        {"intraonly", no_argument, 0, 1006},
         {"ictcp", no_argument, 0, 1005},
         {"no-perceptual-tuning", no_argument, 0, 1007},
         {"no-dead-zone", no_argument, 0, 1013},
+        {"no-deadzone", no_argument, 0, 1013},
         {"encode-limit", required_argument, 0, 1008},
         {"dump-frame", required_argument, 0, 1009},
         {"fontrom-lo", required_argument, 0, 1011},
+        {"fontrom-low", required_argument, 0, 1011},
         {"fontrom-hi", required_argument, 0, 1012},
+        {"fontrom-high", required_argument, 0, 1012},
         {"zstd-level", required_argument, 0, 1014},
         {"interlace", no_argument, 0, 1015},
         {"interlaced", no_argument, 0, 1015},
@@ -3396,7 +3402,7 @@ int main(int argc, char *argv[]) {
     };
 
     int c, option_index = 0;
-    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:a:w:c:d:b:pS:vt", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:a:w:c:d:b:S:vt?", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
@@ -3568,6 +3574,15 @@ int main(int argc, char *argv[]) {
     // adjust encoding parameters for ICtCp
     if (enc->ictcp_mode) {
         enc->quantiser_cg = enc->quantiser_co;
+    }
+
+    // Halve internal height for interlaced mode (FFmpeg will output half-height fields)
+    if (!enc->progressive_mode) {
+        enc->height = enc->height / 2;
+        if (enc->verbose) {
+            printf("Interlaced mode: internal height adjusted to %d\n", enc->height);
+        }
+        enc->intra_only = 1;
     }
 
     // disable perceptual tuning if wavelet filter is not CDF 9/7

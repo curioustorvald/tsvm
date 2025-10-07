@@ -305,6 +305,13 @@ console.log(`Channel layout: ${getChannelLayoutName(header.channelLayout)}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
 console.log(`Colour space: ${header.version % 2 == 0 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
+console.log(`Video flags raw: 0x${header.videoFlags.toString(16)}`)
+console.log(`Scan type: ${isInterlaced ? "Interlaced" : "Progressive"}`)
+
+// Adjust decode height for interlaced content
+// For interlaced: header.height is display height (448)
+// Each field is half of display height (448/2 = 224)
+let decodeHeight = isInterlaced ? (header.height >> 1) : header.height
 
 // Frame buffer addresses - same as TEV
 const FRAME_PIXELS = header.width * header.height
@@ -313,9 +320,27 @@ const FRAME_SIZE = FRAME_PIXELS * 3  // RGB buffer size
 const RGB_BUFFER_A = sys.malloc(FRAME_SIZE)
 const RGB_BUFFER_B = sys.malloc(FRAME_SIZE)
 
+// Field buffers for interlaced mode (half-height fields)
+const FIELD_SIZE = header.width * decodeHeight * 3
+const CURR_FIELD_BUFFER = isInterlaced ? sys.malloc(FIELD_SIZE) : 0
+const PREV_FIELD_BUFFER = isInterlaced ? sys.malloc(FIELD_SIZE) : 0
+const NEXT_FIELD_BUFFER = isInterlaced ? sys.malloc(FIELD_SIZE) : 0
+
 // Ping-pong buffer pointers (swap instead of copy)
 let CURRENT_RGB_ADDR = RGB_BUFFER_A
 let PREV_RGB_ADDR = RGB_BUFFER_B
+
+// Initialize field buffers to black for interlaced mode
+if (isInterlaced) {
+    sys.memset(CURR_FIELD_BUFFER, 0, FIELD_SIZE)
+    sys.memset(PREV_FIELD_BUFFER, 0, FIELD_SIZE)
+    sys.memset(NEXT_FIELD_BUFFER, 0, FIELD_SIZE)
+}
+
+// Field buffer pointers for temporal deinterlacing
+let prevFieldAddr = PREV_FIELD_BUFFER
+let currentFieldAddr = CURR_FIELD_BUFFER
+let nextFieldAddr = NEXT_FIELD_BUFFER
 
 // Audio state
 let audioBufferBytesLastFrame = 0
@@ -631,13 +656,26 @@ try {
                 try {
                     let decodeStart = sys.nanoTime()
 
+                    // For interlaced mode, decode to field buffer at half height
+                    let decodeTarget = isInterlaced ? currentFieldAddr : CURRENT_RGB_ADDR
+
+                    // Debug interlaced mode
+                    if (frameCount === 0 && isInterlaced) {
+                        serial.println(`[DEBUG] Interlaced mode active:`)
+                        serial.println(`  decodeHeight: ${decodeHeight}`)
+                        serial.println(`  currentFieldAddr: ${currentFieldAddr}`)
+                        serial.println(`  prevFieldAddr: ${prevFieldAddr}`)
+                        serial.println(`  nextFieldAddr: ${nextFieldAddr}`)
+                        serial.println(`  FIELD_SIZE: ${FIELD_SIZE}`)
+                    }
+
                     // Call new TAV hardware decoder that handles Zstd decompression internally
                     // Note: No longer using JS gzip.decompFromTo - Kotlin handles Zstd natively
                     decoderDbgInfo = graphics.tavDecodeCompressed(
                         compressedPtr,             // Pass compressed data directly
                         compressedSize,            // Size of compressed data
-                        CURRENT_RGB_ADDR, PREV_RGB_ADDR,  // RGB buffer pointers
-                        header.width, header.height,
+                        decodeTarget, PREV_RGB_ADDR,  // RGB buffer pointers (field buffer for interlaced)
+                        header.width, decodeHeight,   // Use half height for interlaced
                         header.qualityLevel, QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,      // Channel layout for variable processing
                         trueFrameCount,
@@ -650,8 +688,38 @@ try {
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
                     decompressTime = 0  // Decompression time now included in decode time
 
-                    // Upload RGB buffer to display framebuffer (like TEV)
+                    // For interlaced: deinterlace fields into full frame, otherwise upload directly
                     let uploadStart = sys.nanoTime()
+                    if (isInterlaced) {
+                        if (frameCount === 0) {
+                            serial.println(`[DEBUG] Calling tavDeinterlace for first frame`)
+                        }
+                        // Weave fields using temporal deinterlacing (yadif algorithm)
+                        try {
+                            graphics.tavDeinterlace(trueFrameCount, header.width, decodeHeight,
+                                                    prevFieldAddr, currentFieldAddr, nextFieldAddr,
+                                                    CURRENT_RGB_ADDR, "yadif")
+                            if (frameCount === 0) {
+                                serial.println(`[DEBUG] tavDeinterlace succeeded`)
+                            }
+                        } catch (deinterlaceError) {
+                            serial.printerr(`[ERROR] tavDeinterlace failed: ${deinterlaceError}`)
+                            serial.printerr(`  frame: ${trueFrameCount}, width: ${header.width}, height: ${decodeHeight}`)
+                            serial.printerr(`  prevField: ${prevFieldAddr}, currField: ${currentFieldAddr}, nextField: ${nextFieldAddr}`)
+                            throw deinterlaceError
+                        }
+
+                        // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
+                        let tempField = prevFieldAddr
+                        prevFieldAddr = currentFieldAddr
+                        currentFieldAddr = nextFieldAddr
+                        nextFieldAddr = tempField
+                    } else {
+                        if (frameCount === 0) {
+                            serial.println(`[DEBUG] Progressive mode - no deinterlacing`)
+                        }
+                    }
+
                     graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, trueFrameCount, false)
                     uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
 
@@ -739,7 +807,7 @@ try {
                 akku: akku2,
                 fileName: fullFilePathStr,
                 fileOrd: currentFileIndex,
-                resolution: `${header.width}x${header.height}`,
+                resolution: `${header.width}x${header.height}${(isInterlaced) ? 'i' : ''}`,
                 colourSpace: header.version % 2 == 0 ? "ICtCp" : "YCoCg",
                 currentStatus: 1
             }
@@ -758,6 +826,13 @@ finally {
     // Cleanup
     sys.free(RGB_BUFFER_A)
     sys.free(RGB_BUFFER_B)
+
+    // Free field buffers if interlaced
+    if (isInterlaced) {
+        sys.free(CURR_FIELD_BUFFER)
+        sys.free(PREV_FIELD_BUFFER)
+        sys.free(NEXT_FIELD_BUFFER)
+    }
 
     con.curs_set(1)
     con.clear()

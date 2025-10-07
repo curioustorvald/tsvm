@@ -3139,6 +3139,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    fun tavDeinterlace(frameCount: Int, width: Int, height: Int, prevField: Long, currentField: Long, nextField: Long, outputRGB: Long, algorithm: String = "yadif") {
+        // TAV deinterlacing - same logic as TEV
+        tevDeinterlace(frameCount, width, height, prevField, currentField, nextField, outputRGB, algorithm)
+    }
+
     // Helper functions for motion compensation and block handling in two-pass mode
     private fun tevHandleSkipBlockTwoPass(startX: Int, startY: Int, currentRGBAddr: Long, prevRGBAddr: Long,
                                           width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int) {
