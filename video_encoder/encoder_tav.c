@@ -269,7 +269,6 @@ typedef struct tav_encoder_s {
     float dither_accumulator;    // Accumulated dithering error for error diffusion
     
     // Flags
-//    int progressive; // no interlaced mode for TAV
     int lossless;
     int enable_rcf;
     int enable_progressive_transmission;
@@ -281,7 +280,8 @@ typedef struct tav_encoder_s {
     int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
     int perceptual_tuning; // 1 = perceptual quantisation (default), 0 = uniform quantisation
     int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
-    
+    int progressive_mode;  // 0 = interlaced (default), 1 = progressive
+
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
     int frame_buffer_index;     // 0 or 1, indicates which set is "current"
@@ -693,6 +693,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
     enc->zstd_level = DEFAULT_ZSTD_LEVEL;  // Default Zstd compression level
+    enc->progressive_mode = 1;  // Default to progressive mode
 
     return enc;
 }
@@ -2302,8 +2303,9 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(version, enc->output_fp);
 
     // Video parameters
+    uint16_t height = enc->progressive_mode ? enc->height : enc->height * 2;
     fwrite(&enc->width, sizeof(uint16_t), 1, enc->output_fp);
-    fwrite(&enc->height, sizeof(uint16_t), 1, enc->output_fp);
+    fwrite(&height, sizeof(uint16_t), 1, enc->output_fp);
     fputc(enc->output_fps, enc->output_fp);
     fwrite(&enc->total_frames, sizeof(uint32_t), 1, enc->output_fp);
 
@@ -2323,7 +2325,7 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(extra_flags, enc->output_fp);
 
     uint8_t video_flags = 0;
-//    if (!enc->progressive) video_flags |= 0x01;  // Interlaced (deprecated, reserved for future use)
+    if (!enc->progressive_mode) video_flags |= 0x01;  // Interlaced
     if (enc->is_ntsc_framerate) video_flags |= 0x02;  // NTSC
     if (enc->lossless) video_flags |= 0x04;  // Lossless
     fputc(video_flags, enc->output_fp);
@@ -2438,10 +2440,11 @@ static int get_video_metadata(tav_encoder_t *config) {
     fprintf(stderr, "  FPS: %.2f input, %d output\n", inputFramerate, config->output_fps);
     fprintf(stderr, "  Duration: %.2fs\n", config->duration);
     fprintf(stderr, "  Audio: %s\n", config->has_audio ? "Yes" : "No");
-//    fprintf(stderr, "  Resolution: %dx%d (%s)\n", config->width, config->height,
-//            config->progressive ? "progressive" : "interlaced");
-    fprintf(stderr, "  Resolution: %dx%d\n", config->width, config->height);
-
+    if (config->progressive_mode) {
+        fprintf(stderr, "  Resolution: %dx%d\n", config->width, config->height);
+    } else {
+        fprintf(stderr, "  Resolution: %dx%d (interlaced)\n", config->width, config->height);
+    }
     return 1;
 }
 
@@ -2449,22 +2452,51 @@ static int get_video_metadata(tav_encoder_t *config) {
 static int start_video_conversion(tav_encoder_t *enc) {
     char command[2048];
 
-    // Use simple FFmpeg command like TEV encoder for reliable EOF detection
-    if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
-        // Frame rate conversion requested
-        enc->is_ntsc_framerate = 0;
-        snprintf(command, sizeof(command),
-            "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-            "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
-            "-y - 2>&1",
-            enc->input_file, enc->output_fps, enc->width, enc->height, enc->width, enc->height);
+    // Build FFmpeg command with potential frame rate conversion and interlacing support
+    if (enc->progressive_mode) {
+        if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
+            // Frame rate conversion requested
+            enc->is_ntsc_framerate = 0;
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
+                "-y - 2>&1",
+                enc->input_file, enc->output_fps, enc->width, enc->height, enc->width, enc->height);
+        } else {
+            // No frame rate conversion
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
+                "-y -",
+                enc->input_file, enc->width, enc->height, enc->width, enc->height);
+        }
+    // Let FFmpeg handle the interlacing
     } else {
-        // No frame rate conversion
-        snprintf(command, sizeof(command),
-            "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
-            "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" "
-            "-y -",
-            enc->input_file, enc->width, enc->height, enc->width, enc->height);
+        if (enc->output_fps > 0 && enc->output_fps != enc->fps) {
+            // Frame rate conversion requested
+            // filtergraph path:
+            // 1. FPS conversion
+            // 2. scale and crop to requested size
+            // 3. tinterlace weave-overwrites even and odd fields together to produce intermediate video at half framerate, full height (we're losing half the information here -- and that's on purpose)
+            // 4. separatefields separates weave-overwritten frame as two consecutive frames, at half height. Since the frame rate is halved in Step 3. and being doubled here, the final framerate is identical to given framerate
+            enc->is_ntsc_framerate = 0;
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"fps=%d,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top:cvlpf,separatefields\" "
+                "-y - 2>&1",
+                enc->input_file, enc->output_fps, enc->width, enc->height * 2, enc->width, enc->height * 2);
+        } else {
+            // No frame rate conversion
+            // filtergraph path:
+            // 1. scale and crop to requested size
+            // 2. tinterlace weave-overwrites even and odd fields together to produce intermediate video at half framerate, full height (we're losing half the information here -- and that's on purpose)
+            // 3. separatefields separates weave-overwritten frame as two consecutive frames, at half height. Since the frame rate is halved in Step 2. and being doubled here, the final framerate is identical to the original framerate
+            snprintf(command, sizeof(command),
+                "ffmpeg -v error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,tinterlace=interleave_top:cvlpf,separatefields\" "
+                "-y -",
+                enc->input_file, enc->width, enc->height * 2, enc->width, enc->height * 2);
+        }
     }
 
     if (enc->verbose) {
@@ -3290,6 +3322,8 @@ int main(int argc, char *argv[]) {
         {"fontrom-lo", required_argument, 0, 1011},
         {"fontrom-hi", required_argument, 0, 1012},
         {"zstd-level", required_argument, 0, 1014},
+        {"interlace", no_argument, 0, 1015},
+        {"interlaced", no_argument, 0, 1015},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3435,6 +3469,9 @@ int main(int argc, char *argv[]) {
                     cleanup_encoder(enc);
                     return 1;
                 }
+                break;
+            case 1015: // --interlaced
+                enc->progressive_mode = 0;
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
