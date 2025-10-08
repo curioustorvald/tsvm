@@ -3433,6 +3433,83 @@ static int detect_still_frame(tav_encoder_t *enc) {
     return (changed_pixels == 0);
 }
 
+// Detect still frames by comparing quantised DWT coefficients
+// Returns 1 if quantised coefficients are identical (frame is truly still), 0 otherwise
+// Benefits: quality-aware (lower quality = more SKIP frames), pure integer math
+// DISABLED - should work in theory, not actually
+static int detect_still_frame_dwt(tav_encoder_t *enc) {
+    if (!enc->previous_coeffs_allocated || enc->intra_only) {
+        return 0; // No previous coefficients to compare or intra-only mode
+    }
+
+    // Only compare against I-frames to avoid DELTA quantization drift
+    // previous_coeffs are updated by DELTA frames with reconstructed values that accumulate error
+    if (enc->last_frame_packet_type != TAV_PACKET_IFRAME) {
+        return 0; // Must compare against clean I-frame, not DELTA reconstruction
+    }
+
+    // Get current quantisers (use adjusted quantiser from bitrate control if applicable)
+    int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
+    int this_frame_qY = QLUT[qY];
+    int this_frame_qCo = QLUT[enc->quantiser_co];
+    int this_frame_qCg = QLUT[enc->quantiser_cg];
+
+    // Coefficient count (monoblock mode)
+    const int coeff_count = enc->width * enc->height;
+
+    // Quantise current DWT coefficients
+    int16_t *quantised_y = enc->reusable_quantised_y;
+    int16_t *quantised_co = enc->reusable_quantised_co;
+    int16_t *quantised_cg = enc->reusable_quantised_cg;
+
+    if (enc->perceptual_tuning) {
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->current_dwt_y, quantised_y, coeff_count, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->current_dwt_co, quantised_co, coeff_count, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->current_dwt_cg, quantised_cg, coeff_count, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+    } else {
+        quantise_dwt_coefficients(enc->current_dwt_y, quantised_y, coeff_count, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
+        quantise_dwt_coefficients(enc->current_dwt_co, quantised_co, coeff_count, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+        quantise_dwt_coefficients(enc->current_dwt_cg, quantised_cg, coeff_count, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+    }
+
+    // Quantise previous DWT coefficients (stored from last I-frame)
+    int16_t *prev_quantised_y = malloc(coeff_count * sizeof(int16_t));
+    int16_t *prev_quantised_co = malloc(coeff_count * sizeof(int16_t));
+    int16_t *prev_quantised_cg = malloc(coeff_count * sizeof(int16_t));
+
+    if (enc->perceptual_tuning) {
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->previous_coeffs_y, prev_quantised_y, coeff_count, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->previous_coeffs_co, prev_quantised_co, coeff_count, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->previous_coeffs_cg, prev_quantised_cg, coeff_count, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+    } else {
+        quantise_dwt_coefficients(enc->previous_coeffs_y, prev_quantised_y, coeff_count, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
+        quantise_dwt_coefficients(enc->previous_coeffs_co, prev_quantised_co, coeff_count, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+        quantise_dwt_coefficients(enc->previous_coeffs_cg, prev_quantised_cg, coeff_count, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+    }
+
+    // Compare quantised coefficients - pure integer math
+    int diff_count = 0;
+    for (int i = 0; i < coeff_count; i++) {
+        if (quantised_y[i] != prev_quantised_y[i] ||
+            quantised_co[i] != prev_quantised_co[i] ||
+            quantised_cg[i] != prev_quantised_cg[i]) {
+            diff_count++;
+        }
+    }
+
+    free(prev_quantised_y);
+    free(prev_quantised_co);
+    free(prev_quantised_cg);
+
+    if (enc->verbose) {
+        printf("Still frame detection (DWT): %d/%d coeffs differ\n", diff_count, coeff_count);
+    }
+
+    // If all quantised coefficients match, frames are identical after compression
+    return (diff_count == 0);
+}
+
+
 // Main function
 int main(int argc, char *argv[]) {
     generate_random_filename(TEMP_AUDIO_FILE);
@@ -3892,18 +3969,14 @@ int main(int argc, char *argv[]) {
         int is_scene_change = detect_scene_change(enc);
         int is_time_keyframe = (frame_count % KEYFRAME_INTERVAL) == 0;
 
-        // Check if we can use SKIP mode
+        // Check if we can use SKIP mode (DWT coefficient-based detection)
         int is_still = detect_still_frame(enc);
         enc->is_still_frame_cached = is_still;  // Cache for use in compress_and_write_frame
 
-        // SKIP mode can be used if:
-        // 1. Frame is still AND
-        // 2. Previous coeffs allocated AND
-        // 3. (Last frame was I-frame OR we're continuing a SKIP run)
+        // SKIP mode can be used if frame is still (detect_still_frame_dwt already checks against I-frame)
+        // SKIP runs can continue as long as frames remain identical to the reference I-frame
         int in_skip_run = enc->used_skip_mode_last_frame;
-        int can_use_skip = is_still &&
-                          enc->previous_coeffs_allocated &&
-                          (enc->last_frame_packet_type == TAV_PACKET_IFRAME || in_skip_run);
+        int can_use_skip = is_still && enc->previous_coeffs_allocated;
 
         // During a SKIP run, suppress keyframe timer unless content changes enough to un-skip
         // Un-skip threshold is the negation of SKIP threshold: content must change to break the run

@@ -470,6 +470,75 @@ let decoderDbgInfo = {}
 
 let cueElements = []
 let currentCueIndex = -1  // Track current cue position
+let iframePositions = []  // Track I-frame positions for seeking: [{offset, frameNum}]
+
+// Function to find nearest I-frame before or at target frame
+function findNearestIframe(targetFrame) {
+    if (iframePositions.length === 0) return null
+
+    // Find the largest I-frame position <= targetFrame
+    let result = null
+    for (let i = iframePositions.length - 1; i >= 0; i--) {
+        if (iframePositions[i].frameNum <= targetFrame) {
+            result = iframePositions[i]
+            break
+        }
+    }
+
+    // If targetFrame is before first I-frame, return first I-frame
+    return result || iframePositions[0]
+}
+
+// Function to scan forward and find next I-frame at or after target frame
+function scanForwardToIframe(targetFrame, currentPos) {
+    // Save current position
+    let savedPos = seqread.getReadCount()
+
+    try {
+        let scanFrameCount = frameCount
+
+        // Scan forward through packets
+        while (seqread.getReadCount() < FILE_LENGTH) {
+            let packetPos = seqread.getReadCount()
+            let pType = seqread.readOneByte()
+
+            // Handle sync packets (increment frame counter)
+            if (pType === TAV_PACKET_SYNC || pType === TAV_PACKET_SYNC_NTSC) {
+                if (pType === TAV_PACKET_SYNC) {
+                    scanFrameCount++
+                }
+                continue
+            }
+
+            // Found I-frame at or after target?
+            if (pType === TAV_PACKET_IFRAME && scanFrameCount >= targetFrame) {
+                // Record this I-frame position for future use
+                iframePositions.push({offset: packetPos, frameNum: scanFrameCount})
+                return {offset: packetPos, frameNum: scanFrameCount}
+            }
+
+            // Skip over packet payload (all non-sync packets have uint32 size)
+            if (pType !== TAV_PACKET_SYNC && pType !== TAV_PACKET_SYNC_NTSC && pType !== TAV_FILE_HEADER_FIRST) {
+                let payloadSize = seqread.readInt()
+                seqread.skip(payloadSize)
+            } else if (pType === TAV_FILE_HEADER_FIRST) {
+                // Hit next file header, stop scanning
+                break
+            }
+        }
+
+        // Didn't find I-frame, restore position
+        return null
+
+    } catch (e) {
+        // Error or EOF during scan
+        serial.printerr(`Scan error: ${e}`)
+        return null
+    } finally {
+        // Restore original position
+        seqread.seek(savedPos)
+    }
+}
 
 // Function to try reading next TAV file header at current position
 function tryReadNextTAVHeader() {
@@ -624,6 +693,7 @@ function tryReadNextTAVHeader() {
 
 let lastKey = 0
 let skipped = false
+let paused = false
 
 // Playback loop - properly adapted from TEV with multi-file support
 try {
@@ -642,6 +712,16 @@ try {
                     stopPlay = true
                     break
                 }
+                else if (keyCode == 62) { // SPACE - pause/resume
+                    paused = !paused
+                    if (paused) {
+                        audio.stop(0)
+                        serial.println(`Paused at frame ${frameCount}`)
+                    } else {
+                        audio.play(0)
+                        serial.println(`Resumed`)
+                    }
+                }
                 else if (keyCode == 19 && cueElements.length > 0) { // Up arrow - previous cue
                     currentCueIndex = (currentCueIndex <= 0) ? cueElements.length - 1 : currentCueIndex - 1
                     let cue = cueElements[currentCueIndex]
@@ -653,6 +733,10 @@ try {
                         akku = FRAME_TIME
                         akku2 = 0.0
                         audio.purgeQueue(0)
+                        if (paused) {
+                            audio.play(0)
+                            audio.stop(0)
+                        }
                         skipped = true
                     }
                 }
@@ -667,7 +751,57 @@ try {
                         akku = FRAME_TIME
                         akku2 = 0.0
                         audio.purgeQueue(0)
+                        if (paused) {
+                            audio.play(0)
+                            audio.stop(0)
+                        }
                         skipped = true
+                    }
+                }
+                else if (keyCode == 21) { // Left arrow - seek back 5.5s
+                    let targetFrame = Math.max(0, frameCount - Math.floor(header.fps * 5.5))
+                    let seekTarget = findNearestIframe(targetFrame)
+
+                    if (seekTarget) {
+                        serial.println(`Seeking back to frame ${seekTarget.frameNum} (offset ${seekTarget.offset})`)
+                        seqread.seek(seekTarget.offset)
+                        frameCount = seekTarget.frameNum
+                        akku = FRAME_TIME
+                        akku2 -= 5.5
+                        audio.purgeQueue(0)
+                        if (paused) {
+                            audio.play(0)
+                            audio.stop(0)
+                        }
+                        skipped = true
+                    }
+                }
+                else if (keyCode == 22) { // Right arrow - seek forward 5s
+                    let targetFrame = Math.min(header.totalFrames - 1, frameCount + Math.floor(header.fps * 5.0))
+
+                    // Try to find in already-decoded I-frames first
+                    let seekTarget = findNearestIframe(targetFrame)
+
+                    // If not found or behind current position, scan forward
+                    if (!seekTarget || seekTarget.frameNum <= frameCount) {
+                        serial.println(`Scanning forward for I-frame near frame ${targetFrame}...`)
+                        seekTarget = scanForwardToIframe(targetFrame, seqread.getReadCount())
+                    }
+
+                    if (seekTarget && seekTarget.frameNum > frameCount) {
+                        serial.println(`Seeking forward to frame ${seekTarget.frameNum} (offset ${seekTarget.offset})`)
+                        seqread.seek(seekTarget.offset)
+                        frameCount = seekTarget.frameNum
+                        akku = FRAME_TIME
+                        akku2 += 5.0
+                        audio.purgeQueue(0)
+                        if (paused) {
+                            audio.play(0)
+                            audio.stop(0)
+                        }
+                        skipped = true
+                    } else if (!seekTarget) {
+                        serial.println(`No I-frame found ahead`)
                     }
                 }
             }
@@ -676,8 +810,11 @@ try {
         }
 
         if (akku >= FRAME_TIME) {
-            // Read packet header
-            var packetType = seqread.readOneByte()
+            // When paused, just reset accumulator and skip frame processing
+            if (!paused) {
+                // Read packet header (record position before reading for I-frame tracking)
+                let packetOffset = seqread.getReadCount()
+                var packetType = seqread.readOneByte()
 
 //            serial.println(`Packet ${packetType} at offset ${seqread.getReadCount() - 1}`)
 
@@ -733,6 +870,11 @@ try {
 
             }
             else if (packetType === TAV_PACKET_IFRAME || packetType === TAV_PACKET_PFRAME) {
+                // Record I-frame position for seeking
+                if (packetType === TAV_PACKET_IFRAME) {
+                    iframePositions.push({offset: packetOffset, frameNum: frameCount})
+                }
+
                 // Video packet
                 const compressedSize = seqread.readInt()
 
@@ -870,11 +1012,14 @@ try {
                 println(`Unknown packet type: 0x${packetType.toString(16)}`)
                 break
             }
+            } // end of !paused block
         }
 
         let t2 = sys.nanoTime()
-        akku += (t2 - t1) / 1000000000.0
-        akku2 += (t2 - t1) / 1000000000.0
+        if (!paused) {
+            akku += (t2 - t1) / 1000000000.0
+            akku2 += (t2 - t1) / 1000000000.0
+        }
 
         // Simple progress display
         if (interactive) {
@@ -899,7 +1044,7 @@ try {
                 fileOrd: (cueElements.length > 0) ? currentCueIndex+1 : currentFileIndex,
                 resolution: `${header.width}x${header.height}${(isInterlaced) ? 'i' : ''}`,
                 colourSpace: header.version % 2 == 0 ? "ICtCp" : "YCoCg",
-                currentStatus: 1
+                currentStatus: paused ? 2 : 1  // 2 = paused, 1 = playing
             }
             gui.printBottomBar(guiStatus)
             gui.printTopBar(guiStatus, 1)

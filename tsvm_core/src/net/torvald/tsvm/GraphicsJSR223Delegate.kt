@@ -4683,8 +4683,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val random = java.util.Random()
                 for (i in 0 until coeffCount) {
                     yTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-                    coTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-                    cgTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+//                    coTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+//                    cgTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
                 }
             }
 
@@ -4749,8 +4749,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val random = java.util.Random()
                 for (i in 0 until coeffCount) {
                     yTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-                    coTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-                    cgTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+//                    coTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+//                    cgTile[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
                 }
             }
 
@@ -5331,8 +5331,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val random = java.util.Random()
             for (i in 0 until coeffCount) {
                 currentY[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-                currentCo[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-                currentCg[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+//                currentCo[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
+//                currentCg[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
             }
         }
 
