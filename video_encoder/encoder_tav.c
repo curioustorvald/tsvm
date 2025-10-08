@@ -291,6 +291,9 @@ typedef struct tav_encoder_s {
     uint8_t *current_frame_rgb;
     uint8_t *previous_frame_rgb;
 
+    // DWT coefficient buffers (pre-computed for SKIP detection and encoding)
+    float *current_dwt_y, *current_dwt_co, *current_dwt_cg;
+
     // Tile processing
     int tiles_x, tiles_y;
     dwt_tile_t *tiles;
@@ -743,6 +746,11 @@ static int initialise_encoder(tav_encoder_t *enc) {
     enc->current_frame_co = malloc(frame_size * sizeof(float));
     enc->current_frame_cg = malloc(frame_size * sizeof(float));
     enc->current_frame_alpha = malloc(frame_size * sizeof(float));
+
+    // Allocate DWT coefficient buffers for SKIP detection
+    enc->current_dwt_y = malloc(frame_size * sizeof(float));
+    enc->current_dwt_co = malloc(frame_size * sizeof(float));
+    enc->current_dwt_cg = malloc(frame_size * sizeof(float));
 
     // Allocate tile structures
     enc->tiles = malloc(num_tiles * sizeof(dwt_tile_t));
@@ -3385,7 +3393,7 @@ static int detect_scene_change(tav_encoder_t *enc) {
     return changed_ratio > threshold;
 }
 
-// Detect still frames (identical or nearly identical to previous frame)
+// Detect still frames by comparing quantised DWT coefficients
 // Returns 1 if frame is still (suitable for SKIP mode), 0 otherwise
 static int detect_still_frame(tav_encoder_t *enc) {
     if (!enc->current_frame_rgb || !enc->previous_frame_rgb || enc->intra_only) {
@@ -3417,18 +3425,12 @@ static int detect_still_frame(tav_encoder_t *enc) {
 
     // Calculate metrics
     int sampled_pixels = (enc->height / 2) * (enc->width / 2);
-    double avg_diff = (double)total_diff / sampled_pixels;
-    double changed_ratio = (double)changed_pixels / sampled_pixels;
 
     if (enc->verbose) {
-        printf("Still frame detection: avg_diff=%.2f\tchanged_ratio=%.4f\n", avg_diff, changed_ratio);
+        printf("Still frame detection: %d/%d pixels changed\n", changed_pixels, sampled_pixels);
     }
 
-    // Extremely tight thresholds for still frame detection
-    // Designed to catch only truly static content (paused video, title cards)
-    // Rejects slow panning, gradual drawing, or any partial motion
-    // Frame is "still" only if less than 0.1% of pixels changed AND average difference < 0.5
-    return (changed_ratio < 0.00001 && avg_diff < 0.05);
+    return (changed_pixels == 0);
 }
 
 // Main function
