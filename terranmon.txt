@@ -1069,6 +1069,13 @@ This perceptual approach allocates more bits to visually important low-frequency
 details while aggressively quantising high-frequency noise, resulting in superior
 visual quality at equivalent bitrates.
 
+#### Grain Synthesis
+
+The decoder must synthesise a film grain on non-LL subbands at the amplitude half of the quantisation level.
+The encoder may synthesise the exact same grain in sign-reversed on encoding (but not recommended for practical reasons).
+
+The base noise function must be triangular noise in range [-1.0, 1.0].
+
 ## Colour Space
 TAV supports two colour spaces:
 

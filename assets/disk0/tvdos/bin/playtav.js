@@ -898,7 +898,8 @@ try {
                         serial.println(`  FIELD_SIZE: ${FIELD_SIZE}`)
                     }
 
-                    let thisFrameNoiseLevel = (filmGrainLevel >= 0) ? filmGrainLevel : -(filmGrainLevel - (trueFrameCount % 2))
+                    //let thisFrameNoiseLevel = (filmGrainLevel >= 0) ? filmGrainLevel : -(filmGrainLevel - (trueFrameCount % 2))
+                    // grain synthesis is now part of the spec
 
                     // Call new TAV hardware decoder that handles Zstd decompression internally
                     // Note: No longer using JS gzip.decompFromTo - Kotlin handles Zstd natively
@@ -913,8 +914,7 @@ try {
                         header.waveletFilter,      // TAV-specific parameter
                         header.decompLevels,       // TAV-specific parameter
                         isLossless,
-                        header.version,            // TAV version for colour space detection
-                        thisFrameNoiseLevel         // Undocumented spooky noise filter
+                        header.version             // TAV version for colour space detection
                     )
 
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0

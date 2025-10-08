@@ -281,6 +281,7 @@ typedef struct tav_encoder_s {
     int perceptual_tuning; // 1 = perceptual quantisation (default), 0 = uniform quantisation
     int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
+    int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -616,6 +617,21 @@ static void free_subtitle_list(subtitle_entry_t *list);
 static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text);
 static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output);
 
+// Film grain synthesis
+static uint32_t rng_hash(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return x;
+}
+
+static uint32_t grain_synthesis_rng(uint32_t frame, uint32_t band, uint32_t x, uint32_t y) {
+    uint32_t key = frame * 0x9e3779b9u ^ band * 0x7f4a7c15u ^ (y << 16) ^ x;
+    return rng_hash(key);
+}
+
 // Show usage information
 static void show_usage(const char *program_name) {
     int qtsize = sizeof(MP2_RATE_TABLE) / sizeof(int);
@@ -647,6 +663,7 @@ static void show_usage(const char *program_name) {
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --wavelet N             Wavelet filter: 0=LGT 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
     printf("  --zstd-level N          Zstd compression level 1-22 (default: %d, higher = better compression but slower)\n", DEFAULT_ZSTD_LEVEL);
+    printf("  --no-grain-synthesis    Disable grain synthesis (enabled by default)\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -710,6 +727,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->encode_limit = 0;  // Default: no frame limit
     enc->zstd_level = DEFAULT_ZSTD_LEVEL;  // Default Zstd compression level
     enc->progressive_mode = 1;  // Default to progressive mode
+    enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
 
     return enc;
 }
@@ -1138,6 +1156,67 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
                 padded_co[padded_idx] = enc->current_frame_co[src_idx];
                 padded_cg[padded_idx] = enc->current_frame_cg[src_idx];
             }
+        }
+    }
+}
+
+// ==============================================================================
+// Grain Synthesis Functions
+// ==============================================================================
+
+// Forward declaration for perceptual weight function
+static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_type, int is_chroma, int max_levels);
+
+// Generate triangular noise from uint32 RNG
+// Returns value in range [-1.0, 1.0]
+static float grain_triangular_noise(uint32_t rng_val) {
+    // Get two uniform random values in [0, 1]
+    float u1 = (rng_val & 0xFFFF) / 65535.0f;
+    float u2 = ((rng_val >> 16) & 0xFFFF) / 65535.0f;
+
+    // Convert to range [-1, 1] and average for triangular distribution
+    return (u1 + u2) - 1.0f;
+}
+
+// Apply grain synthesis to DWT coefficients (encoder adds noise)
+static void apply_grain_synthesis_encoder(tav_encoder_t *enc, float *coeffs, int width, int height,
+                                         int decomp_levels, uint32_t frame_num,
+                                         int quantiser, int is_chroma) {
+    // Only apply to Y channel, excluding LL band
+    // Noise amplitude = half of quantization step (scaled by perceptual weight if enabled)
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int idx = y * width + x;
+
+            // Check if this is the LL band (level 0)
+            int level = get_subband_level_2d(x, y, width, height, decomp_levels);
+            int subband_type = get_subband_type_2d(x, y, width, height, decomp_levels);
+            if (level == 0) {
+                continue; // Skip LL band
+            }
+
+            // Get subband type for perceptual weight calculation
+            /*int subband_type = get_subband_type_2d(x, y, width, height, decomp_levels);
+
+            // Calculate noise amplitude based on perceptual tuning mode
+            float noise_amplitude;
+            if (enc->perceptual_tuning) {
+                // Perceptual mode: scale by perceptual weight
+                float perceptual_weight = get_perceptual_weight(enc, level, subband_type, is_chroma, decomp_levels);
+                noise_amplitude = (quantiser * perceptual_weight) * 0.5f;
+            } else {
+                // Uniform mode: use global quantiser
+                noise_amplitude = quantiser * 0.5f;
+            }*/
+            float noise_amplitude = FCLAMP(quantiser, 0.0f, 32.0f) * 0.25f;
+
+            // Generate deterministic noise
+            uint32_t rng_val = grain_synthesis_rng(frame_num, level + subband_type * 31 + 16777219, x, y);
+            float noise = grain_triangular_noise(rng_val);
+
+            // Add noise to coefficient
+            coeffs[idx] += noise * noise_amplitude;
         }
     }
 }
@@ -2001,6 +2080,21 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 }
                 printf("\n");
             }*/
+
+            // Apply grain synthesis to Y channel (after DWT, before quantization)
+            if (enc->grain_synthesis && mode != TAV_MODE_SKIP) {
+                // Get the quantiser value that will be used for this frame
+                int qY_value = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
+                int actual_qY = QLUT[qY_value];
+
+                // Determine dimensions based on mode
+                int gs_width = enc->monoblock ? enc->width : PADDED_TILE_SIZE_X;
+                int gs_height = enc->monoblock ? enc->height : PADDED_TILE_SIZE_Y;
+
+                // Apply grain synthesis to Y channel only (is_chroma = 0)
+                apply_grain_synthesis_encoder(enc, tile_y_data, gs_width, gs_height,
+                                             enc->decomp_levels, enc->frame_count, actual_qY, 0);
+            }
 
             // Serialise tile
             size_t tile_size = serialise_tile_data(enc, tile_x, tile_y,
@@ -3555,6 +3649,7 @@ int main(int argc, char *argv[]) {
         {"zstd-level", required_argument, 0, 1014},
         {"interlace", no_argument, 0, 1015},
         {"interlaced", no_argument, 0, 1015},
+//        {"no-grain-synthesis", no_argument, 0, 1016},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3703,6 +3798,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 1015: // --interlaced
                 enc->progressive_mode = 0;
+                break;
+            case 1016: // --no-grain-synthesis
+                enc->grain_synthesis = 0;
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
