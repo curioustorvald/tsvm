@@ -582,6 +582,11 @@ static int parse_resolution(const char *res_str, int *width, int *height) {
     return sscanf(res_str, "%dx%d", width, height) == 2;
 }
 
+// encoder stats
+static size_t count_intra = 0;
+static size_t count_delta = 0;
+static size_t count_skip = 0;
+
 // Function prototypes
 static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
@@ -1903,13 +1908,16 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
 
             if (is_keyframe || !enc->previous_coeffs_allocated) {
                 mode = TAV_MODE_INTRA;  // I-frames, first frames, or intra-only mode always use INTRA
+                count_intra++;
             } else if (can_use_skip) {
                 mode = TAV_MODE_SKIP;   // Still frames in SKIP run use SKIP mode
+                count_skip++;
                 if (enc->verbose && tile_x == 0 && tile_y == 0) {
                     printf("  → Using SKIP mode (copying from reference I-frame)\n");
                 }
             } else {
                 mode = TAV_MODE_DELTA;  // P-frames use coefficient delta encoding
+                count_delta++;
             }
 
             // Determine tile data size and allocate buffers
@@ -3803,9 +3811,6 @@ int main(int argc, char *argv[]) {
     int true_frame_count = 0;
     int continue_encoding = 1;
 
-    int count_iframe = 0;
-    int count_pframe = 0;
-
     KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
     // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
 
@@ -3980,11 +3985,6 @@ int main(int argc, char *argv[]) {
                 fwrite(&sync_packet_ntsc, 1, 1, enc->output_fp);
                 printf("Frame %d: NTSC duplication - extra sync packet emitted with audio/subtitle sync\n", frame_count);
             }
-
-            if (is_keyframe)
-                count_iframe++;
-            else
-                count_pframe++;
         }
 
         // Swap ping-pong buffers (eliminates memcpy operations)
@@ -4033,7 +4033,7 @@ int main(int argc, char *argv[]) {
     printf("  Framerate: %d\n", enc->output_fps);
     printf("  Output size: %zu bytes\n", enc->total_compressed_size);
     printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
-    printf("  Frame statistics: I-Frame=%d, P-Frame=%d\n", count_iframe, count_pframe);
+    printf("  Frame statistics: INTRA=%lu, DELTA=%lu, SKIP=%lu\n", count_intra, count_delta, count_skip);
 
 
     cleanup_encoder(enc);
