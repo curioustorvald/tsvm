@@ -204,7 +204,10 @@ status = {
     frameCount: int,
     totalFrames: int,
     fps: int,
+    frameMode: String,
     qY: int,
+    qCo: int,
+    qCg: int,
     akku: float,
     fileName: String,
     fileOrd: int,
@@ -247,7 +250,7 @@ function printTopBar(status, moreInfo) {
     if (moreInfo) {
         let filename = status.fileName.split("\\").pop()
 
-        let sF = `F ${(''+status.frameCount).padStart((''+status.totalFrames).length, ' ')}/${status.totalFrames}`
+        let sF = `F ${(''+status.frameCount).padStart((''+status.totalFrames).length, ' ')}${status.frameMode}/${status.totalFrames}`
         let sQ = `Q${(''+status.qY).padStart(4,' ')},${(''+status.qCo).padStart(2,' ')},${(''+status.qCg).padStart(2,' ')}`
         let sFPS = `${(status.frameCount / status.akku).toFixed(2)}f`
         let sRes = `${status.resolution}`

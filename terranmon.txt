@@ -944,7 +944,7 @@ transmission capability, and region-of-interest coding.
 
 ## Packet Types
     0x10: I-frame (intra-coded frame)
-    0x11: P-frame (delta-coded frame)
+    0x11: P-frame (delta/skip frame)
     0x1F: (prohibited)
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
@@ -1005,6 +1005,7 @@ transmission capability, and region-of-interest coding.
 
 ## Block Data (per frame)
     uint8  Mode: encoding mode
+            0x00 = SKIP (just use frame data from previous frame)
             0x01 = INTRA (DWT-coded)
             0x02 = DELTA (DWT delta)
     uint8  Quantiser override Y  (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)

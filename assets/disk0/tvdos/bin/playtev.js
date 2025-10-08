@@ -584,6 +584,7 @@ function rotateFieldBuffers() {
 }
 
 let frameDuped = false
+let currentFrameType = "I"
 
 // Main decoding loop - simplified for performance
 try {
@@ -712,6 +713,8 @@ try {
                     serial.println(`Frame ${frameCount}: Decompress=${decompressTime.toFixed(1)}ms, Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms`)
                 }
 
+                currentFrameType = packetType == TEV_PACKET_IFRAME ? "I" : "P"
+
             } else if (packetType == TEV_PACKET_AUDIO_MP2) {
                 // MP2 Audio packet
                 let audioLen = seqread.readInt()
@@ -756,6 +759,7 @@ try {
                 videoRate: getVideoRate(),
                 frameCount: frameCount,
                 totalFrames: totalFrames,
+                frameMode: currentFrameType,
                 qY: qualityY,
                 qCo: qualityCo,
                 qCg: qualityCg,

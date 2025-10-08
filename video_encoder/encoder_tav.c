@@ -329,6 +329,11 @@ typedef struct tav_encoder_s {
     float *previous_coeffs_alpha;  // Previous frame Alpha coefficients for all tiles
     int previous_coeffs_allocated; // Flag to track allocation
 
+    // Frame type tracking for SKIP mode
+    uint8_t last_frame_packet_type;  // Last emitted packet type (TAV_PACKET_IFRAME or TAV_PACKET_PFRAME)
+    int is_still_frame_cached;       // Cached result from detect_still_frame() for current frame
+    int used_skip_mode_last_frame;   // Set to 1 when SKIP mode was used (suppresses next keyframe timer)
+
     // Statistics
     size_t total_compressed_size;
     size_t total_uncompressed_size;
@@ -1882,6 +1887,9 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
     uint8_t *uncompressed_buffer = malloc(total_uncompressed_size);
     size_t uncompressed_offset = 0;
 
+    // Use cached still frame detection result (set in main loop)
+    int is_still_frame = enc->is_still_frame_cached;
+
     // Serialise all tiles
     for (int tile_y = 0; tile_y < enc->tiles_y; tile_y++) {
         for (int tile_x = 0; tile_x < enc->tiles_x; tile_x++) {
@@ -1889,8 +1897,17 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             // Determine tile mode based on frame type, coefficient availability, and intra_only flag
             uint8_t mode;
             int is_keyframe = (packet_type == TAV_PACKET_IFRAME);
+
+            // SKIP mode condition matches main loop logic: still frame during SKIP run
+            int can_use_skip = is_still_frame && enc->previous_coeffs_allocated;
+
             if (is_keyframe || !enc->previous_coeffs_allocated) {
                 mode = TAV_MODE_INTRA;  // I-frames, first frames, or intra-only mode always use INTRA
+            } else if (can_use_skip) {
+                mode = TAV_MODE_SKIP;   // Still frames in SKIP run use SKIP mode
+                if (enc->verbose && tile_x == 0 && tile_y == 0) {
+                    printf("  → Using SKIP mode (copying from reference I-frame)\n");
+                }
             } else {
                 mode = TAV_MODE_DELTA;  // P-frames use coefficient delta encoding
             }
@@ -1909,14 +1926,17 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             float *tile_co_data = malloc(tile_data_size * sizeof(float));
             float *tile_cg_data = malloc(tile_data_size * sizeof(float));
 
-            if (enc->monoblock) {
-                // Extract entire frame (no padding)
-                memcpy(tile_y_data, enc->current_frame_y, tile_data_size * sizeof(float));
-                memcpy(tile_co_data, enc->current_frame_co, tile_data_size * sizeof(float));
-                memcpy(tile_cg_data, enc->current_frame_cg, tile_data_size * sizeof(float));
-            } else {
-                // Extract padded tiles using context from neighbours
-                extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
+            // Skip processing for SKIP mode - decoder will copy from reference
+            if (mode != TAV_MODE_SKIP) {
+                if (enc->monoblock) {
+                    // Extract entire frame (no padding)
+                    memcpy(tile_y_data, enc->current_frame_y, tile_data_size * sizeof(float));
+                    memcpy(tile_co_data, enc->current_frame_co, tile_data_size * sizeof(float));
+                    memcpy(tile_cg_data, enc->current_frame_cg, tile_data_size * sizeof(float));
+                } else {
+                    // Extract padded tiles using context from neighbours
+                    extract_padded_tile(enc, tile_x, tile_y, tile_y_data, tile_co_data, tile_cg_data);
+                }
             }
 
             // Debug: check input data before DWT
@@ -1941,17 +1961,19 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 printf("DEBUG: Y data before DWT: max=%.2f, nonzero=%d/%d\n", max_y_before, nonzero_before, total_pixels);
             }*/
 
-            // Apply DWT transform to each channel
-            if (enc->monoblock) {
-                // Monoblock mode: transform entire frame
-                dwt_2d_forward_flexible(tile_y_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-                dwt_2d_forward_flexible(tile_co_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-                dwt_2d_forward_flexible(tile_cg_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-            } else {
-                // Standard mode: transform padded tiles (344x288)
-                dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
-                dwt_2d_forward_padded(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
-                dwt_2d_forward_padded(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+            // Apply DWT transform to each channel (skip for SKIP mode)
+            if (mode != TAV_MODE_SKIP) {
+                if (enc->monoblock) {
+                    // Monoblock mode: transform entire frame
+                    dwt_2d_forward_flexible(tile_y_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(tile_co_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(tile_cg_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                } else {
+                    // Standard mode: transform padded tiles (344x288)
+                    dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_padded(tile_co_data, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_padded(tile_cg_data, enc->decomp_levels, enc->wavelet_filter);
+                }
             }
 
             // Debug: Check Y data after DWT transform for high-frequency content
@@ -1997,6 +2019,9 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
 
     enc->total_compressed_size += compressed_size;
     enc->total_uncompressed_size += uncompressed_offset;
+
+    // Track last frame type for SKIP mode eligibility
+    enc->last_frame_packet_type = packet_type;
 
     // Mark coefficient storage as available after first I-frame
     if (packet_type == TAV_PACKET_IFRAME) {
@@ -3352,6 +3377,52 @@ static int detect_scene_change(tav_encoder_t *enc) {
     return changed_ratio > threshold;
 }
 
+// Detect still frames (identical or nearly identical to previous frame)
+// Returns 1 if frame is still (suitable for SKIP mode), 0 otherwise
+static int detect_still_frame(tav_encoder_t *enc) {
+    if (!enc->current_frame_rgb || !enc->previous_frame_rgb || enc->intra_only) {
+        return 0; // No frame to compare or intra-only mode
+    }
+
+    long long total_diff = 0;
+    int changed_pixels = 0;
+
+    // Sample every 4th pixel for performance (same as scene change detection)
+    for (int y = 0; y < enc->height; y += 2) {
+        for (int x = 0; x < enc->width; x += 2) {
+            int offset = (y * enc->width + x) * 3;
+
+            // Calculate colour difference
+            int r_diff = abs(enc->current_frame_rgb[offset] - enc->previous_frame_rgb[offset]);
+            int g_diff = abs(enc->current_frame_rgb[offset + 1] - enc->previous_frame_rgb[offset + 1]);
+            int b_diff = abs(enc->current_frame_rgb[offset + 2] - enc->previous_frame_rgb[offset + 2]);
+
+            int pixel_diff = r_diff + g_diff + b_diff;
+            total_diff += pixel_diff;
+
+            // Count changed pixels with very low threshold (2 per channel average = 6 total)
+            if (pixel_diff > 6) {
+                changed_pixels++;
+            }
+        }
+    }
+
+    // Calculate metrics
+    int sampled_pixels = (enc->height / 2) * (enc->width / 2);
+    double avg_diff = (double)total_diff / sampled_pixels;
+    double changed_ratio = (double)changed_pixels / sampled_pixels;
+
+    if (enc->verbose) {
+        printf("Still frame detection: avg_diff=%.2f\tchanged_ratio=%.4f\n", avg_diff, changed_ratio);
+    }
+
+    // Extremely tight thresholds for still frame detection
+    // Designed to catch only truly static content (paused video, title cards)
+    // Rejects slow panning, gradual drawing, or any partial motion
+    // Frame is "still" only if less than 0.1% of pixels changed AND average difference < 0.5
+    return (changed_ratio < 0.00001 && avg_diff < 0.05);
+}
+
 // Main function
 int main(int argc, char *argv[]) {
     generate_random_filename(TEMP_AUDIO_FILE);
@@ -3813,7 +3884,31 @@ int main(int argc, char *argv[]) {
         // Determine frame type
         int is_scene_change = detect_scene_change(enc);
         int is_time_keyframe = (frame_count % KEYFRAME_INTERVAL) == 0;
-        int is_keyframe = enc->intra_only || is_time_keyframe || is_scene_change;
+
+        // Check if we can use SKIP mode
+        int is_still = detect_still_frame(enc);
+        enc->is_still_frame_cached = is_still;  // Cache for use in compress_and_write_frame
+
+        // SKIP mode can be used if:
+        // 1. Frame is still AND
+        // 2. Previous coeffs allocated AND
+        // 3. (Last frame was I-frame OR we're continuing a SKIP run)
+        int in_skip_run = enc->used_skip_mode_last_frame;
+        int can_use_skip = is_still &&
+                          enc->previous_coeffs_allocated &&
+                          (enc->last_frame_packet_type == TAV_PACKET_IFRAME || in_skip_run);
+
+        // During a SKIP run, suppress keyframe timer unless content changes enough to un-skip
+        // Un-skip threshold is the negation of SKIP threshold: content must change to break the run
+        int suppress_keyframe_timer = in_skip_run && is_still;
+
+        // Keyframe decision: intra-only mode, time-based (unless suppressed by SKIP run), or scene change
+        int is_keyframe = enc->intra_only ||
+                         (is_time_keyframe && !suppress_keyframe_timer) ||
+                         is_scene_change;
+
+        // Track if we'll use SKIP mode this frame (continues the SKIP run)
+        enc->used_skip_mode_last_frame = can_use_skip && !is_keyframe;
 
         // Verbose output for keyframe decisions
         /*if (enc->verbose && is_keyframe) {

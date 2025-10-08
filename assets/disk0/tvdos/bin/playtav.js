@@ -890,6 +890,7 @@ try {
                 videoRate: getVideoRate(),
                 frameCount: frameCount,
                 totalFrames: header.totalFrames,
+                frameMode: decoderDbgInfo.frameMode,
                 qY: decoderDbgInfo.qY,
                 qCo: decoderDbgInfo.qCo,
                 qCg: decoderDbgInfo.qCg,

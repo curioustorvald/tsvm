@@ -4535,6 +4535,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     dbgOut["qY"] = qY
                     dbgOut["qCo"] = qCo
                     dbgOut["qCg"] = qCg
+                    dbgOut["frameMode"] = ""
 
                     // debug print: raw decompressed bytes
                     /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
@@ -4547,18 +4548,21 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         0x00 -> { // TAV_MODE_SKIP
                             // Copy 280x224 tile from previous frame to current frame
                             tavCopyTileRGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
+                            dbgOut["frameMode"] = "S"
                         }
                         0x01 -> { // TAV_MODE_INTRA
                             // Decode DWT coefficients directly to RGB buffer
                             readPtr = tavDecodeDWTIntraTileRGB(qIndex, qYGlobal, channelLayout, readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
                                                           waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock, filmGrainLevel)
+                            dbgOut["frameMode"] = " "
                         }
                         0x02 -> { // TAV_MODE_DELTA
                             // Coefficient delta encoding for efficient P-frames
                             readPtr = tavDecodeDeltaTileRGB(readPtr, channelLayout, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
                                                       waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock, filmGrainLevel)
+                            dbgOut["frameMode"] = " "
                         }
                     }
                 }
@@ -4674,7 +4678,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
             dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
 
-            // Apply spooky noise filter if enabled
+            // Apply film grain filter if enabled
             if (filmGrainLevel > 0) {
                 val random = java.util.Random()
                 for (i in 0 until coeffCount) {
@@ -4740,7 +4744,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 cgTile[i] = quantisedCg[i] * qCg.toFloat()
             }
 
-            // Apply spooky noise filter if enabled
+            // Apply film grain filter if enabled
             if (filmGrainLevel > 0) {
                 val random = java.util.Random()
                 for (i in 0 until coeffCount) {
@@ -5322,7 +5326,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
         }
 
-        // Apply spooky noise filter if enabled
+        // Apply film grain filter if enabled
         if (filmGrainLevel > 0) {
             val random = java.util.Random()
             for (i in 0 until coeffCount) {
