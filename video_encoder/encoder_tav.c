@@ -1209,7 +1209,7 @@ static void apply_grain_synthesis_encoder(tav_encoder_t *enc, float *coeffs, int
                 // Uniform mode: use global quantiser
                 noise_amplitude = quantiser * 0.5f;
             }*/
-            float noise_amplitude = FCLAMP(quantiser, 0.0f, 32.0f) * 0.25f;
+            float noise_amplitude = FCLAMP(quantiser, 0.0f, 32.0f) * 0.5f;
 
             // Generate deterministic noise
             uint32_t rng_val = grain_synthesis_rng(frame_num, level + subband_type * 31 + 16777219, x, y);
