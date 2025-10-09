@@ -1477,28 +1477,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Get native resolution
         val nativeWidth = gpu.config.width
         val nativeHeight = gpu.config.height
-        val totalNativePixels = (nativeWidth * nativeHeight)
+        val totalNativePixels = nativeWidth * nativeHeight
         val totalVideoPixels = width * height
 
-        val chunkSize = 32768
+        val chunkSize = width
         val rgbBulkBuffer = ByteArray(chunkSize * 3)
         val rgChunk = ByteArray(chunkSize)
         val baChunk = ByteArray(chunkSize)
         val rChunk = ByteArray(chunkSize)
         val gChunk = ByteArray(chunkSize)
         val bChunk = ByteArray(chunkSize)
-        val aChunk = ByteArray(chunkSize); aChunk.fill(-1)
+        val aChunk = ByteArray(chunkSize)
         var pixelsProcessed = 0
 
         // Helper function to write chunks to framebuffer (shared between native size and resize paths)
-        fun writeChunksToFramebuffer(
-            pixelsInChunk: Int,
-            rgChunk: ByteArray, baChunk: ByteArray,
-            rChunk: ByteArray, gChunk: ByteArray, bChunk: ByteArray, aChunk: ByteArray
-        ) {
+        fun writeChunksToFramebuffer(pixelsInChunk: Int, startX: Int = 0, startY: Int = 0) {
             val pixelIndex = pixelsProcessed
-            val videoY = pixelIndex / width
-            val videoX = pixelIndex % width
+            val videoY = (pixelIndex / width) + startY
+            val videoX = (pixelIndex % width) + startX
             val nativePos = videoY * nativeWidth + videoX
             if (graphicsMode == 4) {
                 UnsafeHelper.memcpyRaw(
@@ -1510,7 +1506,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
                 )
             }
-            else if (graphicsMode == 5) {
+            else {
                 UnsafeHelper.memcpyRaw(
                     rChunk, UnsafeHelper.getArrayOffset(rChunk),
                     null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
@@ -1532,7 +1528,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             pixelsProcessed += pixelsInChunk
         }
 
-        fun writeToChunk(r: Int, g: Int, b: Int, videoX: Int, videoY: Int, i: Int) {
+        fun writeToChunk(r: Int, g: Int, b: Int, videoX: Int, videoY: Int, i: Int, coordInVideoFrame: Boolean = true) {
             if (graphicsMode == 4) {
                 // Apply Bayer dithering and convert to 4-bit
                 val r4 = ditherValue(r, videoX, videoY, frameCount)
@@ -1541,13 +1537,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 // Pack RGB values and store in chunk arrays for batch processing
                 rgChunk[i] = ((r4 shl 4) or g4).toByte()
-                baChunk[i] = ((b4 shl 4) or 15).toByte()
+                baChunk[i] = ((b4 shl 4) or coordInVideoFrame.toInt().times(15)).toByte()
 
             }
-            else if (graphicsMode == 5) {
+            else {
                 rChunk[i] = r.toByte()
                 gChunk[i] = g.toByte()
                 bChunk[i] = b.toByte()
+                aChunk[i] = coordInVideoFrame.toInt().times(255).toByte()
             }
         }
 
@@ -1574,7 +1571,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
 
                 // Write chunks to framebuffer
-                writeChunksToFramebuffer(pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
+                writeChunksToFramebuffer(pixelsInChunk)
             }
         }
         else if (resizeToFull && (width / 2 != nativeWidth / 2 || height / 2 != nativeHeight / 2)) {
@@ -1605,7 +1602,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 }
 
                 // Write chunks to framebuffer
-                writeChunksToFramebuffer(pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
+                writeChunksToFramebuffer(pixelsInChunk)
             }
         } else {
             // Optimised centering logic with bulk memory operations
@@ -1633,18 +1630,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     if (nativeX !in 0 until nativeWidth || nativeY !in 0 until nativeHeight) {
                         continue
                     }
-                    
-                    // Read RGB values from bulk buffer
-                    val rgbIndex = i * 3
-                    val r = rgbBulkBuffer[rgbIndex].toUint()
-                    val g = rgbBulkBuffer[rgbIndex + 1].toUint()
-                    val b = rgbBulkBuffer[rgbIndex + 2].toUint()
 
-                    writeToChunk(r, g, b, videoX, videoY, i)
+                    // Read RGB values from bulk buffer
+                    val r = rgbBulkBuffer[i*3].toUint()
+                    val g = rgbBulkBuffer[i*3 + 1].toUint()
+                    val b = rgbBulkBuffer[i*3 + 2].toUint()
+
+                    writeToChunk(r, g, b, nativeX, nativeY, i)
                 }
 
                 // Write chunks to framebuffer
-                writeChunksToFramebuffer(pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
+                writeChunksToFramebuffer(pixelsInChunk, offsetX, offsetY)
             }
         }
     }

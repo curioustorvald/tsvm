@@ -112,7 +112,8 @@ if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAP
 
 con.clear()
 con.curs_set(0)
-graphics.setGraphicsMode(5) // 32-bit colour mode
+graphics.setGraphicsMode(4) // initially set to 4bpp mode
+graphics.setGraphicsMode(5) // set to 8bpp mode. If GPU don't support it, mode will remain to 4
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
 graphics.clearPixels3(0)
@@ -394,31 +395,27 @@ let decodeTime = 0
 let uploadTime = 0
 let biasTime = 0
 
+const nativeWidth = graphics.getPixelDimension()[0]
+const nativeHeight = graphics.getPixelDimension()[1]
 const BIAS_LIGHTING_MIN = 1.0 / 16.0
 let oldBgcol = [BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN]
 
 let notifHidden = false
 
 function getRGBfromScr(x, y) {
-    if (gpuGraphicsMode == 4) {
-        let offset = y * WIDTH + x
-        let rg = sys.peek(-1048577 - offset)
-        let ba = sys.peek(-1310721 - offset)
-        return [(rg >>> 4) / 15.0, (rg & 15) / 15.0, (ba >>> 4) / 15.0]
-    }
-    else if (gpuGraphicsMode == 5) {
-        let offset = y * WIDTH + x
-        let r = sys.peek(-1048577 - offset)
-        let g = sys.peek(-1310721 - offset)
-        let b = sys.peek(-1572865 - offset)
-        return [r / 255.0, g / 255.0, b / 255.0]
-    }
+    let offset = y * WIDTH + x
+    let fb1 = sys.peek(-1048577 - offset)
+    let fb2 = sys.peek(-1310721 - offset)
+    let fb3 = sys.peek(-1310721 - (262144 * (gpuGraphicsMode - 4)) - offset)
+
+    if (gpuGraphicsMode == 4)
+        return [(fb1 >>> 4) / 15.0, (fb1 & 15) / 15.0, (fb2 >>> 4) / 15.0]
+    else
+        return [fb1 / 255.0, fb2 / 255.0, fb3 / 255.0]
 }
 
 function setBiasLighting() {
     let samples = []
-    let nativeWidth = graphics.getPixelDimension()[0]
-    let nativeHeight = graphics.getPixelDimension()[1]
     let width = header.width; let height = header.height
 
     let offsetX = Math.floor((nativeWidth - width) / 2)
