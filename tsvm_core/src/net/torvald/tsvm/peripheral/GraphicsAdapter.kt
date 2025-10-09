@@ -50,7 +50,7 @@ data class SuperGraphicsAddonConfig(
     val bankCount: Int = 1
 )
 
-class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
+class ReferenceGraphicsAdapter(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(4))
 class ReferenceGraphicsAdapter2(assetsRoot: String, vm: VM) : RemoteGraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_COLOR_CRT, SuperGraphicsAddonConfig(2))
 class ReferenceLikeLCD(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, GraphicsAdapter.DEFAULT_CONFIG_PMLCD)
 
@@ -76,6 +76,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     internal val framebuffer = UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this)//Pixmap(WIDTH, HEIGHT, Pixmap.Format.Alpha)
     internal val framebuffer2 = if (sgr.bankCount >= 2) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this) else null
+    internal val framebuffer3 = if (sgr.bankCount >= 3) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this) else null
+    internal val framebuffer4 = if (sgr.bankCount >= 4) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this) else null
+
     internal val framebufferOut = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
@@ -130,7 +133,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private val outFBOregion = Array(2) { TextureRegion(outFBOs[it].colorBufferTexture) }
     private val outFBObatch = SpriteBatch(1000, DefaultGL32Shaders.createSpriteBatchShader())
 
-    private var graphicsMode = 0
+    var graphicsMode = 0
     private var layerArrangement = 0
 
 
@@ -227,7 +230,19 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun peek(addr: Long): Byte? {
         val adi = addr.toInt()
-        if (framebuffer2 != null && addr >= 262144) {
+        if (framebuffer4 != null && addr >= 524288) {
+            return when (addr - 524288) {
+                in 0 until 250880 -> framebuffer4[addr - 524288]
+                else -> null
+            }
+        }
+        else if (framebuffer3 != null && addr >= 393216) {
+            return when (addr - 393216) {
+                in 0 until 250880 -> framebuffer3[addr - 393216]
+                else -> null
+            }
+        }
+        else if (framebuffer2 != null && addr >= 262144) {
             return when (addr - 262144) {
                 in 0 until 250880 -> framebuffer2[addr - 262144]
                 else -> null
@@ -275,6 +290,24 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     override fun poke(addr: Long, byte: Byte) {
         val adi = addr.toInt()
         val bi = byte.toInt().and(255)
+        if (framebuffer4 != null) {
+            when (addr - 524288) {
+                in 0 until 250880 -> {
+                    lastUsedColour = byte
+                    framebuffer4[addr - 524288] = byte
+                    return
+                }
+            }
+        }
+        if (framebuffer3 != null) {
+            when (addr - 393216) {
+                in 0 until 250880 -> {
+                    lastUsedColour = byte
+                    framebuffer3[addr - 393216] = byte
+                    return
+                }
+            }
+        }
         if (framebuffer2 != null) {
             when (addr - 262144) {
                 in 0 until 250880 -> {
@@ -899,6 +932,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 //        textShader.tryDispose()
         framebuffer.destroy()
         framebuffer2?.destroy()
+        framebuffer3?.destroy()
+        framebuffer4?.destroy()
         framebufferOut.tryDispose()
         rendertex.tryDispose()
         textArea.destroy()
@@ -942,7 +977,27 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom.pixels.position(0)
 
         framebufferOut.setColor(-1);framebufferOut.fill()
-        if (graphicsMode == 4 && framebuffer2 != null) {
+        if (graphicsMode == 5 && framebuffer4 != null && framebuffer3 != null && framebuffer2 != null) {
+            for (y in 0 until HEIGHT) {
+                var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
+                if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+                val xs = (0 + xoff).coerceIn(0, WIDTH - 1)..(WIDTH - 1 + xoff).coerceIn(0, WIDTH - 1)
+
+                if (xoff in -(WIDTH - 1) until WIDTH) {
+                    for (x in xs) {
+                        val r = framebuffer[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val g = framebuffer2[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val b = framebuffer3[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val a = framebuffer4[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        framebufferOut.setColor(
+                            r.shl(24) or g.shl(16) or b.shl(8) or a
+                        )
+                        framebufferOut.drawPixel(x, y)
+                    }
+                }
+            }
+        }
+        else if (graphicsMode == 4 && framebuffer2 != null) {
             for (y in 0 until HEIGHT) {
                 var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
                 if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
@@ -968,7 +1023,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             }
         }
         else if (graphicsMode == 3 && framebuffer2 != null) {
-            val layerOrder = (if (graphicsMode == 1) LAYERORDERS4 else LAYERORDERS2)[layerArrangement]
+            val layerOrder = LAYERORDERS2[layerArrangement]
 
             val fb1 = if (layerOrder[0] == 0) framebuffer else framebuffer2
             val fb2 = if (layerOrder[0] == 0) framebuffer2 else framebuffer

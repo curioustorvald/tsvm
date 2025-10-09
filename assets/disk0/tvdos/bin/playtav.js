@@ -112,7 +112,7 @@ if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAP
 
 con.clear()
 con.curs_set(0)
-graphics.setGraphicsMode(4) // 4096-colour mode  
+graphics.setGraphicsMode(5) // 32-bit colour mode
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
 
