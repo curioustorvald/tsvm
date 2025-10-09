@@ -230,15 +230,15 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override fun peek(addr: Long): Byte? {
         val adi = addr.toInt()
-        if (framebuffer4 != null && addr >= 524288) {
-            return when (addr - 524288) {
-                in 0 until 250880 -> framebuffer4[addr - 524288]
+        if (framebuffer4 != null && addr >= 786432) {
+            return when (addr - 786432) {
+                in 0 until 250880 -> framebuffer4[addr - 786432]
                 else -> null
             }
         }
-        else if (framebuffer3 != null && addr >= 393216) {
-            return when (addr - 393216) {
-                in 0 until 250880 -> framebuffer3[addr - 393216]
+        else if (framebuffer3 != null && addr >= 524288) {
+            return when (addr - 524288) {
+                in 0 until 250880 -> framebuffer3[addr - 524288]
                 else -> null
             }
         }
@@ -291,19 +291,19 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         val adi = addr.toInt()
         val bi = byte.toInt().and(255)
         if (framebuffer4 != null) {
-            when (addr - 524288) {
+            when (addr - 786432) {
                 in 0 until 250880 -> {
                     lastUsedColour = byte
-                    framebuffer4[addr - 524288] = byte
+                    framebuffer4[addr - 786432] = byte
                     return
                 }
             }
         }
         if (framebuffer3 != null) {
-            when (addr - 393216) {
+            when (addr - 524288) {
                 in 0 until 250880 -> {
                     lastUsedColour = byte
-                    framebuffer3[addr - 393216] = byte
+                    framebuffer3[addr - 524288] = byte
                     return
                 }
             }
@@ -417,6 +417,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private fun runCommand(opcode: Byte) {
         val arg1 = unusedArea[4].toInt().and(255)
         val arg2 = unusedArea[5].toInt().and(255)
+        val arg3 = unusedArea[6].toInt().and(255)
+        val arg4 = unusedArea[7].toInt().and(255)
 
         when (opcode.toInt()) {
             1 -> {
@@ -432,6 +434,12 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             4 -> {
                 framebuffer2?.fillWith(arg1.toByte())
             }
+            6 -> {
+                framebuffer3?.fillWith(arg1.toByte())
+            }
+            8 -> {
+                framebuffer4?.fillWith(arg1.toByte())
+            }
             3 -> {
                 for (it in 0 until 1024) {
                     val rgba = DEFAULT_PALETTE[it / 4]
@@ -440,6 +448,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 }
                 framebuffer.fillWith(arg1.toByte())
                 framebuffer2?.fillWith(arg2.toByte())
+                framebuffer3?.fillWith(arg3.toByte())
+                framebuffer4?.fillWith(arg4.toByte())
             }
             16, 17 -> readFontRom(opcode - 16)
             18, 19 -> writeFontRom(opcode - 18)

@@ -115,6 +115,10 @@ con.curs_set(0)
 graphics.setGraphicsMode(5) // 32-bit colour mode
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
+graphics.clearPixels3(0)
+graphics.clearPixels4(0)
+
+const gpuGraphicsMode = graphics.getGraphicsMode()
 
 // Initialize audio
 audio.resetParams(0)
@@ -396,10 +400,19 @@ let oldBgcol = [BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN, BIAS_LIGHTING_MIN]
 let notifHidden = false
 
 function getRGBfromScr(x, y) {
-    let offset = y * WIDTH + x
-    let rg = sys.peek(-1048577 - offset)
-    let ba = sys.peek(-1310721 - offset)
-    return [(rg >>> 4) / 15.0, (rg & 15) / 15.0, (ba >>> 4) / 15.0]
+    if (gpuGraphicsMode == 4) {
+        let offset = y * WIDTH + x
+        let rg = sys.peek(-1048577 - offset)
+        let ba = sys.peek(-1310721 - offset)
+        return [(rg >>> 4) / 15.0, (rg & 15) / 15.0, (ba >>> 4) / 15.0]
+    }
+    else if (gpuGraphicsMode == 5) {
+        let offset = y * WIDTH + x
+        let r = sys.peek(-1048577 - offset)
+        let g = sys.peek(-1310721 - offset)
+        let b = sys.peek(-1572865 - offset)
+        return [r / 255.0, g / 255.0, b / 255.0]
+    }
 }
 
 function setBiasLighting() {

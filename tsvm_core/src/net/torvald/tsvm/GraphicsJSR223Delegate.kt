@@ -268,8 +268,24 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     fun clearPixels2(col: Int) {
         getFirstGPU()?.let {
-            it.poke(250883L, 4)
             it.poke(250884L, col.toByte())
+            it.poke(250883L, 4)
+            it.applyDelay()
+        }
+    }
+
+    fun clearPixels3(col: Int) {
+        getFirstGPU()?.let {
+            it.poke(250884L, col.toByte())
+            it.poke(250883L, 6)
+            it.applyDelay()
+        }
+    }
+
+    fun clearPixels4(col: Int) {
+        getFirstGPU()?.let {
+            it.poke(250884L, col.toByte())
+            it.poke(250883L, 8)
             it.applyDelay()
         }
     }
