@@ -1465,6 +1465,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val totalVideoPixels = width * height
 
         val chunkSize = 32768
+        val rgbBulkBuffer = ByteArray(chunkSize * 3)
         val rgChunk = ByteArray(chunkSize)
         val baChunk = ByteArray(chunkSize)
         val rChunk = ByteArray(chunkSize)
@@ -1475,7 +1476,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Helper function to write chunks to framebuffer (shared between native size and resize paths)
         fun writeChunksToFramebuffer(
-            pixelsProcessed: Int, pixelsInChunk: Int,
+            pixelsInChunk: Int,
             rgChunk: ByteArray, baChunk: ByteArray,
             rChunk: ByteArray, gChunk: ByteArray, bChunk: ByteArray, aChunk: ByteArray
         ) {
@@ -1511,12 +1512,30 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     null, gpu.framebuffer4!!.ptr + nativePos, pixelsInChunk.toLong()
                 )
             }
+
+            pixelsProcessed += pixelsInChunk
+        }
+
+        fun writeToChunk(r: Int, g: Int, b: Int, videoX: Int, videoY: Int, i: Int) {
+            if (graphicsMode == 4) {
+                // Apply Bayer dithering and convert to 4-bit
+                val r4 = ditherValue(r, videoX, videoY, frameCount)
+                val g4 = ditherValue(g, videoX, videoY, frameCount)
+                val b4 = ditherValue(b, videoX, videoY, frameCount)
+
+                // Pack RGB values and store in chunk arrays for batch processing
+                rgChunk[i] = ((r4 shl 4) or g4).toByte()
+                baChunk[i] = ((b4 shl 4) or 15).toByte()
+
+            }
+            else if (graphicsMode == 5) {
+                rChunk[i] = r.toByte()
+                gChunk[i] = g.toByte()
+                bChunk[i] = b.toByte()
+            }
         }
 
         if (width == nativeWidth && height == nativeHeight) {
-            // Pre-allocate RGB buffer for bulk reads and chunk arrays
-            val rgbBulkBuffer = ByteArray(chunkSize * 3)
-
             while (pixelsProcessed < totalNativePixels) {
                 val pixelsInChunk = kotlin.math.min(chunkSize, totalNativePixels - pixelsProcessed)
                 val rgbStartAddr = rgbAddr + (pixelsProcessed.toLong() * 3) * rgbAddrIncVec
@@ -1535,28 +1554,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val g = rgbBulkBuffer[i*3 + 1].toUint()
                     val b = rgbBulkBuffer[i*3 + 2].toUint()
 
-                    if (graphicsMode == 4) {
-                        // Apply Bayer dithering and convert to 4-bit
-                        val r4 = ditherValue(r, videoX, videoY, frameCount)
-                        val g4 = ditherValue(g, videoX, videoY, frameCount)
-                        val b4 = ditherValue(b, videoX, videoY, frameCount)
-
-                        // Pack RGB values and store in chunk arrays for batch processing
-                        rgChunk[i] = ((r4 shl 4) or g4).toByte()
-                        baChunk[i] = ((b4 shl 4) or 15).toByte()
-
-                    }
-                    else if (graphicsMode == 5) {
-                        rChunk[i] = r.toByte()
-                        gChunk[i] = g.toByte()
-                        bChunk[i] = b.toByte()
-                    }
+                    writeToChunk(r, g, b, videoX, videoY, i)
                 }
 
                 // Write chunks to framebuffer
-                writeChunksToFramebuffer(pixelsProcessed, pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
-
-                pixelsProcessed += pixelsInChunk
+                writeChunksToFramebuffer(pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
             }
         }
         else if (resizeToFull && (width / 2 != nativeWidth / 2 || height / 2 != nativeHeight / 2)) {
@@ -1583,38 +1585,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val g = rgb[1]
                     val b = rgb[2]
 
-                    if (graphicsMode == 4) {
-                        // Apply Bayer dithering and convert to 4-bit using native coordinates
-                        val r4 = ditherValue(r, nativeX, nativeY, frameCount)
-                        val g4 = ditherValue(g, nativeX, nativeY, frameCount)
-                        val b4 = ditherValue(b, nativeX, nativeY, frameCount)
-
-                        // Pack and store in chunk buffers
-                        rgChunk[i] = ((r4 shl 4) or g4).toByte()
-                        baChunk[i] = ((b4 shl 4) or 15).toByte()
-                    }
-                    else if (graphicsMode == 5) {
-                        rChunk[i] = r.toByte()
-                        gChunk[i] = g.toByte()
-                        bChunk[i] = b.toByte()
-                    }
+                    writeToChunk(r, g, b, nativeX, nativeY, i)
                 }
 
                 // Write chunks to framebuffer
-                writeChunksToFramebuffer(pixelsProcessed, pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
-
-                pixelsProcessed += pixelsInChunk
+                writeChunksToFramebuffer(pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
             }
         } else {
             // Optimised centering logic with bulk memory operations
             val offsetX = (nativeWidth - width) / 2
             val offsetY = (nativeHeight - height) / 2
 
-            // Pre-allocate RGB buffer for bulk reads
-            val rgbBulkBuffer = ByteArray(chunkSize * 3)
-            val rgChunk = ByteArray(chunkSize)
-            val baChunk = ByteArray(chunkSize)
-            
             while (pixelsProcessed < totalVideoPixels) {
                 val pixelsInChunk = kotlin.math.min(chunkSize, totalVideoPixels - pixelsProcessed)
                 val rgbStartAddr = rgbAddr + (pixelsProcessed.toLong() * 3) * rgbAddrIncVec
@@ -1633,7 +1614,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val nativeY = videoY + offsetY
                     
                     // Skip pixels outside framebuffer bounds
-                    if (nativeX < 0 || nativeX >= nativeWidth || nativeY < 0 || nativeY >= nativeHeight) {
+                    if (nativeX !in 0 until nativeWidth || nativeY !in 0 until nativeHeight) {
                         continue
                     }
                     
@@ -1643,28 +1624,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val g = rgbBulkBuffer[rgbIndex + 1].toUint()
                     val b = rgbBulkBuffer[rgbIndex + 2].toUint()
 
-                    if (graphicsMode == 4) {
-                        // Apply Bayer dithering and convert to 4-bit
-                        val r4 = ditherValue(r, videoX, videoY, frameCount)
-                        val g4 = ditherValue(g, videoX, videoY, frameCount)
-                        val b4 = ditherValue(b, videoX, videoY, frameCount)
-
-                        // Pack RGB values and store in chunk arrays for batch processing
-                        rgChunk[i] = ((r4 shl 4) or g4).toByte()
-                        baChunk[i] = ((b4 shl 4) or 15).toByte()
-
-                    }
-                    else if (graphicsMode == 5) {
-                        rChunk[i] = r.toByte()
-                        gChunk[i] = g.toByte()
-                        bChunk[i] = b.toByte()
-                    }
+                    writeToChunk(r, g, b, videoX, videoY, i)
                 }
 
                 // Write chunks to framebuffer
-                writeChunksToFramebuffer(pixelsProcessed, pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
-
-                pixelsProcessed += pixelsInChunk
+                writeChunksToFramebuffer(pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
             }
         }
     }
