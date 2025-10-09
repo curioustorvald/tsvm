@@ -1462,20 +1462,60 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val nativeWidth = gpu.config.width
         val nativeHeight = gpu.config.height
         val totalNativePixels = (nativeWidth * nativeHeight)
+        val totalVideoPixels = width * height
+
+        val chunkSize = 32768
+        val rgChunk = ByteArray(chunkSize)
+        val baChunk = ByteArray(chunkSize)
+        val rChunk = ByteArray(chunkSize)
+        val gChunk = ByteArray(chunkSize)
+        val bChunk = ByteArray(chunkSize)
+        val aChunk = ByteArray(chunkSize); aChunk.fill(-1)
+        var pixelsProcessed = 0
+
+        // Helper function to write chunks to framebuffer (shared between native size and resize paths)
+        fun writeChunksToFramebuffer(
+            pixelsProcessed: Int, pixelsInChunk: Int,
+            rgChunk: ByteArray, baChunk: ByteArray,
+            rChunk: ByteArray, gChunk: ByteArray, bChunk: ByteArray, aChunk: ByteArray
+        ) {
+            val pixelIndex = pixelsProcessed
+            val videoY = pixelIndex / width
+            val videoX = pixelIndex % width
+            val nativePos = videoY * nativeWidth + videoX
+            if (graphicsMode == 4) {
+                UnsafeHelper.memcpyRaw(
+                    rgChunk, UnsafeHelper.getArrayOffset(rgChunk),
+                    null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
+                )
+                UnsafeHelper.memcpyRaw(
+                    baChunk, UnsafeHelper.getArrayOffset(baChunk),
+                    null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
+                )
+            }
+            else if (graphicsMode == 5) {
+                UnsafeHelper.memcpyRaw(
+                    rChunk, UnsafeHelper.getArrayOffset(rChunk),
+                    null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
+                )
+                UnsafeHelper.memcpyRaw(
+                    gChunk, UnsafeHelper.getArrayOffset(gChunk),
+                    null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
+                )
+                UnsafeHelper.memcpyRaw(
+                    bChunk, UnsafeHelper.getArrayOffset(bChunk),
+                    null, gpu.framebuffer3!!.ptr + nativePos, pixelsInChunk.toLong()
+                )
+                UnsafeHelper.memcpyRaw(
+                    aChunk, UnsafeHelper.getArrayOffset(aChunk),
+                    null, gpu.framebuffer4!!.ptr + nativePos, pixelsInChunk.toLong()
+                )
+            }
+        }
 
         if (width == nativeWidth && height == nativeHeight) {
-            val chunkSize = 32768 // Larger chunks for bulk processing
-
-            var pixelsProcessed = 0
-
-            // Pre-allocate RGB buffer for bulk reads
+            // Pre-allocate RGB buffer for bulk reads and chunk arrays
             val rgbBulkBuffer = ByteArray(chunkSize * 3)
-            val rgChunk = ByteArray(chunkSize)
-            val baChunk = ByteArray(chunkSize)
-            val rChunk = ByteArray(chunkSize)
-            val gChunk = ByteArray(chunkSize)
-            val bChunk = ByteArray(chunkSize)
-            val aChunk = ByteArray(chunkSize); aChunk.fill(-1)
 
             while (pixelsProcessed < totalNativePixels) {
                 val pixelsInChunk = kotlin.math.min(chunkSize, totalNativePixels - pixelsProcessed)
@@ -1512,38 +1552,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         bChunk[i] = b.toByte()
                     }
                 }
-                val pixelIndex = pixelsProcessed
-                val videoY = pixelIndex / width
-                val videoX = pixelIndex % width
-                val nativePos = videoY * nativeWidth + videoX
-                if (graphicsMode == 4) {
-                    UnsafeHelper.memcpyRaw(
-                        rgChunk, UnsafeHelper.getArrayOffset(rgChunk),
-                        null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        baChunk, UnsafeHelper.getArrayOffset(baChunk),
-                        null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                }
-                else if (graphicsMode == 5) {
-                    UnsafeHelper.memcpyRaw(
-                        rChunk, UnsafeHelper.getArrayOffset(rChunk),
-                        null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        gChunk, UnsafeHelper.getArrayOffset(gChunk),
-                        null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        bChunk, UnsafeHelper.getArrayOffset(bChunk),
-                        null, gpu.framebuffer3!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        aChunk, UnsafeHelper.getArrayOffset(aChunk),
-                        null, gpu.framebuffer4!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                }
+
+                // Write chunks to framebuffer
+                writeChunksToFramebuffer(pixelsProcessed, pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
 
                 pixelsProcessed += pixelsInChunk
             }
@@ -1552,31 +1563,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             // Calculate scaling factors for resize-to-full (source to native mapping)
             val scaleX = width.toFloat() / nativeWidth.toFloat()
             val scaleY = height.toFloat() / nativeHeight.toFloat()
-            
-            // Process native pixels in 8KB chunks
-            val chunkSize = 32768
-            val rgChunk = ByteArray(chunkSize)
-            val baChunk = ByteArray(chunkSize)
-            val rChunk = ByteArray(chunkSize)
-            val gChunk = ByteArray(chunkSize)
-            val bChunk = ByteArray(chunkSize)
-            val aChunk = ByteArray(chunkSize); aChunk.fill(-1)
 
-            var pixelsProcessed = 0
-            
             while (pixelsProcessed < totalNativePixels) {
                 val pixelsInChunk = kotlin.math.min(chunkSize, (totalNativePixels - pixelsProcessed).toInt())
-                
+
                 // Batch process chunk of pixels
                 for (i in 0 until pixelsInChunk) {
                     val nativePixelIndex = pixelsProcessed + i
                     val nativeY = nativePixelIndex / nativeWidth
                     val nativeX = nativePixelIndex % nativeWidth
-                    
+
                     // Map native pixel to source video coordinates for bilinear sampling
                     val videoX = nativeX * scaleX
                     val videoY = nativeY * scaleY
-                    
+
                     // Sample RGB values using bilinear interpolation (optimised version)
                     val rgb = sampleBilinearOptimised(rgbAddr, width, height, videoX, videoY, rgbAddrIncVec)
                     val r = rgb[0]
@@ -1599,38 +1599,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         bChunk[i] = b.toByte()
                     }
                 }
-                val pixelIndex = pixelsProcessed
-                val videoY = pixelIndex / width
-                val videoX = pixelIndex % width
-                val nativePos = videoY * nativeWidth + videoX
-                if (graphicsMode == 4) {
-                    UnsafeHelper.memcpyRaw(
-                        rgChunk, UnsafeHelper.getArrayOffset(rgChunk),
-                        null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        baChunk, UnsafeHelper.getArrayOffset(baChunk),
-                        null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                }
-                else if (graphicsMode == 5) {
-                    UnsafeHelper.memcpyRaw(
-                        rChunk, UnsafeHelper.getArrayOffset(rChunk),
-                        null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        gChunk, UnsafeHelper.getArrayOffset(gChunk),
-                        null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        bChunk, UnsafeHelper.getArrayOffset(bChunk),
-                        null, gpu.framebuffer3!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                    UnsafeHelper.memcpyRaw(
-                        aChunk, UnsafeHelper.getArrayOffset(aChunk),
-                        null, gpu.framebuffer4!!.ptr + nativePos, pixelsInChunk.toLong()
-                    )
-                }
+
+                // Write chunks to framebuffer
+                writeChunksToFramebuffer(pixelsProcessed, pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
 
                 pixelsProcessed += pixelsInChunk
             }
@@ -1639,11 +1610,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val offsetX = (nativeWidth - width) / 2
             val offsetY = (nativeHeight - height) / 2
 
-            val totalVideoPixels = width * height
-            val chunkSize = 32768 // Larger chunks for bulk processing
-            
-            var pixelsProcessed = 0
-            
             // Pre-allocate RGB buffer for bulk reads
             val rgbBulkBuffer = ByteArray(chunkSize * 3)
             val rgChunk = ByteArray(chunkSize)
@@ -1677,25 +1643,26 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val g = rgbBulkBuffer[rgbIndex + 1].toUint()
                     val b = rgbBulkBuffer[rgbIndex + 2].toUint()
 
-                    // Apply Bayer dithering and convert to 4-bit
-                    val r4 = ditherValue(r, videoX, videoY, frameCount)
-                    val g4 = ditherValue(g, videoX, videoY, frameCount)
-                    val b4 = ditherValue(b, videoX, videoY, frameCount)
+                    if (graphicsMode == 4) {
+                        // Apply Bayer dithering and convert to 4-bit
+                        val r4 = ditherValue(r, videoX, videoY, frameCount)
+                        val g4 = ditherValue(g, videoX, videoY, frameCount)
+                        val b4 = ditherValue(b, videoX, videoY, frameCount)
 
-                    // Pack RGB values and store in chunk arrays for batch processing
-                    val validIndex = i
-                    rgChunk[validIndex] = ((r4 shl 4) or g4).toByte()
-                    baChunk[validIndex] = ((b4 shl 4) or 15).toByte()
-                    
-                    // Write directly to framebuffer position
-                    val nativePos = nativeY * nativeWidth + nativeX
-                    UnsafeHelper.memcpyRaw(
-                        rgChunk, UnsafeHelper.getArrayOffset(rgChunk) + validIndex,
-                        null, gpu.framebuffer.ptr + nativePos, 1L)
-                    UnsafeHelper.memcpyRaw(
-                        baChunk, UnsafeHelper.getArrayOffset(baChunk) + validIndex,
-                        null, gpu.framebuffer2!!.ptr + nativePos, 1L)
+                        // Pack RGB values and store in chunk arrays for batch processing
+                        rgChunk[i] = ((r4 shl 4) or g4).toByte()
+                        baChunk[i] = ((b4 shl 4) or 15).toByte()
+
+                    }
+                    else if (graphicsMode == 5) {
+                        rChunk[i] = r.toByte()
+                        gChunk[i] = g.toByte()
+                        bChunk[i] = b.toByte()
+                    }
                 }
+
+                // Write chunks to framebuffer
+                writeChunksToFramebuffer(pixelsProcessed, pixelsInChunk, rgChunk, baChunk, rChunk, gChunk, bChunk, aChunk)
 
                 pixelsProcessed += pixelsInChunk
             }
