@@ -943,6 +943,7 @@ transmission capability, and region-of-interest coding.
     *      Payload
 
 ## Packet Types
+    <video packets>
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (delta/skip frame)
     0x1F: (prohibited)
@@ -965,7 +966,8 @@ transmission capability, and region-of-interest coding.
     0xE2: ID3v2 packet
     0xE3: Vorbis Comment packet
     0xE4: CD-text packet
-    <End of Standard metadata>
+    <Special packets>
+    0x00: No-op
     0xF0: Loop point start
     0xF1: Loop point end
     0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance)

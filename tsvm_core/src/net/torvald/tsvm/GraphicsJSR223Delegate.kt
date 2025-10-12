@@ -4504,11 +4504,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 getPerceptualWeight(qIndex, qYGlobal, subband.level, subband.subbandType, false, decompLevels)
             } else {
                 1.0f
-            }
+            }*/
 
             // Noise amplitude for this subband
-            val noiseAmplitude = (quantiser * perceptualWeight) * 0.5f*/
-            val noiseAmplitude = quantiser.coerceAtMost(32f) * 0.5f
+//            val noiseAmplitude = quantiser.coerceAtMost(32f) * 0.5f
+            val noiseAmplitude = qYGlobal.coerceAtMost(32) * 0.5f // using qYGlobal because quantiser is variable on bitrate-control mode and varying grain amp annoys viewer
 
             // Remove noise from each coefficient in this subband
             for (i in 0 until subband.coeffCount) {

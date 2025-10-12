@@ -53,7 +53,6 @@ let subtitlePosition = 0  // 0=bottom center (default)
 
 // Parse command line options
 let interactive = false
-let userDefinedFilmGrain = false
 let filmGrainLevel = null
 
 if (exec_args.length > 2) {
@@ -69,7 +68,6 @@ if (exec_args.length > 2) {
                 const level = parseInt(parts[1])
                 if (!isNaN(level) && level >= 1 && level <= 32767) {
                     filmGrainLevel = level
-                    userDefinedFilmGrain = true
                 }
             }
             // Try next argument if no '=' found
@@ -77,7 +75,6 @@ if (exec_args.length > 2) {
                 const level = parseInt(exec_args[i + 1])
                 if (!isNaN(level) && level >= 1 && level <= 32767) {
                     filmGrainLevel = level
-                    userDefinedFilmGrain = true
                     i++ // Skip next arg
                 }
             }
@@ -297,13 +294,6 @@ if (header.version < 1 || header.version > 8) {
     errorlevel = 1
     return
 }
-
-function setFilmGrainLevel(header) {
-    // decide film grain strength by quality level
-    filmGrainLevel = [9,6,-4,3,-2,-2,-2][header.qualityLevel - 1]
-}
-
-setFilmGrainLevel(header)
 
 // Helper function to decode channel layout name
 function getChannelLayoutName(layout) {
@@ -846,7 +836,6 @@ try {
                         currentCueIndex++
                     }
                     totalFilesProcessed++
-                    setFilmGrainLevel(header)
 
                     console.log(`\nStarting file ${currentFileIndex}:`)
                     console.log(`Resolution: ${header.width}x${header.height}`)
@@ -908,8 +897,8 @@ try {
                         serial.println(`  FIELD_SIZE: ${FIELD_SIZE}`)
                     }
 
-                    //let thisFrameNoiseLevel = (filmGrainLevel >= 0) ? filmGrainLevel : -(filmGrainLevel - (trueFrameCount % 2))
                     // grain synthesis is now part of the spec
+                    // TODO if filmGrainLevel != null, user requested custom film grain level
 
                     // Call new TAV hardware decoder that handles Zstd decompression internally
                     // Note: No longer using JS gzip.decompFromTo - Kotlin handles Zstd natively
