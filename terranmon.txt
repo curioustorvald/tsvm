@@ -991,7 +991,7 @@ transmission capability, and region-of-interest coding.
         2. Standard metadata payloads (if any)
 
         Frame group:
-        1. TC Packet (0xEF) or File packet (0x1F) [mutually exclusive!]
+        1. TC Packet (0xFD) or File packet (0x1F) [mutually exclusive!]
         2. Loop point packets
         3. Audio packets
         4. Subtitle packets
@@ -1025,9 +1025,9 @@ transmission capability, and region-of-interest coding.
     ### List of Keys
     - Uint64 BGNT: Video begin time (must be equal to the value of the first Timecode packet)
     - Uint64 ENDT: Video end time (must be equal to the value of the last Timecode packet)
+    - Uint64 CDAT: Creation time in nanoseconds since UNIX Epoch
     - Bytes VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014")
     - Bytes FMPG: FFmpeg version (typically "ffmpeg version 6.1.2"; the first line of text FFmpeg emits right before the copyright text)
-    - Uint64 CDAT: Creation time in nanoseconds since UNIX Epoch
 
 
 ## Standard Metadata Payload Packet Structure

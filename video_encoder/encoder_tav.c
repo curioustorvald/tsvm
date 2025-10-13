@@ -16,8 +16,7 @@
 #include <limits.h>
 #include <float.h>
 
-// Debug dump frame target moved to command-line argument --dump-frame
-
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251014"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -37,13 +36,14 @@
 #define TAV_MODE_DELTA     0x02  // Coefficient delta encoding (efficient P-frames)
 
 // Video packet types
-#define TAV_PACKET_IFRAME      0x10  // Intra frame (keyframe)
-#define TAV_PACKET_PFRAME      0x11  // Predicted frame
-#define TAV_PACKET_AUDIO_MP2   0x20  // MP2 audio
-#define TAV_PACKET_SUBTITLE    0x30  // Subtitle packet
-#define TAV_PACKET_TIMECODE    0xFD  // Timecode packet
-#define TAV_PACKET_SYNC_NTSC   0xFE  // NTSC Sync packet
-#define TAV_PACKET_SYNC        0xFF  // Sync packet
+#define TAV_PACKET_IFRAME         0x10  // Intra frame (keyframe)
+#define TAV_PACKET_PFRAME         0x11  // Predicted frame
+#define TAV_PACKET_AUDIO_MP2      0x20  // MP2 audio
+#define TAV_PACKET_SUBTITLE       0x30  // Subtitle packet
+#define TAV_PACKET_EXTENDED_HDR   0xEF  // Extended header packet
+#define TAV_PACKET_TIMECODE       0xFD  // Timecode packet
+#define TAV_PACKET_SYNC_NTSC      0xFE  // NTSC Sync packet
+#define TAV_PACKET_SYNC           0xFF  // Sync packet
 
 // DWT settings
 #define TILE_SIZE_X 640
@@ -347,6 +347,11 @@ typedef struct tav_encoder_s {
     struct timeval start_time;
     int encode_limit;  // Maximum number of frames to encode (0 = no limit)
 
+    // Extended header support
+    char *ffmpeg_version;  // FFmpeg version string
+    uint64_t creation_time_ns;  // Creation time in nanoseconds since UNIX epoch
+    long extended_header_offset;  // File offset of extended header for ENDT update
+
 } tav_encoder_t;
 
 // Wavelet filter constants removed - using lifting scheme implementation instead
@@ -608,6 +613,7 @@ static int calculate_max_decomp_levels(int width, int height);
 static int start_audio_conversion(tav_encoder_t *enc);
 static int get_mp2_packet_size(uint8_t *header);
 static int mp2_packet_size_to_rate_index(int packet_size, int is_mono);
+static long write_extended_header(tav_encoder_t *enc);
 static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_ntsc_framerate);
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output);
 static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps);
@@ -2538,10 +2544,16 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(enc->quality_level+1, enc->output_fp);
     fputc(enc->channel_layout, enc->output_fp);
 
-    // Reserved bytes (5 bytes - one used for channel layout)
-    for (int i = 0; i < 5; i++) {
+    // Device Orientation (default: 0 = no rotation)
+    fputc(0, enc->output_fp);
+
+    // Reserved bytes (3 bytes)
+    for (int i = 0; i < 3; i++) {
         fputc(0, enc->output_fp);
     }
+
+    // File Role (0 = generic)
+    fputc(0, enc->output_fp);
 
     return 0;
 }
@@ -2571,6 +2583,21 @@ static char* execute_command(const char* command) {
     buffer[total_size] = '\0';
     pclose(pipe);
     return buffer;
+}
+
+// Get FFmpeg version string (first line before copyright)
+static char* get_ffmpeg_version(void) {
+    char *output = execute_command("ffmpeg -version 2>&1 | head -1");
+    if (!output) return NULL;
+
+    // Trim trailing newline
+    size_t len = strlen(output);
+    while (len > 0 && (output[len-1] == '\n' || output[len-1] == '\r')) {
+        output[len-1] = '\0';
+        len--;
+    }
+
+    return output;  // Caller must free
 }
 
 // Get video metadata using ffprobe
@@ -3310,6 +3337,60 @@ static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_n
     fwrite(&timecode_ns, sizeof(uint64_t), 1, output);
 }
 
+// Write extended header packet with metadata
+// Returns the file offset where ENDT value is written (for later update)
+static long write_extended_header(tav_encoder_t *enc) {
+    uint8_t packet_type = TAV_PACKET_EXTENDED_HDR;
+    fwrite(&packet_type, 1, 1, enc->output_fp);
+
+    // Count key-value pairs (BGNT, ENDT, CDAT, VNDR, FMPG)
+    uint16_t num_pairs = enc->ffmpeg_version ? 5 : 4;  // FMPG is optional
+    fwrite(&num_pairs, sizeof(uint16_t), 1, enc->output_fp);
+
+    // Helper macro to write key-value pairs
+    #define WRITE_KV_UINT64(key_str, value) do { \
+        fwrite(key_str, 1, 4, enc->output_fp); \
+        uint8_t value_type = 0x04; /* Uint64 */ \
+        fwrite(&value_type, 1, 1, enc->output_fp); \
+        uint64_t val = (value); \
+        fwrite(&val, sizeof(uint64_t), 1, enc->output_fp); \
+    } while(0)
+
+    #define WRITE_KV_BYTES(key_str, data, len) do { \
+        fwrite(key_str, 1, 4, enc->output_fp); \
+        uint8_t value_type = 0x10; /* Bytes */ \
+        fwrite(&value_type, 1, 1, enc->output_fp); \
+        uint16_t length = (len); \
+        fwrite(&length, sizeof(uint16_t), 1, enc->output_fp); \
+        fwrite((data), 1, (len), enc->output_fp); \
+    } while(0)
+
+    // BGNT: Video begin time (0 for frame 0)
+    WRITE_KV_UINT64("BGNT", 0ULL);
+
+    // ENDT: Video end time (placeholder, will be updated at end)
+    long endt_offset = ftell(enc->output_fp);
+    WRITE_KV_UINT64("ENDT", 0ULL);
+
+    // CDAT: Creation time in nanoseconds since UNIX epoch
+    WRITE_KV_UINT64("CDAT", enc->creation_time_ns);
+
+    // VNDR: Encoder name and version
+    const char *vendor_str = ENCODER_VENDOR_STRING;
+    WRITE_KV_BYTES("VNDR", vendor_str, strlen(vendor_str));
+
+    // FMPG: FFmpeg version (if available)
+    if (enc->ffmpeg_version) {
+        WRITE_KV_BYTES("FMPG", enc->ffmpeg_version, strlen(enc->ffmpeg_version));
+    }
+
+    #undef WRITE_KV_UINT64
+    #undef WRITE_KV_BYTES
+
+    // Return offset of ENDT value (skip key, type byte)
+    return endt_offset + 4 + 1;  // 4 bytes for "ENDT", 1 byte for type
+}
+
 // Process audio for current frame (copied and adapted from TEV)
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
@@ -3939,6 +4020,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Capture FFmpeg version and creation time for extended header
+    enc->ffmpeg_version = get_ffmpeg_version();
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    enc->creation_time_ns = (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+
     // Start FFmpeg process for video input (using TEV-compatible filtergraphs)
     if (enc->test_mode) {
         // Test mode - generate solid colour frames
@@ -4016,7 +4103,10 @@ int main(int argc, char *argv[]) {
     KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
     // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
 
-    // Write timecode packet for frame 0 (before the first frame)
+    // Write extended header packet (before first timecode)
+    enc->extended_header_offset = write_extended_header(enc);
+
+    // Write timecode packet for frame 0 (after extended header)
     write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
 
     while (continue_encoding) {
@@ -4226,6 +4316,20 @@ int main(int argc, char *argv[]) {
         if (enc->verbose) {
             printf("Updated header with actual frame count: %d\n", frame_count);
         }
+
+        // Update ENDT in extended header (calculate end time for last frame)
+        uint64_t endt_ns;
+        if (enc->is_ntsc_framerate) {
+            endt_ns = ((uint64_t)(frame_count - 1) * 1001000000ULL) / 30000ULL;
+        } else {
+            endt_ns = ((uint64_t)(frame_count - 1) * 1000000000ULL) / (uint64_t)enc->output_fps;
+        }
+        fseek(enc->output_fp, enc->extended_header_offset, SEEK_SET);
+        fwrite(&endt_ns, sizeof(uint64_t), 1, enc->output_fp);
+        fseek(enc->output_fp, current_pos, SEEK_SET);  // Restore position
+        if (enc->verbose) {
+            printf("Updated ENDT in extended header: %llu ns\n", (unsigned long long)endt_ns);
+        }
     }
 
     // Final statistics
@@ -4266,6 +4370,7 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->subtitle_file);
     free(enc->fontrom_lo_file);
     free(enc->fontrom_hi_file);
+    free(enc->ffmpeg_version);
     free(enc->frame_rgb[0]);
     free(enc->frame_rgb[1]);
     free(enc->current_frame_y);
