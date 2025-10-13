@@ -38,9 +38,10 @@
 
 // Video packet types
 #define TAV_PACKET_IFRAME      0x10  // Intra frame (keyframe)
-#define TAV_PACKET_PFRAME      0x11  // Predicted frame  
+#define TAV_PACKET_PFRAME      0x11  // Predicted frame
 #define TAV_PACKET_AUDIO_MP2   0x20  // MP2 audio
 #define TAV_PACKET_SUBTITLE    0x30  // Subtitle packet
+#define TAV_PACKET_TIMECODE    0xFD  // Timecode packet
 #define TAV_PACKET_SYNC_NTSC   0xFE  // NTSC Sync packet
 #define TAV_PACKET_SYNC        0xFF  // Sync packet
 
@@ -607,6 +608,7 @@ static int calculate_max_decomp_levels(int width, int height);
 static int start_audio_conversion(tav_encoder_t *enc);
 static int get_mp2_packet_size(uint8_t *header);
 static int mp2_packet_size_to_rate_index(int packet_size, int is_mono);
+static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_ntsc_framerate);
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output);
 static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps);
 static subtitle_entry_t* parse_srt_file(const char *filename, int fps);
@@ -3285,6 +3287,29 @@ static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, c
     return 1 + 4 + packet_size;  // Total bytes written
 }
 
+// Write timecode packet for current frame
+// Timecode is the time since stream start in nanoseconds
+static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_ntsc_framerate) {
+    uint8_t packet_type = TAV_PACKET_TIMECODE;
+    fwrite(&packet_type, 1, 1, output);
+
+    // Calculate timecode in nanoseconds
+    // For NTSC (29.97 fps): time = frame_num * 1001000000 / 30000
+    // For other framerates: time = frame_num * 1000000000 / fps
+    uint64_t timecode_ns;
+    if (is_ntsc_framerate) {
+        // NTSC uses 30000/1001 fps (29.97...)
+        // To avoid floating point: time_ns = frame_num * 1001000000 / 30000
+        timecode_ns = ((uint64_t)frame_num * 1001000000ULL) / 30000ULL;
+    } else {
+        // Standard framerate
+        timecode_ns = ((uint64_t)frame_num * 1000000000ULL) / (uint64_t)fps;
+    }
+
+    // Write timecode as little-endian uint64
+    fwrite(&timecode_ns, sizeof(uint64_t), 1, output);
+}
+
 // Process audio for current frame (copied and adapted from TEV)
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
@@ -3991,12 +4016,20 @@ int main(int argc, char *argv[]) {
     KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
     // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
 
+    // Write timecode packet for frame 0 (before the first frame)
+    write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
+
     while (continue_encoding) {
         // Check encode limit if specified
         if (enc->encode_limit > 0 && frame_count >= enc->encode_limit) {
             printf("Reached encode limit of %d frames, finalising...\n", enc->encode_limit);
             continue_encoding = 0;
             break;
+        }
+
+        // Write timecode packet for frames 1+ (right after sync packet from previous frame)
+        if (frame_count > 0) {
+            write_timecode_packet(enc->output_fp, frame_count, enc->output_fps, enc->is_ntsc_framerate);
         }
 
         if (enc->test_mode) {

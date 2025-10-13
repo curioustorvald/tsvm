@@ -930,14 +930,23 @@ transmission capability, and region-of-interest coding.
             - 4 = Co-Cg/Ct-Cp (100: no alpha, has chroma, no luma)
             - 5 = Co-Cg-A/Ct-Cp-A (101: has alpha, has chroma, no luma)
             - 6-7 = Reserved/invalid (would indicate no luma and no chroma)
-    uint8  Reserved[4]: fill with zeros
+    uint8  Device Orientation
+            - 0 = No rotation
+            - 1 = Clockwise 90 deg
+            - 2 = 180 deg
+            - 3 = Clockwise 270 deg
+            - 4 = Mirrored, No rotation
+            - 5 = Mirrored, Clockwise 90 deg
+            - 6 = Mirrored, 180 deg
+            - 7 = Mirrored, Clockwise 270 deg
+    uint8  Reserved[3]: fill with zeros
     uint8  File Role
             - 0 = generic
             - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
 
-## Packet Structure (all packets EXCEPT sync packets follow this structure; sync packets are one-byte packet)
+## Packet Structure (some special packets have no payload. See Packet Types for details)
     uint8  Packet Type
     uint32 Payload Size
     *      Payload
@@ -967,30 +976,62 @@ transmission capability, and region-of-interest coding.
     0xE3: Vorbis Comment packet
     0xE4: CD-text packet
     <Special packets>
-    0x00: No-op
-    0xF0: Loop point start
-    0xF1: Loop point end
-    0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance)
-    0xFF: Sync packet
+    0x00: No-op (no payload)
+    0xEF: TAV Extended Header
+    0xF0: Loop point start (insert right AFTER the TC packet; no payload)
+    0xF1: Loop point end (insert right AFTER the TC packet; no payload)
+    0xFD: Timecode (TC) Packet [for frame 0, insert at the beginning; otherwise, insert right AFTER the sync]
+    0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance; no payload)
+    0xFF: Sync packet (no payload)
 
     ### Packet Precedence
 
         Before the first frame group:
-        1. Standard metadata payloads
+        1. TAV Extended header (if any)
+        2. Standard metadata payloads (if any)
 
         Frame group:
-        1. File packet (0x1F)
-        2. Audio packets
-        3. Subtitle packets
-        4. Main video packets (0x10-0x1E)
-        5. Multiplexed video packets (0x70-7F)
-        6. Loop point packets
+        1. TC Packet (0xEF) or File packet (0x1F) [mutually exclusive!]
+        2. Loop point packets
+        3. Audio packets
+        4. Subtitle packets
+        5. Main video packets (0x10-0x1E)
+        6. Multiplexed video packets (0x70-7F)
 
         After a frame group:
         1. Sync packet
 
-## Standard metadata payload packet structure
-    uint8  0xE0/0xE1/0xE2/.../0xEF (see Packet Types section)
+
+## TAV Extended Header Specification and Structure
+    uint8  0xEF
+    uint16 Number of Key-Value pairs
+    *      Key-Value pairs
+
+    ### Key-Value Pair
+    uint8  Key[4]
+    uint8  Value Type
+           - 0x00: (U)Int16
+           - 0x01: (U)Int24
+           - 0x02: (U)Int32
+           - 0x03: (U)Int48
+           - 0x04: (U)Int64
+           - 0x10: Bytes
+    <if Value Type is Bytes>
+    uint16 Length of bytes
+    *      Bytes
+    <otherwise>
+    type_t Value
+
+    ### List of Keys
+    - Uint64 BGNT: Video begin time (must be equal to the value of the first Timecode packet)
+    - Uint64 ENDT: Video end time (must be equal to the value of the last Timecode packet)
+    - Bytes VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014")
+    - Bytes FMPG: FFmpeg version (typically "ffmpeg version 6.1.2"; the first line of text FFmpeg emits right before the copyright text)
+    - Uint64 CDAT: Creation time in nanoseconds since UNIX Epoch
+
+
+## Standard Metadata Payload Packet Structure
+    uint8  0xE0/0xE1/0xE2/.../0xEE (see Packet Types section)
     uint32 Length of the payload
     *      Standard payload
 
@@ -999,6 +1040,10 @@ transmission capability, and region-of-interest coding.
     - when multiple metadata packets are present (e.g. ID3v2 and Vorbis Comment both present),
       which gets precedence is implementation-dependent. ONE EXCEPTION is ID3v1 and ID3v2 where ID3v2 gets
       precedence.
+
+## Timecode Packet Structure
+    uint8  Packet Type (0xFE)
+    uint64 Time since stream start in nanoseconds (this may NOT start from zero if the video is coming from a livestream)
 
 ## Video Packet Structure
     uint8  Packet Type
