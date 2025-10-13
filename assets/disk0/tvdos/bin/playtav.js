@@ -27,6 +27,8 @@ const TAV_PACKET_IFRAME = 0x10
 const TAV_PACKET_PFRAME = 0x11
 const TAV_PACKET_AUDIO_MP2 = 0x20
 const TAV_PACKET_SUBTITLE = 0x30
+const TAV_PACKET_EXTENDED_HDR = 0xEF
+const TAV_PACKET_TIMECODE = 0xFD
 const TAV_PACKET_SYNC_NTSC = 0xFE
 const TAV_PACKET_SYNC = 0xFF
 const TAV_FILE_HEADER_FIRST = 0x1F
@@ -1005,7 +1007,76 @@ try {
                 // Subtitle packet - same format as TEV
                 let packetSize = seqread.readInt()
                 processSubtitlePacket(packetSize)
-            } else if (packetType == 0x00) {
+            }
+            else if (packetType === TAV_PACKET_EXTENDED_HDR) {
+                // Extended header packet - metadata key-value pairs
+                let numPairs = seqread.readShort()
+
+                if (interactive) {
+                    serial.println(`[EXTENDED HEADER] ${numPairs} key-value pairs:`)
+                }
+
+                for (let i = 0; i < numPairs; i++) {
+                    // Read key (4 bytes)
+                    let keyBytes = seqread.readBytes(4)
+                    let key = ""
+                    for (let j = 0; j < 4; j++) {
+                        key += String.fromCharCode(sys.peek(keyBytes + j))
+                    }
+                    sys.free(keyBytes)
+
+                    // Read value type
+                    let valueType = seqread.readOneByte()
+
+                    if (valueType === 0x04) {  // Uint64
+                        let valueLow = seqread.readInt()
+                        let valueHigh = seqread.readInt()
+                        // Combine into 64-bit value (JS uses double, loses precision beyond 2^53)
+                        let value = valueHigh * 0x100000000 + (valueLow >>> 0)
+
+                        if (interactive) {
+                            if (key === "CDAT") {
+                                // Creation date - convert to human readable
+                                let seconds = Math.floor(value / 1000000000)
+                                let date = new Date(seconds * 1000)
+                                serial.println(`  ${key}: ${date.toISOString()}`)
+                            } else {
+                                // BGNT/ENDT - show as seconds
+                                serial.println(`  ${key}: ${(value / 1000000000).toFixed(6)}s`)
+                            }
+                        }
+                    } else if (valueType === 0x10) {  // Bytes
+                        let length = seqread.readShort()
+                        let dataBytes = seqread.readBytes(length)
+                        let dataStr = ""
+                        for (let j = 0; j < length; j++) {
+                            dataStr += String.fromCharCode(sys.peek(dataBytes + j))
+                        }
+                        sys.free(dataBytes)
+
+                        if (interactive) {
+                            serial.println(`  ${key}: "${dataStr}"`)
+                        }
+                    } else {
+                        if (interactive) {
+                            serial.println(`  ${key}: Unknown type 0x${valueType.toString(16)}`)
+                        }
+                    }
+                }
+            }
+            else if (packetType === TAV_PACKET_TIMECODE) {
+                // Timecode packet - time since stream start in nanoseconds
+                let timecodeLow = seqread.readInt()
+                let timecodeHigh = seqread.readInt()
+                let timecodeNs = timecodeHigh * 0x100000000 + (timecodeLow >>> 0)
+
+                // Optionally display timecode in interactive mode (can be verbose)
+                // Uncomment for debugging:
+//                if (interactive && frameCount % 60 === 0) {
+//                    serial.println(`[TIMECODE] Frame ${frameCount}: ${(timecodeNs / 1000000000).toFixed(6)}s`)
+//                }
+            }
+            else if (packetType == 0x00) {
                 // Silently discard, faulty subtitle creation can cause this as 0x00 is used as an argument terminator
             } else {
                 println(`Unknown packet type: 0x${packetType.toString(16)}`)

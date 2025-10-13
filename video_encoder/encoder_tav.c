@@ -4068,12 +4068,19 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
+    // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
+
     // Write TAV header
     if (write_tav_header(enc) != 0) {
         fprintf(stderr, "Error: Failed to write TAV header\n");
         cleanup_encoder(enc);
         return 1;
     }
+
+    // Write extended header packet (before first timecode)
+    gettimeofday(&enc->start_time, NULL);
+    enc->extended_header_offset = write_extended_header(enc);
 
     // Write font ROM packets if provided
     if (enc->fontrom_lo_file) {
@@ -4087,8 +4094,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    gettimeofday(&enc->start_time, NULL);
-
     if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
@@ -4100,13 +4105,7 @@ int main(int argc, char *argv[]) {
     int true_frame_count = 0;
     int continue_encoding = 1;
 
-    KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
-    // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
-
-    // Write extended header packet (before first timecode)
-    enc->extended_header_offset = write_extended_header(enc);
-
-    // Write timecode packet for frame 0 (after extended header)
+    // Write timecode packet for frame 0 (before the first frame group)
     write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
 
     while (continue_encoding) {
