@@ -283,6 +283,7 @@ typedef struct tav_encoder_s {
     int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
     int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
+    int use_delta_encoding;
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -663,7 +664,8 @@ static void show_usage(const char *program_name) {
     printf("  -v, --verbose           Verbose output\n");
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode (-q %d -Q1,1,1 -w 0 --intra-only --no-perceptual-tuning --no-dead-zone --arate 384)\n", qtsize);
-    printf("  --intra-only            Disable delta encoding\n");
+    printf("  --intra-only            Disable delta and skip encoding\n");
+    printf("  --enable-delta            Enable delta encoding\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -736,6 +738,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->zstd_level = DEFAULT_ZSTD_LEVEL;  // Default Zstd compression level
     enc->progressive_mode = 1;  // Default to progressive mode
     enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
+    enc->use_delta_encoding = 0; // disable by default: no longer brings size benefit
 
     return enc;
 }
@@ -2010,9 +2013,13 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 if (enc->verbose && tile_x == 0 && tile_y == 0) {
                     printf("  → Using SKIP mode (copying from reference I-frame)\n");
                 }
-            } else {
+            } else if (enc->use_delta_encoding) {
                 mode = TAV_MODE_DELTA;  // P-frames use coefficient delta encoding
                 count_delta++;
+            } else {
+                // Delta encoding disabled: use INTRA mode (packet_type is already I-frame from main loop)
+                mode = TAV_MODE_INTRA;
+                count_intra++;
             }
 
             // Determine tile data size and allocate buffers
@@ -3756,6 +3763,7 @@ int main(int argc, char *argv[]) {
         {"interlace", no_argument, 0, 1015},
         {"interlaced", no_argument, 0, 1015},
 //        {"no-grain-synthesis", no_argument, 0, 1016},
+        {"enable-delta", no_argument, 0, 1017},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3907,6 +3915,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 1016: // --no-grain-synthesis
                 enc->grain_synthesis = 0;
+                break;
+            case 1017: // --enable-delta
+                enc->use_delta_encoding = 1;
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -4202,10 +4213,12 @@ int main(int argc, char *argv[]) {
         // Un-skip threshold is the negation of SKIP threshold: content must change to break the run
         int suppress_keyframe_timer = in_skip_run && is_still;
 
-        // Keyframe decision: intra-only mode, time-based (unless suppressed by SKIP run), or scene change
+        // Keyframe decision: intra-only mode, time-based (unless suppressed by SKIP run), scene change,
+        // or when delta encoding is disabled and skip mode cannot be used (pure INTRA frames)
         int is_keyframe = enc->intra_only ||
                          (is_time_keyframe && !suppress_keyframe_timer) ||
-                         is_scene_change;
+                         is_scene_change ||
+                         (!enc->use_delta_encoding && !can_use_skip);
 
         // Track if we'll use SKIP mode this frame (continues the SKIP run)
         enc->used_skip_mode_last_frame = can_use_skip && !is_keyframe;
