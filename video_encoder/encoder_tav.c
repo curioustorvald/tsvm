@@ -16,7 +16,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251014"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251015"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -101,7 +101,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 9
-int KEYFRAME_INTERVAL = 2; // refresh often because deltas in DWT are more visible than DCT
+#define GOP_SIZE 16
 
 // Audio/subtitle constants (reused from TEV)
 #define MP2_DEFAULT_PACKET_SIZE 1152
@@ -284,6 +284,7 @@ typedef struct tav_encoder_s {
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
     int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
     int use_delta_encoding;
+    int delta_haar_levels; // Number of Haar DWT levels to apply to delta coefficients (0 = disabled)
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -666,6 +667,7 @@ static void show_usage(const char *program_name) {
     printf("  --lossless              Lossless mode (-q %d -Q1,1,1 -w 0 --intra-only --no-perceptual-tuning --no-dead-zone --arate 384)\n", qtsize);
     printf("  --intra-only            Disable delta and skip encoding\n");
     printf("  --enable-delta            Enable delta encoding\n");
+    printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -739,6 +741,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->progressive_mode = 1;  // Default to progressive mode
     enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
     enc->use_delta_encoding = 0; // disable by default: no longer brings size benefit
+    enc->delta_haar_levels = 0;  // Default: no Haar DWT on deltas
 
     return enc;
 }
@@ -1082,6 +1085,30 @@ static void dwt_haar_forward_1d(float *data, int length) {
     free(temp);
 }
 
+// Haar wavelet inverse 1D transform
+// Reconstructs from averages (low-pass) and differences (high-pass)
+static void dwt_haar_inverse_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(length * sizeof(float));
+    int half = (length + 1) / 2;
+
+    // Inverse Haar transform: reconstruct from averages and differences
+    for (int i = 0; i < half; i++) {
+        if (2 * i + 1 < length) {
+            // Reconstruct adjacent pairs from average and difference
+            temp[2 * i] = data[i] + data[half + i];      // average + difference
+            temp[2 * i + 1] = data[i] - data[half + i];  // average - difference
+        } else {
+            // Handle odd length: last sample is just the low-pass value
+            temp[2 * i] = data[i];
+        }
+    }
+
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
 // Extract padded tile with margins for seamless DWT processing (correct implementation)
 static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
                                float *padded_y, float *padded_co, float *padded_cg) {
@@ -1351,6 +1378,50 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
 
             for (int y = 0; y < current_height; y++) {
                 tile_data[y * width + x] = temp_col[y];
+            }
+        }
+    }
+
+    free(temp_row);
+    free(temp_col);
+}
+
+// 2D Haar wavelet inverse transform for arbitrary dimensions
+// Used for delta coefficient reconstruction (inverse must be done in reverse order of levels)
+static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height, int levels) {
+    const int max_size = (width > height) ? width : height;
+    float *temp_row = malloc(max_size * sizeof(float));
+    float *temp_col = malloc(max_size * sizeof(float));
+
+    // Apply inverse transform in reverse order of levels
+    for (int level = levels - 1; level >= 0; level--) {
+        int current_width = width >> level;
+        int current_height = height >> level;
+        if (current_width < 1 || current_height < 1) continue;
+
+        // Column inverse transform (vertical) - done first to reverse forward order
+        for (int x = 0; x < current_width; x++) {
+            for (int y = 0; y < current_height; y++) {
+                temp_col[y] = tile_data[y * width + x];
+            }
+
+            dwt_haar_inverse_1d(temp_col, current_height);
+
+            for (int y = 0; y < current_height; y++) {
+                tile_data[y * width + x] = temp_col[y];
+            }
+        }
+
+        // Row inverse transform (horizontal) - done second to reverse forward order
+        for (int y = 0; y < current_height; y++) {
+            for (int x = 0; x < current_width; x++) {
+                temp_row[x] = tile_data[y * width + x];
+            }
+
+            dwt_haar_inverse_1d(temp_row, current_width);
+
+            for (int x = 0; x < current_width; x++) {
+                tile_data[y * width + x] = temp_row[x];
             }
         }
     }
@@ -1895,6 +1966,21 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             delta_cg[i] = tile_cg_data[i] - prev_cg[i];
         }
 
+        // Apply Haar DWT to deltas if enabled (improves compression of sparse deltas)
+        if (enc->delta_haar_levels > 0) {
+            int tile_width, tile_height;
+            if (enc->monoblock) {
+                tile_width = enc->width;
+                tile_height = enc->height;
+            } else {
+                tile_width = PADDED_TILE_SIZE_X;
+                tile_height = PADDED_TILE_SIZE_Y;
+            }
+            dwt_2d_forward_flexible(delta_y, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
+            dwt_2d_forward_flexible(delta_co, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
+            dwt_2d_forward_flexible(delta_cg, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
+        }
+
         // Quantise the deltas with uniform quantisation (perceptual tuning is for original coefficients, not deltas)
         quantise_dwt_coefficients(delta_y, quantised_y, tile_size, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
         quantise_dwt_coefficients(delta_co, quantised_co, tile_size, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
@@ -1906,9 +1992,31 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
             float dequant_delta_co = (float)quantised_co[i] * this_frame_qCo;
             float dequant_delta_cg = (float)quantised_cg[i] * this_frame_qCg;
 
-            prev_y[i] = prev_y[i] + dequant_delta_y;
-            prev_co[i] = prev_co[i] + dequant_delta_co;
-            prev_cg[i] = prev_cg[i] + dequant_delta_cg;
+            delta_y[i] = dequant_delta_y;
+            delta_co[i] = dequant_delta_co;
+            delta_cg[i] = dequant_delta_cg;
+        }
+
+        // Apply inverse Haar DWT to reconstructed deltas if enabled
+        if (enc->delta_haar_levels > 0) {
+            int tile_width, tile_height;
+            if (enc->monoblock) {
+                tile_width = enc->width;
+                tile_height = enc->height;
+            } else {
+                tile_width = PADDED_TILE_SIZE_X;
+                tile_height = PADDED_TILE_SIZE_Y;
+            }
+            dwt_2d_haar_inverse_flexible(delta_y, tile_width, tile_height, enc->delta_haar_levels);
+            dwt_2d_haar_inverse_flexible(delta_co, tile_width, tile_height, enc->delta_haar_levels);
+            dwt_2d_haar_inverse_flexible(delta_cg, tile_width, tile_height, enc->delta_haar_levels);
+        }
+
+        // Add reconstructed deltas to previous coefficients
+        for (int i = 0; i < tile_size; i++) {
+            prev_y[i] = prev_y[i] + delta_y[i];
+            prev_co[i] = prev_co[i] + delta_co[i];
+            prev_cg[i] = prev_cg[i] + delta_cg[i];
         }
 
         free(delta_y);
@@ -3764,6 +3872,7 @@ int main(int argc, char *argv[]) {
         {"interlaced", no_argument, 0, 1015},
 //        {"no-grain-synthesis", no_argument, 0, 1016},
         {"enable-delta", no_argument, 0, 1017},
+        {"delta-haar", required_argument, 0, 1018},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -3918,6 +4027,12 @@ int main(int argc, char *argv[]) {
                 break;
             case 1017: // --enable-delta
                 enc->use_delta_encoding = 1;
+                break;
+            case 1018: // --delta-haar
+                enc->delta_haar_levels = CLAMP(atoi(optarg), 0, 6);
+                if (enc->delta_haar_levels > 0) {
+                    enc->use_delta_encoding = 1;  // Auto-enable delta encoding
+                }
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -4079,9 +4194,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    KEYFRAME_INTERVAL = CLAMP(enc->output_fps >> 4, 2, 4); // refresh often because deltas in DWT are more visible than DCT
-    // how in the world GOP of 2 produces smallest file??? I refuse to believe it but that's the test result.
-
     // Write TAV header
     if (write_tav_header(enc) != 0) {
         fprintf(stderr, "Error: Failed to write TAV header\n");
@@ -4198,7 +4310,7 @@ int main(int argc, char *argv[]) {
 
         // Determine frame type
         int is_scene_change = detect_scene_change(enc);
-        int is_time_keyframe = (frame_count % KEYFRAME_INTERVAL) == 0;
+        int is_time_keyframe = (frame_count % GOP_SIZE) == 0;
 
         // Check if we can use SKIP mode (DWT coefficient-based detection)
         int is_still = detect_still_frame(enc);
@@ -4228,7 +4340,7 @@ int main(int argc, char *argv[]) {
             if (is_scene_change && !is_time_keyframe) {
                 printf("Frame %d: Scene change detected, inserting keyframe\n", frame_count);
             } else if (is_time_keyframe) {
-                printf("Frame %d: Time-based keyframe (interval: %d)\n", frame_count, KEYFRAME_INTERVAL);
+                printf("Frame %d: Time-based keyframe (interval: %d)\n", frame_count, GOP_SIZE);
             }
         }*/
 
