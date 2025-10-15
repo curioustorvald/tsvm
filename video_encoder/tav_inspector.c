@@ -1,4 +1,5 @@
 // TAV Packet Inspector - Comprehensive packet analysis tool for TAV files
+// to compile: gcc -o tav_inspector tav_inspector.c -lzstd -lm
 // Created by Claude on 2025-10-14
 #include <stdio.h>
 #include <stdint.h>
@@ -173,12 +174,12 @@ void print_subtitle_packet(FILE *fp, uint32_t size, int is_karaoke, int verbose)
             text[remaining] = '\0';
 
             // Truncate long text for display
-            if (remaining > 60) {
+            /*if (remaining > 60) {
                 text[57] = '.';
                 text[58] = '.';
                 text[59] = '.';
                 text[60] = '\0';
-            }
+            }*/
 
             // Clean up newlines and control characters for display
             for (int i = 0; text[i]; i++) {
@@ -221,8 +222,19 @@ void print_extended_header(FILE *fp, int verbose) {
         }
 
         if (verbose) {
-            printf("    %.4s (type=0x%02X): ", key, value_type);
+            const char *value_type_str = "Unknown";
+            switch (value_type) {
+                case 0x00: value_type_str = "Int16"; break;
+                case 0x01: value_type_str = "Int24"; break;
+                case 0x02: value_type_str = "Int32"; break;
+                case 0x03: value_type_str = "Int48"; break;
+                case 0x04: value_type_str = "Int64"; break;
+                case 0x10: value_type_str = "Bytes"; break;
+            }
+
+            printf("    %.4s (type: %s (0x%02X)): ", key, value_type_str, value_type);
         }
+
 
         if (value_type == 0x04) {  // Uint64
             uint64_t value;
@@ -261,12 +273,12 @@ void print_extended_header(FILE *fp, int verbose) {
                 data[length] = '\0';
 
                 // Truncate long strings
-                if (length > 60) {
+                /*if (length > 60) {
                     data[57] = '.';
                     data[58] = '.';
                     data[59] = '.';
                     data[60] = '\0';
-                }
+                }*/
                 printf("\"%s\"", data);
             }
             free(data);
@@ -274,25 +286,33 @@ void print_extended_header(FILE *fp, int verbose) {
             if (verbose) printf("Unknown type");
         }
 
-        if (verbose) {
+        if (verbose && i < num_pairs - 1) {
             printf("\n");
         }
     }
 }
 
-// Read frame mode from compressed P-frame data
-// Returns: 0=SKIP, 1=INTRA, 2=DELTA, -1=error
-int get_frame_mode(FILE *fp, uint32_t compressed_size) {
+// Frame info structure
+typedef struct {
+    int mode;              // 0=SKIP, 1=INTRA, 2=DELTA, -1=error
+    uint8_t quantiser;     // Quantiser override (0xFF = default)
+} frame_info_t;
+
+// Read frame mode and quantiser from compressed frame data
+// Works for both I-frames and P-frames
+frame_info_t get_frame_info(FILE *fp, uint32_t compressed_size) {
+    frame_info_t info = {-1, 0xFF};
+
     // Read compressed data
     uint8_t *compressed_data = malloc(compressed_size);
     if (!compressed_data) {
         fseek(fp, compressed_size, SEEK_CUR);
-        return -1;
+        return info;
     }
 
     if (fread(compressed_data, 1, compressed_size, fp) != compressed_size) {
         free(compressed_data);
-        return -1;
+        return info;
     }
 
     // Allocate buffer for decompression
@@ -301,23 +321,28 @@ int get_frame_mode(FILE *fp, uint32_t compressed_size) {
     uint8_t *decompressed_data = malloc(decompress_size);
     if (!decompressed_data) {
         free(compressed_data);
-        return -1;
+        return info;
     }
 
     // Decompress
     size_t actual_size = ZSTD_decompress(decompressed_data, decompress_size, compressed_data, compressed_size);
     free(compressed_data);
 
-    if (ZSTD_isError(actual_size) || actual_size < 1) {
+    if (ZSTD_isError(actual_size) || actual_size < 2) {
         free(decompressed_data);
-        return -1;
+        return info;
     }
 
     // Read mode byte (first byte of decompressed data)
-    uint8_t mode_byte = decompressed_data[0];
-    free(decompressed_data);
+    info.mode = decompressed_data[0];
 
-    return mode_byte;
+    // Read quantiser override (second byte) if mode is not SKIP
+    if (info.mode != FRAME_MODE_SKIP && actual_size >= 2) {
+        info.quantiser = decompressed_data[1];
+    }
+
+    free(decompressed_data);
+    return info;
 }
 
 void print_help(const char *program_name) {
@@ -332,7 +357,6 @@ void print_help(const char *program_name) {
     printf("  -m, --metadata     Show metadata packets only\n");
     printf("  -x, --extended     Show extended header only\n");
     printf("  -S, --sync         Show sync packets\n");
-    printf("  -V, --verbose      Verbose output with packet details\n");
     printf("  --summary          Show summary statistics only\n");
     printf("  -h, --help         Show this help\n\n");
     printf("Examples:\n");
@@ -346,6 +370,9 @@ int main(int argc, char *argv[]) {
     display_options_t opts = {0};
     opts.show_all = 1;  // Default: show all
 
+    // Track absolute frame number
+    int current_frame = 0;
+
     static struct option long_options[] = {
         {"all", no_argument, 0, 'a'},
         {"video", no_argument, 0, 'v'},
@@ -355,7 +382,6 @@ int main(int argc, char *argv[]) {
         {"metadata", no_argument, 0, 'm'},
         {"extended", no_argument, 0, 'x'},
         {"sync", no_argument, 0, 'S'},
-        {"verbose", no_argument, 0, 'V'},
         {"summary", no_argument, 0, 1000},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -372,7 +398,6 @@ int main(int argc, char *argv[]) {
             case 'm': opts.show_metadata = 1; opts.show_all = 0; break;
             case 'x': opts.show_extended = 1; opts.show_all = 0; break;
             case 'S': opts.show_sync = 1; opts.show_all = 0; break;
-            case 'V': opts.verbose = 1; break;
             case 1000: opts.summary_only = 1; break;
             case 'h':
                 print_help(argv[0]);
@@ -382,6 +407,8 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
     }
+
+    opts.verbose = 1;
 
     if (optind >= argc) {
         fprintf(stderr, "Error: No input file specified\n\n");
@@ -452,7 +479,7 @@ int main(int argc, char *argv[]) {
 
                 if (!opts.summary_only && display) {
                     double timecode_sec = timecode_ns / 1000000000.0;
-                    printf(" - %.6f seconds", timecode_sec);
+                    printf(" - %.6f seconds (Frame %d)", timecode_sec, current_frame);
                 }
                 break;
             }
@@ -486,12 +513,12 @@ int main(int argc, char *argv[]) {
                     printf(" - GOP size=%u, data size=%u bytes (%.2f bytes/frame)",
                            gop_size, size, (double)size / gop_size);
 
-                    // Always show motion vectors for GOP packets
+                    // Always show motion vectors for GOP packets with absolute frame numbers
                     if (gop_size > 0) {
                         printf("\n    Motion vectors (quarter-pixel):");
                         for (int i = 0; i < gop_size; i++) {
-                            printf("\n      Frame %d: (%.2f, %.2f) px",
-                                   i, motion_x[i] / 4.0, motion_y[i] / 4.0);
+                            printf("\n      Frame %d (#%d): (%.2f, %.2f) px",
+                                   current_frame + i, i, motion_x[i] / 4.0, motion_y[i] / 4.0);
                         }
                     }
                 }
@@ -508,6 +535,7 @@ int main(int argc, char *argv[]) {
                 if (fread(&frame_count, 1, 1, fp) != 1) break;
 
                 stats.gop_sync_count++;
+                current_frame += frame_count;  // Advance frame counter
 
                 if (!opts.summary_only && display) {
                     printf(" - %u frames decoded from GOP block", frame_count);
@@ -537,36 +565,46 @@ int main(int argc, char *argv[]) {
                 if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
                 stats.total_video_bytes += size;
 
-                // Determine frame mode for P-frames
-                int frame_mode = -1;
+                // Get frame info (mode and quantiser) for both I-frames and P-frames
+                frame_info_t frame_info = get_frame_info(fp, size);
+
                 if (packet_type == TAV_PACKET_PFRAME ||
                     (packet_type >= 0x71 && packet_type <= 0x7F && (packet_type & 1))) {
                     // This is a P-frame (main or multiplexed)
-                    frame_mode = get_frame_mode(fp, size);
-
                     if (packet_type == TAV_PACKET_PFRAME) {
                         stats.pframe_count++;
-                        if (frame_mode == FRAME_MODE_INTRA) stats.pframe_intra_count++;
-                        else if (frame_mode == FRAME_MODE_DELTA) stats.pframe_delta_count++;
-                        else if (frame_mode == FRAME_MODE_SKIP) stats.pframe_skip_count++;
+                        if (frame_info.mode == FRAME_MODE_INTRA) stats.pframe_intra_count++;
+                        else if (frame_info.mode == FRAME_MODE_DELTA) stats.pframe_delta_count++;
+                        else if (frame_info.mode == FRAME_MODE_SKIP) stats.pframe_skip_count++;
+                        current_frame++;  // Increment for P-frame
                     } else {
                         stats.mux_video_count++;
                     }
                 } else {
                     // I-frame
-                    if (packet_type == TAV_PACKET_IFRAME) stats.iframe_count++;
-                    else stats.mux_video_count++;
-                    fseek(fp, size, SEEK_CUR);
+                    if (packet_type == TAV_PACKET_IFRAME) {
+                        stats.iframe_count++;
+                        current_frame++;  // Increment for I-frame
+                    } else {
+                        stats.mux_video_count++;
+                    }
                 }
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes", size);
 
-                    // Show frame mode for P-frames
-                    if (frame_mode >= 0) {
-                        if (frame_mode == FRAME_MODE_SKIP) printf(" [SKIP]");
-                        else if (frame_mode == FRAME_MODE_DELTA) printf(" [DELTA]");
-                        else if (frame_mode == FRAME_MODE_INTRA) printf(" [INTRA]");
+                    // Show frame mode (for both I-frames and P-frames)
+                    if (frame_info.mode >= 0) {
+                        if (frame_info.mode == FRAME_MODE_SKIP) printf(" [SKIP]");
+                        else if (frame_info.mode == FRAME_MODE_DELTA) printf(" [DELTA]");
+                        else if (frame_info.mode == FRAME_MODE_INTRA) printf(" [INTRA]");
+
+                        // Show quantiser override if not default
+                        if (frame_info.mode != FRAME_MODE_SKIP) {
+                            if (frame_info.quantiser != 0xFF) {
+                                printf(" [Q=%u]", frame_info.quantiser);
+                            }
+                        }
                     }
 
                     if (packet_type >= 0x70 && packet_type <= 0x7F) {
