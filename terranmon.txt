@@ -1104,6 +1104,11 @@ Note: GOP Sync packets have no payload size field (fixed 2-byte packet).
             0x00 = SKIP (just use frame data from previous frame)
             0x01 = INTRA (DWT-coded)
             0x02 = DELTA (DWT delta)
+            - 0x02: DWT level 1
+            - 0x12: DWT level 2
+            - 0x22: DWT level 3
+              ...
+            - 0xF2: DWT Level 16
     uint8  Quantiser override Y  (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
     uint8  Quantiser override Co (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)
     uint8  Quantiser override Cg (uses exponential numeric system; stored with index bias of 1 (127->252, 255->4032); use 0 to disable overriding)

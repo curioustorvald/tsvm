@@ -104,7 +104,8 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 9
-#define GOP_SIZE /*1*/4
+#define GOP_SIZE 8
+#define TEMPORAL_DECOMP_LEVEL 2
 
 // Audio/subtitle constants (reused from TEV)
 #define MP2_DEFAULT_PACKET_SIZE 1152
@@ -778,13 +779,13 @@ static tav_encoder_t* create_encoder(void) {
     enc->progressive_mode = 1;  // Default to progressive mode
     enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
     enc->use_delta_encoding = 0;
-    enc->delta_haar_levels = 2;
+    enc->delta_haar_levels = TEMPORAL_DECOMP_LEVEL;
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 0;  // Default: disabled for backward compatibility. Mutually exclusive with use_delta_encoding
     enc->gop_capacity = GOP_SIZE;  // 16 frames
     enc->gop_frame_count = 0;
-    enc->temporal_decomp_levels = 2;  // 2 levels of temporal DWT (16 -> 4x4 subbands)
+    enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 2 levels of temporal DWT (16 -> 4x4 subbands)
     enc->gop_rgb_frames = NULL;
     enc->gop_y_frames = NULL;
     enc->gop_co_frames = NULL;
@@ -2985,8 +2986,14 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                                   uint8_t mode, uint8_t *buffer) {
     size_t offset = 0;
 
-    // Write tile header
-    buffer[offset++] = mode;
+    // Write tile header with Haar level encoded in upper nibble for DELTA mode
+    // Mode encoding: base_mode | ((haar_level - 1) << 4)
+    // - level 1: 0x02, level 2: 0x12, level 3: 0x22
+    uint8_t encoded_mode = mode;
+    if (mode == TAV_MODE_DELTA && enc->delta_haar_levels >= 1) {
+        encoded_mode = mode | ((enc->delta_haar_levels - 1) << 4);
+    }
+    buffer[offset++] = encoded_mode;
 
     // Use adjusted quantiser from bitrate control, or base quantiser if not in bitrate mode
     int qY_override = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;

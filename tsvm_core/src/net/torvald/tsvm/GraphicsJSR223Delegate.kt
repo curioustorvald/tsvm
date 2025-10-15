@@ -4835,10 +4835,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 for (tileX in 0 until tilesX) {
                     
                     // Read tile header (4 bytes: mode + qY + qCo + qCg)
-                    val mode = vm.peek(readPtr++).toUint()
+                    val modeRaw = vm.peek(readPtr++).toUint()
                     val qY = vm.peek(readPtr++).toUint().let { if (it == 0) qYGlobal else TAV_QLUT[it - 1] }
                     val qCo = vm.peek(readPtr++).toUint().let { if (it == 0) qCoGlobal else TAV_QLUT[it - 1] }
                     val qCg = vm.peek(readPtr++).toUint().let { if (it == 0) qCgGlobal else TAV_QLUT[it - 1] }
+
+                    // Extract base mode and Haar level from mode byte
+                    // Mode encoding: base_mode | ((haar_level - 1) << 4)
+                    // Examples: 0x02 = DELTA (no Haar), 0x12 = DELTA+Haar2, 0x22 = DELTA+Haar3
+                    val baseMode = modeRaw and 0x0F
+                    val haarNibble = (modeRaw shr 4)
+                    val haarLevel = if (baseMode == 0x02 && haarNibble > 0) (haarNibble + 1) else 0
 
                     dbgOut["qY"] = qY
                     dbgOut["qCo"] = qCo
@@ -4846,13 +4853,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     dbgOut["frameMode"] = ""
 
                     // debug print: raw decompressed bytes
-                    /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[mode]}): ")
+                    /*print("TAV Decode raw bytes (Frame $frameCount, mode: ${arrayOf("SKIP", "INTRA", "DELTA")[baseMode]}): ")
                     for (i in 0 until 32) {
                         print("${vm.peek(blockDataPtr + i).toUint().toString(16).uppercase().padStart(2, '0')} ")
                     }
                     println("...")*/
 
-                    when (mode) {
+                    when (baseMode) {
                         0x00 -> { // TAV_MODE_SKIP
                             // Copy 280x224 tile from previous frame to current frame
                             tavCopyTileRGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
@@ -4865,11 +4872,11 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                                                           waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock, frameCount)
                             dbgOut["frameMode"] = " "
                         }
-                        0x02 -> { // TAV_MODE_DELTA
+                        0x02 -> { // TAV_MODE_DELTA (with optional Haar wavelet)
                             // Coefficient delta encoding for efficient P-frames
                             readPtr = tavDecodeDeltaTileRGB(readPtr, channelLayout, tileX, tileY, currentRGBAddr,
                                                       width, height, qY, qCo, qCg,
-                                                      decompLevels, tavVersion, isMonoblock, frameCount)
+                                                      waveletFilter, decompLevels, tavVersion, isMonoblock, frameCount, haarLevel)
                             dbgOut["frameMode"] = " "
                         }
                     }
@@ -5487,7 +5494,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun tavDecodeDeltaTileRGB(readPtr: Long, channelLayout: Int, tileX: Int, tileY: Int, currentRGBAddr: Long,
                                       width: Int, height: Int, qY: Int, qCo: Int, qCg: Int,
-                                      decompLevels: Int, tavVersion: Int, isMonoblock: Boolean = false, frameCount: Int = 0): Long {
+                                      spatialFilter: Int, decompLevels: Int, tavVersion: Int, isMonoblock: Boolean = false, frameCount: Int = 0, haarLevel: Int = 0): Long {
         
         val tileIdx = if (isMonoblock) {
             0  // Single tile index for monoblock
@@ -5598,15 +5605,45 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // TEMPORARILY DISABLED: Delta-specific perceptual reconstruction
         // Use uniform delta reconstruction (same as original implementation)
-        for (i in 0 until coeffCount) {
-            currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
-            currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
-            currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
+
+        // Determine tile dimensions for DWT operations
+        val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
+        val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
+
+        // Apply inverse Haar DWT to deltas if Haar encoding was used
+        if (haarLevel > 0) {
+            // Debug: Check if previous coefficients exist
+            if (frameCount in 0..5) {
+                println("[HAAR-DELTA] Frame $frameCount, Tile $tileIdx: haarLevel=$haarLevel, prevY exists=${tavPreviousCoeffsY?.contains(tileIdx) ?: false}")
+            }
+
+            // Dequantize deltas to float arrays
+            val deltaYFloat = FloatArray(coeffCount) { deltaY[it].toFloat() * qY }
+            val deltaCoFloat = FloatArray(coeffCount) { deltaCo[it].toFloat() * qCo }
+            val deltaCgFloat = FloatArray(coeffCount) { deltaCg[it].toFloat() * qCg }
+
+            // Apply inverse Haar DWT (same as encoder: Haar wavelet filter = 255)
+            tavApplyDWTInverseMultiLevel(deltaYFloat, tileWidth, tileHeight, haarLevel, 255, TavNullFilter)
+            tavApplyDWTInverseMultiLevel(deltaCoFloat, tileWidth, tileHeight, haarLevel, 255, TavNullFilter)
+            tavApplyDWTInverseMultiLevel(deltaCgFloat, tileWidth, tileHeight, haarLevel, 255, TavNullFilter)
+
+            // Add transformed deltas to previous coefficients
+            for (i in 0 until coeffCount) {
+                currentY[i] = prevY[i] + deltaYFloat[i]
+                currentCo[i] = prevCo[i] + deltaCoFloat[i]
+                currentCg[i] = prevCg[i] + deltaCgFloat[i]
+            }
+        } else {
+            throw Error()
+            // No Haar transform: direct dequantization
+            for (i in 0 until coeffCount) {
+                currentY[i] = prevY[i] + (deltaY[i].toFloat() * qY)
+                currentCo[i] = prevCo[i] + (deltaCo[i].toFloat() * qCo)
+                currentCg[i] = prevCg[i] + (deltaCg[i].toFloat() * qCg)
+            }
         }
 
         // Remove grain synthesis from Y channel (must happen after dequantization, before inverse DWT)
-        val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
-        val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
         val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
         // Delta frames use uniform quantization for the deltas themselves, so no perceptual weights
         removeGrainSynthesisDecoder(currentY, tileWidth, tileHeight, decompLevels, frameCount, qY.toFloat(), subbands)
@@ -5628,9 +5665,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         tavPreviousCoeffsCg!![tileIdx] = currentCg.clone()
         
         // Apply inverse DWT
-        tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, 255, TavSharpenLuma)
-        tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, 255, TavNullFilter)
-        tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, 255, TavNullFilter)
+        tavApplyDWTInverseMultiLevel(currentY, tileWidth, tileHeight, decompLevels, spatialFilter, TavSharpenLuma)
+        tavApplyDWTInverseMultiLevel(currentCo, tileWidth, tileHeight, decompLevels, spatialFilter, TavNullFilter)
+        tavApplyDWTInverseMultiLevel(currentCg, tileWidth, tileHeight, decompLevels, spatialFilter, TavNullFilter)
 
         // Debug: Check coefficient values after inverse DWT
         if (tavDebugCurrentFrameNumber == tavDebugFrameTarget) {
