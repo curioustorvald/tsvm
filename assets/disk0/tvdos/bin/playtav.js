@@ -25,9 +25,11 @@ const TAV_MODE_MOTION = 0x03
 // Packet types (same as TEV)
 const TAV_PACKET_IFRAME = 0x10
 const TAV_PACKET_PFRAME = 0x11
+const TAV_PACKET_GOP_UNIFIED = 0x12  // Unified 3D DWT GOP (temporal + spatial)
 const TAV_PACKET_AUDIO_MP2 = 0x20
 const TAV_PACKET_SUBTITLE = 0x30
 const TAV_PACKET_EXTENDED_HDR = 0xEF
+const TAV_PACKET_GOP_SYNC = 0xFC  // GOP sync (N frames decoded from GOP block)
 const TAV_PACKET_TIMECODE = 0xFD
 const TAV_PACKET_SYNC_NTSC = 0xFE
 const TAV_PACKET_SYNC = 0xFF
@@ -988,6 +990,159 @@ try {
                     console.log(`Frame ${frameCount}: Decompress=${decompressTime.toFixed(1)}ms, Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms`)
                 }
 
+            }
+            else if (packetType === TAV_PACKET_GOP_UNIFIED) {
+                // GOP Unified packet (temporal 3D DWT)
+
+                // Read GOP size (number of frames in this GOP, 1-16)
+                const gopSize = seqread.readOneByte()
+
+                // Read motion vectors (quarter-pixel units, int16)
+                // Encoder writes ALL motion vectors including frame 0
+                let motionX = new Array(gopSize)
+                let motionY = new Array(gopSize)
+
+                for (let i = 0; i < gopSize; i++) {
+                    motionX[i] = seqread.readShort()  // Signed int16
+                    motionY[i] = seqread.readShort()
+                }
+
+                // Read compressed data size
+                const compressedSize = seqread.readInt()
+
+                // Read compressed data
+                let compressedPtr = seqread.readBytes(compressedSize)
+                updateDataRateBin(compressedSize)
+
+                // Check if GOP fits in VM memory
+                const gopMemoryNeeded = gopSize * FRAME_SIZE
+                if (gopMemoryNeeded > 8 * 1024 * 1024) {
+                    throw new Error(`GOP too large: ${gopSize} frames needs ${(gopMemoryNeeded / 1024 / 1024).toFixed(2)}MB, but VM has only 8MB. Max GOP size: 11 frames.`)
+                }
+
+                // Allocate GOP buffers outside try block so finally can free them
+                let gopRGBBuffers = new Array(gopSize)
+                for (let i = 0; i < gopSize; i++) {
+                    gopRGBBuffers[i] = sys.malloc(FRAME_SIZE)
+                    if (gopRGBBuffers[i] === 0) {
+                        // Malloc failed - free what we allocated and bail out
+                        for (let j = 0; j < i; j++) {
+                            sys.free(gopRGBBuffers[j])
+                        }
+                        throw new Error(`Failed to allocate GOP buffer ${i}/${gopSize}. Out of memory.`)
+                    }
+                }
+
+                try {
+                    let decodeStart = sys.nanoTime()
+
+                    // Call GOP decoder
+                    const framesDecoded = graphics.tavDecodeGopUnified(
+                        compressedPtr,
+                        compressedSize,
+                        gopSize,
+                        motionX,
+                        motionY,
+                        gopRGBBuffers,  // Array of output buffer addresses
+                        header.width,
+                        header.height,
+                        header.qualityLevel,
+                        QLUT[header.qualityY],
+                        QLUT[header.qualityCo],
+                        QLUT[header.qualityCg],
+                        header.channelLayout,
+                        header.waveletFilter,
+                        header.decompLevels,
+                        2  // temporalLevels (hardcoded for now, could be in header)
+                    )
+
+                    decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
+                    decompressTime = 0  // Included in decode time
+
+                    // Display each decoded frame
+                    for (let i = 0; i < framesDecoded; i++) {
+                        let uploadStart = sys.nanoTime()
+
+                        // Upload GOP frame directly (no copy needed - already in ARGB format)
+                        graphics.uploadRGBToFramebuffer(gopRGBBuffers[i], header.width, header.height, trueFrameCount + i, false)
+                        uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
+
+                        // Apply bias lighting (only for first/last frame to save CPU)
+                        let biasStart = sys.nanoTime()
+                        if (i === 0 || i === framesDecoded - 1) {
+                            setBiasLighting()
+                        }
+                        biasTime = (sys.nanoTime() - biasStart) / 1000000.0
+
+                        // Fire audio on first frame
+                        if (!audioFired && (frameCount > 0 || i > 0)) {
+                            audio.play(0)
+                            audioFired = true
+                        }
+
+                        // Wait for frame timing
+                        akku -= FRAME_TIME
+                        while (akku < 0 && !stopPlay && !paused) {
+                            let t = sys.nanoTime()
+                            // Busy wait for accurate timing
+                            akku += (sys.nanoTime() - t) / 1000000000.0
+                        }
+
+                        // Swap ping-pong buffers for P-frame reference
+                        let temp = CURRENT_RGB_ADDR
+                        CURRENT_RGB_ADDR = PREV_RGB_ADDR
+                        PREV_RGB_ADDR = temp
+
+                        // Log performance for first frame of GOP
+                        if (i === 0 && (frameCount % 60 == 0 || frameCount == 0)) {
+                            let totalTime = decompressTime + decodeTime + uploadTime + biasTime
+                            console.log(`GOP Frame ${frameCount}: Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms (${gopSize} frames)`)
+                        }
+                    }
+
+                    // Note: frameCount and trueFrameCount will be incremented by GOP_SYNC packet
+                    // Note: GOP buffers will be freed in finally block
+
+                } catch (e) {
+                    console.log(`GOP Frame ${frameCount}: decode failed: ${e}`)
+                    // Try to get more details from the exception
+                    if (e.stack) {
+                        console.log(`Stack trace: ${e.stack}`)
+                    }
+                    if (e.javaException) {
+                        console.log(`Java exception: ${e.javaException}`)
+                        if (e.javaException.printStackTrace) {
+                            serial.println("Java stack trace:")
+                            e.javaException.printStackTrace()
+                        }
+                    }
+                    // Print exception properties
+                    try {
+                        const props = Object.keys(e)
+                        if (props.length > 0) {
+                            console.log(`Exception properties: ${props.join(', ')}`)
+                            e.printStackTrace()
+                            let ee = e.getStackTrace()
+                            console.log(ee.length)
+                            console.log(ee.join('\n'))
+                        }
+                    } catch (ex) {}
+                } finally {
+                    // Always free GOP buffers even on error
+                    for (let i = 0; i < gopSize; i++) {
+                        sys.free(gopRGBBuffers[i])
+                    }
+                    sys.free(compressedPtr)
+                }
+            }
+            else if (packetType === TAV_PACKET_GOP_SYNC) {
+                // GOP sync packet - increment frame counters by number of frames decoded
+                const framesInGOP = seqread.readOneByte()
+
+                frameCount += framesInGOP
+                trueFrameCount += framesInGOP
+
+                // Note: Buffer swapping already handled in GOP_UNIFIED handler
             }
             else if (packetType === TAV_PACKET_AUDIO_MP2) {
                 // MP2 Audio packet

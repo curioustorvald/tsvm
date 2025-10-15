@@ -104,7 +104,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 9
-#define GOP_SIZE 16
+#define GOP_SIZE /*1*/4
 
 // Audio/subtitle constants (reused from TEV)
 #define MP2_DEFAULT_PACKET_SIZE 1152
@@ -1456,8 +1456,8 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
                                         int spatial_size,
                                         int base_quantiser,
                                         int is_chroma) {
-    const float BETA = 0.8f;  // Temporal scaling exponent
-    const float TEMPORAL_BASE_SCALE = 0.7f;  // Temporal coefficients are typically sparser
+    const float BETA = 0.8f;  // Temporal scaling exponent (aggressive for temporal high-pass)
+    const float TEMPORAL_BASE_SCALE = 1.0f;  // Don't reduce tLL quantization (same as intra)
 
     // Process each temporal subband independently (separable approach)
     for (int t = 0; t < num_frames; t++) {
@@ -1468,11 +1468,11 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         int temporal_level = get_temporal_subband_level(t, num_frames, enc->temporal_decomp_levels);
 
         // Step 2: Compute temporal base quantizer using exponential scaling
-        // Formula: tH_base = Qbase_t * 0.7 * 2^(0.8 * level)
+        // Formula: tH_base = Qbase_t * 1.0 * 2^(2.0 * level)
         // Example with Qbase_t=16:
-        //   - Level 0 (tLL): 16 * 0.7 * 2^0 = 11.2
-        //   - Level 1 (tLH): 16 * 0.7 * 2^0.8 = 19.5
-        //   - Level 2 (tHH): 16 * 0.7 * 2^1.6 = 33.8
+        //   - Level 0 (tLL): 16 * 1.0 * 2^0 = 16 (same as intra-only)
+        //   - Level 1 (tH):  16 * 1.0 * 2^2.0 = 64 (4× base, aggressive)
+        //   - Level 2 (tHH): 16 * 1.0 * 2^4.0 = 256 → clamped to 255 (very aggressive)
         float temporal_scale = TEMPORAL_BASE_SCALE * powf(2.0f, BETA * temporal_level);
         float temporal_quantiser = base_quantiser * temporal_scale;
 
@@ -1620,6 +1620,40 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         memcpy(gop_y_coeffs[i], enc->gop_y_frames[i], num_pixels * sizeof(float));
         memcpy(gop_co_coeffs[i], enc->gop_co_frames[i], num_pixels * sizeof(float));
         memcpy(gop_cg_coeffs[i], enc->gop_cg_frames[i], num_pixels * sizeof(float));
+    }
+
+    // Step 0.5: Apply motion compensation to align frames before temporal DWT
+    // This uses the computed translation vectors to align each frame to the previous one
+    for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
+        float *aligned_y = malloc(num_pixels * sizeof(float));
+        float *aligned_co = malloc(num_pixels * sizeof(float));
+        float *aligned_cg = malloc(num_pixels * sizeof(float));
+
+        if (!aligned_y || !aligned_co || !aligned_cg) {
+            fprintf(stderr, "Error: Failed to allocate motion compensation buffers\n");
+            // Cleanup and skip motion compensation for this GOP
+            free(aligned_y);
+            free(aligned_co);
+            free(aligned_cg);
+            break;
+        }
+
+        // Apply translation to align this frame
+        apply_translation(gop_y_coeffs[i], enc->width, enc->height,
+                         enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_y);
+        apply_translation(gop_co_coeffs[i], enc->width, enc->height,
+                         enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_co);
+        apply_translation(gop_cg_coeffs[i], enc->width, enc->height,
+                         enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_cg);
+
+        // Copy aligned frames back
+        memcpy(gop_y_coeffs[i], aligned_y, num_pixels * sizeof(float));
+        memcpy(gop_co_coeffs[i], aligned_co, num_pixels * sizeof(float));
+        memcpy(gop_cg_coeffs[i], aligned_cg, num_pixels * sizeof(float));
+
+        free(aligned_y);
+        free(aligned_co);
+        free(aligned_cg);
     }
 
     // Step 1: Apply 3D DWT (temporal + spatial) to each channel

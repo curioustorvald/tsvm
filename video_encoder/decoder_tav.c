@@ -15,11 +15,15 @@
 #define TAV_MODE_SKIP      0x00
 #define TAV_MODE_INTRA     0x01
 #define TAV_MODE_DELTA     0x02
-#define TAV_PACKET_IFRAME      0x10
-#define TAV_PACKET_PFRAME      0x11
-#define TAV_PACKET_AUDIO_MP2   0x20
-#define TAV_PACKET_SUBTITLE    0x30
-#define TAV_PACKET_SYNC        0xFF
+#define TAV_PACKET_IFRAME         0x10
+#define TAV_PACKET_PFRAME         0x11
+#define TAV_PACKET_GOP_UNIFIED    0x12  // Unified 3D DWT GOP
+#define TAV_PACKET_AUDIO_MP2      0x20
+#define TAV_PACKET_SUBTITLE       0x30
+#define TAV_PACKET_EXTENDED_HDR   0xEF
+#define TAV_PACKET_GOP_SYNC       0xFC  // GOP sync (N frames decoded)
+#define TAV_PACKET_TIMECODE       0xFD
+#define TAV_PACKET_SYNC           0xFF
 
 // Channel layout constants (bit-field design)
 #define CHANNEL_LAYOUT_YCOCG     0  // Y-Co-Cg (000: no alpha, has chroma, has luma)
