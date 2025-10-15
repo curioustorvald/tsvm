@@ -189,6 +189,9 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
   ./encoder_tav -i input.mp4 -q 0 -o output.tav         # Lowest quality, smallest file
   ./encoder_tav -i input.mp4 -q 5 -o output.tav         # Highest quality, largest file
 
+  # Temporal 3D DWT (GOP-based encoding)
+  ./encoder_tav -i input.mp4 --temporal-dwt -q 2 -o output.tav
+
   # Playback
   playtav output.tav
   ```
@@ -264,3 +267,49 @@ Concatenated Maps Layout:
 - **Compression improvement**: 16.4% from significance maps + 1.6% from concatenated layout
 - **Real-world impact**: 559 bytes saved per frame (5.59 MB per 10k frames)
 - **Cross-channel benefit**: Concatenated maps allow Zstd to exploit similarity between significance patterns
+
+#### TAV Temporal 3D DWT (GOP Unified Encoding)
+
+Implemented on 2025-10-15 for improved temporal compression through group-of-pictures (GOP) encoding:
+
+**Key Features**:
+- **3D DWT**: Applies DWT in both spatial (2D) and temporal (1D) dimensions for optimal spacetime compression
+- **Unified GOP Preprocessing**: Single significance map for all frames and channels in a GOP (width×height×N_frames×3_channels)
+- **FFT-based Phase Correlation**: Uses FFTW3 library for accurate global motion estimation with quarter-pixel precision
+- **GOP Size**: Typically 16 frames (configurable), with scene change detection for adaptive GOPs
+- **Single-frame Fallback**: GOP size of 1 automatically uses traditional I-frame encoding
+
+**Packet Format**:
+- **0x12 (GOP_UNIFIED)**: `[gop_size][motion_vectors...][compressed_size][compressed_data]`
+  - Motion vectors stored as int16_t in quarter-pixel units for all frames in GOP
+  - Unified significance map for entire GOP block enables cross-frame compression
+- **0xFC (GOP_SYNC)**: `[frame_count]` - Indicates N frames were decoded from GOP block
+- **Timecode Emission**: One timecode packet per GOP (not per frame)
+
+**Technical Implementation**:
+```c
+// Unified preprocessing structure (encoder_tav.c:2371-2509)
+[All_Y_maps][All_Co_maps][All_Cg_maps][All_Y_values][All_Co_values][All_Cg_values]
+// Where maps are grouped by channel across all GOP frames for optimal Zstd compression
+
+// Phase correlation using FFT (encoder_tav.c:1246-1383)
+// - FFTW3 forward FFT on grayscale frames
+// - Cross-power spectrum computation
+// - Inverse FFT gives correlation peak at (dx, dy)
+// - Parabolic interpolation for quarter-pixel refinement
+```
+
+**Usage**:
+```bash
+# Enable temporal 3D DWT
+./encoder_tav -i input.mp4 --temporal-dwt -q 2 -o output.tav
+
+# Inspect GOP structure
+./tav_inspector output.tav -v
+```
+
+**Compression Benefits**:
+- **Temporal Coherence**: Exploits similarity across consecutive frames
+- **Unified Compression**: Zstd compresses entire GOP as single block, finding patterns across time
+- **Motion Compensation**: FFT-based phase correlation provides accurate global motion estimation
+- **Adaptive GOPs**: Scene change detection ensures optimal GOP boundaries

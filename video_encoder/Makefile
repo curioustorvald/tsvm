@@ -18,7 +18,7 @@ tev: encoder_tev.c
 
 tav: encoder_tav.c
 	rm -f encoder_tav
-	$(CC) $(CFLAGS) -o encoder_tav $< $(LIBS)
+	$(CC) $(CFLAGS) -o encoder_tav $< $(LIBS) -lfftw3f
 
 tav_decoder: decoder_tav.c
 	rm -f decoder_tav

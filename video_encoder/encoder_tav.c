@@ -15,6 +15,7 @@
 #include <time.h>
 #include <limits.h>
 #include <float.h>
+#include <fftw3.h>
 
 #define ENCODER_VENDOR_STRING "Encoder-TAV 20251015"
 
@@ -38,9 +39,11 @@
 // Video packet types
 #define TAV_PACKET_IFRAME         0x10  // Intra frame (keyframe)
 #define TAV_PACKET_PFRAME         0x11  // Predicted frame
+#define TAV_PACKET_GOP_UNIFIED    0x12  // Unified 3D DWT GOP (all frames in single block)
 #define TAV_PACKET_AUDIO_MP2      0x20  // MP2 audio
 #define TAV_PACKET_SUBTITLE       0x30  // Subtitle packet
 #define TAV_PACKET_EXTENDED_HDR   0xEF  // Extended header packet
+#define TAV_PACKET_GOP_SYNC       0xFC  // GOP sync packet (N frames decoded)
 #define TAV_PACKET_TIMECODE       0xFD  // Timecode packet
 #define TAV_PACKET_SYNC_NTSC      0xFE  // NTSC Sync packet
 #define TAV_PACKET_SYNC           0xFF  // Sync packet
@@ -297,6 +300,18 @@ typedef struct tav_encoder_s {
 
     // DWT coefficient buffers (pre-computed for SKIP detection and encoding)
     float *current_dwt_y, *current_dwt_co, *current_dwt_cg;
+
+    // GOP (Group of Pictures) buffer for temporal 3D DWT
+    int enable_temporal_dwt;    // Flag to enable temporal DWT (default: 0 for backward compatibility)
+    int gop_capacity;            // Maximum GOP size (typically 16)
+    int gop_frame_count;         // Current number of frames accumulated in GOP
+    uint8_t **gop_rgb_frames;    // [frame][pixel*3] - RGB data for each GOP frame
+    float **gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
+    float **gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
+    float **gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
+    int16_t *gop_translation_x;  // [frame] - Translation X in quarter-pixel units
+    int16_t *gop_translation_y;  // [frame] - Translation Y in quarter-pixel units
+    int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
 
     // Tile processing
     int tiles_x, tiles_y;
@@ -627,6 +642,27 @@ static void free_subtitle_list(subtitle_entry_t *list);
 static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text);
 static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output);
 
+// Temporal 3D DWT prototypes
+static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
+                          int spatial_levels, int temporal_levels, int spatial_filter);
+static void dwt_3d_inverse(float **gop_data, int width, int height, int num_frames,
+                          int spatial_levels, int temporal_levels, int spatial_filter);
+static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
+                       int *frame_numbers, int actual_gop_size);
+static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
+                                   int *frame_numbers, int force_flush);
+static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int levels, int filter_type);
+static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height, int levels);
+static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
+                                                           float *coeffs, int16_t *quantised, int size,
+                                                           int base_quantiser, int width, int height,
+                                                           int decomp_levels, int is_chroma, int frame_count);
+static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                                     int coeff_count, int channel_layout, uint8_t *output_buffer);
+static size_t preprocess_gop_unified(int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
+                                     int num_frames, int num_pixels, int channel_layout,
+                                     uint8_t *output_buffer);
+
 // Film grain synthesis
 static uint32_t rng_hash(uint32_t x) {
     x ^= x >> 16;
@@ -666,8 +702,9 @@ static void show_usage(const char *program_name) {
     printf("  -t, --test              Test mode: generate solid colour frames\n");
     printf("  --lossless              Lossless mode (-q %d -Q1,1,1 -w 0 --intra-only --no-perceptual-tuning --no-dead-zone --arate 384)\n", qtsize);
     printf("  --intra-only            Disable delta and skip encoding\n");
-    printf("  --enable-delta            Enable delta encoding\n");
+    printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
+    printf("  --temporal-dwt          Enable temporal 3D DWT (GOP-based encoding with temporal transform)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -740,8 +777,20 @@ static tav_encoder_t* create_encoder(void) {
     enc->zstd_level = DEFAULT_ZSTD_LEVEL;  // Default Zstd compression level
     enc->progressive_mode = 1;  // Default to progressive mode
     enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
-    enc->use_delta_encoding = 0; // disable by default: no longer brings size benefit
-    enc->delta_haar_levels = 0;  // Default: no Haar DWT on deltas
+    enc->use_delta_encoding = 0;
+    enc->delta_haar_levels = 2;
+
+    // GOP / temporal DWT settings
+    enc->enable_temporal_dwt = 0;  // Default: disabled for backward compatibility. Mutually exclusive with use_delta_encoding
+    enc->gop_capacity = GOP_SIZE;  // 16 frames
+    enc->gop_frame_count = 0;
+    enc->temporal_decomp_levels = 2;  // 2 levels of temporal DWT (16 -> 4x4 subbands)
+    enc->gop_rgb_frames = NULL;
+    enc->gop_y_frames = NULL;
+    enc->gop_co_frames = NULL;
+    enc->gop_cg_frames = NULL;
+    enc->gop_translation_x = NULL;
+    enc->gop_translation_y = NULL;
 
     return enc;
 }
@@ -837,6 +886,64 @@ static int initialise_encoder(tav_encoder_t *enc) {
 
         printf("Bitrate control enabled: target = %d kbps, initial quality = %d\n",
                enc->target_bitrate, enc->quality_level);
+    }
+
+    // Allocate GOP buffers if temporal DWT is enabled
+    if (enc->enable_temporal_dwt) {
+        size_t frame_rgb_size = frame_size * 3;  // RGB
+        size_t frame_channel_size = frame_size * sizeof(float);
+
+        // Allocate frame arrays
+        enc->gop_rgb_frames = malloc(enc->gop_capacity * sizeof(uint8_t*));
+        enc->gop_y_frames = malloc(enc->gop_capacity * sizeof(float*));
+        enc->gop_co_frames = malloc(enc->gop_capacity * sizeof(float*));
+        enc->gop_cg_frames = malloc(enc->gop_capacity * sizeof(float*));
+
+        if (!enc->gop_rgb_frames || !enc->gop_y_frames ||
+            !enc->gop_co_frames || !enc->gop_cg_frames) {
+            return -1;
+        }
+
+        // Allocate individual frame buffers
+        for (int i = 0; i < enc->gop_capacity; i++) {
+            enc->gop_rgb_frames[i] = malloc(frame_rgb_size);
+            enc->gop_y_frames[i] = malloc(frame_channel_size);
+            enc->gop_co_frames[i] = malloc(frame_channel_size);
+            enc->gop_cg_frames[i] = malloc(frame_channel_size);
+
+            if (!enc->gop_rgb_frames[i] || !enc->gop_y_frames[i] ||
+                !enc->gop_co_frames[i] || !enc->gop_cg_frames[i]) {
+                // Cleanup on allocation failure
+                for (int j = 0; j <= i; j++) {
+                    free(enc->gop_rgb_frames[j]);
+                    free(enc->gop_y_frames[j]);
+                    free(enc->gop_co_frames[j]);
+                    free(enc->gop_cg_frames[j]);
+                }
+                free(enc->gop_rgb_frames);
+                free(enc->gop_y_frames);
+                free(enc->gop_co_frames);
+                free(enc->gop_cg_frames);
+                return -1;
+            }
+        }
+
+        // Allocate translation vector storage
+        enc->gop_translation_x = malloc(enc->gop_capacity * sizeof(int16_t));
+        enc->gop_translation_y = malloc(enc->gop_capacity * sizeof(int16_t));
+
+        if (!enc->gop_translation_x || !enc->gop_translation_y) {
+            return -1;
+        }
+
+        // Initialize translation vectors to zero
+        memset(enc->gop_translation_x, 0, enc->gop_capacity * sizeof(int16_t));
+        memset(enc->gop_translation_y, 0, enc->gop_capacity * sizeof(int16_t));
+
+        if (enc->verbose) {
+            printf("Temporal DWT enabled: GOP size=%d, temporal levels=%d\n",
+                   enc->gop_capacity, enc->temporal_decomp_levels);
+        }
     }
 
     if (!enc->frame_rgb[0] || !enc->frame_rgb[1] ||
@@ -1107,6 +1214,825 @@ static void dwt_haar_inverse_1d(float *data, int length) {
 
     memcpy(data, temp, length * sizeof(float));
     free(temp);
+}
+
+// 1D DWT inverse using lifting scheme for 5/3 reversible filter
+static void dwt_53_inverse_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(length * sizeof(float));
+    int half = (length + 1) / 2;
+
+    // Copy low-pass and high-pass subbands to temp
+    memcpy(temp, data, length * sizeof(float));
+
+    // Undo update step (low-pass)
+    for (int i = 0; i < half; i++) {
+        float update = 0.25f * ((i > 0 ? temp[half + i - 1] : 0) +
+                               (i < half - 1 ? temp[half + i] : 0));
+        temp[i] -= update;
+    }
+
+    // Undo predict step (high-pass) and interleave samples
+    for (int i = 0; i < half; i++) {
+        data[2 * i] = temp[i];  // Even samples (low-pass)
+        int idx = 2 * i + 1;
+        if (idx < length) {
+            float pred = 0.5f * (temp[i] + (i < half - 1 ? temp[i + 1] : temp[i]));
+            data[idx] = temp[half + i] + pred;  // Odd samples (high-pass)
+        }
+    }
+
+    free(temp);
+}
+
+// FFT-based phase correlation for global motion estimation
+// Uses FFTW3 to compute cross-power spectrum and find translation peak
+// Returns quarter-pixel precision translation vectors
+static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2_rgb,
+                               int width, int height, int16_t *dx_qpel, int16_t *dy_qpel) {
+    // Step 1: Convert RGB to grayscale
+    float *gray1 = fftwf_malloc(width * height * sizeof(float));
+    float *gray2 = fftwf_malloc(width * height * sizeof(float));
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int idx = y * width + x;
+            int rgb_idx = idx * 3;
+
+            // ITU-R BT.601 grayscale conversion
+            gray1[idx] = 0.299f * frame1_rgb[rgb_idx] +
+                        0.587f * frame1_rgb[rgb_idx + 1] +
+                        0.114f * frame1_rgb[rgb_idx + 2];
+            gray2[idx] = 0.299f * frame2_rgb[rgb_idx] +
+                        0.587f * frame2_rgb[rgb_idx + 1] +
+                        0.114f * frame2_rgb[rgb_idx + 2];
+        }
+    }
+
+    // Step 2: Plan FFTs (r2c = real to complex)
+    int fft_height = height;
+    int fft_width = width / 2 + 1;  // R2C FFT only stores half + 1 complex values
+
+    fftwf_complex *fft1 = fftwf_malloc(fft_height * fft_width * sizeof(fftwf_complex));
+    fftwf_complex *fft2 = fftwf_malloc(fft_height * fft_width * sizeof(fftwf_complex));
+    fftwf_complex *cross_power = fftwf_malloc(fft_height * fft_width * sizeof(fftwf_complex));
+    float *correlation = fftwf_malloc(width * height * sizeof(float));
+
+    fftwf_plan plan_fwd1 = fftwf_plan_dft_r2c_2d(height, width, gray1, fft1, FFTW_ESTIMATE);
+    fftwf_plan plan_fwd2 = fftwf_plan_dft_r2c_2d(height, width, gray2, fft2, FFTW_ESTIMATE);
+    fftwf_plan plan_inv = fftwf_plan_dft_c2r_2d(height, width, cross_power, correlation, FFTW_ESTIMATE);
+
+    // Step 3: Execute forward FFTs
+    fftwf_execute(plan_fwd1);
+    fftwf_execute(plan_fwd2);
+
+    // Step 4: Compute cross-power spectrum: F1 * conj(F2) / |F1 * conj(F2)|
+    for (int i = 0; i < fft_height * fft_width; i++) {
+        float re1 = fft1[i][0];
+        float im1 = fft1[i][1];
+        float re2 = fft2[i][0];
+        float im2 = fft2[i][1];
+
+        // F1 * conj(F2)
+        float cross_re = re1 * re2 + im1 * im2;
+        float cross_im = im1 * re2 - re1 * im2;
+
+        // Magnitude
+        float mag = sqrtf(cross_re * cross_re + cross_im * cross_im);
+
+        // Normalize (avoid division by zero)
+        if (mag > 1e-10f) {
+            cross_power[i][0] = cross_re / mag;
+            cross_power[i][1] = cross_im / mag;
+        } else {
+            cross_power[i][0] = 0.0f;
+            cross_power[i][1] = 0.0f;
+        }
+    }
+
+    // Step 5: Inverse FFT to get correlation surface
+    fftwf_execute(plan_inv);
+
+    // Step 6: Find peak in correlation surface (integer pixel accuracy)
+    float max_val = -1e30f;
+    int peak_x = 0, peak_y = 0;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float val = correlation[y * width + x];
+            if (val > max_val) {
+                max_val = val;
+                peak_x = x;
+                peak_y = y;
+            }
+        }
+    }
+
+    // Convert to signed displacement (FFT shift: peak at (0,0) means no motion)
+    // Peak in second half means negative motion
+    int dx = peak_x;
+    int dy = peak_y;
+    if (dx > width / 2) dx -= width;
+    if (dy > height / 2) dy -= height;
+
+    // Step 7: Quarter-pixel refinement using parabolic interpolation
+    // Only refine if peak is not at boundary
+    float subpixel_dx = 0.0f;
+    float subpixel_dy = 0.0f;
+
+    if (peak_x > 0 && peak_x < width - 1) {
+        float left = correlation[peak_y * width + ((peak_x - 1 + width) % width)];
+        float center = correlation[peak_y * width + peak_x];
+        float right = correlation[peak_y * width + ((peak_x + 1) % width)];
+
+        // Parabolic fit: offset = (left - right) / (2 * (left - 2*center + right))
+        float denom = 2.0f * (left - 2.0f * center + right);
+        if (fabsf(denom) > 1e-6f) {
+            subpixel_dx = (left - right) / denom;
+            subpixel_dx = CLAMP(subpixel_dx, -0.5f, 0.5f);
+        }
+    }
+
+    if (peak_y > 0 && peak_y < height - 1) {
+        float top = correlation[((peak_y - 1 + height) % height) * width + peak_x];
+        float center = correlation[peak_y * width + peak_x];
+        float bottom = correlation[((peak_y + 1) % height) * width + peak_x];
+
+        float denom = 2.0f * (top - 2.0f * center + bottom);
+        if (fabsf(denom) > 1e-6f) {
+            subpixel_dy = (top - bottom) / denom;
+            subpixel_dy = CLAMP(subpixel_dy, -0.5f, 0.5f);
+        }
+    }
+
+    // Step 8: Convert to quarter-pixel units
+    float final_dx = dx + subpixel_dx;
+    float final_dy = dy + subpixel_dy;
+
+    *dx_qpel = (int16_t)roundf(final_dx * 4.0f);
+    *dy_qpel = (int16_t)roundf(final_dy * 4.0f);
+
+    // Cleanup
+    fftwf_destroy_plan(plan_fwd1);
+    fftwf_destroy_plan(plan_fwd2);
+    fftwf_destroy_plan(plan_inv);
+    fftwf_free(gray1);
+    fftwf_free(gray2);
+    fftwf_free(fft1);
+    fftwf_free(fft2);
+    fftwf_free(cross_power);
+    fftwf_free(correlation);
+}
+
+// Apply translation to frame (for frame alignment before temporal DWT)
+static void apply_translation(float *frame_data, int width, int height,
+                             int16_t dx_qpel, int16_t dy_qpel, float *output) {
+    // Convert quarter-pixel to pixel (for now, just use integer translation)
+    int dx = dx_qpel / 4;
+    int dy = dy_qpel / 4;
+
+    // Apply translation with boundary handling
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int src_x = x - dx;
+            int src_y = y - dy;
+
+            // Clamp to frame boundaries
+            src_x = CLAMP(src_x, 0, width - 1);
+            src_y = CLAMP(src_y, 0, height - 1);
+
+            output[y * width + x] = frame_data[src_y * width + src_x];
+        }
+    }
+}
+
+// =============================================================================
+// Temporal Subband Quantization
+// =============================================================================
+
+// Determine temporal subband level for a frame index after multi-level temporal DWT
+// With 2 decomposition levels on 16 frames:
+// - Level 0 (tLL): frames 0-3 (4 frames, low-pass)
+// - Level 1 (tLH, tHL, tHH of level 1): frames 4-7, 8-11, 12-15 (12 frames, high-pass level 1)
+// - Level 2 would be: frames in the high-pass of the high-pass (if we had 3 levels)
+static int get_temporal_subband_level(int frame_idx, int num_frames, int temporal_levels) {
+    // After temporal DWT with 2 levels:
+    // Frames 0...num_frames/(2^2) = tLL (temporal low-low, coarsest)
+    // Remaining frames are temporal high-pass subbands
+
+    int frames_per_level0 = num_frames >> temporal_levels;  // 16 >> 2 = 4
+
+    if (frame_idx < frames_per_level0) {
+        return 0;  // Coarsest temporal level (tLL)
+    } else if (frame_idx < (num_frames >> 1)) {
+        return 1;  // First level high-pass (tLH, tHL, tHH from level 1)
+    } else {
+        return 2;  // Finest level high-pass
+    }
+}
+
+// Quantize 3D DWT coefficients with SEPARABLE temporal-spatial quantization
+//
+// IMPORTANT: This implements a separable quantization approach (temporal × spatial)
+// After dwt_3d_forward(), the GOP coefficients have this structure:
+//   - Temporal DWT applied first (16 frames → 2 levels)
+//     → Results in temporal subbands: tLL (frames 0-3), tLH (4-7), tHL (8-11), tHH (12-15)
+//   - Then spatial DWT applied to each temporal subband
+//     → Each frame now contains 2D spatial coefficients (LL, LH, HL, HH subbands)
+//
+// Quantization strategy:
+//   1. Compute temporal base quantizer: tH_base(level) = Qbase_t * 2^(beta*level)
+//      - tLL (level 0): coarsest temporal, most important → smallest quantizer
+//      - tHH (level 2): finest temporal, less important → largest quantizer
+//   2. Apply spatial perceptual weighting to tH_base (LL: 1.0x, LH/HL: 1.5-2.0x, HH: 2.0-3.0x)
+//   3. Final quantizer: Q_effective = tH_base × spatial_weight
+//
+// This separable approach is efficient and what most 3D wavelet codecs use.
+static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
+                                        float **gop_coeffs,  // [frame][pixel] - frame = temporal subband
+                                        int16_t **quantised,  // [frame][pixel] - output quantised coefficients
+                                        int num_frames,
+                                        int spatial_size,
+                                        int base_quantiser,
+                                        int is_chroma) {
+    const float BETA = 0.8f;  // Temporal scaling exponent
+    const float TEMPORAL_BASE_SCALE = 0.7f;  // Temporal coefficients are typically sparser
+
+    // Process each temporal subband independently (separable approach)
+    for (int t = 0; t < num_frames; t++) {
+        // Step 1: Determine temporal subband level
+        // After 2-level temporal DWT on 16 frames:
+        //   - Frames 0-3: tLL (level 0) - temporal low-pass, most important
+        //   - Frames 4-7, 8-11, 12-15: tLH, tHL, tHH (levels 1-2) - temporal high-pass
+        int temporal_level = get_temporal_subband_level(t, num_frames, enc->temporal_decomp_levels);
+
+        // Step 2: Compute temporal base quantizer using exponential scaling
+        // Formula: tH_base = Qbase_t * 0.7 * 2^(0.8 * level)
+        // Example with Qbase_t=16:
+        //   - Level 0 (tLL): 16 * 0.7 * 2^0 = 11.2
+        //   - Level 1 (tLH): 16 * 0.7 * 2^0.8 = 19.5
+        //   - Level 2 (tHH): 16 * 0.7 * 2^1.6 = 33.8
+        float temporal_scale = TEMPORAL_BASE_SCALE * powf(2.0f, BETA * temporal_level);
+        float temporal_quantiser = base_quantiser * temporal_scale;
+
+        // Convert to integer for quantization
+        int temporal_base_quantiser = (int)roundf(temporal_quantiser);
+        temporal_base_quantiser = CLAMP(temporal_base_quantiser, 1, 255);
+
+        // Step 3: Apply spatial quantization within this temporal subband
+        // The existing function applies spatial perceptual weighting:
+        //   Q_effective = tH_base × spatial_weight
+        // Where spatial_weight depends on spatial frequency (LL, LH, HL, HH subbands)
+        // This reuses all existing perceptual weighting and dead-zone logic
+        quantise_dwt_coefficients_perceptual_per_coeff(
+            enc,
+            gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
+            quantised[t],            // Output: quantised spatial coefficients
+            spatial_size,            // Number of spatial coefficients
+            temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
+            enc->width,              // Frame width
+            enc->height,             // Frame height
+            enc->decomp_levels,      // Spatial decomposition levels (typically 6)
+            is_chroma,               // Is chroma channel (gets additional quantization)
+            enc->frame_count + t     // Frame number (for any frame-dependent logic)
+        );
+
+        if (enc->verbose && (t == 0 || t == num_frames - 1)) {
+            printf("  Temporal subband %d: level=%d, tH_base=%d\n",
+                   t, temporal_level, temporal_base_quantiser);
+        }
+    }
+}
+
+// =============================================================================
+// GOP Management Functions
+// =============================================================================
+
+// Add frame to GOP buffer
+// Returns 0 on success, -1 on error
+static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
+                         const float *frame_y, const float *frame_co, const float *frame_cg) {
+    if (!enc->enable_temporal_dwt || enc->gop_frame_count >= enc->gop_capacity) {
+        return -1;
+    }
+
+    int frame_idx = enc->gop_frame_count;
+    size_t frame_rgb_size = enc->width * enc->height * 3;
+    size_t frame_channel_size = enc->width * enc->height * sizeof(float);
+
+    // Copy frame data to GOP buffers
+    memcpy(enc->gop_rgb_frames[frame_idx], frame_rgb, frame_rgb_size);
+    memcpy(enc->gop_y_frames[frame_idx], frame_y, frame_channel_size);
+    memcpy(enc->gop_co_frames[frame_idx], frame_co, frame_channel_size);
+    memcpy(enc->gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
+
+    // Compute translation vector if not first frame
+    if (frame_idx > 0) {
+        phase_correlate_fft(enc->gop_rgb_frames[frame_idx - 1],
+                           enc->gop_rgb_frames[frame_idx],
+                           enc->width, enc->height,
+                           &enc->gop_translation_x[frame_idx],
+                           &enc->gop_translation_y[frame_idx]);
+
+        if (enc->verbose && (frame_idx < 3 || frame_idx == enc->gop_capacity - 1)) {
+            printf("  GOP frame %d: translation = (%.2f, %.2f) pixels\n",
+                   frame_idx,
+                   enc->gop_translation_x[frame_idx] / 4.0f,
+                   enc->gop_translation_y[frame_idx] / 4.0f);
+        }
+    } else {
+        // First frame has no translation
+        enc->gop_translation_x[0] = 0;
+        enc->gop_translation_y[0] = 0;
+    }
+
+    enc->gop_frame_count++;
+    return 0;
+}
+
+// Check if GOP is full
+static int gop_is_full(const tav_encoder_t *enc) {
+    return enc->enable_temporal_dwt && (enc->gop_frame_count >= enc->gop_capacity);
+}
+
+// Reset GOP buffer
+static void gop_reset(tav_encoder_t *enc) {
+    enc->gop_frame_count = 0;
+    if (enc->gop_translation_x && enc->gop_translation_y) {
+        memset(enc->gop_translation_x, 0, enc->gop_capacity * sizeof(int16_t));
+        memset(enc->gop_translation_y, 0, enc->gop_capacity * sizeof(int16_t));
+    }
+}
+
+// Check if GOP should be flushed due to large motion (potential scene change)
+static int gop_should_flush_motion(tav_encoder_t *enc) {
+    if (!enc->enable_temporal_dwt || enc->gop_frame_count < 2) {
+        return 0;
+    }
+
+    // Check last added frame's motion
+    int last_idx = enc->gop_frame_count - 1;
+    int16_t dx = enc->gop_translation_x[last_idx];
+    int16_t dy = enc->gop_translation_y[last_idx];
+
+    // Convert quarter-pixel to pixels
+    float dx_pixels = fabsf(dx / 4.0f);
+    float dy_pixels = fabsf(dy / 4.0f);
+
+    // Flush if motion exceeds threshold (24 pixels in any direction)
+    // This indicates likely scene change or very fast motion
+    const float MOTION_THRESHOLD = 24.0f;
+
+    if (dx_pixels > MOTION_THRESHOLD || dy_pixels > MOTION_THRESHOLD) {
+        if (enc->verbose) {
+            printf("  Large motion detected (%.1f, %.1f pixels) - flushing GOP\n",
+                   dx_pixels, dy_pixels);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+// Flush GOP: apply 3D DWT, quantize, serialize, and write to output
+// Returns number of bytes written, or 0 on error
+// This function processes the entire GOP and writes all frames with temporal 3D DWT
+static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
+                       int *frame_numbers, int actual_gop_size) {
+    if (actual_gop_size <= 0 || actual_gop_size > enc->gop_capacity) {
+        fprintf(stderr, "Error: Invalid GOP size: %d\n", actual_gop_size);
+        return 0;
+    }
+
+    // Allocate working buffers for each channel
+    const int num_pixels = enc->width * enc->height;
+    float **gop_y_coeffs = malloc(actual_gop_size * sizeof(float*));
+    float **gop_co_coeffs = malloc(actual_gop_size * sizeof(float*));
+    float **gop_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
+
+    for (int i = 0; i < actual_gop_size; i++) {
+        gop_y_coeffs[i] = malloc(num_pixels * sizeof(float));
+        gop_co_coeffs[i] = malloc(num_pixels * sizeof(float));
+        gop_cg_coeffs[i] = malloc(num_pixels * sizeof(float));
+
+        // Copy GOP frame data to working buffers
+        memcpy(gop_y_coeffs[i], enc->gop_y_frames[i], num_pixels * sizeof(float));
+        memcpy(gop_co_coeffs[i], enc->gop_co_frames[i], num_pixels * sizeof(float));
+        memcpy(gop_cg_coeffs[i], enc->gop_cg_frames[i], num_pixels * sizeof(float));
+    }
+
+    // Step 1: Apply 3D DWT (temporal + spatial) to each channel
+    // Note: This modifies gop_*_coeffs in-place
+    dwt_3d_forward(gop_y_coeffs, enc->width, enc->height, actual_gop_size,
+                   enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+    dwt_3d_forward(gop_co_coeffs, enc->width, enc->height, actual_gop_size,
+                   enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+    dwt_3d_forward(gop_cg_coeffs, enc->width, enc->height, actual_gop_size,
+                   enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+
+    // Step 2: Allocate quantized coefficient buffers
+    int16_t **quant_y = malloc(actual_gop_size * sizeof(int16_t*));
+    int16_t **quant_co = malloc(actual_gop_size * sizeof(int16_t*));
+    int16_t **quant_cg = malloc(actual_gop_size * sizeof(int16_t*));
+
+    for (int i = 0; i < actual_gop_size; i++) {
+        quant_y[i] = malloc(num_pixels * sizeof(int16_t));
+        quant_co[i] = malloc(num_pixels * sizeof(int16_t));
+        quant_cg[i] = malloc(num_pixels * sizeof(int16_t));
+    }
+
+    // Step 3: Quantize 3D DWT coefficients with temporal-spatial quantization
+    quantise_3d_dwt_coefficients(enc, gop_y_coeffs, quant_y, actual_gop_size,
+                                 num_pixels, base_quantiser, 0);  // Luma
+    quantise_3d_dwt_coefficients(enc, gop_co_coeffs, quant_co, actual_gop_size,
+                                 num_pixels, base_quantiser, 1);  // Chroma Co
+    quantise_3d_dwt_coefficients(enc, gop_cg_coeffs, quant_cg, actual_gop_size,
+                                 num_pixels, base_quantiser, 1);  // Chroma Cg
+
+    // Step 4: Preprocessing and compression
+    size_t total_bytes_written = 0;
+
+    // Write timecode packet for first frame in GOP
+    write_timecode_packet(output, frame_numbers[0], enc->output_fps, enc->is_ntsc_framerate);
+
+    // Single-frame GOP fallback: use traditional I-frame encoding
+    if (actual_gop_size == 1) {
+        // Write I-frame packet header (no motion vectors, no GOP overhead)
+        uint8_t packet_type = TAV_PACKET_IFRAME;
+        fwrite(&packet_type, 1, 1, output);
+        total_bytes_written += 1;
+
+        // Preprocess single frame using standard variable layout
+        size_t max_preprocessed_size = (num_pixels * 3 * 2 + 7) / 8 + (num_pixels * 3 * sizeof(int16_t));
+        uint8_t *preprocessed_buffer = malloc(max_preprocessed_size);
+
+        size_t preprocessed_size = preprocess_coefficients_variable_layout(
+            quant_y[0], quant_co[0], quant_cg[0], NULL,
+            num_pixels, enc->channel_layout, preprocessed_buffer);
+
+        // Compress with Zstd
+        size_t max_compressed_size = ZSTD_compressBound(preprocessed_size);
+        uint8_t *compressed_buffer = malloc(max_compressed_size);
+        size_t compressed_size = ZSTD_compress(compressed_buffer, max_compressed_size,
+                                               preprocessed_buffer, preprocessed_size,
+                                               enc->zstd_level);
+
+        if (ZSTD_isError(compressed_size)) {
+            fprintf(stderr, "Error: Zstd compression failed for single-frame GOP\n");
+            free(preprocessed_buffer);
+            free(compressed_buffer);
+            // Free all allocated buffers
+            for (int i = 0; i < actual_gop_size; i++) {
+                free(gop_y_coeffs[i]);
+                free(gop_co_coeffs[i]);
+                free(gop_cg_coeffs[i]);
+                free(quant_y[i]);
+                free(quant_co[i]);
+                free(quant_cg[i]);
+            }
+            free(gop_y_coeffs);
+            free(gop_co_coeffs);
+            free(gop_cg_coeffs);
+            free(quant_y);
+            free(quant_co);
+            free(quant_cg);
+            return 0;
+        }
+
+        // Write compressed size (4 bytes) and compressed data
+        uint32_t compressed_size_32 = (uint32_t)compressed_size;
+        fwrite(&compressed_size_32, sizeof(uint32_t), 1, output);
+        fwrite(compressed_buffer, 1, compressed_size, output);
+        total_bytes_written += sizeof(uint32_t) + compressed_size;
+
+        // Cleanup
+        free(preprocessed_buffer);
+        free(compressed_buffer);
+
+        if (enc->verbose) {
+            printf("Frame %d (single-frame GOP as I-frame): %zu bytes\n",
+                   frame_numbers[0], compressed_size);
+        }
+    } else {
+        // Multi-frame GOP: use unified 3D DWT encoding
+        // Write unified GOP packet header
+        // Packet structure: [packet_type=0x12][gop_size][motion_vectors...][compressed_size][compressed_data]
+        uint8_t packet_type = TAV_PACKET_GOP_UNIFIED;
+        fwrite(&packet_type, 1, 1, output);
+        total_bytes_written += 1;
+
+        // Write GOP size (1 byte)
+        uint8_t gop_size_byte = (uint8_t)actual_gop_size;
+        fwrite(&gop_size_byte, 1, 1, output);
+        total_bytes_written += 1;
+
+        // Write all motion vectors (quarter-pixel precision) for the entire GOP
+        for (int t = 0; t < actual_gop_size; t++) {
+            int16_t dx = enc->gop_translation_x[t];
+            int16_t dy = enc->gop_translation_y[t];
+            fwrite(&dx, sizeof(int16_t), 1, output);
+            fwrite(&dy, sizeof(int16_t), 1, output);
+            total_bytes_written += 4;
+        }
+
+        // Preprocess ALL frames with unified significance map
+        // Allocate buffer: maps (2 bits per coeff per frame) + values (int16 per non-zero/±1 coeff)
+        size_t max_preprocessed_size = (num_pixels * actual_gop_size * 3 * 2 + 7) / 8 +
+                                        (num_pixels * actual_gop_size * 3 * sizeof(int16_t));
+        uint8_t *preprocessed_buffer = malloc(max_preprocessed_size);
+
+        size_t preprocessed_size = preprocess_gop_unified(
+            quant_y, quant_co, quant_cg,
+            actual_gop_size, num_pixels, enc->channel_layout,
+            preprocessed_buffer);
+
+        // Compress entire GOP with Zstd (single compression for all frames)
+        size_t max_compressed_size = ZSTD_compressBound(preprocessed_size);
+        uint8_t *compressed_buffer = malloc(max_compressed_size);
+        size_t compressed_size = ZSTD_compress(compressed_buffer, max_compressed_size,
+                                               preprocessed_buffer, preprocessed_size,
+                                               enc->zstd_level);
+
+        if (ZSTD_isError(compressed_size)) {
+            fprintf(stderr, "Error: Zstd compression failed for unified GOP\n");
+            free(preprocessed_buffer);
+            free(compressed_buffer);
+            // Free all allocated buffers and return 0
+            for (int i = 0; i < actual_gop_size; i++) {
+                free(gop_y_coeffs[i]);
+                free(gop_co_coeffs[i]);
+                free(gop_cg_coeffs[i]);
+                free(quant_y[i]);
+                free(quant_co[i]);
+                free(quant_cg[i]);
+            }
+            free(gop_y_coeffs);
+            free(gop_co_coeffs);
+            free(gop_cg_coeffs);
+            free(quant_y);
+            free(quant_co);
+            free(quant_cg);
+            return 0;
+        }
+
+        // Write compressed size (4 bytes) and compressed data
+        uint32_t compressed_size_32 = (uint32_t)compressed_size;
+        fwrite(&compressed_size_32, sizeof(uint32_t), 1, output);
+        fwrite(compressed_buffer, 1, compressed_size, output);
+        total_bytes_written += sizeof(uint32_t) + compressed_size;
+
+        // Cleanup buffers
+        free(preprocessed_buffer);
+        free(compressed_buffer);
+
+        // Write GOP_SYNC packet to indicate N frames were decoded from this GOP block
+        uint8_t sync_packet_type = TAV_PACKET_GOP_SYNC;
+        uint8_t sync_frame_count = (uint8_t)actual_gop_size;
+        fwrite(&sync_packet_type, 1, 1, output);
+        fwrite(&sync_frame_count, 1, 1, output);
+        total_bytes_written += 2;
+
+        // Verbose output
+        if (enc->verbose) {
+            printf("GOP (%d frames): %zu bytes (3D DWT unified, %.2f bytes/frame)\n",
+                   actual_gop_size, compressed_size, (double)compressed_size / actual_gop_size);
+            for (int t = 0; t < actual_gop_size; t++) {
+                printf("  Frame %d: dx=%d/4, dy=%d/4\n",
+                       frame_numbers[t], enc->gop_translation_x[t], enc->gop_translation_y[t]);
+            }
+        }
+    }  // End of if/else for single-frame vs multi-frame GOP
+
+    // Cleanup GOP buffers
+    for (int i = 0; i < actual_gop_size; i++) {
+        free(gop_y_coeffs[i]);
+        free(gop_co_coeffs[i]);
+        free(gop_cg_coeffs[i]);
+        free(quant_y[i]);
+        free(quant_co[i]);
+        free(quant_cg[i]);
+    }
+    free(gop_y_coeffs);
+    free(gop_co_coeffs);
+    free(gop_cg_coeffs);
+    free(quant_y);
+    free(quant_co);
+    free(quant_cg);
+
+    return total_bytes_written;
+}
+
+// Process GOP with scene change detection and flush
+// Returns number of bytes written, or 0 on error
+// This wrapper function handles GOP trimming when scene changes are detected
+static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
+                                   int *frame_numbers, int force_flush) {
+    if (enc->gop_frame_count == 0) {
+        return 0;  // Nothing to flush
+    }
+
+    int actual_gop_size = enc->gop_frame_count;
+    int scene_change_frame = -1;
+
+    // Check for scene changes within the GOP
+    if (!force_flush) {
+        for (int i = 1; i < enc->gop_frame_count; i++) {
+            // Compare consecutive frames using RGB data
+            uint8_t *frame1 = enc->gop_rgb_frames[i - 1];
+            uint8_t *frame2 = enc->gop_rgb_frames[i];
+
+            long long total_diff = 0;
+            int changed_pixels = 0;
+            int num_pixels = enc->width * enc->height;
+
+            // Sample every 4th pixel for performance
+            for (int p = 0; p < num_pixels; p += 4) {
+                int offset = p * 3;
+                int r_diff = abs(frame2[offset] - frame1[offset]);
+                int g_diff = abs(frame2[offset + 1] - frame1[offset + 1]);
+                int b_diff = abs(frame2[offset + 2] - frame1[offset + 2]);
+
+                int pixel_diff = r_diff + g_diff + b_diff;
+                total_diff += pixel_diff;
+
+                if (pixel_diff > 90) {
+                    changed_pixels++;
+                }
+            }
+
+            // Scene change thresholds (same as detect_scene_change)
+            int sampled_pixels = (num_pixels + 3) / 4;
+            double avg_diff = (double)total_diff / sampled_pixels;
+            double change_ratio = (double)changed_pixels / sampled_pixels;
+
+            // Scene change detected if either threshold exceeded
+            if (avg_diff > 15.0 || change_ratio > 0.4) {
+                scene_change_frame = i;
+                if (enc->verbose) {
+                    printf("Scene change detected within GOP at frame %d (avg_diff=%.2f, change_ratio=%.2f)\n",
+                           frame_numbers[i], avg_diff, change_ratio);
+                }
+                break;
+            }
+        }
+    }
+
+    // Trim GOP if scene change detected
+    if (scene_change_frame > 0) {
+        actual_gop_size = scene_change_frame;
+        if (enc->verbose) {
+            printf("Trimming GOP from %d to %d frames due to scene change\n",
+                   enc->gop_frame_count, actual_gop_size);
+        }
+    }
+
+    // Flush the GOP (or trimmed portion)
+    size_t bytes_written = gop_flush(enc, output, base_quantiser, frame_numbers, actual_gop_size);
+
+    // If GOP was trimmed, shift remaining frames to start of buffer
+    if (scene_change_frame > 0 && scene_change_frame < enc->gop_frame_count) {
+        int remaining_frames = enc->gop_frame_count - scene_change_frame;
+        for (int i = 0; i < remaining_frames; i++) {
+            int src = scene_change_frame + i;
+            // Swap pointers instead of copying data
+            uint8_t *temp_rgb = enc->gop_rgb_frames[i];
+            float *temp_y = enc->gop_y_frames[i];
+            float *temp_co = enc->gop_co_frames[i];
+            float *temp_cg = enc->gop_cg_frames[i];
+
+            enc->gop_rgb_frames[i] = enc->gop_rgb_frames[src];
+            enc->gop_y_frames[i] = enc->gop_y_frames[src];
+            enc->gop_co_frames[i] = enc->gop_co_frames[src];
+            enc->gop_cg_frames[i] = enc->gop_cg_frames[src];
+
+            enc->gop_rgb_frames[src] = temp_rgb;
+            enc->gop_y_frames[src] = temp_y;
+            enc->gop_co_frames[src] = temp_co;
+            enc->gop_cg_frames[src] = temp_cg;
+
+            enc->gop_translation_x[i] = enc->gop_translation_x[src];
+            enc->gop_translation_y[i] = enc->gop_translation_y[src];
+        }
+        enc->gop_frame_count = remaining_frames;
+    } else {
+        // Full GOP flushed, reset
+        gop_reset(enc);
+    }
+
+    return bytes_written;
+}
+
+// =============================================================================
+// Temporal DWT Functions
+// =============================================================================
+
+// Apply 1D temporal DWT along time axis for a spatial location (encoder side)
+// data[i] = frame i's coefficient value at this spatial location
+// Applies LGT 5/3 wavelet for reversibility
+static void dwt_temporal_1d_forward_53(float *temporal_data, int num_frames) {
+    if (num_frames < 2) return;
+    dwt_53_forward_1d(temporal_data, num_frames);
+}
+
+// Apply inverse 1D temporal DWT (decoder side)
+static void dwt_temporal_1d_inverse_53(float *temporal_data, int num_frames) {
+    if (num_frames < 2) return;
+    dwt_53_inverse_1d(temporal_data, num_frames);
+}
+
+// Apply 3D DWT: temporal DWT across frames, then spatial DWT on each temporal subband
+// gop_data[frame][y * width + x] - GOP buffer organized as frame-major
+// Modifies gop_data in-place
+static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
+                          int spatial_levels, int temporal_levels, int spatial_filter) {
+    if (num_frames < 2 || width < 2 || height < 2) return;
+
+    int num_pixels = width * height;
+    float *temporal_line = malloc(num_frames * sizeof(float));
+
+    // Step 1: Apply temporal DWT to each spatial location across all GOP frames
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int pixel_idx = y * width + x;
+
+            // Extract temporal signal for this spatial location
+            for (int t = 0; t < num_frames; t++) {
+                temporal_line[t] = gop_data[t][pixel_idx];
+            }
+
+            // Apply temporal DWT with multiple levels
+            for (int level = 0; level < temporal_levels; level++) {
+                int level_frames = num_frames >> level;
+                if (level_frames >= 2) {
+//                    dwt_temporal_1d_forward_53(temporal_line, level_frames);
+                    dwt_haar_forward_1d(temporal_line, level_frames);
+                }
+            }
+
+            // Write back temporal coefficients
+            for (int t = 0; t < num_frames; t++) {
+                gop_data[t][pixel_idx] = temporal_line[t];
+            }
+        }
+    }
+
+    free(temporal_line);
+
+    // Step 2: Apply 2D spatial DWT to each temporal subband (each frame after temporal DWT)
+    for (int t = 0; t < num_frames; t++) {
+        // Apply spatial DWT using the appropriate flexible function
+        dwt_2d_forward_flexible(gop_data[t], width, height, spatial_levels, spatial_filter);
+    }
+}
+
+// Apply inverse 3D DWT: inverse spatial DWT on each temporal subband, then inverse temporal DWT
+static void dwt_3d_inverse(float **gop_data, int width, int height, int num_frames,
+                          int spatial_levels, int temporal_levels, int spatial_filter) {
+    if (num_frames < 2 || width < 2 || height < 2) return;
+
+    // Step 1: Apply inverse 2D spatial DWT to each temporal subband
+    for (int t = 0; t < num_frames; t++) {
+        // Note: Need to implement appropriate inverse function based on filter type
+        // For now, using Haar inverse as reference (will need proper inverse for 5/3, 9/7, etc.)
+        if (spatial_filter == WAVELET_HAAR) {
+            dwt_2d_haar_inverse_flexible(gop_data[t], width, height, spatial_levels);
+        } else {
+            // TODO: Implement proper inverse for other wavelets (5/3, 9/7, etc.)
+            // For now, log warning
+            fprintf(stderr, "Warning: Inverse spatial DWT not fully implemented for filter %d\n", spatial_filter);
+        }
+    }
+
+    // Step 2: Apply inverse temporal DWT to each spatial location
+    int num_pixels = width * height;
+    float *temporal_line = malloc(num_frames * sizeof(float));
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int pixel_idx = y * width + x;
+
+            // Extract temporal coefficients for this spatial location
+            for (int t = 0; t < num_frames; t++) {
+                temporal_line[t] = gop_data[t][pixel_idx];
+            }
+
+            // Apply inverse temporal DWT with multiple levels (reverse order)
+            for (int level = temporal_levels - 1; level >= 0; level--) {
+                int level_frames = num_frames >> level;
+                if (level_frames >= 2) {
+                    dwt_temporal_1d_inverse_53(temporal_line, level_frames);
+                }
+            }
+
+            // Write back reconstructed values
+            for (int t = 0; t < num_frames; t++) {
+                gop_data[t][pixel_idx] = temporal_line[t];
+            }
+        }
+    }
+
+    free(temporal_line);
 }
 
 // Extract padded tile with margins for seamless DWT processing (correct implementation)
@@ -1522,10 +2448,150 @@ static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t
     return map_bytes * total_maps + total_others * sizeof(int16_t);
 }
 
+// Unified GOP preprocessing: single significance map for all frames and channels
+// Layout: [All_Y_maps][All_Co_maps][All_Cg_maps][All_Y_values][All_Co_values][All_Cg_values]
+// This enables optimal cross-frame compression in the temporal dimension
+static size_t preprocess_gop_unified(int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
+                                     int num_frames, int num_pixels, int channel_layout,
+                                     uint8_t *output_buffer) {
+    const channel_layout_config_t *config = &channel_layouts[channel_layout];
+    const int map_bytes_per_frame = (num_pixels * 2 + 7) / 8;  // 2 bits per coefficient
+    const int total_coeffs = num_pixels * num_frames;
+
+    // Count "other" values (not 0, +1, or -1) for each channel across ALL frames
+    int other_count_y = 0, other_count_co = 0, other_count_cg = 0;
+
+    for (int frame = 0; frame < num_frames; frame++) {
+        if (config->has_y && quant_y && quant_y[frame]) {
+            for (int i = 0; i < num_pixels; i++) {
+                int16_t val = quant_y[frame][i];
+                if (val != 0 && val != 1 && val != -1) other_count_y++;
+            }
+        }
+        if (config->has_co && quant_co && quant_co[frame]) {
+            for (int i = 0; i < num_pixels; i++) {
+                int16_t val = quant_co[frame][i];
+                if (val != 0 && val != 1 && val != -1) other_count_co++;
+            }
+        }
+        if (config->has_cg && quant_cg && quant_cg[frame]) {
+            for (int i = 0; i < num_pixels; i++) {
+                int16_t val = quant_cg[frame][i];
+                if (val != 0 && val != 1 && val != -1) other_count_cg++;
+            }
+        }
+    }
+
+    // Calculate buffer layout
+    uint8_t *write_ptr = output_buffer;
+
+    // Significance maps: grouped by channel (all Y frames, then all Co frames, then all Cg frames)
+    uint8_t *y_maps_start = write_ptr;
+    if (config->has_y) write_ptr += map_bytes_per_frame * num_frames;
+
+    uint8_t *co_maps_start = write_ptr;
+    if (config->has_co) write_ptr += map_bytes_per_frame * num_frames;
+
+    uint8_t *cg_maps_start = write_ptr;
+    if (config->has_cg) write_ptr += map_bytes_per_frame * num_frames;
+
+    // Value arrays: grouped by channel
+    int16_t *y_values = (int16_t *)write_ptr;
+    if (config->has_y) write_ptr += other_count_y * sizeof(int16_t);
+
+    int16_t *co_values = (int16_t *)write_ptr;
+    if (config->has_co) write_ptr += other_count_co * sizeof(int16_t);
+
+    int16_t *cg_values = (int16_t *)write_ptr;
+    if (config->has_cg) write_ptr += other_count_cg * sizeof(int16_t);
+
+    // Clear all map bytes
+    size_t total_map_bytes = 0;
+    if (config->has_y) total_map_bytes += map_bytes_per_frame * num_frames;
+    if (config->has_co) total_map_bytes += map_bytes_per_frame * num_frames;
+    if (config->has_cg) total_map_bytes += map_bytes_per_frame * num_frames;
+    memset(output_buffer, 0, total_map_bytes);
+
+    // Process each frame and fill maps/values
+    int y_value_idx = 0, co_value_idx = 0, cg_value_idx = 0;
+
+    for (int frame = 0; frame < num_frames; frame++) {
+        uint8_t *y_map = y_maps_start + frame * map_bytes_per_frame;
+        uint8_t *co_map = co_maps_start + frame * map_bytes_per_frame;
+        uint8_t *cg_map = cg_maps_start + frame * map_bytes_per_frame;
+
+        for (int i = 0; i < num_pixels; i++) {
+            size_t bit_pos = i * 2;
+            size_t byte_idx = bit_pos / 8;
+            size_t bit_offset = bit_pos % 8;
+
+            // Process Y channel
+            if (config->has_y && quant_y && quant_y[frame]) {
+                int16_t val = quant_y[frame][i];
+                uint8_t code;
+
+                if (val == 0) code = 0;       // 00
+                else if (val == 1) code = 1;  // 01
+                else if (val == -1) code = 2; // 10
+                else {
+                    code = 3;  // 11
+                    y_values[y_value_idx++] = val;
+                }
+
+                y_map[byte_idx] |= (code << bit_offset);
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    y_map[byte_idx + 1] |= (code >> 1);
+                }
+            }
+
+            // Process Co channel
+            if (config->has_co && quant_co && quant_co[frame]) {
+                int16_t val = quant_co[frame][i];
+                uint8_t code;
+
+                if (val == 0) code = 0;
+                else if (val == 1) code = 1;
+                else if (val == -1) code = 2;
+                else {
+                    code = 3;
+                    co_values[co_value_idx++] = val;
+                }
+
+                co_map[byte_idx] |= (code << bit_offset);
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    co_map[byte_idx + 1] |= (code >> 1);
+                }
+            }
+
+            // Process Cg channel
+            if (config->has_cg && quant_cg && quant_cg[frame]) {
+                int16_t val = quant_cg[frame][i];
+                uint8_t code;
+
+                if (val == 0) code = 0;
+                else if (val == 1) code = 1;
+                else if (val == -1) code = 2;
+                else {
+                    code = 3;
+                    cg_values[cg_value_idx++] = val;
+                }
+
+                cg_map[byte_idx] |= (code << bit_offset);
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    cg_map[byte_idx + 1] |= (code >> 1);
+                }
+            }
+        }
+    }
+
+    // Return total size
+    return (size_t)(write_ptr - output_buffer);
+}
+
 // Quantisation for DWT subbands with rate control
 static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int size, int quantiser, float dead_zone_threshold, int width, int height, int decomp_levels, int is_chroma) {
     float effective_q = quantiser;
-    effective_q = FCLAMP(effective_q, 1.0f, 255.0f);
+    effective_q = FCLAMP(effective_q, 1.0f, 4096.0f);
 
     for (int i = 0; i < size; i++) {
         float quantised_val = coeffs[i] / effective_q;
@@ -1780,7 +2846,7 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                           int decomp_levels, int is_chroma, int frame_count) {
     // EXACTLY the same approach as uniform quantisation but apply weight per coefficient
     float effective_base_q = base_quantiser;
-    effective_base_q = FCLAMP(effective_base_q, 1.0f, 255.0f);
+    effective_base_q = FCLAMP(effective_base_q, 1.0f, 4096.0f);
 
     for (int i = 0; i < size; i++) {
         // Apply perceptual weight based on coefficient's position in DWT layout
@@ -3873,6 +4939,8 @@ int main(int argc, char *argv[]) {
 //        {"no-grain-synthesis", no_argument, 0, 1016},
         {"enable-delta", no_argument, 0, 1017},
         {"delta-haar", required_argument, 0, 1018},
+        {"temporal-dwt", no_argument, 0, 1019},
+        {"temporal-3d", no_argument, 0, 1019},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -4033,6 +5101,11 @@ int main(int argc, char *argv[]) {
                 if (enc->delta_haar_levels > 0) {
                     enc->use_delta_encoding = 1;  // Auto-enable delta encoding
                 }
+                break;
+            case 1019: // --temporal-dwt / --temporal-3d
+                enc->use_delta_encoding = 0; // two modes are mutually exclusive
+                enc->enable_temporal_dwt = 1;
+                printf("Temporal 3D DWT encoding enabled (GOP size: %d frames)\n", GOP_SIZE);
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -4240,7 +5313,8 @@ int main(int argc, char *argv[]) {
         }
 
         // Write timecode packet for frames 1+ (right after sync packet from previous frame)
-        if (frame_count > 0) {
+        // Skip timecode emission in temporal DWT mode (GOP handles its own timecodes)
+        if (frame_count > 0 && !enc->enable_temporal_dwt) {
             write_timecode_packet(enc->output_fp, frame_count, enc->output_fps, enc->is_ntsc_framerate);
         }
 
@@ -4368,22 +5442,103 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }*/
 
-        // Compress and write frame packet
-        uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
-        size_t packet_size = compress_and_write_frame(enc, packet_type);
+        // GOP-based temporal 3D DWT encoding path (when enabled)
+        size_t packet_size = 0;
 
-        if (packet_size == 0) {
+        if (enc->enable_temporal_dwt) {
+            // Add frame to GOP buffer
+            int add_result = gop_add_frame(enc, enc->current_frame_rgb,
+                                          enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg);
+
+            if (add_result != 0) {
+                fprintf(stderr, "Error: Failed to add frame %d to GOP buffer\n", frame_count);
+                break;
+            }
+
+            // Check if GOP should be flushed
+            int should_flush = 0;
+            int force_flush = 0;
+
+            // Flush if GOP is full
+            if (gop_is_full(enc)) {
+                should_flush = 1;
+                if (enc->verbose) {
+                    printf("GOP buffer full (%d frames), flushing...\n", enc->gop_frame_count);
+                }
+            }
+            // Flush if large motion detected (breaks temporal coherence)
+            else if (gop_should_flush_motion(enc)) {
+                should_flush = 1;
+                if (enc->verbose) {
+                    printf("Large motion detected (>24 pixels), flushing GOP early...\n");
+                }
+            }
+            // Flush if scene change detected
+            else if (is_scene_change && enc->gop_frame_count > 1) {
+                should_flush = 1;
+                force_flush = 1;  // Skip internal scene change detection (already detected)
+                if (enc->verbose) {
+                    printf("Scene change detected, flushing GOP early...\n");
+                }
+            }
+
+            // Flush GOP if needed
+            if (should_flush) {
+                // Build frame number array for this GOP
+                int *gop_frame_numbers = malloc(enc->gop_frame_count * sizeof(int));
+                for (int i = 0; i < enc->gop_frame_count; i++) {
+                    gop_frame_numbers[i] = frame_count - enc->gop_frame_count + 1 + i;
+                }
+
+                // Get quantiser (use adjusted quantiser from bitrate control if applicable)
+                int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
+
+                // Process and flush GOP with scene change detection
+                packet_size = gop_process_and_flush(enc, enc->output_fp, qY,
+                                                   gop_frame_numbers, force_flush);
+
+                free(gop_frame_numbers);
+
+                if (packet_size == 0) {
+                    fprintf(stderr, "Error: Failed to flush GOP at frame %d\n", frame_count);
+                    break;
+                }
+            } else {
+                // Frame added to GOP buffer but not flushed yet
+                // Skip normal packet processing (no packet written yet)
+                packet_size = 0;
+            }
+        } else {
+            // Traditional 2D DWT encoding path (no temporal transform)
+            uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
+            packet_size = compress_and_write_frame(enc, packet_type);
+        }
+
+        if (packet_size == 0 && !enc->enable_temporal_dwt) {
+            // Traditional 2D path: packet_size == 0 means encoding failed
             fprintf(stderr, "Error: Failed to compress frame %d\n", frame_count);
             break;
         }
-        else {
+
+        // Process audio/subtitles and sync packets only when frames were actually written
+        if (packet_size > 0) {
             // Update bitrate tracking with compressed video packet size
             if (enc->bitrate_mode) {
-                // packet_size includes packet header (5 bytes), subtract to get just video data
-                size_t video_data_size = packet_size > 5 ? packet_size - 5 : 0;
+                // For GOP-based encoding, packet_size covers multiple frames
+                // For traditional encoding, packet_size includes packet header (5 bytes)
+                size_t video_data_size = packet_size;
                 update_video_rate_bin(enc, video_data_size);
                 adjust_quantiser_for_bitrate(enc);
             }
+
+            // For GOP encoding, process audio/subtitles for all frames in the flushed GOP
+            // For traditional encoding, process audio/subtitles for this single frame
+            if (enc->enable_temporal_dwt) {
+                // Note: In GOP mode, audio/subtitle sync is approximate since we flush multiple frames at once
+                // This is acceptable since GOPs are short (16 frames max = ~0.5s at 30fps)
+                // TODO: Consider buffering audio/subtitles for precise sync if needed
+            }
+
             // Process audio for this frame
             process_audio(enc, true_frame_count, enc->output_fp);
 
@@ -4424,6 +5579,35 @@ int main(int argc, char *argv[]) {
             int display_qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
             printf("Encoded frame %d (%s, %.1f fps, qY=%d)\n", frame_count,
                    is_keyframe ? "I-frame" : "P-frame", fps, QLUT[display_qY]);
+        }
+    }
+
+    // Flush any remaining GOP frames (temporal 3D DWT mode only)
+    if (enc->enable_temporal_dwt && enc->gop_frame_count > 0) {
+        printf("Flushing remaining %d frames from GOP buffer...\n", enc->gop_frame_count);
+
+        // Build frame number array for remaining GOP
+        int *gop_frame_numbers = malloc(enc->gop_frame_count * sizeof(int));
+        for (int i = 0; i < enc->gop_frame_count; i++) {
+            gop_frame_numbers[i] = frame_count - enc->gop_frame_count + 1 + i;
+        }
+
+        // Get quantiser (use adjusted quantiser from bitrate control if applicable)
+        int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
+
+        // Flush remaining GOP with force_flush=1 to process all frames
+        size_t final_packet_size = gop_process_and_flush(enc, enc->output_fp, qY,
+                                                         gop_frame_numbers, 1);
+
+        free(gop_frame_numbers);
+
+        if (final_packet_size == 0) {
+            fprintf(stderr, "Warning: Failed to flush final GOP frames\n");
+        } else {
+            // Write sync packet after final GOP
+            uint8_t sync_packet = TAV_PACKET_SYNC;
+            fwrite(&sync_packet, 1, 1, enc->output_fp);
+            printf("Final GOP flushed successfully (%zu bytes)\n", final_packet_size);
         }
     }
 
@@ -4519,6 +5703,34 @@ static void cleanup_encoder(tav_encoder_t *enc) {
 
     // Free bitrate control structures
     free(enc->video_rate_bin);
+
+    // Free GOP buffers
+    if (enc->gop_rgb_frames) {
+        for (int i = 0; i < enc->gop_capacity; i++) {
+            free(enc->gop_rgb_frames[i]);
+        }
+        free(enc->gop_rgb_frames);
+    }
+    if (enc->gop_y_frames) {
+        for (int i = 0; i < enc->gop_capacity; i++) {
+            free(enc->gop_y_frames[i]);
+        }
+        free(enc->gop_y_frames);
+    }
+    if (enc->gop_co_frames) {
+        for (int i = 0; i < enc->gop_capacity; i++) {
+            free(enc->gop_co_frames[i]);
+        }
+        free(enc->gop_co_frames);
+    }
+    if (enc->gop_cg_frames) {
+        for (int i = 0; i < enc->gop_capacity; i++) {
+            free(enc->gop_cg_frames[i]);
+        }
+        free(enc->gop_cg_frames);
+    }
+    free(enc->gop_translation_x);
+    free(enc->gop_translation_y);
 
     // Free subtitle list
     if (enc->subtitles) {

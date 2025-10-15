@@ -16,6 +16,7 @@
 // Packet type constants
 #define TAV_PACKET_IFRAME         0x10
 #define TAV_PACKET_PFRAME         0x11
+#define TAV_PACKET_GOP_UNIFIED    0x12  // Unified 3D DWT GOP (all frames in single block)
 #define TAV_PACKET_AUDIO_MP2      0x20
 #define TAV_PACKET_SUBTITLE       0x30
 #define TAV_PACKET_SUBTITLE_KAR   0x31
@@ -43,6 +44,7 @@
 #define TAV_PACKET_EXTENDED_HDR   0xEF
 #define TAV_PACKET_LOOP_START     0xF0
 #define TAV_PACKET_LOOP_END       0xF1
+#define TAV_PACKET_GOP_SYNC       0xFC  // GOP sync packet (N frames decoded)
 #define TAV_PACKET_TIMECODE       0xFD
 #define TAV_PACKET_SYNC_NTSC      0xFE
 #define TAV_PACKET_SYNC           0xFF
@@ -55,6 +57,9 @@ typedef struct {
     int pframe_intra_count;
     int pframe_delta_count;
     int pframe_skip_count;
+    int gop_unified_count;
+    int gop_sync_count;
+    int total_gop_frames;
     int audio_count;
     int subtitle_count;
     int timecode_count;
@@ -87,6 +92,7 @@ const char* get_packet_type_name(uint8_t type) {
     switch (type) {
         case TAV_PACKET_IFRAME: return "I-FRAME";
         case TAV_PACKET_PFRAME: return "P-FRAME";
+        case TAV_PACKET_GOP_UNIFIED: return "GOP (3D DWT Unified)";
         case TAV_PACKET_AUDIO_MP2: return "AUDIO MP2";
         case TAV_PACKET_SUBTITLE: return "SUBTITLE (Simple)";
         case TAV_PACKET_SUBTITLE_KAR: return "SUBTITLE (Karaoke)";
@@ -98,6 +104,7 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_EXTENDED_HDR: return "EXTENDED HEADER";
         case TAV_PACKET_LOOP_START: return "LOOP START";
         case TAV_PACKET_LOOP_END: return "LOOP END";
+        case TAV_PACKET_GOP_SYNC: return "GOP SYNC";
         case TAV_PACKET_TIMECODE: return "TIMECODE";
         case TAV_PACKET_SYNC_NTSC: return "SYNC (NTSC)";
         case TAV_PACKET_SYNC: return "SYNC";
@@ -114,6 +121,7 @@ int should_display_packet(uint8_t type, display_options_t *opts) {
     if (opts->show_all) return 1;
 
     if (opts->show_video && (type == TAV_PACKET_IFRAME || type == TAV_PACKET_PFRAME ||
+        type == TAV_PACKET_GOP_UNIFIED || type == TAV_PACKET_GOP_SYNC ||
         (type >= 0x70 && type <= 0x7F))) return 1;
     if (opts->show_audio && type == TAV_PACKET_AUDIO_MP2) return 1;
     if (opts->show_subtitles && (type == TAV_PACKET_SUBTITLE || type == TAV_PACKET_SUBTITLE_KAR)) return 1;
@@ -449,6 +457,64 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
+            case TAV_PACKET_GOP_UNIFIED: {
+                // Unified GOP packet: [gop_size][motion_vectors...][compressed_size][data]
+                uint8_t gop_size;
+                if (fread(&gop_size, 1, 1, fp) != 1) break;
+
+                // Read all motion vectors
+                int16_t *motion_x = malloc(gop_size * sizeof(int16_t));
+                int16_t *motion_y = malloc(gop_size * sizeof(int16_t));
+                for (int i = 0; i < gop_size; i++) {
+                    if (fread(&motion_x[i], sizeof(int16_t), 1, fp) != 1) break;
+                    if (fread(&motion_y[i], sizeof(int16_t), 1, fp) != 1) break;
+                }
+
+                // Read compressed data size
+                uint32_t size;
+                if (fread(&size, sizeof(uint32_t), 1, fp) != 1) {
+                    free(motion_x);
+                    free(motion_y);
+                    break;
+                }
+
+                stats.total_video_bytes += size;
+                stats.gop_unified_count++;
+                stats.total_gop_frames += gop_size;
+
+                if (!opts.summary_only && display) {
+                    printf(" - GOP size=%u, data size=%u bytes (%.2f bytes/frame)",
+                           gop_size, size, (double)size / gop_size);
+
+                    // Always show motion vectors for GOP packets
+                    if (gop_size > 0) {
+                        printf("\n    Motion vectors (quarter-pixel):");
+                        for (int i = 0; i < gop_size; i++) {
+                            printf("\n      Frame %d: (%.2f, %.2f) px",
+                                   i, motion_x[i] / 4.0, motion_y[i] / 4.0);
+                        }
+                    }
+                }
+
+                free(motion_x);
+                free(motion_y);
+                fseek(fp, size, SEEK_CUR);
+                break;
+            }
+
+            case TAV_PACKET_GOP_SYNC: {
+                // GOP sync packet: [frame_count]
+                uint8_t frame_count;
+                if (fread(&frame_count, 1, 1, fp) != 1) break;
+
+                stats.gop_sync_count++;
+
+                if (!opts.summary_only && display) {
+                    printf(" - %u frames decoded from GOP block", frame_count);
+                }
+                break;
+            }
+
             case TAV_PACKET_IFRAME:
             case TAV_PACKET_PFRAME:
             case TAV_PACKET_VIDEO_CH2_I:
@@ -610,6 +676,12 @@ int main(int argc, char *argv[]) {
         printf(")");
     }
     printf("\n");
+    if (stats.gop_unified_count > 0) {
+        printf("  3D GOP packets:     %d (total frames: %d, avg %.1f frames/GOP)\n",
+               stats.gop_unified_count, stats.total_gop_frames,
+               (double)stats.total_gop_frames / stats.gop_unified_count);
+        printf("  GOP sync packets:   %d\n", stats.gop_sync_count);
+    }
     printf("  Mux video:          %d\n", stats.mux_video_count);
     printf("  Total video bytes:  %llu (%.2f MB)\n",
            (unsigned long long)stats.total_video_bytes,

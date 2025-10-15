@@ -955,6 +955,7 @@ transmission capability, and region-of-interest coding.
     <video packets>
     0x10: I-frame (intra-coded frame)
     0x11: P-frame (delta/skip frame)
+    0x12: GOP Unified (temporal 3D DWT with unified preprocessing)
     0x1F: (prohibited)
     0x20: MP2 audio packet
     0x30: Subtitle in "Simple" format
@@ -980,6 +981,7 @@ transmission capability, and region-of-interest coding.
     0xEF: TAV Extended Header
     0xF0: Loop point start (insert right AFTER the TC packet; no payload)
     0xF1: Loop point end (insert right AFTER the TC packet; no payload)
+    0xFC: GOP Sync packet (indicates N frames decoded from GOP block)
     0xFD: Timecode (TC) Packet [for frame 0, insert at the beginning; otherwise, insert right AFTER the sync]
     0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance; no payload)
     0xFF: Sync packet (no payload)
@@ -991,7 +993,7 @@ transmission capability, and region-of-interest coding.
         2. Standard metadata payloads (if any)
 
         Frame group:
-        1. TC Packet (0xFD) or File packet (0x1F) [mutually exclusive!]
+        1. TC Packet (0xFD) or Next TAV File (0x1F) [mutually exclusive!]
         2. Loop point packets
         3. Audio packets
         4. Subtitle packets
@@ -1045,10 +1047,57 @@ transmission capability, and region-of-interest coding.
     uint8  Packet Type (0xFE)
     uint64 Time since stream start in nanoseconds (this may NOT start from zero if the video is coming from a livestream)
 
-## Video Packet Structure
+## Video Packet Structure (0x10, 0x11)
     uint8  Packet Type
     uint32 Compressed Size
     *      Zstd-compressed Block Data
+
+## GOP Unified Packet Structure (0x12)
+Implemented on 2025-10-15 for temporal 3D DWT with unified preprocessing.
+This packet contains multiple frames encoded as a single spacetime block for optimal
+temporal compression.
+
+    uint8  Packet Type (0x12)
+    uint8  GOP Size (number of frames in this GOP, typically 16)
+    int16  Motion Vectors X[GOP Size] (quarter-pixel precision for global motion compensation)
+    int16  Motion Vectors Y[GOP Size] (quarter-pixel precision for global motion compensation)
+    uint32 Compressed Size
+    *      Zstd-compressed Unified Block Data
+
+### Unified Block Data Format
+The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single block:
+
+    uint8  Y Significance Maps[(width*height + 7) / 8 * GOP Size]     // All Y frames concatenated
+    uint8  Co Significance Maps[(width*height + 7) / 8 * GOP Size]    // All Co frames concatenated
+    uint8  Cg Significance Maps[(width*height + 7) / 8 * GOP Size]    // All Cg frames concatenated
+    int16  Y Non-zero Values[variable length]                          // All Y non-zero coefficients
+    int16  Co Non-zero Values[variable length]                         // All Co non-zero coefficients
+    int16  Cg Non-zero Values[variable length]                         // All Cg non-zero coefficients
+
+This layout enables Zstd to find patterns across both spatial and temporal dimensions,
+resulting in superior compression compared to per-frame encoding.
+
+### Motion Vectors
+- Stored in quarter-pixel units (divide by 4.0 for pixel displacement)
+- Used for global motion compensation (camera movement, scene translation)
+- Computed using FFT-based phase correlation for accurate frame alignment
+- First frame (frame 0) typically has motion vector (0, 0)
+
+### Temporal 3D DWT Process
+1. Apply 1D DWT across temporal axis (GOP frames)
+2. Apply 2D DWT on each spatial slice of temporal subbands
+3. Perceptual quantization with temporal-spatial awareness
+4. Unified significance map preprocessing across all frames/channels
+5. Single Zstd compression of entire GOP block
+
+## GOP Sync Packet Structure (0xFC)
+Indicates that N frames were decoded from a GOP Unified block.
+Decoders must track this to maintain proper frame count and synchronization.
+
+    uint8  Packet Type (0xFC)
+    uint8  Frame Count (number of frames that were decoded from preceding GOP block)
+
+Note: GOP Sync packets have no payload size field (fixed 2-byte packet).
 
 ## Block Data (per frame)
     uint8  Mode: encoding mode
