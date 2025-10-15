@@ -1059,6 +1059,70 @@ static void dwt_97_forward_1d(float *data, int length) {
     free(temp);
 }
 
+// 1D DWT using lifting scheme for 9/7 integer-reversible filter
+static void dwt_97_iint_forward_1d(float *data, int length) {
+    if (length < 2) return;
+    float *temp = malloc(length * sizeof(float));
+    int half = (length + 1) / 2;
+
+    for (int i = 0; i < half; ++i) temp[i] = data[2*i];
+    for (int i = 0; i < length/2; ++i) temp[half + i] = data[2*i + 1];
+
+    const int SHIFT = 16;
+    const int64_t ROUND = 1LL << (SHIFT - 1);
+    const int64_t A = -103949; // α
+    const int64_t B = -3472;   // β
+    const int64_t G = 57862;   // γ
+    const int64_t D = 29066;   // δ
+    const int64_t K_FP  = 80542; // ≈ 1.230174105 * 2^16
+    const int64_t Ki_FP = 53283; // ≈ (1/1.230174105) * 2^16
+
+    #define RN(x) (((x)>=0)?(((x)+ROUND)>>SHIFT):(-((-(x)+ROUND)>>SHIFT)))
+
+    // Predict α
+    for (int i = 0; i < length/2; ++i) {
+        int s = temp[i];
+        int sn = (i+1<half)? temp[i+1] : s;
+        temp[half+i] += RN(A * (int64_t)(s + sn));
+    }
+
+    // Update β
+    for (int i = 0; i < half; ++i) {
+        int d = (half+i<length)? temp[half+i]:0;
+        int dp = (i>0 && half+i-1<length)? temp[half+i-1]:d;
+        temp[i] += RN(B * (int64_t)(dp + d));
+    }
+
+    // Predict γ
+    for (int i = 0; i < length/2; ++i) {
+        int s = temp[i];
+        int sn = (i+1<half)? temp[i+1]:s;
+        temp[half+i] += RN(G * (int64_t)(s + sn));
+    }
+
+    // Update δ
+    for (int i = 0; i < half; ++i) {
+        int d = (half+i<length)? temp[half+i]:0;
+        int dp = (i>0 && half+i-1<length)? temp[half+i-1]:d;
+        temp[i] += RN(D * (int64_t)(dp + d));
+    }
+
+    // Scaling step (integer reversible)
+    for (int i = 0; i < half; ++i) {
+        temp[i] = (((int64_t)temp[i] * K_FP  + ROUND) >> SHIFT); // s * K
+    }
+    for (int i = 0; i < length/2; ++i) {
+        if (half + i < length) {
+            temp[half + i] = (((int64_t)temp[half + i] * Ki_FP + ROUND) >> SHIFT); // d / K
+        }
+    }
+
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+    #undef RN
+}
+
+
 // Four-point interpolating Deslauriers-Dubuc (DD-4) wavelet forward 1D transform
 // Uses four-sample prediction kernel: w[-1]=-1/16, w[0]=9/16, w[1]=9/16, w[2]=-1/16
 static void dwt_dd4_forward_1d(float *data, int length) {

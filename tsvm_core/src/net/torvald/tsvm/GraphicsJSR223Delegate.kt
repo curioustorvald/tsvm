@@ -5974,7 +5974,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
 
-        // Simple reconstruction (revert to working version)
+        // Simple reconstruction
         for (i in 0 until length) {
             if (i % 2 == 0) {
                 // Even positions: low-pass coefficients
@@ -5987,6 +5987,72 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 } else {
                     data[i] = 0.0f // Boundary case
                 }
+            }
+        }
+    }
+
+    fun tavApplyDWT97IintInverse1D(data: FloatArray, length: Int) {
+        if (data.size < 2) return
+        if (length < 2) return
+
+        val half = (length + 1) / 2
+        val temp = FloatArray(length)
+        for (i in 0 until length) temp[i] = data[i]
+
+        val SHIFT = 16
+        val ROUND = 1L shl (SHIFT - 1)
+
+        val A = -103949L // α
+        val B = -3472L   // β
+        val G = 57862L   // γ
+        val D = 29066L   // δ
+        val K_FP  = 80542L // ≈ 1.230174105 * 2^16
+        val Ki_FP = 53283L // ≈ (1/1.230174105) * 2^16
+
+        fun rn(x: Long): Float = if (x >= 0) ((x + ROUND) shr SHIFT).toInt().toFloat()
+        else (-(((-x) + ROUND) shr SHIFT)).toInt().toFloat()
+
+        // Undo scaling
+        for (i in 0 until half)
+            temp[i] = rn(Ki_FP * temp[i].toLong()) // s /= K
+        for (i in 0 until length / 2)
+            if (half + i < length)
+                temp[half + i] = rn(K_FP * temp[half + i].toLong()) // d *= K
+
+        // Undo δ
+        for (i in 0 until half) {
+            val d = if (half + i < length) temp[half + i] else 0f
+            val dp = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else d
+            temp[i] -= rn(D * (dp + d).toLong())
+        }
+
+        // Undo γ
+        for (i in 0 until length / 2) {
+            val s = temp[i]
+            val sn = if (i + 1 < half) temp[i + 1] else s
+            temp[half + i] -= rn(G * (s + sn).toLong())
+        }
+
+        // Undo β
+        for (i in 0 until half) {
+            val d = if (half + i < length) temp[half + i] else 0f
+            val dp = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else d
+            temp[i] -= rn(B * (dp + d).toLong())
+        }
+
+        // Undo α
+        for (i in 0 until length / 2) {
+            val s = temp[i]
+            val sn = if (i + 1 < half) temp[i + 1] else s
+            temp[half + i] -= rn(A * (s + sn).toLong())
+        }
+
+        // Merge back to original layout
+        for (i in 0 until length) {
+            data[i] = if ((i and 1) == 0) temp[i / 2]
+            else {
+                val idx = i / 2
+                if (half + idx < length) temp[half + idx] else 0f
             }
         }
     }
