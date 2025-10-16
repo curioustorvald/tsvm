@@ -1005,8 +1005,12 @@ try {
                 let motionY = new Array(gopSize)
 
                 for (let i = 0; i < gopSize; i++) {
-                    motionX[i] = seqread.readShort()  // Signed int16
-                    motionY[i] = seqread.readShort()
+                    // readShort() returns unsigned 16-bit, but motion vectors are signed int16
+                    let mx = seqread.readShort()
+                    let my = seqread.readShort()
+                    // Convert to signed: if > 32767, it's negative
+                    motionX[i] = (mx > 32767) ? (mx - 65536) : mx
+                    motionY[i] = (my > 32767) ? (my - 65536) : my
                 }
 
                 // Read compressed data size
@@ -1019,7 +1023,7 @@ try {
                 // Check if GOP fits in VM memory
                 const gopMemoryNeeded = gopSize * FRAME_SIZE
                 if (gopMemoryNeeded > MAXMEM) {
-                    throw new Error(`GOP too large: ${gopSize} frames needs ${(gopMemoryNeeded / 1048576).toFixed(2)}MB, but VM has only ${(MAXMEM / 1048576).toFixed(1)}MB. Max GOP size: 11 frames for 8MB system.`)
+                    throw new Error(`GOP too large: ${gopSize} frames needs ${(gopMemoryNeeded / 1048576).toFixed(2)}MB, but VM has only ${(MAXMEM / 1048576).toFixed(1)}MB. Max GOP size: 8 frames for 8MB system.`)
                 }
 
                 // Allocate GOP buffers outside try block so finally can free them

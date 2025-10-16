@@ -515,10 +515,10 @@ int main(int argc, char *argv[]) {
 
                     // Always show motion vectors for GOP packets with absolute frame numbers
                     if (gop_size > 0) {
-                        printf("\n    Motion vectors (quarter-pixel):");
+                        printf("\n    Motion vectors (1/16-pixel):");
                         for (int i = 0; i < gop_size; i++) {
-                            printf("\n      Frame %d (#%d): (%.2f, %.2f) px",
-                                   current_frame + i, i, motion_x[i] / 4.0, motion_y[i] / 4.0);
+                            printf("\n      Frame %d (#%d): (%.3f, %.3f) px",
+                                   current_frame + i, i, motion_x[i] / 16.0, motion_y[i] / 16.0);
                         }
                     }
                 }

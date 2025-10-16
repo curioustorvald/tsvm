@@ -168,6 +168,7 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
   - **Wavelet Support**: Multiple wavelet types for different compression characteristics
 - **JS Decoder**: `assets/disk0/tvdos/bin/playtav.js` - Native decoder for TAV format playback
 - **Hardware accelerated decoding**: Extended GraphicsJSR223Delegate.kt with TAV functions
+- **Packet analyser**: `video_encoder/tav_inspector.c` - Debugging tool that parses TAV packets into human-readable form
 - **Features**:
   - **Multiple Wavelet Types**: 5/3 reversible, 9/7 irreversible, CDF 13/7, DD-4, Haar
   - **Single-tile encoding**: One large DWT tile for optimal quality (no blocking artifacts)
@@ -276,7 +277,7 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 - **3D DWT**: Applies DWT in both spatial (2D) and temporal (1D) dimensions for optimal spacetime compression
 - **Unified GOP Preprocessing**: Single significance map for all frames and channels in a GOP (width×height×N_frames×3_channels)
 - **FFT-based Phase Correlation**: Uses FFTW3 library for accurate global motion estimation with quarter-pixel precision
-- **GOP Size**: Typically 16 frames (configurable), with scene change detection for adaptive GOPs
+- **GOP Size**: Typically 8 frames (configurable), with scene change detection for adaptive GOPs
 - **Single-frame Fallback**: GOP size of 1 automatically uses traditional I-frame encoding
 
 **Packet Format**:

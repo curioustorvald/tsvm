@@ -17,7 +17,7 @@
 #include <float.h>
 #include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251016"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251017"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -106,6 +106,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_ZSTD_LEVEL 9
 #define GOP_SIZE 8
 #define TEMPORAL_DECOMP_LEVEL 2
+#define MOTION_THRESHOLD 64.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
 #define MP2_DEFAULT_PACKET_SIZE 1152
@@ -310,8 +311,8 @@ typedef struct tav_encoder_s {
     float **gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
     float **gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
     float **gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
-    int16_t *gop_translation_x;  // [frame] - Translation X in quarter-pixel units
-    int16_t *gop_translation_y;  // [frame] - Translation Y in quarter-pixel units
+    int16_t *gop_translation_x;  // [frame] - Translation X in 1/16-pixel units
+    int16_t *gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units
     int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
 
     // Tile processing
@@ -1316,7 +1317,7 @@ static void dwt_53_inverse_1d(float *data, int length) {
 
 // FFT-based phase correlation for global motion estimation
 // Uses FFTW3 to compute cross-power spectrum and find translation peak
-// Returns quarter-pixel precision translation vectors
+// Returns 1/16-pixel precision translation vectors
 static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2_rgb,
                                int width, int height, int16_t *dx_qpel, int16_t *dy_qpel) {
     // Step 1: Convert RGB to grayscale
@@ -1404,7 +1405,7 @@ static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2
     if (dx > width / 2) dx -= width;
     if (dy > height / 2) dy -= height;
 
-    // Step 7: Quarter-pixel refinement using parabolic interpolation
+    // Step 7: Subpixel refinement using parabolic interpolation
     // Only refine if peak is not at boundary
     float subpixel_dx = 0.0f;
     float subpixel_dy = 0.0f;
@@ -1434,12 +1435,12 @@ static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2
         }
     }
 
-    // Step 8: Convert to quarter-pixel units
+    // Step 8: Convert to 1/16-pixel units (sixteenth-pixel precision)
     float final_dx = dx + subpixel_dx;
     float final_dy = dy + subpixel_dy;
 
-    *dx_qpel = (int16_t)roundf(final_dx * 4.0f);
-    *dy_qpel = (int16_t)roundf(final_dy * 4.0f);
+    *dx_qpel = (int16_t)roundf(final_dx * 16.0f);
+    *dy_qpel = (int16_t)roundf(final_dy * 16.0f);
 
     // Cleanup
     fftwf_destroy_plan(plan_fwd1);
@@ -1456,9 +1457,9 @@ static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2
 // Apply translation to frame (for frame alignment before temporal DWT)
 static void apply_translation(float *frame_data, int width, int height,
                              int16_t dx_qpel, int16_t dy_qpel, float *output) {
-    // Convert quarter-pixel to pixel (for now, just use integer translation)
-    int dx = dx_qpel / 4;
-    int dy = dy_qpel / 4;
+    // Convert 1/16-pixel to pixel (for now, just use integer translation)
+    int dx = dx_qpel / 16;
+    int dy = dy_qpel / 16;
 
     // Apply translation with boundary handling
     for (int y = 0; y < height; y++) {
@@ -1524,7 +1525,8 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
                                         int spatial_size,
                                         int base_quantiser,
                                         int is_chroma) {
-    const float BETA = 0.8f;  // Temporal scaling exponent (aggressive for temporal high-pass)
+    const float BETA = 0.6f;  // Temporal scaling exponent (aggressive for temporal high-pass)
+    const float KAPPA = 1.14f;
     const float TEMPORAL_BASE_SCALE = 1.0f;  // Don't reduce tLL quantization (same as intra)
 
     // Process each temporal subband independently (separable approach)
@@ -1541,7 +1543,7 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         //   - Level 0 (tLL): 16 * 1.0 * 2^0 = 16 (same as intra-only)
         //   - Level 1 (tH):  16 * 1.0 * 2^2.0 = 64 (4× base, aggressive)
         //   - Level 2 (tHH): 16 * 1.0 * 2^4.0 = 256 → clamped to 255 (very aggressive)
-        float temporal_scale = TEMPORAL_BASE_SCALE * powf(2.0f, BETA * temporal_level);
+        float temporal_scale = TEMPORAL_BASE_SCALE * powf(2.0f, BETA * powf(temporal_level, KAPPA));
         float temporal_quantiser = base_quantiser * temporal_scale;
 
         // Convert to integer for quantization
@@ -1604,10 +1606,10 @@ static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
                            &enc->gop_translation_y[frame_idx]);
 
         if (enc->verbose && (frame_idx < 3 || frame_idx == enc->gop_capacity - 1)) {
-            printf("  GOP frame %d: translation = (%.2f, %.2f) pixels\n",
+            printf("  GOP frame %d: translation = (%.3f, %.3f) pixels\n",
                    frame_idx,
-                   enc->gop_translation_x[frame_idx] / 4.0f,
-                   enc->gop_translation_y[frame_idx] / 4.0f);
+                   enc->gop_translation_x[frame_idx] / 16.0f,
+                   enc->gop_translation_y[frame_idx] / 16.0f);
         }
     } else {
         // First frame has no translation
@@ -1644,13 +1646,12 @@ static int gop_should_flush_motion(tav_encoder_t *enc) {
     int16_t dx = enc->gop_translation_x[last_idx];
     int16_t dy = enc->gop_translation_y[last_idx];
 
-    // Convert quarter-pixel to pixels
-    float dx_pixels = fabsf(dx / 4.0f);
-    float dy_pixels = fabsf(dy / 4.0f);
+    // Convert 1/16-pixel to pixels
+    float dx_pixels = fabsf(dx / 16.0f);
+    float dy_pixels = fabsf(dy / 16.0f);
 
     // Flush if motion exceeds threshold (24 pixels in any direction)
     // This indicates likely scene change or very fast motion
-    const float MOTION_THRESHOLD = 24.0f;
 
     if (dx_pixels > MOTION_THRESHOLD || dy_pixels > MOTION_THRESHOLD) {
         if (enc->verbose) {
@@ -1690,8 +1691,36 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         memcpy(gop_cg_coeffs[i], enc->gop_cg_frames[i], num_pixels * sizeof(float));
     }
 
-    // Step 0.5: Apply motion compensation to align frames before temporal DWT
-    // This uses the computed translation vectors to align each frame to the previous one
+    // Debug: Print original frame-to-frame motion vectors
+    if (enc->verbose && actual_gop_size >= 4) {
+        printf("Frame-to-frame motion vectors (before cumulative conversion):\n");
+        for (int i = 0; i < actual_gop_size; i++) {
+            printf("  Frame %d: 1/16px=(%d, %d) pixels=(%.3f, %.3f)\n",
+                   i, enc->gop_translation_x[i], enc->gop_translation_y[i],
+                   enc->gop_translation_x[i] / 16.0f, enc->gop_translation_y[i] / 16.0f);
+        }
+    }
+
+    // Step 0.5: Convert frame-to-frame motion vectors to cumulative (relative to frame 0)
+    // Phase correlation computes motion of frame[i] relative to frame[i-1]
+    // We need cumulative motion relative to frame 0 for proper alignment
+    for (int i = 2; i < actual_gop_size; i++) {
+        enc->gop_translation_x[i] += enc->gop_translation_x[i-1];
+        enc->gop_translation_y[i] += enc->gop_translation_y[i-1];
+    }
+
+    // Debug: Print cumulative motion vectors
+    if (enc->verbose && actual_gop_size >= 4) {
+        printf("Cumulative motion vectors (after conversion):\n");
+        for (int i = 0; i < actual_gop_size; i++) {
+            printf("  Frame %d: 1/16px=(%d, %d) pixels=(%.3f, %.3f)\n",
+                   i, enc->gop_translation_x[i], enc->gop_translation_y[i],
+                   enc->gop_translation_x[i] / 16.0f, enc->gop_translation_y[i] / 16.0f);
+        }
+    }
+
+    // Step 0.6: Apply motion compensation to align frames before temporal DWT
+    // This uses the cumulative translation vectors to align each frame to frame 0
     for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
         float *aligned_y = malloc(num_pixels * sizeof(float));
         float *aligned_co = malloc(num_pixels * sizeof(float));
@@ -1856,7 +1885,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         fwrite(&gop_size_byte, 1, 1, output);
         total_bytes_written += 1;
 
-        // Write all motion vectors (quarter-pixel precision) for the entire GOP
+        // Write all motion vectors (1/16-pixel precision) for the entire GOP
         for (int t = 0; t < actual_gop_size; t++) {
             int16_t dx = enc->gop_translation_x[t];
             int16_t dy = enc->gop_translation_y[t];
@@ -1973,34 +2002,39 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
 
             long long total_diff = 0;
             int changed_pixels = 0;
-            int num_pixels = enc->width * enc->height;
 
-            // Sample every 4th pixel for performance
-            for (int p = 0; p < num_pixels; p += 4) {
-                int offset = p * 3;
-                int r_diff = abs(frame2[offset] - frame1[offset]);
-                int g_diff = abs(frame2[offset + 1] - frame1[offset + 1]);
-                int b_diff = abs(frame2[offset + 2] - frame1[offset + 2]);
+            // Sample every 4th pixel for performance (still gives good detection)
+            for (int y = 0; y < enc->height; y += 2) {
+                for (int x = 0; x < enc->width; x += 2) {
+                    int offset = (y * enc->width + x) * 3;
 
-                int pixel_diff = r_diff + g_diff + b_diff;
-                total_diff += pixel_diff;
+                    // Calculate colour difference
+                    int r_diff = abs(frame2[offset] - frame1[offset]);
+                    int g_diff = abs(frame2[offset + 1] - frame1[offset + 1]);
+                    int b_diff = abs(frame2[offset + 2] - frame1[offset + 2]);
 
-                if (pixel_diff > 90) {
-                    changed_pixels++;
+                    int pixel_diff = r_diff + g_diff + b_diff;
+                    total_diff += pixel_diff;
+
+                    // Count significantly changed pixels (threshold of 30 per channel average)
+                    if (pixel_diff > 90) {
+                        changed_pixels++;
+                    }
                 }
             }
 
             // Scene change thresholds (same as detect_scene_change)
-            int sampled_pixels = (num_pixels + 3) / 4;
+            int sampled_pixels = (enc->height / 2) * (enc->width / 2);
             double avg_diff = (double)total_diff / sampled_pixels;
-            double change_ratio = (double)changed_pixels / sampled_pixels;
+            double changed_ratio = (double)changed_pixels / sampled_pixels;
+            double threshold = 0.30;
 
             // Scene change detected if either threshold exceeded
-            if (avg_diff > 15.0 || change_ratio > 0.4) {
+            if (changed_ratio > threshold) {
                 scene_change_frame = i;
                 if (enc->verbose) {
                     printf("Scene change detected within GOP at frame %d (avg_diff=%.2f, change_ratio=%.2f)\n",
-                           frame_numbers[i], avg_diff, change_ratio);
+                           frame_numbers[i], avg_diff, changed_ratio);
                 }
                 break;
             }
