@@ -1455,23 +1455,42 @@ static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2
 }
 
 // Apply translation to frame (for frame alignment before temporal DWT)
+// NO PADDING - only extracts the valid region that will be common across all frames
 static void apply_translation(float *frame_data, int width, int height,
                              int16_t dx_qpel, int16_t dy_qpel, float *output) {
     // Convert 1/16-pixel to pixel (for now, just use integer translation)
     int dx = dx_qpel / 16;
     int dy = dy_qpel / 16;
 
-    // Apply translation with boundary handling
+    // Apply translation WITHOUT padding - just shift the content
+    // Out-of-bounds regions will be cropped away later
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             int src_x = x - dx;
             int src_y = y - dy;
 
-            // Clamp to frame boundaries
+            // Clamp to valid region (this will create edge repetition, but those
+            // edges will be cropped away, so it doesn't matter what we put there)
             src_x = CLAMP(src_x, 0, width - 1);
             src_y = CLAMP(src_y, 0, height - 1);
 
             output[y * width + x] = frame_data[src_y * width + src_x];
+        }
+    }
+}
+
+// Extract cropped region from a frame after alignment
+static void extract_crop(const float *frame_data, int width, int height,
+                        int crop_left, int crop_right, int crop_top, int crop_bottom,
+                        float *cropped_output) {
+    int valid_width = width - crop_left - crop_right;
+    int valid_height = height - crop_top - crop_bottom;
+
+    for (int y = 0; y < valid_height; y++) {
+        for (int x = 0; x < valid_width; x++) {
+            int src_x = x + crop_left;
+            int src_y = y + crop_top;
+            cropped_output[y * valid_width + x] = frame_data[src_y * width + src_x];
         }
     }
 }
@@ -1598,7 +1617,7 @@ static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
     memcpy(enc->gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
 
     // Compute translation vector if not first frame
-    if (frame_idx > 0) {
+    /*if (frame_idx > 0) {
         phase_correlate_fft(enc->gop_rgb_frames[frame_idx - 1],
                            enc->gop_rgb_frames[frame_idx],
                            enc->width, enc->height,
@@ -1615,7 +1634,11 @@ static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
         // First frame has no translation
         enc->gop_translation_x[0] = 0;
         enc->gop_translation_y[0] = 0;
-    }
+    }*/
+
+    // disabling frame realigning: producing worse results in general
+    enc->gop_translation_x[frame_idx] = 0.0f;
+    enc->gop_translation_y[frame_idx] = 0.0f;
 
     enc->gop_frame_count++;
     return 0;
@@ -1675,7 +1698,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     }
 
     // Allocate working buffers for each channel
-    const int num_pixels = enc->width * enc->height;
+    int num_pixels = enc->width * enc->height;  // Will be updated if frames are cropped
     float **gop_y_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **gop_co_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **gop_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
@@ -1719,6 +1742,34 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         }
     }
 
+    // Step 0.5b: Calculate the valid region after alignment (crop bounds)
+    // Find the bounding box that's valid across all aligned frames
+    int min_dx = 0, max_dx = 0, min_dy = 0, max_dy = 0;
+    for (int i = 0; i < actual_gop_size; i++) {
+        int dx = enc->gop_translation_x[i] / 16;
+        int dy = enc->gop_translation_y[i] / 16;
+        if (dx < min_dx) min_dx = dx;
+        if (dx > max_dx) max_dx = dx;
+        if (dy < min_dy) min_dy = dy;
+        if (dy > max_dy) max_dy = dy;
+    }
+
+    // Crop region: the area valid in all frames
+    // When we shift right by +N, we lose N pixels on the left, so crop left edge by abs(min_dx)
+    // When we shift left by -N, we lose N pixels on the right, so crop right edge by max_dx
+    int crop_left = (min_dx < 0) ? -min_dx : 0;
+    int crop_right = (max_dx > 0) ? max_dx : 0;
+    int crop_top = (min_dy < 0) ? -min_dy : 0;
+    int crop_bottom = (max_dy > 0) ? max_dy : 0;
+
+    int valid_width = enc->width - crop_left - crop_right;
+    int valid_height = enc->height - crop_top - crop_bottom;
+
+    if (enc->verbose && (crop_left || crop_right || crop_top || crop_bottom)) {
+        printf("Valid region after alignment: %dx%d (cropped: L=%d R=%d T=%d B=%d)\n",
+               valid_width, valid_height, crop_left, crop_right, crop_top, crop_bottom);
+    }
+
     // Step 0.6: Apply motion compensation to align frames before temporal DWT
     // This uses the cumulative translation vectors to align each frame to frame 0
     for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
@@ -1753,23 +1804,122 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         free(aligned_cg);
     }
 
+    // Step 0.7: Expand frames to larger canvas that preserves ALL original pixels
+    // Calculate expanded canvas size (UNION of all aligned frames)
+    int canvas_width = enc->width + crop_left + crop_right;   // Original width + total shift range
+    int canvas_height = enc->height + crop_top + crop_bottom; // Original height + total shift range
+    int canvas_pixels = canvas_width * canvas_height;
+
+    if (enc->verbose && (crop_left || crop_right || crop_top || crop_bottom)) {
+        printf("Expanded canvas: %dx%d (original %dx%d + margins L=%d R=%d T=%d B=%d)\n",
+               canvas_width, canvas_height, enc->width, enc->height,
+               crop_left, crop_right, crop_top, crop_bottom);
+        printf("This preserves all original pixels from all frames after alignment\n");
+    }
+
+    // Allocate expanded canvas buffers
+    float **canvas_y_coeffs = malloc(actual_gop_size * sizeof(float*));
+    float **canvas_co_coeffs = malloc(actual_gop_size * sizeof(float*));
+    float **canvas_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
+
+    for (int i = 0; i < actual_gop_size; i++) {
+        canvas_y_coeffs[i] = calloc(canvas_pixels, sizeof(float));  // Zero-initialized
+        canvas_co_coeffs[i] = calloc(canvas_pixels, sizeof(float));
+        canvas_cg_coeffs[i] = calloc(canvas_pixels, sizeof(float));
+
+        // Place the aligned frame onto the canvas at the appropriate offset
+        // Each frame's aligned position determines where it sits on the canvas
+        int offset_x = crop_left;  // Frames are offset by the left margin
+        int offset_y = crop_top;   // Frames are offset by the top margin
+
+        // Copy the full aligned frame onto the canvas (preserves all original content)
+        for (int y = 0; y < enc->height; y++) {
+            for (int x = 0; x < enc->width; x++) {
+                int src_idx = y * enc->width + x;
+                int dst_idx = (y + offset_y) * canvas_width + (x + offset_x);
+                canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
+                canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
+                canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
+            }
+        }
+
+        // Fill margin areas with symmetric padding from frame edges
+        for (int y = 0; y < canvas_height; y++) {
+            for (int x = 0; x < canvas_width; x++) {
+                // Skip pixels in the original frame region (already copied)
+                if (y >= offset_y && y < offset_y + enc->height &&
+                    x >= offset_x && x < offset_x + enc->width) {
+                    continue;
+                }
+
+                // Calculate position relative to original frame
+                int src_x = x - offset_x;
+                int src_y = y - offset_y;
+
+                // Apply symmetric padding (mirroring)
+                if (src_x < 0) {
+                    src_x = -src_x - 1;  // Mirror left edge: -1→0, -2→1, -3→2
+                } else if (src_x >= enc->width) {
+                    src_x = 2 * enc->width - src_x - 1;  // Mirror right edge
+                }
+
+                if (src_y < 0) {
+                    src_y = -src_y - 1;  // Mirror top edge
+                } else if (src_y >= enc->height) {
+                    src_y = 2 * enc->height - src_y - 1;  // Mirror bottom edge
+                }
+
+                // Clamp to valid range (safety for extreme cases)
+                src_x = CLAMP(src_x, 0, enc->width - 1);
+                src_y = CLAMP(src_y, 0, enc->height - 1);
+
+                // Copy mirrored pixel from original frame to canvas margin
+                int src_idx = src_y * enc->width + src_x;
+                int dst_idx = y * canvas_width + x;
+                canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
+                canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
+                canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
+            }
+        }
+
+        // Free the original frame (no longer needed)
+        free(gop_y_coeffs[i]);
+        free(gop_co_coeffs[i]);
+        free(gop_cg_coeffs[i]);
+    }
+
+    // Replace pointers with expanded canvas
+    free(gop_y_coeffs);
+    free(gop_co_coeffs);
+    free(gop_cg_coeffs);
+    gop_y_coeffs = canvas_y_coeffs;
+    gop_co_coeffs = canvas_co_coeffs;
+    gop_cg_coeffs = canvas_cg_coeffs;
+
+    // Update dimensions to canvas size
+    valid_width = canvas_width;
+    valid_height = canvas_height;
+    num_pixels = canvas_pixels;
+
     // Step 1: For single-frame GOP, skip temporal DWT and use traditional I-frame path
     if (actual_gop_size == 1) {
         // Apply only 2D spatial DWT (no temporal transform for single frame)
-        dwt_2d_forward_flexible(gop_y_coeffs[0], enc->width, enc->height,
+        // Use cropped dimensions (will be full size if no motion)
+        dwt_2d_forward_flexible(gop_y_coeffs[0], valid_width, valid_height,
                               enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(gop_co_coeffs[0], enc->width, enc->height,
+        dwt_2d_forward_flexible(gop_co_coeffs[0], valid_width, valid_height,
                               enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(gop_cg_coeffs[0], enc->width, enc->height,
+        dwt_2d_forward_flexible(gop_cg_coeffs[0], valid_width, valid_height,
                               enc->decomp_levels, enc->wavelet_filter);
     } else {
         // Multi-frame GOP: Apply 3D DWT (temporal + spatial) to each channel
         // Note: This modifies gop_*_coeffs in-place
-        dwt_3d_forward(gop_y_coeffs, enc->width, enc->height, actual_gop_size,
+        // Use cropped dimensions to encode only the valid region
+        dwt_3d_forward(gop_y_coeffs, valid_width, valid_height, actual_gop_size,
                        enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-        dwt_3d_forward(gop_co_coeffs, enc->width, enc->height, actual_gop_size,
+        dwt_3d_forward(gop_co_coeffs, valid_width, valid_height, actual_gop_size,
                        enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-        dwt_3d_forward(gop_cg_coeffs, enc->width, enc->height, actual_gop_size,
+        dwt_3d_forward(gop_cg_coeffs, valid_width, valid_height, actual_gop_size,
                        enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
     }
 
@@ -1875,7 +2025,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     } else {
         // Multi-frame GOP: use unified 3D DWT encoding
         // Write unified GOP packet header
-        // Packet structure: [packet_type=0x12][gop_size][motion_vectors...][compressed_size][compressed_data]
+        // Packet structure: [packet_type=0x12][gop_size][crop_info][motion_vectors...][compressed_size][compressed_data]
         uint8_t packet_type = TAV_PACKET_GOP_UNIFIED;
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
@@ -1884,6 +2034,18 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         uint8_t gop_size_byte = (uint8_t)actual_gop_size;
         fwrite(&gop_size_byte, 1, 1, output);
         total_bytes_written += 1;
+
+        // Write canvas expansion information (4 bytes)
+        // This tells the decoder the margins added to preserve all original pixels
+        // The encoded canvas is larger than the original frame to preserve edge content after alignment
+        uint8_t canvas_margins[4] = {
+            (uint8_t)crop_left,    // Left margin
+            (uint8_t)crop_right,   // Right margin
+            (uint8_t)crop_top,     // Top margin
+            (uint8_t)crop_bottom   // Bottom margin
+        };
+        fwrite(canvas_margins, 1, 4, output);
+        total_bytes_written += 4;
 
         // Write all motion vectors (1/16-pixel precision) for the entire GOP
         for (int t = 0; t < actual_gop_size; t++) {

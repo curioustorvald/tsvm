@@ -3181,11 +3181,35 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    /**
+     * Symmetric padding (mirroring) for edge handling in motion compensation.
+     * This provides smoother edges than simple clamping/replication.
+     *
+     * @param coord The coordinate to mirror if out of bounds
+     * @param size The dimension size (width or height)
+     * @return The mirrored coordinate within valid range [0, size-1]
+     */
+    private fun symmetricPadding(coord: Int, size: Int): Int {
+        var mirrored = coord
+
+        // Mirror for negative coordinates: -1 -> 0, -2 -> 1, -3 -> 2, etc.
+        if (mirrored < 0) {
+            mirrored = -mirrored - 1
+        }
+        // Mirror for coordinates beyond bounds: size -> size-1, size+1 -> size-2, etc.
+        else if (mirrored >= size) {
+            mirrored = 2 * size - mirrored - 1
+        }
+
+        // Final clamp to ensure we're within bounds (handles extreme cases)
+        return mirrored.coerceIn(0, size - 1)
+    }
+
     private fun tevHandleMotionBlockTwoPass(startX: Int, startY: Int, mvX: Int, mvY: Int,
                                             currentRGBAddr: Long, prevRGBAddr: Long,
                                             width: Int, height: Int, thisAddrIncVec: Int, prevAddrIncVec: Int,
                                             debugMotionVectors: Boolean) {
-        // Copy 16x16 block with motion compensation
+        // Copy 16x16 block with motion compensation using symmetric padding
         for (py in 0 until 16) {
             val y = startY + py
             if (y >= height) break
@@ -3194,8 +3218,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val x = startX + px
                 if (x >= width) break
 
-                val srcX = (x + mvX).coerceIn(0, width - 1)
-                val srcY = (y + mvY).coerceIn(0, height - 1)
+                // Use symmetric padding instead of clamping for smoother edges
+                val srcX = symmetricPadding(x + mvX, width)
+                val srcY = symmetricPadding(y + mvY, height)
 
                 val srcOffset = (srcY * width + srcX) * 3
                 val dstOffset = (y * width + x) * 3
@@ -3226,8 +3251,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val x = startX + px
                 if (x >= width) break
 
-                val srcX = (x + mvX).coerceIn(0, width - 1)
-                val srcY = (y + mvY).coerceIn(0, height - 1)
+                // Use symmetric padding for smoother edges (commented-out code updated for consistency)
+                val srcX = symmetricPadding(x + mvX, width)
+                val srcY = symmetricPadding(y + mvY, height)
 
                 val srcOffset = (srcY * width + srcX) * 3
                 val r = vm.peek(prevRGBAddr + srcOffset * prevAddrIncVec)?.toInt() ?: 0
@@ -6205,6 +6231,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     /**
      * Apply inverse translation (motion compensation) to a frame.
      * Inverse operation: shifts by +dx, +dy (opposite of forward encoder).
+     * Uses symmetric boundary extension (mirror padding) to match encoder.
      *
      * @param frameData Input frame data to shift
      * @param width Frame width
@@ -6215,14 +6242,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun applyInverseTranslation(frameData: FloatArray, width: Int, height: Int, dx: Int, dy: Int) {
         val output = FloatArray(width * height)
 
-        // Apply inverse translation with boundary clamping
+        // Apply inverse translation with symmetric boundary extension (mirror padding)
         for (y in 0 until height) {
             for (x in 0 until width) {
                 // Inverse: shift by +dx, +dy (opposite of encoder's -dx, -dy)
                 var srcX = x + dx
                 var srcY = y + dy
 
-                // Clamp to frame boundaries
+                // Symmetric extension at boundaries (mirror padding)
+                // This gives smooth edges instead of replicated stripes
+                if (srcX < 0) {
+                    srcX = -srcX - 1  // Mirror left edge
+                } else if (srcX >= width) {
+                    srcX = 2 * width - srcX - 1  // Mirror right edge
+                }
+
+                if (srcY < 0) {
+                    srcY = -srcY - 1  // Mirror top edge
+                } else if (srcY >= height) {
+                    srcY = 2 * height - srcY - 1  // Mirror bottom edge
+                }
+
+                // Clamp after mirroring (in case of very large shifts)
                 srcX = srcX.coerceIn(0, width - 1)
                 srcY = srcY.coerceIn(0, height - 1)
 
@@ -6244,8 +6285,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
      * @param motionVectorsX X motion vectors in 1/16-pixel units
      * @param motionVectorsY Y motion vectors in 1/16-pixel units
      * @param outputRGBAddrs Array of output RGB buffer addresses
-     * @param width Frame width
-     * @param height Frame height
+     * @param width Original frame width (output dimensions)
+     * @param height Original frame height (output dimensions)
+     * @param canvasWidth Expanded canvas width (for motion compensation)
+     * @param canvasHeight Expanded canvas height (for motion compensation)
+     * @param marginLeft Left margin to crop from expanded canvas
+     * @param marginTop Top margin to crop from expanded canvas
      * @param qIndex Quality index
      * @param qYGlobal Global Y quantizer
      * @param qCoGlobal Global Co quantizer
@@ -6265,6 +6310,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         outputRGBAddrs: LongArray,
         width: Int,
         height: Int,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        marginLeft: Int,
+        marginTop: Int,
         qIndex: Int,
         qYGlobal: Int,
         qCoGlobal: Int,
@@ -6280,7 +6329,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         dbgOut["qCg"] = qCgGlobal
         dbgOut["frameMode"] = "G"
 
-        val numPixels = width * height
+        // Use expanded canvas dimensions for DWT processing
+        val canvasPixels = canvasWidth * canvasHeight
+        val outputPixels = width * height
 
         // Step 1: Decompress unified GOP block
         val compressedData = ByteArray(compressedSize)
@@ -6305,17 +6356,17 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val quantizedCoeffs = tavPostprocessGopUnified(
             decompressedData,
             gopSize,
-            numPixels,
+            canvasPixels,  // Use expanded canvas size
             channelLayout
         )
 
-        // Step 3: Allocate GOP buffers for float coefficients
-        val gopY = Array(gopSize) { FloatArray(numPixels) }
-        val gopCo = Array(gopSize) { FloatArray(numPixels) }
-        val gopCg = Array(gopSize) { FloatArray(numPixels) }
+        // Step 3: Allocate GOP buffers for float coefficients (expanded canvas size)
+        val gopY = Array(gopSize) { FloatArray(canvasPixels) }
+        val gopCo = Array(gopSize) { FloatArray(canvasPixels) }
+        val gopCg = Array(gopSize) { FloatArray(canvasPixels) }
 
-        // Step 4: Calculate subband layout (needed for perceptual dequantization)
-        val subbands = calculateSubbandLayout(width, height, spatialLevels)
+        // Step 4: Calculate subband layout for expanded canvas (needed for perceptual dequantization)
+        val subbands = calculateSubbandLayout(canvasWidth, canvasHeight, spatialLevels)
 
         // Step 5: Dequantize with temporal-spatial scaling
         for (t in 0 until gopSize) {
@@ -6347,49 +6398,60 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             )
         }
 
-        // Step 6: Apply inverse 3D DWT (spatial first, then temporal)
-        tavApplyInverse3DDWT(gopY, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCo, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCg, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        // Step 6: Apply inverse 3D DWT (spatial first, then temporal) on expanded canvas
+        tavApplyInverse3DDWT(gopY, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCo, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCg, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
 
-        // Step 7: Apply inverse motion compensation (shift frames back)
+        // Step 7: Apply inverse motion compensation (shift frames back) on expanded canvas
         // Note: Motion vectors are in 1/16-pixel units, cumulative relative to frame 0
         for (t in 1 until gopSize) {  // Skip frame 0 (reference)
             val dx = motionVectorsX[t] / 16  // Convert to pixel units
             val dy = motionVectorsY[t] / 16
 
             if (dx != 0 || dy != 0) {
-                applyInverseTranslation(gopY[t], width, height, dx, dy)
-                applyInverseTranslation(gopCo[t], width, height, dx, dy)
-                applyInverseTranslation(gopCg[t], width, height, dx, dy)
+                applyInverseTranslation(gopY[t], canvasWidth, canvasHeight, dx, dy)
+                applyInverseTranslation(gopCo[t], canvasWidth, canvasHeight, dx, dy)
+                applyInverseTranslation(gopCg[t], canvasWidth, canvasHeight, dx, dy)
             }
         }
 
-        // Step 8: Convert each frame to RGB and write to output buffers
+        // Step 8: Crop expanded canvas to original dimensions and convert to RGB
         for (t in 0 until gopSize) {
             val rgbAddr = outputRGBAddrs[t]
 
-            for (i in 0 until numPixels) {
-                val y = gopY[t][i]
-                val co = gopCo[t][i]
-                val cg = gopCg[t][i]
+            // Crop from expanded canvas (canvasWidth x canvasHeight) to output (width x height)
+            for (row in 0 until height) {
+                for (col in 0 until width) {
+                    // Source pixel in expanded canvas
+                    val canvasX = col + marginLeft
+                    val canvasY = row + marginTop
+                    val canvasIdx = canvasY * canvasWidth + canvasX
 
-                // YCoCg-R to RGB conversion
-                val tmp = y - (cg / 2.0f)
-                val g = cg + tmp
-                val b = tmp - (co / 2.0f)
-                val r = b + co
+                    // Destination pixel in output buffer
+                    val outIdx = row * width + col
 
-                // Clamp to 0-255 range
-                val rClamped = r.toInt().coerceIn(0, 255)
-                val gClamped = g.toInt().coerceIn(0, 255)
-                val bClamped = b.toInt().coerceIn(0, 255)
+                    val yVal = gopY[t][canvasIdx]
+                    val co = gopCo[t][canvasIdx]
+                    val cg = gopCg[t][canvasIdx]
 
-                // Write RGB24 format (3 bytes per pixel)
-                val offset = rgbAddr + i * 3L
-                vm.usermem[offset] = rClamped.toByte()
-                vm.usermem[offset + 1] = gClamped.toByte()
-                vm.usermem[offset + 2] = bClamped.toByte()
+                    // YCoCg-R to RGB conversion
+                    val tmp = yVal - (cg / 2.0f)
+                    val g = cg + tmp
+                    val b = tmp - (co / 2.0f)
+                    val r = b + co
+
+                    // Clamp to 0-255 range
+                    val rClamped = r.toInt().coerceIn(0, 255)
+                    val gClamped = g.toInt().coerceIn(0, 255)
+                    val bClamped = b.toInt().coerceIn(0, 255)
+
+                    // Write RGB24 format (3 bytes per pixel)
+                    val offset = rgbAddr + outIdx * 3L
+                    vm.usermem[offset] = rClamped.toByte()
+                    vm.usermem[offset + 1] = gClamped.toByte()
+                    vm.usermem[offset + 2] = bClamped.toByte()
+                }
             }
         }
 

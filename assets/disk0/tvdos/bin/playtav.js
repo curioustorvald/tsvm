@@ -999,7 +999,18 @@ try {
                 // Read GOP size (number of frames in this GOP, 1-16)
                 const gopSize = seqread.readOneByte()
 
-                // Read motion vectors (quarter-pixel units, int16)
+                // Read canvas expansion margins (4 bytes)
+                // Encoder expands canvas to preserve all original pixels from all aligned frames
+                const marginLeft = seqread.readOneByte()
+                const marginRight = seqread.readOneByte()
+                const marginTop = seqread.readOneByte()
+                const marginBottom = seqread.readOneByte()
+
+                // Calculate expanded canvas dimensions
+                const canvasWidth = header.width + marginLeft + marginRight
+                const canvasHeight = header.height + marginTop + marginBottom
+
+                // Read motion vectors (1/16-pixel units, int16)
                 // Encoder writes ALL motion vectors including frame 0
                 let motionX = new Array(gopSize)
                 let motionY = new Array(gopSize)
@@ -1042,7 +1053,7 @@ try {
                 try {
                     let decodeStart = sys.nanoTime()
 
-                    // Call GOP decoder
+                    // Call GOP decoder with canvas expansion information
                     const [r1, r2] = graphics.tavDecodeGopUnified(
                         compressedPtr,
                         compressedSize,
@@ -1050,8 +1061,12 @@ try {
                         motionX,
                         motionY,
                         gopRGBBuffers,  // Array of output buffer addresses
-                        header.width,
-                        header.height,
+                        header.width,   // Original frame width
+                        header.height,  // Original frame height
+                        canvasWidth,    // Expanded canvas width (preserves all pixels)
+                        canvasHeight,   // Expanded canvas height (preserves all pixels)
+                        marginLeft,     // Left margin
+                        marginTop,      // Top margin
                         header.qualityLevel,
                         QLUT[header.qualityY],
                         QLUT[header.qualityCo],
