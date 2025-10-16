@@ -4542,6 +4542,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         val framesPerSubband = numFrames shr temporalLevels  // numFrames / 2^temporalLevels
 
+        // Safety check: ensure we have enough frames for the temporal levels
+        // Minimum frames needed = 2^temporalLevels
+        if (framesPerSubband == 0) {
+            // Not enough frames for this many temporal levels - treat all as base level
+            return 0
+        }
+
         // Determine which temporal subband this frame belongs to
         val subbandIdx = frameIdx / framesPerSubband
 
@@ -4863,6 +4870,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                         0x00 -> { // TAV_MODE_SKIP
                             // Copy 280x224 tile from previous frame to current frame
                             tavCopyTileRGB(tileX, tileY, currentRGBAddr, prevRGBAddr, width, height)
+                            println("SKIP tile at frame $frameCount")
                             dbgOut["frameMode"] = "S"
                         }
                         0x01 -> { // TAV_MODE_INTRA
@@ -4870,7 +4878,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                             readPtr = tavDecodeDWTIntraTileRGB(qIndex, qYGlobal, channelLayout, readPtr, tileX, tileY, currentRGBAddr,
                                                           width, height, qY, qCo, qCg,
                                                           waveletFilter, decompLevels, isLossless, tavVersion, isMonoblock, frameCount)
-                            dbgOut["frameMode"] = " "
+                            dbgOut["frameMode"] = "I"
                         }
                         0x02 -> { // TAV_MODE_DELTA (with optional Haar wavelet)
                             // Coefficient delta encoding for efficient P-frames
@@ -6275,7 +6283,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         spatialFilter: Int = 1,
         spatialLevels: Int = 6,
         temporalLevels: Int = 2
-    ): Int {
+    ): Array<Any> {
+        val dbgOut = HashMap<String, Any>()
+        dbgOut["qY"] = qYGlobal
+        dbgOut["qCo"] = qCoGlobal
+        dbgOut["qCg"] = qCgGlobal
+        dbgOut["frameMode"] = "G"
+
         val numPixels = width * height
 
         // Step 1: Decompress unified GOP block
@@ -6294,7 +6308,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         } catch (e: Exception) {
             println("ERROR: Zstd decompression failed: ${e.message}")
-            return 0
+            return arrayOf(0, dbgOut)
         }
 
         // Step 2: Postprocess unified block to per-frame coefficients
@@ -6318,10 +6332,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val temporalLevel = getTemporalSubbandLevel(t, gopSize, temporalLevels)
             val temporalScale = getTemporalQuantizerScale(temporalLevel)
 
-            // Apply temporal scaling to base quantizers
-            val baseQY = (qYGlobal * temporalScale).coerceIn(1.0f, 255.0f)
-            val baseQCo = (qCoGlobal * temporalScale).coerceIn(1.0f, 255.0f)
-            val baseQCg = (qCgGlobal * temporalScale).coerceIn(1.0f, 255.0f)
+            // Apply temporal scaling to base quantizers for each channel
+            val baseQY = (qYGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
+            val baseQCo = (qCoGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
+            val baseQCg = (qCgGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
 
             // Use existing perceptual dequantization for spatial weighting
             dequantiseDWTSubbandsPerceptual(
@@ -6389,7 +6403,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }
         }
 
-        return gopSize
+        return arrayOf(gopSize, dbgOut)
     }
 
     // Biorthogonal 13/7 wavelet inverse 1D transform

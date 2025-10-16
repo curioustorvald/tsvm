@@ -17,7 +17,7 @@
 #include <float.h>
 #include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251015"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251016"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -652,6 +652,9 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                        int *frame_numbers, int actual_gop_size);
 static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                                    int *frame_numbers, int force_flush);
+static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
+                                  const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
+                                  uint8_t mode, uint8_t *buffer);
 static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int levels, int filter_type);
 static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height, int levels);
 static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
@@ -1660,7 +1663,7 @@ static int gop_should_flush_motion(tav_encoder_t *enc) {
     return 0;
 }
 
-// Flush GOP: apply 3D DWT, quantize, serialize, and write to output
+// Flush GOP: apply 3D DWT, quantize, serialise, and write to output
 // Returns number of bytes written, or 0 on error
 // This function processes the entire GOP and writes all frames with temporal 3D DWT
 static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
@@ -1721,14 +1724,25 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         free(aligned_cg);
     }
 
-    // Step 1: Apply 3D DWT (temporal + spatial) to each channel
-    // Note: This modifies gop_*_coeffs in-place
-    dwt_3d_forward(gop_y_coeffs, enc->width, enc->height, actual_gop_size,
-                   enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-    dwt_3d_forward(gop_co_coeffs, enc->width, enc->height, actual_gop_size,
-                   enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-    dwt_3d_forward(gop_cg_coeffs, enc->width, enc->height, actual_gop_size,
-                   enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+    // Step 1: For single-frame GOP, skip temporal DWT and use traditional I-frame path
+    if (actual_gop_size == 1) {
+        // Apply only 2D spatial DWT (no temporal transform for single frame)
+        dwt_2d_forward_flexible(gop_y_coeffs[0], enc->width, enc->height,
+                              enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(gop_co_coeffs[0], enc->width, enc->height,
+                              enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(gop_cg_coeffs[0], enc->width, enc->height,
+                              enc->decomp_levels, enc->wavelet_filter);
+    } else {
+        // Multi-frame GOP: Apply 3D DWT (temporal + spatial) to each channel
+        // Note: This modifies gop_*_coeffs in-place
+        dwt_3d_forward(gop_y_coeffs, enc->width, enc->height, actual_gop_size,
+                       enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+        dwt_3d_forward(gop_co_coeffs, enc->width, enc->height, actual_gop_size,
+                       enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+        dwt_3d_forward(gop_cg_coeffs, enc->width, enc->height, actual_gop_size,
+                       enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+    }
 
     // Step 2: Allocate quantized coefficient buffers
     int16_t **quant_y = malloc(actual_gop_size * sizeof(int16_t*));
@@ -1742,12 +1756,17 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     }
 
     // Step 3: Quantize 3D DWT coefficients with temporal-spatial quantization
+    // Use channel-specific quantizers from encoder settings
+    int qY = base_quantiser;  // Y quantizer passed as parameter
+    int qCo = QLUT[enc->quantiser_co];  // Co quantizer from encoder
+    int qCg = QLUT[enc->quantiser_cg];  // Cg quantizer from encoder
+
     quantise_3d_dwt_coefficients(enc, gop_y_coeffs, quant_y, actual_gop_size,
-                                 num_pixels, base_quantiser, 0);  // Luma
+                                 num_pixels, qY, 0);  // Luma
     quantise_3d_dwt_coefficients(enc, gop_co_coeffs, quant_co, actual_gop_size,
-                                 num_pixels, base_quantiser, 1);  // Chroma Co
+                                 num_pixels, qCo, 1);  // Chroma Co
     quantise_3d_dwt_coefficients(enc, gop_cg_coeffs, quant_cg, actual_gop_size,
-                                 num_pixels, base_quantiser, 1);  // Chroma Cg
+                                 num_pixels, qCg, 1);  // Chroma Cg
 
     // Step 4: Preprocessing and compression
     size_t total_bytes_written = 0;
@@ -1755,20 +1774,26 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     // Write timecode packet for first frame in GOP
     write_timecode_packet(output, frame_numbers[0], enc->output_fps, enc->is_ntsc_framerate);
 
-    // Single-frame GOP fallback: use traditional I-frame encoding
+    // Single-frame GOP fallback: use traditional I-frame encoding with serialise_tile_data
     if (actual_gop_size == 1) {
         // Write I-frame packet header (no motion vectors, no GOP overhead)
         uint8_t packet_type = TAV_PACKET_IFRAME;
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
 
-        // Preprocess single frame using standard variable layout
-        size_t max_preprocessed_size = (num_pixels * 3 * 2 + 7) / 8 + (num_pixels * 3 * sizeof(int16_t));
-        uint8_t *preprocessed_buffer = malloc(max_preprocessed_size);
+        // Allocate buffer for uncompressed tile data
+        // Use same format as compress_and_write_frame: serialise_tile_data
+        const size_t max_tile_size = 4 + (num_pixels * 3 * sizeof(int16_t));
+        uint8_t *uncompressed_buffer = malloc(max_tile_size);
 
-        size_t preprocessed_size = preprocess_coefficients_variable_layout(
-            quant_y[0], quant_co[0], quant_cg[0], NULL,
-            num_pixels, enc->channel_layout, preprocessed_buffer);
+        // Use serialise_tile_data with DWT-transformed float coefficients (before quantization)
+        // This matches the traditional I-frame path in compress_and_write_frame
+        size_t tile_size = serialise_tile_data(enc, 0, 0,
+                                               gop_y_coeffs[0], gop_co_coeffs[0], gop_cg_coeffs[0],
+                                               TAV_MODE_INTRA, uncompressed_buffer);
+
+        size_t preprocessed_size = tile_size;
+        uint8_t *preprocessed_buffer = uncompressed_buffer;
 
         // Compress with Zstd
         size_t max_compressed_size = ZSTD_compressBound(preprocessed_size);
@@ -1808,6 +1833,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         // Cleanup
         free(preprocessed_buffer);
         free(compressed_buffer);
+
+        // Write SYNC packet after single-frame GOP I-frame
+        uint8_t sync_packet = TAV_PACKET_SYNC;
+        fwrite(&sync_packet, 1, 1, output);
+        total_bytes_written += 1;
 
         if (enc->verbose) {
             printf("Frame %d (single-frame GOP as I-frame): %zu bytes\n",
@@ -5651,8 +5681,11 @@ int main(int argc, char *argv[]) {
             process_subtitles(enc, true_frame_count, enc->output_fp);
 
             // Write a sync packet only after a video is been coded
-            uint8_t sync_packet = TAV_PACKET_SYNC;
-            fwrite(&sync_packet, 1, 1, enc->output_fp);
+            // For GOP encoding, GOP_SYNC packet already serves as sync - don't emit extra SYNC
+            if (!enc->enable_temporal_dwt) {
+                uint8_t sync_packet = TAV_PACKET_SYNC;
+                fwrite(&sync_packet, 1, 1, enc->output_fp);
+            }
 
             // NTSC frame duplication: emit extra sync packet for every 1000n+500 frames
             if (enc->is_ntsc_framerate && (frame_count % 1000 == 500)) {
@@ -5709,9 +5742,7 @@ int main(int argc, char *argv[]) {
         if (final_packet_size == 0) {
             fprintf(stderr, "Warning: Failed to flush final GOP frames\n");
         } else {
-            // Write sync packet after final GOP
-            uint8_t sync_packet = TAV_PACKET_SYNC;
-            fwrite(&sync_packet, 1, 1, enc->output_fp);
+            // GOP_SYNC packet already written by gop_process_and_flush - no additional SYNC needed
             printf("Final GOP flushed successfully (%zu bytes)\n", final_packet_size);
         }
     }

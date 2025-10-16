@@ -4,6 +4,8 @@
 // Usage: playtav moviefile.tav [options]
 // Options: -i (interactive)
 
+const MAXMEM = sys.maxmem()
+
 const WIDTH = 560
 const HEIGHT = 448
 const TAV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x41, 0x56] // "\x1FTSVM TAV"
@@ -1016,8 +1018,8 @@ try {
 
                 // Check if GOP fits in VM memory
                 const gopMemoryNeeded = gopSize * FRAME_SIZE
-                if (gopMemoryNeeded > 8 * 1024 * 1024) {
-                    throw new Error(`GOP too large: ${gopSize} frames needs ${(gopMemoryNeeded / 1024 / 1024).toFixed(2)}MB, but VM has only 8MB. Max GOP size: 11 frames.`)
+                if (gopMemoryNeeded > MAXMEM) {
+                    throw new Error(`GOP too large: ${gopSize} frames needs ${(gopMemoryNeeded / 1048576).toFixed(2)}MB, but VM has only ${(MAXMEM / 1048576).toFixed(1)}MB. Max GOP size: 11 frames for 8MB system.`)
                 }
 
                 // Allocate GOP buffers outside try block so finally can free them
@@ -1037,7 +1039,7 @@ try {
                     let decodeStart = sys.nanoTime()
 
                     // Call GOP decoder
-                    const framesDecoded = graphics.tavDecodeGopUnified(
+                    const [r1, r2] = graphics.tavDecodeGopUnified(
                         compressedPtr,
                         compressedSize,
                         gopSize,
@@ -1056,14 +1058,18 @@ try {
                         2  // temporalLevels (hardcoded for now, could be in header)
                     )
 
+                    const framesDecoded = r1
+                    decoderDbgInfo = r2
+
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
                     decompressTime = 0  // Included in decode time
 
-                    // Display each decoded frame
+                    // Display each decoded frame with proper timing
                     for (let i = 0; i < framesDecoded; i++) {
-                        let uploadStart = sys.nanoTime()
+                        let frameStart = sys.nanoTime()
+                        let uploadStart = frameStart
 
-                        // Upload GOP frame directly (no copy needed - already in ARGB format)
+                        // Upload GOP frame directly (no copy needed - already in RGB24 format)
                         graphics.uploadRGBToFramebuffer(gopRGBBuffers[i], header.width, header.height, trueFrameCount + i, false)
                         uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
 
@@ -1080,13 +1086,26 @@ try {
                             audioFired = true
                         }
 
-                        // Wait for frame timing
-                        akku -= FRAME_TIME
-                        while (akku < 0 && !stopPlay && !paused) {
-                            let t = sys.nanoTime()
-                            // Busy wait for accurate timing
-                            akku += (sys.nanoTime() - t) / 1000000000.0
+                        // Calculate how much time we've used so far for this frame
+                        let frameElapsed = (sys.nanoTime() - frameStart) / 1000000000.0
+
+                        // Wait for the remainder of FRAME_TIME (busy wait for accurate timing)
+                        let waitNeeded = FRAME_TIME - frameElapsed
+                        if (waitNeeded > 0) {
+                            let waitStart = sys.nanoTime()
+                            while ((sys.nanoTime() - waitStart) / 1000000000.0 < waitNeeded && !stopPlay && !paused) {
+                                sys.sleep(0) // Busy wait
+                            }
                         }
+
+                        // Update global time tracking to keep main loop synchronized
+                        let frameEnd = sys.nanoTime()
+                        let frameTotalTime = (frameEnd - frameStart) / 1000000000.0
+                        akku2 += frameTotalTime
+                        t1 = frameEnd  // Keep t1 synchronized with actual time
+
+                        frameCount++
+                        trueFrameCount++
 
                         // Swap ping-pong buffers for P-frame reference
                         let temp = CURRENT_RGB_ADDR
@@ -1124,7 +1143,7 @@ try {
                             e.printStackTrace()
                             let ee = e.getStackTrace()
                             console.log(ee.length)
-                            console.log(ee.join('\n'))
+                            console.log(ee.slice(0, 10).join('\n'))
                         }
                     } catch (ex) {}
                 } finally {
