@@ -17,7 +17,7 @@
 #include <float.h>
 #include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251017"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251018 with mcwarp"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -37,16 +37,17 @@
 #define TAV_MODE_DELTA     0x02  // Coefficient delta encoding (efficient P-frames)
 
 // Video packet types
-#define TAV_PACKET_IFRAME         0x10  // Intra frame (keyframe)
-#define TAV_PACKET_PFRAME         0x11  // Predicted frame
-#define TAV_PACKET_GOP_UNIFIED    0x12  // Unified 3D DWT GOP (all frames in single block)
-#define TAV_PACKET_AUDIO_MP2      0x20  // MP2 audio
-#define TAV_PACKET_SUBTITLE       0x30  // Subtitle packet
-#define TAV_PACKET_EXTENDED_HDR   0xEF  // Extended header packet
-#define TAV_PACKET_GOP_SYNC       0xFC  // GOP sync packet (N frames decoded)
-#define TAV_PACKET_TIMECODE       0xFD  // Timecode packet
-#define TAV_PACKET_SYNC_NTSC      0xFE  // NTSC Sync packet
-#define TAV_PACKET_SYNC           0xFF  // Sync packet
+#define TAV_PACKET_IFRAME          0x10  // Intra frame (keyframe)
+#define TAV_PACKET_PFRAME          0x11  // Predicted frame
+#define TAV_PACKET_GOP_UNIFIED     0x12  // Unified 3D DWT GOP (all frames in single block, translation-based)
+#define TAV_PACKET_GOP_UNIFIED_MESH 0x13  // Unified 3D DWT GOP with distortion mesh warping
+#define TAV_PACKET_AUDIO_MP2       0x20  // MP2 audio
+#define TAV_PACKET_SUBTITLE        0x30  // Subtitle packet
+#define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
+#define TAV_PACKET_GOP_SYNC        0xFC  // GOP sync packet (N frames decoded)
+#define TAV_PACKET_TIMECODE        0xFD  // Timecode packet
+#define TAV_PACKET_SYNC_NTSC       0xFE  // NTSC Sync packet
+#define TAV_PACKET_SYNC            0xFF  // Sync packet
 
 // DWT settings
 #define TILE_SIZE_X 640
@@ -106,7 +107,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_ZSTD_LEVEL 9
 #define GOP_SIZE 8
 #define TEMPORAL_DECOMP_LEVEL 2
-#define MOTION_THRESHOLD 64.0f // Flush if motion exceeds 24 pixels in any direction
+#define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
 #define MP2_DEFAULT_PACKET_SIZE 1152
@@ -311,9 +312,33 @@ typedef struct tav_encoder_s {
     float **gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
     float **gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
     float **gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
-    int16_t *gop_translation_x;  // [frame] - Translation X in 1/16-pixel units
-    int16_t *gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units
+    int16_t *gop_translation_x;  // [frame] - Translation X in 1/16-pixel units (for 0x12 packets)
+    int16_t *gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units (for 0x12 packets)
     int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
+
+    // Mesh warping for temporal 3D DWT (0x13 packets)
+    int enable_mesh_warp;        // Flag to enable mesh warping (default: 0, uses translation if temporal_dwt enabled)
+    int mesh_width;              // Number of control points horizontally (default: 32 for 1920×1080)
+    int mesh_height;             // Number of control points vertically (default: 18 for 1920×1080)
+    int16_t **gop_mesh_dx;       // [frame][mesh_w * mesh_h] - Mesh displacement X in 1/8-pixel units
+    int16_t **gop_mesh_dy;       // [frame][mesh_w * mesh_h] - Mesh displacement Y in 1/8-pixel units
+
+    // Dense optical flow for reliability masking (used with mesh warping)
+    float **gop_flow_fwd_x;      // [frame][width * height] - Forward flow X (F[i-1] → F[i])
+    float **gop_flow_fwd_y;      // [frame][width * height] - Forward flow Y
+    float **gop_flow_bwd_x;      // [frame][width * height] - Backward flow X (F[i] → F[i-1])
+    float **gop_flow_bwd_y;      // [frame][width * height] - Backward flow Y
+
+    // Selective per-cell affine transforms (0x13 packets)
+    uint8_t **gop_affine_mask;   // [frame][mesh_w * mesh_h] - 1 bit: 1=affine, 0=translation only
+    int16_t **gop_affine_a11;    // [frame][mesh_w * mesh_h] - Affine matrix 1/256 fixed-point (a11, a12, a21, a22)
+    int16_t **gop_affine_a12;
+    int16_t **gop_affine_a21;
+    int16_t **gop_affine_a22;
+
+    float mesh_smoothness;       // Laplacian smoothing weight (0.0-1.0, default: 0.5)
+    int mesh_smooth_iterations;  // Number of smoothing iterations (default: 8)
+    float affine_threshold;      // Residual improvement threshold for using affine (default: 0.10 = 10%)
 
     // Tile processing
     int tiles_x, tiles_y;
@@ -647,6 +672,8 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output);
 // Temporal 3D DWT prototypes
 static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
                           int spatial_levels, int temporal_levels, int spatial_filter);
+static void dwt_3d_forward_mc(tav_encoder_t *enc, float **gop_y, float **gop_co, float **gop_cg,
+                              int num_frames, int spatial_levels, int temporal_levels, int spatial_filter);
 static void dwt_3d_inverse(float **gop_data, int width, int height, int num_frames,
                           int spatial_levels, int temporal_levels, int spatial_filter);
 static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
@@ -710,6 +737,7 @@ static void show_usage(const char *program_name) {
     printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
     printf("  --temporal-dwt          Enable temporal 3D DWT (GOP-based encoding with temporal transform)\n");
+    printf("  --mesh-warp             Enable mesh-based motion compensation (requires --temporal-dwt, uses optical flow)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -796,6 +824,25 @@ static tav_encoder_t* create_encoder(void) {
     enc->gop_cg_frames = NULL;
     enc->gop_translation_x = NULL;
     enc->gop_translation_y = NULL;
+
+    // Mesh warping settings (for 0x13 packets)
+    enc->enable_mesh_warp = 0;  // Default: disabled (use translation-based 0x12)
+    enc->mesh_width = 0;  // Will be calculated based on frame dimensions
+    enc->mesh_height = 0;
+    enc->gop_mesh_dx = NULL;
+    enc->gop_mesh_dy = NULL;
+    enc->gop_flow_fwd_x = NULL;  // Dense flow for reliability masking
+    enc->gop_flow_fwd_y = NULL;
+    enc->gop_flow_bwd_x = NULL;
+    enc->gop_flow_bwd_y = NULL;
+    enc->gop_affine_mask = NULL;
+    enc->gop_affine_a11 = NULL;
+    enc->gop_affine_a12 = NULL;
+    enc->gop_affine_a21 = NULL;
+    enc->gop_affine_a22 = NULL;
+    enc->mesh_smoothness = 0.5f;  // 50% smoothness weight
+    enc->mesh_smooth_iterations = 8;  // 8 iterations
+    enc->affine_threshold = 0.40f;  // 40% residual improvement required to use affine (was 0.10, too lenient)
 
     return enc;
 }
@@ -944,6 +991,93 @@ static int initialise_encoder(tav_encoder_t *enc) {
         // Initialize translation vectors to zero
         memset(enc->gop_translation_x, 0, enc->gop_capacity * sizeof(int16_t));
         memset(enc->gop_translation_y, 0, enc->gop_capacity * sizeof(int16_t));
+
+        // Calculate mesh dimensions if mesh warping is enabled
+        if (enc->enable_mesh_warp) {
+            // Calculate mesh grid: approximately 16×16 pixel cells
+            // For 560×448: 18×14 mesh (252 points), for 1920×1080: 60×34 mesh (2040 points)
+            // Mesh density: 32×32 pixel cells for finer motion modeling
+            // Matches block matching resolution (16×16 blocks → 2 blocks per cell)
+            int mesh_cell_size = 32;  // Pixel size of each mesh cell (finer than 64)
+            enc->mesh_width = (enc->width + mesh_cell_size - 1) / mesh_cell_size;   // Round up
+            enc->mesh_height = (enc->height + mesh_cell_size - 1) / mesh_cell_size;
+
+            // Ensure minimum 2×2 mesh
+            if (enc->mesh_width < 2) enc->mesh_width = 2;
+            if (enc->mesh_height < 2) enc->mesh_height = 2;
+
+            int mesh_size = enc->mesh_width * enc->mesh_height;
+
+            // Allocate mesh arrays for each GOP frame
+            enc->gop_mesh_dx = malloc(enc->gop_capacity * sizeof(int16_t*));
+            enc->gop_mesh_dy = malloc(enc->gop_capacity * sizeof(int16_t*));
+            enc->gop_affine_mask = malloc(enc->gop_capacity * sizeof(uint8_t*));
+            enc->gop_affine_a11 = malloc(enc->gop_capacity * sizeof(int16_t*));
+            enc->gop_affine_a12 = malloc(enc->gop_capacity * sizeof(int16_t*));
+            enc->gop_affine_a21 = malloc(enc->gop_capacity * sizeof(int16_t*));
+            enc->gop_affine_a22 = malloc(enc->gop_capacity * sizeof(int16_t*));
+
+            // Allocate dense flow arrays for reliability masking
+            enc->gop_flow_fwd_x = malloc(enc->gop_capacity * sizeof(float*));
+            enc->gop_flow_fwd_y = malloc(enc->gop_capacity * sizeof(float*));
+            enc->gop_flow_bwd_x = malloc(enc->gop_capacity * sizeof(float*));
+            enc->gop_flow_bwd_y = malloc(enc->gop_capacity * sizeof(float*));
+
+            if (!enc->gop_mesh_dx || !enc->gop_mesh_dy || !enc->gop_affine_mask ||
+                !enc->gop_affine_a11 || !enc->gop_affine_a12 ||
+                !enc->gop_affine_a21 || !enc->gop_affine_a22 ||
+                !enc->gop_flow_fwd_x || !enc->gop_flow_fwd_y ||
+                !enc->gop_flow_bwd_x || !enc->gop_flow_bwd_y) {
+                fprintf(stderr, "Failed to allocate GOP mesh arrays\n");
+                return -1;
+            }
+
+            // Allocate individual mesh and affine buffers
+            int flow_size = enc->width * enc->height;
+            for (int i = 0; i < enc->gop_capacity; i++) {
+                enc->gop_mesh_dx[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->gop_mesh_dy[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->gop_affine_mask[i] = malloc(mesh_size * sizeof(uint8_t));
+                enc->gop_affine_a11[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->gop_affine_a12[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->gop_affine_a21[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->gop_affine_a22[i] = malloc(mesh_size * sizeof(int16_t));
+
+                // Allocate dense flow buffers for reliability masking
+                enc->gop_flow_fwd_x[i] = malloc(flow_size * sizeof(float));
+                enc->gop_flow_fwd_y[i] = malloc(flow_size * sizeof(float));
+                enc->gop_flow_bwd_x[i] = malloc(flow_size * sizeof(float));
+                enc->gop_flow_bwd_y[i] = malloc(flow_size * sizeof(float));
+
+                if (!enc->gop_mesh_dx[i] || !enc->gop_mesh_dy[i] || !enc->gop_affine_mask[i] ||
+                    !enc->gop_affine_a11[i] || !enc->gop_affine_a12[i] ||
+                    !enc->gop_affine_a21[i] || !enc->gop_affine_a22[i] ||
+                    !enc->gop_flow_fwd_x[i] || !enc->gop_flow_fwd_y[i] ||
+                    !enc->gop_flow_bwd_x[i] || !enc->gop_flow_bwd_y[i]) {
+                    fprintf(stderr, "Failed to allocate GOP mesh buffers\n");
+                    return -1;
+                }
+
+                // Initialize to zero (affine mask=0 means translation-only, identity affine)
+                memset(enc->gop_mesh_dx[i], 0, mesh_size * sizeof(int16_t));
+                memset(enc->gop_mesh_dy[i], 0, mesh_size * sizeof(int16_t));
+                memset(enc->gop_affine_mask[i], 0, mesh_size * sizeof(uint8_t));
+                // Initialize affine to identity matrix (256 = 1.0 in 1/256 fixed-point)
+                for (int j = 0; j < mesh_size; j++) {
+                    enc->gop_affine_a11[i][j] = 256;  // 1.0
+                    enc->gop_affine_a12[i][j] = 0;
+                    enc->gop_affine_a21[i][j] = 0;
+                    enc->gop_affine_a22[i][j] = 256;  // 1.0
+                }
+            }
+
+            if (enc->verbose) {
+                printf("Mesh warping enabled: mesh=%dx%d (approx %dx%d px cells), smoothness=%.2f, iterations=%d\n",
+                       enc->mesh_width, enc->mesh_height,
+                       enc->width / enc->mesh_width, enc->height / enc->mesh_height,
+                       enc->mesh_smoothness, enc->mesh_smooth_iterations);
+            }
+        }
 
         if (enc->verbose) {
             printf("Temporal DWT enabled: GOP size=%d, temporal levels=%d\n",
@@ -1454,6 +1588,51 @@ static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2
     fftwf_free(correlation);
 }
 
+// ==============================================================================
+// Optical Flow and Mesh Warping Functions
+// ==============================================================================
+
+// Forward declaration for optical flow function (implemented in encoder_tav_opencv.cpp)
+// Forward declarations for OpenCV functions (implemented in encoder_tav_opencv.cpp)
+extern void estimate_motion_optical_flow(
+    const uint8_t *frame1_rgb, const uint8_t *frame2_rgb,
+    int width, int height,
+    float **out_flow_x, float **out_flow_y
+);
+
+extern void build_mesh_from_flow(
+    const float *flow_x, const float *flow_y,
+    int width, int height, int mesh_w, int mesh_h,
+    int16_t *mesh_dx, int16_t *mesh_dy
+);
+
+extern void smooth_mesh_laplacian(
+    int16_t *mesh_dx, int16_t *mesh_dy,
+    int mesh_width, int mesh_height,
+    float smoothness, int iterations
+);
+
+extern void warp_frame_with_mesh(
+    const float *src_frame, int width, int height,
+    const int16_t *mesh_dx, const int16_t *mesh_dy,
+    int mesh_width, int mesh_height,
+    float *dst_frame
+);
+
+extern int estimate_cell_affine(
+    const float *flow_x, const float *flow_y,
+    int width, int height,
+    int cell_x, int cell_y,
+    int cell_w, int cell_h,
+    float threshold,
+    int16_t *out_tx, int16_t *out_ty,
+    int16_t *out_a11, int16_t *out_a12,
+    int16_t *out_a21, int16_t *out_a22
+);
+
+// Note: build_mesh_from_flow, smooth_mesh_laplacian, and warp_frame_with_mesh
+// are implemented in encoder_tav_opencv.cpp (extern declarations above)
+
 // Apply translation to frame (for frame alignment before temporal DWT)
 // NO PADDING - only extracts the valid region that will be common across all frames
 static void apply_translation(float *frame_data, int width, int height,
@@ -1595,6 +1774,195 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
 }
 
 // =============================================================================
+// Mesh Differential Encoding for Compression
+// =============================================================================
+
+// Encode mesh motion vectors with selective affine using temporal and spatial prediction
+// Returns the number of bytes written to output buffer
+// Format:
+//   1. Mesh dimensions (2 bytes each: width, height)
+//   2. Affine significance mask (1 bit per cell per frame, packed into bytes)
+//   3. Translation dx/dy for ALL cells (temporal + spatial differential encoding)
+//   4. Affine parameters a11, a12, a21, a22 for cells where mask=1 (temporal + spatial differential)
+static size_t encode_mesh_differential(
+    int16_t **mesh_dx, int16_t **mesh_dy,
+    uint8_t **affine_mask,
+    int16_t **affine_a11, int16_t **affine_a12,
+    int16_t **affine_a21, int16_t **affine_a22,
+    int gop_size, int mesh_width, int mesh_height,
+    uint8_t *output_buffer, size_t buffer_capacity
+) {
+    int mesh_points = mesh_width * mesh_height;
+    size_t bytes_written = 0;
+
+    // Write mesh dimensions (2 bytes each)
+    if (bytes_written + 4 > buffer_capacity) return 0;
+    uint16_t mesh_w_16 = (uint16_t)mesh_width;
+    uint16_t mesh_h_16 = (uint16_t)mesh_height;
+    memcpy(output_buffer + bytes_written, &mesh_w_16, sizeof(uint16_t));
+    bytes_written += sizeof(uint16_t);
+    memcpy(output_buffer + bytes_written, &mesh_h_16, sizeof(uint16_t));
+    bytes_written += sizeof(uint16_t);
+
+    // Write affine significance mask (packed bits: 1=affine, 0=translation-only)
+    int total_mask_bits = gop_size * mesh_points;
+    int mask_bytes = (total_mask_bits + 7) / 8;
+    if (bytes_written + mask_bytes > buffer_capacity) return 0;
+
+    memset(output_buffer + bytes_written, 0, mask_bytes);  // Clear mask buffer
+    int bit_idx = 0;
+    for (int t = 0; t < gop_size; t++) {
+        for (int i = 0; i < mesh_points; i++) {
+            if (affine_mask[t][i]) {
+                output_buffer[bytes_written + bit_idx / 8] |= (1 << (bit_idx % 8));
+            }
+            bit_idx++;
+        }
+    }
+    bytes_written += mask_bytes;
+
+    // Encode translation data for ALL cells (always present)
+    for (int t = 0; t < gop_size; t++) {
+        for (int i = 0; i < mesh_points; i++) {
+            int16_t dx = mesh_dx[t][i];
+            int16_t dy = mesh_dy[t][i];
+
+            // Temporal prediction
+            if (t > 0) {
+                dx -= mesh_dx[t - 1][i];
+                dy -= mesh_dy[t - 1][i];
+            }
+
+            // Spatial prediction
+            if (i > 0 && (i % mesh_width) != 0) {
+                int16_t left_dx = mesh_dx[t][i - 1];
+                int16_t left_dy = mesh_dy[t][i - 1];
+                if (t > 0) {
+                    left_dx -= mesh_dx[t - 1][i - 1];
+                    left_dy -= mesh_dy[t - 1][i - 1];
+                }
+                dx -= left_dx;
+                dy -= left_dy;
+            }
+
+            if (bytes_written + 4 > buffer_capacity) return 0;
+            memcpy(output_buffer + bytes_written, &dx, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+            memcpy(output_buffer + bytes_written, &dy, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+        }
+    }
+
+    // Encode affine parameters for cells where mask=1
+    for (int t = 0; t < gop_size; t++) {
+        for (int i = 0; i < mesh_points; i++) {
+            if (!affine_mask[t][i]) continue;  // Skip translation-only cells
+
+            int16_t a11 = affine_a11[t][i];
+            int16_t a12 = affine_a12[t][i];
+            int16_t a21 = affine_a21[t][i];
+            int16_t a22 = affine_a22[t][i];
+
+            // Temporal prediction (delta from previous frame's affine params)
+            if (t > 0 && affine_mask[t - 1][i]) {
+                a11 -= affine_a11[t - 1][i];
+                a12 -= affine_a12[t - 1][i];
+                a21 -= affine_a21[t - 1][i];
+                a22 -= affine_a22[t - 1][i];
+            }
+
+            // Spatial prediction (delta from left neighbor if it also uses affine)
+            if (i > 0 && (i % mesh_width) != 0 && affine_mask[t][i - 1]) {
+                int16_t left_a11 = affine_a11[t][i - 1];
+                int16_t left_a12 = affine_a12[t][i - 1];
+                int16_t left_a21 = affine_a21[t][i - 1];
+                int16_t left_a22 = affine_a22[t][i - 1];
+
+                if (t > 0 && affine_mask[t - 1][i - 1]) {
+                    left_a11 -= affine_a11[t - 1][i - 1];
+                    left_a12 -= affine_a12[t - 1][i - 1];
+                    left_a21 -= affine_a21[t - 1][i - 1];
+                    left_a22 -= affine_a22[t - 1][i - 1];
+                }
+
+                a11 -= left_a11;
+                a12 -= left_a12;
+                a21 -= left_a21;
+                a22 -= left_a22;
+            }
+
+            if (bytes_written + 8 > buffer_capacity) return 0;
+            memcpy(output_buffer + bytes_written, &a11, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+            memcpy(output_buffer + bytes_written, &a12, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+            memcpy(output_buffer + bytes_written, &a21, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+            memcpy(output_buffer + bytes_written, &a22, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+        }
+    }
+
+    return bytes_written;
+}
+
+// Decode mesh motion vectors from differential encoding
+// Returns 0 on success, -1 on error
+// This is the inverse of encode_mesh_differential()
+static int decode_mesh_differential(
+    const uint8_t *input_buffer, size_t buffer_size,
+    int16_t **mesh_dx, int16_t **mesh_dy,
+    int gop_size, int *out_mesh_width, int *out_mesh_height
+) {
+    size_t bytes_read = 0;
+
+    // Read mesh dimensions
+    if (bytes_read + 4 > buffer_size) return -1;
+    uint16_t mesh_w_16, mesh_h_16;
+    memcpy(&mesh_w_16, input_buffer + bytes_read, sizeof(uint16_t));
+    bytes_read += sizeof(uint16_t);
+    memcpy(&mesh_h_16, input_buffer + bytes_read, sizeof(uint16_t));
+    bytes_read += sizeof(uint16_t);
+
+    int mesh_width = (int)mesh_w_16;
+    int mesh_height = (int)mesh_h_16;
+    int mesh_points = mesh_width * mesh_height;
+
+    *out_mesh_width = mesh_width;
+    *out_mesh_height = mesh_height;
+
+    // Decode mesh data for all frames
+    for (int t = 0; t < gop_size; t++) {
+        for (int i = 0; i < mesh_points; i++) {
+            // Read differential values
+            if (bytes_read + 4 > buffer_size) return -1;
+            int16_t dx_delta, dy_delta;
+            memcpy(&dx_delta, input_buffer + bytes_read, sizeof(int16_t));
+            bytes_read += sizeof(int16_t);
+            memcpy(&dy_delta, input_buffer + bytes_read, sizeof(int16_t));
+            bytes_read += sizeof(int16_t);
+
+            // Reconstruct: reverse spatial prediction first
+            if (i > 0 && (i % mesh_width) != 0) {
+                dx_delta += mesh_dx[t][i - 1];
+                dy_delta += mesh_dy[t][i - 1];
+            }
+
+            // Then reverse temporal prediction
+            if (t > 0) {
+                dx_delta += mesh_dx[t - 1][i];
+                dy_delta += mesh_dy[t - 1][i];
+            }
+
+            mesh_dx[t][i] = dx_delta;
+            mesh_dy[t][i] = dy_delta;
+        }
+    }
+
+    return 0;
+}
+
+// =============================================================================
 // GOP Management Functions
 // =============================================================================
 
@@ -1616,29 +1984,112 @@ static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
     memcpy(enc->gop_co_frames[frame_idx], frame_co, frame_channel_size);
     memcpy(enc->gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
 
-    // Compute translation vector if not first frame
-    /*if (frame_idx > 0) {
-        phase_correlate_fft(enc->gop_rgb_frames[frame_idx - 1],
-                           enc->gop_rgb_frames[frame_idx],
-                           enc->width, enc->height,
-                           &enc->gop_translation_x[frame_idx],
-                           &enc->gop_translation_y[frame_idx]);
+    // Compute motion estimation if mesh warping is enabled
+    if (enc->enable_mesh_warp && frame_idx > 0) {
+        // Compute forward optical flow (F[i-1] → F[i])
+        estimate_motion_optical_flow(
+            enc->gop_rgb_frames[frame_idx - 1],
+            enc->gop_rgb_frames[frame_idx],
+            enc->width, enc->height,
+            &enc->gop_flow_fwd_x[frame_idx],
+            &enc->gop_flow_fwd_y[frame_idx]
+        );
+
+        // Compute backward optical flow (F[i] → F[i-1]) for reliability masking
+        estimate_motion_optical_flow(
+            enc->gop_rgb_frames[frame_idx],
+            enc->gop_rgb_frames[frame_idx - 1],
+            enc->width, enc->height,
+            &enc->gop_flow_bwd_x[frame_idx],
+            &enc->gop_flow_bwd_y[frame_idx]
+        );
+
+        // Build distortion mesh from forward flow field
+        build_mesh_from_flow(
+            enc->gop_flow_fwd_x[frame_idx], enc->gop_flow_fwd_y[frame_idx],
+            enc->width, enc->height,
+            enc->mesh_width, enc->mesh_height,
+            enc->gop_mesh_dx[frame_idx], enc->gop_mesh_dy[frame_idx]
+        );
+
+        // Apply Laplacian smoothing to regularize mesh
+        smooth_mesh_laplacian(
+            enc->gop_mesh_dx[frame_idx], enc->gop_mesh_dy[frame_idx],
+            enc->mesh_width, enc->mesh_height,
+            enc->mesh_smoothness, enc->mesh_smooth_iterations
+        );
+
+        // Estimate selective per-cell affine transforms
+        int cell_w = enc->width / enc->mesh_width;
+        int cell_h = enc->height / enc->mesh_height;
+        int affine_count = 0;
+
+        for (int cy = 0; cy < enc->mesh_height; cy++) {
+            for (int cx = 0; cx < enc->mesh_width; cx++) {
+                int cell_idx = cy * enc->mesh_width + cx;
+
+                int16_t tx, ty, a11, a12, a21, a22;
+                int use_affine = estimate_cell_affine(
+                    enc->gop_flow_fwd_x[frame_idx], enc->gop_flow_fwd_y[frame_idx],
+                    enc->width, enc->height,
+                    cx, cy, cell_w, cell_h,
+                    enc->affine_threshold,
+                    &tx, &ty, &a11, &a12, &a21, &a22
+                );
+
+                if (use_affine) {
+                    // Use affine transform for this cell
+                    enc->gop_affine_mask[frame_idx][cell_idx] = 1;
+                    enc->gop_mesh_dx[frame_idx][cell_idx] = tx;
+                    enc->gop_mesh_dy[frame_idx][cell_idx] = ty;
+                    enc->gop_affine_a11[frame_idx][cell_idx] = a11;
+                    enc->gop_affine_a12[frame_idx][cell_idx] = a12;
+                    enc->gop_affine_a21[frame_idx][cell_idx] = a21;
+                    enc->gop_affine_a22[frame_idx][cell_idx] = a22;
+                    affine_count++;
+                } else {
+                    // Use translation-only (keep existing mesh dx/dy from build_mesh_from_flow)
+                    enc->gop_affine_mask[frame_idx][cell_idx] = 0;
+                    // Keep dx/dy from build_mesh_from_flow, set affine to identity
+                    enc->gop_affine_a11[frame_idx][cell_idx] = 256;
+                    enc->gop_affine_a12[frame_idx][cell_idx] = 0;
+                    enc->gop_affine_a21[frame_idx][cell_idx] = 0;
+                    enc->gop_affine_a22[frame_idx][cell_idx] = 256;
+                }
+            }
+        }
+
+        // Flow is now stored in enc->gop_flow_*[frame_idx], don't free
 
         if (enc->verbose && (frame_idx < 3 || frame_idx == enc->gop_capacity - 1)) {
-            printf("  GOP frame %d: translation = (%.3f, %.3f) pixels\n",
-                   frame_idx,
-                   enc->gop_translation_x[frame_idx] / 16.0f,
-                   enc->gop_translation_y[frame_idx] / 16.0f);
+            // Compute average mesh displacement for verbose output
+            int mesh_points = enc->mesh_width * enc->mesh_height;
+            float avg_dx = 0.0f, avg_dy = 0.0f;
+            for (int i = 0; i < mesh_points; i++) {
+                avg_dx += fabsf(enc->gop_mesh_dx[frame_idx][i] / 8.0f);
+                avg_dy += fabsf(enc->gop_mesh_dy[frame_idx][i] / 8.0f);
+            }
+            avg_dx /= mesh_points;
+            avg_dy /= mesh_points;
+            printf("  GOP frame %d: mesh avg=(%.2f,%.2f)px, %d/%d affine (%.1f%%), mesh=%dx%d\n",
+                   frame_idx, avg_dx, avg_dy,
+                   affine_count, mesh_points, 100.0f * affine_count / mesh_points,
+                   enc->mesh_width, enc->mesh_height);
         }
-    } else {
-        // First frame has no translation
-        enc->gop_translation_x[0] = 0;
-        enc->gop_translation_y[0] = 0;
-    }*/
+    } else if (frame_idx == 0) {
+        // First frame has no motion (reference frame)
+        if (enc->enable_mesh_warp) {
+            int mesh_points = enc->mesh_width * enc->mesh_height;
+            memset(enc->gop_mesh_dx[0], 0, mesh_points * sizeof(int16_t));
+            memset(enc->gop_mesh_dy[0], 0, mesh_points * sizeof(int16_t));
+        }
+    }
 
-    // disabling frame realigning: producing worse results in general
-    enc->gop_translation_x[frame_idx] = 0.0f;
-    enc->gop_translation_y[frame_idx] = 0.0f;
+    // Legacy translation vectors (used when mesh warp is disabled)
+    if (!enc->enable_mesh_warp) {
+        enc->gop_translation_x[frame_idx] = 0.0f;
+        enc->gop_translation_y[frame_idx] = 0.0f;
+    }
 
     enc->gop_frame_count++;
     return 0;
@@ -1770,54 +2221,75 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                valid_width, valid_height, crop_left, crop_right, crop_top, crop_bottom);
     }
 
-    // Step 0.6: Apply motion compensation to align frames before temporal DWT
-    // This uses the cumulative translation vectors to align each frame to frame 0
-    for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
-        float *aligned_y = malloc(num_pixels * sizeof(float));
-        float *aligned_co = malloc(num_pixels * sizeof(float));
-        float *aligned_cg = malloc(num_pixels * sizeof(float));
+    // Step 0.6: Motion compensation note
+    // For mesh warping: MC-lifting integrates motion compensation directly into the lifting steps
+    // For translation: still use pre-alignment (old method for backwards compatibility)
+    if (!enc->enable_mesh_warp) {
+        // Translation-based motion compensation: align using global translation vectors
+        for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
+            float *aligned_y = malloc(num_pixels * sizeof(float));
+            float *aligned_co = malloc(num_pixels * sizeof(float));
+            float *aligned_cg = malloc(num_pixels * sizeof(float));
 
-        if (!aligned_y || !aligned_co || !aligned_cg) {
-            fprintf(stderr, "Error: Failed to allocate motion compensation buffers\n");
-            // Cleanup and skip motion compensation for this GOP
+            if (!aligned_y || !aligned_co || !aligned_cg) {
+                fprintf(stderr, "Error: Failed to allocate motion compensation buffers\n");
+                // Cleanup and skip motion compensation for this GOP
+                free(aligned_y);
+                free(aligned_co);
+                free(aligned_cg);
+                break;
+            }
+
+            // Apply translation to align this frame
+            apply_translation(gop_y_coeffs[i], enc->width, enc->height,
+                             enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_y);
+            apply_translation(gop_co_coeffs[i], enc->width, enc->height,
+                             enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_co);
+            apply_translation(gop_cg_coeffs[i], enc->width, enc->height,
+                             enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_cg);
+
+            // Copy aligned frames back
+            memcpy(gop_y_coeffs[i], aligned_y, num_pixels * sizeof(float));
+            memcpy(gop_co_coeffs[i], aligned_co, num_pixels * sizeof(float));
+            memcpy(gop_cg_coeffs[i], aligned_cg, num_pixels * sizeof(float));
+
             free(aligned_y);
             free(aligned_co);
             free(aligned_cg);
-            break;
         }
-
-        // Apply translation to align this frame
-        apply_translation(gop_y_coeffs[i], enc->width, enc->height,
-                         enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_y);
-        apply_translation(gop_co_coeffs[i], enc->width, enc->height,
-                         enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_co);
-        apply_translation(gop_cg_coeffs[i], enc->width, enc->height,
-                         enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_cg);
-
-        // Copy aligned frames back
-        memcpy(gop_y_coeffs[i], aligned_y, num_pixels * sizeof(float));
-        memcpy(gop_co_coeffs[i], aligned_co, num_pixels * sizeof(float));
-        memcpy(gop_cg_coeffs[i], aligned_cg, num_pixels * sizeof(float));
-
-        free(aligned_y);
-        free(aligned_co);
-        free(aligned_cg);
+    } else {
+        // Mesh-based motion compensation uses MC-lifting (integrated into temporal DWT)
+        if (enc->verbose) {
+            printf("Using motion-compensated lifting (MC-lifting) (%dx%d mesh)\n",
+                   enc->mesh_width, enc->mesh_height);
+        }
     }
 
-    // Step 0.7: Expand frames to larger canvas that preserves ALL original pixels
-    // Calculate expanded canvas size (UNION of all aligned frames)
-    int canvas_width = enc->width + crop_left + crop_right;   // Original width + total shift range
-    int canvas_height = enc->height + crop_top + crop_bottom; // Original height + total shift range
-    int canvas_pixels = canvas_width * canvas_height;
+    // Step 0.7: Expand frames to larger canvas (only for translation-based alignment)
+    // Mesh-based warping doesn't need canvas expansion since the mesh handles local distortions
+    int canvas_width = enc->width;
+    int canvas_height = enc->height;
+    int canvas_pixels = num_pixels;
 
-    if (enc->verbose && (crop_left || crop_right || crop_top || crop_bottom)) {
-        printf("Expanded canvas: %dx%d (original %dx%d + margins L=%d R=%d T=%d B=%d)\n",
-               canvas_width, canvas_height, enc->width, enc->height,
-               crop_left, crop_right, crop_top, crop_bottom);
-        printf("This preserves all original pixels from all frames after alignment\n");
+    if (!enc->enable_mesh_warp) {
+        // Calculate expanded canvas size (UNION of all aligned frames)
+        canvas_width = enc->width + crop_left + crop_right;   // Original width + total shift range
+        canvas_height = enc->height + crop_top + crop_bottom; // Original height + total shift range
+        canvas_pixels = canvas_width * canvas_height;
+
+        if (enc->verbose && (crop_left || crop_right || crop_top || crop_bottom)) {
+            printf("Expanded canvas: %dx%d (original %dx%d + margins L=%d R=%d T=%d B=%d)\n",
+                   canvas_width, canvas_height, enc->width, enc->height,
+                   crop_left, crop_right, crop_top, crop_bottom);
+            printf("This preserves all original pixels from all frames after alignment\n");
+        }
+    } else {
+        if (enc->verbose) {
+            printf("Using original frame dimensions (mesh warping handles distortions)\n");
+        }
     }
 
-    // Allocate expanded canvas buffers
+    // Allocate canvas buffers (expanded for translation, original size for mesh)
     float **canvas_y_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **canvas_co_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **canvas_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
@@ -1827,58 +2299,65 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         canvas_co_coeffs[i] = calloc(canvas_pixels, sizeof(float));
         canvas_cg_coeffs[i] = calloc(canvas_pixels, sizeof(float));
 
-        // Place the aligned frame onto the canvas at the appropriate offset
-        // Each frame's aligned position determines where it sits on the canvas
-        int offset_x = crop_left;  // Frames are offset by the left margin
-        int offset_y = crop_top;   // Frames are offset by the top margin
+        if (enc->enable_mesh_warp) {
+            // Mesh warping: simply copy frames (no expansion needed)
+            memcpy(canvas_y_coeffs[i], gop_y_coeffs[i], canvas_pixels * sizeof(float));
+            memcpy(canvas_co_coeffs[i], gop_co_coeffs[i], canvas_pixels * sizeof(float));
+            memcpy(canvas_cg_coeffs[i], gop_cg_coeffs[i], canvas_pixels * sizeof(float));
+        } else {
+            // Translation-based: expand canvas and add symmetric padding
+            // Place the aligned frame onto the canvas at the appropriate offset
+            int offset_x = crop_left;  // Frames are offset by the left margin
+            int offset_y = crop_top;   // Frames are offset by the top margin
 
-        // Copy the full aligned frame onto the canvas (preserves all original content)
-        for (int y = 0; y < enc->height; y++) {
-            for (int x = 0; x < enc->width; x++) {
-                int src_idx = y * enc->width + x;
-                int dst_idx = (y + offset_y) * canvas_width + (x + offset_x);
-                canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
-                canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
-                canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
+            // Copy the full aligned frame onto the canvas (preserves all original content)
+            for (int y = 0; y < enc->height; y++) {
+                for (int x = 0; x < enc->width; x++) {
+                    int src_idx = y * enc->width + x;
+                    int dst_idx = (y + offset_y) * canvas_width + (x + offset_x);
+                    canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
+                    canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
+                    canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
+                }
             }
-        }
 
-        // Fill margin areas with symmetric padding from frame edges
-        for (int y = 0; y < canvas_height; y++) {
-            for (int x = 0; x < canvas_width; x++) {
-                // Skip pixels in the original frame region (already copied)
-                if (y >= offset_y && y < offset_y + enc->height &&
-                    x >= offset_x && x < offset_x + enc->width) {
-                    continue;
+            // Fill margin areas with symmetric padding from frame edges
+            for (int y = 0; y < canvas_height; y++) {
+                for (int x = 0; x < canvas_width; x++) {
+                    // Skip pixels in the original frame region (already copied)
+                    if (y >= offset_y && y < offset_y + enc->height &&
+                        x >= offset_x && x < offset_x + enc->width) {
+                        continue;
+                    }
+
+                    // Calculate position relative to original frame
+                    int src_x = x - offset_x;
+                    int src_y = y - offset_y;
+
+                    // Apply symmetric padding (mirroring)
+                    if (src_x < 0) {
+                        src_x = -src_x - 1;  // Mirror left edge: -1→0, -2→1, -3→2
+                    } else if (src_x >= enc->width) {
+                        src_x = 2 * enc->width - src_x - 1;  // Mirror right edge
+                    }
+
+                    if (src_y < 0) {
+                        src_y = -src_y - 1;  // Mirror top edge
+                    } else if (src_y >= enc->height) {
+                        src_y = 2 * enc->height - src_y - 1;  // Mirror bottom edge
+                    }
+
+                    // Clamp to valid range (safety for extreme cases)
+                    src_x = CLAMP(src_x, 0, enc->width - 1);
+                    src_y = CLAMP(src_y, 0, enc->height - 1);
+
+                    // Copy mirrored pixel from original frame to canvas margin
+                    int src_idx = src_y * enc->width + src_x;
+                    int dst_idx = y * canvas_width + x;
+                    canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
+                    canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
+                    canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
                 }
-
-                // Calculate position relative to original frame
-                int src_x = x - offset_x;
-                int src_y = y - offset_y;
-
-                // Apply symmetric padding (mirroring)
-                if (src_x < 0) {
-                    src_x = -src_x - 1;  // Mirror left edge: -1→0, -2→1, -3→2
-                } else if (src_x >= enc->width) {
-                    src_x = 2 * enc->width - src_x - 1;  // Mirror right edge
-                }
-
-                if (src_y < 0) {
-                    src_y = -src_y - 1;  // Mirror top edge
-                } else if (src_y >= enc->height) {
-                    src_y = 2 * enc->height - src_y - 1;  // Mirror bottom edge
-                }
-
-                // Clamp to valid range (safety for extreme cases)
-                src_x = CLAMP(src_x, 0, enc->width - 1);
-                src_y = CLAMP(src_y, 0, enc->height - 1);
-
-                // Copy mirrored pixel from original frame to canvas margin
-                int src_idx = src_y * enc->width + src_x;
-                int dst_idx = y * canvas_width + x;
-                canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
-                canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
-                canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
             }
         }
 
@@ -1888,7 +2367,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         free(gop_cg_coeffs[i]);
     }
 
-    // Replace pointers with expanded canvas
+    // Replace pointers with canvas
     free(gop_y_coeffs);
     free(gop_co_coeffs);
     free(gop_cg_coeffs);
@@ -1915,12 +2394,21 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         // Multi-frame GOP: Apply 3D DWT (temporal + spatial) to each channel
         // Note: This modifies gop_*_coeffs in-place
         // Use cropped dimensions to encode only the valid region
-        dwt_3d_forward(gop_y_coeffs, valid_width, valid_height, actual_gop_size,
-                       enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-        dwt_3d_forward(gop_co_coeffs, valid_width, valid_height, actual_gop_size,
-                       enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-        dwt_3d_forward(gop_cg_coeffs, valid_width, valid_height, actual_gop_size,
-                       enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+
+        if (enc->enable_mesh_warp) {
+            // Use MC-lifting: motion compensation integrated into lifting steps
+            dwt_3d_forward_mc(enc, gop_y_coeffs, gop_co_coeffs, gop_cg_coeffs,
+                             actual_gop_size, enc->decomp_levels,
+                             enc->temporal_decomp_levels, enc->wavelet_filter);
+        } else {
+            // Use traditional 3D DWT with pre-aligned frames (translation-only)
+            dwt_3d_forward(gop_y_coeffs, valid_width, valid_height, actual_gop_size,
+                          enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+            dwt_3d_forward(gop_co_coeffs, valid_width, valid_height, actual_gop_size,
+                          enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+            dwt_3d_forward(gop_cg_coeffs, valid_width, valid_height, actual_gop_size,
+                          enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+        }
     }
 
     // Step 2: Allocate quantized coefficient buffers
@@ -2024,9 +2512,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         }
     } else {
         // Multi-frame GOP: use unified 3D DWT encoding
-        // Write unified GOP packet header
-        // Packet structure: [packet_type=0x12][gop_size][crop_info][motion_vectors...][compressed_size][compressed_data]
-        uint8_t packet_type = TAV_PACKET_GOP_UNIFIED;
+        // Choose packet type based on motion compensation method
+        uint8_t packet_type = enc->enable_mesh_warp ? TAV_PACKET_GOP_UNIFIED_MESH : TAV_PACKET_GOP_UNIFIED;
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
 
@@ -2035,25 +2522,108 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         fwrite(&gop_size_byte, 1, 1, output);
         total_bytes_written += 1;
 
-        // Write canvas expansion information (4 bytes)
-        // This tells the decoder the margins added to preserve all original pixels
-        // The encoded canvas is larger than the original frame to preserve edge content after alignment
-        uint8_t canvas_margins[4] = {
-            (uint8_t)crop_left,    // Left margin
-            (uint8_t)crop_right,   // Right margin
-            (uint8_t)crop_top,     // Top margin
-            (uint8_t)crop_bottom   // Bottom margin
-        };
-        fwrite(canvas_margins, 1, 4, output);
-        total_bytes_written += 4;
+        if (enc->enable_mesh_warp) {
+            // Packet 0x13: Mesh-based warping with selective affine
+            // Encode mesh motion vectors + affine parameters and compress with Zstd
+            // Max size: mesh dimensions (4) + affine mask + translation (4 bytes/cell) + affine (8 bytes/cell worst case)
+            size_t max_mesh_size = 4 + (actual_gop_size * enc->mesh_width * enc->mesh_height * 13);
+            uint8_t *mesh_buffer = malloc(max_mesh_size);
 
-        // Write all motion vectors (1/16-pixel precision) for the entire GOP
-        for (int t = 0; t < actual_gop_size; t++) {
-            int16_t dx = enc->gop_translation_x[t];
-            int16_t dy = enc->gop_translation_y[t];
-            fwrite(&dx, sizeof(int16_t), 1, output);
-            fwrite(&dy, sizeof(int16_t), 1, output);
+            size_t mesh_size = encode_mesh_differential(
+                enc->gop_mesh_dx, enc->gop_mesh_dy,
+                enc->gop_affine_mask,
+                enc->gop_affine_a11, enc->gop_affine_a12,
+                enc->gop_affine_a21, enc->gop_affine_a22,
+                actual_gop_size, enc->mesh_width, enc->mesh_height,
+                mesh_buffer, max_mesh_size
+            );
+
+            if (mesh_size == 0) {
+                fprintf(stderr, "Error: Failed to encode mesh motion vectors\n");
+                free(mesh_buffer);
+                // Free all allocated buffers
+                for (int i = 0; i < actual_gop_size; i++) {
+                    free(gop_y_coeffs[i]);
+                    free(gop_co_coeffs[i]);
+                    free(gop_cg_coeffs[i]);
+                    free(quant_y[i]);
+                    free(quant_co[i]);
+                    free(quant_cg[i]);
+                }
+                free(gop_y_coeffs);
+                free(gop_co_coeffs);
+                free(gop_cg_coeffs);
+                free(quant_y);
+                free(quant_co);
+                free(quant_cg);
+                return 0;
+            }
+
+            // Compress mesh data with Zstd
+            size_t max_compressed_mesh = ZSTD_compressBound(mesh_size);
+            uint8_t *compressed_mesh = malloc(max_compressed_mesh);
+            size_t compressed_mesh_size = ZSTD_compress(
+                compressed_mesh, max_compressed_mesh,
+                mesh_buffer, mesh_size,
+                enc->zstd_level
+            );
+
+            if (ZSTD_isError(compressed_mesh_size)) {
+                fprintf(stderr, "Error: Zstd compression failed for mesh data\n");
+                free(mesh_buffer);
+                free(compressed_mesh);
+                // Free all allocated buffers
+                for (int i = 0; i < actual_gop_size; i++) {
+                    free(gop_y_coeffs[i]);
+                    free(gop_co_coeffs[i]);
+                    free(gop_cg_coeffs[i]);
+                    free(quant_y[i]);
+                    free(quant_co[i]);
+                    free(quant_cg[i]);
+                }
+                free(gop_y_coeffs);
+                free(gop_co_coeffs);
+                free(gop_cg_coeffs);
+                free(quant_y);
+                free(quant_co);
+                free(quant_cg);
+                return 0;
+            }
+
+            // Write compressed mesh size and data
+            uint32_t compressed_mesh_size_32 = (uint32_t)compressed_mesh_size;
+            fwrite(&compressed_mesh_size_32, sizeof(uint32_t), 1, output);
+            fwrite(compressed_mesh, 1, compressed_mesh_size, output);
+            total_bytes_written += sizeof(uint32_t) + compressed_mesh_size;
+
+            if (enc->verbose) {
+                printf("Mesh data: %zu bytes raw, %zu bytes compressed (%.1f%% compression)\n",
+                       mesh_size, compressed_mesh_size,
+                       100.0 * compressed_mesh_size / mesh_size);
+            }
+
+            free(mesh_buffer);
+            free(compressed_mesh);
+        } else {
+            // Packet 0x12: Translation-based alignment
+            // Write canvas expansion information (4 bytes)
+            uint8_t canvas_margins[4] = {
+                (uint8_t)crop_left,    // Left margin
+                (uint8_t)crop_right,   // Right margin
+                (uint8_t)crop_top,     // Top margin
+                (uint8_t)crop_bottom   // Bottom margin
+            };
+            fwrite(canvas_margins, 1, 4, output);
             total_bytes_written += 4;
+
+            // Write all motion vectors (1/16-pixel precision) for the entire GOP
+            for (int t = 0; t < actual_gop_size; t++) {
+                int16_t dx = enc->gop_translation_x[t];
+                int16_t dy = enc->gop_translation_y[t];
+                fwrite(&dx, sizeof(int16_t), 1, output);
+                fwrite(&dy, sizeof(int16_t), 1, output);
+                total_bytes_written += 4;
+            }
         }
 
         // Preprocess ALL frames with unified significance map
@@ -2252,6 +2822,251 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
 // Temporal DWT Functions
 // =============================================================================
 
+// Invert mesh for backward warping (MC-lifting update step)
+// Forward mesh: warps F0 to F1
+// Backward mesh: warps F1 to F0 (negated motion vectors)
+static void invert_mesh(
+    const short *mesh_dx, const short *mesh_dy,
+    int mesh_width, int mesh_height,
+    short *inv_mesh_dx, short *inv_mesh_dy
+) {
+    int num_points = mesh_width * mesh_height;
+    for (int i = 0; i < num_points; i++) {
+        inv_mesh_dx[i] = -mesh_dx[i];
+        inv_mesh_dy[i] = -mesh_dy[i];
+    }
+}
+
+// Build block-based reliability mask for selective motion compensation
+// Process 16×16 blocks for efficiency (matches block matching resolution)
+// Returns mask where 1 = use MC, 0 = fall back to plain Haar
+/*static void build_reliability_mask(
+    const uint8_t *frame0_rgb, const uint8_t *frame1_rgb,
+    const float *flow_fwd_x, const float *flow_fwd_y,
+    const float *flow_bwd_x, const float *flow_bwd_y,
+    int width, int height,
+    uint8_t *mask
+) {
+    const int block_size = 16;  // Match block matching resolution
+    int num_pixels = width * height;
+
+    // Relaxed thresholds for better coverage
+    float motion_threshold = 1.0f;   // pixels (relaxed from 2.0)
+    float fb_threshold = 2.0f;       // pixels (relaxed from 1.0)
+    float texture_threshold = 10.0f; // gradient magnitude
+
+    int reliable_blocks = 0;
+    int total_blocks = 0;
+    int reliable_pixels = 0;
+
+    // Process in 16×16 blocks
+    for (int by = 0; by < height; by += block_size) {
+        for (int bx = 0; bx < width; bx += block_size) {
+            total_blocks++;
+
+            // Compute block statistics
+            float sum_motion = 0.0f;
+            float sum_fb_error = 0.0f;
+            float sum_texture = 0.0f;
+            int block_pixels = 0;
+
+            int bh = (by + block_size <= height) ? block_size : (height - by);
+            int bw = (bx + block_size <= width) ? block_size : (width - bx);
+
+            for (int y = by; y < by + bh; y++) {
+                for (int x = bx; x < bx + bw; x++) {
+                    int idx = y * width + x;
+
+                    // Motion magnitude
+                    float fx = flow_fwd_x[idx];
+                    float fy = flow_fwd_y[idx];
+                    sum_motion += sqrtf(fx * fx + fy * fy);
+
+                    // Forward-backward consistency
+                    int x_warped = (int)(x + fx + 0.5f);
+                    int y_warped = (int)(y + fy + 0.5f);
+                    if (x_warped >= 0 && x_warped < width && y_warped >= 0 && y_warped < height) {
+                        int idx_w = y_warped * width + x_warped;
+                        float bx_val = flow_bwd_x[idx_w];
+                        float by_val = flow_bwd_y[idx_w];
+                        float err_x = fx + bx_val;
+                        float err_y = fy + by_val;
+                        sum_fb_error += sqrtf(err_x * err_x + err_y * err_y);
+                    } else {
+                        sum_fb_error += 999.0f;
+                    }
+
+                    // Texture (simple gradient)
+                    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+                        int rgb_idx = idx * 3;
+                        int rgb_idx_r = (y * width + (x + 1)) * 3;
+                        int rgb_idx_d = ((y + 1) * width + x) * 3;
+
+                        float gx = (frame0_rgb[rgb_idx_r] - frame0_rgb[rgb_idx]);
+                        float gy = (frame0_rgb[rgb_idx_d] - frame0_rgb[rgb_idx]);
+                        sum_texture += sqrtf(gx * gx + gy * gy);
+                    }
+
+                    block_pixels++;
+                }
+            }
+
+            // Average block statistics
+            float avg_motion = sum_motion / block_pixels;
+            float avg_fb_error = sum_fb_error / block_pixels;
+            float avg_texture = sum_texture / block_pixels;
+
+            // Decide if block is reliable
+            int block_reliable = (avg_motion > motion_threshold) &&
+                                (avg_fb_error < fb_threshold) &&
+                                (avg_texture > texture_threshold);
+
+            if (block_reliable) reliable_blocks++;
+
+            // Apply decision to all pixels in block
+            for (int y = by; y < by + bh; y++) {
+                for (int x = bx; x < bx + bw; x++) {
+                    int idx = y * width + x;
+                    mask[idx] = block_reliable ? 1 : 0;
+                    if (mask[idx]) reliable_pixels++;
+                }
+            }
+        }
+    }
+
+    // Debug output
+    printf("  Reliability mask: %d/%d blocks (%d/%d pixels, %.1f%%) - motion>%.1fpx, texture>%.1f, fb_err<%.1fpx\n",
+           reliable_blocks, total_blocks, reliable_pixels, num_pixels,
+           100.0f * reliable_pixels / num_pixels,
+           motion_threshold, texture_threshold, fb_threshold);
+}*/
+
+// Motion-compensated lifting: Haar wavelet with SYMMETRIC bi-directional warping
+// Implements predict-update lifting scheme with symmetric motion compensation
+//
+// Symmetric lifting (both frames meet in the middle):
+//   Predict: H = warp(F1, -½·mesh) - warp(F0, +½·mesh)
+//   Update:  L = 0.5 * (warp(F0, +½·mesh) + warp(F1, -½·mesh))
+//
+// With reliability masking:
+//   For reliable pixels: use MC-lifting (mesh warp)
+//   For unreliable pixels: fall back to plain Haar (H = F1 - F0, L = 0.5*(F0+F1))
+//
+// This produces:
+//   L (lowband): symmetric motion-aligned temporal average (where reliable)
+//   H (highband): symmetric motion-compensated residual (where reliable)
+//
+// Benefits:
+//   - Symmetric treatment of both frames (no bias)
+//   - Better invertibility (both frames warp equally)
+//   - Lower residual energy (frames meet at temporal midpoint)
+//   - Eliminates errors from occlusions, low-texture regions, and bad matches
+static void mc_lifting_forward_pair(
+    tav_encoder_t *enc,
+    float **f0_y, float **f0_co, float **f0_cg,  // Frame 0 (reference)
+    float **f1_y, float **f1_co, float **f1_cg,  // Frame 1 (current)
+    const short *mesh_dx, const short *mesh_dy,  // Forward mesh (F0→F1)
+//    const uint8_t *reliability_mask,             // Reliability mask (1=use MC, 0=plain Haar)
+    float **out_l_y, float **out_l_co, float **out_l_cg,  // Lowband output
+    float **out_h_y, float **out_h_co, float **out_h_cg   // Highband output
+) {
+    int width = enc->width;
+    int height = enc->height;
+    int num_pixels = width * height;
+    int num_mesh_points = enc->mesh_width * enc->mesh_height;
+
+    // Allocate temporary buffers
+    float *warped_f0_fwd_y = malloc(num_pixels * sizeof(float));
+    float *warped_f0_fwd_co = malloc(num_pixels * sizeof(float));
+    float *warped_f0_fwd_cg = malloc(num_pixels * sizeof(float));
+
+    float *warped_f1_back_y = malloc(num_pixels * sizeof(float));
+    float *warped_f1_back_co = malloc(num_pixels * sizeof(float));
+    float *warped_f1_back_cg = malloc(num_pixels * sizeof(float));
+
+    short *half_mesh_dx = malloc(num_mesh_points * sizeof(short));
+    short *half_mesh_dy = malloc(num_mesh_points * sizeof(short));
+    short *neg_half_mesh_dx = malloc(num_mesh_points * sizeof(short));
+    short *neg_half_mesh_dy = malloc(num_mesh_points * sizeof(short));
+
+    if (!warped_f0_fwd_y || !warped_f0_fwd_co || !warped_f0_fwd_cg ||
+        !warped_f1_back_y || !warped_f1_back_co || !warped_f1_back_cg ||
+        !half_mesh_dx || !half_mesh_dy ||
+        !neg_half_mesh_dx || !neg_half_mesh_dy) {
+        fprintf(stderr, "Error: Failed to allocate MC-lifting buffers\n");
+        goto cleanup;
+    }
+
+    // Create half-step meshes for symmetric warping
+    // +½·mesh for F0 forward, -½·mesh for F1 backward
+    for (int i = 0; i < num_mesh_points; i++) {
+        half_mesh_dx[i] = mesh_dx[i] / 2;
+        half_mesh_dy[i] = mesh_dy[i] / 2;
+        neg_half_mesh_dx[i] = -half_mesh_dx[i];
+        neg_half_mesh_dy[i] = -half_mesh_dy[i];
+    }
+
+    // ===== SYMMETRIC PREDICT STEP: H = warp(F1, -½·mesh) - warp(F0, +½·mesh) =====
+    // Warp F0 forward by half-step (toward temporal midpoint)
+    warp_frame_with_mesh(*f0_y, width, height, half_mesh_dx, half_mesh_dy,
+                         enc->mesh_width, enc->mesh_height, warped_f0_fwd_y);
+    warp_frame_with_mesh(*f0_co, width, height, half_mesh_dx, half_mesh_dy,
+                         enc->mesh_width, enc->mesh_height, warped_f0_fwd_co);
+    warp_frame_with_mesh(*f0_cg, width, height, half_mesh_dx, half_mesh_dy,
+                         enc->mesh_width, enc->mesh_height, warped_f0_fwd_cg);
+
+    // Warp F1 backward by half-step (toward temporal midpoint)
+    warp_frame_with_mesh(*f1_y, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
+                         enc->mesh_width, enc->mesh_height, warped_f1_back_y);
+    warp_frame_with_mesh(*f1_co, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
+                         enc->mesh_width, enc->mesh_height, warped_f1_back_co);
+    warp_frame_with_mesh(*f1_cg, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
+                         enc->mesh_width, enc->mesh_height, warped_f1_back_cg);
+
+    float ALPHA = 0.25f;
+
+    // Compute temporal highband and lowband with selective MC
+    // For reliable pixels: use MC-lifting (warped frames)
+    // For unreliable pixels: fall back to plain Haar (original frames)
+    for (int i = 0; i < num_pixels; i++) {
+//        if (reliability_mask[i]) {
+            // ===== RELIABLE: MC-LIFTING =====
+            // Predict: H = warp(F1, -½·mesh) - warp(F0, +½·mesh)
+            (*out_h_y)[i] = warped_f1_back_y[i] - warped_f0_fwd_y[i];
+            (*out_h_co)[i] = warped_f1_back_co[i] - warped_f0_fwd_co[i];
+            (*out_h_cg)[i] = warped_f1_back_cg[i] - warped_f0_fwd_cg[i];
+
+            // Update: L = 0.5 * (warp(F0, +½·mesh) + warp(F1, -½·mesh))
+            (*out_l_y)[i] = ALPHA * (warped_f0_fwd_y[i] + warped_f1_back_y[i]);
+            (*out_l_co)[i] = ALPHA * (warped_f0_fwd_co[i] + warped_f1_back_co[i]);
+            (*out_l_cg)[i] = ALPHA * (warped_f0_fwd_cg[i] + warped_f1_back_cg[i]);
+        /*} else {
+            // ===== UNRELIABLE: PLAIN HAAR (no warping) =====
+            // Predict: H = F1 - F0
+            (*out_h_y)[i] = (*f1_y)[i] - (*f0_y)[i];
+            (*out_h_co)[i] = (*f1_co)[i] - (*f0_co)[i];
+            (*out_h_cg)[i] = (*f1_cg)[i] - (*f0_cg)[i];
+
+            // Update: L = 0.5 * (F0 + F1)
+            (*out_l_y)[i] = ALPHA * ((*f0_y)[i] + (*f1_y)[i]);
+            (*out_l_co)[i] = ALPHA * ((*f0_co)[i] + (*f1_co)[i]);
+            (*out_l_cg)[i] = ALPHA * ((*f0_cg)[i] + (*f1_cg)[i]);
+        }*/
+    }
+
+cleanup:
+    free(warped_f0_fwd_y);
+    free(warped_f0_fwd_co);
+    free(warped_f0_fwd_cg);
+    free(warped_f1_back_y);
+    free(warped_f1_back_co);
+    free(warped_f1_back_cg);
+    free(half_mesh_dx);
+    free(half_mesh_dy);
+    free(neg_half_mesh_dx);
+    free(neg_half_mesh_dy);
+}
+
 // Apply 1D temporal DWT along time axis for a spatial location (encoder side)
 // data[i] = frame i's coefficient value at this spatial location
 // Applies LGT 5/3 wavelet for reversibility
@@ -2266,9 +3081,127 @@ static void dwt_temporal_1d_inverse_53(float *temporal_data, int num_frames) {
     dwt_53_inverse_1d(temporal_data, num_frames);
 }
 
+// Apply 3D DWT with motion-compensated lifting (MC-lifting)
+// Integrates motion compensation directly into wavelet lifting steps
+// This replaces separate warping + DWT for better invertibility and compression
+static void dwt_3d_forward_mc(
+    tav_encoder_t *enc,
+    float **gop_y, float **gop_co, float **gop_cg,
+    int num_frames, int spatial_levels, int temporal_levels, int spatial_filter
+) {
+    if (num_frames < 2) return;
+
+    int width = enc->width;
+    int height = enc->height;
+    int num_pixels = width * height;
+
+    // Allocate temporary buffers for L and H bands
+    float **temp_l_y = malloc(num_frames * sizeof(float*));
+    float **temp_l_co = malloc(num_frames * sizeof(float*));
+    float **temp_l_cg = malloc(num_frames * sizeof(float*));
+    float **temp_h_y = malloc(num_frames * sizeof(float*));
+    float **temp_h_co = malloc(num_frames * sizeof(float*));
+    float **temp_h_cg = malloc(num_frames * sizeof(float*));
+
+    for (int i = 0; i < num_frames; i++) {
+        temp_l_y[i] = malloc(num_pixels * sizeof(float));
+        temp_l_co[i] = malloc(num_pixels * sizeof(float));
+        temp_l_cg[i] = malloc(num_pixels * sizeof(float));
+        temp_h_y[i] = malloc(num_pixels * sizeof(float));
+        temp_h_co[i] = malloc(num_pixels * sizeof(float));
+        temp_h_cg[i] = malloc(num_pixels * sizeof(float));
+    }
+
+    // Step 1: Apply MC-lifting temporal transform
+    // Process frame pairs at each decomposition level
+    for (int level = 0; level < temporal_levels; level++) {
+        int level_frames = num_frames >> level;
+        if (level_frames < 2) break;
+
+        // Apply MC-lifting to each frame pair
+        for (int i = 0; i < level_frames; i += 2) {
+            int f0_idx = i;
+            int f1_idx = i + 1;
+
+            if (f1_idx >= level_frames) break;
+
+            // Get mesh for this frame pair (mesh[f1] describes motion from f0 to f1)
+            const short *mesh_dx = enc->gop_mesh_dx[f1_idx];
+            const short *mesh_dy = enc->gop_mesh_dy[f1_idx];
+
+            // Build reliability mask for selective motion compensation
+            /*uint8_t *reliability_mask = malloc(num_pixels * sizeof(uint8_t));
+            if (reliability_mask && enc->gop_flow_fwd_x[f1_idx] && enc->gop_flow_bwd_x[f1_idx]) {
+                build_reliability_mask(
+                    enc->gop_rgb_frames[f0_idx], enc->gop_rgb_frames[f1_idx],
+                    enc->gop_flow_fwd_x[f1_idx], enc->gop_flow_fwd_y[f1_idx],
+                    enc->gop_flow_bwd_x[f1_idx], enc->gop_flow_bwd_y[f1_idx],
+                    width, height,
+                    reliability_mask
+                );
+            } else {
+                // Fallback: use MC everywhere (all pixels reliable)
+                if (reliability_mask) {
+                    memset(reliability_mask, 1, num_pixels * sizeof(uint8_t));
+                }
+            }*/
+
+            // Apply MC-lifting: (L, H) = mc_lift(F0, F1, mesh, mask)
+            mc_lifting_forward_pair(
+                enc,
+                &gop_y[f0_idx], &gop_co[f0_idx], &gop_cg[f0_idx],  // F0
+                &gop_y[f1_idx], &gop_co[f1_idx], &gop_cg[f1_idx],  // F1
+                mesh_dx, mesh_dy,
+//                reliability_mask,                                    // Reliability mask
+                &temp_l_y[i/2], &temp_l_co[i/2], &temp_l_cg[i/2],  // L output
+                &temp_h_y[level_frames/2 + i/2], &temp_h_co[level_frames/2 + i/2], &temp_h_cg[level_frames/2 + i/2]  // H output
+            );
+
+//            free(reliability_mask);
+        }
+
+        // Copy L and H bands back to gop buffers for next level
+        int half = level_frames / 2;
+        for (int i = 0; i < half; i++) {
+            memcpy(gop_y[i], temp_l_y[i], num_pixels * sizeof(float));
+            memcpy(gop_co[i], temp_l_co[i], num_pixels * sizeof(float));
+            memcpy(gop_cg[i], temp_l_cg[i], num_pixels * sizeof(float));
+        }
+        for (int i = 0; i < half; i++) {
+            memcpy(gop_y[half + i], temp_h_y[half + i], num_pixels * sizeof(float));
+            memcpy(gop_co[half + i], temp_h_co[half + i], num_pixels * sizeof(float));
+            memcpy(gop_cg[half + i], temp_h_cg[half + i], num_pixels * sizeof(float));
+        }
+    }
+
+    // Step 2: Apply 2D spatial DWT to each temporal subband
+    for (int t = 0; t < num_frames; t++) {
+        dwt_2d_forward_flexible(gop_y[t], width, height, spatial_levels, spatial_filter);
+        dwt_2d_forward_flexible(gop_co[t], width, height, spatial_levels, spatial_filter);
+        dwt_2d_forward_flexible(gop_cg[t], width, height, spatial_levels, spatial_filter);
+    }
+
+    // Cleanup
+    for (int i = 0; i < num_frames; i++) {
+        free(temp_l_y[i]);
+        free(temp_l_co[i]);
+        free(temp_l_cg[i]);
+        free(temp_h_y[i]);
+        free(temp_h_co[i]);
+        free(temp_h_cg[i]);
+    }
+    free(temp_l_y);
+    free(temp_l_co);
+    free(temp_l_cg);
+    free(temp_h_y);
+    free(temp_h_co);
+    free(temp_h_cg);
+}
+
 // Apply 3D DWT: temporal DWT across frames, then spatial DWT on each temporal subband
 // gop_data[frame][y * width + x] - GOP buffer organized as frame-major
 // Modifies gop_data in-place
+// NOTE: This is the OLD version without MC-lifting (kept for non-mesh mode)
 static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
                           int spatial_levels, int temporal_levels, int spatial_filter) {
     if (num_frames < 2 || width < 2 || height < 2) return;
@@ -2290,8 +3223,8 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
             for (int level = 0; level < temporal_levels; level++) {
                 int level_frames = num_frames >> level;
                 if (level_frames >= 2) {
-//                    dwt_temporal_1d_forward_53(temporal_line, level_frames);
-                    dwt_haar_forward_1d(temporal_line, level_frames);
+//                    dwt_temporal_1d_forward_53(temporal_line, level_frames);  // CDF 5/3 worse for motion-compensated frames
+                    dwt_haar_forward_1d(temporal_line, level_frames);  // Haar better for imperfect alignment
                 }
             }
 
@@ -5272,6 +6205,7 @@ int main(int argc, char *argv[]) {
         {"delta-haar", required_argument, 0, 1018},
         {"temporal-dwt", no_argument, 0, 1019},
         {"temporal-3d", no_argument, 0, 1019},
+        {"mesh-warp", no_argument, 0, 1020},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -5437,6 +6371,10 @@ int main(int argc, char *argv[]) {
                 enc->use_delta_encoding = 0; // two modes are mutually exclusive
                 enc->enable_temporal_dwt = 1;
                 printf("Temporal 3D DWT encoding enabled (GOP size: %d frames)\n", GOP_SIZE);
+                break;
+            case 1020: // --mesh-warp
+                enc->enable_mesh_warp = 1;
+                printf("Mesh-based motion compensation enabled (requires --temporal-dwt)\n");
                 break;
             case 'a':
                 int bitrate = atoi(optarg);

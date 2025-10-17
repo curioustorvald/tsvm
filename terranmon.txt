@@ -1054,6 +1054,8 @@ transmission capability, and region-of-interest coding.
 
 ## GOP Unified Packet Structure (0x12)
 Implemented on 2025-10-15 for temporal 3D DWT with unified preprocessing.
+Updated on 2025-10-17 to include canvas expansion margins.
+
 This packet contains multiple frames encoded as a single spacetime block for optimal
 temporal compression.
 
@@ -1077,18 +1079,40 @@ The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single
 This layout enables Zstd to find patterns across both spatial and temporal dimensions,
 resulting in superior compression compared to per-frame encoding.
 
+### Canvas Expansion for Motion Compensation
+When frames in a GOP have camera motion, they must be aligned before temporal DWT.
+However, alignment creates "gaps" at frame edges. To preserve ALL original pixels:
+
+1. **Calculate motion range**: Determine the total shift range across all GOP frames
+   - Example: If frames shift by ±3 pixels horizontally, total range = 6 pixels
+2. **Expand canvas**: Create a larger canvas = original_size + margin
+   - Canvas width = header.width + margin_left + margin_right
+   - Canvas height = header.height + margin_top + margin_bottom
+3. **Place aligned frames**: Each frame is positioned on the expanded canvas
+   - All original pixels from all frames are preserved
+   - No artificial padding or cropping occurs
+4. **Encode expanded canvas**: Apply 3D DWT to the larger canvas dimensions
+5. **Store margins**: 4 bytes (L/R/T/B) tell decoder the canvas expansion
+6. **Decoder extraction**: Decoder extracts display region for each frame based on
+   motion vectors and margins
+
+This approach ensures lossless preservation of original video content during GOP encoding.
+
 ### Motion Vectors
-- Stored in quarter-pixel units (divide by 4.0 for pixel displacement)
+- Stored in 1/16-pixel units (divide by 16.0 for pixel displacement)
 - Used for global motion compensation (camera movement, scene translation)
 - Computed using FFT-based phase correlation for accurate frame alignment
-- First frame (frame 0) typically has motion vector (0, 0)
+- Cumulative relative to frame 0 (not frame-to-frame deltas)
+- First frame (frame 0) always has motion vector (0, 0)
 
 ### Temporal 3D DWT Process
-1. Apply 1D DWT across temporal axis (GOP frames)
-2. Apply 2D DWT on each spatial slice of temporal subbands
-3. Perceptual quantization with temporal-spatial awareness
-4. Unified significance map preprocessing across all frames/channels
-5. Single Zstd compression of entire GOP block
+1. Detect inter-frame motion using phase correlation
+2. Align frames and expand canvas to preserve all original pixels
+3. Apply 1D DWT across temporal axis (GOP frames) on expanded canvas
+4. Apply 2D DWT on each spatial slice of temporal subbands
+5. Perceptual quantization with temporal-spatial awareness
+6. Unified significance map preprocessing across all frames/channels
+7. Single Zstd compression of entire GOP block
 
 ## GOP Sync Packet Structure (0xFC)
 Indicates that N frames were decoded from a GOP Unified block.
