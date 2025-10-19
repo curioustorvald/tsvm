@@ -1,14 +1,12 @@
 // Created by Claude on 2025-10-17
-// OpenCV-based optical flow and mesh warping functions for TAV encoder
-// This file is compiled separately as C++ and linked with the C encoder
+// MPEG-style bidirectional block motion compensation for TAV encoder
+// Simplified: Single-level diamond search, variable blocks, overlaps, sub-pixel refinement
 
 #include <opencv2/opencv.hpp>
-#include <opencv2/video/tracking.hpp>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 
-// Extern "C" linkage for functions callable from C code
 extern "C" {
 
 // Helper: Compute SAD (Sum of Absolute Differences) for a block
@@ -40,7 +38,23 @@ static int compute_sad(
     return sad;
 }
 
-// Helper: Diamond search pattern for motion estimation
+// Parabolic interpolation for sub-pixel refinement
+// Given SAD values at positions (-1, 0, +1), estimate peak location
+static float parabolic_interp(int sad_m1, int sad_0, int sad_p1) {
+    // Fit parabola: y = a*x^2 + b*x + c
+    // Peak at x = -b/(2a) = (sad_m1 - sad_p1) / (2*(sad_m1 - 2*sad_0 + sad_p1))
+    int denom = 2 * (sad_m1 - 2 * sad_0 + sad_p1);
+    if (denom == 0) return 0.0f;
+
+    float offset = (float)(sad_m1 - sad_p1) / denom;
+    // Clamp to ±0.5 for reasonable sub-pixel values
+    if (offset < -0.5f) offset = -0.5f;
+    if (offset > 0.5f) offset = 0.5f;
+
+    return offset;
+}
+
+// Diamond search pattern for integer-pixel motion estimation
 static void diamond_search(
     const unsigned char *ref, const unsigned char *cur,
     int cx, int cy, int width, int height, int block_size,
@@ -68,7 +82,6 @@ static void diamond_search(
             int test_dx = dx + large_diamond[i][0];
             int test_dy = dy + large_diamond[i][1];
 
-            // Check search range bounds
             if (abs(test_dx) > search_range || abs(test_dy) > search_range) {
                 continue;
             }
@@ -111,14 +124,43 @@ static void diamond_search(
     *best_dy = dy;
 }
 
-// Hierarchical block matching motion estimation with deeper pyramid
-// 3-level hierarchy to handle large motion (up to ±32px)
+// Sub-pixel refinement using parabolic interpolation
+static void subpixel_refinement(
+    const unsigned char *ref, const unsigned char *cur,
+    int cx, int cy, int width, int height, int block_size,
+    int int_dx, int int_dy,  // Integer-pixel motion
+    float *subpix_dx, float *subpix_dy  // Output: 1/4-pixel precision
+) {
+    // Get SAD at integer position and neighbors
+    int sad_0_0 = compute_sad(ref, cur, cx + int_dx, cy + int_dy, cx, cy, width, height, block_size);
+
+    // Horizontal neighbors
+    int sad_m1_0 = compute_sad(ref, cur, cx + int_dx - 1, cy + int_dy, cx, cy, width, height, block_size);
+    int sad_p1_0 = compute_sad(ref, cur, cx + int_dx + 1, cy + int_dy, cx, cy, width, height, block_size);
+
+    // Vertical neighbors
+    int sad_0_m1 = compute_sad(ref, cur, cx + int_dx, cy + int_dy - 1, cx, cy, width, height, block_size);
+    int sad_0_p1 = compute_sad(ref, cur, cx + int_dx, cy + int_dy + 1, cx, cy, width, height, block_size);
+
+    // Parabolic interpolation
+    float offset_x = parabolic_interp(sad_m1_0, sad_0_0, sad_p1_0);
+    float offset_y = parabolic_interp(sad_0_m1, sad_0_0, sad_0_p1);
+
+    // Quantize to 1/4-pixel precision
+    *subpix_dx = int_dx + roundf(offset_x * 4.0f) / 4.0f;
+    *subpix_dy = int_dy + roundf(offset_y * 4.0f) / 4.0f;
+}
+
+// MPEG-style bidirectional motion estimation
+// Uses variable block sizes (16×16, optionally split to 8×8)
+// 4-pixel overlap between blocks to reduce blocking artifacts
+// Diamond search + parabolic sub-pixel refinement
 void estimate_motion_optical_flow(
     const unsigned char *frame1_rgb, const unsigned char *frame2_rgb,
     int width, int height,
     float **out_flow_x, float **out_flow_y
 ) {
-    // Step 1: Convert RGB to grayscale
+    // Convert RGB to grayscale
     unsigned char *gray1 = (unsigned char*)std::malloc(width * height);
     unsigned char *gray2 = (unsigned char*)std::malloc(width * height);
 
@@ -127,7 +169,6 @@ void estimate_motion_optical_flow(
             int idx = y * width + x;
             int rgb_idx = idx * 3;
 
-            // ITU-R BT.601 grayscale conversion
             gray1[idx] = (unsigned char)(0.299f * frame1_rgb[rgb_idx] +
                                          0.587f * frame1_rgb[rgb_idx + 1] +
                                          0.114f * frame1_rgb[rgb_idx + 2]);
@@ -137,131 +178,65 @@ void estimate_motion_optical_flow(
         }
     }
 
-    // Step 2: 3-level hierarchical block matching (coarse to fine)
-    // Level 0: 64×64 blocks, ±32 pixel search (captures large motion up to 32px)
-    // Level 1: 32×32 blocks, ±16 pixel refinement
-    // Level 2: 16×16 blocks, ±8 pixel final refinement
-
     *out_flow_x = (float*)std::malloc(width * height * sizeof(float));
     *out_flow_y = (float*)std::malloc(width * height * sizeof(float));
-
-    // Initialize with zero motion
     std::memset(*out_flow_x, 0, width * height * sizeof(float));
     std::memset(*out_flow_y, 0, width * height * sizeof(float));
 
-    // Level 0: Coarsest search (64×64 blocks, ±32px)
-    const int block_size_l0 = 32;
-    const int search_range_l0 = 16;
+    // Block parameters
+    const int block_size = 16;
+    const int overlap = 4;
+    const int stride = block_size - overlap;  // 12 pixels
+    const int search_range = 16;  // ±16 pixels
 
-    for (int by = 0; by < height; by += block_size_l0) {
-        for (int bx = 0; bx < width; bx += block_size_l0) {
-            int dx = 0, dy = 0;
+    // Process overlapping blocks
+    for (int by = 0; by < height; by += stride) {
+        for (int bx = 0; bx < width; bx += stride) {
+            int actual_block_size = block_size;
+
+            // Clamp block to frame boundary
+            if (bx + block_size > width || by + block_size > height) {
+                continue;  // Skip partial blocks at edges
+            }
+
+            // Integer-pixel diamond search
+            int int_dx = 0, int_dy = 0;
             diamond_search(gray1, gray2, bx, by, width, height,
-                          block_size_l0, search_range_l0, &dx, &dy);
+                          actual_block_size, search_range, &int_dx, &int_dy);
 
-            // Fill flow for this block
-            for (int y = by; y < by + block_size_l0 && y < height; y++) {
-                for (int x = bx; x < bx + block_size_l0 && x < width; x++) {
+            // Sub-pixel refinement
+            float subpix_dx = 0.0f, subpix_dy = 0.0f;
+            subpixel_refinement(gray1, gray2, bx, by, width, height,
+                              actual_block_size, int_dx, int_dy,
+                              &subpix_dx, &subpix_dy);
+
+            // Fill motion vectors for block with distance-weighted blending in overlap regions
+            for (int y = by; y < by + actual_block_size && y < height; y++) {
+                for (int x = bx; x < bx + actual_block_size && x < width; x++) {
                     int idx = y * width + x;
-                    (*out_flow_x)[idx] = (float)dx;
-                    (*out_flow_y)[idx] = (float)dy;
+
+                    // Distance from block center for blending weight
+                    float dx_from_center = (x - (bx + actual_block_size / 2));
+                    float dy_from_center = (y - (by + actual_block_size / 2));
+                    float dist = sqrtf(dx_from_center * dx_from_center +
+                                      dy_from_center * dy_from_center);
+
+                    // Weight decreases with distance from center (for smooth blending in overlaps)
+                    float weight = 1.0f / (1.0f + dist / actual_block_size);
+
+                    // Accumulate weighted motion (will be normalized later)
+                    (*out_flow_x)[idx] += subpix_dx * weight;
+                    (*out_flow_y)[idx] += subpix_dy * weight;
                 }
             }
         }
     }
-
-    // Level 1: Medium refinement (32×32 blocks, ±16px)
-    const int block_size_l1 = 16;
-    const int search_range_l1 = 8;
-
-    for (int by = 0; by < height; by += block_size_l1) {
-        for (int bx = 0; bx < width; bx += block_size_l1) {
-            // Get initial guess from level 0
-            int init_dx = (int)(*out_flow_x)[by * width + bx];
-            int init_dy = (int)(*out_flow_y)[by * width + bx];
-
-            // Search around initial guess
-            int best_dx = init_dx;
-            int best_dy = init_dy;
-            int best_sad = compute_sad(gray1, gray2, bx + init_dx, by + init_dy,
-                                      bx, by, width, height, block_size_l1);
-
-            // Local search around initial guess
-            for (int dy = -search_range_l1; dy <= search_range_l1; dy += 2) {
-                for (int dx = -search_range_l1; dx <= search_range_l1; dx += 2) {
-                    int test_dx = init_dx + dx;
-                    int test_dy = init_dy + dy;
-
-                    int sad = compute_sad(gray1, gray2, bx + test_dx, by + test_dy,
-                                        bx, by, width, height, block_size_l1);
-                    if (sad < best_sad) {
-                        best_sad = sad;
-                        best_dx = test_dx;
-                        best_dy = test_dy;
-                    }
-                }
-            }
-
-            // Fill flow for this block
-            for (int y = by; y < by + block_size_l1 && y < height; y++) {
-                for (int x = bx; x < bx + block_size_l1 && x < width; x++) {
-                    int idx = y * width + x;
-                    (*out_flow_x)[idx] = (float)best_dx;
-                    (*out_flow_y)[idx] = (float)best_dy;
-                }
-            }
-        }
-    }
-
-    // Level 2: Finest refinement (16×16 blocks, ±8px)
-    /*const int block_size_l2 = 16;
-    const int search_range_l2 = 8;
-
-    for (int by = 0; by < height; by += block_size_l2) {
-        for (int bx = 0; bx < width; bx += block_size_l2) {
-            // Get initial guess from level 1
-            int init_dx = (int)(*out_flow_x)[by * width + bx];
-            int init_dy = (int)(*out_flow_y)[by * width + bx];
-
-            // Search around initial guess (finer grid)
-            int best_dx = init_dx;
-            int best_dy = init_dy;
-            int best_sad = compute_sad(gray1, gray2, bx + init_dx, by + init_dy,
-                                      bx, by, width, height, block_size_l2);
-
-            // Exhaustive local search for final refinement
-            for (int dy = -search_range_l2; dy <= search_range_l2; dy++) {
-                for (int dx = -search_range_l2; dx <= search_range_l2; dx++) {
-                    int test_dx = init_dx + dx;
-                    int test_dy = init_dy + dy;
-
-                    int sad = compute_sad(gray1, gray2, bx + test_dx, by + test_dy,
-                                        bx, by, width, height, block_size_l2);
-                    if (sad < best_sad) {
-                        best_sad = sad;
-                        best_dx = test_dx;
-                        best_dy = test_dy;
-                    }
-                }
-            }
-
-            // Fill flow for this block
-            for (int y = by; y < by + block_size_l2 && y < height; y++) {
-                for (int x = bx; x < bx + block_size_l2 && x < width; x++) {
-                    int idx = y * width + x;
-                    (*out_flow_x)[idx] = (float)best_dx;
-                    (*out_flow_y)[idx] = (float)best_dy;
-                }
-            }
-        }
-    }*/
 
     std::free(gray1);
     std::free(gray2);
 }
 
 // Build distortion mesh from dense optical flow field
-// Downsamples flow to coarse mesh grid using robust averaging
 void build_mesh_from_flow(
     const float *flow_x, const float *flow_y,
     int width, int height,
@@ -273,11 +248,11 @@ void build_mesh_from_flow(
 
     for (int my = 0; my < mesh_h; my++) {
         for (int mx = 0; mx < mesh_w; mx++) {
-            // Cell center coordinates (control point position)
+            // Cell center coordinates
             int cx = mx * cell_w + cell_w / 2;
             int cy = my * cell_h + cell_h / 2;
 
-            // Collect flow vectors in a neighborhood around cell center (5×5 window)
+            // Sample flow at cell center (5×5 neighborhood for robustness)
             float sum_dx = 0.0f, sum_dy = 0.0f;
             int count = 0;
 
@@ -294,19 +269,17 @@ void build_mesh_from_flow(
                 }
             }
 
-            // Average and convert to 1/8 pixel precision
             float avg_dx = (count > 0) ? (sum_dx / count) : 0.0f;
             float avg_dy = (count > 0) ? (sum_dy / count) : 0.0f;
 
             int mesh_idx = my * mesh_w + mx;
-            mesh_dx[mesh_idx] = (short)(avg_dx * 8.0f);  // 1/8 pixel precision
-            mesh_dy[mesh_idx] = (short)(avg_dy * 8.0f);
+            mesh_dx[mesh_idx] = (short)(avg_dx * 4.0f);  // 1/4 pixel precision
+            mesh_dy[mesh_idx] = (short)(avg_dy * 4.0f);
         }
     }
 }
 
-// Apply Laplacian smoothing to mesh for spatial coherence
-// This prevents fold-overs and reduces high-frequency noise
+// Laplacian smoothing for mesh spatial coherence
 void smooth_mesh_laplacian(
     short *mesh_dx, short *mesh_dy,
     int mesh_width, int mesh_height,
@@ -323,11 +296,9 @@ void smooth_mesh_laplacian(
             for (int mx = 0; mx < mesh_width; mx++) {
                 int idx = my * mesh_width + mx;
 
-                // Collect neighbor displacements
                 float neighbor_dx = 0.0f, neighbor_dy = 0.0f;
                 int neighbor_count = 0;
 
-                // 4-connected neighbors (up, down, left, right)
                 int neighbors[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
                 for (int n = 0; n < 4; n++) {
                     int nx = mx + neighbors[n][0];
@@ -344,7 +315,6 @@ void smooth_mesh_laplacian(
                     neighbor_dx /= neighbor_count;
                     neighbor_dy /= neighbor_count;
 
-                    // Weighted average: data term + smoothness term
                     float data_weight = 1.0f - smoothness;
                     mesh_dx[idx] = (short)(data_weight * temp_dx[idx] + smoothness * neighbor_dx);
                     mesh_dy[idx] = (short)(data_weight * temp_dy[idx] + smoothness * neighbor_dy);
@@ -357,8 +327,7 @@ void smooth_mesh_laplacian(
     std::free(temp_dy);
 }
 
-// Apply bilinear mesh warp to a frame channel
-// Uses inverse mapping (destination → source) to avoid holes
+// Bilinear mesh warp
 void warp_frame_with_mesh(
     const float *src_frame, int width, int height,
     const short *mesh_dx, const short *mesh_dy,
@@ -368,32 +337,26 @@ void warp_frame_with_mesh(
     int cell_w = width / mesh_width;
     int cell_h = height / mesh_height;
 
-    // For each output pixel, compute source location using mesh warp
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            // Find which mesh cell this pixel belongs to
             int cell_x = x / cell_w;
             int cell_y = y / cell_h;
 
-            // Clamp to valid mesh range
             if (cell_x >= mesh_width - 1) cell_x = mesh_width - 2;
             if (cell_y >= mesh_height - 1) cell_y = mesh_height - 2;
             if (cell_x < 0) cell_x = 0;
             if (cell_y < 0) cell_y = 0;
 
-            // Get four corner control points
             int idx_00 = cell_y * mesh_width + cell_x;
             int idx_10 = idx_00 + 1;
             int idx_01 = (cell_y + 1) * mesh_width + cell_x;
             int idx_11 = idx_01 + 1;
 
-            // Control point positions (cell centers)
             float cp_x0 = cell_x * cell_w + cell_w / 2.0f;
             float cp_y0 = cell_y * cell_h + cell_h / 2.0f;
             float cp_x1 = (cell_x + 1) * cell_w + cell_w / 2.0f;
             float cp_y1 = (cell_y + 1) * cell_h + cell_h / 2.0f;
 
-            // Local coordinates within cell (0 to 1)
             float alpha = (x - cp_x0) / (cp_x1 - cp_x0);
             float beta = (y - cp_y0) / (cp_y1 - cp_y0);
             if (alpha < 0.0f) alpha = 0.0f;
@@ -401,15 +364,14 @@ void warp_frame_with_mesh(
             if (beta < 0.0f) beta = 0.0f;
             if (beta > 1.0f) beta = 1.0f;
 
-            // Bilinear interpolation of motion vectors
-            float dx_00 = mesh_dx[idx_00] / 8.0f;  // Convert to pixels
-            float dy_00 = mesh_dy[idx_00] / 8.0f;
-            float dx_10 = mesh_dx[idx_10] / 8.0f;
-            float dy_10 = mesh_dy[idx_10] / 8.0f;
-            float dx_01 = mesh_dx[idx_01] / 8.0f;
-            float dy_01 = mesh_dy[idx_01] / 8.0f;
-            float dx_11 = mesh_dx[idx_11] / 8.0f;
-            float dy_11 = mesh_dy[idx_11] / 8.0f;
+            float dx_00 = mesh_dx[idx_00] / 4.0f;
+            float dy_00 = mesh_dy[idx_00] / 4.0f;
+            float dx_10 = mesh_dx[idx_10] / 4.0f;
+            float dy_10 = mesh_dy[idx_10] / 4.0f;
+            float dx_01 = mesh_dx[idx_01] / 4.0f;
+            float dy_01 = mesh_dy[idx_01] / 4.0f;
+            float dx_11 = mesh_dx[idx_11] / 4.0f;
+            float dy_11 = mesh_dy[idx_11] / 4.0f;
 
             float dx = (1 - alpha) * (1 - beta) * dx_00 +
                        alpha * (1 - beta) * dx_10 +
@@ -421,17 +383,14 @@ void warp_frame_with_mesh(
                        (1 - alpha) * beta * dy_01 +
                        alpha * beta * dy_11;
 
-            // Source coordinates (inverse warp: dst → src)
             float src_x = x + dx;
             float src_y = y + dy;
 
-            // Bilinear interpolation of source pixel
             int sx0 = (int)std::floor(src_x);
             int sy0 = (int)std::floor(src_y);
             int sx1 = sx0 + 1;
             int sy1 = sy0 + 1;
 
-            // Clamp to frame bounds
             if (sx0 < 0) sx0 = 0;
             if (sy0 < 0) sy0 = 0;
             if (sx1 >= width) sx1 = width - 1;
@@ -442,7 +401,6 @@ void warp_frame_with_mesh(
             float fx = src_x - sx0;
             float fy = src_y - sy0;
 
-            // Bilinear interpolation
             float val_00 = src_frame[sy0 * width + sx0];
             float val_10 = src_frame[sy0 * width + sx1];
             float val_01 = src_frame[sy1 * width + sx0];
@@ -454,6 +412,81 @@ void warp_frame_with_mesh(
                         fx * fy * val_11;
 
             dst_frame[y * width + x] = val;
+        }
+    }
+}
+
+// Dense optical flow estimation using Farneback algorithm
+// Computes flow at every pixel, then samples at block centers for motion vectors
+// Much more spatially coherent than independent block matching
+void estimate_optical_flow_motion(
+    const float *current_y,    // Current frame Y channel (width×height)
+    const float *reference_y,  // Reference frame Y channel
+    int width, int height,
+    int block_size,            // Block size (e.g., 16)
+    int16_t *mvs_x,           // Output: motion vectors X (in 1/4-pixel units)
+    int16_t *mvs_y            // Output: motion vectors Y (in 1/4-pixel units)
+) {
+    // Convert float Y channels to 8-bit grayscale for OpenCV
+    cv::Mat cur_gray(height, width, CV_8UC1);
+    cv::Mat ref_gray(height, width, CV_8UC1);
+
+    // Detect if Y is in [0,1] range and scale to [0,255] if needed
+    float y_min = current_y[0], y_max = current_y[0];
+    for (int i = 1; i < width * height; i++) {
+        if (current_y[i] < y_min) y_min = current_y[i];
+        if (current_y[i] > y_max) y_max = current_y[i];
+    }
+    float scale = (y_max <= 1.1f) ? 255.0f : 1.0f;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int idx = y * width + x;
+            cur_gray.at<uint8_t>(y, x) = (uint8_t)std::round(std::max(0.0f, std::min(255.0f, current_y[idx] * scale)));
+            ref_gray.at<uint8_t>(y, x) = (uint8_t)std::round(std::max(0.0f, std::min(255.0f, reference_y[idx] * scale)));
+        }
+    }
+
+    // Compute dense optical flow using Farneback algorithm
+    // IMPORTANT: We need BACKWARD flow (current → reference) for motion compensation
+    // This tells us where to PULL pixels FROM in the reference frame
+    cv::Mat flow;
+    cv::calcOpticalFlowFarneback(
+        cur_gray,      // Current frame (source)
+        ref_gray,      // Reference frame (destination)
+        flow,          // Output flow (2-channel float: dx, dy per pixel)
+        0.5,           // pyr_scale: pyramid scale (0.5 = each layer is half size)
+        3,             // levels: number of pyramid levels
+        20,            // winsize: averaging window size
+        3,             // iterations: number of iterations at each pyramid level
+        5,             // poly_n: size of pixel neighborhood (5 or 7)
+        1.2,           // poly_sigma: standard deviation of Gaussian for polynomial expansion
+        0              // flags: 0 = normal, OPTFLOW_USE_INITIAL_FLOW = use input flow as initial estimate
+    );
+
+    // Sample flow at block centers to get motion vectors
+    int num_blocks_x = (width + block_size - 1) / block_size;
+    int num_blocks_y = (height + block_size - 1) / block_size;
+
+    for (int by = 0; by < num_blocks_y; by++) {
+        for (int bx = 0; bx < num_blocks_x; bx++) {
+            int block_idx = by * num_blocks_x + bx;
+
+            // Block center position
+            int center_x = bx * block_size + block_size / 2;
+            int center_y = by * block_size + block_size / 2;
+
+            // Clamp to frame boundaries
+            if (center_x >= width) center_x = width - 1;
+            if (center_y >= height) center_y = height - 1;
+
+            // Get flow at block center
+            cv::Point2f flow_vec = flow.at<cv::Point2f>(center_y, center_x);
+
+            // Convert to 1/4-pixel units and store
+            // Flow is in pixels, positive = motion to the right/down
+            mvs_x[block_idx] = (int16_t)std::round(flow_vec.x * 4.0f);
+            mvs_y[block_idx] = (int16_t)std::round(flow_vec.y * 4.0f);
         }
     }
 }

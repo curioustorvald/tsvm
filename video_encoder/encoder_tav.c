@@ -17,7 +17,7 @@
 #include <float.h>
 #include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251018 with mcwarp"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251019"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -31,6 +31,13 @@
 // Version 2: ICtCp multi-tile uniform (--ictcp --no-perceptual-tuning)
 // Version 1: YCoCg-R multi-tile uniform (--no-perceptual-tuning)
 
+// === PRODUCTION TOGGLE ===
+// Fine-grained optical flow: Compute flow at residual_coding_min_block_size (4×4) then merge similar MVs
+// vs coarse flow: Compute flow at residual_coding_max_block_size (64×64) then split based on residual variance
+// Set to 1 for fine-grained (bottom-up merge) - RECOMMENDED DEFAULT (17.3% better compression)
+// Set to 0 for coarse (top-down split) - NOT RECOMMENDED (6.3% worse than I-frame baseline)
+#define FINE_GRAINED_OPTICAL_FLOW 1
+
 // Tile encoding modes
 #define TAV_MODE_SKIP      0x00  // Skip tile (copy from reference)
 #define TAV_MODE_INTRA     0x01  // Intra DWT coding (I-frame tiles)
@@ -38,9 +45,13 @@
 
 // Video packet types
 #define TAV_PACKET_IFRAME          0x10  // Intra frame (keyframe)
-#define TAV_PACKET_PFRAME          0x11  // Predicted frame
+#define TAV_PACKET_PFRAME          0x11  // Predicted frame (legacy, unused)
 #define TAV_PACKET_GOP_UNIFIED     0x12  // Unified 3D DWT GOP (all frames in single block, translation-based)
 #define TAV_PACKET_GOP_UNIFIED_MESH 0x13  // Unified 3D DWT GOP with distortion mesh warping
+#define TAV_PACKET_PFRAME_RESIDUAL 0x14  // P-frame with MPEG-style residual coding (block motion compensation)
+#define TAV_PACKET_BFRAME_RESIDUAL 0x15  // B-frame with MPEG-style residual coding (bidirectional prediction)
+#define TAV_PACKET_PFRAME_ADAPTIVE 0x16  // P-frame with adaptive quad-tree block partitioning
+#define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2       0x20  // MP2 audio
 #define TAV_PACKET_SUBTITLE        0x30  // Subtitle packet
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
@@ -105,7 +116,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 9
-#define GOP_SIZE 8
+#define TEMPORAL_GOP_SIZE 8
 #define TEMPORAL_DECOMP_LEVEL 2
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
@@ -166,6 +177,1074 @@ static int calculate_max_decomp_levels(int width, int height) {
 
     // Cap at a reasonable maximum to avoid going too deep
     return levels > 10 ? 10 : levels;
+}
+
+// ===========================
+// Adaptive Block Partitioning
+// ===========================
+
+// Quad-tree node for adaptive block partitioning
+typedef struct quad_tree_node {
+    int x, y;                    // Top-left corner of block
+    int size;                    // Block size (64, 32, 16, 8, or 4)
+    int is_split;                // 1 if block is split into 4 children, 0 if leaf
+    int is_skip;                 // 1 if skip block (for leaf nodes only)
+
+    // Motion vectors for P-frames (single direction)
+    int16_t mv_x, mv_y;          // Motion vector in 1/4-pixel units (for leaf nodes)
+
+    // Motion vectors for B-frames (bidirectional)
+    int16_t fwd_mv_x, fwd_mv_y;  // Forward motion vector (previous reference)
+    int16_t bwd_mv_x, bwd_mv_y;  // Backward motion vector (next reference)
+    struct quad_tree_node *children[4];  // NW, NE, SW, SE children (NULL if leaf)
+} quad_tree_node_t;
+
+// Partitioning decision based on residual variance
+static float compute_block_variance(const float *residual, int width, int x, int y, int block_size) {
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    int count = 0;
+
+    for (int by = 0; by < block_size; by++) {
+        for (int bx = 0; bx < block_size; bx++) {
+            int px = x + bx;
+            int py = y + by;
+            if (px >= width) continue;  // Safety check
+
+            float val = residual[py * width + px];
+            sum += val;
+            sum_sq += val * val;
+            count++;
+        }
+    }
+
+    if (count == 0) return 0.0f;
+
+    double mean = sum / count;
+    double variance = (sum_sq / count) - (mean * mean);
+    return (float)variance;
+}
+
+// Refine motion vector for a specific block using hierarchical search
+// parent_mv is in 1/4-pixel units, search_range is in pixels
+static void refine_motion_vector(
+    const float *current_y,
+    const float *reference_y,
+    int width, int height,
+    int block_x, int block_y, int block_size,
+    int16_t parent_mv_x, int16_t parent_mv_y,
+    int search_range,
+    int16_t *out_mv_x, int16_t *out_mv_y
+) {
+    // Convert parent MV from 1/4-pixel to full-pixel for integer search
+    int parent_pixel_x = parent_mv_x / 4;
+    int parent_pixel_y = parent_mv_y / 4;
+
+    float best_sad = 1e30f;
+    int best_dx = 0;
+    int best_dy = 0;
+
+    // Integer-pixel search around parent motion vector
+    for (int dy = -search_range; dy <= search_range; dy++) {
+        for (int dx = -search_range; dx <= search_range; dx++) {
+            int ref_x = parent_pixel_x + dx;
+            int ref_y = parent_pixel_y + dy;
+
+            // Compute SAD for this motion vector
+            float sad = 0.0f;
+            int valid_pixels = 0;
+
+            for (int by = 0; by < block_size; by++) {
+                for (int bx = 0; bx < block_size; bx++) {
+                    int cur_px = block_x + bx;
+                    int cur_py = block_y + by;
+                    int ref_px = cur_px + ref_x;
+                    int ref_py = cur_py + ref_y;
+
+                    // Bounds check
+                    if (cur_px >= width || cur_py >= height) continue;
+                    if (ref_px < 0 || ref_px >= width || ref_py < 0 || ref_py >= height) continue;
+
+                    float cur_val = current_y[cur_py * width + cur_px];
+                    float ref_val = reference_y[ref_py * width + ref_px];
+                    sad += fabsf(cur_val - ref_val);
+                    valid_pixels++;
+                }
+            }
+
+            if (valid_pixels > 0) {
+                sad /= valid_pixels;  // Normalize by valid pixels
+            }
+
+            if (sad < best_sad) {
+                best_sad = sad;
+                best_dx = dx;
+                best_dy = dy;
+            }
+        }
+    }
+
+    // Sub-pixel refinement (1/4-pixel precision)
+    // Search ±1 pixel around best integer position in 1/4-pixel steps
+    int best_pixel_x = parent_pixel_x + best_dx;
+    int best_pixel_y = parent_pixel_y + best_dy;
+
+    best_sad = 1e30f;
+    int best_subpel_x = 0;
+    int best_subpel_y = 0;
+
+    for (int sub_dy = -4; sub_dy <= 4; sub_dy++) {
+        for (int sub_dx = -4; sub_dx <= 4; sub_dx++) {
+            float mv_x_pixels = best_pixel_x + sub_dx / 4.0f;
+            float mv_y_pixels = best_pixel_y + sub_dy / 4.0f;
+
+            // Compute SAD with bilinear interpolation
+            float sad = 0.0f;
+            int valid_pixels = 0;
+
+            for (int by = 0; by < block_size; by++) {
+                for (int bx = 0; bx < block_size; bx++) {
+                    int cur_px = block_x + bx;
+                    int cur_py = block_y + by;
+                    float ref_px_f = cur_px + mv_x_pixels;
+                    float ref_py_f = cur_py + mv_y_pixels;
+
+                    int ref_px = (int)ref_px_f;
+                    int ref_py = (int)ref_py_f;
+                    float fx = ref_px_f - ref_px;
+                    float fy = ref_py_f - ref_py;
+
+                    // Bounds check
+                    if (cur_px >= width || cur_py >= height) continue;
+                    if (ref_px < 0 || ref_px + 1 >= width || ref_py < 0 || ref_py + 1 >= height) continue;
+
+                    // Bilinear interpolation
+                    float v00 = reference_y[ref_py * width + ref_px];
+                    float v10 = reference_y[ref_py * width + (ref_px + 1)];
+                    float v01 = reference_y[(ref_py + 1) * width + ref_px];
+                    float v11 = reference_y[(ref_py + 1) * width + (ref_px + 1)];
+
+                    float v0 = v00 * (1.0f - fx) + v10 * fx;
+                    float v1 = v01 * (1.0f - fx) + v11 * fx;
+                    float ref_val = v0 * (1.0f - fy) + v1 * fy;
+
+                    float cur_val = current_y[cur_py * width + cur_px];
+                    sad += fabsf(cur_val - ref_val);
+                    valid_pixels++;
+                }
+            }
+
+            if (valid_pixels > 0) {
+                sad /= valid_pixels;
+            }
+
+            if (sad < best_sad) {
+                best_sad = sad;
+                best_subpel_x = sub_dx;
+                best_subpel_y = sub_dy;
+            }
+        }
+    }
+
+    // Output refined motion vector in 1/4-pixel units
+    *out_mv_x = (best_pixel_x * 4) + best_subpel_x;
+    *out_mv_y = (best_pixel_y * 4) + best_subpel_y;
+}
+
+// Build quad-tree bottom-up from fine-grained motion vectors (4×4)
+// Merges blocks with similar MVs into larger blocks
+static quad_tree_node_t* build_quad_tree_bottom_up(
+    const int16_t *fine_mv_x,
+    const int16_t *fine_mv_y,
+    const float *residual_y,
+    const float *residual_co,
+    const float *residual_cg,
+    int width, int height,
+    int x, int y, int size,
+    int min_size, int max_size,
+    int fine_blocks_x
+) {
+    quad_tree_node_t *node = (quad_tree_node_t*)malloc(sizeof(quad_tree_node_t));
+    node->x = x;
+    node->y = y;
+    node->size = size;
+    node->is_split = 0;
+    node->is_skip = 0;
+    for (int i = 0; i < 4; i++) node->children[i] = NULL;
+
+    // Base case: at minimum size, create leaf with MV from fine grid
+    if (size == min_size) {
+        int block_x = x / min_size;
+        int block_y = y / min_size;
+        int idx = block_y * fine_blocks_x + block_x;
+
+        node->mv_x = fine_mv_x[idx];
+        node->mv_y = fine_mv_y[idx];
+
+        // Check if skip block (small motion + low energy)
+        float mv_mag = sqrtf((node->mv_x * node->mv_x + node->mv_y * node->mv_y) / 16.0f);
+        float energy = 0.0f;
+        for (int by = 0; by < min_size && y + by < height; by++) {
+            for (int bx = 0; bx < min_size && x + bx < width; bx++) {
+                int px = x + bx;
+                int py = y + by;
+                if (px >= width || py >= height) continue;
+                float r_y = residual_y[py * width + px];
+                float r_co = residual_co[py * width + px];
+                float r_cg = residual_cg[py * width + px];
+                energy += r_y * r_y + r_co * r_co + r_cg * r_cg;
+            }
+        }
+        node->is_skip = (mv_mag < 0.5f && energy < 50.0f);
+
+        return node;
+    }
+
+    // Don't merge beyond max size
+    if (size >= max_size) {
+        // At max size, compute average MV from fine grid
+        int blocks_in_region = size / min_size;
+        int total_blocks = blocks_in_region * blocks_in_region;
+        int32_t sum_mv_x = 0, sum_mv_y = 0;
+
+        for (int by = 0; by < blocks_in_region; by++) {
+            for (int bx = 0; bx < blocks_in_region; bx++) {
+                int block_x = (x / min_size) + bx;
+                int block_y = (y / min_size) + by;
+                int idx = block_y * fine_blocks_x + block_x;
+                sum_mv_x += fine_mv_x[idx];
+                sum_mv_y += fine_mv_y[idx];
+            }
+        }
+
+        node->mv_x = sum_mv_x / total_blocks;
+        node->mv_y = sum_mv_y / total_blocks;
+        return node;
+    }
+
+    // Recursive case: try to build children at half size
+    int child_size = size / 2;
+    quad_tree_node_t *children[4];
+
+    children[0] = build_quad_tree_bottom_up(fine_mv_x, fine_mv_y, residual_y, residual_co, residual_cg,
+                                            width, height, x, y, child_size, min_size, max_size, fine_blocks_x);
+    children[1] = build_quad_tree_bottom_up(fine_mv_x, fine_mv_y, residual_y, residual_co, residual_cg,
+                                            width, height, x + child_size, y, child_size, min_size, max_size, fine_blocks_x);
+    children[2] = build_quad_tree_bottom_up(fine_mv_x, fine_mv_y, residual_y, residual_co, residual_cg,
+                                            width, height, x, y + child_size, child_size, min_size, max_size, fine_blocks_x);
+    children[3] = build_quad_tree_bottom_up(fine_mv_x, fine_mv_y, residual_y, residual_co, residual_cg,
+                                            width, height, x + child_size, y + child_size, child_size, min_size, max_size, fine_blocks_x);
+
+    // Check if all children can be merged (similar MVs and all are leaves)
+    int can_merge = 1;
+
+    // All children must be leaves (not already split)
+    for (int i = 0; i < 4; i++) {
+        if (children[i]->is_split) {
+            can_merge = 0;
+            break;
+        }
+    }
+
+    if (can_merge) {
+        // Check MV similarity: max difference threshold (in 1/4-pixel units)
+        // Threshold: 4 = 1 pixel, 8 = 2 pixels, etc.
+        int mv_threshold = 8;  // 2 pixels
+
+        int16_t min_mv_x = children[0]->mv_x, max_mv_x = children[0]->mv_x;
+        int16_t min_mv_y = children[0]->mv_y, max_mv_y = children[0]->mv_y;
+
+        for (int i = 1; i < 4; i++) {
+            if (children[i]->mv_x < min_mv_x) min_mv_x = children[i]->mv_x;
+            if (children[i]->mv_x > max_mv_x) max_mv_x = children[i]->mv_x;
+            if (children[i]->mv_y < min_mv_y) min_mv_y = children[i]->mv_y;
+            if (children[i]->mv_y > max_mv_y) max_mv_y = children[i]->mv_y;
+        }
+
+        int mv_range_x = max_mv_x - min_mv_x;
+        int mv_range_y = max_mv_y - min_mv_y;
+
+        if (mv_range_x > mv_threshold || mv_range_y > mv_threshold) {
+            can_merge = 0;
+        }
+    }
+
+    if (can_merge) {
+        // Merge: average the MVs from children
+        int32_t sum_mv_x = 0, sum_mv_y = 0;
+        for (int i = 0; i < 4; i++) {
+            sum_mv_x += children[i]->mv_x;
+            sum_mv_y += children[i]->mv_y;
+        }
+        node->mv_x = sum_mv_x / 4;
+        node->mv_y = sum_mv_y / 4;
+
+        // Free children since we're merging
+        for (int i = 0; i < 4; i++) {
+            free(children[i]);
+        }
+
+        return node;  // Merged leaf node
+    } else {
+        // Can't merge: keep as split node
+        node->is_split = 1;
+        for (int i = 0; i < 4; i++) {
+            node->children[i] = children[i];
+        }
+
+        // Compute average MV for this internal node (for reference)
+        int32_t sum_mv_x = 0, sum_mv_y = 0;
+        for (int i = 0; i < 4; i++) {
+            sum_mv_x += children[i]->mv_x;
+            sum_mv_y += children[i]->mv_y;
+        }
+        node->mv_x = sum_mv_x / 4;
+        node->mv_y = sum_mv_y / 4;
+
+        return node;
+    }
+}
+
+// Build quad-tree bottom-up from fine-grained bidirectional motion vectors (for B-frames)
+// Merges blocks with similar forward AND backward MVs into larger blocks
+static quad_tree_node_t* build_quad_tree_bottom_up_bidirectional(
+    const int16_t *fine_fwd_mv_x,
+    const int16_t *fine_fwd_mv_y,
+    const int16_t *fine_bwd_mv_x,
+    const int16_t *fine_bwd_mv_y,
+    const float *residual_y,
+    const float *residual_co,
+    const float *residual_cg,
+    int width, int height,
+    int x, int y, int size,
+    int min_size, int max_size,
+    int fine_blocks_x
+) {
+    quad_tree_node_t *node = (quad_tree_node_t*)malloc(sizeof(quad_tree_node_t));
+    node->x = x;
+    node->y = y;
+    node->size = size;
+    node->is_split = 0;
+    node->is_skip = 0;
+    for (int i = 0; i < 4; i++) node->children[i] = NULL;
+
+    // Base case: at minimum size, create leaf with MVs from fine grid
+    if (size == min_size) {
+        int block_x = x / min_size;
+        int block_y = y / min_size;
+        int idx = block_y * fine_blocks_x + block_x;
+
+        // Store both forward and backward MVs
+        node->fwd_mv_x = fine_fwd_mv_x[idx];
+        node->fwd_mv_y = fine_fwd_mv_y[idx];
+        node->bwd_mv_x = fine_bwd_mv_x[idx];
+        node->bwd_mv_y = fine_bwd_mv_y[idx];
+
+        // Check if skip block (small motion in BOTH directions + low energy)
+        float fwd_mv_mag = sqrtf((node->fwd_mv_x * node->fwd_mv_x + node->fwd_mv_y * node->fwd_mv_y) / 16.0f);
+        float bwd_mv_mag = sqrtf((node->bwd_mv_x * node->bwd_mv_x + node->bwd_mv_y * node->bwd_mv_y) / 16.0f);
+        float energy = 0.0f;
+        for (int by = 0; by < min_size && y + by < height; by++) {
+            for (int bx = 0; bx < min_size && x + bx < width; bx++) {
+                int px = x + bx;
+                int py = y + by;
+                if (px >= width || py >= height) continue;
+                float r_y = residual_y[py * width + px];
+                float r_co = residual_co[py * width + px];
+                float r_cg = residual_cg[py * width + px];
+                energy += r_y * r_y + r_co * r_co + r_cg * r_cg;
+            }
+        }
+        // More aggressive skip detection for B-frames (dual predictions are more accurate)
+        node->is_skip = (fwd_mv_mag < 0.5f && bwd_mv_mag < 0.5f && energy < 40.0f);
+
+        return node;
+    }
+
+    // Don't merge beyond max size
+    if (size >= max_size) {
+        // At max size, compute average MVs from fine grid
+        int blocks_in_region = size / min_size;
+        int total_blocks = blocks_in_region * blocks_in_region;
+        int32_t sum_fwd_mv_x = 0, sum_fwd_mv_y = 0;
+        int32_t sum_bwd_mv_x = 0, sum_bwd_mv_y = 0;
+
+        for (int by = 0; by < blocks_in_region; by++) {
+            for (int bx = 0; bx < blocks_in_region; bx++) {
+                int block_x = (x / min_size) + bx;
+                int block_y = (y / min_size) + by;
+                int idx = block_y * fine_blocks_x + block_x;
+                sum_fwd_mv_x += fine_fwd_mv_x[idx];
+                sum_fwd_mv_y += fine_fwd_mv_y[idx];
+                sum_bwd_mv_x += fine_bwd_mv_x[idx];
+                sum_bwd_mv_y += fine_bwd_mv_y[idx];
+            }
+        }
+
+        node->fwd_mv_x = sum_fwd_mv_x / total_blocks;
+        node->fwd_mv_y = sum_fwd_mv_y / total_blocks;
+        node->bwd_mv_x = sum_bwd_mv_x / total_blocks;
+        node->bwd_mv_y = sum_bwd_mv_y / total_blocks;
+        return node;
+    }
+
+    // Recursive case: try to build children at half size
+    int child_size = size / 2;
+    quad_tree_node_t *children[4];
+
+    children[0] = build_quad_tree_bottom_up_bidirectional(
+        fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y,
+        residual_y, residual_co, residual_cg,
+        width, height, x, y, child_size, min_size, max_size, fine_blocks_x);
+    children[1] = build_quad_tree_bottom_up_bidirectional(
+        fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y,
+        residual_y, residual_co, residual_cg,
+        width, height, x + child_size, y, child_size, min_size, max_size, fine_blocks_x);
+    children[2] = build_quad_tree_bottom_up_bidirectional(
+        fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y,
+        residual_y, residual_co, residual_cg,
+        width, height, x, y + child_size, child_size, min_size, max_size, fine_blocks_x);
+    children[3] = build_quad_tree_bottom_up_bidirectional(
+        fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y,
+        residual_y, residual_co, residual_cg,
+        width, height, x + child_size, y + child_size, child_size, min_size, max_size, fine_blocks_x);
+
+    // Check if all children can be merged (similar MVs in BOTH directions and all are leaves)
+    int can_merge = 1;
+
+    // All children must be leaves (not already split)
+    for (int i = 0; i < 4; i++) {
+        if (children[i]->is_split) {
+            can_merge = 0;
+            break;
+        }
+    }
+
+    if (can_merge) {
+        // Check MV similarity for BOTH forward and backward vectors
+        // Threshold: 4 = 1 pixel, 8 = 2 pixels, etc.
+        int mv_threshold = 8;  // 2 pixels
+
+        // Check forward MV similarity
+        int16_t min_fwd_mv_x = children[0]->fwd_mv_x, max_fwd_mv_x = children[0]->fwd_mv_x;
+        int16_t min_fwd_mv_y = children[0]->fwd_mv_y, max_fwd_mv_y = children[0]->fwd_mv_y;
+
+        for (int i = 1; i < 4; i++) {
+            if (children[i]->fwd_mv_x < min_fwd_mv_x) min_fwd_mv_x = children[i]->fwd_mv_x;
+            if (children[i]->fwd_mv_x > max_fwd_mv_x) max_fwd_mv_x = children[i]->fwd_mv_x;
+            if (children[i]->fwd_mv_y < min_fwd_mv_y) min_fwd_mv_y = children[i]->fwd_mv_y;
+            if (children[i]->fwd_mv_y > max_fwd_mv_y) max_fwd_mv_y = children[i]->fwd_mv_y;
+        }
+
+        int fwd_mv_range_x = max_fwd_mv_x - min_fwd_mv_x;
+        int fwd_mv_range_y = max_fwd_mv_y - min_fwd_mv_y;
+
+        if (fwd_mv_range_x > mv_threshold || fwd_mv_range_y > mv_threshold) {
+            can_merge = 0;
+        }
+
+        // Check backward MV similarity (only if forward MVs are similar)
+        if (can_merge) {
+            int16_t min_bwd_mv_x = children[0]->bwd_mv_x, max_bwd_mv_x = children[0]->bwd_mv_x;
+            int16_t min_bwd_mv_y = children[0]->bwd_mv_y, max_bwd_mv_y = children[0]->bwd_mv_y;
+
+            for (int i = 1; i < 4; i++) {
+                if (children[i]->bwd_mv_x < min_bwd_mv_x) min_bwd_mv_x = children[i]->bwd_mv_x;
+                if (children[i]->bwd_mv_x > max_bwd_mv_x) max_bwd_mv_x = children[i]->bwd_mv_x;
+                if (children[i]->bwd_mv_y < min_bwd_mv_y) min_bwd_mv_y = children[i]->bwd_mv_y;
+                if (children[i]->bwd_mv_y > max_bwd_mv_y) max_bwd_mv_y = children[i]->bwd_mv_y;
+            }
+
+            int bwd_mv_range_x = max_bwd_mv_x - min_bwd_mv_x;
+            int bwd_mv_range_y = max_bwd_mv_y - min_bwd_mv_y;
+
+            if (bwd_mv_range_x > mv_threshold || bwd_mv_range_y > mv_threshold) {
+                can_merge = 0;
+            }
+        }
+    }
+
+    if (can_merge) {
+        // Merge: average the MVs from children for both directions
+        int32_t sum_fwd_mv_x = 0, sum_fwd_mv_y = 0;
+        int32_t sum_bwd_mv_x = 0, sum_bwd_mv_y = 0;
+        for (int i = 0; i < 4; i++) {
+            sum_fwd_mv_x += children[i]->fwd_mv_x;
+            sum_fwd_mv_y += children[i]->fwd_mv_y;
+            sum_bwd_mv_x += children[i]->bwd_mv_x;
+            sum_bwd_mv_y += children[i]->bwd_mv_y;
+        }
+        node->fwd_mv_x = sum_fwd_mv_x / 4;
+        node->fwd_mv_y = sum_fwd_mv_y / 4;
+        node->bwd_mv_x = sum_bwd_mv_x / 4;
+        node->bwd_mv_y = sum_bwd_mv_y / 4;
+
+        // Free children since we're merging
+        for (int i = 0; i < 4; i++) {
+            free(children[i]);
+        }
+
+        return node;  // Merged leaf node
+    } else {
+        // Can't merge: keep as split node
+        node->is_split = 1;
+        for (int i = 0; i < 4; i++) {
+            node->children[i] = children[i];
+        }
+
+        // Compute average MVs for this internal node (for reference)
+        int32_t sum_fwd_mv_x = 0, sum_fwd_mv_y = 0;
+        int32_t sum_bwd_mv_x = 0, sum_bwd_mv_y = 0;
+        for (int i = 0; i < 4; i++) {
+            sum_fwd_mv_x += children[i]->fwd_mv_x;
+            sum_fwd_mv_y += children[i]->fwd_mv_y;
+            sum_bwd_mv_x += children[i]->bwd_mv_x;
+            sum_bwd_mv_y += children[i]->bwd_mv_y;
+        }
+        node->fwd_mv_x = sum_fwd_mv_x / 4;
+        node->fwd_mv_y = sum_fwd_mv_y / 4;
+        node->bwd_mv_x = sum_bwd_mv_x / 4;
+        node->bwd_mv_y = sum_bwd_mv_y / 4;
+
+        return node;
+    }
+}
+
+// Build quad-tree recursively with per-block motion refinement (top-down split)
+static quad_tree_node_t* build_quad_tree(
+    const float *current_y,
+    const float *reference_y,
+    const float *residual_y,
+    const float *residual_co,
+    const float *residual_cg,
+    int width, int height,
+    int x, int y, int size,
+    int min_size,
+    int16_t mv_x, int16_t mv_y,
+    int is_skip,
+    int enable_refinement
+) {
+    quad_tree_node_t *node = (quad_tree_node_t*)malloc(sizeof(quad_tree_node_t));
+    node->x = x;
+    node->y = y;
+    node->size = size;
+    node->mv_x = mv_x;
+    node->mv_y = mv_y;
+    node->is_skip = is_skip;
+    node->is_split = 0;
+    for (int i = 0; i < 4; i++) node->children[i] = NULL;
+
+    // Don't split if we've reached minimum size or block is skip
+    if (size <= min_size || is_skip) {
+        return node;
+    }
+
+    // Don't split if block extends beyond frame boundaries
+    if (x + size > width || y + size > height) {
+        return node;
+    }
+
+    // Compute variance for each channel
+    float var_y = compute_block_variance(residual_y, width, x, y, size);
+    float var_co = compute_block_variance(residual_co, width, x, y, size);
+    float var_cg = compute_block_variance(residual_cg, width, x, y, size);
+
+    // Combined variance with channel weighting (Y weighted more)
+    float combined_variance = var_y + 0.5f * var_co + 0.5f * var_cg;
+
+    // Split threshold: higher variance = more detail = split to smaller blocks
+    // Threshold scales with block size (larger blocks need higher variance to avoid split)
+    float split_threshold = 100.0f * (size / 16.0f);
+
+    if (combined_variance > split_threshold) {
+        // Split into 4 children
+        node->is_split = 1;
+        int child_size = size / 2;
+
+        // Refine motion vectors for each child block if enabled
+        int16_t child_mvs_x[4], child_mvs_y[4];
+
+        if (enable_refinement) {
+            // Search range decreases with block size (8 pixels for 32x32, 4 for 16x16, 2 for 8x8)
+            int search_range = (child_size >= 32) ? 8 : ((child_size >= 16) ? 4 : 2);
+
+            // Refine MV for each child: NW, NE, SW, SE
+            refine_motion_vector(current_y, reference_y, width, height,
+                                x, y, child_size,
+                                mv_x, mv_y, search_range,
+                                &child_mvs_x[0], &child_mvs_y[0]);
+
+            refine_motion_vector(current_y, reference_y, width, height,
+                                x + child_size, y, child_size,
+                                mv_x, mv_y, search_range,
+                                &child_mvs_x[1], &child_mvs_y[1]);
+
+            refine_motion_vector(current_y, reference_y, width, height,
+                                x, y + child_size, child_size,
+                                mv_x, mv_y, search_range,
+                                &child_mvs_x[2], &child_mvs_y[2]);
+
+            refine_motion_vector(current_y, reference_y, width, height,
+                                x + child_size, y + child_size, child_size,
+                                mv_x, mv_y, search_range,
+                                &child_mvs_x[3], &child_mvs_y[3]);
+        } else {
+            // No refinement - use parent MV for all children
+            for (int i = 0; i < 4; i++) {
+                child_mvs_x[i] = mv_x;
+                child_mvs_y[i] = mv_y;
+            }
+        }
+
+        // NW, NE, SW, SE - recurse with refined motion vectors
+        node->children[0] = build_quad_tree(current_y, reference_y, residual_y, residual_co, residual_cg,
+                                           width, height, x, y, child_size, min_size,
+                                           child_mvs_x[0], child_mvs_y[0], 0, enable_refinement);
+        node->children[1] = build_quad_tree(current_y, reference_y, residual_y, residual_co, residual_cg,
+                                           width, height, x + child_size, y, child_size, min_size,
+                                           child_mvs_x[1], child_mvs_y[1], 0, enable_refinement);
+        node->children[2] = build_quad_tree(current_y, reference_y, residual_y, residual_co, residual_cg,
+                                           width, height, x, y + child_size, child_size, min_size,
+                                           child_mvs_x[2], child_mvs_y[2], 0, enable_refinement);
+        node->children[3] = build_quad_tree(current_y, reference_y, residual_y, residual_co, residual_cg,
+                                           width, height, x + child_size, y + child_size, child_size, min_size,
+                                           child_mvs_x[3], child_mvs_y[3], 0, enable_refinement);
+    }
+
+    return node;
+}
+
+// Free quad-tree memory
+static void free_quad_tree(quad_tree_node_t *node) {
+    if (!node) return;
+
+    if (node->is_split) {
+        for (int i = 0; i < 4; i++) {
+            free_quad_tree(node->children[i]);
+        }
+    }
+
+    free(node);
+}
+
+// Count total nodes in quad-tree (for serialization buffer sizing)
+static int count_quad_tree_nodes(quad_tree_node_t *node) {
+    if (!node) return 0;
+
+    int count = 1;
+    if (node->is_split) {
+        for (int i = 0; i < 4; i++) {
+            count += count_quad_tree_nodes(node->children[i]);
+        }
+    }
+    return count;
+}
+
+// Recompute residuals using refined motion vectors from quad-tree leaves
+static void recompute_residuals_from_tree(
+    quad_tree_node_t *node,
+    const float *current_y, const float *current_co, const float *current_cg,
+    const float *reference_y, const float *reference_co, const float *reference_cg,
+    float *residual_y, float *residual_co, float *residual_cg,
+    int width, int height
+) {
+    if (!node) return;
+
+    if (!node->is_split) {
+        // Leaf node - compute residual for this block using its motion vector
+        int mv_x_pixels = node->mv_x / 4;  // Convert 1/4-pixel to pixels
+        int mv_y_pixels = node->mv_y / 4;
+        float mv_x_frac = (node->mv_x % 4) / 4.0f;  // Fractional part
+        float mv_y_frac = (node->mv_y % 4) / 4.0f;
+
+        for (int by = 0; by < node->size; by++) {
+            for (int bx = 0; bx < node->size; bx++) {
+                int cur_x = node->x + bx;
+                int cur_y = node->y + by;
+
+                if (cur_x >= width || cur_y >= height) continue;
+
+                int cur_idx = cur_y * width + cur_x;
+
+                // Compute reference position with sub-pixel precision
+                float ref_x_f = cur_x + mv_x_pixels + mv_x_frac;
+                float ref_y_f = cur_y + mv_y_pixels + mv_y_frac;
+
+                int ref_x = (int)ref_x_f;
+                int ref_y = (int)ref_y_f;
+                float fx = ref_x_f - ref_x;
+                float fy = ref_y_f - ref_y;
+
+                // Bounds check
+                if (ref_x < 0 || ref_x + 1 >= width || ref_y < 0 || ref_y + 1 >= height) {
+                    // Out of bounds - use zero residual (copy from reference won't work)
+                    residual_y[cur_idx] = current_y[cur_idx];
+                    residual_co[cur_idx] = current_co[cur_idx];
+                    residual_cg[cur_idx] = current_cg[cur_idx];
+                    continue;
+                }
+
+                // Bilinear interpolation for each channel
+                // Y channel
+                float v00_y = reference_y[ref_y * width + ref_x];
+                float v10_y = reference_y[ref_y * width + (ref_x + 1)];
+                float v01_y = reference_y[(ref_y + 1) * width + ref_x];
+                float v11_y = reference_y[(ref_y + 1) * width + (ref_x + 1)];
+                float pred_y = (v00_y * (1-fx) + v10_y * fx) * (1-fy) +
+                               (v01_y * (1-fx) + v11_y * fx) * fy;
+
+                // Co channel
+                float v00_co = reference_co[ref_y * width + ref_x];
+                float v10_co = reference_co[ref_y * width + (ref_x + 1)];
+                float v01_co = reference_co[(ref_y + 1) * width + ref_x];
+                float v11_co = reference_co[(ref_y + 1) * width + (ref_x + 1)];
+                float pred_co = (v00_co * (1-fx) + v10_co * fx) * (1-fy) +
+                                (v01_co * (1-fx) + v11_co * fx) * fy;
+
+                // Cg channel
+                float v00_cg = reference_cg[ref_y * width + ref_x];
+                float v10_cg = reference_cg[ref_y * width + (ref_x + 1)];
+                float v01_cg = reference_cg[(ref_y + 1) * width + ref_x];
+                float v11_cg = reference_cg[(ref_y + 1) * width + (ref_x + 1)];
+                float pred_cg = (v00_cg * (1-fx) + v10_cg * fx) * (1-fy) +
+                                (v01_cg * (1-fx) + v11_cg * fx) * fy;
+
+                // Compute residual
+                residual_y[cur_idx] = current_y[cur_idx] - pred_y;
+                residual_co[cur_idx] = current_co[cur_idx] - pred_co;
+                residual_cg[cur_idx] = current_cg[cur_idx] - pred_cg;
+            }
+        }
+    } else {
+        // Internal node - recurse to children
+        for (int i = 0; i < 4; i++) {
+            recompute_residuals_from_tree(node->children[i],
+                                         current_y, current_co, current_cg,
+                                         reference_y, reference_co, reference_cg,
+                                         residual_y, residual_co, residual_cg,
+                                         width, height);
+        }
+    }
+}
+
+// Forward declarations
+static void fill_mv_map_recursive(quad_tree_node_t *node, int residual_coding_min_block_size,
+                                  int blocks_x, int16_t *mv_map_x, int16_t *mv_map_y);
+static int16_t median3(int16_t a, int16_t b, int16_t c);
+
+// Build spatial MV map from quad-tree forest for prediction
+// Returns a 2D array indexed by [block_y * blocks_x + block_x]
+// Each entry contains the MV for that block (at residual_coding_min_block_size granularity)
+static void build_mv_map_from_forest(
+    quad_tree_node_t **forest,
+    int num_trees_x, int num_trees_y,
+    int residual_coding_max_block_size, int residual_coding_min_block_size,
+    int width, int height,
+    int16_t *mv_map_x, int16_t *mv_map_y
+) {
+    int blocks_x = (width + residual_coding_min_block_size - 1) / residual_coding_min_block_size;
+
+    // Initialize map with zeros
+    int total_blocks = blocks_x * ((height + residual_coding_min_block_size - 1) / residual_coding_min_block_size);
+    memset(mv_map_x, 0, total_blocks * sizeof(int16_t));
+    memset(mv_map_y, 0, total_blocks * sizeof(int16_t));
+
+    // Fill map from quad-tree leaves
+    for (int ty = 0; ty < num_trees_y; ty++) {
+        for (int tx = 0; tx < num_trees_x; tx++) {
+            int tree_idx = ty * num_trees_x + tx;
+            fill_mv_map_recursive(forest[tree_idx], residual_coding_min_block_size, blocks_x, mv_map_x, mv_map_y);
+        }
+    }
+}
+
+// Recursive helper to fill MV map from quad-tree
+static void fill_mv_map_recursive(
+    quad_tree_node_t *node,
+    int residual_coding_min_block_size,
+    int blocks_x,
+    int16_t *mv_map_x,
+    int16_t *mv_map_y
+) {
+    if (!node) return;
+
+    if (!node->is_split) {
+        // Leaf node - fill all min-sized blocks within this region
+        int block_x_start = node->x / residual_coding_min_block_size;
+        int block_y_start = node->y / residual_coding_min_block_size;
+        int block_x_end = (node->x + node->size) / residual_coding_min_block_size;
+        int block_y_end = (node->y + node->size) / residual_coding_min_block_size;
+
+        for (int by = block_y_start; by < block_y_end; by++) {
+            for (int bx = block_x_start; bx < block_x_end; bx++) {
+                int idx = by * blocks_x + bx;
+                mv_map_x[idx] = node->mv_x;
+                mv_map_y[idx] = node->mv_y;
+            }
+        }
+    } else {
+        // Internal node - recurse to children
+        for (int i = 0; i < 4; i++) {
+            fill_mv_map_recursive(node->children[i], residual_coding_min_block_size, blocks_x, mv_map_x, mv_map_y);
+        }
+    }
+}
+
+// Apply spatial MV prediction to leaf nodes using median predictor
+// Modifies MVs in-place to be differentials
+static void apply_spatial_mv_prediction_to_tree(
+    quad_tree_node_t *node,
+    int residual_coding_min_block_size,
+    int blocks_x,
+    const int16_t *mv_map_x,
+    const int16_t *mv_map_y
+) {
+    if (!node) return;
+
+    if (!node->is_split) {
+        // Leaf node - apply median prediction
+        int block_x = node->x / residual_coding_min_block_size;
+        int block_y = node->y / residual_coding_min_block_size;
+        int idx = block_y * blocks_x + block_x;
+
+        // Get neighbors: left, top, top-right
+        int16_t left_x = 0, left_y = 0;
+        int16_t top_x = 0, top_y = 0;
+        int16_t top_right_x = 0, top_right_y = 0;
+
+        if (block_x > 0) {
+            // Left neighbor
+            int left_idx = idx - 1;
+            left_x = mv_map_x[left_idx];
+            left_y = mv_map_y[left_idx];
+        }
+
+        if (block_y > 0) {
+            // Top neighbor
+            int top_idx = idx - blocks_x;
+            top_x = mv_map_x[top_idx];
+            top_y = mv_map_y[top_idx];
+
+            // Top-right neighbor
+            if (block_x + 1 < blocks_x) {
+                int top_right_idx = top_idx + 1;
+                top_right_x = mv_map_x[top_right_idx];
+                top_right_y = mv_map_y[top_right_idx];
+            }
+        }
+
+        // Median prediction (H.264 style)
+        int16_t pred_x = median3(left_x, top_x, top_right_x);
+        int16_t pred_y = median3(left_y, top_y, top_right_y);
+
+        // Convert to differential
+        int16_t orig_mv_x = node->mv_x;
+        int16_t orig_mv_y = node->mv_y;
+        node->mv_x = orig_mv_x - pred_x;
+        node->mv_y = orig_mv_y - pred_y;
+
+    } else {
+        // Internal node - recurse to children
+        for (int i = 0; i < 4; i++) {
+            apply_spatial_mv_prediction_to_tree(node->children[i], residual_coding_min_block_size, blocks_x, mv_map_x, mv_map_y);
+        }
+    }
+}
+
+// Serialize quad-tree to compact binary format
+// Format: [split_flags_bitstream][leaf_mv_data]
+//   - split_flags: 1 bit per node (breadth-first), 1=split, 0=leaf
+//   - leaf_mv_data: For each leaf in order: [skip_flag:1bit][mvd_x:15bits][mvd_y:16bits]
+//   Note: MVs are now DIFFERENTIAL (predicted from spatial neighbors)
+static size_t serialize_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
+    if (!root) return 0;
+
+    // First pass: Count nodes and leaves
+    int total_nodes = count_quad_tree_nodes(root);
+    int split_bytes = (total_nodes + 7) / 8;  // Bits for split flags
+
+    // Create temporary arrays for breadth-first traversal
+    quad_tree_node_t **queue = (quad_tree_node_t**)malloc(total_nodes * sizeof(quad_tree_node_t*));
+    int queue_start = 0, queue_end = 0;
+
+    // Initialize split flags buffer
+    uint8_t *split_flags = (uint8_t*)calloc(split_bytes, 1);
+    int split_bit_pos = 0;
+
+    // Start serialization
+    queue[queue_end++] = root;
+    size_t write_pos = split_bytes;  // Leave space for split flags
+
+    while (queue_start < queue_end) {
+        quad_tree_node_t *node = queue[queue_start++];
+
+        // Write split flag
+        if (node->is_split) {
+            split_flags[split_bit_pos / 8] |= (1 << (split_bit_pos % 8));
+
+            // Add children to queue
+            for (int i = 0; i < 4; i++) {
+                if (node->children[i]) {
+                    queue[queue_end++] = node->children[i];
+                }
+            }
+        } else {
+            // Leaf node - will write MV data later
+        }
+
+        split_bit_pos++;
+    }
+
+    // Second pass: Write leaf node motion vectors
+    queue_start = 0;
+    queue_end = 0;
+    queue[queue_end++] = root;
+
+    while (queue_start < queue_end) {
+        quad_tree_node_t *node = queue[queue_start++];
+
+        if (!node->is_split) {
+            // Leaf node - write skip flag + motion vectors
+            if (write_pos + 5 > buffer_size) {
+                fprintf(stderr, "ERROR: Quad-tree serialization buffer overflow\n");
+                free(queue);
+                free(split_flags);
+                return 0;
+            }
+
+            // Pack: [skip:1bit][mv_x:15bits][mv_y:16bits] = 32 bits = 4 bytes
+            uint32_t packed = 0;
+            if (node->is_skip) {
+                packed |= (1U << 31);  // Set skip bit
+            }
+            packed |= ((uint32_t)(node->mv_x & 0x7FFF) << 16);  // 15 bits for mv_x
+            packed |= ((uint32_t)(node->mv_y & 0xFFFF));        // 16 bits for mv_y
+
+            buffer[write_pos++] = (packed >> 24) & 0xFF;
+            buffer[write_pos++] = (packed >> 16) & 0xFF;
+            buffer[write_pos++] = (packed >> 8) & 0xFF;
+            buffer[write_pos++] = packed & 0xFF;
+        } else {
+            // Add children to queue
+            for (int i = 0; i < 4; i++) {
+                if (node->children[i]) {
+                    queue[queue_end++] = node->children[i];
+                }
+            }
+        }
+    }
+
+    // Copy split flags to beginning of buffer
+    memcpy(buffer, split_flags, split_bytes);
+
+    free(queue);
+    free(split_flags);
+
+    return write_pos;
+}
+
+// Serialize quad-tree with bidirectional motion vectors for B-frames (64-bit leaf nodes)
+// Format: [split_flags] [leaf_data: skip(1) + fwd_mv_x(15) + fwd_mv_y(16) + bwd_mv_x(16) + bwd_mv_y(16) = 64 bits]
+static size_t serialize_quad_tree_bidirectional(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
+    if (!root) return 0;
+
+    // First pass: Count nodes and leaves
+    int total_nodes = count_quad_tree_nodes(root);
+    int split_bytes = (total_nodes + 7) / 8;  // Bits for split flags
+
+    // Create temporary arrays for breadth-first traversal
+    quad_tree_node_t **queue = (quad_tree_node_t**)malloc(total_nodes * sizeof(quad_tree_node_t*));
+    int queue_start = 0, queue_end = 0;
+
+    // Initialize split flags buffer
+    uint8_t *split_flags = (uint8_t*)calloc(split_bytes, 1);
+    int split_bit_pos = 0;
+
+    // Start serialization
+    queue[queue_end++] = root;
+    size_t write_pos = split_bytes;  // Leave space for split flags
+
+    while (queue_start < queue_end) {
+        quad_tree_node_t *node = queue[queue_start++];
+
+        // Write split flag
+        if (node->is_split) {
+            split_flags[split_bit_pos / 8] |= (1 << (split_bit_pos % 8));
+
+            // Add children to queue
+            for (int i = 0; i < 4; i++) {
+                if (node->children[i]) {
+                    queue[queue_end++] = node->children[i];
+                }
+            }
+        } else {
+            // Leaf node - will write dual MV data later
+        }
+
+        split_bit_pos++;
+    }
+
+    // Second pass: Write leaf node motion vectors (forward + backward)
+    queue_start = 0;
+    queue_end = 0;
+    queue[queue_end++] = root;
+
+    while (queue_start < queue_end) {
+        quad_tree_node_t *node = queue[queue_start++];
+
+        if (!node->is_split) {
+            // Leaf node - write skip flag + dual motion vectors
+            if (write_pos + 8 > buffer_size) {
+                fprintf(stderr, "ERROR: Bidirectional quad-tree serialization buffer overflow\n");
+                free(queue);
+                free(split_flags);
+                return 0;
+            }
+
+            // Pack 64 bits: [skip:1][fwd_mv_x:15][fwd_mv_y:16][bwd_mv_x:16][bwd_mv_y:16]
+            // Split into two 32-bit chunks for easier handling
+
+            // First 32 bits: [skip:1][fwd_mv_x:15][fwd_mv_y:16]
+            uint32_t packed_fwd = 0;
+            if (node->is_skip) {
+                packed_fwd |= (1U << 31);  // Set skip bit
+            }
+            packed_fwd |= ((uint32_t)(node->fwd_mv_x & 0x7FFF) << 16);  // 15 bits for fwd_mv_x
+            packed_fwd |= ((uint32_t)(node->fwd_mv_y & 0xFFFF));        // 16 bits for fwd_mv_y
+
+            // Second 32 bits: [bwd_mv_x:16][bwd_mv_y:16]
+            uint32_t packed_bwd = 0;
+            packed_bwd |= ((uint32_t)(node->bwd_mv_x & 0xFFFF) << 16);  // 16 bits for bwd_mv_x
+            packed_bwd |= ((uint32_t)(node->bwd_mv_y & 0xFFFF));        // 16 bits for bwd_mv_y
+
+            // Write first 32 bits (forward MV + skip)
+            buffer[write_pos++] = (packed_fwd >> 24) & 0xFF;
+            buffer[write_pos++] = (packed_fwd >> 16) & 0xFF;
+            buffer[write_pos++] = (packed_fwd >> 8) & 0xFF;
+            buffer[write_pos++] = packed_fwd & 0xFF;
+
+            // Write second 32 bits (backward MV)
+            buffer[write_pos++] = (packed_bwd >> 24) & 0xFF;
+            buffer[write_pos++] = (packed_bwd >> 16) & 0xFF;
+            buffer[write_pos++] = (packed_bwd >> 8) & 0xFF;
+            buffer[write_pos++] = packed_bwd & 0xFF;
+        } else {
+            // Add children to queue
+            for (int i = 0; i < 4; i++) {
+                if (node->children[i]) {
+                    queue[queue_end++] = node->children[i];
+                }
+            }
+        }
+    }
+
+    // Copy split flags to beginning of buffer
+    memcpy(buffer, split_flags, split_bytes);
+
+    free(queue);
+    free(split_flags);
+
+    return write_pos;
 }
 
 // MP2 audio rate table (same as TEV)
@@ -306,39 +1385,84 @@ typedef struct tav_encoder_s {
 
     // GOP (Group of Pictures) buffer for temporal 3D DWT
     int enable_temporal_dwt;    // Flag to enable temporal DWT (default: 0 for backward compatibility)
-    int gop_capacity;            // Maximum GOP size (typically 16)
-    int gop_frame_count;         // Current number of frames accumulated in GOP
-    uint8_t **gop_rgb_frames;    // [frame][pixel*3] - RGB data for each GOP frame
-    float **gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
-    float **gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
-    float **gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
-    int16_t *gop_translation_x;  // [frame] - Translation X in 1/16-pixel units (for 0x12 packets)
-    int16_t *gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units (for 0x12 packets)
+    int temporal_gop_capacity;            // Maximum GOP size (typically 16)
+    int temporal_gop_frame_count;         // Current number of frames accumulated in GOP
+    uint8_t **temporal_gop_rgb_frames;    // [frame][pixel*3] - RGB data for each GOP frame
+    float **temporal_gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
+    float **temporal_gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
+    float **temporal_gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
+    int16_t *temporal_gop_translation_x;  // [frame] - Translation X in 1/16-pixel units (for 0x12 packets)
+    int16_t *temporal_gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units (for 0x12 packets)
     int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
 
     // Mesh warping for temporal 3D DWT (0x13 packets)
-    int enable_mesh_warp;        // Flag to enable mesh warping (default: 0, uses translation if temporal_dwt enabled)
-    int mesh_width;              // Number of control points horizontally (default: 32 for 1920×1080)
-    int mesh_height;             // Number of control points vertically (default: 18 for 1920×1080)
-    int16_t **gop_mesh_dx;       // [frame][mesh_w * mesh_h] - Mesh displacement X in 1/8-pixel units
-    int16_t **gop_mesh_dy;       // [frame][mesh_w * mesh_h] - Mesh displacement Y in 1/8-pixel units
+    int temporal_enable_mesh_warp;        // Flag to enable mesh warping (default: 0, uses translation if temporal_dwt enabled)
+    int temporal_mesh_width;              // Number of control points horizontally (default: 32 for 1920×1080)
+    int temporal_mesh_height;             // Number of control points vertically (default: 18 for 1920×1080)
+
+    int16_t **temporal_gop_mesh_dx;       // [frame][mesh_w * mesh_h] - Mesh displacement X in 1/8-pixel units
+    int16_t **temporal_gop_mesh_dy;       // [frame][mesh_w * mesh_h] - Mesh displacement Y in 1/8-pixel units
 
     // Dense optical flow for reliability masking (used with mesh warping)
-    float **gop_flow_fwd_x;      // [frame][width * height] - Forward flow X (F[i-1] → F[i])
-    float **gop_flow_fwd_y;      // [frame][width * height] - Forward flow Y
-    float **gop_flow_bwd_x;      // [frame][width * height] - Backward flow X (F[i] → F[i-1])
-    float **gop_flow_bwd_y;      // [frame][width * height] - Backward flow Y
+    float **temporal_gop_flow_fwd_x;      // [frame][width * height] - Forward flow X (F[i-1] → F[i])
+    float **temporal_gop_flow_fwd_y;      // [frame][width * height] - Forward flow Y
+    float **temporal_gop_flow_bwd_x;      // [frame][width * height] - Backward flow X (F[i] → F[i-1])
+    float **temporal_gop_flow_bwd_y;      // [frame][width * height] - Backward flow Y
 
-    // Selective per-cell affine transforms (0x13 packets)
-    uint8_t **gop_affine_mask;   // [frame][mesh_w * mesh_h] - 1 bit: 1=affine, 0=translation only
-    int16_t **gop_affine_a11;    // [frame][mesh_w * mesh_h] - Affine matrix 1/256 fixed-point (a11, a12, a21, a22)
-    int16_t **gop_affine_a12;
-    int16_t **gop_affine_a21;
-    int16_t **gop_affine_a22;
+    float temporal_mesh_smoothness;       // Laplacian smoothing weight (0.0-1.0, default: 0.5)
+    int temporal_mesh_smooth_iterations;  // Number of smoothing iterations (default: 8)
 
-    float mesh_smoothness;       // Laplacian smoothing weight (0.0-1.0, default: 0.5)
-    int mesh_smooth_iterations;  // Number of smoothing iterations (default: 8)
-    float affine_threshold;      // Residual improvement threshold for using affine (default: 0.10 = 10%)
+    // MPEG-style residual coding (0x14/0x15 packets) - replaces temporal DWT
+    int enable_residual_coding;  // Flag to enable MPEG-style residual coding (I/P/B frames)
+    int residual_coding_block_size;              // Block size for motion estimation (default: 16)
+    int residual_coding_search_range;            // Motion search range in pixels (default: 16)
+
+    // Reference frame storage for motion compensation (I and P frames)
+    float *residual_coding_reference_frame_y;    // Reference frame Y channel (previous I or P frame)
+    float *residual_coding_reference_frame_co;   // Reference frame Co channel
+    float *residual_coding_reference_frame_cg;   // Reference frame Cg channel
+    int residual_coding_reference_frame_allocated; // Flag to track allocation
+
+    // Next reference frame storage for B-frame backward prediction
+    float *next_residual_coding_reference_frame_y;    // Next reference frame Y (future P frame for B-frames)
+    float *next_residual_coding_reference_frame_co;   // Next reference frame Co
+    float *next_residual_coding_reference_frame_cg;   // Next reference frame Cg
+    int next_residual_coding_reference_frame_allocated; // Flag to track allocation
+
+    // B-frame GOP configuration
+    int residual_coding_enable_bframes;          // Enable B-frames (0=disabled, 1=enabled)
+    int residual_coding_bframe_count;            // Number of B-frames between reference frames (M parameter, default: 2)
+    int residual_coding_gop_size;                // GOP size (distance between I-frames, default: 24)
+    int residual_coding_frames_since_last_iframe; // Counter for GOP management
+
+    // Frame buffering for B-frame lookahead
+    int residual_coding_lookahead_buffer_capacity; // Maximum frames to buffer (M+1)
+    int residual_coding_lookahead_buffer_count;    // Current number of frames in buffer
+    float **residual_coding_lookahead_buffer_y;    // [frame][pixel] - Y channel buffered frames
+    float **residual_coding_lookahead_buffer_co;   // [frame][pixel] - Co channel buffered frames
+    float **residual_coding_lookahead_buffer_cg;   // [frame][pixel] - Cg channel buffered frames
+    int *residual_coding_lookahead_buffer_display_index; // [frame] - Display order index for each buffered frame
+
+    // Block motion vectors for P/B frames (fixed-size blocks - legacy)
+    int residual_coding_num_blocks_x;            // Number of blocks horizontally
+    int residual_coding_num_blocks_y;            // Number of blocks vertically
+    int16_t *residual_coding_motion_vectors_x;   // Motion vectors X in 1/4-pixel units [residual_coding_num_blocks_x * residual_coding_num_blocks_y]
+    int16_t *residual_coding_motion_vectors_y;   // Motion vectors Y in 1/4-pixel units
+    uint8_t *residual_coding_skip_blocks;        // Skip block flags [residual_coding_num_blocks_x * residual_coding_num_blocks_y]: 1=skip, 0=coded
+
+    // Adaptive block partitioning (quad-tree)
+    int residual_coding_enable_adaptive_blocks;  // Enable adaptive block sizing
+    int residual_coding_max_block_size;          // Maximum block size (64, 32, 16)
+    int residual_coding_min_block_size;          // Minimum block size (4, 8, 16)
+    void *residual_coding_block_tree_root;       // Root of quad-tree structure (opaque pointer)
+
+    // Prediction and residual buffers
+    float *residual_coding_predicted_frame_y;    // Motion-compensated prediction Y
+    float *residual_coding_predicted_frame_co;   // Motion-compensated prediction Co
+    float *residual_coding_predicted_frame_cg;   // Motion-compensated prediction Cg
+    float *residual_coding_residual_frame_y;     // Residual = current - predicted (Y)
+    float *residual_coding_residual_frame_co;    // Residual = current - predicted (Co)
+    float *residual_coding_residual_frame_cg;    // Residual = current - predicted (Cg)
 
     // Tile processing
     int tiles_x, tiles_y;
@@ -646,6 +1770,13 @@ static void show_usage(const char *program_name);
 static tav_encoder_t* create_encoder(void);
 static void cleanup_encoder(tav_encoder_t *enc);
 static int initialise_encoder(tav_encoder_t *enc);
+
+// OpenCV optical flow (external C++ function)
+extern void estimate_optical_flow_motion(
+    const float *current_y, const float *reference_y,
+    int width, int height, int block_size,
+    int16_t *mvs_x, int16_t *mvs_y
+);
 static int get_subband_level_2d(int x, int y, int width, int height, int decomp_levels);
 static int get_subband_type_2d(int x, int y, int width, int height, int decomp_levels);
 static int get_subband_level(int linear_idx, int width, int height, int decomp_levels);
@@ -815,34 +1946,75 @@ static tav_encoder_t* create_encoder(void) {
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 0;  // Default: disabled for backward compatibility. Mutually exclusive with use_delta_encoding
-    enc->gop_capacity = GOP_SIZE;  // 16 frames
-    enc->gop_frame_count = 0;
+    enc->temporal_gop_capacity = TEMPORAL_GOP_SIZE;  // 16 frames
+    enc->temporal_gop_frame_count = 0;
     enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 2 levels of temporal DWT (16 -> 4x4 subbands)
-    enc->gop_rgb_frames = NULL;
-    enc->gop_y_frames = NULL;
-    enc->gop_co_frames = NULL;
-    enc->gop_cg_frames = NULL;
-    enc->gop_translation_x = NULL;
-    enc->gop_translation_y = NULL;
+    enc->temporal_gop_rgb_frames = NULL;
+    enc->temporal_gop_y_frames = NULL;
+    enc->temporal_gop_co_frames = NULL;
+    enc->temporal_gop_cg_frames = NULL;
+    enc->temporal_gop_translation_x = NULL;
+    enc->temporal_gop_translation_y = NULL;
 
     // Mesh warping settings (for 0x13 packets)
-    enc->enable_mesh_warp = 0;  // Default: disabled (use translation-based 0x12)
-    enc->mesh_width = 0;  // Will be calculated based on frame dimensions
-    enc->mesh_height = 0;
-    enc->gop_mesh_dx = NULL;
-    enc->gop_mesh_dy = NULL;
-    enc->gop_flow_fwd_x = NULL;  // Dense flow for reliability masking
-    enc->gop_flow_fwd_y = NULL;
-    enc->gop_flow_bwd_x = NULL;
-    enc->gop_flow_bwd_y = NULL;
-    enc->gop_affine_mask = NULL;
-    enc->gop_affine_a11 = NULL;
-    enc->gop_affine_a12 = NULL;
-    enc->gop_affine_a21 = NULL;
-    enc->gop_affine_a22 = NULL;
-    enc->mesh_smoothness = 0.5f;  // 50% smoothness weight
-    enc->mesh_smooth_iterations = 8;  // 8 iterations
-    enc->affine_threshold = 0.40f;  // 40% residual improvement required to use affine (was 0.10, too lenient)
+    enc->temporal_enable_mesh_warp = 0;  // Default: disabled (use translation-based 0x12)
+    enc->temporal_mesh_width = 0;  // Will be calculated based on frame dimensions
+    enc->temporal_mesh_height = 0;
+    enc->temporal_gop_mesh_dx = NULL;
+    enc->temporal_gop_mesh_dy = NULL;
+    enc->temporal_gop_flow_fwd_x = NULL;  // Dense flow for reliability masking
+    enc->temporal_gop_flow_fwd_y = NULL;
+    enc->temporal_gop_flow_bwd_x = NULL;
+    enc->temporal_gop_flow_bwd_y = NULL;
+    enc->temporal_mesh_smoothness = 0.5f;  // 50% smoothness weight
+    enc->temporal_mesh_smooth_iterations = 8;  // 8 iterations
+
+    // MPEG-style residual coding settings (for 0x14/0x15 packets)
+    enc->enable_residual_coding = 0;  // Default: disabled (use temporal DWT)
+    enc->residual_coding_block_size = 16;  // 16×16 blocks (standard MPEG size)
+    enc->residual_coding_search_range = 16;  // ±16 pixel search range
+
+    // Adaptive block partitioning (for 0x16 packets)
+    enc->residual_coding_enable_adaptive_blocks = 0;  // Default: disabled (use fixed 16×16 blocks)
+    enc->residual_coding_max_block_size = 64;  // Maximum block size
+    enc->residual_coding_min_block_size = 4;   // Minimum block size
+    enc->residual_coding_block_tree_root = NULL;
+
+    // Initialize residual coding buffers (allocated in initialise_encoder)
+    enc->residual_coding_reference_frame_y = NULL;
+    enc->residual_coding_reference_frame_co = NULL;
+    enc->residual_coding_reference_frame_cg = NULL;
+    enc->residual_coding_reference_frame_allocated = 0;
+    enc->residual_coding_num_blocks_x = 0;
+    enc->residual_coding_num_blocks_y = 0;
+    enc->residual_coding_motion_vectors_x = NULL;
+    enc->residual_coding_motion_vectors_y = NULL;
+    enc->residual_coding_predicted_frame_y = NULL;
+    enc->residual_coding_predicted_frame_co = NULL;
+    enc->residual_coding_predicted_frame_cg = NULL;
+    enc->residual_coding_residual_frame_y = NULL;
+    enc->residual_coding_residual_frame_co = NULL;
+    enc->residual_coding_residual_frame_cg = NULL;
+
+    // B-frame settings (for 0x17 packets)
+    enc->residual_coding_enable_bframes = 0;  // Default: disabled (I/P frames only)
+    enc->residual_coding_bframe_count = 2;    // Default: 2 B-frames between references (M=2)
+    enc->residual_coding_gop_size = 24;       // Default: GOP size = 24 frames (1 second @ 24fps)
+    enc->residual_coding_frames_since_last_iframe = 0;
+
+    // B-frame next reference frame storage (allocated when first needed)
+    enc->next_residual_coding_reference_frame_y = NULL;
+    enc->next_residual_coding_reference_frame_co = NULL;
+    enc->next_residual_coding_reference_frame_cg = NULL;
+    enc->next_residual_coding_reference_frame_allocated = 0;
+
+    // B-frame lookahead buffer (allocated when first needed)
+    enc->residual_coding_lookahead_buffer_capacity = 0;
+    enc->residual_coding_lookahead_buffer_count = 0;
+    enc->residual_coding_lookahead_buffer_y = NULL;
+    enc->residual_coding_lookahead_buffer_co = NULL;
+    enc->residual_coding_lookahead_buffer_cg = NULL;
+    enc->residual_coding_lookahead_buffer_display_index = NULL;
 
     return enc;
 }
@@ -940,148 +2112,165 @@ static int initialise_encoder(tav_encoder_t *enc) {
                enc->target_bitrate, enc->quality_level);
     }
 
+    // Allocate MPEG-style residual coding buffers if enabled
+    if (enc->enable_residual_coding) {
+        // Calculate number of blocks
+        enc->residual_coding_num_blocks_x = (enc->width + enc->residual_coding_block_size - 1) / enc->residual_coding_block_size;
+        enc->residual_coding_num_blocks_y = (enc->height + enc->residual_coding_block_size - 1) / enc->residual_coding_block_size;
+        int total_blocks = enc->residual_coding_num_blocks_x * enc->residual_coding_num_blocks_y;
+
+        // Allocate reference frame storage
+        enc->residual_coding_reference_frame_y = malloc(frame_size * sizeof(float));
+        enc->residual_coding_reference_frame_co = malloc(frame_size * sizeof(float));
+        enc->residual_coding_reference_frame_cg = malloc(frame_size * sizeof(float));
+        enc->residual_coding_reference_frame_allocated = 0;  // Will be set to 1 after first I-frame
+
+        // Allocate motion vector storage
+        enc->residual_coding_motion_vectors_x = malloc(total_blocks * sizeof(int16_t));
+        enc->residual_coding_motion_vectors_y = malloc(total_blocks * sizeof(int16_t));
+        enc->residual_coding_skip_blocks = malloc(total_blocks * sizeof(uint8_t));
+
+        // Allocate prediction buffers
+        enc->residual_coding_predicted_frame_y = malloc(frame_size * sizeof(float));
+        enc->residual_coding_predicted_frame_co = malloc(frame_size * sizeof(float));
+        enc->residual_coding_predicted_frame_cg = malloc(frame_size * sizeof(float));
+
+        // Allocate residual buffers
+        enc->residual_coding_residual_frame_y = malloc(frame_size * sizeof(float));
+        enc->residual_coding_residual_frame_co = malloc(frame_size * sizeof(float));
+        enc->residual_coding_residual_frame_cg = malloc(frame_size * sizeof(float));
+
+        if (!enc->residual_coding_reference_frame_y || !enc->residual_coding_reference_frame_co || !enc->residual_coding_reference_frame_cg ||
+            !enc->residual_coding_motion_vectors_x || !enc->residual_coding_motion_vectors_y || !enc->residual_coding_skip_blocks ||
+            !enc->residual_coding_predicted_frame_y || !enc->residual_coding_predicted_frame_co || !enc->residual_coding_predicted_frame_cg ||
+            !enc->residual_coding_residual_frame_y || !enc->residual_coding_residual_frame_co || !enc->residual_coding_residual_frame_cg) {
+            fprintf(stderr, "Error: Failed to allocate residual coding buffers\n");
+            return -1;
+        }
+
+        printf("MPEG-style residual coding: %dx%d blocks (block_size=%d, search_range=%d)\n",
+               enc->residual_coding_num_blocks_x, enc->residual_coding_num_blocks_y, enc->residual_coding_block_size, enc->residual_coding_search_range);
+    }
+
     // Allocate GOP buffers if temporal DWT is enabled
     if (enc->enable_temporal_dwt) {
         size_t frame_rgb_size = frame_size * 3;  // RGB
         size_t frame_channel_size = frame_size * sizeof(float);
 
         // Allocate frame arrays
-        enc->gop_rgb_frames = malloc(enc->gop_capacity * sizeof(uint8_t*));
-        enc->gop_y_frames = malloc(enc->gop_capacity * sizeof(float*));
-        enc->gop_co_frames = malloc(enc->gop_capacity * sizeof(float*));
-        enc->gop_cg_frames = malloc(enc->gop_capacity * sizeof(float*));
+        enc->temporal_gop_rgb_frames = malloc(enc->temporal_gop_capacity * sizeof(uint8_t*));
+        enc->temporal_gop_y_frames = malloc(enc->temporal_gop_capacity * sizeof(float*));
+        enc->temporal_gop_co_frames = malloc(enc->temporal_gop_capacity * sizeof(float*));
+        enc->temporal_gop_cg_frames = malloc(enc->temporal_gop_capacity * sizeof(float*));
 
-        if (!enc->gop_rgb_frames || !enc->gop_y_frames ||
-            !enc->gop_co_frames || !enc->gop_cg_frames) {
+        if (!enc->temporal_gop_rgb_frames || !enc->temporal_gop_y_frames ||
+            !enc->temporal_gop_co_frames || !enc->temporal_gop_cg_frames) {
             return -1;
         }
 
         // Allocate individual frame buffers
-        for (int i = 0; i < enc->gop_capacity; i++) {
-            enc->gop_rgb_frames[i] = malloc(frame_rgb_size);
-            enc->gop_y_frames[i] = malloc(frame_channel_size);
-            enc->gop_co_frames[i] = malloc(frame_channel_size);
-            enc->gop_cg_frames[i] = malloc(frame_channel_size);
+        for (int i = 0; i < enc->temporal_gop_capacity; i++) {
+            enc->temporal_gop_rgb_frames[i] = malloc(frame_rgb_size);
+            enc->temporal_gop_y_frames[i] = malloc(frame_channel_size);
+            enc->temporal_gop_co_frames[i] = malloc(frame_channel_size);
+            enc->temporal_gop_cg_frames[i] = malloc(frame_channel_size);
 
-            if (!enc->gop_rgb_frames[i] || !enc->gop_y_frames[i] ||
-                !enc->gop_co_frames[i] || !enc->gop_cg_frames[i]) {
+            if (!enc->temporal_gop_rgb_frames[i] || !enc->temporal_gop_y_frames[i] ||
+                !enc->temporal_gop_co_frames[i] || !enc->temporal_gop_cg_frames[i]) {
                 // Cleanup on allocation failure
                 for (int j = 0; j <= i; j++) {
-                    free(enc->gop_rgb_frames[j]);
-                    free(enc->gop_y_frames[j]);
-                    free(enc->gop_co_frames[j]);
-                    free(enc->gop_cg_frames[j]);
+                    free(enc->temporal_gop_rgb_frames[j]);
+                    free(enc->temporal_gop_y_frames[j]);
+                    free(enc->temporal_gop_co_frames[j]);
+                    free(enc->temporal_gop_cg_frames[j]);
                 }
-                free(enc->gop_rgb_frames);
-                free(enc->gop_y_frames);
-                free(enc->gop_co_frames);
-                free(enc->gop_cg_frames);
+                free(enc->temporal_gop_rgb_frames);
+                free(enc->temporal_gop_y_frames);
+                free(enc->temporal_gop_co_frames);
+                free(enc->temporal_gop_cg_frames);
                 return -1;
             }
         }
 
         // Allocate translation vector storage
-        enc->gop_translation_x = malloc(enc->gop_capacity * sizeof(int16_t));
-        enc->gop_translation_y = malloc(enc->gop_capacity * sizeof(int16_t));
+        enc->temporal_gop_translation_x = malloc(enc->temporal_gop_capacity * sizeof(int16_t));
+        enc->temporal_gop_translation_y = malloc(enc->temporal_gop_capacity * sizeof(int16_t));
 
-        if (!enc->gop_translation_x || !enc->gop_translation_y) {
+        if (!enc->temporal_gop_translation_x || !enc->temporal_gop_translation_y) {
             return -1;
         }
 
         // Initialize translation vectors to zero
-        memset(enc->gop_translation_x, 0, enc->gop_capacity * sizeof(int16_t));
-        memset(enc->gop_translation_y, 0, enc->gop_capacity * sizeof(int16_t));
+        memset(enc->temporal_gop_translation_x, 0, enc->temporal_gop_capacity * sizeof(int16_t));
+        memset(enc->temporal_gop_translation_y, 0, enc->temporal_gop_capacity * sizeof(int16_t));
 
         // Calculate mesh dimensions if mesh warping is enabled
-        if (enc->enable_mesh_warp) {
+        if (enc->temporal_enable_mesh_warp) {
             // Calculate mesh grid: approximately 16×16 pixel cells
             // For 560×448: 18×14 mesh (252 points), for 1920×1080: 60×34 mesh (2040 points)
             // Mesh density: 32×32 pixel cells for finer motion modeling
             // Matches block matching resolution (16×16 blocks → 2 blocks per cell)
             int mesh_cell_size = 32;  // Pixel size of each mesh cell (finer than 64)
-            enc->mesh_width = (enc->width + mesh_cell_size - 1) / mesh_cell_size;   // Round up
-            enc->mesh_height = (enc->height + mesh_cell_size - 1) / mesh_cell_size;
+            enc->temporal_mesh_width = (enc->width + mesh_cell_size - 1) / mesh_cell_size;   // Round up
+            enc->temporal_mesh_height = (enc->height + mesh_cell_size - 1) / mesh_cell_size;
 
             // Ensure minimum 2×2 mesh
-            if (enc->mesh_width < 2) enc->mesh_width = 2;
-            if (enc->mesh_height < 2) enc->mesh_height = 2;
+            if (enc->temporal_mesh_width < 2) enc->temporal_mesh_width = 2;
+            if (enc->temporal_mesh_height < 2) enc->temporal_mesh_height = 2;
 
-            int mesh_size = enc->mesh_width * enc->mesh_height;
+            int mesh_size = enc->temporal_mesh_width * enc->temporal_mesh_height;
 
             // Allocate mesh arrays for each GOP frame
-            enc->gop_mesh_dx = malloc(enc->gop_capacity * sizeof(int16_t*));
-            enc->gop_mesh_dy = malloc(enc->gop_capacity * sizeof(int16_t*));
-            enc->gop_affine_mask = malloc(enc->gop_capacity * sizeof(uint8_t*));
-            enc->gop_affine_a11 = malloc(enc->gop_capacity * sizeof(int16_t*));
-            enc->gop_affine_a12 = malloc(enc->gop_capacity * sizeof(int16_t*));
-            enc->gop_affine_a21 = malloc(enc->gop_capacity * sizeof(int16_t*));
-            enc->gop_affine_a22 = malloc(enc->gop_capacity * sizeof(int16_t*));
+            enc->temporal_gop_mesh_dx = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
+            enc->temporal_gop_mesh_dy = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
+            // Allocate dense flow arrays for motion estimation
+            enc->temporal_gop_flow_fwd_x = malloc(enc->temporal_gop_capacity * sizeof(float*));
+            enc->temporal_gop_flow_fwd_y = malloc(enc->temporal_gop_capacity * sizeof(float*));
+            enc->temporal_gop_flow_bwd_x = malloc(enc->temporal_gop_capacity * sizeof(float*));
+            enc->temporal_gop_flow_bwd_y = malloc(enc->temporal_gop_capacity * sizeof(float*));
 
-            // Allocate dense flow arrays for reliability masking
-            enc->gop_flow_fwd_x = malloc(enc->gop_capacity * sizeof(float*));
-            enc->gop_flow_fwd_y = malloc(enc->gop_capacity * sizeof(float*));
-            enc->gop_flow_bwd_x = malloc(enc->gop_capacity * sizeof(float*));
-            enc->gop_flow_bwd_y = malloc(enc->gop_capacity * sizeof(float*));
-
-            if (!enc->gop_mesh_dx || !enc->gop_mesh_dy || !enc->gop_affine_mask ||
-                !enc->gop_affine_a11 || !enc->gop_affine_a12 ||
-                !enc->gop_affine_a21 || !enc->gop_affine_a22 ||
-                !enc->gop_flow_fwd_x || !enc->gop_flow_fwd_y ||
-                !enc->gop_flow_bwd_x || !enc->gop_flow_bwd_y) {
+            if (!enc->temporal_gop_mesh_dx || !enc->temporal_gop_mesh_dy ||
+                !enc->temporal_gop_flow_fwd_x || !enc->temporal_gop_flow_fwd_y ||
+                !enc->temporal_gop_flow_bwd_x || !enc->temporal_gop_flow_bwd_y) {
                 fprintf(stderr, "Failed to allocate GOP mesh arrays\n");
                 return -1;
             }
 
-            // Allocate individual mesh and affine buffers
+            // Allocate individual mesh and flow buffers
             int flow_size = enc->width * enc->height;
-            for (int i = 0; i < enc->gop_capacity; i++) {
-                enc->gop_mesh_dx[i] = malloc(mesh_size * sizeof(int16_t));
-                enc->gop_mesh_dy[i] = malloc(mesh_size * sizeof(int16_t));
-                enc->gop_affine_mask[i] = malloc(mesh_size * sizeof(uint8_t));
-                enc->gop_affine_a11[i] = malloc(mesh_size * sizeof(int16_t));
-                enc->gop_affine_a12[i] = malloc(mesh_size * sizeof(int16_t));
-                enc->gop_affine_a21[i] = malloc(mesh_size * sizeof(int16_t));
-                enc->gop_affine_a22[i] = malloc(mesh_size * sizeof(int16_t));
+            for (int i = 0; i < enc->temporal_gop_capacity; i++) {
+                enc->temporal_gop_mesh_dx[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->temporal_gop_mesh_dy[i] = malloc(mesh_size * sizeof(int16_t));
 
-                // Allocate dense flow buffers for reliability masking
-                enc->gop_flow_fwd_x[i] = malloc(flow_size * sizeof(float));
-                enc->gop_flow_fwd_y[i] = malloc(flow_size * sizeof(float));
-                enc->gop_flow_bwd_x[i] = malloc(flow_size * sizeof(float));
-                enc->gop_flow_bwd_y[i] = malloc(flow_size * sizeof(float));
+                // Allocate dense flow buffers for motion estimation
+                enc->temporal_gop_flow_fwd_x[i] = malloc(flow_size * sizeof(float));
+                enc->temporal_gop_flow_fwd_y[i] = malloc(flow_size * sizeof(float));
+                enc->temporal_gop_flow_bwd_x[i] = malloc(flow_size * sizeof(float));
+                enc->temporal_gop_flow_bwd_y[i] = malloc(flow_size * sizeof(float));
 
-                if (!enc->gop_mesh_dx[i] || !enc->gop_mesh_dy[i] || !enc->gop_affine_mask[i] ||
-                    !enc->gop_affine_a11[i] || !enc->gop_affine_a12[i] ||
-                    !enc->gop_affine_a21[i] || !enc->gop_affine_a22[i] ||
-                    !enc->gop_flow_fwd_x[i] || !enc->gop_flow_fwd_y[i] ||
-                    !enc->gop_flow_bwd_x[i] || !enc->gop_flow_bwd_y[i]) {
+                if (!enc->temporal_gop_mesh_dx[i] || !enc->temporal_gop_mesh_dy[i] ||
+                    !enc->temporal_gop_flow_fwd_x[i] || !enc->temporal_gop_flow_fwd_y[i] ||
+                    !enc->temporal_gop_flow_bwd_x[i] || !enc->temporal_gop_flow_bwd_y[i]) {
                     fprintf(stderr, "Failed to allocate GOP mesh buffers\n");
                     return -1;
                 }
 
-                // Initialize to zero (affine mask=0 means translation-only, identity affine)
-                memset(enc->gop_mesh_dx[i], 0, mesh_size * sizeof(int16_t));
-                memset(enc->gop_mesh_dy[i], 0, mesh_size * sizeof(int16_t));
-                memset(enc->gop_affine_mask[i], 0, mesh_size * sizeof(uint8_t));
-                // Initialize affine to identity matrix (256 = 1.0 in 1/256 fixed-point)
-                for (int j = 0; j < mesh_size; j++) {
-                    enc->gop_affine_a11[i][j] = 256;  // 1.0
-                    enc->gop_affine_a12[i][j] = 0;
-                    enc->gop_affine_a21[i][j] = 0;
-                    enc->gop_affine_a22[i][j] = 256;  // 1.0
-                }
+                // Initialize to zero
+                memset(enc->temporal_gop_mesh_dx[i], 0, mesh_size * sizeof(int16_t));
+                memset(enc->temporal_gop_mesh_dy[i], 0, mesh_size * sizeof(int16_t));
             }
 
             if (enc->verbose) {
                 printf("Mesh warping enabled: mesh=%dx%d (approx %dx%d px cells), smoothness=%.2f, iterations=%d\n",
-                       enc->mesh_width, enc->mesh_height,
-                       enc->width / enc->mesh_width, enc->height / enc->mesh_height,
-                       enc->mesh_smoothness, enc->mesh_smooth_iterations);
+                       enc->temporal_mesh_width, enc->temporal_mesh_height,
+                       enc->width / enc->temporal_mesh_width, enc->height / enc->temporal_mesh_height,
+                       enc->temporal_mesh_smoothness, enc->temporal_mesh_smooth_iterations);
             }
         }
 
         if (enc->verbose) {
             printf("Temporal DWT enabled: GOP size=%d, temporal levels=%d\n",
-                   enc->gop_capacity, enc->temporal_decomp_levels);
+                   enc->temporal_gop_capacity, enc->temporal_decomp_levels);
         }
     }
 
@@ -1608,30 +2797,19 @@ extern void build_mesh_from_flow(
 
 extern void smooth_mesh_laplacian(
     int16_t *mesh_dx, int16_t *mesh_dy,
-    int mesh_width, int mesh_height,
+    int temporal_mesh_width, int temporal_mesh_height,
     float smoothness, int iterations
 );
 
 extern void warp_frame_with_mesh(
     const float *src_frame, int width, int height,
     const int16_t *mesh_dx, const int16_t *mesh_dy,
-    int mesh_width, int mesh_height,
+    int temporal_mesh_width, int temporal_mesh_height,
     float *dst_frame
 );
 
-extern int estimate_cell_affine(
-    const float *flow_x, const float *flow_y,
-    int width, int height,
-    int cell_x, int cell_y,
-    int cell_w, int cell_h,
-    float threshold,
-    int16_t *out_tx, int16_t *out_ty,
-    int16_t *out_a11, int16_t *out_a12,
-    int16_t *out_a21, int16_t *out_a22
-);
-
-// Note: build_mesh_from_flow, smooth_mesh_laplacian, and warp_frame_with_mesh
-// are implemented in encoder_tav_opencv.cpp (extern declarations above)
+// Note: build_mesh_from_flow, smooth_mesh_laplacian, warp_frame_with_mesh,
+// and estimate_motion_optical_flow are implemented in encoder_tav_opencv.cpp
 
 // Apply translation to frame (for frame alignment before temporal DWT)
 // NO PADDING - only extracts the valid region that will be common across all frames
@@ -1784,44 +2962,25 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
 //   2. Affine significance mask (1 bit per cell per frame, packed into bytes)
 //   3. Translation dx/dy for ALL cells (temporal + spatial differential encoding)
 //   4. Affine parameters a11, a12, a21, a22 for cells where mask=1 (temporal + spatial differential)
+// Simplified mesh encoding - translation only (no affine)
 static size_t encode_mesh_differential(
     int16_t **mesh_dx, int16_t **mesh_dy,
-    uint8_t **affine_mask,
-    int16_t **affine_a11, int16_t **affine_a12,
-    int16_t **affine_a21, int16_t **affine_a22,
-    int gop_size, int mesh_width, int mesh_height,
+    int gop_size, int temporal_mesh_width, int temporal_mesh_height,
     uint8_t *output_buffer, size_t buffer_capacity
 ) {
-    int mesh_points = mesh_width * mesh_height;
+    int mesh_points = temporal_mesh_width * temporal_mesh_height;
     size_t bytes_written = 0;
 
     // Write mesh dimensions (2 bytes each)
     if (bytes_written + 4 > buffer_capacity) return 0;
-    uint16_t mesh_w_16 = (uint16_t)mesh_width;
-    uint16_t mesh_h_16 = (uint16_t)mesh_height;
+    uint16_t mesh_w_16 = (uint16_t)temporal_mesh_width;
+    uint16_t mesh_h_16 = (uint16_t)temporal_mesh_height;
     memcpy(output_buffer + bytes_written, &mesh_w_16, sizeof(uint16_t));
     bytes_written += sizeof(uint16_t);
     memcpy(output_buffer + bytes_written, &mesh_h_16, sizeof(uint16_t));
     bytes_written += sizeof(uint16_t);
 
-    // Write affine significance mask (packed bits: 1=affine, 0=translation-only)
-    int total_mask_bits = gop_size * mesh_points;
-    int mask_bytes = (total_mask_bits + 7) / 8;
-    if (bytes_written + mask_bytes > buffer_capacity) return 0;
-
-    memset(output_buffer + bytes_written, 0, mask_bytes);  // Clear mask buffer
-    int bit_idx = 0;
-    for (int t = 0; t < gop_size; t++) {
-        for (int i = 0; i < mesh_points; i++) {
-            if (affine_mask[t][i]) {
-                output_buffer[bytes_written + bit_idx / 8] |= (1 << (bit_idx % 8));
-            }
-            bit_idx++;
-        }
-    }
-    bytes_written += mask_bytes;
-
-    // Encode translation data for ALL cells (always present)
+    // Encode translation data for all cells with temporal + spatial prediction
     for (int t = 0; t < gop_size; t++) {
         for (int i = 0; i < mesh_points; i++) {
             int16_t dx = mesh_dx[t][i];
@@ -1834,7 +2993,7 @@ static size_t encode_mesh_differential(
             }
 
             // Spatial prediction
-            if (i > 0 && (i % mesh_width) != 0) {
+            if (i > 0 && (i % temporal_mesh_width) != 0) {
                 int16_t left_dx = mesh_dx[t][i - 1];
                 int16_t left_dy = mesh_dy[t][i - 1];
                 if (t > 0) {
@@ -1853,56 +3012,6 @@ static size_t encode_mesh_differential(
         }
     }
 
-    // Encode affine parameters for cells where mask=1
-    for (int t = 0; t < gop_size; t++) {
-        for (int i = 0; i < mesh_points; i++) {
-            if (!affine_mask[t][i]) continue;  // Skip translation-only cells
-
-            int16_t a11 = affine_a11[t][i];
-            int16_t a12 = affine_a12[t][i];
-            int16_t a21 = affine_a21[t][i];
-            int16_t a22 = affine_a22[t][i];
-
-            // Temporal prediction (delta from previous frame's affine params)
-            if (t > 0 && affine_mask[t - 1][i]) {
-                a11 -= affine_a11[t - 1][i];
-                a12 -= affine_a12[t - 1][i];
-                a21 -= affine_a21[t - 1][i];
-                a22 -= affine_a22[t - 1][i];
-            }
-
-            // Spatial prediction (delta from left neighbor if it also uses affine)
-            if (i > 0 && (i % mesh_width) != 0 && affine_mask[t][i - 1]) {
-                int16_t left_a11 = affine_a11[t][i - 1];
-                int16_t left_a12 = affine_a12[t][i - 1];
-                int16_t left_a21 = affine_a21[t][i - 1];
-                int16_t left_a22 = affine_a22[t][i - 1];
-
-                if (t > 0 && affine_mask[t - 1][i - 1]) {
-                    left_a11 -= affine_a11[t - 1][i - 1];
-                    left_a12 -= affine_a12[t - 1][i - 1];
-                    left_a21 -= affine_a21[t - 1][i - 1];
-                    left_a22 -= affine_a22[t - 1][i - 1];
-                }
-
-                a11 -= left_a11;
-                a12 -= left_a12;
-                a21 -= left_a21;
-                a22 -= left_a22;
-            }
-
-            if (bytes_written + 8 > buffer_capacity) return 0;
-            memcpy(output_buffer + bytes_written, &a11, sizeof(int16_t));
-            bytes_written += sizeof(int16_t);
-            memcpy(output_buffer + bytes_written, &a12, sizeof(int16_t));
-            bytes_written += sizeof(int16_t);
-            memcpy(output_buffer + bytes_written, &a21, sizeof(int16_t));
-            bytes_written += sizeof(int16_t);
-            memcpy(output_buffer + bytes_written, &a22, sizeof(int16_t));
-            bytes_written += sizeof(int16_t);
-        }
-    }
-
     return bytes_written;
 }
 
@@ -1912,7 +3021,7 @@ static size_t encode_mesh_differential(
 static int decode_mesh_differential(
     const uint8_t *input_buffer, size_t buffer_size,
     int16_t **mesh_dx, int16_t **mesh_dy,
-    int gop_size, int *out_mesh_width, int *out_mesh_height
+    int gop_size, int *out_temporal_mesh_width, int *out_temporal_mesh_height
 ) {
     size_t bytes_read = 0;
 
@@ -1924,12 +3033,12 @@ static int decode_mesh_differential(
     memcpy(&mesh_h_16, input_buffer + bytes_read, sizeof(uint16_t));
     bytes_read += sizeof(uint16_t);
 
-    int mesh_width = (int)mesh_w_16;
-    int mesh_height = (int)mesh_h_16;
-    int mesh_points = mesh_width * mesh_height;
+    int temporal_mesh_width = (int)mesh_w_16;
+    int temporal_mesh_height = (int)mesh_h_16;
+    int mesh_points = temporal_mesh_width * temporal_mesh_height;
 
-    *out_mesh_width = mesh_width;
-    *out_mesh_height = mesh_height;
+    *out_temporal_mesh_width = temporal_mesh_width;
+    *out_temporal_mesh_height = temporal_mesh_height;
 
     // Decode mesh data for all frames
     for (int t = 0; t < gop_size; t++) {
@@ -1943,7 +3052,7 @@ static int decode_mesh_differential(
             bytes_read += sizeof(int16_t);
 
             // Reconstruct: reverse spatial prediction first
-            if (i > 0 && (i % mesh_width) != 0) {
+            if (i > 0 && (i % temporal_mesh_width) != 0) {
                 dx_delta += mesh_dx[t][i - 1];
                 dy_delta += mesh_dy[t][i - 1];
             }
@@ -1963,6 +3072,1340 @@ static int decode_mesh_differential(
 }
 
 // =============================================================================
+// MPEG-Style Motion Estimation and Residual Coding
+// =============================================================================
+
+// Bilinear interpolation for sub-pixel motion compensation
+// x, y are in pixel coordinates (not 1/4-pixel units)
+static float interpolate_subpixel(const float *frame, int width, int height, float x, float y) {
+    // Clamp input coordinates to valid range
+    if (x < 0.0f) x = 0.0f;
+    if (y < 0.0f) y = 0.0f;
+    if (x >= width - 1) x = width - 1.001f;  // Leave tiny margin for float precision
+    if (y >= height - 1) y = height - 1.001f;
+
+    int x0 = (int)x;
+    int y0 = (int)y;
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+
+    // Double-check bounds (should be safe after clamping above)
+    if (x1 >= width) x1 = width - 1;
+    if (y1 >= height) y1 = height - 1;
+
+    float fx = x - (float)x0;
+    float fy = y - (float)y0;
+
+    // Bilinear interpolation
+    float p00 = frame[y0 * width + x0];
+    float p10 = frame[y0 * width + x1];
+    float p01 = frame[y1 * width + x0];
+    float p11 = frame[y1 * width + x1];
+
+    float p0 = p00 * (1.0f - fx) + p10 * fx;
+    float p1 = p01 * (1.0f - fx) + p11 * fx;
+
+    return p0 * (1.0f - fy) + p1 * fy;
+}
+
+// Block-matching motion estimation with 1/4-pixel precision
+// Returns the Sum of Absolute Differences (SAD) for the best match
+// Search is centered around predicted MV for spatial coherence
+static float block_matching_sad(const float *current, const float *reference,
+                               int width, int height,
+                               int block_x, int block_y, int block_size,
+                               int search_range,
+                               int16_t pred_mv_x, int16_t pred_mv_y,
+                               int16_t *best_mv_x, int16_t *best_mv_y) {
+    float best_sad = 1e9f;
+    int best_dx = 0, best_dy = 0;
+
+    // Block coordinates in current frame
+    int block_start_x = block_x * block_size;
+    int block_start_y = block_y * block_size;
+
+    // Convert predicted MV from 1/4-pixel units to full pixels for search center
+    int pred_dx = pred_mv_x / 4;
+    int pred_dy = pred_mv_y / 4;
+
+    // Full-pixel search centered around prediction
+    for (int dy = pred_dy - search_range; dy <= pred_dy + search_range; dy++) {
+        for (int dx = pred_dx - search_range; dx <= pred_dx + search_range; dx++) {
+            float sad = 0.0f;
+
+            // Calculate SAD for this displacement
+            for (int by = 0; by < block_size; by++) {
+                for (int bx = 0; bx < block_size; bx++) {
+                    int curr_x = block_start_x + bx;
+                    int curr_y = block_start_y + by;
+
+                    if (curr_x >= width || curr_y >= height) continue;
+
+                    int ref_x = curr_x + dx;
+                    int ref_y = curr_y + dy;
+
+                    // Clamp reference coordinates
+                    if (ref_x < 0) ref_x = 0;
+                    if (ref_y < 0) ref_y = 0;
+                    if (ref_x >= width) ref_x = width - 1;
+                    if (ref_y >= height) ref_y = height - 1;
+
+                    float curr_val = current[curr_y * width + curr_x];
+                    float ref_val = reference[ref_y * width + ref_x];
+
+                    sad += fabsf(curr_val - ref_val);
+                }
+            }
+
+            if (sad < best_sad) {
+                best_sad = sad;
+                best_dx = dx;
+                best_dy = dy;
+            }
+        }
+    }
+
+    // Sub-pixel refinement (1/4-pixel precision)
+    // Search in a 3x3 pattern around the best full-pixel match
+    for (int qpy = -2; qpy <= 2; qpy++) {
+        for (int qpx = -2; qpx <= 2; qpx++) {
+            float dx_subpel = best_dx + qpx * 0.25f;
+            float dy_subpel = best_dy + qpy * 0.25f;
+
+            float sad = 0.0f;
+
+            for (int by = 0; by < block_size; by++) {
+                for (int bx = 0; bx < block_size; bx++) {
+                    int curr_x = block_start_x + bx;
+                    int curr_y = block_start_y + by;
+
+                    if (curr_x >= width || curr_y >= height) continue;
+
+                    float ref_x = curr_x + dx_subpel;
+                    float ref_y = curr_y + dy_subpel;
+
+                    float curr_val = current[curr_y * width + curr_x];
+                    float ref_val = interpolate_subpixel(reference, width, height, ref_x, ref_y);
+
+                    sad += fabsf(curr_val - ref_val);
+                }
+            }
+
+            if (sad < best_sad) {
+                best_sad = sad;
+                *best_mv_x = (int16_t)roundf(dx_subpel * 4.0f);  // Store in 1/4-pixel units
+                *best_mv_y = (int16_t)roundf(dy_subpel * 4.0f);
+            }
+        }
+    }
+
+    // If sub-pixel search didn't improve, use full-pixel result
+    if (best_sad == 1e9f || (*best_mv_x == 0 && *best_mv_y == 0 && (best_dx != 0 || best_dy != 0))) {
+        *best_mv_x = best_dx * 4;  // Convert to 1/4-pixel units
+        *best_mv_y = best_dy * 4;
+    }
+
+    return best_sad;
+}
+
+// Helper function: compute median of three values (for MV prediction)
+static int16_t median3(int16_t a, int16_t b, int16_t c) {
+    if (a > b) {
+        if (b > c) return b;
+        else if (a > c) return c;
+        else return a;
+    } else {
+        if (a > c) return a;
+        else if (b > c) return c;
+        else return b;
+    }
+}
+
+// Perform motion estimation for entire frame using dense optical flow
+// Fills residual_coding_motion_vectors_x and residual_coding_motion_vectors_y arrays
+// Uses OpenCV Farneback optical flow for spatially coherent motion estimation
+static void estimate_motion(tav_encoder_t *enc) {
+    // Use dense optical flow from OpenCV (C++ function)
+    // This computes flow at every pixel then samples at block centers
+    // Much more spatially coherent than independent block matching
+    estimate_optical_flow_motion(
+        enc->current_frame_y,
+        enc->residual_coding_reference_frame_y,
+        enc->width, enc->height,
+        enc->residual_coding_block_size,
+        enc->residual_coding_motion_vectors_x,
+        enc->residual_coding_motion_vectors_y
+    );
+}
+
+// Bidirectional motion estimation for B-frames
+// Computes both forward MVs (to previous ref) and backward MVs (to next ref)
+static void estimate_motion_bidirectional(tav_encoder_t *enc,
+                                          int16_t *fwd_mv_x, int16_t *fwd_mv_y,
+                                          int16_t *bwd_mv_x, int16_t *bwd_mv_y) {
+    // Forward motion: current → previous reference (I or P frame)
+    estimate_optical_flow_motion(
+        enc->current_frame_y,
+        enc->residual_coding_reference_frame_y,  // Previous reference
+        enc->width, enc->height,
+        enc->residual_coding_block_size,
+        fwd_mv_x,
+        fwd_mv_y
+    );
+
+    // Backward motion: current → next reference (P frame)
+    estimate_optical_flow_motion(
+        enc->current_frame_y,
+        enc->next_residual_coding_reference_frame_y,  // Next reference (future P-frame)
+        enc->width, enc->height,
+        enc->residual_coding_block_size,
+        bwd_mv_x,
+        bwd_mv_y
+    );
+}
+
+// Apply motion compensation to a single block (for bidirectional prediction)
+// Copies pixels from reference frame to predicted frame using motion vector
+static void apply_motion_compensation_to_block(
+    const float *reference_y, const float *reference_co, const float *reference_cg,
+    float *predicted_y, float *predicted_co, float *predicted_cg,
+    int width, int height, int block_size,
+    int block_x, int block_y,
+    int16_t mv_x, int16_t mv_y) {
+
+    // Convert motion vector from 1/4-pixel units to float pixels
+    float dx = mv_x / 4.0f;
+    float dy = mv_y / 4.0f;
+
+    // Apply motion compensation to each pixel in the block
+    for (int y = 0; y < block_size; y++) {
+        for (int x = 0; x < block_size; x++) {
+            int curr_x = block_x * block_size + x;
+            int curr_y = block_y * block_size + y;
+
+            // Boundary check
+            if (curr_x >= width || curr_y >= height) continue;
+
+            // Reference position with motion vector
+            float ref_x = curr_x + dx;
+            float ref_y = curr_y + dy;
+
+            // Get predicted values with sub-pixel interpolation
+            int pixel_idx = curr_y * width + curr_x;
+            predicted_y[pixel_idx] = interpolate_subpixel(reference_y, width, height, ref_x, ref_y);
+            predicted_co[pixel_idx] = interpolate_subpixel(reference_co, width, height, ref_x, ref_y);
+            predicted_cg[pixel_idx] = interpolate_subpixel(reference_cg, width, height, ref_x, ref_y);
+        }
+    }
+}
+
+// Generate bidirectional prediction by combining forward and backward predictions
+// Uses 50/50 weighting (can be enhanced with adaptive weighting later)
+// For B-frames: predicted = (forward_prediction + backward_prediction) / 2
+static void generate_bidirectional_prediction(
+    tav_encoder_t *enc,
+    const int16_t *fwd_mv_x, const int16_t *fwd_mv_y,
+    const int16_t *bwd_mv_x, const int16_t *bwd_mv_y,
+    float *predicted_y, float *predicted_co, float *predicted_cg) {
+
+    int width = enc->width;
+    int height = enc->height;
+    int residual_coding_num_blocks_x = width / enc->residual_coding_block_size;
+    int residual_coding_num_blocks_y = height / enc->residual_coding_block_size;
+
+    // Allocate temporary buffers for forward and backward predictions
+    float *fwd_pred_y = malloc(width * height * sizeof(float));
+    float *fwd_pred_co = malloc(width * height * sizeof(float));
+    float *fwd_pred_cg = malloc(width * height * sizeof(float));
+    float *bwd_pred_y = malloc(width * height * sizeof(float));
+    float *bwd_pred_co = malloc(width * height * sizeof(float));
+    float *bwd_pred_cg = malloc(width * height * sizeof(float));
+
+    if (!fwd_pred_y || !fwd_pred_co || !fwd_pred_cg ||
+        !bwd_pred_y || !bwd_pred_co || !bwd_pred_cg) {
+        fprintf(stderr, "Error: Failed to allocate memory for bidirectional prediction\n");
+        free(fwd_pred_y); free(fwd_pred_co); free(fwd_pred_cg);
+        free(bwd_pred_y); free(bwd_pred_co); free(bwd_pred_cg);
+        return;
+    }
+
+    // Generate forward prediction: motion-compensated from previous reference
+    for (int by = 0; by < residual_coding_num_blocks_y; by++) {
+        for (int bx = 0; bx < residual_coding_num_blocks_x; bx++) {
+            int block_idx = by * residual_coding_num_blocks_x + bx;
+            int16_t mv_x = fwd_mv_x[block_idx];
+            int16_t mv_y = fwd_mv_y[block_idx];
+
+            // Apply motion compensation to this block using previous reference
+            apply_motion_compensation_to_block(
+                enc->residual_coding_reference_frame_y, enc->residual_coding_reference_frame_co, enc->residual_coding_reference_frame_cg,
+                fwd_pred_y, fwd_pred_co, fwd_pred_cg,
+                width, height, enc->residual_coding_block_size,
+                bx, by, mv_x, mv_y
+            );
+        }
+    }
+
+    // Generate backward prediction: motion-compensated from next reference
+    for (int by = 0; by < residual_coding_num_blocks_y; by++) {
+        for (int bx = 0; bx < residual_coding_num_blocks_x; bx++) {
+            int block_idx = by * residual_coding_num_blocks_x + bx;
+            int16_t mv_x = bwd_mv_x[block_idx];
+            int16_t mv_y = bwd_mv_y[block_idx];
+
+            // Apply motion compensation to this block using next reference
+            apply_motion_compensation_to_block(
+                enc->next_residual_coding_reference_frame_y, enc->next_residual_coding_reference_frame_co, enc->next_residual_coding_reference_frame_cg,
+                bwd_pred_y, bwd_pred_co, bwd_pred_cg,
+                width, height, enc->residual_coding_block_size,
+                bx, by, mv_x, mv_y
+            );
+        }
+    }
+
+    // Combine predictions with 50/50 weighting
+    for (int i = 0; i < width * height; i++) {
+        predicted_y[i] = (fwd_pred_y[i] + bwd_pred_y[i]) / 2.0f;
+        predicted_co[i] = (fwd_pred_co[i] + bwd_pred_co[i]) / 2.0f;
+        predicted_cg[i] = (fwd_pred_cg[i] + bwd_pred_cg[i]) / 2.0f;
+    }
+
+    // Free temporary buffers
+    free(fwd_pred_y); free(fwd_pred_co); free(fwd_pred_cg);
+    free(bwd_pred_y); free(bwd_pred_co); free(bwd_pred_cg);
+}
+
+// Spatial motion vector prediction with differential coding
+// Predicts each block's MV from neighbors (left, top, top-right) using median
+// Converts absolute MVs to differential MVs for better compression
+// This enforces spatial coherence and is standard MPEG practice
+static void apply_mv_prediction(int16_t *mvs_x, int16_t *mvs_y,
+                                int residual_coding_num_blocks_x, int residual_coding_num_blocks_y) {
+    // We'll store the original MVs temporarily
+    int total_blocks = residual_coding_num_blocks_x * residual_coding_num_blocks_y;
+    int16_t *orig_mvs_x = malloc(total_blocks * sizeof(int16_t));
+    int16_t *orig_mvs_y = malloc(total_blocks * sizeof(int16_t));
+
+    if (!orig_mvs_x || !orig_mvs_y) {
+        fprintf(stderr, "Error: Failed to allocate memory for MV prediction\n");
+        free(orig_mvs_x);
+        free(orig_mvs_y);
+        return;
+    }
+
+    // Copy original MVs
+    memcpy(orig_mvs_x, mvs_x, total_blocks * sizeof(int16_t));
+    memcpy(orig_mvs_y, mvs_y, total_blocks * sizeof(int16_t));
+
+    // Process each block in raster scan order
+    for (int by = 0; by < residual_coding_num_blocks_y; by++) {
+        for (int bx = 0; bx < residual_coding_num_blocks_x; bx++) {
+            int block_idx = by * residual_coding_num_blocks_x + bx;
+
+            // Get original MV for this block
+            int16_t mv_x = orig_mvs_x[block_idx];
+            int16_t mv_y = orig_mvs_y[block_idx];
+
+            // Predict MV from spatial neighbors using median
+            int16_t pred_x = 0, pred_y = 0;
+
+            // Get neighbor indices (if they exist)
+            int has_left = (bx > 0);
+            int has_top = (by > 0);
+            int has_top_right = (bx < residual_coding_num_blocks_x - 1 && by > 0);
+
+            int left_idx = by * residual_coding_num_blocks_x + (bx - 1);
+            int top_idx = (by - 1) * residual_coding_num_blocks_x + bx;
+            int top_right_idx = (by - 1) * residual_coding_num_blocks_x + (bx + 1);
+
+            // Standard MPEG median prediction
+            if (has_left && has_top && has_top_right) {
+                // All three neighbors available: use median
+                pred_x = median3(orig_mvs_x[left_idx],
+                               orig_mvs_x[top_idx],
+                               orig_mvs_x[top_right_idx]);
+                pred_y = median3(orig_mvs_y[left_idx],
+                               orig_mvs_y[top_idx],
+                               orig_mvs_y[top_right_idx]);
+            } else if (has_left && has_top) {
+                // Left and top available: use average
+                pred_x = (orig_mvs_x[left_idx] + orig_mvs_x[top_idx]) / 2;
+                pred_y = (orig_mvs_y[left_idx] + orig_mvs_y[top_idx]) / 2;
+            } else if (has_left) {
+                // Only left available
+                pred_x = orig_mvs_x[left_idx];
+                pred_y = orig_mvs_y[left_idx];
+            } else if (has_top) {
+                // Only top available
+                pred_x = orig_mvs_x[top_idx];
+                pred_y = orig_mvs_y[top_idx];
+            }
+            // else: no neighbors, prediction remains (0, 0)
+
+            // Store differential MV = actual - predicted
+            mvs_x[block_idx] = mv_x - pred_x;
+            mvs_y[block_idx] = mv_y - pred_y;
+        }
+    }
+
+    free(orig_mvs_x);
+    free(orig_mvs_y);
+}
+
+// Generate motion-compensated prediction for a single channel
+// Uses motion vectors to copy blocks from reference frame with sub-pixel accuracy
+static void generate_prediction_channel(const float *reference, float *predicted,
+                                       const int16_t *mvs_x, const int16_t *mvs_y,
+                                       int width, int height,
+                                       int residual_coding_num_blocks_x, int residual_coding_num_blocks_y,
+                                       int block_size) {
+    for (int by = 0; by < residual_coding_num_blocks_y; by++) {
+        for (int bx = 0; bx < residual_coding_num_blocks_x; bx++) {
+            int block_idx = by * residual_coding_num_blocks_x + bx;
+            int16_t mv_x = mvs_x[block_idx];  // In 1/4-pixel units
+            int16_t mv_y = mvs_y[block_idx];  // In 1/4-pixel units
+
+            // Convert to float pixels
+            float dx = mv_x / 4.0f;
+            float dy = mv_y / 4.0f;
+
+            // Block coordinates
+            int block_start_x = bx * block_size;
+            int block_start_y = by * block_size;
+
+            // Copy block with motion compensation
+            for (int y = 0; y < block_size; y++) {
+                for (int x = 0; x < block_size; x++) {
+                    int curr_x = block_start_x + x;
+                    int curr_y = block_start_y + y;
+
+                    // Skip if outside frame boundary
+                    if (curr_x >= width || curr_y >= height) continue;
+
+                    // Reference position with motion vector
+                    float ref_x = curr_x + dx;
+                    float ref_y = curr_y + dy;
+
+                    // Get predicted value with sub-pixel interpolation
+                    float pred_val = interpolate_subpixel(reference, width, height, ref_x, ref_y);
+
+                    predicted[curr_y * width + curr_x] = pred_val;
+                }
+            }
+        }
+    }
+}
+
+// Generate motion-compensated prediction for all channels
+static void generate_prediction(tav_encoder_t *enc) {
+    generate_prediction_channel(enc->residual_coding_reference_frame_y, enc->residual_coding_predicted_frame_y,
+                               enc->residual_coding_motion_vectors_x, enc->residual_coding_motion_vectors_y,
+                               enc->width, enc->height,
+                               enc->residual_coding_num_blocks_x, enc->residual_coding_num_blocks_y,
+                               enc->residual_coding_block_size);
+
+    generate_prediction_channel(enc->residual_coding_reference_frame_co, enc->residual_coding_predicted_frame_co,
+                               enc->residual_coding_motion_vectors_x, enc->residual_coding_motion_vectors_y,
+                               enc->width, enc->height,
+                               enc->residual_coding_num_blocks_x, enc->residual_coding_num_blocks_y,
+                               enc->residual_coding_block_size);
+
+    generate_prediction_channel(enc->residual_coding_reference_frame_cg, enc->residual_coding_predicted_frame_cg,
+                               enc->residual_coding_motion_vectors_x, enc->residual_coding_motion_vectors_y,
+                               enc->width, enc->height,
+                               enc->residual_coding_num_blocks_x, enc->residual_coding_num_blocks_y,
+                               enc->residual_coding_block_size);
+}
+
+// Compute residual = current - predicted for all channels
+static void compute_residual(tav_encoder_t *enc) {
+    size_t frame_size = enc->width * enc->height;
+
+    for (size_t i = 0; i < frame_size; i++) {
+        enc->residual_coding_residual_frame_y[i] = enc->current_frame_y[i] - enc->residual_coding_predicted_frame_y[i];
+        enc->residual_coding_residual_frame_co[i] = enc->current_frame_co[i] - enc->residual_coding_predicted_frame_co[i];
+        enc->residual_coding_residual_frame_cg[i] = enc->current_frame_cg[i] - enc->residual_coding_predicted_frame_cg[i];
+    }
+}
+
+// Detect skip blocks (small motion + low residual energy)
+// Skip blocks don't encode residuals, saving bits in static regions
+static int detect_residual_coding_skip_blocks(tav_encoder_t *enc) {
+    int skip_count = 0;
+
+    // Thresholds (tunable parameters)
+    const float MV_THRESHOLD = 2.0f;        // 0.5 pixels in 1/4-pixel units
+    const float ENERGY_THRESHOLD = 50.0f;   // Sum of squared residuals per block
+
+    for (int by = 0; by < enc->residual_coding_num_blocks_y; by++) {
+        for (int bx = 0; bx < enc->residual_coding_num_blocks_x; bx++) {
+            int block_idx = by * enc->residual_coding_num_blocks_x + bx;
+
+            // Check motion vector magnitude
+            int16_t mv_x = enc->residual_coding_motion_vectors_x[block_idx];
+            int16_t mv_y = enc->residual_coding_motion_vectors_y[block_idx];
+            float mv_mag = sqrtf((mv_x * mv_x + mv_y * mv_y) / 16.0f);  // Convert from 1/4-pixel units
+
+            // Check residual energy for this block
+            float energy = 0.0f;
+            int block_start_x = bx * enc->residual_coding_block_size;
+            int block_start_y = by * enc->residual_coding_block_size;
+
+            for (int y = 0; y < enc->residual_coding_block_size; y++) {
+                for (int x = 0; x < enc->residual_coding_block_size; x++) {
+                    int px = block_start_x + x;
+                    int py = block_start_y + y;
+
+                    if (px >= enc->width || py >= enc->height) continue;
+
+                    int idx = py * enc->width + px;
+                    float res_y = enc->residual_coding_residual_frame_y[idx];
+                    float res_co = enc->residual_coding_residual_frame_co[idx];
+                    float res_cg = enc->residual_coding_residual_frame_cg[idx];
+
+                    energy += res_y * res_y + res_co * res_co + res_cg * res_cg;
+                }
+            }
+
+            // Mark as skip if both conditions met
+            if (mv_mag < MV_THRESHOLD && energy < ENERGY_THRESHOLD) {
+                enc->residual_coding_skip_blocks[block_idx] = 1;
+                skip_count++;
+
+                // Zero out residuals for this block (won't be encoded after DWT)
+                for (int y = 0; y < enc->residual_coding_block_size; y++) {
+                    for (int x = 0; x < enc->residual_coding_block_size; x++) {
+                        int px = block_start_x + x;
+                        int py = block_start_y + y;
+
+                        if (px >= enc->width || py >= enc->height) continue;
+
+                        int idx = py * enc->width + px;
+                        enc->residual_coding_residual_frame_y[idx] = 0.0f;
+                        enc->residual_coding_residual_frame_co[idx] = 0.0f;
+                        enc->residual_coding_residual_frame_cg[idx] = 0.0f;
+                    }
+                }
+            } else {
+                enc->residual_coding_skip_blocks[block_idx] = 0;
+            }
+        }
+    }
+
+    return skip_count;
+}
+
+// Update reference frame (store current frame for next P-frame)
+static void update_reference_frame(tav_encoder_t *enc) {
+    size_t frame_size = enc->width * enc->height;
+
+    memcpy(enc->residual_coding_reference_frame_y, enc->current_frame_y, frame_size * sizeof(float));
+    memcpy(enc->residual_coding_reference_frame_co, enc->current_frame_co, frame_size * sizeof(float));
+    memcpy(enc->residual_coding_reference_frame_cg, enc->current_frame_cg, frame_size * sizeof(float));
+
+    enc->residual_coding_reference_frame_allocated = 1;
+}
+
+// ===========================
+// B-Frame Buffering Functions
+// ===========================
+
+// Allocate lookahead buffer for B-frame encoding
+// Buffer size = M+1 (M B-frames + 1 next reference frame)
+static int allocate_lookahead_buffer(tav_encoder_t *enc) {
+    if (!enc->residual_coding_enable_bframes || enc->residual_coding_bframe_count == 0) {
+        return 0;  // B-frames disabled, no buffer needed
+    }
+
+    // Capacity = M B-frames + 1 reference frame
+    enc->residual_coding_lookahead_buffer_capacity = enc->residual_coding_bframe_count + 1;
+    size_t frame_size = enc->width * enc->height;
+
+    // Allocate buffer arrays
+    enc->residual_coding_lookahead_buffer_y = calloc(enc->residual_coding_lookahead_buffer_capacity, sizeof(float*));
+    enc->residual_coding_lookahead_buffer_co = calloc(enc->residual_coding_lookahead_buffer_capacity, sizeof(float*));
+    enc->residual_coding_lookahead_buffer_cg = calloc(enc->residual_coding_lookahead_buffer_capacity, sizeof(float*));
+    enc->residual_coding_lookahead_buffer_display_index = calloc(enc->residual_coding_lookahead_buffer_capacity, sizeof(int));
+
+    if (!enc->residual_coding_lookahead_buffer_y || !enc->residual_coding_lookahead_buffer_co ||
+        !enc->residual_coding_lookahead_buffer_cg || !enc->residual_coding_lookahead_buffer_display_index) {
+        fprintf(stderr, "Error: Failed to allocate lookahead buffer arrays\n");
+        return -1;
+    }
+
+    // Allocate individual frame buffers
+    for (int i = 0; i < enc->residual_coding_lookahead_buffer_capacity; i++) {
+        enc->residual_coding_lookahead_buffer_y[i] = malloc(frame_size * sizeof(float));
+        enc->residual_coding_lookahead_buffer_co[i] = malloc(frame_size * sizeof(float));
+        enc->residual_coding_lookahead_buffer_cg[i] = malloc(frame_size * sizeof(float));
+
+        if (!enc->residual_coding_lookahead_buffer_y[i] || !enc->residual_coding_lookahead_buffer_co[i] ||
+            !enc->residual_coding_lookahead_buffer_cg[i]) {
+            fprintf(stderr, "Error: Failed to allocate lookahead buffer frame %d\n", i);
+            return -1;
+        }
+    }
+
+    enc->residual_coding_lookahead_buffer_count = 0;
+    return 0;
+}
+
+// Free lookahead buffer
+static void free_lookahead_buffer(tav_encoder_t *enc) {
+    if (!enc->residual_coding_lookahead_buffer_y) return;
+
+    for (int i = 0; i < enc->residual_coding_lookahead_buffer_capacity; i++) {
+        free(enc->residual_coding_lookahead_buffer_y[i]);
+        free(enc->residual_coding_lookahead_buffer_co[i]);
+        free(enc->residual_coding_lookahead_buffer_cg[i]);
+    }
+
+    free(enc->residual_coding_lookahead_buffer_y);
+    free(enc->residual_coding_lookahead_buffer_co);
+    free(enc->residual_coding_lookahead_buffer_cg);
+    free(enc->residual_coding_lookahead_buffer_display_index);
+
+    enc->residual_coding_lookahead_buffer_y = NULL;
+    enc->residual_coding_lookahead_buffer_co = NULL;
+    enc->residual_coding_lookahead_buffer_cg = NULL;
+    enc->residual_coding_lookahead_buffer_display_index = NULL;
+    enc->residual_coding_lookahead_buffer_capacity = 0;
+    enc->residual_coding_lookahead_buffer_count = 0;
+}
+
+// Add current frame to lookahead buffer
+// Returns 0 if buffer not full yet, 1 if buffer is now full and ready to encode
+static int add_frame_to_buffer(tav_encoder_t *enc, int display_index) {
+    if (!enc->residual_coding_enable_bframes || enc->residual_coding_lookahead_buffer_capacity == 0) {
+        return 1;  // No buffering, encode immediately
+    }
+
+    if (enc->residual_coding_lookahead_buffer_count >= enc->residual_coding_lookahead_buffer_capacity) {
+        fprintf(stderr, "Error: Lookahead buffer overflow\n");
+        return -1;
+    }
+
+    // Copy current frame to buffer
+    size_t frame_size = enc->width * enc->height;
+    int buf_idx = enc->residual_coding_lookahead_buffer_count;
+
+    memcpy(enc->residual_coding_lookahead_buffer_y[buf_idx], enc->current_frame_y, frame_size * sizeof(float));
+    memcpy(enc->residual_coding_lookahead_buffer_co[buf_idx], enc->current_frame_co, frame_size * sizeof(float));
+    memcpy(enc->residual_coding_lookahead_buffer_cg[buf_idx], enc->current_frame_cg, frame_size * sizeof(float));
+    enc->residual_coding_lookahead_buffer_display_index[buf_idx] = display_index;
+
+    enc->residual_coding_lookahead_buffer_count++;
+
+    // Return 1 if buffer is full (ready to start encoding)
+    return (enc->residual_coding_lookahead_buffer_count >= enc->residual_coding_lookahead_buffer_capacity) ? 1 : 0;
+}
+
+// Get frame from buffer by buffer index (not display index)
+// Loads the frame into enc->current_frame_* buffers
+static void load_frame_from_buffer(tav_encoder_t *enc, int buffer_index) {
+    if (buffer_index < 0 || buffer_index >= enc->residual_coding_lookahead_buffer_count) {
+        fprintf(stderr, "Error: Invalid buffer index %d (count=%d)\n",
+                buffer_index, enc->residual_coding_lookahead_buffer_count);
+        return;
+    }
+
+    size_t frame_size = enc->width * enc->height;
+    memcpy(enc->current_frame_y, enc->residual_coding_lookahead_buffer_y[buffer_index], frame_size * sizeof(float));
+    memcpy(enc->current_frame_co, enc->residual_coding_lookahead_buffer_co[buffer_index], frame_size * sizeof(float));
+    memcpy(enc->current_frame_cg, enc->residual_coding_lookahead_buffer_cg[buffer_index], frame_size * sizeof(float));
+}
+
+// Shift buffer contents (remove first frame, shift others down)
+// Used after encoding a group of frames to make room for new frames
+static void shift_buffer(tav_encoder_t *enc, int num_frames_to_remove) {
+    if (num_frames_to_remove <= 0 || num_frames_to_remove > enc->residual_coding_lookahead_buffer_count) {
+        return;
+    }
+
+    size_t frame_size = enc->width * enc->height;
+
+    // Shift frames down
+    for (int i = num_frames_to_remove; i < enc->residual_coding_lookahead_buffer_count; i++) {
+        int src_idx = i;
+        int dst_idx = i - num_frames_to_remove;
+
+        memcpy(enc->residual_coding_lookahead_buffer_y[dst_idx], enc->residual_coding_lookahead_buffer_y[src_idx], frame_size * sizeof(float));
+        memcpy(enc->residual_coding_lookahead_buffer_co[dst_idx], enc->residual_coding_lookahead_buffer_co[src_idx], frame_size * sizeof(float));
+        memcpy(enc->residual_coding_lookahead_buffer_cg[dst_idx], enc->residual_coding_lookahead_buffer_cg[src_idx], frame_size * sizeof(float));
+        enc->residual_coding_lookahead_buffer_display_index[dst_idx] = enc->residual_coding_lookahead_buffer_display_index[src_idx];
+    }
+
+    enc->residual_coding_lookahead_buffer_count -= num_frames_to_remove;
+}
+
+// ===========================
+// P-Frame and B-Frame Encoding
+// ===========================
+
+// Encode and write P-frame with MPEG-style residual coding (packet type 0x14)
+// Returns total packet size (including header and compressed data)
+static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
+
+    // Step 1: Motion estimation
+    estimate_motion(enc);
+
+    // Step 2: Generate motion-compensated prediction
+    generate_prediction(enc);
+
+    // Step 3: Compute residual
+    compute_residual(enc);
+
+    // Step 3.5: Detect skip blocks (small motion + low energy)
+    // Zeros out residuals for skip blocks to save bits
+    int skip_count = detect_residual_coding_skip_blocks(enc);
+
+    // Optional: Print skip statistics every N frames
+    if (enc->verbose && enc->frame_count % 30 == 0) {
+        int total_blocks = enc->residual_coding_num_blocks_x * enc->residual_coding_num_blocks_y;
+        fprintf(stderr, "Frame %d: %d/%d blocks skipped (%.1f%%)\n",
+                enc->frame_count, skip_count, total_blocks,
+                100.0f * skip_count / total_blocks);
+    }
+
+    // Step 4: Apply DWT to residual (monoblock mode only for now)
+    if (!enc->monoblock) {
+        fprintf(stderr, "Error: Residual coding currently requires monoblock mode\n");
+        return 0;
+    }
+
+    size_t frame_size = enc->width * enc->height;
+
+    // Create temporary buffers for DWT-transformed residuals
+    float *residual_y_dwt = malloc(frame_size * sizeof(float));
+    float *residual_co_dwt = malloc(frame_size * sizeof(float));
+    float *residual_cg_dwt = malloc(frame_size * sizeof(float));
+
+    memcpy(residual_y_dwt, enc->residual_coding_residual_frame_y, frame_size * sizeof(float));
+    memcpy(residual_co_dwt, enc->residual_coding_residual_frame_co, frame_size * sizeof(float));
+    memcpy(residual_cg_dwt, enc->residual_coding_residual_frame_cg, frame_size * sizeof(float));
+
+    // Apply 2D DWT to residuals
+    dwt_2d_forward_flexible(residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+
+    // Step 5: Quantize residual coefficients
+    int16_t *quantised_y = enc->reusable_quantised_y;
+    int16_t *quantised_co = enc->reusable_quantised_co;
+    int16_t *quantised_cg = enc->reusable_quantised_cg;
+
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
+                                                  qY, enc->width, enc->height,
+                                                  enc->decomp_levels, 0, 0);
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
+                                                  enc->quantiser_co, enc->width, enc->height,
+                                                  enc->decomp_levels, 1, 0);
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
+                                                  enc->quantiser_cg, enc->width, enc->height,
+                                                  enc->decomp_levels, 1, 0);
+
+    // Step 6: Preprocess coefficients (significance map compression)
+    int total_coeffs = frame_size * 3;  // Y + Co + Cg
+    uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);  // Extra space for map
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg,
+                                                                      NULL, frame_size, enc->channel_layout,
+                                                                      preprocessed);
+
+    // Step 7: Compress preprocessed coefficients with Zstd
+    size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
+    uint8_t *compressed_coeffs = malloc(compressed_bound);
+    size_t compressed_size = ZSTD_compressCCtx(enc->zstd_ctx, compressed_coeffs, compressed_bound,
+                                               preprocessed, preprocessed_size, enc->zstd_level);
+
+    if (ZSTD_isError(compressed_size)) {
+        fprintf(stderr, "Error: Zstd compression failed for P-frame residual\n");
+        free(residual_y_dwt);
+        free(residual_co_dwt);
+        free(residual_cg_dwt);
+        free(preprocessed);
+        free(compressed_coeffs);
+        return 0;
+    }
+
+    // Step 7.5: Apply spatial MV prediction to convert to differential MVs
+    // This must be done AFTER prediction but BEFORE writing to file
+    // Improves compression and enforces spatial coherence
+    apply_mv_prediction(enc->residual_coding_motion_vectors_x, enc->residual_coding_motion_vectors_y,
+                       enc->residual_coding_num_blocks_x, enc->residual_coding_num_blocks_y);
+
+    // Step 8: Write P-frame packet
+    // Packet format: [type=0x14][num_blocks:uint16][mvs_x][mvs_y][compressed_size:uint32][compressed_data]
+    // Note: MVs are now differential (predicted from neighbors)
+
+    uint8_t packet_type = TAV_PACKET_PFRAME_RESIDUAL;
+    int total_blocks = enc->residual_coding_num_blocks_x * enc->residual_coding_num_blocks_y;
+    uint16_t num_blocks = (uint16_t)total_blocks;
+    uint32_t compressed_size_u32 = (uint32_t)compressed_size;
+
+    // Write packet header
+    fwrite(&packet_type, 1, 1, enc->output_fp);
+    fwrite(&num_blocks, sizeof(uint16_t), 1, enc->output_fp);
+
+    // Write motion vectors
+    fwrite(enc->residual_coding_motion_vectors_x, sizeof(int16_t), total_blocks, enc->output_fp);
+    fwrite(enc->residual_coding_motion_vectors_y, sizeof(int16_t), total_blocks, enc->output_fp);
+
+    // Write compressed size and data
+    fwrite(&compressed_size_u32, sizeof(uint32_t), 1, enc->output_fp);
+    fwrite(compressed_coeffs, 1, compressed_size, enc->output_fp);
+
+    // Calculate total packet size
+    size_t packet_size = 1 + sizeof(uint16_t) + (total_blocks * 2 * sizeof(int16_t)) +
+                        sizeof(uint32_t) + compressed_size;
+
+    // Cleanup
+    free(residual_y_dwt);
+    free(residual_co_dwt);
+    free(residual_cg_dwt);
+    free(preprocessed);
+    free(compressed_coeffs);
+
+    if (enc->verbose) {
+        printf("  P-frame: %d blocks, %d MVs, residual: %zu → %zu bytes (%.1f%%)\n",
+               total_blocks, total_blocks * 2, preprocessed_size, compressed_size,
+               (compressed_size * 100.0f) / preprocessed_size);
+    }
+
+    return packet_size;
+}
+
+// Encode and write P-frame with adaptive quad-tree blocks (packet type 0x16)
+// Returns total packet size (including header and compressed data)
+static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
+
+    int saved_block_size = enc->residual_coding_block_size;
+
+    // Save original MV arrays
+    int16_t *orig_mv_x = enc->residual_coding_motion_vectors_x;
+    int16_t *orig_mv_y = enc->residual_coding_motion_vectors_y;
+    int orig_blocks_x = enc->residual_coding_num_blocks_x;
+    int orig_blocks_y = enc->residual_coding_num_blocks_y;
+
+    int16_t *fine_mv_x = NULL;
+    int16_t *fine_mv_y = NULL;
+    int fine_blocks_x = 0;
+    int fine_blocks_y = 0;
+
+#if FINE_GRAINED_OPTICAL_FLOW
+    // === BOTTOM-UP APPROACH: Fine-grained optical flow + merging ===
+    // Step 1: Motion estimation at min block size (4×4)
+    enc->residual_coding_block_size = enc->residual_coding_min_block_size;
+    fine_blocks_x = (enc->width + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
+    fine_blocks_y = (enc->height + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
+    int fine_total_blocks = fine_blocks_x * fine_blocks_y;
+
+    fine_mv_x = malloc(fine_total_blocks * sizeof(int16_t));
+    fine_mv_y = malloc(fine_total_blocks * sizeof(int16_t));
+
+    enc->residual_coding_motion_vectors_x = fine_mv_x;
+    enc->residual_coding_motion_vectors_y = fine_mv_y;
+    enc->residual_coding_num_blocks_x = fine_blocks_x;
+    enc->residual_coding_num_blocks_y = fine_blocks_y;
+
+    estimate_motion(enc);
+
+    // Step 2-3: Generate prediction and compute residual using fine-grained MVs
+    generate_prediction(enc);
+    compute_residual(enc);
+
+#else
+    // === TOP-DOWN APPROACH: Coarse optical flow + variance-based splitting ===
+    // Step 1: Motion estimation at max block size (64×64)
+    enc->residual_coding_block_size = enc->residual_coding_max_block_size;
+    int max_blocks_x = (enc->width + enc->residual_coding_max_block_size - 1) / enc->residual_coding_max_block_size;
+    int max_blocks_y = (enc->height + enc->residual_coding_max_block_size - 1) / enc->residual_coding_max_block_size;
+    int max_total_blocks = max_blocks_x * max_blocks_y;
+
+    int16_t *temp_mv_x = malloc(max_total_blocks * sizeof(int16_t));
+    int16_t *temp_mv_y = malloc(max_total_blocks * sizeof(int16_t));
+
+    enc->residual_coding_motion_vectors_x = temp_mv_x;
+    enc->residual_coding_motion_vectors_y = temp_mv_y;
+    enc->residual_coding_num_blocks_x = max_blocks_x;
+    enc->residual_coding_num_blocks_y = max_blocks_y;
+
+    estimate_motion(enc);
+
+    // Step 2-3: Generate prediction and compute residual using coarse MVs
+    generate_prediction(enc);
+    compute_residual(enc);
+#endif
+
+    // Step 4: Build quad-tree forest
+    int num_tree_cols = (enc->width + enc->residual_coding_max_block_size - 1) / enc->residual_coding_max_block_size;
+    int num_tree_rows = (enc->height + enc->residual_coding_max_block_size - 1) / enc->residual_coding_max_block_size;
+    int total_trees = num_tree_cols * num_tree_rows;
+
+    quad_tree_node_t **tree_forest = malloc(total_trees * sizeof(quad_tree_node_t*));
+
+    for (int ty = 0; ty < num_tree_rows; ty++) {
+        for (int tx = 0; tx < num_tree_cols; tx++) {
+            int tree_idx = ty * num_tree_cols + tx;
+            int x = tx * enc->residual_coding_max_block_size;
+            int y = ty * enc->residual_coding_max_block_size;
+
+#if FINE_GRAINED_OPTICAL_FLOW
+            // Bottom-up: Build tree by merging fine-grained blocks
+            tree_forest[tree_idx] = build_quad_tree_bottom_up(
+                fine_mv_x, fine_mv_y,
+                enc->residual_coding_residual_frame_y,
+                enc->residual_coding_residual_frame_co,
+                enc->residual_coding_residual_frame_cg,
+                enc->width, enc->height,
+                x, y, enc->residual_coding_max_block_size,
+                enc->residual_coding_min_block_size, enc->residual_coding_max_block_size,
+                fine_blocks_x
+            );
+#else
+            // Top-down: Build tree by splitting coarse blocks based on variance
+            int16_t mv_x = enc->residual_coding_motion_vectors_x[tree_idx];
+            int16_t mv_y = enc->residual_coding_motion_vectors_y[tree_idx];
+
+            // Detect if this is a skip block
+            float mv_mag = sqrtf((mv_x * mv_x + mv_y * mv_y) / 16.0f);
+            float energy = 0.0f;
+            for (int by = 0; by < enc->residual_coding_max_block_size && y + by < enc->height; by++) {
+                for (int bx = 0; bx < enc->residual_coding_max_block_size && x + bx < enc->width; bx++) {
+                    int px = x + bx;
+                    int py = y + by;
+                    float r_y = enc->residual_coding_residual_frame_y[py * enc->width + px];
+                    float r_co = enc->residual_coding_residual_frame_co[py * enc->width + px];
+                    float r_cg = enc->residual_coding_residual_frame_cg[py * enc->width + px];
+                    energy += r_y * r_y + r_co * r_co + r_cg * r_cg;
+                }
+            }
+            int is_skip = (mv_mag < 0.5f && energy < 50.0f * enc->residual_coding_max_block_size * enc->residual_coding_max_block_size / (16 * 16));
+
+            tree_forest[tree_idx] = build_quad_tree(
+                enc->current_frame_y,
+                enc->residual_coding_reference_frame_y,
+                enc->residual_coding_residual_frame_y,
+                enc->residual_coding_residual_frame_co,
+                enc->residual_coding_residual_frame_cg,
+                enc->width, enc->height,
+                x, y, enc->residual_coding_max_block_size,
+                enc->residual_coding_min_block_size,
+                mv_x, mv_y,
+                is_skip,
+                0  // Disable per-block motion refinement
+            );
+#endif
+        }
+    }
+
+    // Step 4.5: Recompute residuals using refined motion vectors from quad-tree
+    // This gives us better residuals that compress more efficiently
+    for (int i = 0; i < total_trees; i++) {
+        recompute_residuals_from_tree(tree_forest[i],
+                                     enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
+                                     enc->residual_coding_reference_frame_y, enc->residual_coding_reference_frame_co, enc->residual_coding_reference_frame_cg,
+                                     enc->residual_coding_residual_frame_y, enc->residual_coding_residual_frame_co, enc->residual_coding_residual_frame_cg,
+                                     enc->width, enc->height);
+    }
+
+    // Step 4.75: Spatial MV prediction (DISABLED - degrades compression)
+    // Differential MV coding doesn't help because:
+    // 1. Too little MV data for Zstd to exploit patterns (only 63 trees/frame)
+    // 2. Optical flow produces smooth absolute MVs that compress well already
+    // 3. Differential prediction can introduce noise if neighbors aren't perfect predictors
+    // Leaving code in place for future experimentation with entropy coding
+    #if 0
+    int mv_blocks_x = (enc->width + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
+    int mv_blocks_y = (enc->height + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
+    int16_t *mv_map_x = malloc(mv_blocks_x * mv_blocks_y * sizeof(int16_t));
+    int16_t *mv_map_y = malloc(mv_blocks_x * mv_blocks_y * sizeof(int16_t));
+
+    build_mv_map_from_forest(tree_forest, num_tree_cols, num_tree_rows,
+                             enc->residual_coding_max_block_size, enc->residual_coding_min_block_size,
+                             enc->width, enc->height,
+                             mv_map_x, mv_map_y);
+
+    for (int i = 0; i < total_trees; i++) {
+        apply_spatial_mv_prediction_to_tree(tree_forest[i], enc->residual_coding_min_block_size, mv_blocks_x, mv_map_x, mv_map_y);
+    }
+
+    free(mv_map_x);
+    free(mv_map_y);
+    #endif
+
+    // Step 5: Serialize all quad-trees (now with differential MVs)
+    // Estimate buffer size: worst case is all leaf nodes at min size
+    size_t max_serialized_size = total_trees * 10000;  // Conservative estimate
+    uint8_t *serialized_trees = malloc(max_serialized_size);
+    size_t total_serialized = 0;
+
+    for (int i = 0; i < total_trees; i++) {
+        size_t tree_size = serialize_quad_tree(tree_forest[i], serialized_trees + total_serialized,
+                                               max_serialized_size - total_serialized);
+        if (tree_size == 0) {
+            fprintf(stderr, "Error: Failed to serialize quad-tree %d\n", i);
+            // Cleanup and return error
+            for (int j = 0; j < total_trees; j++) {
+                free_quad_tree(tree_forest[j]);
+            }
+            free(tree_forest);
+#if FINE_GRAINED_OPTICAL_FLOW
+            free(fine_mv_x);
+            free(fine_mv_y);
+#else
+            free(temp_mv_x);
+            free(temp_mv_y);
+#endif
+            free(serialized_trees);
+            enc->residual_coding_block_size = saved_block_size;
+            enc->residual_coding_motion_vectors_x = orig_mv_x;
+            enc->residual_coding_motion_vectors_y = orig_mv_y;
+            enc->residual_coding_num_blocks_x = orig_blocks_x;
+            enc->residual_coding_num_blocks_y = orig_blocks_y;
+            return 0;
+        }
+        total_serialized += tree_size;
+    }
+
+    // Step 6: Apply DWT to residual (same as fixed blocks)
+    size_t frame_size = enc->width * enc->height;
+
+    float *residual_y_dwt = malloc(frame_size * sizeof(float));
+    float *residual_co_dwt = malloc(frame_size * sizeof(float));
+    float *residual_cg_dwt = malloc(frame_size * sizeof(float));
+
+    memcpy(residual_y_dwt, enc->residual_coding_residual_frame_y, frame_size * sizeof(float));
+    memcpy(residual_co_dwt, enc->residual_coding_residual_frame_co, frame_size * sizeof(float));
+    memcpy(residual_cg_dwt, enc->residual_coding_residual_frame_cg, frame_size * sizeof(float));
+
+    dwt_2d_forward_flexible(residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+
+    // Step 7: Quantize residual coefficients
+    int16_t *quantised_y = enc->reusable_quantised_y;
+    int16_t *quantised_co = enc->reusable_quantised_co;
+    int16_t *quantised_cg = enc->reusable_quantised_cg;
+
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
+                                                  qY, enc->width, enc->height,
+                                                  enc->decomp_levels, 0, 0);
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
+                                                  enc->quantiser_co, enc->width, enc->height,
+                                                  enc->decomp_levels, 1, 0);
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
+                                                  enc->quantiser_cg, enc->width, enc->height,
+                                                  enc->decomp_levels, 1, 0);
+
+    // Step 8: Preprocess coefficients
+    int total_coeffs = frame_size * 3;
+    uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg,
+                                                                      NULL, frame_size, enc->channel_layout,
+                                                                      preprocessed);
+
+    // Step 9: Compress preprocessed coefficients
+    size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
+    uint8_t *compressed_coeffs = malloc(compressed_bound);
+    size_t compressed_size = ZSTD_compressCCtx(enc->zstd_ctx, compressed_coeffs, compressed_bound,
+                                               preprocessed, preprocessed_size, enc->zstd_level);
+
+    if (ZSTD_isError(compressed_size)) {
+        fprintf(stderr, "Error: Zstd compression failed for adaptive P-frame\n");
+        // Cleanup
+        for (int i = 0; i < total_trees; i++) {
+            free_quad_tree(tree_forest[i]);
+        }
+        free(tree_forest);
+#if FINE_GRAINED_OPTICAL_FLOW
+        free(fine_mv_x);
+        free(fine_mv_y);
+#else
+        free(temp_mv_x);
+        free(temp_mv_y);
+#endif
+        free(serialized_trees);
+        free(residual_y_dwt);
+        free(residual_co_dwt);
+        free(residual_cg_dwt);
+        free(preprocessed);
+        free(compressed_coeffs);
+        enc->residual_coding_block_size = saved_block_size;
+        enc->residual_coding_motion_vectors_x = orig_mv_x;
+        enc->residual_coding_motion_vectors_y = orig_mv_y;
+        enc->residual_coding_num_blocks_x = orig_blocks_x;
+        enc->residual_coding_num_blocks_y = orig_blocks_y;
+        return 0;
+    }
+
+    // Step 10: Write P-frame adaptive packet
+    // Packet format: [type=0x16][num_trees:uint16][tree_data_size:uint32][tree_data][compressed_size:uint32][compressed_data]
+
+    uint8_t packet_type = TAV_PACKET_PFRAME_ADAPTIVE;
+    uint16_t num_trees_u16 = (uint16_t)total_trees;
+    uint32_t tree_data_size = (uint32_t)total_serialized;
+    uint32_t compressed_size_u32 = (uint32_t)compressed_size;
+
+    fwrite(&packet_type, 1, 1, enc->output_fp);
+    fwrite(&num_trees_u16, sizeof(uint16_t), 1, enc->output_fp);
+    fwrite(&tree_data_size, sizeof(uint32_t), 1, enc->output_fp);
+    fwrite(serialized_trees, 1, total_serialized, enc->output_fp);
+    fwrite(&compressed_size_u32, sizeof(uint32_t), 1, enc->output_fp);
+    fwrite(compressed_coeffs, 1, compressed_size, enc->output_fp);
+
+    size_t packet_size = 1 + sizeof(uint16_t) + sizeof(uint32_t) + total_serialized +
+                        sizeof(uint32_t) + compressed_size;
+
+    // Cleanup
+    for (int i = 0; i < total_trees; i++) {
+        free_quad_tree(tree_forest[i]);
+    }
+    free(tree_forest);
+#if FINE_GRAINED_OPTICAL_FLOW
+    free(fine_mv_x);
+    free(fine_mv_y);
+#else
+    free(temp_mv_x);
+    free(temp_mv_y);
+#endif
+    free(serialized_trees);
+    free(residual_y_dwt);
+    free(residual_co_dwt);
+    free(residual_cg_dwt);
+    free(preprocessed);
+    free(compressed_coeffs);
+
+    // Restore original state
+    enc->residual_coding_block_size = saved_block_size;
+    enc->residual_coding_motion_vectors_x = orig_mv_x;
+    enc->residual_coding_motion_vectors_y = orig_mv_y;
+    enc->residual_coding_num_blocks_x = orig_blocks_x;
+    enc->residual_coding_num_blocks_y = orig_blocks_y;
+
+    if (enc->verbose) {
+        printf("  P-frame (adaptive): %d trees, tree_data: %zu bytes, residual: %zu → %zu bytes (%.1f%%)\n",
+               total_trees, total_serialized, preprocessed_size, compressed_size,
+               (compressed_size * 100.0f) / preprocessed_size);
+    }
+
+    return packet_size;
+}
+
+// Encode B-frame with adaptive quad-tree block partitioning and bidirectional prediction
+// Uses fine-grained optical flow (4×4) for both forward and backward MVs, then merges into quad-tree
+static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
+
+    int saved_block_size = enc->residual_coding_block_size;
+
+    // Step 1: Bidirectional motion estimation at min block size (4×4)
+    enc->residual_coding_block_size = enc->residual_coding_min_block_size;
+    int fine_blocks_x = (enc->width + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
+    int fine_blocks_y = (enc->height + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
+    int fine_total_blocks = fine_blocks_x * fine_blocks_y;
+
+    int16_t *fine_fwd_mv_x = malloc(fine_total_blocks * sizeof(int16_t));
+    int16_t *fine_fwd_mv_y = malloc(fine_total_blocks * sizeof(int16_t));
+    int16_t *fine_bwd_mv_x = malloc(fine_total_blocks * sizeof(int16_t));
+    int16_t *fine_bwd_mv_y = malloc(fine_total_blocks * sizeof(int16_t));
+
+    if (!fine_fwd_mv_x || !fine_fwd_mv_y || !fine_bwd_mv_x || !fine_bwd_mv_y) {
+        fprintf(stderr, "Error: Failed to allocate memory for B-frame motion vectors\n");
+        free(fine_fwd_mv_x); free(fine_fwd_mv_y);
+        free(fine_bwd_mv_x); free(fine_bwd_mv_y);
+        enc->residual_coding_block_size = saved_block_size;
+        return 0;
+    }
+
+    // Compute bidirectional motion vectors (fine-grained)
+    estimate_motion_bidirectional(enc, fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y);
+
+    // Step 2: Generate bidirectional prediction (weighted 50/50)
+    float *predicted_y = malloc(enc->width * enc->height * sizeof(float));
+    float *predicted_co = malloc(enc->width * enc->height * sizeof(float));
+    float *predicted_cg = malloc(enc->width * enc->height * sizeof(float));
+
+    if (!predicted_y || !predicted_co || !predicted_cg) {
+        fprintf(stderr, "Error: Failed to allocate memory for B-frame prediction\n");
+        free(fine_fwd_mv_x); free(fine_fwd_mv_y);
+        free(fine_bwd_mv_x); free(fine_bwd_mv_y);
+        free(predicted_y); free(predicted_co); free(predicted_cg);
+        enc->residual_coding_block_size = saved_block_size;
+        return 0;
+    }
+
+    generate_bidirectional_prediction(enc, fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y,
+                                     predicted_y, predicted_co, predicted_cg);
+
+    // Step 3: Compute residual = current - bidirectional_prediction
+    size_t frame_size = enc->width * enc->height;
+    for (size_t i = 0; i < frame_size; i++) {
+        enc->residual_coding_residual_frame_y[i] = enc->current_frame_y[i] - predicted_y[i];
+        enc->residual_coding_residual_frame_co[i] = enc->current_frame_co[i] - predicted_co[i];
+        enc->residual_coding_residual_frame_cg[i] = enc->current_frame_cg[i] - predicted_cg[i];
+    }
+
+    free(predicted_y);
+    free(predicted_co);
+    free(predicted_cg);
+
+    // Step 4: Build quad-tree forest with bidirectional MVs (bottom-up merging)
+    int num_tree_cols = (enc->width + enc->residual_coding_max_block_size - 1) / enc->residual_coding_max_block_size;
+    int num_tree_rows = (enc->height + enc->residual_coding_max_block_size - 1) / enc->residual_coding_max_block_size;
+    int total_trees = num_tree_cols * num_tree_rows;
+
+    quad_tree_node_t **tree_forest = malloc(total_trees * sizeof(quad_tree_node_t*));
+
+    for (int ty = 0; ty < num_tree_rows; ty++) {
+        for (int tx = 0; tx < num_tree_cols; tx++) {
+            int tree_idx = ty * num_tree_cols + tx;
+            int x = tx * enc->residual_coding_max_block_size;
+            int y = ty * enc->residual_coding_max_block_size;
+
+            // Build bidirectional quad-tree by merging fine-grained blocks
+            tree_forest[tree_idx] = build_quad_tree_bottom_up_bidirectional(
+                fine_fwd_mv_x, fine_fwd_mv_y, fine_bwd_mv_x, fine_bwd_mv_y,
+                enc->residual_coding_residual_frame_y,
+                enc->residual_coding_residual_frame_co,
+                enc->residual_coding_residual_frame_cg,
+                enc->width, enc->height,
+                x, y, enc->residual_coding_max_block_size,
+                enc->residual_coding_min_block_size, enc->residual_coding_max_block_size,
+                fine_blocks_x
+            );
+        }
+    }
+
+    // Note: For B-frames, we don't recompute residuals because dual predictions are already optimal
+
+    // Step 5: Serialize all quad-trees with 64-bit leaf nodes
+    size_t max_serialized_size = total_trees * 20000;  // Conservative (2× P-frame size due to dual MVs)
+    uint8_t *serialized_trees = malloc(max_serialized_size);
+    size_t total_serialized = 0;
+
+    for (int i = 0; i < total_trees; i++) {
+        size_t tree_size = serialize_quad_tree_bidirectional(tree_forest[i], serialized_trees + total_serialized,
+                                                             max_serialized_size - total_serialized);
+        if (tree_size == 0) {
+            fprintf(stderr, "Error: Failed to serialize bidirectional quad-tree %d\n", i);
+            // Cleanup and return error
+            for (int j = 0; j < total_trees; j++) {
+                free_quad_tree(tree_forest[j]);
+            }
+            free(tree_forest);
+            free(fine_fwd_mv_x); free(fine_fwd_mv_y);
+            free(fine_bwd_mv_x); free(fine_bwd_mv_y);
+            free(serialized_trees);
+            enc->residual_coding_block_size = saved_block_size;
+            return 0;
+        }
+        total_serialized += tree_size;
+    }
+
+    // Step 6: Apply DWT to residual
+    float *residual_y_dwt = malloc(frame_size * sizeof(float));
+    float *residual_co_dwt = malloc(frame_size * sizeof(float));
+    float *residual_cg_dwt = malloc(frame_size * sizeof(float));
+
+    memcpy(residual_y_dwt, enc->residual_coding_residual_frame_y, frame_size * sizeof(float));
+    memcpy(residual_co_dwt, enc->residual_coding_residual_frame_co, frame_size * sizeof(float));
+    memcpy(residual_cg_dwt, enc->residual_coding_residual_frame_cg, frame_size * sizeof(float));
+
+    dwt_2d_forward_flexible(residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+
+    // Step 7: Quantize residual coefficients
+    int16_t *quantised_y = enc->reusable_quantised_y;
+    int16_t *quantised_co = enc->reusable_quantised_co;
+    int16_t *quantised_cg = enc->reusable_quantised_cg;
+
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
+                                                  qY, enc->width, enc->height,
+                                                  enc->decomp_levels, 0, 0);
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
+                                                  enc->quantiser_co, enc->width, enc->height,
+                                                  enc->decomp_levels, 1, 0);
+    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
+                                                  enc->quantiser_cg, enc->width, enc->height,
+                                                  enc->decomp_levels, 1, 0);
+
+    // Step 8: Preprocess coefficients
+    int total_coeffs = frame_size * 3;
+    uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg,
+                                                                      NULL, frame_size, enc->channel_layout,
+                                                                      preprocessed);
+
+    // Step 9: Compress preprocessed coefficients
+    size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
+    uint8_t *compressed_coeffs = malloc(compressed_bound);
+    size_t compressed_size = ZSTD_compressCCtx(enc->zstd_ctx, compressed_coeffs, compressed_bound,
+                                               preprocessed, preprocessed_size, enc->zstd_level);
+
+    if (ZSTD_isError(compressed_size)) {
+        fprintf(stderr, "Error: Zstd compression failed for B-frame\n");
+        // Cleanup
+        for (int i = 0; i < total_trees; i++) {
+            free_quad_tree(tree_forest[i]);
+        }
+        free(tree_forest);
+        free(fine_fwd_mv_x); free(fine_fwd_mv_y);
+        free(fine_bwd_mv_x); free(fine_bwd_mv_y);
+        free(serialized_trees);
+        free(residual_y_dwt);
+        free(residual_co_dwt);
+        free(residual_cg_dwt);
+        free(preprocessed);
+        free(compressed_coeffs);
+        enc->residual_coding_block_size = saved_block_size;
+        return 0;
+    }
+
+    // Step 10: Write B-frame adaptive packet (0x17)
+    // Packet format: [type=0x17][num_trees:uint16][tree_data_size:uint32][tree_data][compressed_size:uint32][compressed_data]
+
+    uint8_t packet_type = TAV_PACKET_BFRAME_ADAPTIVE;
+    uint16_t num_trees_u16 = (uint16_t)total_trees;
+    uint32_t tree_data_size = (uint32_t)total_serialized;
+    uint32_t compressed_size_u32 = (uint32_t)compressed_size;
+
+    fwrite(&packet_type, 1, 1, enc->output_fp);
+    fwrite(&num_trees_u16, sizeof(uint16_t), 1, enc->output_fp);
+    fwrite(&tree_data_size, sizeof(uint32_t), 1, enc->output_fp);
+    fwrite(serialized_trees, 1, total_serialized, enc->output_fp);
+    fwrite(&compressed_size_u32, sizeof(uint32_t), 1, enc->output_fp);
+    fwrite(compressed_coeffs, 1, compressed_size, enc->output_fp);
+
+    size_t packet_size = 1 + sizeof(uint16_t) + sizeof(uint32_t) + total_serialized +
+                        sizeof(uint32_t) + compressed_size;
+
+    // Cleanup
+    for (int i = 0; i < total_trees; i++) {
+        free_quad_tree(tree_forest[i]);
+    }
+    free(tree_forest);
+    free(fine_fwd_mv_x); free(fine_fwd_mv_y);
+    free(fine_bwd_mv_x); free(fine_bwd_mv_y);
+    free(serialized_trees);
+    free(residual_y_dwt);
+    free(residual_co_dwt);
+    free(residual_cg_dwt);
+    free(preprocessed);
+    free(compressed_coeffs);
+
+    // Restore original state
+    enc->residual_coding_block_size = saved_block_size;
+
+    if (enc->verbose) {
+        printf("  B-frame (adaptive): %d trees, tree_data: %zu bytes, residual: %zu → %zu bytes (%.1f%%)\n",
+               total_trees, total_serialized, preprocessed_size, compressed_size,
+               (compressed_size * 100.0f) / preprocessed_size);
+    }
+
+    return packet_size;
+}
+
+// =============================================================================
 // GOP Management Functions
 // =============================================================================
 
@@ -1970,155 +4413,115 @@ static int decode_mesh_differential(
 // Returns 0 on success, -1 on error
 static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
                          const float *frame_y, const float *frame_co, const float *frame_cg) {
-    if (!enc->enable_temporal_dwt || enc->gop_frame_count >= enc->gop_capacity) {
+    if (!enc->enable_temporal_dwt || enc->temporal_gop_frame_count >= enc->temporal_gop_capacity) {
         return -1;
     }
 
-    int frame_idx = enc->gop_frame_count;
+    int frame_idx = enc->temporal_gop_frame_count;
     size_t frame_rgb_size = enc->width * enc->height * 3;
     size_t frame_channel_size = enc->width * enc->height * sizeof(float);
 
     // Copy frame data to GOP buffers
-    memcpy(enc->gop_rgb_frames[frame_idx], frame_rgb, frame_rgb_size);
-    memcpy(enc->gop_y_frames[frame_idx], frame_y, frame_channel_size);
-    memcpy(enc->gop_co_frames[frame_idx], frame_co, frame_channel_size);
-    memcpy(enc->gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
+    memcpy(enc->temporal_gop_rgb_frames[frame_idx], frame_rgb, frame_rgb_size);
+    memcpy(enc->temporal_gop_y_frames[frame_idx], frame_y, frame_channel_size);
+    memcpy(enc->temporal_gop_co_frames[frame_idx], frame_co, frame_channel_size);
+    memcpy(enc->temporal_gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
 
     // Compute motion estimation if mesh warping is enabled
-    if (enc->enable_mesh_warp && frame_idx > 0) {
+    if (enc->temporal_enable_mesh_warp && frame_idx > 0) {
         // Compute forward optical flow (F[i-1] → F[i])
         estimate_motion_optical_flow(
-            enc->gop_rgb_frames[frame_idx - 1],
-            enc->gop_rgb_frames[frame_idx],
+            enc->temporal_gop_rgb_frames[frame_idx - 1],
+            enc->temporal_gop_rgb_frames[frame_idx],
             enc->width, enc->height,
-            &enc->gop_flow_fwd_x[frame_idx],
-            &enc->gop_flow_fwd_y[frame_idx]
+            &enc->temporal_gop_flow_fwd_x[frame_idx],
+            &enc->temporal_gop_flow_fwd_y[frame_idx]
         );
 
         // Compute backward optical flow (F[i] → F[i-1]) for reliability masking
         estimate_motion_optical_flow(
-            enc->gop_rgb_frames[frame_idx],
-            enc->gop_rgb_frames[frame_idx - 1],
+            enc->temporal_gop_rgb_frames[frame_idx],
+            enc->temporal_gop_rgb_frames[frame_idx - 1],
             enc->width, enc->height,
-            &enc->gop_flow_bwd_x[frame_idx],
-            &enc->gop_flow_bwd_y[frame_idx]
+            &enc->temporal_gop_flow_bwd_x[frame_idx],
+            &enc->temporal_gop_flow_bwd_y[frame_idx]
         );
 
         // Build distortion mesh from forward flow field
         build_mesh_from_flow(
-            enc->gop_flow_fwd_x[frame_idx], enc->gop_flow_fwd_y[frame_idx],
+            enc->temporal_gop_flow_fwd_x[frame_idx], enc->temporal_gop_flow_fwd_y[frame_idx],
             enc->width, enc->height,
-            enc->mesh_width, enc->mesh_height,
-            enc->gop_mesh_dx[frame_idx], enc->gop_mesh_dy[frame_idx]
+            enc->temporal_mesh_width, enc->temporal_mesh_height,
+            enc->temporal_gop_mesh_dx[frame_idx], enc->temporal_gop_mesh_dy[frame_idx]
         );
 
         // Apply Laplacian smoothing to regularize mesh
         smooth_mesh_laplacian(
-            enc->gop_mesh_dx[frame_idx], enc->gop_mesh_dy[frame_idx],
-            enc->mesh_width, enc->mesh_height,
-            enc->mesh_smoothness, enc->mesh_smooth_iterations
+            enc->temporal_gop_mesh_dx[frame_idx], enc->temporal_gop_mesh_dy[frame_idx],
+            enc->temporal_mesh_width, enc->temporal_mesh_height,
+            enc->temporal_mesh_smoothness, enc->temporal_mesh_smooth_iterations
         );
 
-        // Estimate selective per-cell affine transforms
-        int cell_w = enc->width / enc->mesh_width;
-        int cell_h = enc->height / enc->mesh_height;
-        int affine_count = 0;
-
-        for (int cy = 0; cy < enc->mesh_height; cy++) {
-            for (int cx = 0; cx < enc->mesh_width; cx++) {
-                int cell_idx = cy * enc->mesh_width + cx;
-
-                int16_t tx, ty, a11, a12, a21, a22;
-                int use_affine = estimate_cell_affine(
-                    enc->gop_flow_fwd_x[frame_idx], enc->gop_flow_fwd_y[frame_idx],
-                    enc->width, enc->height,
-                    cx, cy, cell_w, cell_h,
-                    enc->affine_threshold,
-                    &tx, &ty, &a11, &a12, &a21, &a22
-                );
-
-                if (use_affine) {
-                    // Use affine transform for this cell
-                    enc->gop_affine_mask[frame_idx][cell_idx] = 1;
-                    enc->gop_mesh_dx[frame_idx][cell_idx] = tx;
-                    enc->gop_mesh_dy[frame_idx][cell_idx] = ty;
-                    enc->gop_affine_a11[frame_idx][cell_idx] = a11;
-                    enc->gop_affine_a12[frame_idx][cell_idx] = a12;
-                    enc->gop_affine_a21[frame_idx][cell_idx] = a21;
-                    enc->gop_affine_a22[frame_idx][cell_idx] = a22;
-                    affine_count++;
-                } else {
-                    // Use translation-only (keep existing mesh dx/dy from build_mesh_from_flow)
-                    enc->gop_affine_mask[frame_idx][cell_idx] = 0;
-                    // Keep dx/dy from build_mesh_from_flow, set affine to identity
-                    enc->gop_affine_a11[frame_idx][cell_idx] = 256;
-                    enc->gop_affine_a12[frame_idx][cell_idx] = 0;
-                    enc->gop_affine_a21[frame_idx][cell_idx] = 0;
-                    enc->gop_affine_a22[frame_idx][cell_idx] = 256;
-                }
-            }
-        }
-
         // Flow is now stored in enc->gop_flow_*[frame_idx], don't free
+        // Mesh dx/dy already set by build_mesh_from_flow() above (translation only)
 
-        if (enc->verbose && (frame_idx < 3 || frame_idx == enc->gop_capacity - 1)) {
+        if (enc->verbose && (frame_idx < 3 || frame_idx == enc->temporal_gop_capacity - 1)) {
             // Compute average mesh displacement for verbose output
-            int mesh_points = enc->mesh_width * enc->mesh_height;
+            int mesh_points = enc->temporal_mesh_width * enc->temporal_mesh_height;
             float avg_dx = 0.0f, avg_dy = 0.0f;
             for (int i = 0; i < mesh_points; i++) {
-                avg_dx += fabsf(enc->gop_mesh_dx[frame_idx][i] / 8.0f);
-                avg_dy += fabsf(enc->gop_mesh_dy[frame_idx][i] / 8.0f);
+                avg_dx += fabsf(enc->temporal_gop_mesh_dx[frame_idx][i] / 8.0f);
+                avg_dy += fabsf(enc->temporal_gop_mesh_dy[frame_idx][i] / 8.0f);
             }
             avg_dx /= mesh_points;
             avg_dy /= mesh_points;
-            printf("  GOP frame %d: mesh avg=(%.2f,%.2f)px, %d/%d affine (%.1f%%), mesh=%dx%d\n",
+            printf("  GOP frame %d: mesh avg=(%.2f,%.2f)px, mesh=%dx%d\n",
                    frame_idx, avg_dx, avg_dy,
-                   affine_count, mesh_points, 100.0f * affine_count / mesh_points,
-                   enc->mesh_width, enc->mesh_height);
+                   enc->temporal_mesh_width, enc->temporal_mesh_height);
         }
     } else if (frame_idx == 0) {
         // First frame has no motion (reference frame)
-        if (enc->enable_mesh_warp) {
-            int mesh_points = enc->mesh_width * enc->mesh_height;
-            memset(enc->gop_mesh_dx[0], 0, mesh_points * sizeof(int16_t));
-            memset(enc->gop_mesh_dy[0], 0, mesh_points * sizeof(int16_t));
+        if (enc->temporal_enable_mesh_warp) {
+            int mesh_points = enc->temporal_mesh_width * enc->temporal_mesh_height;
+            memset(enc->temporal_gop_mesh_dx[0], 0, mesh_points * sizeof(int16_t));
+            memset(enc->temporal_gop_mesh_dy[0], 0, mesh_points * sizeof(int16_t));
         }
     }
 
     // Legacy translation vectors (used when mesh warp is disabled)
-    if (!enc->enable_mesh_warp) {
-        enc->gop_translation_x[frame_idx] = 0.0f;
-        enc->gop_translation_y[frame_idx] = 0.0f;
+    if (!enc->temporal_enable_mesh_warp) {
+        enc->temporal_gop_translation_x[frame_idx] = 0.0f;
+        enc->temporal_gop_translation_y[frame_idx] = 0.0f;
     }
 
-    enc->gop_frame_count++;
+    enc->temporal_gop_frame_count++;
     return 0;
 }
 
 // Check if GOP is full
 static int gop_is_full(const tav_encoder_t *enc) {
-    return enc->enable_temporal_dwt && (enc->gop_frame_count >= enc->gop_capacity);
+    return enc->enable_temporal_dwt && (enc->temporal_gop_frame_count >= enc->temporal_gop_capacity);
 }
 
 // Reset GOP buffer
 static void gop_reset(tav_encoder_t *enc) {
-    enc->gop_frame_count = 0;
-    if (enc->gop_translation_x && enc->gop_translation_y) {
-        memset(enc->gop_translation_x, 0, enc->gop_capacity * sizeof(int16_t));
-        memset(enc->gop_translation_y, 0, enc->gop_capacity * sizeof(int16_t));
+    enc->temporal_gop_frame_count = 0;
+    if (enc->temporal_gop_translation_x && enc->temporal_gop_translation_y) {
+        memset(enc->temporal_gop_translation_x, 0, enc->temporal_gop_capacity * sizeof(int16_t));
+        memset(enc->temporal_gop_translation_y, 0, enc->temporal_gop_capacity * sizeof(int16_t));
     }
 }
 
 // Check if GOP should be flushed due to large motion (potential scene change)
 static int gop_should_flush_motion(tav_encoder_t *enc) {
-    if (!enc->enable_temporal_dwt || enc->gop_frame_count < 2) {
+    if (!enc->enable_temporal_dwt || enc->temporal_gop_frame_count < 2) {
         return 0;
     }
 
     // Check last added frame's motion
-    int last_idx = enc->gop_frame_count - 1;
-    int16_t dx = enc->gop_translation_x[last_idx];
-    int16_t dy = enc->gop_translation_y[last_idx];
+    int last_idx = enc->temporal_gop_frame_count - 1;
+    int16_t dx = enc->temporal_gop_translation_x[last_idx];
+    int16_t dy = enc->temporal_gop_translation_y[last_idx];
 
     // Convert 1/16-pixel to pixels
     float dx_pixels = fabsf(dx / 16.0f);
@@ -2143,7 +4546,7 @@ static int gop_should_flush_motion(tav_encoder_t *enc) {
 // This function processes the entire GOP and writes all frames with temporal 3D DWT
 static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                        int *frame_numbers, int actual_gop_size) {
-    if (actual_gop_size <= 0 || actual_gop_size > enc->gop_capacity) {
+    if (actual_gop_size <= 0 || actual_gop_size > enc->temporal_gop_capacity) {
         fprintf(stderr, "Error: Invalid GOP size: %d\n", actual_gop_size);
         return 0;
     }
@@ -2160,9 +4563,9 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         gop_cg_coeffs[i] = malloc(num_pixels * sizeof(float));
 
         // Copy GOP frame data to working buffers
-        memcpy(gop_y_coeffs[i], enc->gop_y_frames[i], num_pixels * sizeof(float));
-        memcpy(gop_co_coeffs[i], enc->gop_co_frames[i], num_pixels * sizeof(float));
-        memcpy(gop_cg_coeffs[i], enc->gop_cg_frames[i], num_pixels * sizeof(float));
+        memcpy(gop_y_coeffs[i], enc->temporal_gop_y_frames[i], num_pixels * sizeof(float));
+        memcpy(gop_co_coeffs[i], enc->temporal_gop_co_frames[i], num_pixels * sizeof(float));
+        memcpy(gop_cg_coeffs[i], enc->temporal_gop_cg_frames[i], num_pixels * sizeof(float));
     }
 
     // Debug: Print original frame-to-frame motion vectors
@@ -2170,8 +4573,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         printf("Frame-to-frame motion vectors (before cumulative conversion):\n");
         for (int i = 0; i < actual_gop_size; i++) {
             printf("  Frame %d: 1/16px=(%d, %d) pixels=(%.3f, %.3f)\n",
-                   i, enc->gop_translation_x[i], enc->gop_translation_y[i],
-                   enc->gop_translation_x[i] / 16.0f, enc->gop_translation_y[i] / 16.0f);
+                   i, enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i],
+                   enc->temporal_gop_translation_x[i] / 16.0f, enc->temporal_gop_translation_y[i] / 16.0f);
         }
     }
 
@@ -2179,8 +4582,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     // Phase correlation computes motion of frame[i] relative to frame[i-1]
     // We need cumulative motion relative to frame 0 for proper alignment
     for (int i = 2; i < actual_gop_size; i++) {
-        enc->gop_translation_x[i] += enc->gop_translation_x[i-1];
-        enc->gop_translation_y[i] += enc->gop_translation_y[i-1];
+        enc->temporal_gop_translation_x[i] += enc->temporal_gop_translation_x[i-1];
+        enc->temporal_gop_translation_y[i] += enc->temporal_gop_translation_y[i-1];
     }
 
     // Debug: Print cumulative motion vectors
@@ -2188,8 +4591,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         printf("Cumulative motion vectors (after conversion):\n");
         for (int i = 0; i < actual_gop_size; i++) {
             printf("  Frame %d: 1/16px=(%d, %d) pixels=(%.3f, %.3f)\n",
-                   i, enc->gop_translation_x[i], enc->gop_translation_y[i],
-                   enc->gop_translation_x[i] / 16.0f, enc->gop_translation_y[i] / 16.0f);
+                   i, enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i],
+                   enc->temporal_gop_translation_x[i] / 16.0f, enc->temporal_gop_translation_y[i] / 16.0f);
         }
     }
 
@@ -2197,8 +4600,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     // Find the bounding box that's valid across all aligned frames
     int min_dx = 0, max_dx = 0, min_dy = 0, max_dy = 0;
     for (int i = 0; i < actual_gop_size; i++) {
-        int dx = enc->gop_translation_x[i] / 16;
-        int dy = enc->gop_translation_y[i] / 16;
+        int dx = enc->temporal_gop_translation_x[i] / 16;
+        int dy = enc->temporal_gop_translation_y[i] / 16;
         if (dx < min_dx) min_dx = dx;
         if (dx > max_dx) max_dx = dx;
         if (dy < min_dy) min_dy = dy;
@@ -2224,7 +4627,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     // Step 0.6: Motion compensation note
     // For mesh warping: MC-lifting integrates motion compensation directly into the lifting steps
     // For translation: still use pre-alignment (old method for backwards compatibility)
-    if (!enc->enable_mesh_warp) {
+    if (!enc->temporal_enable_mesh_warp) {
         // Translation-based motion compensation: align using global translation vectors
         for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
             float *aligned_y = malloc(num_pixels * sizeof(float));
@@ -2242,11 +4645,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
 
             // Apply translation to align this frame
             apply_translation(gop_y_coeffs[i], enc->width, enc->height,
-                             enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_y);
+                             enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i], aligned_y);
             apply_translation(gop_co_coeffs[i], enc->width, enc->height,
-                             enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_co);
+                             enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i], aligned_co);
             apply_translation(gop_cg_coeffs[i], enc->width, enc->height,
-                             enc->gop_translation_x[i], enc->gop_translation_y[i], aligned_cg);
+                             enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i], aligned_cg);
 
             // Copy aligned frames back
             memcpy(gop_y_coeffs[i], aligned_y, num_pixels * sizeof(float));
@@ -2261,7 +4664,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         // Mesh-based motion compensation uses MC-lifting (integrated into temporal DWT)
         if (enc->verbose) {
             printf("Using motion-compensated lifting (MC-lifting) (%dx%d mesh)\n",
-                   enc->mesh_width, enc->mesh_height);
+                   enc->temporal_mesh_width, enc->temporal_mesh_height);
         }
     }
 
@@ -2271,7 +4674,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     int canvas_height = enc->height;
     int canvas_pixels = num_pixels;
 
-    if (!enc->enable_mesh_warp) {
+    if (!enc->temporal_enable_mesh_warp) {
         // Calculate expanded canvas size (UNION of all aligned frames)
         canvas_width = enc->width + crop_left + crop_right;   // Original width + total shift range
         canvas_height = enc->height + crop_top + crop_bottom; // Original height + total shift range
@@ -2299,7 +4702,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         canvas_co_coeffs[i] = calloc(canvas_pixels, sizeof(float));
         canvas_cg_coeffs[i] = calloc(canvas_pixels, sizeof(float));
 
-        if (enc->enable_mesh_warp) {
+        if (enc->temporal_enable_mesh_warp) {
             // Mesh warping: simply copy frames (no expansion needed)
             memcpy(canvas_y_coeffs[i], gop_y_coeffs[i], canvas_pixels * sizeof(float));
             memcpy(canvas_co_coeffs[i], gop_co_coeffs[i], canvas_pixels * sizeof(float));
@@ -2395,7 +4798,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         // Note: This modifies gop_*_coeffs in-place
         // Use cropped dimensions to encode only the valid region
 
-        if (enc->enable_mesh_warp) {
+        if (enc->temporal_enable_mesh_warp) {
             // Use MC-lifting: motion compensation integrated into lifting steps
             dwt_3d_forward_mc(enc, gop_y_coeffs, gop_co_coeffs, gop_cg_coeffs,
                              actual_gop_size, enc->decomp_levels,
@@ -2513,7 +4916,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     } else {
         // Multi-frame GOP: use unified 3D DWT encoding
         // Choose packet type based on motion compensation method
-        uint8_t packet_type = enc->enable_mesh_warp ? TAV_PACKET_GOP_UNIFIED_MESH : TAV_PACKET_GOP_UNIFIED;
+        uint8_t packet_type = enc->temporal_enable_mesh_warp ? TAV_PACKET_GOP_UNIFIED_MESH : TAV_PACKET_GOP_UNIFIED;
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
 
@@ -2522,19 +4925,16 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         fwrite(&gop_size_byte, 1, 1, output);
         total_bytes_written += 1;
 
-        if (enc->enable_mesh_warp) {
-            // Packet 0x13: Mesh-based warping with selective affine
-            // Encode mesh motion vectors + affine parameters and compress with Zstd
-            // Max size: mesh dimensions (4) + affine mask + translation (4 bytes/cell) + affine (8 bytes/cell worst case)
-            size_t max_mesh_size = 4 + (actual_gop_size * enc->mesh_width * enc->mesh_height * 13);
+        if (enc->temporal_enable_mesh_warp) {
+            // Packet 0x13: Mesh-based warping (translation only, no affine)
+            // Encode mesh motion vectors and compress with Zstd
+            // Max size: mesh dimensions (4) + translation (4 bytes/cell)
+            size_t max_mesh_size = 4 + (actual_gop_size * enc->temporal_mesh_width * enc->temporal_mesh_height * 4);
             uint8_t *mesh_buffer = malloc(max_mesh_size);
 
             size_t mesh_size = encode_mesh_differential(
-                enc->gop_mesh_dx, enc->gop_mesh_dy,
-                enc->gop_affine_mask,
-                enc->gop_affine_a11, enc->gop_affine_a12,
-                enc->gop_affine_a21, enc->gop_affine_a22,
-                actual_gop_size, enc->mesh_width, enc->mesh_height,
+                enc->temporal_gop_mesh_dx, enc->temporal_gop_mesh_dy,
+                actual_gop_size, enc->temporal_mesh_width, enc->temporal_mesh_height,
                 mesh_buffer, max_mesh_size
             );
 
@@ -2618,8 +5018,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
 
             // Write all motion vectors (1/16-pixel precision) for the entire GOP
             for (int t = 0; t < actual_gop_size; t++) {
-                int16_t dx = enc->gop_translation_x[t];
-                int16_t dy = enc->gop_translation_y[t];
+                int16_t dx = enc->temporal_gop_translation_x[t];
+                int16_t dy = enc->temporal_gop_translation_y[t];
                 fwrite(&dx, sizeof(int16_t), 1, output);
                 fwrite(&dy, sizeof(int16_t), 1, output);
                 total_bytes_written += 4;
@@ -2689,7 +5089,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                    actual_gop_size, compressed_size, (double)compressed_size / actual_gop_size);
             for (int t = 0; t < actual_gop_size; t++) {
                 printf("  Frame %d: dx=%d/4, dy=%d/4\n",
-                       frame_numbers[t], enc->gop_translation_x[t], enc->gop_translation_y[t]);
+                       frame_numbers[t], enc->temporal_gop_translation_x[t], enc->temporal_gop_translation_y[t]);
             }
         }
     }  // End of if/else for single-frame vs multi-frame GOP
@@ -2718,19 +5118,19 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
 // This wrapper function handles GOP trimming when scene changes are detected
 static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                                    int *frame_numbers, int force_flush) {
-    if (enc->gop_frame_count == 0) {
+    if (enc->temporal_gop_frame_count == 0) {
         return 0;  // Nothing to flush
     }
 
-    int actual_gop_size = enc->gop_frame_count;
+    int actual_gop_size = enc->temporal_gop_frame_count;
     int scene_change_frame = -1;
 
     // Check for scene changes within the GOP
     if (!force_flush) {
-        for (int i = 1; i < enc->gop_frame_count; i++) {
+        for (int i = 1; i < enc->temporal_gop_frame_count; i++) {
             // Compare consecutive frames using RGB data
-            uint8_t *frame1 = enc->gop_rgb_frames[i - 1];
-            uint8_t *frame2 = enc->gop_rgb_frames[i];
+            uint8_t *frame1 = enc->temporal_gop_rgb_frames[i - 1];
+            uint8_t *frame2 = enc->temporal_gop_rgb_frames[i];
 
             long long total_diff = 0;
             int changed_pixels = 0;
@@ -2778,7 +5178,7 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
         actual_gop_size = scene_change_frame;
         if (enc->verbose) {
             printf("Trimming GOP from %d to %d frames due to scene change\n",
-                   enc->gop_frame_count, actual_gop_size);
+                   enc->temporal_gop_frame_count, actual_gop_size);
         }
     }
 
@@ -2786,30 +5186,30 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
     size_t bytes_written = gop_flush(enc, output, base_quantiser, frame_numbers, actual_gop_size);
 
     // If GOP was trimmed, shift remaining frames to start of buffer
-    if (scene_change_frame > 0 && scene_change_frame < enc->gop_frame_count) {
-        int remaining_frames = enc->gop_frame_count - scene_change_frame;
+    if (scene_change_frame > 0 && scene_change_frame < enc->temporal_gop_frame_count) {
+        int remaining_frames = enc->temporal_gop_frame_count - scene_change_frame;
         for (int i = 0; i < remaining_frames; i++) {
             int src = scene_change_frame + i;
             // Swap pointers instead of copying data
-            uint8_t *temp_rgb = enc->gop_rgb_frames[i];
-            float *temp_y = enc->gop_y_frames[i];
-            float *temp_co = enc->gop_co_frames[i];
-            float *temp_cg = enc->gop_cg_frames[i];
+            uint8_t *temp_rgb = enc->temporal_gop_rgb_frames[i];
+            float *temp_y = enc->temporal_gop_y_frames[i];
+            float *temp_co = enc->temporal_gop_co_frames[i];
+            float *temp_cg = enc->temporal_gop_cg_frames[i];
 
-            enc->gop_rgb_frames[i] = enc->gop_rgb_frames[src];
-            enc->gop_y_frames[i] = enc->gop_y_frames[src];
-            enc->gop_co_frames[i] = enc->gop_co_frames[src];
-            enc->gop_cg_frames[i] = enc->gop_cg_frames[src];
+            enc->temporal_gop_rgb_frames[i] = enc->temporal_gop_rgb_frames[src];
+            enc->temporal_gop_y_frames[i] = enc->temporal_gop_y_frames[src];
+            enc->temporal_gop_co_frames[i] = enc->temporal_gop_co_frames[src];
+            enc->temporal_gop_cg_frames[i] = enc->temporal_gop_cg_frames[src];
 
-            enc->gop_rgb_frames[src] = temp_rgb;
-            enc->gop_y_frames[src] = temp_y;
-            enc->gop_co_frames[src] = temp_co;
-            enc->gop_cg_frames[src] = temp_cg;
+            enc->temporal_gop_rgb_frames[src] = temp_rgb;
+            enc->temporal_gop_y_frames[src] = temp_y;
+            enc->temporal_gop_co_frames[src] = temp_co;
+            enc->temporal_gop_cg_frames[src] = temp_cg;
 
-            enc->gop_translation_x[i] = enc->gop_translation_x[src];
-            enc->gop_translation_y[i] = enc->gop_translation_y[src];
+            enc->temporal_gop_translation_x[i] = enc->temporal_gop_translation_x[src];
+            enc->temporal_gop_translation_y[i] = enc->temporal_gop_translation_y[src];
         }
-        enc->gop_frame_count = remaining_frames;
+        enc->temporal_gop_frame_count = remaining_frames;
     } else {
         // Full GOP flushed, reset
         gop_reset(enc);
@@ -2827,10 +5227,10 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
 // Backward mesh: warps F1 to F0 (negated motion vectors)
 static void invert_mesh(
     const short *mesh_dx, const short *mesh_dy,
-    int mesh_width, int mesh_height,
+    int temporal_mesh_width, int temporal_mesh_height,
     short *inv_mesh_dx, short *inv_mesh_dy
 ) {
-    int num_points = mesh_width * mesh_height;
+    int num_points = temporal_mesh_width * temporal_mesh_height;
     for (int i = 0; i < num_points; i++) {
         inv_mesh_dx[i] = -mesh_dx[i];
         inv_mesh_dy[i] = -mesh_dy[i];
@@ -2973,7 +5373,7 @@ static void mc_lifting_forward_pair(
     int width = enc->width;
     int height = enc->height;
     int num_pixels = width * height;
-    int num_mesh_points = enc->mesh_width * enc->mesh_height;
+    int num_mesh_points = enc->temporal_mesh_width * enc->temporal_mesh_height;
 
     // Allocate temporary buffers
     float *warped_f0_fwd_y = malloc(num_pixels * sizeof(float));
@@ -3009,21 +5409,21 @@ static void mc_lifting_forward_pair(
     // ===== SYMMETRIC PREDICT STEP: H = warp(F1, -½·mesh) - warp(F0, +½·mesh) =====
     // Warp F0 forward by half-step (toward temporal midpoint)
     warp_frame_with_mesh(*f0_y, width, height, half_mesh_dx, half_mesh_dy,
-                         enc->mesh_width, enc->mesh_height, warped_f0_fwd_y);
+                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f0_fwd_y);
     warp_frame_with_mesh(*f0_co, width, height, half_mesh_dx, half_mesh_dy,
-                         enc->mesh_width, enc->mesh_height, warped_f0_fwd_co);
+                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f0_fwd_co);
     warp_frame_with_mesh(*f0_cg, width, height, half_mesh_dx, half_mesh_dy,
-                         enc->mesh_width, enc->mesh_height, warped_f0_fwd_cg);
+                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f0_fwd_cg);
 
     // Warp F1 backward by half-step (toward temporal midpoint)
     warp_frame_with_mesh(*f1_y, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
-                         enc->mesh_width, enc->mesh_height, warped_f1_back_y);
+                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f1_back_y);
     warp_frame_with_mesh(*f1_co, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
-                         enc->mesh_width, enc->mesh_height, warped_f1_back_co);
+                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f1_back_co);
     warp_frame_with_mesh(*f1_cg, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
-                         enc->mesh_width, enc->mesh_height, warped_f1_back_cg);
+                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f1_back_cg);
 
-    float ALPHA = 0.25f;
+    float ALPHA = 0.5f; // lowering the alpha also drops the visual quality
 
     // Compute temporal highband and lowband with selective MC
     // For reliable pixels: use MC-lifting (warped frames)
@@ -3126,16 +5526,16 @@ static void dwt_3d_forward_mc(
             if (f1_idx >= level_frames) break;
 
             // Get mesh for this frame pair (mesh[f1] describes motion from f0 to f1)
-            const short *mesh_dx = enc->gop_mesh_dx[f1_idx];
-            const short *mesh_dy = enc->gop_mesh_dy[f1_idx];
+            const short *mesh_dx = enc->temporal_gop_mesh_dx[f1_idx];
+            const short *mesh_dy = enc->temporal_gop_mesh_dy[f1_idx];
 
             // Build reliability mask for selective motion compensation
             /*uint8_t *reliability_mask = malloc(num_pixels * sizeof(uint8_t));
-            if (reliability_mask && enc->gop_flow_fwd_x[f1_idx] && enc->gop_flow_bwd_x[f1_idx]) {
+            if (reliability_mask && enc->temporal_gop_flow_fwd_x[f1_idx] && enc->temporal_gop_flow_bwd_x[f1_idx]) {
                 build_reliability_mask(
-                    enc->gop_rgb_frames[f0_idx], enc->gop_rgb_frames[f1_idx],
-                    enc->gop_flow_fwd_x[f1_idx], enc->gop_flow_fwd_y[f1_idx],
-                    enc->gop_flow_bwd_x[f1_idx], enc->gop_flow_bwd_y[f1_idx],
+                    enc->temporal_gop_rgb_frames[f0_idx], enc->temporal_gop_rgb_frames[f1_idx],
+                    enc->temporal_gop_flow_fwd_x[f1_idx], enc->temporal_gop_flow_fwd_y[f1_idx],
+                    enc->temporal_gop_flow_bwd_x[f1_idx], enc->temporal_gop_flow_bwd_y[f1_idx],
                     width, height,
                     reliability_mask
                 );
@@ -6206,6 +8606,10 @@ int main(int argc, char *argv[]) {
         {"temporal-dwt", no_argument, 0, 1019},
         {"temporal-3d", no_argument, 0, 1019},
         {"mesh-warp", no_argument, 0, 1020},
+        {"residual-coding", no_argument, 0, 1021},
+        {"adaptive-blocks", no_argument, 0, 1022},
+        {"bframes", required_argument, 0, 1023},
+        {"gop-size", required_argument, 0, 1024},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -6370,11 +8774,46 @@ int main(int argc, char *argv[]) {
             case 1019: // --temporal-dwt / --temporal-3d
                 enc->use_delta_encoding = 0; // two modes are mutually exclusive
                 enc->enable_temporal_dwt = 1;
-                printf("Temporal 3D DWT encoding enabled (GOP size: %d frames)\n", GOP_SIZE);
+                printf("Temporal 3D DWT encoding enabled (GOP size: %d frames)\n", TEMPORAL_GOP_SIZE);
                 break;
             case 1020: // --mesh-warp
-                enc->enable_mesh_warp = 1;
+                enc->temporal_enable_mesh_warp = 1;
                 printf("Mesh-based motion compensation enabled (requires --temporal-dwt)\n");
+                break;
+            case 1021: // --residual-coding
+                enc->use_delta_encoding = 0; // Mutually exclusive with delta encoding
+                enc->enable_temporal_dwt = 0; // Mutually exclusive with temporal DWT
+                enc->enable_residual_coding = 1;
+                enc->monoblock = 1;  // Force monoblock mode (required for residual coding)
+                printf("MPEG-style residual coding enabled (I/P frames, block-matching)\n");
+                break;
+            case 1022: // --adaptive-blocks
+                enc->residual_coding_enable_adaptive_blocks = 1;
+                printf("Adaptive quad-tree block partitioning enabled (block sizes: %d-%d, requires --residual-coding)\n",
+                       enc->residual_coding_min_block_size, enc->residual_coding_max_block_size);
+                break;
+            case 1023: // --bframes
+                enc->residual_coding_bframe_count = atoi(optarg);
+                if (enc->residual_coding_bframe_count < 0 || enc->residual_coding_bframe_count > 4) {
+                    fprintf(stderr, "Error: B-frame count must be 0-4 (got %d)\n", enc->residual_coding_bframe_count);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                enc->residual_coding_enable_bframes = (enc->residual_coding_bframe_count > 0) ? 1 : 0;
+                if (enc->residual_coding_enable_bframes) {
+                    printf("B-frames enabled: M=%d (pattern: I", enc->residual_coding_bframe_count);
+                    for (int i = 0; i < enc->residual_coding_bframe_count; i++) printf("B");
+                    printf("P...)\n");
+                }
+                break;
+            case 1024: // --gop-size
+                enc->residual_coding_gop_size = atoi(optarg);
+                if (enc->residual_coding_gop_size < 1 || enc->residual_coding_gop_size > 250) {
+                    fprintf(stderr, "Error: GOP size must be 1-250 (got %d)\n", enc->residual_coding_gop_size);
+                    cleanup_encoder(enc);
+                    return 1;
+                }
+                printf("GOP size set to %d frames\n", enc->residual_coding_gop_size);
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -6653,7 +9092,7 @@ int main(int argc, char *argv[]) {
 
         // Determine frame type
         int is_scene_change = detect_scene_change(enc);
-        int is_time_keyframe = (frame_count % GOP_SIZE) == 0;
+        int is_time_keyframe = (frame_count % TEMPORAL_GOP_SIZE) == 0;
 
         // Check if we can use SKIP mode (DWT coefficient-based detection)
         int is_still = detect_still_frame(enc);
@@ -6669,11 +9108,11 @@ int main(int argc, char *argv[]) {
         int suppress_keyframe_timer = in_skip_run && is_still;
 
         // Keyframe decision: intra-only mode, time-based (unless suppressed by SKIP run), scene change,
-        // or when delta encoding is disabled and skip mode cannot be used (pure INTRA frames)
+        // or when both delta encoding and residual coding are disabled and skip mode cannot be used (pure INTRA frames)
         int is_keyframe = enc->intra_only ||
                          (is_time_keyframe && !suppress_keyframe_timer) ||
                          is_scene_change ||
-                         (!enc->use_delta_encoding && !can_use_skip);
+                         (!enc->use_delta_encoding && !enc->enable_residual_coding && !can_use_skip);
 
         // Track if we'll use SKIP mode this frame (continues the SKIP run)
         enc->used_skip_mode_last_frame = can_use_skip && !is_keyframe;
@@ -6683,7 +9122,7 @@ int main(int argc, char *argv[]) {
             if (is_scene_change && !is_time_keyframe) {
                 printf("Frame %d: Scene change detected, inserting keyframe\n", frame_count);
             } else if (is_time_keyframe) {
-                printf("Frame %d: Time-based keyframe (interval: %d)\n", frame_count, GOP_SIZE);
+                printf("Frame %d: Time-based keyframe (interval: %d)\n", frame_count, TEMPORAL_GOP_SIZE);
             }
         }*/
 
@@ -6711,11 +9150,11 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }*/
 
-        // GOP-based temporal 3D DWT encoding path (when enabled)
+        // Choose encoding path based on configuration
         size_t packet_size = 0;
 
         if (enc->enable_temporal_dwt) {
-            // Add frame to GOP buffer
+            // GOP-based temporal 3D DWT encoding path
             int add_result = gop_add_frame(enc, enc->current_frame_rgb,
                                           enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg);
 
@@ -6732,7 +9171,7 @@ int main(int argc, char *argv[]) {
             if (gop_is_full(enc)) {
                 should_flush = 1;
                 if (enc->verbose) {
-                    printf("GOP buffer full (%d frames), flushing...\n", enc->gop_frame_count);
+                    printf("GOP buffer full (%d frames), flushing...\n", enc->temporal_gop_frame_count);
                 }
             }
             // Flush if large motion detected (breaks temporal coherence)
@@ -6743,7 +9182,7 @@ int main(int argc, char *argv[]) {
                 }
             }
             // Flush if scene change detected
-            else if (is_scene_change && enc->gop_frame_count > 1) {
+            else if (is_scene_change && enc->temporal_gop_frame_count > 1) {
                 should_flush = 1;
                 force_flush = 1;  // Skip internal scene change detection (already detected)
                 if (enc->verbose) {
@@ -6754,9 +9193,9 @@ int main(int argc, char *argv[]) {
             // Flush GOP if needed
             if (should_flush) {
                 // Build frame number array for this GOP
-                int *gop_frame_numbers = malloc(enc->gop_frame_count * sizeof(int));
-                for (int i = 0; i < enc->gop_frame_count; i++) {
-                    gop_frame_numbers[i] = frame_count - enc->gop_frame_count + 1 + i;
+                int *gop_frame_numbers = malloc(enc->temporal_gop_frame_count * sizeof(int));
+                for (int i = 0; i < enc->temporal_gop_frame_count; i++) {
+                    gop_frame_numbers[i] = frame_count - enc->temporal_gop_frame_count + 1 + i;
                 }
 
                 // Get quantiser (use adjusted quantiser from bitrate control if applicable)
@@ -6777,14 +9216,182 @@ int main(int argc, char *argv[]) {
                 // Skip normal packet processing (no packet written yet)
                 packet_size = 0;
             }
+        } else if (enc->enable_residual_coding) {
+            // MPEG-style residual coding path (I/P/B frames with motion compensation)
+            // Get quantiser (use adjusted quantiser from bitrate control if applicable)
+            int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
+
+            if (enc->residual_coding_enable_bframes && enc->residual_coding_bframe_count > 0) {
+                // ========== B-FRAME GOP REORDERING MODE ==========
+                // Pattern: I B B P B B P ... (display order)
+                // Encoding: I P B B P B B ... (encode references first, then B-frames)
+
+                // Allocate lookahead buffer on first use
+                if (!enc->residual_coding_lookahead_buffer_y) {
+                    allocate_lookahead_buffer(enc);
+                }
+
+                // Add current frame to buffer
+                int buffer_full = add_frame_to_buffer(enc, frame_count);
+
+                // Scene change or keyframe forces flush and I-frame
+                if (is_keyframe || is_scene_change) {
+                    // Flush buffered B-frames if any (encode as P-frames due to missing reference)
+                    while (enc->residual_coding_lookahead_buffer_count > 1) {
+                        // Load oldest buffered frame
+                        load_frame_from_buffer(enc, 0);
+
+                        // Encode as P-frame (no forward ref for B-frame after scene change)
+                        if (enc->residual_coding_enable_adaptive_blocks) {
+                            size_t p_size = encode_pframe_adaptive(enc, qY);
+                            if (p_size > 0) {
+                                update_reference_frame(enc);
+                                if (enc->verbose) {
+                                    printf("  P-frame (buffered, pre-keyframe): %zu bytes\n", p_size);
+                                }
+                            }
+                        } else {
+                            size_t p_size = encode_pframe_residual(enc, qY);
+                            if (p_size > 0) {
+                                update_reference_frame(enc);
+                            }
+                        }
+
+                        // Write sync
+                        uint8_t sync = TAV_PACKET_SYNC;
+                        fwrite(&sync, 1, 1, enc->output_fp);
+
+                        shift_buffer(enc, 1);  // Remove the encoded frame
+                    }
+
+                    // Now encode current frame as I-frame
+                    load_frame_from_buffer(enc, 0);
+                    uint8_t packet_type = TAV_PACKET_IFRAME;
+                    packet_size = compress_and_write_frame(enc, packet_type);
+
+                    if (packet_size > 0) {
+                        update_reference_frame(enc);
+                        if (enc->verbose) {
+                            printf("  I-frame: %zu bytes (GOP reset)\n", packet_size);
+                        }
+                    }
+
+                    // Clear buffer
+                    enc->residual_coding_lookahead_buffer_count = 0;
+                    enc->residual_coding_frames_since_last_iframe = 0;
+
+                } else if (buffer_full || !continue_encoding) {
+                    // Buffer is full (M+1 frames) or end of stream - encode a mini-GOP
+
+                    // Load the FUTURE reference frame (position M, which is the last in buffer)
+                    int future_ref_idx = enc->residual_coding_bframe_count;  // M B-frames means ref at position M
+                    load_frame_from_buffer(enc, future_ref_idx);
+
+                    // Encode as P-frame and store as next_reference
+                    if (enc->residual_coding_enable_adaptive_blocks) {
+                        packet_size = encode_pframe_adaptive(enc, qY);
+                    } else {
+                        packet_size = encode_pframe_residual(enc, qY);
+                    }
+
+                    if (packet_size > 0) {
+                        // Store current frame as next_reference for B-frames
+                        if (!enc->next_residual_coding_reference_frame_allocated) {
+                            size_t frame_size = enc->width * enc->height;
+                            enc->next_residual_coding_reference_frame_y = malloc(frame_size * sizeof(float));
+                            enc->next_residual_coding_reference_frame_co = malloc(frame_size * sizeof(float));
+                            enc->next_residual_coding_reference_frame_cg = malloc(frame_size * sizeof(float));
+                            enc->next_residual_coding_reference_frame_allocated = 1;
+                        }
+                        memcpy(enc->next_residual_coding_reference_frame_y, enc->current_frame_y, enc->width * enc->height * sizeof(float));
+                        memcpy(enc->next_residual_coding_reference_frame_co, enc->current_frame_co, enc->width * enc->height * sizeof(float));
+                        memcpy(enc->next_residual_coding_reference_frame_cg, enc->current_frame_cg, enc->width * enc->height * sizeof(float));
+
+                        if (enc->verbose) {
+                            printf("  P-frame (future ref): %zu bytes\n", packet_size);
+                        }
+
+                        // Write sync after P-frame
+                        uint8_t sync = TAV_PACKET_SYNC;
+                        fwrite(&sync, 1, 1, enc->output_fp);
+                    }
+
+                    // Now encode all B-frames between previous and next reference
+                    for (int b = 0; b < enc->residual_coding_bframe_count && b < enc->residual_coding_lookahead_buffer_count - 1; b++) {
+                        load_frame_from_buffer(enc, b);
+
+                        // Encode as B-frame using bidirectional prediction
+                        if (enc->residual_coding_enable_adaptive_blocks) {
+                            size_t b_size = encode_bframe_adaptive(enc, qY);
+                            if (b_size > 0 && enc->verbose) {
+                                printf("  B-frame %d: %zu bytes\n", b, b_size);
+                            }
+                        } else {
+                            // Fallback: encode as P-frame if fixed blocks
+                            size_t b_size = encode_pframe_residual(enc, qY);
+                            if (b_size > 0 && enc->verbose) {
+                                printf("  B→P-frame %d: %zu bytes (fallback)\n", b, b_size);
+                            }
+                        }
+
+                        // Write sync after each B-frame
+                        uint8_t sync = TAV_PACKET_SYNC;
+                        fwrite(&sync, 1, 1, enc->output_fp);
+                    }
+
+                    // Update reference: next_reference becomes current reference for next mini-GOP
+                    memcpy(enc->residual_coding_reference_frame_y, enc->next_residual_coding_reference_frame_y, enc->width * enc->height * sizeof(float));
+                    memcpy(enc->residual_coding_reference_frame_co, enc->next_residual_coding_reference_frame_co, enc->width * enc->height * sizeof(float));
+                    memcpy(enc->residual_coding_reference_frame_cg, enc->next_residual_coding_reference_frame_cg, enc->width * enc->height * sizeof(float));
+                    enc->residual_coding_reference_frame_allocated = 1;
+
+                    // Shift buffer to remove encoded frames (P-frame + B-frames)
+                    shift_buffer(enc, enc->residual_coding_bframe_count + 1);
+
+                    packet_size = 1;  // Signal success (multiple packets written)
+                } else {
+                    // Buffer not full yet, continue reading frames
+                    packet_size = 0;  // No packet written yet
+                }
+
+            } else {
+                // ========== TRADITIONAL I/P MODE (NO B-FRAMES) ==========
+                if (is_keyframe || !enc->residual_coding_reference_frame_allocated) {
+                    // I-frame: encode normally and update reference
+                    uint8_t packet_type = TAV_PACKET_IFRAME;
+                    packet_size = compress_and_write_frame(enc, packet_type);
+
+                    if (packet_size > 0) {
+                        // Update reference frame for next P-frame
+                        update_reference_frame(enc);
+
+                        if (enc->verbose) {
+                            printf("  I-frame: %zu bytes (reference updated)\n", packet_size);
+                        }
+                    }
+                } else {
+                    // P-frame: encode residual with motion compensation
+                    if (enc->residual_coding_enable_adaptive_blocks) {
+                        packet_size = encode_pframe_adaptive(enc, qY);
+                    } else {
+                        packet_size = encode_pframe_residual(enc, qY);
+                    }
+
+                    if (packet_size > 0) {
+                        // Update reference frame for next P-frame
+                        update_reference_frame(enc);
+                    }
+                }
+            }
         } else {
-            // Traditional 2D DWT encoding path (no temporal transform)
+            // Traditional 2D DWT encoding path (no temporal transform, no motion compensation)
             uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
             packet_size = compress_and_write_frame(enc, packet_type);
         }
 
-        if (packet_size == 0 && !enc->enable_temporal_dwt) {
+        if (packet_size == 0 && !enc->enable_temporal_dwt && !(enc->residual_coding_enable_bframes && enc->residual_coding_bframe_count > 0)) {
             // Traditional 2D path: packet_size == 0 means encoding failed
+            // B-frame mode: packet_size == 0 is normal when buffering frames
             fprintf(stderr, "Error: Failed to compress frame %d\n", frame_count);
             break;
         }
@@ -6816,7 +9423,8 @@ int main(int argc, char *argv[]) {
 
             // Write a sync packet only after a video is been coded
             // For GOP encoding, GOP_SYNC packet already serves as sync - don't emit extra SYNC
-            if (!enc->enable_temporal_dwt) {
+            // For B-frame mode, sync packets are already written in the encoding loop
+            if (!enc->enable_temporal_dwt && !(enc->residual_coding_enable_bframes && enc->residual_coding_bframe_count > 0)) {
                 uint8_t sync_packet = TAV_PACKET_SYNC;
                 fwrite(&sync_packet, 1, 1, enc->output_fp);
             }
@@ -6855,13 +9463,13 @@ int main(int argc, char *argv[]) {
     }
 
     // Flush any remaining GOP frames (temporal 3D DWT mode only)
-    if (enc->enable_temporal_dwt && enc->gop_frame_count > 0) {
-        printf("Flushing remaining %d frames from GOP buffer...\n", enc->gop_frame_count);
+    if (enc->enable_temporal_dwt && enc->temporal_gop_frame_count > 0) {
+        printf("Flushing remaining %d frames from GOP buffer...\n", enc->temporal_gop_frame_count);
 
         // Build frame number array for remaining GOP
-        int *gop_frame_numbers = malloc(enc->gop_frame_count * sizeof(int));
-        for (int i = 0; i < enc->gop_frame_count; i++) {
-            gop_frame_numbers[i] = frame_count - enc->gop_frame_count + 1 + i;
+        int *gop_frame_numbers = malloc(enc->temporal_gop_frame_count * sizeof(int));
+        for (int i = 0; i < enc->temporal_gop_frame_count; i++) {
+            gop_frame_numbers[i] = frame_count - enc->temporal_gop_frame_count + 1 + i;
         }
 
         // Get quantiser (use adjusted quantiser from bitrate control if applicable)
@@ -6975,32 +9583,46 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->video_rate_bin);
 
     // Free GOP buffers
-    if (enc->gop_rgb_frames) {
-        for (int i = 0; i < enc->gop_capacity; i++) {
-            free(enc->gop_rgb_frames[i]);
+    if (enc->temporal_gop_rgb_frames) {
+        for (int i = 0; i < enc->temporal_gop_capacity; i++) {
+            free(enc->temporal_gop_rgb_frames[i]);
         }
-        free(enc->gop_rgb_frames);
+        free(enc->temporal_gop_rgb_frames);
     }
-    if (enc->gop_y_frames) {
-        for (int i = 0; i < enc->gop_capacity; i++) {
-            free(enc->gop_y_frames[i]);
+    if (enc->temporal_gop_y_frames) {
+        for (int i = 0; i < enc->temporal_gop_capacity; i++) {
+            free(enc->temporal_gop_y_frames[i]);
         }
-        free(enc->gop_y_frames);
+        free(enc->temporal_gop_y_frames);
     }
-    if (enc->gop_co_frames) {
-        for (int i = 0; i < enc->gop_capacity; i++) {
-            free(enc->gop_co_frames[i]);
+    if (enc->temporal_gop_co_frames) {
+        for (int i = 0; i < enc->temporal_gop_capacity; i++) {
+            free(enc->temporal_gop_co_frames[i]);
         }
-        free(enc->gop_co_frames);
+        free(enc->temporal_gop_co_frames);
     }
-    if (enc->gop_cg_frames) {
-        for (int i = 0; i < enc->gop_capacity; i++) {
-            free(enc->gop_cg_frames[i]);
+    if (enc->temporal_gop_cg_frames) {
+        for (int i = 0; i < enc->temporal_gop_capacity; i++) {
+            free(enc->temporal_gop_cg_frames[i]);
         }
-        free(enc->gop_cg_frames);
+        free(enc->temporal_gop_cg_frames);
     }
-    free(enc->gop_translation_x);
-    free(enc->gop_translation_y);
+    free(enc->temporal_gop_translation_x);
+    free(enc->temporal_gop_translation_y);
+
+    // Free MPEG-style residual coding buffers
+    free(enc->residual_coding_reference_frame_y);
+    free(enc->residual_coding_reference_frame_co);
+    free(enc->residual_coding_reference_frame_cg);
+    free(enc->residual_coding_motion_vectors_x);
+    free(enc->residual_coding_motion_vectors_y);
+    free(enc->residual_coding_skip_blocks);
+    free(enc->residual_coding_predicted_frame_y);
+    free(enc->residual_coding_predicted_frame_co);
+    free(enc->residual_coding_predicted_frame_cg);
+    free(enc->residual_coding_residual_frame_y);
+    free(enc->residual_coding_residual_frame_co);
+    free(enc->residual_coding_residual_frame_cg);
 
     // Free subtitle list
     if (enc->subtitles) {

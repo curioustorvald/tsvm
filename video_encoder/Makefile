@@ -43,6 +43,18 @@ test_mesh_roundtrip: test_mesh_roundtrip.cpp encoder_tav_opencv.cpp
 	rm -f test_mesh_roundtrip test_mesh_roundtrip.o
 	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_mesh_roundtrip test_mesh_roundtrip.cpp encoder_tav_opencv.cpp $(OPENCV_LIBS)
 
+test_interpolation_comparison: test_interpolation_comparison.cpp encoder_tav_opencv.cpp
+	rm -f test_interpolation_comparison test_interpolation_comparison.o
+	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_interpolation_comparison test_interpolation_comparison.cpp encoder_tav_opencv.cpp $(OPENCV_LIBS)
+
+test_bidirectional_prediction: test_bidirectional_prediction.cpp encoder_tav_opencv.cpp
+	rm -f test_bidirectional_prediction test_bidirectional_prediction.o
+	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_bidirectional_prediction test_bidirectional_prediction.cpp encoder_tav_opencv.cpp $(OPENCV_LIBS)
+
+test_mpeg_motion: test_mpeg_motion.cpp
+	rm -f test_mpeg_motion test_mpeg_motion.o
+	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_mpeg_motion test_mpeg_motion.cpp $(OPENCV_LIBS)
+
 tests: $(TEST_TARGETS)
 
 # Build with debug symbols
