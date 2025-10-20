@@ -253,6 +253,7 @@ let header = {
     videoFlags: 0,
     qualityLevel: 0,
     channelLayout: 0,
+    entropyCoder: 0,      // 0 = Twobit-map, 1 = EZBC
     fileRole: 0
 }
 
@@ -290,10 +291,12 @@ header.extraFlags = seqread.readOneByte()
 header.videoFlags = seqread.readOneByte()
 header.qualityLevel = seqread.readOneByte() // the decoder expects biased value
 header.channelLayout = seqread.readOneByte()
-header.fileRole = seqread.readOneByte()
+header.entropyCoder = seqread.readOneByte()
 
-// Skip reserved bytes
-seqread.skip(4)
+// Skip reserved bytes (2) and device orientation (1)
+seqread.skip(3)
+
+header.fileRole = seqread.readOneByte()
 
 if (header.version < 1 || header.version > 8) {
     printerrln(`Error: Unsupported TAV version ${header.version}`)
@@ -336,6 +339,7 @@ console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ?
 console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${QLUT[header.qualityY]}, Co=${QLUT[header.qualityCo]}, Cg=${QLUT[header.qualityCg]}`)
 console.log(`Channel layout: ${getChannelLayoutName(header.channelLayout)}`)
+console.log(`Entropy coder: ${header.entropyCoder === 0 ? "Twobit-map" : header.entropyCoder === 1 ? "EZBC" : "Unknown"}`)
 console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
 console.log(`Colour space: ${header.version % 2 == 0 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
@@ -919,7 +923,8 @@ try {
                         header.waveletFilter,      // TAV-specific parameter
                         header.decompLevels,       // TAV-specific parameter
                         isLossless,
-                        header.version             // TAV version for colour space detection
+                        header.version,            // TAV version for colour space detection
+                        header.entropyCoder        // Entropy coder: 0 = Twobit-map, 1 = EZBC
                     )
 
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
@@ -1074,7 +1079,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter,
                         header.decompLevels,
-                        2  // temporalLevels (hardcoded for now, could be in header)
+                        2,              // temporalLevels (hardcoded for now, could be in header)
+                        header.entropyCoder  // Entropy coder: 0 = Twobit-map, 1 = EZBC
                     )
 
                     const framesDecoded = r1

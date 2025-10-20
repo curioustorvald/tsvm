@@ -7779,13 +7779,15 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(enc->quality_level+1, enc->output_fp);
     fputc(enc->channel_layout, enc->output_fp);
 
-    // Device Orientation (default: 0 = no rotation)
+    // Entropy Coder (0 = Twobit-map, 1 = EZBC)
+    fputc(enc->enable_ezbc ? 1 : 0, enc->output_fp);
+
+    // Reserved bytes (2 bytes)
+    fputc(0, enc->output_fp);
     fputc(0, enc->output_fp);
 
-    // Reserved bytes (3 bytes)
-    for (int i = 0; i < 3; i++) {
-        fputc(0, enc->output_fp);
-    }
+    // Device Orientation (default: 0 = no rotation)
+    fputc(0, enc->output_fp);
 
     // File Role (0 = generic)
     fputc(0, enc->output_fp);
