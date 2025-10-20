@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <string.h>
 #include <math.h>
 #include <zstd.h>
@@ -116,8 +117,8 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 9
-#define TEMPORAL_GOP_SIZE 8
-#define TEMPORAL_DECOMP_LEVEL 2
+#define TEMPORAL_GOP_SIZE 24//8
+#define TEMPORAL_DECOMP_LEVEL 3
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
@@ -198,6 +199,374 @@ typedef struct quad_tree_node {
     int16_t bwd_mv_x, bwd_mv_y;  // Backward motion vector (next reference)
     struct quad_tree_node *children[4];  // NW, NE, SW, SE children (NULL if leaf)
 } quad_tree_node_t;
+
+// ====================================================================================
+// EZBC (Embedded Zero Block Coding) Structures and Functions
+// ====================================================================================
+
+// Bitstream writer for EZBC
+typedef struct {
+    uint8_t *data;
+    size_t capacity;
+    size_t byte_pos;
+    uint8_t bit_pos;  // 0-7, current bit position in current byte
+} bitstream_t;
+
+// Block structure for EZBC quadtree
+typedef struct {
+    int x, y;           // Top-left position in 2D coefficient array
+    int width, height;  // Block dimensions
+} ezbc_block_t;
+
+// Queue for EZBC block processing
+typedef struct {
+    ezbc_block_t *blocks;
+    size_t count;
+    size_t capacity;
+} block_queue_t;
+
+// Track coefficient state for refinement
+typedef struct {
+    bool significant;     // Has been marked significant
+    int first_bitplane;   // Bitplane where it became significant
+} coeff_state_t;
+
+// Bitstream operations
+static void bitstream_init(bitstream_t *bs, size_t initial_capacity) {
+    bs->capacity = initial_capacity;
+    bs->data = calloc(1, initial_capacity);
+    bs->byte_pos = 0;
+    bs->bit_pos = 0;
+}
+
+static void bitstream_write_bit(bitstream_t *bs, int bit) {
+    // Grow if needed
+    if (bs->byte_pos >= bs->capacity) {
+        bs->capacity *= 2;
+        bs->data = realloc(bs->data, bs->capacity);
+        // Clear new memory
+        memset(bs->data + bs->byte_pos, 0, bs->capacity - bs->byte_pos);
+    }
+
+    if (bit) {
+        bs->data[bs->byte_pos] |= (1 << bs->bit_pos);
+    }
+
+    bs->bit_pos++;
+    if (bs->bit_pos == 8) {
+        bs->bit_pos = 0;
+        bs->byte_pos++;
+    }
+}
+
+static void bitstream_write_bits(bitstream_t *bs, uint32_t value, int num_bits) {
+    for (int i = 0; i < num_bits; i++) {
+        bitstream_write_bit(bs, (value >> i) & 1);
+    }
+}
+
+static size_t bitstream_size(bitstream_t *bs) {
+    return bs->byte_pos + (bs->bit_pos > 0 ? 1 : 0);
+}
+
+static void bitstream_free(bitstream_t *bs) {
+    free(bs->data);
+}
+
+// Block queue operations
+static void queue_init(block_queue_t *q) {
+    q->capacity = 1024;
+    q->blocks = malloc(q->capacity * sizeof(ezbc_block_t));
+    q->count = 0;
+}
+
+static void queue_push(block_queue_t *q, ezbc_block_t block) {
+    if (q->count >= q->capacity) {
+        q->capacity *= 2;
+        q->blocks = realloc(q->blocks, q->capacity * sizeof(ezbc_block_t));
+    }
+    q->blocks[q->count++] = block;
+}
+
+static void queue_free(block_queue_t *q) {
+    free(q->blocks);
+}
+
+// Check if all coefficients in block have |coeff| < threshold
+static bool is_zero_block_ezbc(int16_t *coeffs, int width, int height,
+                                const ezbc_block_t *block, int threshold) {
+    for (int y = block->y; y < block->y + block->height && y < height; y++) {
+        for (int x = block->x; x < block->x + block->width && x < width; x++) {
+            int idx = y * width + x;
+            if (abs(coeffs[idx]) >= threshold) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Find maximum absolute coefficient value for determining MSB
+static int find_max_abs_ezbc(int16_t *coeffs, size_t count) {
+    int max_abs = 0;
+    for (size_t i = 0; i < count; i++) {
+        int abs_val = abs(coeffs[i]);
+        if (abs_val > max_abs) {
+            max_abs = abs_val;
+        }
+    }
+    return max_abs;
+}
+
+// Get MSB position (bitplane number)
+// Returns floor(log2(value)), i.e., the position of the highest set bit
+static int get_msb_bitplane(int value) {
+    if (value == 0) return 0;
+    int bitplane = 0;
+    while (value > 1) {
+        value >>= 1;
+        bitplane++;
+    }
+    return bitplane;
+}
+
+// Forward declarations for recursive EZBC
+typedef struct {
+    bitstream_t *bs;
+    int16_t *coeffs;
+    coeff_state_t *states;
+    int width;
+    int height;
+    int bitplane;
+    int threshold;
+    block_queue_t *next_insignificant;
+    block_queue_t *next_significant;
+    int *sign_count;
+} ezbc_context_t;
+
+// Recursively process a significant block - subdivide until 1x1
+static void process_significant_block_recursive(ezbc_context_t *ctx, ezbc_block_t block) {
+    // If 1x1 block: emit sign bit and add to significant queue
+    if (block.width == 1 && block.height == 1) {
+        int idx = block.y * ctx->width + block.x;
+        bitstream_write_bit(ctx->bs, ctx->coeffs[idx] < 0 ? 1 : 0);
+        (*ctx->sign_count)++;
+        ctx->states[idx].significant = true;
+        ctx->states[idx].first_bitplane = ctx->bitplane;
+        queue_push(ctx->next_significant, block);
+        return;
+    }
+
+    // Block is > 1x1: subdivide into children and recursively process each
+    int mid_x = block.width / 2;
+    int mid_y = block.height / 2;
+    if (mid_x == 0) mid_x = 1;
+    if (mid_y == 0) mid_y = 1;
+
+    // Process top-left child
+    ezbc_block_t tl = {block.x, block.y, mid_x, mid_y};
+    if (!is_zero_block_ezbc(ctx->coeffs, ctx->width, ctx->height, &tl, ctx->threshold)) {
+        bitstream_write_bit(ctx->bs, 1);  // Significant
+        process_significant_block_recursive(ctx, tl);
+    } else {
+        bitstream_write_bit(ctx->bs, 0);  // Insignificant
+        queue_push(ctx->next_insignificant, tl);
+    }
+
+    // Process top-right child (if exists)
+    if (block.width > mid_x) {
+        ezbc_block_t tr = {block.x + mid_x, block.y, block.width - mid_x, mid_y};
+        if (!is_zero_block_ezbc(ctx->coeffs, ctx->width, ctx->height, &tr, ctx->threshold)) {
+            bitstream_write_bit(ctx->bs, 1);
+            process_significant_block_recursive(ctx, tr);
+        } else {
+            bitstream_write_bit(ctx->bs, 0);
+            queue_push(ctx->next_insignificant, tr);
+        }
+    }
+
+    // Process bottom-left child (if exists)
+    if (block.height > mid_y) {
+        ezbc_block_t bl = {block.x, block.y + mid_y, mid_x, block.height - mid_y};
+        if (!is_zero_block_ezbc(ctx->coeffs, ctx->width, ctx->height, &bl, ctx->threshold)) {
+            bitstream_write_bit(ctx->bs, 1);
+            process_significant_block_recursive(ctx, bl);
+        } else {
+            bitstream_write_bit(ctx->bs, 0);
+            queue_push(ctx->next_insignificant, bl);
+        }
+    }
+
+    // Process bottom-right child (if exists)
+    if (block.width > mid_x && block.height > mid_y) {
+        ezbc_block_t br = {block.x + mid_x, block.y + mid_y, block.width - mid_x, block.height - mid_y};
+        if (!is_zero_block_ezbc(ctx->coeffs, ctx->width, ctx->height, &br, ctx->threshold)) {
+            bitstream_write_bit(ctx->bs, 1);
+            process_significant_block_recursive(ctx, br);
+        } else {
+            bitstream_write_bit(ctx->bs, 0);
+            queue_push(ctx->next_insignificant, br);
+        }
+    }
+}
+
+// EZBC encoding for a single channel (Fixed version from significance_map_granularity_test.c)
+// Uses two separate queues for insignificant blocks and significant 1x1 blocks
+// Returns encoded size and allocates output buffer
+static size_t encode_channel_ezbc(int16_t *coeffs, size_t count, int width, int height,
+                                   uint8_t **output) {
+    bitstream_t bs;
+    bitstream_init(&bs, count / 4);  // Initial guess
+
+    // Track coefficient significance
+    coeff_state_t *states = calloc(count, sizeof(coeff_state_t));
+
+    // Find maximum value to determine MSB bitplane
+    int max_abs = find_max_abs_ezbc(coeffs, count);
+    int msb_bitplane = get_msb_bitplane(max_abs);
+
+    // Write header: MSB bitplane and dimensions
+    bitstream_write_bits(&bs, msb_bitplane, 8);
+    bitstream_write_bits(&bs, width, 16);
+    bitstream_write_bits(&bs, height, 16);
+
+    if (0) {
+        fprintf(stderr, "[EZBC-ENC] Encoding: max_abs=%d, msb_bitplane=%d, dims=%dx%d, count=%zu\n",
+                max_abs, msb_bitplane, width, height, count);
+        fprintf(stderr, "[EZBC-ENC] Header bytes: MSB=0x%02X, W=%d (0x%04X), H=%d (0x%04X)\n",
+                msb_bitplane, width, width, height, height);
+        fprintf(stderr, "[EZBC-ENC] First 9 bytes of bitstream: %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                bs.data[0], bs.data[1], bs.data[2], bs.data[3], bs.data[4],
+                bs.data[5], bs.data[6], bs.data[7], bs.data[8]);
+    }
+
+    // Initialize two queues: insignificant blocks and significant 1x1 blocks
+    block_queue_t insignificant_queue, next_insignificant;
+    block_queue_t significant_queue, next_significant;
+
+    queue_init(&insignificant_queue);
+    queue_init(&next_insignificant);
+    queue_init(&significant_queue);
+    queue_init(&next_significant);
+
+    // Start with root block as insignificant
+    ezbc_block_t root = {0, 0, width, height};
+    queue_push(&insignificant_queue, root);
+
+    // Process bitplanes from MSB to LSB
+    int bitplanes_processed = 0;
+    int total_flags_written = 0;
+    int total_ones_written = 0;
+    int total_sign_bits_written = 0;
+    int total_refinement_bits_written = 0;
+    for (int bitplane = msb_bitplane; bitplane >= 0; bitplane--) {
+        int threshold = 1 << bitplane;
+        bitplanes_processed++;
+
+        size_t insignif_before = insignificant_queue.count;
+        size_t signif_before = significant_queue.count;
+
+        int flags_this_bitplane = 0;
+        int ones_this_bitplane = 0;
+        int sign_bits_this_bitplane = 0;
+        int refinement_bits_this_bitplane = 0;
+
+        // Process insignificant blocks - check if they become significant
+        for (size_t i = 0; i < insignificant_queue.count; i++) {
+            ezbc_block_t block = insignificant_queue.blocks[i];
+
+            // Check if this block has any coefficient >= threshold
+            if (is_zero_block_ezbc(coeffs, width, height, &block, threshold)) {
+                // Still insignificant: emit 0
+                bitstream_write_bit(&bs, 0);
+                flags_this_bitplane++;
+                // Keep in insignificant queue for next bitplane
+                queue_push(&next_insignificant, block);
+            } else {
+                // Became significant: emit 1
+                bitstream_write_bit(&bs, 1);
+                flags_this_bitplane++;
+                ones_this_bitplane++;
+                total_ones_written++;
+
+                // Use recursive subdivision to process this block and all children
+                ezbc_context_t ctx = {
+                    .bs = &bs,
+                    .coeffs = coeffs,
+                    .states = states,
+                    .width = width,
+                    .height = height,
+                    .bitplane = bitplane,
+                    .threshold = threshold,
+                    .next_insignificant = &next_insignificant,
+                    .next_significant = &next_significant,
+                    .sign_count = &sign_bits_this_bitplane
+                };
+                process_significant_block_recursive(&ctx, block);
+            }
+        }
+
+        // Process significant 1x1 blocks - emit refinement bits
+        for (size_t i = 0; i < significant_queue.count; i++) {
+            ezbc_block_t block = significant_queue.blocks[i];
+            int idx = block.y * width + block.x;
+            int abs_val = abs(coeffs[idx]);
+
+            // Emit refinement bit at current bitplane
+            int bit = (abs_val >> bitplane) & 1;
+            bitstream_write_bit(&bs, bit);
+            refinement_bits_this_bitplane++;
+            total_refinement_bits_written++;
+
+            // Keep in significant queue for next bitplane
+            queue_push(&next_significant, block);
+        }
+
+        // Swap queues for next bitplane
+        queue_free(&insignificant_queue);
+        queue_free(&significant_queue);
+        insignificant_queue = next_insignificant;
+        significant_queue = next_significant;
+        queue_init(&next_insignificant);
+        queue_init(&next_significant);
+
+        total_flags_written += flags_this_bitplane;
+        total_sign_bits_written += sign_bits_this_bitplane;
+        total_refinement_bits_written += refinement_bits_this_bitplane;
+
+        if (0 && (bitplane == msb_bitplane || bitplane == 0 || bitplane % 3 == 0)) {
+            fprintf(stderr, "[EZBC-BP] Bitplane %2d: threshold=%4d, flags=%d (ones=%d), sign=%d, refine=%d, insignif=%zu->%zu, signif=%zu->%zu\n",
+                    bitplane, threshold, flags_this_bitplane, ones_this_bitplane,
+                    sign_bits_this_bitplane, refinement_bits_this_bitplane,
+                    insignif_before, insignificant_queue.count,
+                    signif_before, significant_queue.count);
+        }
+    }
+
+    if (0) {
+        fprintf(stderr, "[EZBC-ENC] Processed %d bitplanes, wrote %d flags (%d ones), %d sign bits, %d refinement bits\n",
+                bitplanes_processed, total_flags_written, total_ones_written,
+                total_sign_bits_written, total_refinement_bits_written);
+    }
+
+    queue_free(&insignificant_queue);
+    queue_free(&significant_queue);
+    free(states);
+
+    size_t final_size = bitstream_size(&bs);
+    *output = bs.data;
+
+    if (0) {
+        fprintf(stderr, "[EZBC-ENC] Completed: final_size=%zu bytes (%.1f bits/coeff)\n",
+                final_size, (final_size * 8.0) / count);
+    }
+
+    return final_size;
+}
+
+// ====================================================================================
+// End of EZBC Implementation
+// ====================================================================================
 
 // Partitioning decision based on residual variance
 static float compute_block_variance(const float *residual, int width, int x, int y, int block_size) {
@@ -1365,6 +1734,7 @@ typedef struct tav_encoder_s {
     int intra_only;       // Force all tiles to use INTRA mode (disable delta encoding)
     int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
     int perceptual_tuning; // 1 = perceptual quantisation (default), 0 = uniform quantisation
+    int enable_ezbc;       // 1 = use EZBC (Embedded Zero Block Coding) for significance maps, 0 = use twobit-map (default)
     int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
     int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
@@ -1395,22 +1765,17 @@ typedef struct tav_encoder_s {
     int16_t *temporal_gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units (for 0x12 packets)
     int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
 
-    // Mesh warping for temporal 3D DWT (0x13 packets)
-    int temporal_enable_mesh_warp;        // Flag to enable mesh warping (default: 0, uses translation if temporal_dwt enabled)
-    int temporal_mesh_width;              // Number of control points horizontally (default: 32 for 1920×1080)
-    int temporal_mesh_height;             // Number of control points vertically (default: 18 for 1920×1080)
+    // MC-EZBC block-based motion compensation for temporal 3D DWT (0x13 packets)
+    int temporal_enable_mcezbc;           // Flag to enable MC-EZBC block compensation (default: 0, uses translation if temporal_dwt enabled)
+    int temporal_block_size;              // Block size for motion compensation (default: 16)
+    int temporal_num_blocks_x;            // Number of blocks horizontally
+    int temporal_num_blocks_y;            // Number of blocks vertically
 
-    int16_t **temporal_gop_mesh_dx;       // [frame][mesh_w * mesh_h] - Mesh displacement X in 1/8-pixel units
-    int16_t **temporal_gop_mesh_dy;       // [frame][mesh_w * mesh_h] - Mesh displacement Y in 1/8-pixel units
-
-    // Dense optical flow for reliability masking (used with mesh warping)
-    float **temporal_gop_flow_fwd_x;      // [frame][width * height] - Forward flow X (F[i-1] → F[i])
-    float **temporal_gop_flow_fwd_y;      // [frame][width * height] - Forward flow Y
-    float **temporal_gop_flow_bwd_x;      // [frame][width * height] - Backward flow X (F[i] → F[i-1])
-    float **temporal_gop_flow_bwd_y;      // [frame][width * height] - Backward flow Y
-
-    float temporal_mesh_smoothness;       // Laplacian smoothing weight (0.0-1.0, default: 0.5)
-    int temporal_mesh_smooth_iterations;  // Number of smoothing iterations (default: 8)
+    // Motion vectors for MC-EZBC lifting (forward and backward for bidirectional prediction)
+    int16_t **temporal_gop_mvs_fwd_x;     // [frame][num_blocks] - Forward MVs X in 1/4-pixel units (F[t-1] → F[t])
+    int16_t **temporal_gop_mvs_fwd_y;     // [frame][num_blocks] - Forward MVs Y in 1/4-pixel units
+    int16_t **temporal_gop_mvs_bwd_x;     // [frame][num_blocks] - Backward MVs X in 1/4-pixel units (F[t+1] → F[t])
+    int16_t **temporal_gop_mvs_bwd_y;     // [frame][num_blocks] - Backward MVs Y in 1/4-pixel units
 
     // MPEG-style residual coding (0x14/0x15 packets) - replaces temporal DWT
     int enable_residual_coding;  // Flag to enable MPEG-style residual coding (I/P/B frames)
@@ -1777,6 +2142,25 @@ extern void estimate_optical_flow_motion(
     int width, int height, int block_size,
     int16_t *mvs_x, int16_t *mvs_y
 );
+
+// MC-EZBC block-based motion compensation (external C++ functions)
+extern void warp_block_motion(
+    const float *src, int width, int height,
+    const int16_t *mvs_x, const int16_t *mvs_y,
+    int block_size, float *dst
+);
+
+extern void warp_bidirectional(
+    const float *f0, const float *f1,
+    int width, int height,
+    const int16_t *mvs_fwd_x, const int16_t *mvs_fwd_y,
+    const int16_t *mvs_bwd_x, const int16_t *mvs_bwd_y,
+    int block_size, float *prediction
+);
+
+// Helper functions for motion compensation
+static void apply_translation(const float *src, int width, int height, float dx, float dy, float *dst);
+
 static int get_subband_level_2d(int x, int y, int width, int height, int decomp_levels);
 static int get_subband_type_2d(int x, int y, int width, int height, int decomp_levels);
 static int get_subband_level(int linear_idx, int width, int height, int decomp_levels);
@@ -1811,6 +2195,9 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                        int *frame_numbers, int actual_gop_size);
 static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                                    int *frame_numbers, int force_flush);
+static int detect_scene_change_between_frames(const uint8_t *frame1_rgb, const uint8_t *frame2_rgb,
+                                               int width, int height,
+                                               double *out_avg_diff, double *out_changed_ratio);
 static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                                   const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
                                   uint8_t mode, uint8_t *buffer);
@@ -1820,10 +2207,15 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                            float *coeffs, int16_t *quantised, int size,
                                                            int base_quantiser, int width, int height,
                                                            int decomp_levels, int is_chroma, int frame_count);
-static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
-                                                     int coeff_count, int channel_layout, uint8_t *output_buffer);
-static size_t preprocess_gop_unified(int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
-                                     int num_frames, int num_pixels, int channel_layout,
+static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_encoder_t *enc,
+                                                           float *coeffs, int16_t *quantised, int size,
+                                                           int base_quantiser, int width, int height,
+                                                           int decomp_levels, int is_chroma, int frame_count);
+static size_t preprocess_coefficients_variable_layout(int enable_ezbc, int width, int height,
+                                                       int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                                       int coeff_count, int channel_layout, uint8_t *output_buffer);
+static size_t preprocess_gop_unified(int enable_ezbc, int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
+                                     int num_frames, int num_pixels, int width, int height, int channel_layout,
                                      uint8_t *output_buffer);
 
 // Film grain synthesis
@@ -1868,7 +2260,8 @@ static void show_usage(const char *program_name) {
     printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
     printf("  --temporal-dwt          Enable temporal 3D DWT (GOP-based encoding with temporal transform)\n");
-    printf("  --mesh-warp             Enable mesh-based motion compensation (requires --temporal-dwt, uses optical flow)\n");
+    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt)\n");
+    printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) for significance maps\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -1935,6 +2328,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
+    enc->enable_ezbc = 0;  // Default to twobit-map (EZBC adds overhead for small files)
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
@@ -1956,18 +2350,15 @@ static tav_encoder_t* create_encoder(void) {
     enc->temporal_gop_translation_x = NULL;
     enc->temporal_gop_translation_y = NULL;
 
-    // Mesh warping settings (for 0x13 packets)
-    enc->temporal_enable_mesh_warp = 0;  // Default: disabled (use translation-based 0x12)
-    enc->temporal_mesh_width = 0;  // Will be calculated based on frame dimensions
-    enc->temporal_mesh_height = 0;
-    enc->temporal_gop_mesh_dx = NULL;
-    enc->temporal_gop_mesh_dy = NULL;
-    enc->temporal_gop_flow_fwd_x = NULL;  // Dense flow for reliability masking
-    enc->temporal_gop_flow_fwd_y = NULL;
-    enc->temporal_gop_flow_bwd_x = NULL;
-    enc->temporal_gop_flow_bwd_y = NULL;
-    enc->temporal_mesh_smoothness = 0.5f;  // 50% smoothness weight
-    enc->temporal_mesh_smooth_iterations = 8;  // 8 iterations
+    // MC-EZBC block-based motion compensation settings (for 0x13 packets)
+    enc->temporal_enable_mcezbc = 0;  // Default: disabled (use translation-based 0x12)
+    enc->temporal_block_size = 16;    // 16×16 blocks (standard for MC-EZBC)
+    enc->temporal_num_blocks_x = 0;   // Will be calculated based on frame dimensions
+    enc->temporal_num_blocks_y = 0;
+    enc->temporal_gop_mvs_fwd_x = NULL;
+    enc->temporal_gop_mvs_fwd_y = NULL;
+    enc->temporal_gop_mvs_bwd_x = NULL;
+    enc->temporal_gop_mvs_bwd_y = NULL;
 
     // MPEG-style residual coding settings (for 0x14/0x15 packets)
     enc->enable_residual_coding = 0;  // Default: disabled (use temporal DWT)
@@ -2204,67 +2595,52 @@ static int initialise_encoder(tav_encoder_t *enc) {
         memset(enc->temporal_gop_translation_x, 0, enc->temporal_gop_capacity * sizeof(int16_t));
         memset(enc->temporal_gop_translation_y, 0, enc->temporal_gop_capacity * sizeof(int16_t));
 
-        // Calculate mesh dimensions if mesh warping is enabled
-        if (enc->temporal_enable_mesh_warp) {
-            // Calculate mesh grid: approximately 16×16 pixel cells
-            // For 560×448: 18×14 mesh (252 points), for 1920×1080: 60×34 mesh (2040 points)
-            // Mesh density: 32×32 pixel cells for finer motion modeling
-            // Matches block matching resolution (16×16 blocks → 2 blocks per cell)
-            int mesh_cell_size = 32;  // Pixel size of each mesh cell (finer than 64)
-            enc->temporal_mesh_width = (enc->width + mesh_cell_size - 1) / mesh_cell_size;   // Round up
-            enc->temporal_mesh_height = (enc->height + mesh_cell_size - 1) / mesh_cell_size;
+        // Calculate block dimensions if MC-EZBC is enabled
+        if (enc->temporal_enable_mcezbc) {
+            // Calculate block grid for MC-EZBC
+            // Block size: 16×16 (standard for MC-EZBC and MPEG-style codecs)
+            // For 560×448: 35×28 blocks (980 blocks), for 1920×1080: 120×68 blocks (8160 blocks)
+            enc->temporal_num_blocks_x = (enc->width + enc->temporal_block_size - 1) / enc->temporal_block_size;
+            enc->temporal_num_blocks_y = (enc->height + enc->temporal_block_size - 1) / enc->temporal_block_size;
 
-            // Ensure minimum 2×2 mesh
-            if (enc->temporal_mesh_width < 2) enc->temporal_mesh_width = 2;
-            if (enc->temporal_mesh_height < 2) enc->temporal_mesh_height = 2;
+            int num_blocks = enc->temporal_num_blocks_x * enc->temporal_num_blocks_y;
 
-            int mesh_size = enc->temporal_mesh_width * enc->temporal_mesh_height;
+            // Allocate motion vector arrays for each GOP frame
+            enc->temporal_gop_mvs_fwd_x = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
+            enc->temporal_gop_mvs_fwd_y = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
+            enc->temporal_gop_mvs_bwd_x = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
+            enc->temporal_gop_mvs_bwd_y = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
 
-            // Allocate mesh arrays for each GOP frame
-            enc->temporal_gop_mesh_dx = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
-            enc->temporal_gop_mesh_dy = malloc(enc->temporal_gop_capacity * sizeof(int16_t*));
-            // Allocate dense flow arrays for motion estimation
-            enc->temporal_gop_flow_fwd_x = malloc(enc->temporal_gop_capacity * sizeof(float*));
-            enc->temporal_gop_flow_fwd_y = malloc(enc->temporal_gop_capacity * sizeof(float*));
-            enc->temporal_gop_flow_bwd_x = malloc(enc->temporal_gop_capacity * sizeof(float*));
-            enc->temporal_gop_flow_bwd_y = malloc(enc->temporal_gop_capacity * sizeof(float*));
-
-            if (!enc->temporal_gop_mesh_dx || !enc->temporal_gop_mesh_dy ||
-                !enc->temporal_gop_flow_fwd_x || !enc->temporal_gop_flow_fwd_y ||
-                !enc->temporal_gop_flow_bwd_x || !enc->temporal_gop_flow_bwd_y) {
-                fprintf(stderr, "Failed to allocate GOP mesh arrays\n");
+            if (!enc->temporal_gop_mvs_fwd_x || !enc->temporal_gop_mvs_fwd_y ||
+                !enc->temporal_gop_mvs_bwd_x || !enc->temporal_gop_mvs_bwd_y) {
+                fprintf(stderr, "Failed to allocate GOP motion vector arrays\n");
                 return -1;
             }
 
-            // Allocate individual mesh and flow buffers
-            int flow_size = enc->width * enc->height;
+            // Allocate individual motion vector buffers
             for (int i = 0; i < enc->temporal_gop_capacity; i++) {
-                enc->temporal_gop_mesh_dx[i] = malloc(mesh_size * sizeof(int16_t));
-                enc->temporal_gop_mesh_dy[i] = malloc(mesh_size * sizeof(int16_t));
+                enc->temporal_gop_mvs_fwd_x[i] = malloc(num_blocks * sizeof(int16_t));
+                enc->temporal_gop_mvs_fwd_y[i] = malloc(num_blocks * sizeof(int16_t));
+                enc->temporal_gop_mvs_bwd_x[i] = malloc(num_blocks * sizeof(int16_t));
+                enc->temporal_gop_mvs_bwd_y[i] = malloc(num_blocks * sizeof(int16_t));
 
-                // Allocate dense flow buffers for motion estimation
-                enc->temporal_gop_flow_fwd_x[i] = malloc(flow_size * sizeof(float));
-                enc->temporal_gop_flow_fwd_y[i] = malloc(flow_size * sizeof(float));
-                enc->temporal_gop_flow_bwd_x[i] = malloc(flow_size * sizeof(float));
-                enc->temporal_gop_flow_bwd_y[i] = malloc(flow_size * sizeof(float));
-
-                if (!enc->temporal_gop_mesh_dx[i] || !enc->temporal_gop_mesh_dy[i] ||
-                    !enc->temporal_gop_flow_fwd_x[i] || !enc->temporal_gop_flow_fwd_y[i] ||
-                    !enc->temporal_gop_flow_bwd_x[i] || !enc->temporal_gop_flow_bwd_y[i]) {
-                    fprintf(stderr, "Failed to allocate GOP mesh buffers\n");
+                if (!enc->temporal_gop_mvs_fwd_x[i] || !enc->temporal_gop_mvs_fwd_y[i] ||
+                    !enc->temporal_gop_mvs_bwd_x[i] || !enc->temporal_gop_mvs_bwd_y[i]) {
+                    fprintf(stderr, "Failed to allocate GOP motion vector buffers\n");
                     return -1;
                 }
 
                 // Initialize to zero
-                memset(enc->temporal_gop_mesh_dx[i], 0, mesh_size * sizeof(int16_t));
-                memset(enc->temporal_gop_mesh_dy[i], 0, mesh_size * sizeof(int16_t));
+                memset(enc->temporal_gop_mvs_fwd_x[i], 0, num_blocks * sizeof(int16_t));
+                memset(enc->temporal_gop_mvs_fwd_y[i], 0, num_blocks * sizeof(int16_t));
+                memset(enc->temporal_gop_mvs_bwd_x[i], 0, num_blocks * sizeof(int16_t));
+                memset(enc->temporal_gop_mvs_bwd_y[i], 0, num_blocks * sizeof(int16_t));
             }
 
             if (enc->verbose) {
-                printf("Mesh warping enabled: mesh=%dx%d (approx %dx%d px cells), smoothness=%.2f, iterations=%d\n",
-                       enc->temporal_mesh_width, enc->temporal_mesh_height,
-                       enc->width / enc->temporal_mesh_width, enc->height / enc->temporal_mesh_height,
-                       enc->temporal_mesh_smoothness, enc->temporal_mesh_smooth_iterations);
+                printf("MC-EZBC enabled: %dx%d blocks (%d total), block size=%dx%d\n",
+                       enc->temporal_num_blocks_x, enc->temporal_num_blocks_y, num_blocks,
+                       enc->temporal_block_size, enc->temporal_block_size);
             }
         }
 
@@ -2638,219 +3014,9 @@ static void dwt_53_inverse_1d(float *data, int length) {
     free(temp);
 }
 
-// FFT-based phase correlation for global motion estimation
-// Uses FFTW3 to compute cross-power spectrum and find translation peak
-// Returns 1/16-pixel precision translation vectors
-static void phase_correlate_fft(const uint8_t *frame1_rgb, const uint8_t *frame2_rgb,
-                               int width, int height, int16_t *dx_qpel, int16_t *dy_qpel) {
-    // Step 1: Convert RGB to grayscale
-    float *gray1 = fftwf_malloc(width * height * sizeof(float));
-    float *gray2 = fftwf_malloc(width * height * sizeof(float));
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int idx = y * width + x;
-            int rgb_idx = idx * 3;
-
-            // ITU-R BT.601 grayscale conversion
-            gray1[idx] = 0.299f * frame1_rgb[rgb_idx] +
-                        0.587f * frame1_rgb[rgb_idx + 1] +
-                        0.114f * frame1_rgb[rgb_idx + 2];
-            gray2[idx] = 0.299f * frame2_rgb[rgb_idx] +
-                        0.587f * frame2_rgb[rgb_idx + 1] +
-                        0.114f * frame2_rgb[rgb_idx + 2];
-        }
-    }
-
-    // Step 2: Plan FFTs (r2c = real to complex)
-    int fft_height = height;
-    int fft_width = width / 2 + 1;  // R2C FFT only stores half + 1 complex values
-
-    fftwf_complex *fft1 = fftwf_malloc(fft_height * fft_width * sizeof(fftwf_complex));
-    fftwf_complex *fft2 = fftwf_malloc(fft_height * fft_width * sizeof(fftwf_complex));
-    fftwf_complex *cross_power = fftwf_malloc(fft_height * fft_width * sizeof(fftwf_complex));
-    float *correlation = fftwf_malloc(width * height * sizeof(float));
-
-    fftwf_plan plan_fwd1 = fftwf_plan_dft_r2c_2d(height, width, gray1, fft1, FFTW_ESTIMATE);
-    fftwf_plan plan_fwd2 = fftwf_plan_dft_r2c_2d(height, width, gray2, fft2, FFTW_ESTIMATE);
-    fftwf_plan plan_inv = fftwf_plan_dft_c2r_2d(height, width, cross_power, correlation, FFTW_ESTIMATE);
-
-    // Step 3: Execute forward FFTs
-    fftwf_execute(plan_fwd1);
-    fftwf_execute(plan_fwd2);
-
-    // Step 4: Compute cross-power spectrum: F1 * conj(F2) / |F1 * conj(F2)|
-    for (int i = 0; i < fft_height * fft_width; i++) {
-        float re1 = fft1[i][0];
-        float im1 = fft1[i][1];
-        float re2 = fft2[i][0];
-        float im2 = fft2[i][1];
-
-        // F1 * conj(F2)
-        float cross_re = re1 * re2 + im1 * im2;
-        float cross_im = im1 * re2 - re1 * im2;
-
-        // Magnitude
-        float mag = sqrtf(cross_re * cross_re + cross_im * cross_im);
-
-        // Normalize (avoid division by zero)
-        if (mag > 1e-10f) {
-            cross_power[i][0] = cross_re / mag;
-            cross_power[i][1] = cross_im / mag;
-        } else {
-            cross_power[i][0] = 0.0f;
-            cross_power[i][1] = 0.0f;
-        }
-    }
-
-    // Step 5: Inverse FFT to get correlation surface
-    fftwf_execute(plan_inv);
-
-    // Step 6: Find peak in correlation surface (integer pixel accuracy)
-    float max_val = -1e30f;
-    int peak_x = 0, peak_y = 0;
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float val = correlation[y * width + x];
-            if (val > max_val) {
-                max_val = val;
-                peak_x = x;
-                peak_y = y;
-            }
-        }
-    }
-
-    // Convert to signed displacement (FFT shift: peak at (0,0) means no motion)
-    // Peak in second half means negative motion
-    int dx = peak_x;
-    int dy = peak_y;
-    if (dx > width / 2) dx -= width;
-    if (dy > height / 2) dy -= height;
-
-    // Step 7: Subpixel refinement using parabolic interpolation
-    // Only refine if peak is not at boundary
-    float subpixel_dx = 0.0f;
-    float subpixel_dy = 0.0f;
-
-    if (peak_x > 0 && peak_x < width - 1) {
-        float left = correlation[peak_y * width + ((peak_x - 1 + width) % width)];
-        float center = correlation[peak_y * width + peak_x];
-        float right = correlation[peak_y * width + ((peak_x + 1) % width)];
-
-        // Parabolic fit: offset = (left - right) / (2 * (left - 2*center + right))
-        float denom = 2.0f * (left - 2.0f * center + right);
-        if (fabsf(denom) > 1e-6f) {
-            subpixel_dx = (left - right) / denom;
-            subpixel_dx = CLAMP(subpixel_dx, -0.5f, 0.5f);
-        }
-    }
-
-    if (peak_y > 0 && peak_y < height - 1) {
-        float top = correlation[((peak_y - 1 + height) % height) * width + peak_x];
-        float center = correlation[peak_y * width + peak_x];
-        float bottom = correlation[((peak_y + 1) % height) * width + peak_x];
-
-        float denom = 2.0f * (top - 2.0f * center + bottom);
-        if (fabsf(denom) > 1e-6f) {
-            subpixel_dy = (top - bottom) / denom;
-            subpixel_dy = CLAMP(subpixel_dy, -0.5f, 0.5f);
-        }
-    }
-
-    // Step 8: Convert to 1/16-pixel units (sixteenth-pixel precision)
-    float final_dx = dx + subpixel_dx;
-    float final_dy = dy + subpixel_dy;
-
-    *dx_qpel = (int16_t)roundf(final_dx * 16.0f);
-    *dy_qpel = (int16_t)roundf(final_dy * 16.0f);
-
-    // Cleanup
-    fftwf_destroy_plan(plan_fwd1);
-    fftwf_destroy_plan(plan_fwd2);
-    fftwf_destroy_plan(plan_inv);
-    fftwf_free(gray1);
-    fftwf_free(gray2);
-    fftwf_free(fft1);
-    fftwf_free(fft2);
-    fftwf_free(cross_power);
-    fftwf_free(correlation);
-}
-
-// ==============================================================================
-// Optical Flow and Mesh Warping Functions
-// ==============================================================================
-
-// Forward declaration for optical flow function (implemented in encoder_tav_opencv.cpp)
-// Forward declarations for OpenCV functions (implemented in encoder_tav_opencv.cpp)
-extern void estimate_motion_optical_flow(
-    const uint8_t *frame1_rgb, const uint8_t *frame2_rgb,
-    int width, int height,
-    float **out_flow_x, float **out_flow_y
-);
-
-extern void build_mesh_from_flow(
-    const float *flow_x, const float *flow_y,
-    int width, int height, int mesh_w, int mesh_h,
-    int16_t *mesh_dx, int16_t *mesh_dy
-);
-
-extern void smooth_mesh_laplacian(
-    int16_t *mesh_dx, int16_t *mesh_dy,
-    int temporal_mesh_width, int temporal_mesh_height,
-    float smoothness, int iterations
-);
-
-extern void warp_frame_with_mesh(
-    const float *src_frame, int width, int height,
-    const int16_t *mesh_dx, const int16_t *mesh_dy,
-    int temporal_mesh_width, int temporal_mesh_height,
-    float *dst_frame
-);
 
 // Note: build_mesh_from_flow, smooth_mesh_laplacian, warp_frame_with_mesh,
 // and estimate_motion_optical_flow are implemented in encoder_tav_opencv.cpp
-
-// Apply translation to frame (for frame alignment before temporal DWT)
-// NO PADDING - only extracts the valid region that will be common across all frames
-static void apply_translation(float *frame_data, int width, int height,
-                             int16_t dx_qpel, int16_t dy_qpel, float *output) {
-    // Convert 1/16-pixel to pixel (for now, just use integer translation)
-    int dx = dx_qpel / 16;
-    int dy = dy_qpel / 16;
-
-    // Apply translation WITHOUT padding - just shift the content
-    // Out-of-bounds regions will be cropped away later
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int src_x = x - dx;
-            int src_y = y - dy;
-
-            // Clamp to valid region (this will create edge repetition, but those
-            // edges will be cropped away, so it doesn't matter what we put there)
-            src_x = CLAMP(src_x, 0, width - 1);
-            src_y = CLAMP(src_y, 0, height - 1);
-
-            output[y * width + x] = frame_data[src_y * width + src_x];
-        }
-    }
-}
-
-// Extract cropped region from a frame after alignment
-static void extract_crop(const float *frame_data, int width, int height,
-                        int crop_left, int crop_right, int crop_top, int crop_bottom,
-                        float *cropped_output) {
-    int valid_width = width - crop_left - crop_right;
-    int valid_height = height - crop_top - crop_bottom;
-
-    for (int y = 0; y < valid_height; y++) {
-        for (int x = 0; x < valid_width; x++) {
-            int src_x = x + crop_left;
-            int src_y = y + crop_top;
-            cropped_output[y * valid_width + x] = frame_data[src_y * width + src_x];
-        }
-    }
-}
 
 // =============================================================================
 // Temporal Subband Quantization
@@ -2931,18 +3097,37 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         //   Q_effective = tH_base × spatial_weight
         // Where spatial_weight depends on spatial frequency (LL, LH, HL, HH subbands)
         // This reuses all existing perceptual weighting and dead-zone logic
-        quantise_dwt_coefficients_perceptual_per_coeff(
-            enc,
-            gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
-            quantised[t],            // Output: quantised spatial coefficients
-            spatial_size,            // Number of spatial coefficients
-            temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
-            enc->width,              // Frame width
-            enc->height,             // Frame height
-            enc->decomp_levels,      // Spatial decomposition levels (typically 6)
-            is_chroma,               // Is chroma channel (gets additional quantization)
-            enc->frame_count + t     // Frame number (for any frame-dependent logic)
-        );
+        //
+        // CRITICAL: Use no_normalisation variant when EZBC is enabled
+        // - EZBC mode: coefficients must be denormalized (quantize + multiply back)
+        // - Twobit-map mode: coefficients stay normalized (quantize only)
+        if (enc->enable_ezbc) {
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(
+                enc,
+                gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
+                quantised[t],            // Output: quantised spatial coefficients (denormalized for EZBC)
+                spatial_size,            // Number of spatial coefficients
+                temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
+                enc->width,              // Frame width
+                enc->height,             // Frame height
+                enc->decomp_levels,      // Spatial decomposition levels (typically 6)
+                is_chroma,               // Is chroma channel (gets additional quantization)
+                enc->frame_count + t     // Frame number (for any frame-dependent logic)
+            );
+        } else {
+            quantise_dwt_coefficients_perceptual_per_coeff(
+                enc,
+                gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
+                quantised[t],            // Output: quantised spatial coefficients (normalized for twobit-map)
+                spatial_size,            // Number of spatial coefficients
+                temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
+                enc->width,              // Frame width
+                enc->height,             // Frame height
+                enc->decomp_levels,      // Spatial decomposition levels (typically 6)
+                is_chroma,               // Is chroma channel (gets additional quantization)
+                enc->frame_count + t     // Frame number (for any frame-dependent logic)
+            );
+        }
 
         if (enc->verbose && (t == 0 || t == num_frames - 1)) {
             printf("  Temporal subband %d: level=%d, tH_base=%d\n",
@@ -3004,6 +3189,67 @@ static size_t encode_mesh_differential(
                 dy -= left_dy;
             }
 
+            if (bytes_written + 4 > buffer_capacity) return 0;
+            memcpy(output_buffer + bytes_written, &dx, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+            memcpy(output_buffer + bytes_written, &dy, sizeof(int16_t));
+            bytes_written += sizeof(int16_t);
+        }
+    }
+
+    return bytes_written;
+}
+
+// =============================================================================
+// Block MV Differential Encoding for MC-EZBC
+// =============================================================================
+
+// Encode block motion vectors with temporal and spatial prediction
+// Returns the number of bytes written to output buffer
+// Format:
+//   1. Block grid dimensions (1 byte each: blocks_x, blocks_y)
+//   2. Forward MVs for all blocks (temporal + spatial differential encoding)
+// Note: Backward MVs are computed as negation of forward MVs, so not stored separately
+static size_t encode_block_mvs_differential(
+    int16_t **mvs_x, int16_t **mvs_y,
+    int gop_size, int num_blocks_x, int num_blocks_y,
+    uint8_t *output_buffer, size_t buffer_capacity
+) {
+    int num_blocks = num_blocks_x * num_blocks_y;
+    size_t bytes_written = 0;
+
+    // Write block grid dimensions (1 byte each)
+    if (bytes_written + 2 > buffer_capacity) return 0;
+    uint8_t blocks_x_8 = (uint8_t)num_blocks_x;
+    uint8_t blocks_y_8 = (uint8_t)num_blocks_y;
+    output_buffer[bytes_written++] = blocks_x_8;
+    output_buffer[bytes_written++] = blocks_y_8;
+
+    // Encode forward MVs for all blocks with temporal + spatial prediction
+    for (int t = 0; t < gop_size; t++) {
+        for (int i = 0; i < num_blocks; i++) {
+            int16_t dx = mvs_x[t][i];
+            int16_t dy = mvs_y[t][i];
+
+            // Temporal prediction (from previous frame)
+            if (t > 0) {
+                dx -= mvs_x[t - 1][i];
+                dy -= mvs_y[t - 1][i];
+            }
+
+            // Spatial prediction (from left block)
+            if (i > 0 && (i % num_blocks_x) != 0) {
+                int16_t left_dx = mvs_x[t][i - 1];
+                int16_t left_dy = mvs_y[t][i - 1];
+                if (t > 0) {
+                    left_dx -= mvs_x[t - 1][i - 1];
+                    left_dy -= mvs_y[t - 1][i - 1];
+                }
+                dx -= left_dx;
+                dy -= left_dy;
+            }
+
+            // Write differentially encoded MVs
             if (bytes_written + 4 > buffer_capacity) return 0;
             memcpy(output_buffer + bytes_written, &dx, sizeof(int16_t));
             bytes_written += sizeof(int16_t);
@@ -3789,27 +4035,53 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
     dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
-    // Step 5: Quantize residual coefficients
+    // Step 5: Quantize residual coefficients (skip for EZBC - it handles quantization implicitly)
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
 
-    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
-                                                  qY, enc->width, enc->height,
-                                                  enc->decomp_levels, 0, 0);
-    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
-                                                  enc->quantiser_co, enc->width, enc->height,
-                                                  enc->decomp_levels, 1, 0);
-    quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
-                                                  enc->quantiser_cg, enc->width, enc->height,
-                                                  enc->decomp_levels, 1, 0);
+    if (enc->enable_ezbc) {
+        // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
+        // EZBC will compress by encoding only significant bitplanes
+        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantization without normalization\n");
+        quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_y_dwt, quantised_y, frame_size,
+                                                      qY, enc->width, enc->height,
+                                                      enc->decomp_levels, 0, 0);
+        quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_co_dwt, quantised_co, frame_size,
+                                                      enc->quantiser_co, enc->width, enc->height,
+                                                      enc->decomp_levels, 1, 0);
+        quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_cg_dwt, quantised_cg, frame_size,
+                                                      enc->quantiser_cg, enc->width, enc->height,
+                                                      enc->decomp_levels, 1, 0);
+
+        // Print max abs for debug
+        int max_y = 0, max_co = 0, max_cg = 0;
+        for (int i = 0; i < frame_size; i++) {
+            if (abs(quantised_y[i]) > max_y) max_y = abs(quantised_y[i]);
+            if (abs(quantised_co[i]) > max_co) max_co = abs(quantised_co[i]);
+            if (abs(quantised_cg[i]) > max_cg) max_cg = abs(quantised_cg[i]);
+        }
+        fprintf(stderr, "[EZBC-QUANT-PFRAME] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
+    } else {
+        // Twobit-map mode: Use traditional quantization
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
+                                                      qY, enc->width, enc->height,
+                                                      enc->decomp_levels, 0, 0);
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
+                                                      enc->quantiser_co, enc->width, enc->height,
+                                                      enc->decomp_levels, 1, 0);
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
+                                                      enc->quantiser_cg, enc->width, enc->height,
+                                                      enc->decomp_levels, 1, 0);
+    }
 
     // Step 6: Preprocess coefficients (significance map compression)
     int total_coeffs = frame_size * 3;  // Y + Co + Cg
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);  // Extra space for map
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg,
-                                                                      NULL, frame_size, enc->channel_layout,
-                                                                      preprocessed);
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+                                                                       quantised_y, quantised_co, quantised_cg,
+                                                                       NULL, frame_size, enc->channel_layout,
+                                                                       preprocessed);
 
     // Step 7: Compress preprocessed coefficients with Zstd
     size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
@@ -4100,9 +4372,10 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     // Step 8: Preprocess coefficients
     int total_coeffs = frame_size * 3;
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg,
-                                                                      NULL, frame_size, enc->channel_layout,
-                                                                      preprocessed);
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+                                                                       quantised_y, quantised_co, quantised_cg,
+                                                                       NULL, frame_size, enc->channel_layout,
+                                                                       preprocessed);
 
     // Step 9: Compress preprocessed coefficients
     size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
@@ -4332,9 +4605,10 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
     // Step 8: Preprocess coefficients
     int total_coeffs = frame_size * 3;
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg,
-                                                                      NULL, frame_size, enc->channel_layout,
-                                                                      preprocessed);
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+                                                                       quantised_y, quantised_co, quantised_cg,
+                                                                       NULL, frame_size, enc->channel_layout,
+                                                                       preprocessed);
 
     // Step 9: Compress preprocessed coefficients
     size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
@@ -4411,7 +4685,7 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
 
 // Add frame to GOP buffer
 // Returns 0 on success, -1 on error
-static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
+static int temporal_gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
                          const float *frame_y, const float *frame_co, const float *frame_cg) {
     if (!enc->enable_temporal_dwt || enc->temporal_gop_frame_count >= enc->temporal_gop_capacity) {
         return -1;
@@ -4427,69 +4701,53 @@ static int gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
     memcpy(enc->temporal_gop_co_frames[frame_idx], frame_co, frame_channel_size);
     memcpy(enc->temporal_gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
 
-    // Compute motion estimation if mesh warping is enabled
-    if (enc->temporal_enable_mesh_warp && frame_idx > 0) {
-        // Compute forward optical flow (F[i-1] → F[i])
-        estimate_motion_optical_flow(
-            enc->temporal_gop_rgb_frames[frame_idx - 1],
-            enc->temporal_gop_rgb_frames[frame_idx],
+    // Compute block-based motion estimation if MC-EZBC is enabled
+    if (enc->temporal_enable_mcezbc && frame_idx > 0) {
+        // Compute forward motion vectors (F[i-1] → F[i]) using optical flow
+        // This uses the proven estimate_optical_flow_motion function from encoder_tav_opencv.cpp
+        estimate_optical_flow_motion(
+            enc->temporal_gop_y_frames[frame_idx],       // Current frame Y channel
+            enc->temporal_gop_y_frames[frame_idx - 1],   // Reference frame Y channel
             enc->width, enc->height,
-            &enc->temporal_gop_flow_fwd_x[frame_idx],
-            &enc->temporal_gop_flow_fwd_y[frame_idx]
+            enc->temporal_block_size,
+            enc->temporal_gop_mvs_fwd_x[frame_idx],      // Output: forward MVs X (1/4-pixel units)
+            enc->temporal_gop_mvs_fwd_y[frame_idx]       // Output: forward MVs Y (1/4-pixel units)
         );
 
-        // Compute backward optical flow (F[i] → F[i-1]) for reliability masking
-        estimate_motion_optical_flow(
-            enc->temporal_gop_rgb_frames[frame_idx],
-            enc->temporal_gop_rgb_frames[frame_idx - 1],
-            enc->width, enc->height,
-            &enc->temporal_gop_flow_bwd_x[frame_idx],
-            &enc->temporal_gop_flow_bwd_y[frame_idx]
-        );
-
-        // Build distortion mesh from forward flow field
-        build_mesh_from_flow(
-            enc->temporal_gop_flow_fwd_x[frame_idx], enc->temporal_gop_flow_fwd_y[frame_idx],
-            enc->width, enc->height,
-            enc->temporal_mesh_width, enc->temporal_mesh_height,
-            enc->temporal_gop_mesh_dx[frame_idx], enc->temporal_gop_mesh_dy[frame_idx]
-        );
-
-        // Apply Laplacian smoothing to regularize mesh
-        smooth_mesh_laplacian(
-            enc->temporal_gop_mesh_dx[frame_idx], enc->temporal_gop_mesh_dy[frame_idx],
-            enc->temporal_mesh_width, enc->temporal_mesh_height,
-            enc->temporal_mesh_smoothness, enc->temporal_mesh_smooth_iterations
-        );
-
-        // Flow is now stored in enc->gop_flow_*[frame_idx], don't free
-        // Mesh dx/dy already set by build_mesh_from_flow() above (translation only)
+        // Compute backward motion vectors (F[i] → F[i-1]) by inverting forward MVs
+        // MC-EZBC uses bidirectional prediction for better temporal decorrelation
+        int num_blocks = enc->temporal_num_blocks_x * enc->temporal_num_blocks_y;
+        for (int i = 0; i < num_blocks; i++) {
+            enc->temporal_gop_mvs_bwd_x[frame_idx][i] = -enc->temporal_gop_mvs_fwd_x[frame_idx][i];
+            enc->temporal_gop_mvs_bwd_y[frame_idx][i] = -enc->temporal_gop_mvs_fwd_y[frame_idx][i];
+        }
 
         if (enc->verbose && (frame_idx < 3 || frame_idx == enc->temporal_gop_capacity - 1)) {
-            // Compute average mesh displacement for verbose output
-            int mesh_points = enc->temporal_mesh_width * enc->temporal_mesh_height;
-            float avg_dx = 0.0f, avg_dy = 0.0f;
-            for (int i = 0; i < mesh_points; i++) {
-                avg_dx += fabsf(enc->temporal_gop_mesh_dx[frame_idx][i] / 8.0f);
-                avg_dy += fabsf(enc->temporal_gop_mesh_dy[frame_idx][i] / 8.0f);
+            // Compute average motion vector magnitude for verbose output
+            float avg_mvx = 0.0f, avg_mvy = 0.0f;
+            for (int i = 0; i < num_blocks; i++) {
+                avg_mvx += fabsf(enc->temporal_gop_mvs_fwd_x[frame_idx][i] / 4.0f);
+                avg_mvy += fabsf(enc->temporal_gop_mvs_fwd_y[frame_idx][i] / 4.0f);
             }
-            avg_dx /= mesh_points;
-            avg_dy /= mesh_points;
-            printf("  GOP frame %d: mesh avg=(%.2f,%.2f)px, mesh=%dx%d\n",
-                   frame_idx, avg_dx, avg_dy,
-                   enc->temporal_mesh_width, enc->temporal_mesh_height);
+            avg_mvx /= num_blocks;
+            avg_mvy /= num_blocks;
+            printf("  GOP frame %d: motion avg=(%.2f,%.2f)px, blocks=%dx%d\n",
+                   frame_idx, avg_mvx, avg_mvy,
+                   enc->temporal_num_blocks_x, enc->temporal_num_blocks_y);
         }
     } else if (frame_idx == 0) {
         // First frame has no motion (reference frame)
-        if (enc->temporal_enable_mesh_warp) {
-            int mesh_points = enc->temporal_mesh_width * enc->temporal_mesh_height;
-            memset(enc->temporal_gop_mesh_dx[0], 0, mesh_points * sizeof(int16_t));
-            memset(enc->temporal_gop_mesh_dy[0], 0, mesh_points * sizeof(int16_t));
+        if (enc->temporal_enable_mcezbc) {
+            int num_blocks = enc->temporal_num_blocks_x * enc->temporal_num_blocks_y;
+            memset(enc->temporal_gop_mvs_fwd_x[0], 0, num_blocks * sizeof(int16_t));
+            memset(enc->temporal_gop_mvs_fwd_y[0], 0, num_blocks * sizeof(int16_t));
+            memset(enc->temporal_gop_mvs_bwd_x[0], 0, num_blocks * sizeof(int16_t));
+            memset(enc->temporal_gop_mvs_bwd_y[0], 0, num_blocks * sizeof(int16_t));
         }
     }
 
-    // Legacy translation vectors (used when mesh warp is disabled)
-    if (!enc->temporal_enable_mesh_warp) {
+    // Legacy translation vectors (used when MC-EZBC is disabled)
+    if (!enc->temporal_enable_mcezbc) {
         enc->temporal_gop_translation_x[frame_idx] = 0.0f;
         enc->temporal_gop_translation_y[frame_idx] = 0.0f;
     }
@@ -4625,9 +4883,9 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     }
 
     // Step 0.6: Motion compensation note
-    // For mesh warping: MC-lifting integrates motion compensation directly into the lifting steps
+    // For MC-EZBC: MC-lifting integrates motion compensation directly into the lifting steps
     // For translation: still use pre-alignment (old method for backwards compatibility)
-    if (!enc->temporal_enable_mesh_warp) {
+    if (!enc->temporal_enable_mcezbc) {
         // Translation-based motion compensation: align using global translation vectors
         for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
             float *aligned_y = malloc(num_pixels * sizeof(float));
@@ -4661,20 +4919,20 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
             free(aligned_cg);
         }
     } else {
-        // Mesh-based motion compensation uses MC-lifting (integrated into temporal DWT)
+        // MC-EZBC block-based motion compensation uses MC-lifting (integrated into temporal DWT)
         if (enc->verbose) {
-            printf("Using motion-compensated lifting (MC-lifting) (%dx%d mesh)\n",
-                   enc->temporal_mesh_width, enc->temporal_mesh_height);
+            printf("Using motion-compensated lifting (MC-EZBC) (%dx%d blocks)\n",
+                   enc->temporal_num_blocks_x, enc->temporal_num_blocks_y);
         }
     }
 
     // Step 0.7: Expand frames to larger canvas (only for translation-based alignment)
-    // Mesh-based warping doesn't need canvas expansion since the mesh handles local distortions
+    // MC-EZBC doesn't need canvas expansion since motion compensation is integrated into lifting
     int canvas_width = enc->width;
     int canvas_height = enc->height;
     int canvas_pixels = num_pixels;
 
-    if (!enc->temporal_enable_mesh_warp) {
+    if (!enc->temporal_enable_mcezbc) {
         // Calculate expanded canvas size (UNION of all aligned frames)
         canvas_width = enc->width + crop_left + crop_right;   // Original width + total shift range
         canvas_height = enc->height + crop_top + crop_bottom; // Original height + total shift range
@@ -4688,11 +4946,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         }
     } else {
         if (enc->verbose) {
-            printf("Using original frame dimensions (mesh warping handles distortions)\n");
+            printf("Using original frame dimensions (MC-EZBC handles motion compensation)\n");
         }
     }
 
-    // Allocate canvas buffers (expanded for translation, original size for mesh)
+    // Allocate canvas buffers (expanded for translation, original size for MC-EZBC)
     float **canvas_y_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **canvas_co_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **canvas_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
@@ -4702,8 +4960,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         canvas_co_coeffs[i] = calloc(canvas_pixels, sizeof(float));
         canvas_cg_coeffs[i] = calloc(canvas_pixels, sizeof(float));
 
-        if (enc->temporal_enable_mesh_warp) {
-            // Mesh warping: simply copy frames (no expansion needed)
+        if (enc->temporal_enable_mcezbc) {
+            // MC-EZBC: simply copy frames (no expansion needed)
             memcpy(canvas_y_coeffs[i], gop_y_coeffs[i], canvas_pixels * sizeof(float));
             memcpy(canvas_co_coeffs[i], gop_co_coeffs[i], canvas_pixels * sizeof(float));
             memcpy(canvas_cg_coeffs[i], gop_cg_coeffs[i], canvas_pixels * sizeof(float));
@@ -4798,8 +5056,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         // Note: This modifies gop_*_coeffs in-place
         // Use cropped dimensions to encode only the valid region
 
-        if (enc->temporal_enable_mesh_warp) {
-            // Use MC-lifting: motion compensation integrated into lifting steps
+        if (enc->temporal_enable_mcezbc) {
+            // Use MC-EZBC lifting: motion compensation integrated into lifting steps
             dwt_3d_forward_mc(enc, gop_y_coeffs, gop_co_coeffs, gop_cg_coeffs,
                              actual_gop_size, enc->decomp_levels,
                              enc->temporal_decomp_levels, enc->wavelet_filter);
@@ -4916,7 +5174,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     } else {
         // Multi-frame GOP: use unified 3D DWT encoding
         // Choose packet type based on motion compensation method
-        uint8_t packet_type = enc->temporal_enable_mesh_warp ? TAV_PACKET_GOP_UNIFIED_MESH : TAV_PACKET_GOP_UNIFIED;
+        uint8_t packet_type = enc->temporal_enable_mcezbc ? TAV_PACKET_GOP_UNIFIED_MESH : TAV_PACKET_GOP_UNIFIED;
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
 
@@ -4925,22 +5183,23 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         fwrite(&gop_size_byte, 1, 1, output);
         total_bytes_written += 1;
 
-        if (enc->temporal_enable_mesh_warp) {
-            // Packet 0x13: Mesh-based warping (translation only, no affine)
-            // Encode mesh motion vectors and compress with Zstd
-            // Max size: mesh dimensions (4) + translation (4 bytes/cell)
-            size_t max_mesh_size = 4 + (actual_gop_size * enc->temporal_mesh_width * enc->temporal_mesh_height * 4);
-            uint8_t *mesh_buffer = malloc(max_mesh_size);
+        if (enc->temporal_enable_mcezbc) {
+            // Packet 0x13: MC-EZBC block-based motion compensation
+            // Encode block motion vectors and compress with Zstd
+            // Max size: block dimensions (2) + MVs (4 bytes per block × 2 directions)
+            int num_blocks = enc->temporal_num_blocks_x * enc->temporal_num_blocks_y;
+            size_t max_mv_size = 2 + (actual_gop_size * num_blocks * 4 * 2);  // fwd + bwd MVs
+            uint8_t *mv_buffer = malloc(max_mv_size);
 
-            size_t mesh_size = encode_mesh_differential(
-                enc->temporal_gop_mesh_dx, enc->temporal_gop_mesh_dy,
-                actual_gop_size, enc->temporal_mesh_width, enc->temporal_mesh_height,
-                mesh_buffer, max_mesh_size
+            size_t mv_size = encode_block_mvs_differential(
+                enc->temporal_gop_mvs_fwd_x, enc->temporal_gop_mvs_fwd_y,
+                actual_gop_size, enc->temporal_num_blocks_x, enc->temporal_num_blocks_y,
+                mv_buffer, max_mv_size
             );
 
-            if (mesh_size == 0) {
-                fprintf(stderr, "Error: Failed to encode mesh motion vectors\n");
-                free(mesh_buffer);
+            if (mv_size == 0) {
+                fprintf(stderr, "Error: Failed to encode block motion vectors\n");
+                free(mv_buffer);
                 // Free all allocated buffers
                 for (int i = 0; i < actual_gop_size; i++) {
                     free(gop_y_coeffs[i]);
@@ -4959,19 +5218,19 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                 return 0;
             }
 
-            // Compress mesh data with Zstd
-            size_t max_compressed_mesh = ZSTD_compressBound(mesh_size);
-            uint8_t *compressed_mesh = malloc(max_compressed_mesh);
-            size_t compressed_mesh_size = ZSTD_compress(
-                compressed_mesh, max_compressed_mesh,
-                mesh_buffer, mesh_size,
+            // Compress MV data with Zstd
+            size_t max_compressed_mv = ZSTD_compressBound(mv_size);
+            uint8_t *compressed_mv = malloc(max_compressed_mv);
+            size_t compressed_mv_size = ZSTD_compress(
+                compressed_mv, max_compressed_mv,
+                mv_buffer, mv_size,
                 enc->zstd_level
             );
 
-            if (ZSTD_isError(compressed_mesh_size)) {
-                fprintf(stderr, "Error: Zstd compression failed for mesh data\n");
-                free(mesh_buffer);
-                free(compressed_mesh);
+            if (ZSTD_isError(compressed_mv_size)) {
+                fprintf(stderr, "Error: Zstd compression failed for motion vector data\n");
+                free(mv_buffer);
+                free(compressed_mv);
                 // Free all allocated buffers
                 for (int i = 0; i < actual_gop_size; i++) {
                     free(gop_y_coeffs[i]);
@@ -4990,20 +5249,20 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                 return 0;
             }
 
-            // Write compressed mesh size and data
-            uint32_t compressed_mesh_size_32 = (uint32_t)compressed_mesh_size;
-            fwrite(&compressed_mesh_size_32, sizeof(uint32_t), 1, output);
-            fwrite(compressed_mesh, 1, compressed_mesh_size, output);
-            total_bytes_written += sizeof(uint32_t) + compressed_mesh_size;
+            // Write compressed MV size and data
+            uint32_t compressed_mv_size_32 = (uint32_t)compressed_mv_size;
+            fwrite(&compressed_mv_size_32, sizeof(uint32_t), 1, output);
+            fwrite(compressed_mv, 1, compressed_mv_size, output);
+            total_bytes_written += sizeof(uint32_t) + compressed_mv_size;
 
             if (enc->verbose) {
-                printf("Mesh data: %zu bytes raw, %zu bytes compressed (%.1f%% compression)\n",
-                       mesh_size, compressed_mesh_size,
-                       100.0 * compressed_mesh_size / mesh_size);
+                printf("Motion vectors: %zu bytes raw, %zu bytes compressed (%.1f%% compression)\n",
+                       mv_size, compressed_mv_size,
+                       100.0 * compressed_mv_size / mv_size);
             }
 
-            free(mesh_buffer);
-            free(compressed_mesh);
+            free(mv_buffer);
+            free(compressed_mv);
         } else {
             // Packet 0x12: Translation-based alignment
             // Write canvas expansion information (4 bytes)
@@ -5033,8 +5292,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         uint8_t *preprocessed_buffer = malloc(max_preprocessed_size);
 
         size_t preprocessed_size = preprocess_gop_unified(
-            quant_y, quant_co, quant_cg,
-            actual_gop_size, num_pixels, enc->channel_layout,
+            enc->enable_ezbc, quant_y, quant_co, quant_cg,
+            actual_gop_size, num_pixels, enc->width, enc->height, enc->channel_layout,
             preprocessed_buffer);
 
         // Compress entire GOP with Zstd (single compression for all frames)
@@ -5128,44 +5387,21 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
     // Check for scene changes within the GOP
     if (!force_flush) {
         for (int i = 1; i < enc->temporal_gop_frame_count; i++) {
-            // Compare consecutive frames using RGB data
-            uint8_t *frame1 = enc->temporal_gop_rgb_frames[i - 1];
-            uint8_t *frame2 = enc->temporal_gop_rgb_frames[i];
+            // Compare consecutive frames using unified scene change detection
+            double avg_diff, changed_ratio;
+            int is_scene_change = detect_scene_change_between_frames(
+                enc->temporal_gop_rgb_frames[i - 1],
+                enc->temporal_gop_rgb_frames[i],
+                enc->width,
+                enc->height,
+                &avg_diff,
+                &changed_ratio
+            );
 
-            long long total_diff = 0;
-            int changed_pixels = 0;
-
-            // Sample every 4th pixel for performance (still gives good detection)
-            for (int y = 0; y < enc->height; y += 2) {
-                for (int x = 0; x < enc->width; x += 2) {
-                    int offset = (y * enc->width + x) * 3;
-
-                    // Calculate colour difference
-                    int r_diff = abs(frame2[offset] - frame1[offset]);
-                    int g_diff = abs(frame2[offset + 1] - frame1[offset + 1]);
-                    int b_diff = abs(frame2[offset + 2] - frame1[offset + 2]);
-
-                    int pixel_diff = r_diff + g_diff + b_diff;
-                    total_diff += pixel_diff;
-
-                    // Count significantly changed pixels (threshold of 30 per channel average)
-                    if (pixel_diff > 90) {
-                        changed_pixels++;
-                    }
-                }
-            }
-
-            // Scene change thresholds (same as detect_scene_change)
-            int sampled_pixels = (enc->height / 2) * (enc->width / 2);
-            double avg_diff = (double)total_diff / sampled_pixels;
-            double changed_ratio = (double)changed_pixels / sampled_pixels;
-            double threshold = 0.30;
-
-            // Scene change detected if either threshold exceeded
-            if (changed_ratio > threshold) {
+            if (is_scene_change) {
                 scene_change_frame = i;
                 if (enc->verbose) {
-                    printf("Scene change detected within GOP at frame %d (avg_diff=%.2f, change_ratio=%.2f)\n",
+                    printf("Scene change detected within GOP at frame %d (avg_diff=%.2f, change_ratio=%.4f)\n",
                            frame_numbers[i], avg_diff, changed_ratio);
                 }
                 break;
@@ -5341,130 +5577,157 @@ static void invert_mesh(
            motion_threshold, texture_threshold, fb_threshold);
 }*/
 
-// Motion-compensated lifting: Haar wavelet with SYMMETRIC bi-directional warping
-// Implements predict-update lifting scheme with symmetric motion compensation
+// Simple translation-based frame alignment (legacy, non-MC-EZBC path)
+// Shifts entire frame by (dx, dy) pixels with bilinear interpolation
+static void apply_translation(
+    const float *src, int width, int height,
+    float dx, float dy,
+    float *dst
+) {
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            // Source position (backward warping)
+            float src_x = x - dx;
+            float src_y = y - dy;
+
+            // Clamp to valid range
+            if (src_x < 0.0f) src_x = 0.0f;
+            if (src_x >= width - 1) src_x = width - 1.001f;
+            if (src_y < 0.0f) src_y = 0.0f;
+            if (src_y >= height - 1) src_y = height - 1.001f;
+
+            // Bilinear interpolation
+            int x0 = (int)src_x;
+            int y0 = (int)src_y;
+            int x1 = x0 + 1;
+            int y1 = y0 + 1;
+
+            float fx = src_x - x0;
+            float fy = src_y - y0;
+
+            float val00 = src[y0 * width + x0];
+            float val10 = src[y0 * width + x1];
+            float val01 = src[y1 * width + x0];
+            float val11 = src[y1 * width + x1];
+
+            float val_top = (1.0f - fx) * val00 + fx * val10;
+            float val_bot = (1.0f - fx) * val01 + fx * val11;
+            float val = (1.0f - fy) * val_top + fy * val_bot;
+
+            dst[y * width + x] = val;
+        }
+    }
+}
+
+// MC-EZBC Motion-Compensated Lifting (Proper Implementation)
+// Implements the predict-update lifting scheme from MC-EZBC paper
+// Based on MC-EZBC.md documentation
 //
-// Symmetric lifting (both frames meet in the middle):
-//   Predict: H = warp(F1, -½·mesh) - warp(F0, +½·mesh)
-//   Update:  L = 0.5 * (warp(F0, +½·mesh) + warp(F1, -½·mesh))
-//
-// With reliability masking:
-//   For reliable pixels: use MC-lifting (mesh warp)
-//   For unreliable pixels: fall back to plain Haar (H = F1 - F0, L = 0.5*(F0+F1))
+// MC-EZBC Lifting Steps:
+//   Predict: H[i] = F_odd[i] - 0.5 * (warp(F_even[i], MV_fw) + warp(F_even[i+1], MV_bw))
+//   Update:  L[i] = F_even[i] + 0.25 * (warp(H[i-1], MV_bw) + warp(H[i], MV_fw))
 //
 // This produces:
-//   L (lowband): symmetric motion-aligned temporal average (where reliable)
-//   H (highband): symmetric motion-compensated residual (where reliable)
+//   L (lowband): temporal low-pass with motion-compensated update
+//   H (highband): temporal high-pass residual after bidirectional prediction
 //
-// Benefits:
-//   - Symmetric treatment of both frames (no bias)
-//   - Better invertibility (both frames warp equally)
-//   - Lower residual energy (frames meet at temporal midpoint)
-//   - Eliminates errors from occlusions, low-texture regions, and bad matches
+// Benefits over mesh warping:
+//   - Standard block-based approach (proven in JPEG 2000, H.264)
+//   - Perfect invertibility
+//   - Lower computational cost
+//   - Smaller motion vector overhead
 static void mc_lifting_forward_pair(
     tav_encoder_t *enc,
-    float **f0_y, float **f0_co, float **f0_cg,  // Frame 0 (reference)
-    float **f1_y, float **f1_co, float **f1_cg,  // Frame 1 (current)
-    const short *mesh_dx, const short *mesh_dy,  // Forward mesh (F0→F1)
-//    const uint8_t *reliability_mask,             // Reliability mask (1=use MC, 0=plain Haar)
+    float **f0_y, float **f0_co, float **f0_cg,  // F_even (frame at even index)
+    float **f1_y, float **f1_co, float **f1_cg,  // F_odd (frame at odd index)
+    int f0_idx, int f1_idx,                       // Frame indices for MV lookup
     float **out_l_y, float **out_l_co, float **out_l_cg,  // Lowband output
     float **out_h_y, float **out_h_co, float **out_h_cg   // Highband output
 ) {
     int width = enc->width;
     int height = enc->height;
     int num_pixels = width * height;
-    int num_mesh_points = enc->temporal_mesh_width * enc->temporal_mesh_height;
 
-    // Allocate temporary buffers
-    float *warped_f0_fwd_y = malloc(num_pixels * sizeof(float));
-    float *warped_f0_fwd_co = malloc(num_pixels * sizeof(float));
-    float *warped_f0_fwd_cg = malloc(num_pixels * sizeof(float));
+    // Get motion vectors for this frame pair
+    int16_t *mvs_fwd_x = enc->temporal_gop_mvs_fwd_x[f1_idx];  // F0 → F1
+    int16_t *mvs_fwd_y = enc->temporal_gop_mvs_fwd_y[f1_idx];
+    int16_t *mvs_bwd_x = enc->temporal_gop_mvs_bwd_x[f1_idx];  // F1 → F0
+    int16_t *mvs_bwd_y = enc->temporal_gop_mvs_bwd_y[f1_idx];
 
-    float *warped_f1_back_y = malloc(num_pixels * sizeof(float));
-    float *warped_f1_back_co = malloc(num_pixels * sizeof(float));
-    float *warped_f1_back_cg = malloc(num_pixels * sizeof(float));
+    // Allocate temporary buffers for predictions
+    float *pred_y = malloc(num_pixels * sizeof(float));
+    float *pred_co = malloc(num_pixels * sizeof(float));
+    float *pred_cg = malloc(num_pixels * sizeof(float));
 
-    short *half_mesh_dx = malloc(num_mesh_points * sizeof(short));
-    short *half_mesh_dy = malloc(num_mesh_points * sizeof(short));
-    short *neg_half_mesh_dx = malloc(num_mesh_points * sizeof(short));
-    short *neg_half_mesh_dy = malloc(num_mesh_points * sizeof(short));
-
-    if (!warped_f0_fwd_y || !warped_f0_fwd_co || !warped_f0_fwd_cg ||
-        !warped_f1_back_y || !warped_f1_back_co || !warped_f1_back_cg ||
-        !half_mesh_dx || !half_mesh_dy ||
-        !neg_half_mesh_dx || !neg_half_mesh_dy) {
-        fprintf(stderr, "Error: Failed to allocate MC-lifting buffers\n");
-        goto cleanup;
+    if (!pred_y || !pred_co || !pred_cg) {
+        fprintf(stderr, "Error: Failed to allocate MC-EZBC lifting buffers\n");
+        free(pred_y);
+        free(pred_co);
+        free(pred_cg);
+        return;
     }
 
-    // Create half-step meshes for symmetric warping
-    // +½·mesh for F0 forward, -½·mesh for F1 backward
-    for (int i = 0; i < num_mesh_points; i++) {
-        half_mesh_dx[i] = mesh_dx[i] / 2;
-        half_mesh_dy[i] = mesh_dy[i] / 2;
-        neg_half_mesh_dx[i] = -half_mesh_dx[i];
-        neg_half_mesh_dy[i] = -half_mesh_dy[i];
-    }
+    // ===== MC-EZBC PREDICT STEP =====
+    // H = F_odd - 0.5 * (warp(F_even, MV_fw) + warp(F_even, MV_bw))
+    // Use bidirectional prediction for better temporal decorrelation
+    warp_bidirectional(*f0_y, *f1_y, width, height,
+                       mvs_fwd_x, mvs_fwd_y, mvs_bwd_x, mvs_bwd_y,
+                       enc->temporal_block_size, pred_y);
+    warp_bidirectional(*f0_co, *f1_co, width, height,
+                       mvs_fwd_x, mvs_fwd_y, mvs_bwd_x, mvs_bwd_y,
+                       enc->temporal_block_size, pred_co);
+    warp_bidirectional(*f0_cg, *f1_cg, width, height,
+                       mvs_fwd_x, mvs_fwd_y, mvs_bwd_x, mvs_bwd_y,
+                       enc->temporal_block_size, pred_cg);
 
-    // ===== SYMMETRIC PREDICT STEP: H = warp(F1, -½·mesh) - warp(F0, +½·mesh) =====
-    // Warp F0 forward by half-step (toward temporal midpoint)
-    warp_frame_with_mesh(*f0_y, width, height, half_mesh_dx, half_mesh_dy,
-                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f0_fwd_y);
-    warp_frame_with_mesh(*f0_co, width, height, half_mesh_dx, half_mesh_dy,
-                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f0_fwd_co);
-    warp_frame_with_mesh(*f0_cg, width, height, half_mesh_dx, half_mesh_dy,
-                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f0_fwd_cg);
-
-    // Warp F1 backward by half-step (toward temporal midpoint)
-    warp_frame_with_mesh(*f1_y, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
-                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f1_back_y);
-    warp_frame_with_mesh(*f1_co, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
-                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f1_back_co);
-    warp_frame_with_mesh(*f1_cg, width, height, neg_half_mesh_dx, neg_half_mesh_dy,
-                         enc->temporal_mesh_width, enc->temporal_mesh_height, warped_f1_back_cg);
-
-    float ALPHA = 0.5f; // lowering the alpha also drops the visual quality
-
-    // Compute temporal highband and lowband with selective MC
-    // For reliable pixels: use MC-lifting (warped frames)
-    // For unreliable pixels: fall back to plain Haar (original frames)
+    // Compute high-pass (temporal residual)
     for (int i = 0; i < num_pixels; i++) {
-//        if (reliability_mask[i]) {
-            // ===== RELIABLE: MC-LIFTING =====
-            // Predict: H = warp(F1, -½·mesh) - warp(F0, +½·mesh)
-            (*out_h_y)[i] = warped_f1_back_y[i] - warped_f0_fwd_y[i];
-            (*out_h_co)[i] = warped_f1_back_co[i] - warped_f0_fwd_co[i];
-            (*out_h_cg)[i] = warped_f1_back_cg[i] - warped_f0_fwd_cg[i];
-
-            // Update: L = 0.5 * (warp(F0, +½·mesh) + warp(F1, -½·mesh))
-            (*out_l_y)[i] = ALPHA * (warped_f0_fwd_y[i] + warped_f1_back_y[i]);
-            (*out_l_co)[i] = ALPHA * (warped_f0_fwd_co[i] + warped_f1_back_co[i]);
-            (*out_l_cg)[i] = ALPHA * (warped_f0_fwd_cg[i] + warped_f1_back_cg[i]);
-        /*} else {
-            // ===== UNRELIABLE: PLAIN HAAR (no warping) =====
-            // Predict: H = F1 - F0
-            (*out_h_y)[i] = (*f1_y)[i] - (*f0_y)[i];
-            (*out_h_co)[i] = (*f1_co)[i] - (*f0_co)[i];
-            (*out_h_cg)[i] = (*f1_cg)[i] - (*f0_cg)[i];
-
-            // Update: L = 0.5 * (F0 + F1)
-            (*out_l_y)[i] = ALPHA * ((*f0_y)[i] + (*f1_y)[i]);
-            (*out_l_co)[i] = ALPHA * ((*f0_co)[i] + (*f1_co)[i]);
-            (*out_l_cg)[i] = ALPHA * ((*f0_cg)[i] + (*f1_cg)[i]);
-        }*/
+        (*out_h_y)[i] = (*f1_y)[i] - pred_y[i];
+        (*out_h_co)[i] = (*f1_co)[i] - pred_co[i];
+        (*out_h_cg)[i] = (*f1_cg)[i] - pred_cg[i];
     }
 
-cleanup:
-    free(warped_f0_fwd_y);
-    free(warped_f0_fwd_co);
-    free(warped_f0_fwd_cg);
-    free(warped_f1_back_y);
-    free(warped_f1_back_co);
-    free(warped_f1_back_cg);
-    free(half_mesh_dx);
-    free(half_mesh_dy);
-    free(neg_half_mesh_dx);
-    free(neg_half_mesh_dy);
+    // ===== MC-EZBC UPDATE STEP =====
+    // L = F_even + 0.25 * warp(H, MV_bw)
+    // (Note: In full implementation, this would use both H[i-1] and H[i],
+    // but for single-level decomposition, we only have current H)
+    float *update_y = malloc(num_pixels * sizeof(float));
+    float *update_co = malloc(num_pixels * sizeof(float));
+    float *update_cg = malloc(num_pixels * sizeof(float));
+
+    if (!update_y || !update_co || !update_cg) {
+        fprintf(stderr, "Error: Failed to allocate MC-EZBC update buffers\n");
+        free(pred_y);
+        free(pred_co);
+        free(pred_cg);
+        free(update_y);
+        free(update_co);
+        free(update_cg);
+        return;
+    }
+
+    // Warp H (high-pass) back to F_even using backward MVs
+    warp_block_motion(*out_h_y, width, height, mvs_bwd_x, mvs_bwd_y,
+                      enc->temporal_block_size, update_y);
+    warp_block_motion(*out_h_co, width, height, mvs_bwd_x, mvs_bwd_y,
+                      enc->temporal_block_size, update_co);
+    warp_block_motion(*out_h_cg, width, height, mvs_bwd_x, mvs_bwd_y,
+                      enc->temporal_block_size, update_cg);
+
+    // Compute low-pass (temporal approximation)
+    for (int i = 0; i < num_pixels; i++) {
+        (*out_l_y)[i] = (*f0_y)[i] + 0.25f * update_y[i];
+        (*out_l_co)[i] = (*f0_co)[i] + 0.25f * update_co[i];
+        (*out_l_cg)[i] = (*f0_cg)[i] + 0.25f * update_cg[i];
+    }
+
+    // Cleanup
+    free(pred_y);
+    free(pred_co);
+    free(pred_cg);
+    free(update_y);
+    free(update_co);
+    free(update_cg);
 }
 
 // Apply 1D temporal DWT along time axis for a spatial location (encoder side)
@@ -5525,39 +5788,16 @@ static void dwt_3d_forward_mc(
 
             if (f1_idx >= level_frames) break;
 
-            // Get mesh for this frame pair (mesh[f1] describes motion from f0 to f1)
-            const short *mesh_dx = enc->temporal_gop_mesh_dx[f1_idx];
-            const short *mesh_dy = enc->temporal_gop_mesh_dy[f1_idx];
-
-            // Build reliability mask for selective motion compensation
-            /*uint8_t *reliability_mask = malloc(num_pixels * sizeof(uint8_t));
-            if (reliability_mask && enc->temporal_gop_flow_fwd_x[f1_idx] && enc->temporal_gop_flow_bwd_x[f1_idx]) {
-                build_reliability_mask(
-                    enc->temporal_gop_rgb_frames[f0_idx], enc->temporal_gop_rgb_frames[f1_idx],
-                    enc->temporal_gop_flow_fwd_x[f1_idx], enc->temporal_gop_flow_fwd_y[f1_idx],
-                    enc->temporal_gop_flow_bwd_x[f1_idx], enc->temporal_gop_flow_bwd_y[f1_idx],
-                    width, height,
-                    reliability_mask
-                );
-            } else {
-                // Fallback: use MC everywhere (all pixels reliable)
-                if (reliability_mask) {
-                    memset(reliability_mask, 1, num_pixels * sizeof(uint8_t));
-                }
-            }*/
-
-            // Apply MC-lifting: (L, H) = mc_lift(F0, F1, mesh, mask)
+            // Apply MC-EZBC lifting: (L, H) = mc_lift_ezbc(F0, F1, MVs)
+            // Motion vectors are stored per frame and looked up by frame index
             mc_lifting_forward_pair(
                 enc,
-                &gop_y[f0_idx], &gop_co[f0_idx], &gop_cg[f0_idx],  // F0
-                &gop_y[f1_idx], &gop_co[f1_idx], &gop_cg[f1_idx],  // F1
-                mesh_dx, mesh_dy,
-//                reliability_mask,                                    // Reliability mask
+                &gop_y[f0_idx], &gop_co[f0_idx], &gop_cg[f0_idx],  // F_even
+                &gop_y[f1_idx], &gop_co[f1_idx], &gop_cg[f1_idx],  // F_odd
+                f0_idx, f1_idx,                                     // Frame indices for MV lookup
                 &temp_l_y[i/2], &temp_l_co[i/2], &temp_l_cg[i/2],  // L output
                 &temp_h_y[level_frames/2 + i/2], &temp_h_co[level_frames/2 + i/2], &temp_h_cg[level_frames/2 + i/2]  // H output
             );
-
-//            free(reliability_mask);
         }
 
         // Copy L and H bands back to gop buffers for next level
@@ -6014,11 +6254,10 @@ static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height
     free(temp_col);
 }
 
-// Variable channel layout preprocessing for concatenated maps
 // Significance Map v2.1 (twobit-map): 2 bits per coefficient
 // 00=zero, 01=+1, 10=-1, 11=other (stored as int16)
-static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
-                                                     int coeff_count, int channel_layout, uint8_t *output_buffer) {
+static size_t preprocess_coefficients_twobitmap(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                                int coeff_count, int channel_layout, uint8_t *output_buffer) {
     const channel_layout_config_t *config = &channel_layouts[channel_layout];
     int map_bytes = (coeff_count * 2 + 7) / 8;  // 2 bits per coefficient
     int total_maps = config->num_channels;
@@ -6106,12 +6345,88 @@ static size_t preprocess_coefficients_variable_layout(int16_t *coeffs_y, int16_t
     return map_bytes * total_maps + total_others * sizeof(int16_t);
 }
 
+// EZBC preprocessing: encode each channel with embedded zero block coding
+static size_t preprocess_coefficients_ezbc(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                            int coeff_count, int width, int height, int channel_layout,
+                                            uint8_t *output_buffer) {
+    const channel_layout_config_t *config = &channel_layouts[channel_layout];
+    size_t total_size = 0;
+    uint8_t *write_ptr = output_buffer;
+
+    // Encode each active channel separately with EZBC
+    int16_t *channel_coeffs[4] = {coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha};
+    int channel_active[4] = {config->has_y, config->has_co, config->has_cg, config->has_alpha};
+
+    for (int ch = 0; ch < 4; ch++) {
+        if (!channel_active[ch] || !channel_coeffs[ch]) continue;
+
+        // Encode this channel with EZBC
+        uint8_t *ezbc_data = NULL;
+        size_t ezbc_size = encode_channel_ezbc(channel_coeffs[ch], coeff_count, width, height, &ezbc_data);
+
+        // Write size header (uint32_t) for this channel
+        *((uint32_t*)write_ptr) = (uint32_t)ezbc_size;
+        write_ptr += sizeof(uint32_t);
+        total_size += sizeof(uint32_t);
+
+        // Copy EZBC-encoded data
+        memcpy(write_ptr, ezbc_data, ezbc_size);
+        write_ptr += ezbc_size;
+        total_size += ezbc_size;
+
+        // Free EZBC buffer
+        free(ezbc_data);
+    }
+
+    return total_size;
+}
+
+// Wrapper: select between EZBC and twobit-map based on encoder settings
+static size_t preprocess_coefficients_variable_layout(int enable_ezbc, int width, int height,
+                                                       int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                                       int coeff_count, int channel_layout, uint8_t *output_buffer) {
+    if (enable_ezbc) {
+        return preprocess_coefficients_ezbc(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
+                                             coeff_count, width, height, channel_layout, output_buffer);
+    } else {
+        return preprocess_coefficients_twobitmap(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
+                                                 coeff_count, channel_layout, output_buffer);
+    }
+}
+
 // Unified GOP preprocessing: single significance map for all frames and channels
-// Layout: [All_Y_maps][All_Co_maps][All_Cg_maps][All_Y_values][All_Co_values][All_Cg_values]
+// Layout (twobit-map): [All_Y_maps][All_Co_maps][All_Cg_maps][All_Y_values][All_Co_values][All_Cg_values]
+// Layout (EZBC): [frame0_size(4)][frame0_ezbc][frame1_size(4)][frame1_ezbc]...
 // This enables optimal cross-frame compression in the temporal dimension
-static size_t preprocess_gop_unified(int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
-                                     int num_frames, int num_pixels, int channel_layout,
+static size_t preprocess_gop_unified(int enable_ezbc, int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
+                                     int num_frames, int num_pixels, int width, int height, int channel_layout,
                                      uint8_t *output_buffer) {
+    // EZBC mode: encode each frame separately with EZBC
+    if (enable_ezbc) {
+        size_t total_size = 0;
+        uint8_t *write_ptr = output_buffer;
+
+        for (int frame = 0; frame < num_frames; frame++) {
+            // Encode this frame with EZBC
+            size_t frame_size = preprocess_coefficients_ezbc(
+                quant_y ? quant_y[frame] : NULL,
+                quant_co ? quant_co[frame] : NULL,
+                quant_cg ? quant_cg[frame] : NULL,
+                NULL,  // No alpha in GOP mode
+                num_pixels, width, height, channel_layout,
+                write_ptr + sizeof(uint32_t)  // Leave space for size header
+            );
+
+            // Write frame size header
+            *((uint32_t*)write_ptr) = (uint32_t)frame_size;
+            write_ptr += sizeof(uint32_t) + frame_size;
+            total_size += sizeof(uint32_t) + frame_size;
+        }
+
+        return total_size;
+    }
+
+    // Twobit-map mode: original unified GOP preprocessing
     const channel_layout_config_t *config = &channel_layouts[channel_layout];
     const int map_bytes_per_frame = (num_pixels * 2 + 7) / 8;  // 2 bits per coefficient
     const int total_coeffs = num_pixels * num_frames;
@@ -6549,6 +6864,65 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
     }
 }
 
+// Quantization for EZBC mode: quantizes to discrete levels but doesn't normalize (shrink) values
+// This reduces coefficient precision while preserving magnitude for EZBC's bitplane encoding
+static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_encoder_t *enc,
+                                                          float *coeffs, int16_t *quantised, int size,
+                                                          int base_quantiser, int width, int height,
+                                                          int decomp_levels, int is_chroma, int frame_count) {
+    (void)frame_count;  // Unused parameter
+
+    float effective_base_q = base_quantiser;
+    effective_base_q = FCLAMP(effective_base_q, 1.0f, 4096.0f);
+
+    for (int i = 0; i < size; i++) {
+        // Apply perceptual weight based on coefficient's position in DWT layout
+        float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
+        float effective_q = effective_base_q * weight;
+
+        // Step 1: Quantize - divide by quantizer to get normalized value
+        float quantised_val = coeffs[i] / effective_q;
+
+        // Step 2: Apply dead-zone quantization to normalized value
+        if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
+            int level = get_subband_level(i, width, height, decomp_levels);
+            int subband_type = get_subband_type(i, width, height, decomp_levels);
+            float level_threshold = 0.0f;
+
+            if (level == 1) {
+                // Finest level (level 1: 280x224)
+                if (subband_type == 3) {
+                    // HH1: full dead-zone
+                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
+                } else if (subband_type == 1 || subband_type == 2) {
+                    // LH1, HL1: half dead-zone
+                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                }
+            } else if (level == 2) {
+                // Second-finest level (level 2: 140x112)
+                if (subband_type == 3) {
+                    // HH2: half dead-zone
+                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                }
+                // LH2, HL2: no dead-zone
+            }
+            // Coarser levels (3-6): no dead-zone to preserve structural information
+
+            if (fabsf(quantised_val) <= level_threshold) {
+                quantised_val = 0.0f;
+            }
+        }
+
+        // Step 3: Round to discrete quantization levels
+        quantised_val = roundf(quantised_val);
+
+        // Step 4: Denormalize - multiply back by quantizer to restore magnitude
+        // This gives us quantized values at original scale (not shrunken to 0-10 range)
+        float denormalized = quantised_val * effective_q;
+
+        quantised[i] = (int16_t)CLAMP((int)denormalized, -32768, 32767);
+    }
+}
 
 
 // Convert 2D spatial DWT layout to linear subband layout (for decoder compatibility)
@@ -6657,7 +7031,22 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
     if (mode == TAV_MODE_INTRA) {
         // INTRA mode: quantise coefficients directly and store for future reference
-        if (enc->perceptual_tuning) {
+        if (enc->enable_ezbc) {
+            // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
+            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantization without normalization\n");
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+
+            // Print max abs for debug
+            int max_y = 0, max_co = 0, max_cg = 0;
+            for (int i = 0; i < tile_size; i++) {
+                if (abs(quantised_y[i]) > max_y) max_y = abs(quantised_y[i]);
+                if (abs(quantised_co[i]) > max_co) max_co = abs(quantised_co[i]);
+                if (abs(quantised_cg[i]) > max_cg) max_cg = abs(quantised_cg[i]);
+            }
+            fprintf(stderr, "[EZBC-QUANT-INTRA] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
+        } else if (enc->perceptual_tuning) {
             // Perceptual quantisation: EXACTLY like uniform but with per-coefficient weights
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
@@ -6764,8 +7153,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     }*/
 
     // Preprocess and write quantised coefficients using variable channel layout concatenated significance maps
-    size_t total_compressed_size = preprocess_coefficients_variable_layout(quantised_y, quantised_co, quantised_cg, NULL,
-                                                                          tile_size, enc->channel_layout, buffer + offset);
+    size_t total_compressed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+                                                                           quantised_y, quantised_co, quantised_cg, NULL,
+                                                                           tile_size, enc->channel_layout, buffer + offset);
     offset += total_compressed_size;
 
     // DEBUG: Dump raw DWT coefficients for specified frame when it's an intra-frame
@@ -8392,25 +8782,33 @@ static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
 }
 
 // Detect scene changes by analysing frame differences
-static int detect_scene_change(tav_encoder_t *enc) {
-    if (!enc->current_frame_rgb || enc->intra_only) {
-        return 0; // No current frame to compare
+// Unified scene change detection comparing two RGB frames
+// Returns 1 if scene change detected, 0 otherwise
+// Also outputs avg_diff and changed_ratio through pointers if non-NULL
+static int detect_scene_change_between_frames(
+    const uint8_t *frame1_rgb,
+    const uint8_t *frame2_rgb,
+    int width,
+    int height,
+    double *out_avg_diff,
+    double *out_changed_ratio
+) {
+    if (!frame1_rgb || !frame2_rgb) {
+        return 0; // No frames to compare
     }
-
-    uint8_t *comparison_buffer = enc->previous_frame_rgb;
 
     long long total_diff = 0;
     int changed_pixels = 0;
 
     // Sample every 4th pixel for performance (still gives good detection)
-    for (int y = 0; y < enc->height; y += 2) {
-        for (int x = 0; x < enc->width; x += 2) {
-            int offset = (y * enc->width + x) * 3;
+    for (int y = 0; y < height; y += 2) {
+        for (int x = 0; x < width; x += 2) {
+            int offset = (y * width + x) * 3;
 
             // Calculate colour difference
-            int r_diff = abs(enc->current_frame_rgb[offset] - comparison_buffer[offset]);
-            int g_diff = abs(enc->current_frame_rgb[offset + 1] - comparison_buffer[offset + 1]);
-            int b_diff = abs(enc->current_frame_rgb[offset + 2] - comparison_buffer[offset + 2]);
+            int r_diff = abs(frame2_rgb[offset] - frame1_rgb[offset]);
+            int g_diff = abs(frame2_rgb[offset + 1] - frame1_rgb[offset + 1]);
+            int b_diff = abs(frame2_rgb[offset + 2] - frame1_rgb[offset + 2]);
 
             int pixel_diff = r_diff + g_diff + b_diff;
             total_diff += pixel_diff;
@@ -8423,19 +8821,41 @@ static int detect_scene_change(tav_encoder_t *enc) {
     }
 
     // Calculate metrics for scene change detection
-    int sampled_pixels = (enc->height / 2) * (enc->width / 2);
+    int sampled_pixels = (height / 2) * (width / 2);
     double avg_diff = (double)total_diff / sampled_pixels;
     double changed_ratio = (double)changed_pixels / sampled_pixels;
 
-    if (enc->verbose) {
+    // Output metrics if requested
+    if (out_avg_diff) *out_avg_diff = avg_diff;
+    if (out_changed_ratio) *out_changed_ratio = changed_ratio;
+
+    // Scene change threshold
+    double threshold = 0.75;
+
+    return changed_ratio > threshold;
+}
+
+// Wrapper for normal mode: compare current frame with previous frame
+static int detect_scene_change(tav_encoder_t *enc) {
+    if (!enc->current_frame_rgb || enc->intra_only) {
+        return 0; // No current frame to compare
+    }
+
+    double avg_diff, changed_ratio;
+    int is_scene_change = detect_scene_change_between_frames(
+        enc->previous_frame_rgb,
+        enc->current_frame_rgb,
+        enc->width,
+        enc->height,
+        &avg_diff,
+        &changed_ratio
+    );
+
+    if (is_scene_change) {
         printf("Scene change detection: avg_diff=%.2f\tchanged_ratio=%.4f\n", avg_diff, changed_ratio);
     }
 
-    // Scene change thresholds - adjust for interlaced mode
-    // Interlaced fields have more natural differences due to temporal field separation
-    double threshold = 0.30;
-
-    return changed_ratio > threshold;
+    return is_scene_change;
 }
 
 // Detect still frames by comparing quantised DWT coefficients
@@ -8605,11 +9025,12 @@ int main(int argc, char *argv[]) {
         {"delta-haar", required_argument, 0, 1018},
         {"temporal-dwt", no_argument, 0, 1019},
         {"temporal-3d", no_argument, 0, 1019},
-        {"mesh-warp", no_argument, 0, 1020},
+        {"mc-ezbc", no_argument, 0, 1020},
         {"residual-coding", no_argument, 0, 1021},
         {"adaptive-blocks", no_argument, 0, 1022},
         {"bframes", required_argument, 0, 1023},
         {"gop-size", required_argument, 0, 1024},
+        {"ezbc", no_argument, 0, 1025},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -8776,9 +9197,9 @@ int main(int argc, char *argv[]) {
                 enc->enable_temporal_dwt = 1;
                 printf("Temporal 3D DWT encoding enabled (GOP size: %d frames)\n", TEMPORAL_GOP_SIZE);
                 break;
-            case 1020: // --mesh-warp
-                enc->temporal_enable_mesh_warp = 1;
-                printf("Mesh-based motion compensation enabled (requires --temporal-dwt)\n");
+            case 1020: // --mc-ezbc
+                enc->temporal_enable_mcezbc = 1;
+                printf("MC-EZBC block-based motion compensation enabled (requires --temporal-dwt)\n");
                 break;
             case 1021: // --residual-coding
                 enc->use_delta_encoding = 0; // Mutually exclusive with delta encoding
@@ -8814,6 +9235,10 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
                 printf("GOP size set to %d frames\n", enc->residual_coding_gop_size);
+                break;
+            case 1025: // --ezbc
+                enc->enable_ezbc = 1;
+                printf("EZBC (Embedded Zero Block Coding) enabled for significance maps\n");
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -9155,7 +9580,7 @@ int main(int argc, char *argv[]) {
 
         if (enc->enable_temporal_dwt) {
             // GOP-based temporal 3D DWT encoding path
-            int add_result = gop_add_frame(enc, enc->current_frame_rgb,
+            int add_result = temporal_gop_add_frame(enc, enc->current_frame_rgb,
                                           enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg);
 
             if (add_result != 0) {

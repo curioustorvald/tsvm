@@ -4231,6 +4231,335 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
+     * EZBC (Embedded Zero Block Coding) decoder for a single channel
+     * Decodes hierarchical zero-block coded bitstream
+     *
+     * @param ezbc_data EZBC-encoded bitstream
+     * @param offset Starting offset in ezbc_data
+     * @param size Size of EZBC data in bytes
+     * @param outputCoeffs Output array for decoded coefficients
+     */
+    private fun decodeChannelEZBC(ezbcData: ByteArray, offset: Int, size: Int, outputCoeffs: ShortArray) {
+        var bytePos = offset
+        var bitPos = 0
+
+        // Helper: read N bits from bitstream
+        var hitEndOfStream = false
+        fun readBits(numBits: Int): Int {
+            var result = 0
+            for (i in 0 until numBits) {
+                if (bytePos >= offset + size) {
+                    if (!hitEndOfStream) {
+                        println("[EZBC-BITS] HIT END OF STREAM at byte $bytePos (size=$size, requested $numBits bits)")
+                        hitEndOfStream = true
+                    }
+                    return result
+                }
+
+                val bit = (ezbcData[bytePos].toInt() shr bitPos) and 1
+                result = result or (bit shl i)
+
+                bitPos++
+                if (bitPos == 8) {
+                    bitPos = 0
+                    bytePos++
+                }
+            }
+            return result
+        }
+
+        // Debug: print raw bytes before reading header
+        if (ezbcData.size >= offset + 9) {
+            println("[EZBC-DEC] First 9 bytes at offset $offset: ${(0..8).map {
+                String.format("%02X", ezbcData[offset + it].toInt() and 0xFF)
+            }.joinToString(" ")}")
+        }
+
+        // Read header: MSB bitplane, width, height
+        val msbBitplane = readBits(8)
+        val width = readBits(16)
+        val height = readBits(16)
+
+        println("[EZBC-DEC] Decoded header: MSB=$msbBitplane, width=$width, height=$height")
+
+        if (width * height != outputCoeffs.size) {
+            System.err.println("EZBC dimension mismatch: ${width}x${height} != ${outputCoeffs.size}")
+            return
+        }
+
+        // Initialize coefficient state tracking
+        val significant = BooleanArray(outputCoeffs.size)
+        val firstBitplane = IntArray(outputCoeffs.size)
+
+        // Initialize output to zero
+        outputCoeffs.fill(0)
+
+        var totalSignificantCoeffs = 0
+
+        // Queue structures for block processing
+        data class Block(val x: Int, val y: Int, val width: Int, val height: Int)
+
+        var insignificantQueue = ArrayList<Block>()
+        var nextInsignificant = ArrayList<Block>()
+        var significantQueue = ArrayList<Block>()
+        var nextSignificant = ArrayList<Block>()
+
+        // Start with root block
+        insignificantQueue.add(Block(0, 0, width, height))
+
+        // Recursive function to process a significant block and its children
+        fun processSignificantBlockRecursive(block: Block, bitplane: Int, threshold: Int): Int {
+            var signBitsRead = 0
+
+            // If 1x1 block: read sign bit and add to significant queue
+            if (block.width == 1 && block.height == 1) {
+                val idx = block.y * width + block.x
+                val signBit = readBits(1)
+                signBitsRead++
+
+                // Set coefficient to threshold value with sign
+                outputCoeffs[idx] = (if (signBit == 1) -threshold else threshold).toShort()
+                significant[idx] = true
+                firstBitplane[idx] = bitplane
+                nextSignificant.add(block)
+                return signBitsRead
+            }
+
+            // Block is > 1x1: subdivide and recursively process children
+            var midX = block.width / 2
+            var midY = block.height / 2
+            if (midX == 0) midX = 1
+            if (midY == 0) midY = 1
+
+            // Top-left child
+            val tl = Block(block.x, block.y, midX, midY)
+            val tlFlag = readBits(1)
+            if (tlFlag == 1) {
+                signBitsRead += processSignificantBlockRecursive(tl, bitplane, threshold)
+            } else {
+                nextInsignificant.add(tl)
+            }
+
+            // Top-right child (if exists)
+            if (block.width > midX) {
+                val tr = Block(block.x + midX, block.y, block.width - midX, midY)
+                val trFlag = readBits(1)
+                if (trFlag == 1) {
+                    signBitsRead += processSignificantBlockRecursive(tr, bitplane, threshold)
+                } else {
+                    nextInsignificant.add(tr)
+                }
+            }
+
+            // Bottom-left child (if exists)
+            if (block.height > midY) {
+                val bl = Block(block.x, block.y + midY, midX, block.height - midY)
+                val blFlag = readBits(1)
+                if (blFlag == 1) {
+                    signBitsRead += processSignificantBlockRecursive(bl, bitplane, threshold)
+                } else {
+                    nextInsignificant.add(bl)
+                }
+            }
+
+            // Bottom-right child (if exists)
+            if (block.width > midX && block.height > midY) {
+                val br = Block(block.x + midX, block.y + midY, block.width - midX, block.height - midY)
+                val brFlag = readBits(1)
+                if (brFlag == 1) {
+                    signBitsRead += processSignificantBlockRecursive(br, bitplane, threshold)
+                } else {
+                    nextInsignificant.add(br)
+                }
+            }
+
+            return signBitsRead
+        }
+
+        // Process bitplanes from MSB to LSB
+        for (bitplane in msbBitplane downTo 0) {
+            val threshold = 1 shl bitplane
+            val insignifCountBefore = insignificantQueue.size
+            val signifCountBefore = significantQueue.size
+
+            // Process insignificant blocks
+            for (block in insignificantQueue) {
+                val flag = readBits(1)
+
+                if (flag == 0) {
+                    // Still insignificant
+                    nextInsignificant.add(block)
+                } else {
+                    // Became significant - use recursive processing
+                    val signBitsRead = processSignificantBlockRecursive(block, bitplane, threshold)
+                    totalSignificantCoeffs += signBitsRead
+                }
+            }
+
+            // Process significant 1x1 blocks (refinement)
+            for (block in significantQueue) {
+                val idx = block.y * width + block.x
+                val refineBit = readBits(1)
+
+                // Add refinement bit at current bitplane
+                if (refineBit == 1) {
+                    val bitValue = 1 shl bitplane
+                    if (outputCoeffs[idx] < 0) {
+                        outputCoeffs[idx] = (outputCoeffs[idx] - bitValue).toShort()
+                    } else {
+                        outputCoeffs[idx] = (outputCoeffs[idx] + bitValue).toShort()
+                    }
+                }
+
+                // Keep in significant queue
+                nextSignificant.add(block)
+            }
+
+            // Swap queues
+            insignificantQueue = nextInsignificant
+            significantQueue = nextSignificant
+            nextInsignificant = ArrayList()
+            nextSignificant = ArrayList()
+
+            if (bitplane == msbBitplane || bitplane == 0 || (msbBitplane - bitplane) % 3 == 0) {
+                println("[EZBC-BP] Bitplane $bitplane: threshold=$threshold, insignif=${insignifCountBefore}->${insignificantQueue.size}, signif=${signifCountBefore}->${significantQueue.size}, totalSig=$totalSignificantCoeffs")
+            }
+        }
+
+        // Debug summary
+        println("[EZBC-CH] Decoded $totalSignificantCoeffs significant coefficients out of ${outputCoeffs.size}")
+        val nonZeroCount = outputCoeffs.count { it != 0.toShort() }
+        println("[EZBC-CH] Non-zero coefficients: $nonZeroCount")
+        val maxVal = outputCoeffs.maxOrNull() ?: 0
+        val minVal = outputCoeffs.minOrNull() ?: 0
+        println("[EZBC-CH] Value range: [$minVal, $maxVal]")
+    }
+
+    /**
+     * EZBC decoder wrapper for variable channel layout
+     * Detects and decodes EZBC-encoded significance maps
+     *
+     * Format: [size_y(4)][ezbc_y][size_co(4)][ezbc_co][size_cg(4)][ezbc_cg]...
+     */
+    private fun postprocessCoefficientsEZBC(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int,
+                                           channelLayout: Int, outputY: ShortArray?, outputCo: ShortArray?,
+                                           outputCg: ShortArray?, outputAlpha: ShortArray?) {
+        // Determine active channels based on channel_layout bitfield
+        // Bit 2 (value 4): 0=has Y/I, 1=no Y/I
+        // Bit 1 (value 2): 0=has Co/Cg or Ct/Cp, 1=no chroma
+        // Bit 0 (value 1): 1=has alpha, 0=no alpha
+        val hasY = (channelLayout and 4) == 0
+        val hasCo = (channelLayout and 2) == 0
+        val hasCg = (channelLayout and 2) == 0  // Same as Co - both chroma channels present together
+        val hasAlpha = (channelLayout and 1) != 0
+
+        println("[EZBC] Decoding: coeffCount=$coeffCount, channelLayout=$channelLayout, hasY=$hasY, hasCo=$hasCo, hasCg=$hasCg")
+
+        var offset = compressedOffset
+
+        // Decode Y channel
+        if (hasY && outputY != null) {
+            val size = ((compressedData[offset].toInt() and 0xFF) or
+                       ((compressedData[offset + 1].toInt() and 0xFF) shl 8) or
+                       ((compressedData[offset + 2].toInt() and 0xFF) shl 16) or
+                       ((compressedData[offset + 3].toInt() and 0xFF) shl 24))
+            println("[EZBC] Y channel: size=$size, offset=$offset")
+            offset += 4
+            decodeChannelEZBC(compressedData, offset, size, outputY)
+            println("[EZBC] Y channel decoded: first 10 values = ${outputY.take(10)}")
+            offset += size
+        }
+
+        // Decode Co channel
+        if (hasCo && outputCo != null) {
+            val size = ((compressedData[offset].toInt() and 0xFF) or
+                       ((compressedData[offset + 1].toInt() and 0xFF) shl 8) or
+                       ((compressedData[offset + 2].toInt() and 0xFF) shl 16) or
+                       ((compressedData[offset + 3].toInt() and 0xFF) shl 24))
+            println("[EZBC] Co channel: size=$size, offset=$offset")
+            offset += 4
+            decodeChannelEZBC(compressedData, offset, size, outputCo)
+            println("[EZBC] Co channel decoded: first 10 values = ${outputCo.take(10)}")
+            offset += size
+        }
+
+        // Decode Cg channel
+        if (hasCg && outputCg != null) {
+            val size = ((compressedData[offset].toInt() and 0xFF) or
+                       ((compressedData[offset + 1].toInt() and 0xFF) shl 8) or
+                       ((compressedData[offset + 2].toInt() and 0xFF) shl 16) or
+                       ((compressedData[offset + 3].toInt() and 0xFF) shl 24))
+            println("[EZBC] Cg channel: size=$size, offset=$offset")
+            offset += 4
+            decodeChannelEZBC(compressedData, offset, size, outputCg)
+            println("[EZBC] Cg channel decoded: first 10 values = ${outputCg.take(10)}")
+            offset += size
+        }
+
+        // Decode Alpha channel
+        if (hasAlpha && outputAlpha != null) {
+            val size = ((compressedData[offset].toInt() and 0xFF) or
+                       ((compressedData[offset + 1].toInt() and 0xFF) shl 8) or
+                       ((compressedData[offset + 2].toInt() and 0xFF) shl 16) or
+                       ((compressedData[offset + 3].toInt() and 0xFF) shl 24))
+            offset += 4
+            decodeChannelEZBC(compressedData, offset, size, outputAlpha)
+        }
+    }
+
+    /**
+     * Auto-detecting coefficient decoder wrapper
+     * Detects EZBC vs twobit-map format and calls appropriate decoder
+     */
+    private fun postprocessCoefficientsAuto(compressedData: ByteArray, compressedOffset: Int, coeffCount: Int,
+                                            channelLayout: Int, outputY: ShortArray?, outputCo: ShortArray?,
+                                            outputCg: ShortArray?, outputAlpha: ShortArray?): Boolean {
+        // TEMPORARY: Force EZBC mode until entropy coding method flag is added
+        val isEZBC = true
+
+        /* Auto-detection disabled for now - will use entropy coding method flag later
+        // Better auto-detection: Check EZBC header structure
+        // EZBC format: [size(4)][msb_bitplane(1)][width(2)][height(2)][bits...]
+        // Twobit-map format: [2-bit map + values...]
+
+        val isEZBC = if (compressedData.size >= compressedOffset + 9) {
+            // Read first uint32 (should be EZBC channel size)
+            val possibleSize = ((compressedData[compressedOffset].toInt() and 0xFF) or
+                              ((compressedData[compressedOffset + 1].toInt() and 0xFF) shl 8) or
+                              ((compressedData[compressedOffset + 2].toInt() and 0xFF) shl 16) or
+                              ((compressedData[compressedOffset + 3].toInt() and 0xFF) shl 24))
+            val msbBitplane = compressedData[compressedOffset + 4].toInt() and 0xFF
+            val width = ((compressedData[compressedOffset + 5].toInt() and 0xFF) or
+                         ((compressedData[compressedOffset + 6].toInt() and 0xFF) shl 8))
+            val height = ((compressedData[compressedOffset + 7].toInt() and 0xFF) or
+                          ((compressedData[compressedOffset + 8].toInt() and 0xFF) shl 8))
+
+            println("[AUTO] Checking EZBC: possibleSize=$possibleSize, msb=$msbBitplane, w=$width, h=$height, coeffCount=$coeffCount")
+
+            // Valid EZBC header should have reasonable size, MSB bitplane, and dimensions matching coeffCount
+            val detected = possibleSize in 10..(coeffCount * 4) && msbBitplane < 20 && width > 0 && height > 0 && width * height == coeffCount
+            println("[AUTO] Detection result: isEZBC=$detected")
+            detected
+        } else {
+            println("[AUTO] Not enough data for EZBC detection, using twobit-map")
+            false
+        }
+        */
+
+        if (isEZBC) {
+            println("[AUTO] Using EZBC decoder (FORCED)")
+            postprocessCoefficientsEZBC(compressedData, compressedOffset, coeffCount,
+                                       channelLayout, outputY, outputCo, outputCg, outputAlpha)
+        } else {
+            println("[AUTO] Using twobit-map decoder")
+            postprocessCoefficientsVariableLayout(compressedData, compressedOffset, coeffCount,
+                                                 channelLayout, outputY, outputCo, outputCg, outputAlpha)
+        }
+
+        return isEZBC
+    }
+
+    /**
      * Reconstruct per-frame coefficients from unified GOP block (2-bit format)
      * Reverse of encoder's preprocess_gop_unified()
      *
@@ -4406,6 +4735,95 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         return output
+    }
+
+    /**
+     * Reconstruct per-frame coefficients from unified GOP block (EZBC format)
+     * Format: [frame0_size(4)][frame0_ezbc][frame1_size(4)][frame1_ezbc]...
+     *
+     * @param decompressedData Unified EZBC block data (after Zstd decompression)
+     * @param numFrames Number of frames in GOP
+     * @param numPixels Pixels per frame (width × height)
+     * @param channelLayout Channel layout (0=YCoCg, 2=Y-only, etc)
+     * @return Array of [frame][channel] where channel: 0=Y, 1=Co, 2=Cg
+     */
+    private fun tavPostprocessGopEZBC(
+        decompressedData: ByteArray,
+        numFrames: Int,
+        numPixels: Int,
+        channelLayout: Int
+    ): Array<Array<ShortArray>> {
+        // Allocate output arrays
+        val output = Array(numFrames) { Array(3) { ShortArray(numPixels) } }
+
+        var offset = 0
+        for (frame in 0 until numFrames) {
+            if (offset + 4 > decompressedData.size) break
+
+            // Read frame size
+            val frameSize = ((decompressedData[offset].toInt() and 0xFF) or
+                           ((decompressedData[offset + 1].toInt() and 0xFF) shl 8) or
+                           ((decompressedData[offset + 2].toInt() and 0xFF) shl 16) or
+                           ((decompressedData[offset + 3].toInt() and 0xFF) shl 24))
+            offset += 4
+
+            if (offset + frameSize > decompressedData.size) break
+
+            // Decode this frame with EZBC
+            postprocessCoefficientsEZBC(
+                decompressedData, offset, numPixels, channelLayout,
+                output[frame][0], output[frame][1], output[frame][2], null
+            )
+
+            offset += frameSize
+        }
+
+        return output
+    }
+
+    /**
+     * Auto-detecting GOP postprocessor
+     * Detects EZBC vs twobit-map format and calls appropriate decoder
+     */
+    private fun tavPostprocessGopAuto(
+        decompressedData: ByteArray,
+        numFrames: Int,
+        numPixels: Int,
+        channelLayout: Int
+    ): Pair<Boolean, Array<Array<ShortArray>>> {
+        // TEMPORARY: Force EZBC mode until entropy coding method flag is added
+        val isEZBC = true
+
+        /* Auto-detection disabled for now - will use entropy coding method flag later
+        // Auto-detect: EZBC format has frame size headers
+        // Check if first 4 bytes look like a reasonable frame size
+        val isEZBC = if (decompressedData.size >= 8) {
+            val possibleSize = ((decompressedData[0].toInt() and 0xFF) or
+                              ((decompressedData[1].toInt() and 0xFF) shl 8) or
+                              ((decompressedData[2].toInt() and 0xFF) shl 16) or
+                              ((decompressedData[3].toInt() and 0xFF) shl 24))
+
+            // Check if this looks like an EZBC header (size followed by MSB bitplane)
+            if (possibleSize in 10..(numPixels * 16)) {
+                val msbBitplane = decompressedData[4].toInt() and 0xFF
+                msbBitplane < 20  // Valid MSB bitplane
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+        */
+
+        println("[GOP AUTO] Using ${if (isEZBC) "EZBC (FORCED)" else "twobit-map"} decoder")
+
+        val data = if (isEZBC) {
+            tavPostprocessGopEZBC(decompressedData, numFrames, numPixels, channelLayout)
+        } else {
+            tavPostprocessGopUnified(decompressedData, numFrames, numPixels, channelLayout)
+        }
+
+        return Pair(isEZBC, data)
     }
 
     // TAV Simulated overlapping tiles constants (must match encoder)
@@ -4658,7 +5076,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     private fun dequantiseDWTSubbandsPerceptual(qIndex: Int, qYGlobal: Int, quantised: ShortArray, dequantised: FloatArray,
-                                               subbands: List<DWTSubbandInfo>, baseQuantiser: Float, isChroma: Boolean, decompLevels: Int) {
+                                               subbands: List<DWTSubbandInfo>, baseQuantiser: Float, isChroma: Boolean, decompLevels: Int,
+                                               isEZBC: Boolean) {
 
         // CRITICAL FIX: Encoder stores coefficients in LINEAR order, not subband-mapped order!
         // The subband layout calculation is only used for determining perceptual weights,
@@ -4681,10 +5100,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Apply linear dequantisation with perceptual weights (matching encoder's linear storage)
+        // EZBC mode: coefficients are ALREADY DENORMALIZED by encoder
+        //            e.g., encoder: coeff=377 → quantize: 377/48=7.85→8 → denormalize: 8*48=384 → store 384
+        //            decoder: read 384 → pass through as-is (already in correct range for IDWT)
+        // Significance-map mode: coefficients are normalized (quantized only)
+        //                       e.g., encoder stores 8 = round(377/48)
+        //                       decoder must multiply: 8 * 48 = 384 (denormalize for IDWT)
         for (i in quantised.indices) {
             if (i < dequantised.size) {
                 val effectiveQuantiser = baseQuantiser * weights[i]
-                dequantised[i] = quantised[i] * effectiveQuantiser
+
+                dequantised[i] = if (isEZBC) {
+                    // EZBC mode: pass through as-is (coefficients already denormalized)
+                    quantised[i].toFloat()
+                } else {
+                    // Significance-map mode: multiply to denormalize (coefficients are normalized)
+                    quantised[i] * effectiveQuantiser
+                }
             }
         }
 
@@ -4696,11 +5128,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val weightRange = if (weightStats.isNotEmpty())
                 "weights: ${weightStats.first()}-${weightStats.last()}" else "no weights"
 
-            for (coeff in quantised) {
-                if (coeff != 0.toShort()) nonZeroCoeffs++
+            for (i in quantised.indices) {
+                if (quantised[i] != 0.toShort()) {
+                    nonZeroCoeffs++
+                }
             }
 
-            println("LINEAR PERCEPTUAL DEQUANT: $channelType - coeffs=${quantised.size}, nonzero=$nonZeroCoeffs, $weightRange")
+            val mode = if (isEZBC) "EZBC (pass-through)" else "Sigmap (multiply)"
+            println("LINEAR PERCEPTUAL DEQUANT: $channelType - mode=$mode, coeffs=${quantised.size}, nonzero=$nonZeroCoeffs, $weightRange")
         }
     }
 
@@ -4971,8 +5406,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return count
         }
 
-        // Use variable channel layout concatenated maps format
-        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, quantisedY, quantisedCo, quantisedCg, quantisedAlpha)
+        // Use auto-detecting decoder (EZBC or variable channel layout concatenated maps)
+        val isEZBCMode = postprocessCoefficientsAuto(coeffBuffer, 0, coeffCount, channelLayout, quantisedY, quantisedCo, quantisedCg, quantisedAlpha)
 
         // Calculate total size for variable channel layout format
         val numChannels = when (channelLayout) {
@@ -5013,9 +5448,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
             val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
 
-            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels)
-            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels)
-            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels)
+            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedY, yTile, subbands, qY.toFloat(), false, decompLevels, isEZBCMode)
+            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCo, coTile, subbands, qCo.toFloat(), true, decompLevels, isEZBCMode)
+            dequantiseDWTSubbandsPerceptual(qIndex, qYGlobal, quantisedCg, cgTile, subbands, qCg.toFloat(), true, decompLevels, isEZBCMode)
 
             // Remove grain synthesis from Y channel (must happen after dequantization, before inverse DWT)
             // Use perceptual weights since this is the perceptual quantization path
@@ -5584,8 +6019,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return count
         }
 
-        // Use variable channel layout concatenated maps format for deltas
-        postprocessCoefficientsVariableLayout(coeffBuffer, 0, coeffCount, channelLayout, deltaY, deltaCo, deltaCg, deltaAlpha)
+        // Use auto-detecting decoder for deltas (EZBC or variable channel layout concatenated maps)
+        postprocessCoefficientsAuto(coeffBuffer, 0, coeffCount, channelLayout, deltaY, deltaCo, deltaCg, deltaAlpha)
 
         // Calculate total size for variable channel layout format (deltas)
         val numChannels = when (channelLayout) {
@@ -6352,8 +6787,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             return arrayOf(0, dbgOut)
         }
 
-        // Step 2: Postprocess unified block to per-frame coefficients
-        val quantizedCoeffs = tavPostprocessGopUnified(
+        // Step 2: Postprocess unified block to per-frame coefficients (auto-detect EZBC vs twobit-map)
+        val (isEZBCMode, quantizedCoeffs) = tavPostprocessGopAuto(
             decompressedData,
             gopSize,
             canvasPixels,  // Use expanded canvas size
@@ -6382,19 +6817,22 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             dequantiseDWTSubbandsPerceptual(
                 qIndex, qYGlobal,
                 quantizedCoeffs[t][0], gopY[t],
-                subbands, baseQY, false, spatialLevels  // isChroma=false
+                subbands, baseQY, false, spatialLevels,  // isChroma=false
+                isEZBCMode
             )
 
             dequantiseDWTSubbandsPerceptual(
                 qIndex, qYGlobal,
                 quantizedCoeffs[t][1], gopCo[t],
-                subbands, baseQCo, true, spatialLevels  // isChroma=true
+                subbands, baseQCo, true, spatialLevels,  // isChroma=true
+                isEZBCMode
             )
 
             dequantiseDWTSubbandsPerceptual(
                 qIndex, qYGlobal,
                 quantizedCoeffs[t][2], gopCg[t],
-                subbands, baseQCg, true, spatialLevels  // isChroma=true
+                subbands, baseQCg, true, spatialLevels,  // isChroma=true
+                isEZBCMode
             )
         }
 
