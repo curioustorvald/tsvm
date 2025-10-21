@@ -1030,9 +1030,9 @@ transmission capability, and region-of-interest coding.
     ### List of Keys
     - Uint64 BGNT: Video begin time (must be equal to the value of the first Timecode packet)
     - Uint64 ENDT: Video end time (must be equal to the value of the last Timecode packet)
-    - Uint64 CDAT: Creation time in nanoseconds since UNIX Epoch
-    - Bytes VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014")
-    - Bytes FMPG: FFmpeg version (typically "ffmpeg version 6.1.2"; the first line of text FFmpeg emits right before the copyright text)
+    - Uint64 CDAT: Creation time in nanoseconds since UNIX Epoch (must be in UTC timezone)
+    - Bytes VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014 (list,of,features)")
+    - Bytes FMPG: FFmpeg version (typically "ffmpeg version 8.0 Copyright (c) 2000-2025 the FFmpeg developers"; the first line of text FFmpeg emits)
 
 
 ## Standard Metadata Payload Packet Structure
@@ -1062,10 +1062,12 @@ Updated on 2025-10-17 to include canvas expansion margins.
 This packet contains multiple frames encoded as a single spacetime block for optimal
 temporal compression.
 
-    uint8  Packet Type (0x12)
+    uint8  Packet Type (0x12/0x13)
     uint8  GOP Size (number of frames in this GOP, typically 16)
-    int16  Motion Vectors X[GOP Size] (quarter-pixel precision for global motion compensation)
-    int16  Motion Vectors Y[GOP Size] (quarter-pixel precision for global motion compensation)
+    <if packet type is 0x13>
+    uint32 Compressed Size
+    *      Zstd-compressed Motion Data
+    <endif>
     uint32 Compressed Size
     *      Zstd-compressed Unified Block Data
 

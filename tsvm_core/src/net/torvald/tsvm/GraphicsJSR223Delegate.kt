@@ -6663,194 +6663,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Main GOP unified decoder function.
-     * Decodes a unified 3D DWT GOP block (temporal + spatial) and outputs RGB frames.
-     *
-     * @param compressedDataPtr Pointer to compressed Zstd data
-     * @param compressedSize Size of compressed data
-     * @param gopSize Number of frames in GOP (1-16)
-     * @param motionVectorsX X motion vectors in 1/16-pixel units
-     * @param motionVectorsY Y motion vectors in 1/16-pixel units
-     * @param outputRGBAddrs Array of output RGB buffer addresses
-     * @param width Original frame width (output dimensions)
-     * @param height Original frame height (output dimensions)
-     * @param canvasWidth Expanded canvas width (for motion compensation)
-     * @param canvasHeight Expanded canvas height (for motion compensation)
-     * @param marginLeft Left margin to crop from expanded canvas
-     * @param marginTop Top margin to crop from expanded canvas
-     * @param qIndex Quality index
-     * @param qYGlobal Global Y quantizer
-     * @param qCoGlobal Global Co quantizer
-     * @param qCgGlobal Global Cg quantizer
-     * @param channelLayout Channel layout flags
-     * @param spatialFilter Wavelet filter type
-     * @param spatialLevels Number of spatial DWT levels (default 6)
-     * @param temporalLevels Number of temporal DWT levels (default 2)
-     * @return Number of frames decoded
-     */
-    fun tavDecodeGopUnified(
-        compressedDataPtr: Long,
-        compressedSize: Int,
-        gopSize: Int,
-        motionVectorsX: IntArray,
-        motionVectorsY: IntArray,
-        outputRGBAddrs: LongArray,
-        width: Int,
-        height: Int,
-        canvasWidth: Int,
-        canvasHeight: Int,
-        marginLeft: Int,
-        marginTop: Int,
-        qIndex: Int,
-        qYGlobal: Int,
-        qCoGlobal: Int,
-        qCgGlobal: Int,
-        channelLayout: Int,
-        spatialFilter: Int = 1,
-        spatialLevels: Int = 6,
-        temporalLevels: Int = 2,
-        entropyCoder: Int = 0
-    ): Array<Any> {
-        val dbgOut = HashMap<String, Any>()
-        dbgOut["qY"] = qYGlobal
-        dbgOut["qCo"] = qCoGlobal
-        dbgOut["qCg"] = qCgGlobal
-        dbgOut["frameMode"] = "G"
-
-        // Use expanded canvas dimensions for DWT processing
-        val canvasPixels = canvasWidth * canvasHeight
-        val outputPixels = width * height
-
-        // Step 1: Decompress unified GOP block
-        val compressedData = ByteArray(compressedSize)
-        UnsafeHelper.memcpyRaw(
-            null,
-            vm.usermem.ptr + compressedDataPtr,
-            compressedData,
-            UnsafeHelper.getArrayOffset(compressedData),
-            compressedSize.toLong()
-        )
-
-        val decompressedData = try {
-            ZstdInputStream(java.io.ByteArrayInputStream(compressedData)).use { zstd ->
-                zstd.readBytes()
-            }
-        } catch (e: Exception) {
-            println("ERROR: Zstd decompression failed: ${e.message}")
-            return arrayOf(0, dbgOut)
-        }
-
-        // Step 2: Postprocess unified block to per-frame coefficients (based on header's entropy coder field)
-        val (isEZBCMode, quantizedCoeffs) = tavPostprocessGopAuto(
-            decompressedData,
-            gopSize,
-            canvasPixels,  // Use expanded canvas size
-            channelLayout,
-            entropyCoder
-        )
-
-        // Step 3: Allocate GOP buffers for float coefficients (expanded canvas size)
-        val gopY = Array(gopSize) { FloatArray(canvasPixels) }
-        val gopCo = Array(gopSize) { FloatArray(canvasPixels) }
-        val gopCg = Array(gopSize) { FloatArray(canvasPixels) }
-
-        // Step 4: Calculate subband layout for expanded canvas (needed for perceptual dequantization)
-        val subbands = calculateSubbandLayout(canvasWidth, canvasHeight, spatialLevels)
-
-        // Step 5: Dequantize with temporal-spatial scaling
-        for (t in 0 until gopSize) {
-            val temporalLevel = getTemporalSubbandLevel(t, gopSize, temporalLevels)
-            val temporalScale = getTemporalQuantizerScale(temporalLevel)
-
-            // Apply temporal scaling to base quantizers for each channel
-            val baseQY = (qYGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
-            val baseQCo = (qCoGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
-            val baseQCg = (qCgGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
-
-            // Use existing perceptual dequantization for spatial weighting
-            dequantiseDWTSubbandsPerceptual(
-                qIndex, qYGlobal,
-                quantizedCoeffs[t][0], gopY[t],
-                subbands, baseQY, false, spatialLevels,  // isChroma=false
-                isEZBCMode
-            )
-
-            dequantiseDWTSubbandsPerceptual(
-                qIndex, qYGlobal,
-                quantizedCoeffs[t][1], gopCo[t],
-                subbands, baseQCo, true, spatialLevels,  // isChroma=true
-                isEZBCMode
-            )
-
-            dequantiseDWTSubbandsPerceptual(
-                qIndex, qYGlobal,
-                quantizedCoeffs[t][2], gopCg[t],
-                subbands, baseQCg, true, spatialLevels,  // isChroma=true
-                isEZBCMode
-            )
-        }
-
-        // Step 6: Apply inverse 3D DWT (spatial first, then temporal) on expanded canvas
-        tavApplyInverse3DDWT(gopY, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCo, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCg, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
-
-        // Step 7: Apply inverse motion compensation (shift frames back) on expanded canvas
-        // Note: Motion vectors are in 1/16-pixel units, cumulative relative to frame 0
-        for (t in 1 until gopSize) {  // Skip frame 0 (reference)
-            val dx = motionVectorsX[t] / 16  // Convert to pixel units
-            val dy = motionVectorsY[t] / 16
-
-            if (dx != 0 || dy != 0) {
-                applyInverseTranslation(gopY[t], canvasWidth, canvasHeight, dx, dy)
-                applyInverseTranslation(gopCo[t], canvasWidth, canvasHeight, dx, dy)
-                applyInverseTranslation(gopCg[t], canvasWidth, canvasHeight, dx, dy)
-            }
-        }
-
-        // Step 8: Crop expanded canvas to original dimensions and convert to RGB
-        for (t in 0 until gopSize) {
-            val rgbAddr = outputRGBAddrs[t]
-
-            // Crop from expanded canvas (canvasWidth x canvasHeight) to output (width x height)
-            for (row in 0 until height) {
-                for (col in 0 until width) {
-                    // Source pixel in expanded canvas
-                    val canvasX = col + marginLeft
-                    val canvasY = row + marginTop
-                    val canvasIdx = canvasY * canvasWidth + canvasX
-
-                    // Destination pixel in output buffer
-                    val outIdx = row * width + col
-
-                    val yVal = gopY[t][canvasIdx]
-                    val co = gopCo[t][canvasIdx]
-                    val cg = gopCg[t][canvasIdx]
-
-                    // YCoCg-R to RGB conversion
-                    val tmp = yVal - (cg / 2.0f)
-                    val g = cg + tmp
-                    val b = tmp - (co / 2.0f)
-                    val r = b + co
-
-                    // Clamp to 0-255 range
-                    val rClamped = r.toInt().coerceIn(0, 255)
-                    val gClamped = g.toInt().coerceIn(0, 255)
-                    val bClamped = b.toInt().coerceIn(0, 255)
-
-                    // Write RGB24 format (3 bytes per pixel)
-                    val offset = rgbAddr + outIdx * 3L
-                    vm.usermem[offset] = rClamped.toByte()
-                    vm.usermem[offset + 1] = gClamped.toByte()
-                    vm.usermem[offset + 2] = bClamped.toByte()
-                }
-            }
-        }
-
-        return arrayOf(gopSize, dbgOut)
-    }
-
-    /**
      * Decode GOP frames directly into GraphicsAdapter.videoBuffer (Java heap).
      * This avoids allocating GOP frames in VM user memory, saving ~6 MB for 8-frame GOPs.
      *
@@ -6864,14 +6676,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         compressedDataPtr: Long,
         compressedSize: Int,
         gopSize: Int,
-        motionVectorsX: IntArray,
-        motionVectorsY: IntArray,
         width: Int,
         height: Int,
-        canvasWidth: Int,
-        canvasHeight: Int,
-        marginLeft: Int,
-        marginTop: Int,
         qIndex: Int,
         qYGlobal: Int,
         qCoGlobal: Int,
@@ -6900,7 +6706,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Use expanded canvas dimensions for DWT processing
-        val canvasPixels = canvasWidth * canvasHeight
         val outputPixels = width * height
 
         // Step 1: Decompress unified GOP block
@@ -6926,18 +6731,18 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val (isEZBCMode, quantizedCoeffs) = tavPostprocessGopAuto(
             decompressedData,
             gopSize,
-            canvasPixels,
+            outputPixels,
             channelLayout,
             entropyCoder
         )
 
         // Step 3: Allocate GOP buffers for float coefficients (expanded canvas size)
-        val gopY = Array(gopSize) { FloatArray(canvasPixels) }
-        val gopCo = Array(gopSize) { FloatArray(canvasPixels) }
-        val gopCg = Array(gopSize) { FloatArray(canvasPixels) }
+        val gopY = Array(gopSize) { FloatArray(outputPixels) }
+        val gopCo = Array(gopSize) { FloatArray(outputPixels) }
+        val gopCg = Array(gopSize) { FloatArray(outputPixels) }
 
         // Step 4: Calculate subband layout for expanded canvas
-        val subbands = calculateSubbandLayout(canvasWidth, canvasHeight, spatialLevels)
+        val subbands = calculateSubbandLayout(width, height, spatialLevels)
 
         // Step 5: Dequantize with temporal-spatial scaling
         for (t in 0 until gopSize) {
@@ -6971,40 +6776,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Step 6: Apply inverse 3D DWT
-        tavApplyInverse3DDWT(gopY, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCo, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCg, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
-
-        // Step 7: Apply inverse motion compensation
-        for (t in 1 until gopSize) {
-            val dx = motionVectorsX[t] / 16
-            val dy = motionVectorsY[t] / 16
-
-            if (dx != 0 || dy != 0) {
-                applyInverseTranslation(gopY[t], canvasWidth, canvasHeight, dx, dy)
-                applyInverseTranslation(gopCo[t], canvasWidth, canvasHeight, dx, dy)
-                applyInverseTranslation(gopCg[t], canvasWidth, canvasHeight, dx, dy)
-            }
-        }
+        tavApplyInverse3DDWT(gopY, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCo, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCg, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
 
         // Step 8: Crop and convert to RGB, write directly to videoBuffer
         for (t in 0 until gopSize) {
             val videoBufferOffset = bufferOffset + (t * frameSize)  // Each frame sequentially, starting at bufferOffset
 
-            for (row in 0 until height) {
-                for (col in 0 until width) {
-                    // Source pixel in expanded canvas
-                    val canvasX = col + marginLeft
-                    val canvasY = row + marginTop
-                    val canvasIdx = canvasY * canvasWidth + canvasX
-
+            for (py in 0 until height) {
+                for (px in 0 until width) {
                     // Destination pixel in videoBuffer
-                    val outIdx = row * width + col
+                    val outIdx = py * width + px
                     val offset = videoBufferOffset + outIdx * 3L
 
-                    val yVal = gopY[t][canvasIdx]
-                    val co = gopCo[t][canvasIdx]
-                    val cg = gopCg[t][canvasIdx]
+                    val yVal = gopY[t][outIdx]
+                    val co = gopCo[t][outIdx]
+                    val cg = gopCg[t][outIdx]
 
                     // YCoCg-R to RGB conversion
                     val tmp = yVal - (cg / 2.0f)
@@ -7113,14 +6901,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         compressedDataPtr: Long,
         compressedSize: Int,
         gopSize: Int,
-        motionVectorsX: IntArray,
-        motionVectorsY: IntArray,
         width: Int,
         height: Int,
-        canvasWidth: Int,
-        canvasHeight: Int,
-        marginLeft: Int,
-        marginTop: Int,
         qIndex: Int,
         qYGlobal: Int,
         qCoGlobal: Int,
@@ -7128,7 +6910,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         channelLayout: Int,
         spatialFilter: Int = 1,
         spatialLevels: Int = 6,
-        temporalLevels: Int = 2,
+        temporalLevels: Int = 3,
         entropyCoder: Int = 0,
         bufferOffset: Long = 0
     ) {
@@ -7144,9 +6926,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             try {
                 val result = tavDecodeGopToVideoBuffer(
                     compressedDataPtr, compressedSize, gopSize,
-                    motionVectorsX, motionVectorsY,
-                    width, height, canvasWidth, canvasHeight,
-                    marginLeft, marginTop,
+                    width, height,
                     qIndex, qYGlobal, qCoGlobal, qCgGlobal,
                     channelLayout, spatialFilter, spatialLevels, temporalLevels,
                     entropyCoder, bufferOffset

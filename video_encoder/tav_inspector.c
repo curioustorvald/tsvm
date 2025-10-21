@@ -18,6 +18,11 @@
 #define TAV_PACKET_IFRAME         0x10
 #define TAV_PACKET_PFRAME         0x11
 #define TAV_PACKET_GOP_UNIFIED    0x12  // Unified 3D DWT GOP (all frames in single block)
+#define TAV_PACKET_GOP_UNIFIED_MOTION    0x13
+#define TAV_PACKET_PFRAME_RESIDUAL 0x14  // P-frame with MPEG-style residual coding (block motion compensation)
+#define TAV_PACKET_BFRAME_RESIDUAL 0x15  // B-frame with MPEG-style residual coding (bidirectional prediction)
+#define TAV_PACKET_PFRAME_ADAPTIVE 0x16  // P-frame with adaptive quad-tree block partitioning
+#define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2      0x20
 #define TAV_PACKET_SUBTITLE       0x30
 #define TAV_PACKET_SUBTITLE_KAR   0x31
@@ -59,6 +64,7 @@ typedef struct {
     int pframe_delta_count;
     int pframe_skip_count;
     int gop_unified_count;
+    int gop_unified_motion_count;
     int gop_sync_count;
     int total_gop_frames;
     int audio_count;
@@ -94,6 +100,11 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_IFRAME: return "I-FRAME";
         case TAV_PACKET_PFRAME: return "P-FRAME";
         case TAV_PACKET_GOP_UNIFIED: return "GOP (3D DWT Unified)";
+        case TAV_PACKET_GOP_UNIFIED_MOTION: return "GOP (3D DWT Unified with Motion Data)";
+        case TAV_PACKET_PFRAME_RESIDUAL: return "P-FRAME (residual)";
+        case TAV_PACKET_BFRAME_RESIDUAL: return "B-FRAME (residual)";
+        case TAV_PACKET_PFRAME_ADAPTIVE: return "P-FRAME (quadtree)";
+        case TAV_PACKET_BFRAME_ADAPTIVE: return "B-FRAME (quadtree)";
         case TAV_PACKET_AUDIO_MP2: return "AUDIO MP2";
         case TAV_PACKET_SUBTITLE: return "SUBTITLE (Simple)";
         case TAV_PACKET_SUBTITLE_KAR: return "SUBTITLE (Karaoke)";
@@ -246,9 +257,10 @@ void print_extended_header(FILE *fp, int verbose) {
             if (verbose) {
                 if (strcmp(key, "CDAT") == 0) {
                     time_t time_sec = value / 1000000000ULL;
-                    char *time_str = ctime(&time_sec);
-                    if (time_str) {
-                        time_str[strlen(time_str)-1] = '\0';  // Remove newline
+                    struct tm *time_info = gmtime(&time_sec);
+                    if (time_info) {
+                        char time_str[64];
+                        strftime(time_str, sizeof(time_str), "%a %b %d %H:%M:%S %Y UTC", time_info);
                         printf("%s", time_str);
                     }
                 } else {
@@ -484,48 +496,37 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            case TAV_PACKET_GOP_UNIFIED: {
+            case TAV_PACKET_GOP_UNIFIED: case TAV_PACKET_GOP_UNIFIED_MOTION: {
                 // Unified GOP packet: [gop_size][motion_vectors...][compressed_size][data]
                 uint8_t gop_size;
                 if (fread(&gop_size, 1, 1, fp) != 1) break;
 
-                // Read all motion vectors
-                int16_t *motion_x = malloc(gop_size * sizeof(int16_t));
-                int16_t *motion_y = malloc(gop_size * sizeof(int16_t));
-                for (int i = 0; i < gop_size; i++) {
-                    if (fread(&motion_x[i], sizeof(int16_t), 1, fp) != 1) break;
-                    if (fread(&motion_y[i], sizeof(int16_t), 1, fp) != 1) break;
+                // Read motion vectors
+                uint32_t size0 = 0;
+                if (packet_type == TAV_PACKET_GOP_UNIFIED_MOTION) {
+                    if (fread(&size0, sizeof(uint32_t), 1, fp) != 1) { break; }
+                    stats.total_video_bytes += size0;
+                    stats.gop_unified_motion_count++;
+                    fseek(fp, size0, SEEK_CUR);
                 }
 
                 // Read compressed data size
-                uint32_t size;
-                if (fread(&size, sizeof(uint32_t), 1, fp) != 1) {
-                    free(motion_x);
-                    free(motion_y);
-                    break;
-                }
+                uint32_t size1;
+                if (fread(&size1, sizeof(uint32_t), 1, fp) != 1) { break; }
+                stats.total_video_bytes += size1;
+                fseek(fp, size1, SEEK_CUR);
 
-                stats.total_video_bytes += size;
-                stats.gop_unified_count++;
+
                 stats.total_gop_frames += gop_size;
+                if (packet_type == TAV_PACKET_GOP_UNIFIED) {
+                    stats.gop_unified_count++;
+                }
 
                 if (!opts.summary_only && display) {
                     printf(" - GOP size=%u, data size=%u bytes (%.2f bytes/frame)",
-                           gop_size, size, (double)size / gop_size);
-
-                    // Always show motion vectors for GOP packets with absolute frame numbers
-                    if (gop_size > 0) {
-                        printf("\n    Motion vectors (1/16-pixel):");
-                        for (int i = 0; i < gop_size; i++) {
-                            printf("\n      Frame %d (#%d): (%.3f, %.3f) px",
-                                   current_frame + i, i, motion_x[i] / 16.0, motion_y[i] / 16.0);
-                        }
-                    }
+                           gop_size, (size0 + size1), (double)(size0 + size1) / gop_size);
                 }
 
-                free(motion_x);
-                free(motion_y);
-                fseek(fp, size, SEEK_CUR);
                 break;
             }
 
@@ -714,10 +715,10 @@ int main(int argc, char *argv[]) {
         printf(")");
     }
     printf("\n");
-    if (stats.gop_unified_count > 0) {
+    if (stats.gop_unified_count + stats.gop_unified_motion_count > 0) {
         printf("  3D GOP packets:     %d (total frames: %d, avg %.1f frames/GOP)\n",
-               stats.gop_unified_count, stats.total_gop_frames,
-               (double)stats.total_gop_frames / stats.gop_unified_count);
+               (stats.gop_unified_count + stats.gop_unified_motion_count), stats.total_gop_frames,
+               (double)stats.total_gop_frames / (stats.gop_unified_count + stats.gop_unified_motion_count));
         printf("  GOP sync packets:   %d\n", stats.gop_sync_count);
     }
     printf("  Mux video:          %d\n", stats.mux_video_count);

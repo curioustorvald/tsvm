@@ -18,7 +18,7 @@
 #include <float.h>
 #include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251019"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251022 (3d-dwt,ezbc)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -48,7 +48,7 @@
 #define TAV_PACKET_IFRAME          0x10  // Intra frame (keyframe)
 #define TAV_PACKET_PFRAME          0x11  // Predicted frame (legacy, unused)
 #define TAV_PACKET_GOP_UNIFIED     0x12  // Unified 3D DWT GOP (all frames in single block, translation-based)
-#define TAV_PACKET_GOP_UNIFIED_MESH 0x13  // Unified 3D DWT GOP with distortion mesh warping
+#define TAV_PACKET_GOP_UNIFIED_MOTION 0x13  // Unified 3D DWT GOP with motion-compensated lifting
 #define TAV_PACKET_PFRAME_RESIDUAL 0x14  // P-frame with MPEG-style residual coding (block motion compensation)
 #define TAV_PACKET_BFRAME_RESIDUAL 0x15  // B-frame with MPEG-style residual coding (bidirectional prediction)
 #define TAV_PACKET_PFRAME_ADAPTIVE 0x16  // P-frame with adaptive quad-tree block partitioning
@@ -116,13 +116,15 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
-#define DEFAULT_ZSTD_LEVEL 9
-#define TEMPORAL_GOP_SIZE 20//8 // ~42 frames fit into 32 MB video buffer
+#define DEFAULT_ZSTD_LEVEL 3
+#define TEMPORAL_GOP_SIZE 20
 #define TEMPORAL_DECOMP_LEVEL 2
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
+#define MP2_SAMPLE_RATE 32000
 #define MP2_DEFAULT_PACKET_SIZE 1152
+#define PACKET_AUDIO_TIME ((double)MP2_DEFAULT_PACKET_SIZE / MP2_SAMPLE_RATE)
 #define MAX_SUBTITLE_LENGTH 2048
 
 int debugDumpMade = 0;
@@ -2175,6 +2177,7 @@ static int mp2_packet_size_to_rate_index(int packet_size, int is_mono);
 static long write_extended_header(tav_encoder_t *enc);
 static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_ntsc_framerate);
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output);
+static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num_frames, FILE *output);
 static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps);
 static subtitle_entry_t* parse_srt_file(const char *filename, int fps);
 static subtitle_entry_t* parse_smi_file(const char *filename, int fps);
@@ -2269,7 +2272,7 @@ static void show_usage(const char *program_name) {
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --wavelet N             Wavelet filter: 0=LGT 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
     printf("  --zstd-level N          Zstd compression level 1-22 (default: %d, higher = better compression but slower)\n", DEFAULT_ZSTD_LEVEL);
-    printf("  --no-grain-synthesis    Disable grain synthesis (enabled by default)\n");
+//    printf("  --no-grain-synthesis    Disable grain synthesis (enabled by default)\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -2328,7 +2331,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
-    enc->enable_ezbc = 0;  // Default to twobit-map (EZBC adds overhead for small files)
+    enc->enable_ezbc = 1;  // Default to EZBC over twobit-map
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
@@ -2339,7 +2342,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->delta_haar_levels = TEMPORAL_DECOMP_LEVEL;
 
     // GOP / temporal DWT settings
-    enc->enable_temporal_dwt = 0;  // Default: disabled for backward compatibility. Mutually exclusive with use_delta_encoding
+    enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
     enc->temporal_gop_capacity = TEMPORAL_GOP_SIZE;  // 16 frames
     enc->temporal_gop_frame_count = 0;
     enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 2 levels of temporal DWT (16 -> 4x4 subbands)
@@ -4826,32 +4829,12 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         memcpy(gop_cg_coeffs[i], enc->temporal_gop_cg_frames[i], num_pixels * sizeof(float));
     }
 
-    // Debug: Print original frame-to-frame motion vectors
-    if (enc->verbose && actual_gop_size >= 4) {
-        printf("Frame-to-frame motion vectors (before cumulative conversion):\n");
-        for (int i = 0; i < actual_gop_size; i++) {
-            printf("  Frame %d: 1/16px=(%d, %d) pixels=(%.3f, %.3f)\n",
-                   i, enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i],
-                   enc->temporal_gop_translation_x[i] / 16.0f, enc->temporal_gop_translation_y[i] / 16.0f);
-        }
-    }
-
     // Step 0.5: Convert frame-to-frame motion vectors to cumulative (relative to frame 0)
     // Phase correlation computes motion of frame[i] relative to frame[i-1]
     // We need cumulative motion relative to frame 0 for proper alignment
     for (int i = 2; i < actual_gop_size; i++) {
         enc->temporal_gop_translation_x[i] += enc->temporal_gop_translation_x[i-1];
         enc->temporal_gop_translation_y[i] += enc->temporal_gop_translation_y[i-1];
-    }
-
-    // Debug: Print cumulative motion vectors
-    if (enc->verbose && actual_gop_size >= 4) {
-        printf("Cumulative motion vectors (after conversion):\n");
-        for (int i = 0; i < actual_gop_size; i++) {
-            printf("  Frame %d: 1/16px=(%d, %d) pixels=(%.3f, %.3f)\n",
-                   i, enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i],
-                   enc->temporal_gop_translation_x[i] / 16.0f, enc->temporal_gop_translation_y[i] / 16.0f);
-        }
     }
 
     // Step 0.5b: Calculate the valid region after alignment (crop bounds)
@@ -5102,6 +5085,9 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     // Write timecode packet for first frame in GOP
     write_timecode_packet(output, frame_numbers[0], enc->output_fps, enc->is_ntsc_framerate);
 
+    // Process audio for this GOP (all frames at once)
+    process_audio_for_gop(enc, frame_numbers, actual_gop_size, output);
+
     // Single-frame GOP fallback: use traditional I-frame encoding with serialise_tile_data
     if (actual_gop_size == 1) {
         // Write I-frame packet header (no motion vectors, no GOP overhead)
@@ -5171,10 +5157,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
             printf("Frame %d (single-frame GOP as I-frame): %zu bytes\n",
                    frame_numbers[0], compressed_size);
         }
-    } else {
+    }
+    else {
         // Multi-frame GOP: use unified 3D DWT encoding
         // Choose packet type based on motion compensation method
-        uint8_t packet_type = enc->temporal_enable_mcezbc ? TAV_PACKET_GOP_UNIFIED_MESH : TAV_PACKET_GOP_UNIFIED;
+        uint8_t packet_type = enc->temporal_enable_mcezbc ? TAV_PACKET_GOP_UNIFIED_MOTION : TAV_PACKET_GOP_UNIFIED;
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
 
@@ -5263,26 +5250,6 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
 
             free(mv_buffer);
             free(compressed_mv);
-        } else {
-            // Packet 0x12: Translation-based alignment
-            // Write canvas expansion information (4 bytes)
-            uint8_t canvas_margins[4] = {
-                (uint8_t)crop_left,    // Left margin
-                (uint8_t)crop_right,   // Right margin
-                (uint8_t)crop_top,     // Top margin
-                (uint8_t)crop_bottom   // Bottom margin
-            };
-            fwrite(canvas_margins, 1, 4, output);
-            total_bytes_written += 4;
-
-            // Write all motion vectors (1/16-pixel precision) for the entire GOP
-            for (int t = 0; t < actual_gop_size; t++) {
-                int16_t dx = enc->temporal_gop_translation_x[t];
-                int16_t dy = enc->temporal_gop_translation_y[t];
-                fwrite(&dx, sizeof(int16_t), 1, output);
-                fwrite(&dy, sizeof(int16_t), 1, output);
-                total_bytes_written += 4;
-            }
         }
 
         // Preprocess ALL frames with unified significance map
@@ -8649,13 +8616,8 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     // Calculate how much audio time each frame represents (in seconds)
     double frame_audio_time = 1.0 / enc->output_fps;
 
-    // Calculate how much audio time each MP2 packet represents
-    // MP2 frame contains 1152 samples at 32kHz = 0.036 seconds
-    #define MP2_SAMPLE_RATE 32000
-    double packet_audio_time = 1152.0 / MP2_SAMPLE_RATE;
-
     // Estimate how many packets we consume per video frame
-    double packets_per_frame = frame_audio_time / packet_audio_time;
+    double packets_per_frame = frame_audio_time / PACKET_AUDIO_TIME;
 
     // Allocate MP2 buffer if needed
     if (!enc->mp2_buffer) {
@@ -8683,24 +8645,20 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
 
         // Calculate how many packets we need to maintain target buffer level
         // Only insert when buffer drops below target, and only insert enough to restore target
-        double target_level = (double)enc->target_audio_buffer_size;
-        if (enc->audio_frames_in_buffer < target_level) {
+        double target_level = fmax(packets_per_frame, (double)enc->target_audio_buffer_size);
+//        if (enc->audio_frames_in_buffer < target_level) {
             double deficit = target_level - enc->audio_frames_in_buffer;
             // Insert packets to cover the deficit, but at least maintain minimum flow
             packets_to_insert = (int)ceil(deficit);
-            // Cap at reasonable maximum to prevent excessive insertion
-            if (packets_to_insert > enc->target_audio_buffer_size) {
-                packets_to_insert = enc->target_audio_buffer_size;
-            }
 
             if (enc->verbose) {
                 printf("Frame %d: Buffer low (%.2f->%.2f), deficit %.2f, inserting %d packets\n",
                        frame_num, old_buffer, enc->audio_frames_in_buffer, deficit, packets_to_insert);
             }
-        } else if (enc->verbose && old_buffer != enc->audio_frames_in_buffer) {
-            printf("Frame %d: Buffer sufficient (%.2f->%.2f), no packets\n",
-                   frame_num, old_buffer, enc->audio_frames_in_buffer);
-        }
+//        } else if (enc->verbose && old_buffer != enc->audio_frames_in_buffer) {
+//            printf("Frame %d: Buffer sufficient (%.2f->%.2f), no packets\n",
+//                   frame_num, old_buffer, enc->audio_frames_in_buffer);
+//        }
     }
 
     // Insert the calculated number of audio packets
@@ -8726,6 +8684,96 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
 
         if (frame_num == 0) {
             enc->audio_frames_in_buffer = enc->target_audio_buffer_size / 2; // trick the buffer simulator so that it doesn't count the frame 0 priming
+        }
+
+        if (enc->verbose) {
+            printf("Audio packet %d: %zu bytes (buffer: %.2f packets)\n",
+                   q, bytes_read, enc->audio_frames_in_buffer);
+        }
+    }
+
+    return 1;
+}
+
+// Process audio for a GOP (multiple frames at once)
+// Accumulates deficit for N frames and emits all necessary audio packets
+static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num_frames, FILE *output) {
+    if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0 || num_frames == 0) {
+        return 1;
+    }
+
+    // Handle first frame initialization (same as process_audio)
+    int first_frame_in_gop = frame_numbers[0];
+    if (first_frame_in_gop == 0) {
+        uint8_t header[4];
+        if (fread(header, 1, 4, enc->mp2_file) != 4) return 1;
+        fseek(enc->mp2_file, 0, SEEK_SET);
+        enc->mp2_packet_size = get_mp2_packet_size(header);
+        int is_mono = (header[3] >> 6) == 3;
+        enc->mp2_rate_index = mp2_packet_size_to_rate_index(enc->mp2_packet_size, is_mono);
+        enc->target_audio_buffer_size = 4; // 4 audio packets in buffer (does nothing for GOP)
+        enc->audio_frames_in_buffer = 0.0;
+    }
+
+    // Calculate audio packet consumption per video frame
+    double frame_audio_time = 1.0 / enc->output_fps;
+    double packets_per_frame = frame_audio_time / PACKET_AUDIO_TIME;
+
+    // Allocate MP2 buffer if needed
+    if (!enc->mp2_buffer) {
+        enc->mp2_buffer_size = enc->mp2_packet_size * 2;
+        enc->mp2_buffer = malloc(enc->mp2_buffer_size);
+        if (!enc->mp2_buffer) {
+            fprintf(stderr, "Failed to allocate audio buffer\n");
+            return 1;
+        }
+    }
+
+    // Calculate total deficit for all frames in the GOP
+    int total_packets_to_insert = 0;
+
+    // Simulate buffer consumption for all N frames in the GOP
+    double old_buffer = enc->audio_frames_in_buffer;
+    enc->audio_frames_in_buffer -= (packets_per_frame * num_frames);
+
+    // Calculate deficit to restore buffer to target level
+//    double target_level = fmax(packets_per_frame, (double)enc->target_audio_buffer_size);
+//    if (enc->audio_frames_in_buffer < target_level) {
+        double deficit = packets_per_frame * num_frames;
+        total_packets_to_insert = CLAMP((int)round(deficit), enc->target_audio_buffer_size, 9999);
+
+        if (enc->verbose) {
+            printf("GOP (%d frames, starting at %d): Buffer low (%.2f->%.2f), deficit %.2f, inserting %d packets\n",
+                   num_frames, first_frame_in_gop, old_buffer, enc->audio_frames_in_buffer, deficit, total_packets_to_insert);
+        }
+//    } else if (enc->verbose) {
+//        printf("GOP (%d frames, starting at %d): Buffer sufficient (%.2f->%.2f), no packets\n",
+//               num_frames, first_frame_in_gop, old_buffer, enc->audio_frames_in_buffer);
+//    }
+
+    // Emit all audio packets for this GOP
+    for (int q = 0; q < total_packets_to_insert; q++) {
+        size_t bytes_to_read = enc->mp2_packet_size;
+        if (bytes_to_read > enc->audio_remaining) {
+            bytes_to_read = enc->audio_remaining;
+        }
+
+        size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
+        if (bytes_read == 0) break;
+
+        // Write TAV MP2 audio packet
+        uint8_t audio_packet_type = TAV_PACKET_AUDIO_MP2;
+        uint32_t audio_len = (uint32_t)bytes_read;
+        fwrite(&audio_packet_type, 1, 1, output);
+        fwrite(&audio_len, 4, 1, output);
+        fwrite(enc->mp2_buffer, 1, bytes_read, output);
+
+        // Track audio bytes written
+        enc->audio_remaining -= bytes_read;
+        enc->audio_frames_in_buffer++;
+
+        if (first_frame_in_gop == 0) {
+            enc->audio_frames_in_buffer = enc->target_audio_buffer_size / 2;
         }
 
         if (enc->verbose) {
@@ -9834,19 +9882,15 @@ int main(int argc, char *argv[]) {
                 adjust_quantiser_for_bitrate(enc);
             }
 
-            // For GOP encoding, process audio/subtitles for all frames in the flushed GOP
+            // For GOP encoding, audio/subtitles are handled in gop_flush() for all GOP frames
             // For traditional encoding, process audio/subtitles for this single frame
-            if (enc->enable_temporal_dwt) {
-                // Note: In GOP mode, audio/subtitle sync is approximate since we flush multiple frames at once
-                // This is acceptable since GOPs are short (16 frames max = ~0.5s at 30fps)
-                // TODO: Consider buffering audio/subtitles for precise sync if needed
+            if (!enc->enable_temporal_dwt) {
+                // Process audio for this frame
+                process_audio(enc, true_frame_count, enc->output_fp);
+
+                // Process subtitles for this frame
+                process_subtitles(enc, true_frame_count, enc->output_fp);
             }
-
-            // Process audio for this frame
-            process_audio(enc, true_frame_count, enc->output_fp);
-
-            // Process subtitles for this frame
-            process_subtitles(enc, true_frame_count, enc->output_fp);
 
             // Write a sync packet only after a video is been coded
             // For GOP encoding, GOP_SYNC packet already serves as sync - don't emit extra SYNC
@@ -9857,7 +9901,8 @@ int main(int argc, char *argv[]) {
             }
 
             // NTSC frame duplication: emit extra sync packet for every 1000n+500 frames
-            if (enc->is_ntsc_framerate && (frame_count % 1000 == 500)) {
+            // Skip when temporal DWT is enabled (audio handled in GOP flush)
+            if (!enc->enable_temporal_dwt && enc->is_ntsc_framerate && (frame_count % 1000 == 500)) {
                 true_frame_count++;
                 // Process audio and subtitles for the duplicated frame to maintain sync
                 process_audio(enc, true_frame_count, enc->output_fp);

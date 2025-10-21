@@ -107,7 +107,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     internal val unusedArea = UnsafeHelper.allocate(1024, this)
     internal val scanlineOffsets = UnsafeHelper.allocate(1024, this)
 
-    internal val videoBuffer = UnsafeHelper.allocate(32 * 1024 * 1024, this)
+    internal val videoBuffer = UnsafeHelper.allocate(48 * 1024 * 1024, this)  // 48 MB for triple-buffering (3 slots × 21 frames × 752 kB)
 
     protected val paletteShader = LoadShader(DRAW_SHADER_VERT, config.paletteShader)
     protected val textShader = LoadShader(DRAW_SHADER_VERT, config.fragShader)
