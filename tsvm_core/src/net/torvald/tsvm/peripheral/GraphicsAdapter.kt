@@ -79,6 +79,10 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     internal val framebuffer3 = if (sgr.bankCount >= 3) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this) else null
     internal val framebuffer4 = if (sgr.bankCount >= 4) UnsafeHelper.allocate(WIDTH.toLong() * HEIGHT, this) else null
 
+    init {
+        framebuffer4?.fillWith(-1)
+    }
+
     internal val framebufferOut = Pixmap(WIDTH, HEIGHT, Pixmap.Format.RGBA8888)
     protected var rendertex = Texture(1, 1, Pixmap.Format.RGBA8888)
     internal val paletteOfFloats = FloatArray(1024) {
@@ -102,6 +106,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     internal val textArea = UnsafeHelper.allocate(7682, this)
     internal val unusedArea = UnsafeHelper.allocate(1024, this)
     internal val scanlineOffsets = UnsafeHelper.allocate(1024, this)
+
+    internal val videoBuffer = UnsafeHelper.allocate(32 * 1024 * 1024, this)
 
     protected val paletteShader = LoadShader(DRAW_SHADER_VERT, config.paletteShader)
     protected val textShader = LoadShader(DRAW_SHADER_VERT, config.fragShader)
@@ -960,6 +966,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom0.tryDispose()
         chrrom.tryDispose()
         unusedArea.destroy()
+        videoBuffer.destroy()
         scanlineOffsets.destroy()
         instArea.destroy()
         mappedFontRom.destroy()

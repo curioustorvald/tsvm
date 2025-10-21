@@ -80,6 +80,7 @@ import kotlin.text.toString
 
 class GraphicsJSR223Delegate(private val vm: VM) {
 
+
     private fun getFirstGPU(): GraphicsAdapter? {
         return vm.findPeribyType(VM.PERITYPE_GPU_AND_TERM)?.peripheral as? GraphicsAdapter
     }
@@ -4519,15 +4520,15 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Read entropy coder from header: 0 = Twobit-map, 1 = EZBC
         val isEZBC = (entropyCoder == 1)
 
-        if (isEZBC) {
-            println("[AUTO] Using EZBC decoder (FORCED)")
+        /*if (isEZBC) {
+            println("[AUTO] Using EZBC decoder")
             postprocessCoefficientsEZBC(compressedData, compressedOffset, coeffCount,
                                        channelLayout, outputY, outputCo, outputCg, outputAlpha)
         } else {
             println("[AUTO] Using twobit-map decoder")
             postprocessCoefficientsVariableLayout(compressedData, compressedOffset, coeffCount,
                                                  channelLayout, outputY, outputCo, outputCg, outputAlpha)
-        }
+        }*/
 
         return isEZBC
     }
@@ -6847,6 +6848,337 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         return arrayOf(gopSize, dbgOut)
+    }
+
+    /**
+     * Decode GOP frames directly into GraphicsAdapter.videoBuffer (Java heap).
+     * This avoids allocating GOP frames in VM user memory, saving ~6 MB for 8-frame GOPs.
+     *
+     * Frames are stored sequentially in videoBuffer: [Frame0_RGB][Frame1_RGB]...[FrameN_RGB]
+     * Each frame is width×height×3 bytes (RGB24 format).
+     *
+     * @param bufferOffset Byte offset into videoBuffer (for double-buffering: 0 or GOP_SIZE*FRAME_SIZE)
+     * @return Pair<Int, HashMap<String, Any>> - (number of frames decoded, debug info)
+     */
+    fun tavDecodeGopToVideoBuffer(
+        compressedDataPtr: Long,
+        compressedSize: Int,
+        gopSize: Int,
+        motionVectorsX: IntArray,
+        motionVectorsY: IntArray,
+        width: Int,
+        height: Int,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        marginLeft: Int,
+        marginTop: Int,
+        qIndex: Int,
+        qYGlobal: Int,
+        qCoGlobal: Int,
+        qCgGlobal: Int,
+        channelLayout: Int,
+        spatialFilter: Int = 1,
+        spatialLevels: Int = 6,
+        temporalLevels: Int = 2,
+        entropyCoder: Int = 0,
+        bufferOffset: Long = 0
+    ): Array<Any> {
+        val dbgOut = HashMap<String, Any>()
+        dbgOut["qY"] = qYGlobal
+        dbgOut["qCo"] = qCoGlobal
+        dbgOut["qCg"] = qCgGlobal
+        dbgOut["frameMode"] = "G"
+
+        val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
+
+        // Verify videoBuffer has enough space
+        val frameSize = width * height * 3L  // RGB24
+        val requiredSize = gopSize * frameSize
+        if (requiredSize > gpu.videoBuffer.size) {
+            println("ERROR: GOP requires ${requiredSize / 1048576}MB but videoBuffer is only ${gpu.videoBuffer.size / 1048576}MB")
+            return arrayOf(0, dbgOut)
+        }
+
+        // Use expanded canvas dimensions for DWT processing
+        val canvasPixels = canvasWidth * canvasHeight
+        val outputPixels = width * height
+
+        // Step 1: Decompress unified GOP block
+        val compressedData = ByteArray(compressedSize)
+        UnsafeHelper.memcpyRaw(
+            null,
+            vm.usermem.ptr + compressedDataPtr,
+            compressedData,
+            UnsafeHelper.getArrayOffset(compressedData),
+            compressedSize.toLong()
+        )
+
+        val decompressedData = try {
+            ZstdInputStream(java.io.ByteArrayInputStream(compressedData)).use { zstd ->
+                zstd.readBytes()
+            }
+        } catch (e: Exception) {
+            println("ERROR: Zstd decompression failed: ${e.message}")
+            return arrayOf(0, dbgOut)
+        }
+
+        // Step 2: Postprocess unified block to per-frame coefficients
+        val (isEZBCMode, quantizedCoeffs) = tavPostprocessGopAuto(
+            decompressedData,
+            gopSize,
+            canvasPixels,
+            channelLayout,
+            entropyCoder
+        )
+
+        // Step 3: Allocate GOP buffers for float coefficients (expanded canvas size)
+        val gopY = Array(gopSize) { FloatArray(canvasPixels) }
+        val gopCo = Array(gopSize) { FloatArray(canvasPixels) }
+        val gopCg = Array(gopSize) { FloatArray(canvasPixels) }
+
+        // Step 4: Calculate subband layout for expanded canvas
+        val subbands = calculateSubbandLayout(canvasWidth, canvasHeight, spatialLevels)
+
+        // Step 5: Dequantize with temporal-spatial scaling
+        for (t in 0 until gopSize) {
+            val temporalLevel = getTemporalSubbandLevel(t, gopSize, temporalLevels)
+            val temporalScale = getTemporalQuantizerScale(temporalLevel)
+
+            val baseQY = (qYGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
+            val baseQCo = (qCoGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
+            val baseQCg = (qCgGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
+
+            dequantiseDWTSubbandsPerceptual(
+                qIndex, qYGlobal,
+                quantizedCoeffs[t][0], gopY[t],
+                subbands, baseQY, false, spatialLevels,
+                isEZBCMode
+            )
+
+            dequantiseDWTSubbandsPerceptual(
+                qIndex, qYGlobal,
+                quantizedCoeffs[t][1], gopCo[t],
+                subbands, baseQCo, true, spatialLevels,
+                isEZBCMode
+            )
+
+            dequantiseDWTSubbandsPerceptual(
+                qIndex, qYGlobal,
+                quantizedCoeffs[t][2], gopCg[t],
+                subbands, baseQCg, true, spatialLevels,
+                isEZBCMode
+            )
+        }
+
+        // Step 6: Apply inverse 3D DWT
+        tavApplyInverse3DDWT(gopY, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCo, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCg, canvasWidth, canvasHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+
+        // Step 7: Apply inverse motion compensation
+        for (t in 1 until gopSize) {
+            val dx = motionVectorsX[t] / 16
+            val dy = motionVectorsY[t] / 16
+
+            if (dx != 0 || dy != 0) {
+                applyInverseTranslation(gopY[t], canvasWidth, canvasHeight, dx, dy)
+                applyInverseTranslation(gopCo[t], canvasWidth, canvasHeight, dx, dy)
+                applyInverseTranslation(gopCg[t], canvasWidth, canvasHeight, dx, dy)
+            }
+        }
+
+        // Step 8: Crop and convert to RGB, write directly to videoBuffer
+        for (t in 0 until gopSize) {
+            val videoBufferOffset = bufferOffset + (t * frameSize)  // Each frame sequentially, starting at bufferOffset
+
+            for (row in 0 until height) {
+                for (col in 0 until width) {
+                    // Source pixel in expanded canvas
+                    val canvasX = col + marginLeft
+                    val canvasY = row + marginTop
+                    val canvasIdx = canvasY * canvasWidth + canvasX
+
+                    // Destination pixel in videoBuffer
+                    val outIdx = row * width + col
+                    val offset = videoBufferOffset + outIdx * 3L
+
+                    val yVal = gopY[t][canvasIdx]
+                    val co = gopCo[t][canvasIdx]
+                    val cg = gopCg[t][canvasIdx]
+
+                    // YCoCg-R to RGB conversion
+                    val tmp = yVal - (cg / 2.0f)
+                    val g = cg + tmp
+                    val b = tmp - (co / 2.0f)
+                    val r = b + co
+
+                    // Clamp and write to videoBuffer
+                    gpu.videoBuffer[offset + 0] = r.toInt().coerceIn(0, 255).toByte()
+                    gpu.videoBuffer[offset + 1] = g.toInt().coerceIn(0, 255).toByte()
+                    gpu.videoBuffer[offset + 2] = b.toInt().coerceIn(0, 255).toByte()
+                }
+            }
+        }
+
+        return arrayOf(gopSize, dbgOut)
+    }
+
+    /**
+     * Upload a specific frame from videoBuffer to the framebuffer with dithering.
+     * Frames are stored sequentially in videoBuffer starting at offset 0.
+     *
+     * @param frameIndex Which frame in the GOP to upload (0-based)
+     * @param width Frame width
+     * @param height Frame height
+     * @param frameCount Global frame counter for dithering
+     * @param bufferOffset Byte offset into videoBuffer (for double-buffering: 0 or GOP_SIZE*FRAME_SIZE)
+     */
+    fun uploadVideoBufferFrameToFramebuffer(frameIndex: Int, width: Int, height: Int, frameCount: Int, bufferOffset: Long = 0) {
+        val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
+        val graphicsMode = gpu.graphicsMode
+
+        val frameSize = width * height * 3L
+        val videoBufferOffset = bufferOffset + (frameIndex * frameSize)
+
+        // Get native resolution
+        val nativeWidth = gpu.config.width
+        val nativeHeight = gpu.config.height
+
+        // Calculate centering offsets
+        val offsetX = (nativeWidth - width) / 2
+        val offsetY = (nativeHeight - height) / 2
+
+        // Dithering pattern for 8bpp → 4bpp conversion
+        val bayerMatrix = arrayOf(
+            intArrayOf(0, 8, 2, 10),
+            intArrayOf(12, 4, 14, 6),
+            intArrayOf(3, 11, 1, 9),
+            intArrayOf(15, 7, 13, 5)
+        )
+
+        // Process row by row
+        for (y in 0 until height) {
+            val screenY = y + offsetY
+            if (screenY !in 0 until nativeHeight) continue
+
+            for (x in 0 until width) {
+                val screenX = x + offsetX
+                if (screenX !in 0 until nativeWidth) continue
+
+                // Read RGB from videoBuffer
+                val pixelIdx = y * width + x
+                val offset = videoBufferOffset + pixelIdx * 3L
+
+                val r = gpu.videoBuffer[offset + 0].toUint()
+                val g = gpu.videoBuffer[offset + 1].toUint()
+                val b = gpu.videoBuffer[offset + 2].toUint()
+
+                val screenPixelIdx = screenY.toLong() * nativeWidth + screenX
+
+                if (graphicsMode == 4) {
+                    // 4bpp mode: dithered RGB (RG in fb1, B_ in fb2)
+                    val threshold = bayerMatrix[y % 4][x % 4]
+                    val rDithered = ((r + (threshold - 8)) shr 4).coerceIn(0, 15)
+                    val gDithered = ((g + (threshold - 8)) shr 4).coerceIn(0, 15)
+                    val bDithered = ((b + (threshold - 8)) shr 4).coerceIn(0, 15)
+
+                    gpu.framebuffer[screenPixelIdx] = ((rDithered shl 4) or gDithered).toByte()
+                    gpu.framebuffer2?.set(screenPixelIdx, (bDithered shl 4).toByte())
+                } else if (graphicsMode == 5) {
+                    // 8bpp mode: full RGB (R in fb1, G in fb2, B in fb3)
+                    gpu.framebuffer[screenPixelIdx] = r.toByte()
+                    gpu.framebuffer2?.set(screenPixelIdx, g.toByte())
+                    gpu.framebuffer3?.set(screenPixelIdx, b.toByte())
+                    gpu.framebuffer4?.set(screenPixelIdx, 255.toByte())
+                }
+            }
+        }
+    }
+
+    // Async GOP decode state
+    private val asyncDecodeComplete = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var asyncDecodeResult: Array<Any>? = null
+    private var asyncDecodeThread: Thread? = null
+
+    /**
+     * Asynchronously decode GOP frames to videoBuffer in a background thread.
+     * This allows JavaScript to continue reading packets and displaying frames while decode runs.
+     *
+     * Call this function, then poll tavDecodeGopIsComplete() in your main loop.
+     * When complete, retrieve result with tavDecodeGopGetResult().
+     *
+     * @param All parameters same as tavDecodeGopToVideoBuffer()
+     */
+    fun tavDecodeGopToVideoBufferAsync(
+        compressedDataPtr: Long,
+        compressedSize: Int,
+        gopSize: Int,
+        motionVectorsX: IntArray,
+        motionVectorsY: IntArray,
+        width: Int,
+        height: Int,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        marginLeft: Int,
+        marginTop: Int,
+        qIndex: Int,
+        qYGlobal: Int,
+        qCoGlobal: Int,
+        qCgGlobal: Int,
+        channelLayout: Int,
+        spatialFilter: Int = 1,
+        spatialLevels: Int = 6,
+        temporalLevels: Int = 2,
+        entropyCoder: Int = 0,
+        bufferOffset: Long = 0
+    ) {
+        // Cancel any existing decode thread
+        asyncDecodeThread?.interrupt()
+
+        // Reset completion flag
+        asyncDecodeComplete.set(false)
+        asyncDecodeResult = null
+
+        // Spawn thread to decode in background
+        asyncDecodeThread = Thread {
+            try {
+                val result = tavDecodeGopToVideoBuffer(
+                    compressedDataPtr, compressedSize, gopSize,
+                    motionVectorsX, motionVectorsY,
+                    width, height, canvasWidth, canvasHeight,
+                    marginLeft, marginTop,
+                    qIndex, qYGlobal, qCoGlobal, qCgGlobal,
+                    channelLayout, spatialFilter, spatialLevels, temporalLevels,
+                    entropyCoder, bufferOffset
+                )
+                asyncDecodeResult = result
+                asyncDecodeComplete.set(true)
+            } catch (e: InterruptedException) {
+                // Thread was cancelled, do nothing
+            } catch (e: Exception) {
+                // Decode failed, set empty result and mark complete
+                asyncDecodeResult = arrayOf(0, HashMap<String, Any>())
+                asyncDecodeComplete.set(true)
+            }
+        }
+        asyncDecodeThread?.start()
+    }
+
+    /**
+     * Check if async GOP decode has completed.
+     * @return true if decode finished, false if still running
+     */
+    fun tavDecodeGopIsComplete(): Boolean {
+        return asyncDecodeComplete.get()
+    }
+
+    /**
+     * Get the result of async GOP decode.
+     * Only call this after tavDecodeGopIsComplete() returns true!
+     * @return Array<Any> - same as tavDecodeGopToVideoBuffer()
+     */
+    fun tavDecodeGopGetResult(): Array<Any> {
+        return asyncDecodeResult ?: arrayOf(0, HashMap<String, Any>())
     }
 
     // Biorthogonal 13/7 wavelet inverse 1D transform

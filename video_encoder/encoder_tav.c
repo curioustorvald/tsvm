@@ -117,8 +117,8 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 9
-#define TEMPORAL_GOP_SIZE 24//8
-#define TEMPORAL_DECOMP_LEVEL 3
+#define TEMPORAL_GOP_SIZE 20//8 // ~42 frames fit into 32 MB video buffer
+#define TEMPORAL_DECOMP_LEVEL 2
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
@@ -8832,7 +8832,7 @@ static int detect_scene_change_between_frames(
     if (out_changed_ratio) *out_changed_ratio = changed_ratio;
 
     // Scene change threshold
-    double threshold = 0.75;
+    double threshold = 0.50;
 
     return changed_ratio > threshold;
 }

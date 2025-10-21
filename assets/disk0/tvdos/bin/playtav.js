@@ -355,6 +355,12 @@ let decodeHeight = isInterlaced ? (header.height >> 1) : header.height
 const FRAME_PIXELS = header.width * header.height
 const FRAME_SIZE = FRAME_PIXELS * 3  // RGB buffer size
 
+// Double-buffering: Fixed slot sizes in videoBuffer (32 MB total)
+const MAX_GOP_SIZE = 21  // Maximum frames per slot (21 * 752KB = ~15MB per slot)
+const SLOT_SIZE = MAX_GOP_SIZE * FRAME_SIZE  // Fixed slot size regardless of actual GOP size
+
+console.log(`Double-buffering: Max ${MAX_GOP_SIZE} frames/slot, ${(SLOT_SIZE / 1048576).toFixed(1)}MB per slot`)
+
 const RGB_BUFFER_A = sys.malloc(FRAME_SIZE)
 const RGB_BUFFER_B = sys.malloc(FRAME_SIZE)
 
@@ -384,7 +390,6 @@ let nextFieldAddr = NEXT_FIELD_BUFFER
 let audioBufferBytesLastFrame = 0
 let frame_cnt = 0
 let frametime = 1000000000.0 / header.fps
-let nextFrameTime = 0
 let mp2Initialised = false
 let audioFired = false
 
@@ -474,13 +479,50 @@ let trueFrameCount = 0
 let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
+let nextFrameTime = 0  // Absolute time when next frame should display (nanoseconds)
 let currentFileIndex = 1  // Track which file we're playing in concatenated stream
 let totalFilesProcessed = 0
 let decoderDbgInfo = {}
 
+// GOP double-buffering state
+let currentGopBufferSlot = 0  // Which buffer slot is currently being displayed (0 or 1)
+let currentGopSize = 0         // Number of frames in current GOP being displayed
+let currentGopFrameIndex = 0   // Which frame of current GOP we're displaying
+let nextGopData = null         // Buffered next GOP packet data for background decode
+let asyncDecodeInProgress = false  // Track if async decode is running
+let asyncDecodeSlot = 0        // Which slot the async decode is targeting
+let asyncDecodeGopSize = 0     // Size of GOP being decoded async
+let asyncDecodePtr = 0         // Compressed data pointer to free after decode
+let asyncDecodeStartTime = 0   // When async decode started (for diagnostics)
+let shouldReadPackets = true   // Gate packet reading: false when both buffers are full
+
 let cueElements = []
 let currentCueIndex = -1  // Track current cue position
 let iframePositions = []  // Track I-frame positions for seeking: [{offset, frameNum}]
+
+// Helper function to clean up async decode state (prevents memory leaks)
+function cleanupAsyncDecode() {
+    // Free first GOP decode memory if in progress
+    if (asyncDecodeInProgress && asyncDecodePtr && asyncDecodePtr !== 0) {
+        sys.free(asyncDecodePtr)
+        asyncDecodeInProgress = false
+        asyncDecodePtr = 0
+        asyncDecodeGopSize = 0
+    }
+
+    // Free background GOP decode memory if in progress
+    if (nextGopData !== null && nextGopData.compressedPtr && nextGopData.compressedPtr !== 0) {
+        sys.free(nextGopData.compressedPtr)
+        nextGopData.compressedPtr = 0
+    }
+    nextGopData = null
+
+    // Reset GOP playback state
+    currentGopSize = 0
+    currentGopFrameIndex = 0
+    nextFrameTime = 0  // Reset frame timing
+    shouldReadPackets = true  // Resume packet reading after cleanup
+}
 
 // Function to find nearest I-frame before or at target frame
 function findNearestIframe(targetFrame) {
@@ -738,6 +780,7 @@ try {
 
                     if (cue.addressingMode === ADDRESSING_INTERNAL) {
                         serial.println(`Seeking to cue: ${cue.name} (offset ${cue.offset})`)
+                        cleanupAsyncDecode()  // Free any pending async decode memory
                         seqread.seek(cue.offset)
                         frameCount = 0
                         akku = FRAME_TIME
@@ -756,6 +799,7 @@ try {
 
                     if (cue.addressingMode === ADDRESSING_INTERNAL) {
                         serial.println(`Seeking to cue: ${cue.name} (offset ${cue.offset})`)
+                        cleanupAsyncDecode()  // Free any pending async decode memory
                         seqread.seek(cue.offset)
                         frameCount = 0
                         akku = FRAME_TIME
@@ -774,6 +818,7 @@ try {
 
                     if (seekTarget) {
                         serial.println(`Seeking back to frame ${seekTarget.frameNum} (offset ${seekTarget.offset})`)
+                        cleanupAsyncDecode()  // Free any pending async decode memory
                         seqread.seek(seekTarget.offset)
                         frameCount = seekTarget.frameNum
                         akku = FRAME_TIME
@@ -800,6 +845,7 @@ try {
 
                     if (seekTarget && seekTarget.frameNum > frameCount) {
                         serial.println(`Seeking forward to frame ${seekTarget.frameNum} (offset ${seekTarget.offset})`)
+                        cleanupAsyncDecode()  // Free any pending async decode memory
                         seqread.seek(seekTarget.offset)
                         frameCount = seekTarget.frameNum
                         akku = FRAME_TIME
@@ -819,12 +865,13 @@ try {
             lastKey = keyCode
         }
 
-        if (akku >= FRAME_TIME) {
-            // When paused, just reset accumulator and skip frame processing
-            if (!paused) {
-                // Read packet header (record position before reading for I-frame tracking)
-                let packetOffset = seqread.getReadCount()
-                var packetType = seqread.readOneByte()
+        // GATED PACKET READING
+        // Stop reading when both buffers are full (GOP playing + GOP decoding/ready)
+        // Resume reading when GOP finishes (one buffer becomes free)
+        if (shouldReadPackets && !paused) {
+            // Read packet header (record position before reading for I-frame tracking)
+            let packetOffset = seqread.getReadCount()
+            var packetType = seqread.readOneByte()
 
 //            serial.println(`Packet ${packetType} at offset ${seqread.getReadCount() - 1}`)
 
@@ -864,7 +911,7 @@ try {
             }
 
             if (packetType === TAV_PACKET_SYNC || packetType == TAV_PACKET_SYNC_NTSC) {
-                // Sync packet - no additional data
+                // Sync packet - no additional data (for I/P frames, not GOPs)
                 akku -= FRAME_TIME
                 if (packetType == TAV_PACKET_SYNC) {
                     frameCount++
@@ -872,7 +919,7 @@ try {
 
                 trueFrameCount++
 
-                // Swap ping-pong buffers instead of expensive memcpy (752KB copy eliminated!)
+                // Swap ping-pong buffers
                 let temp = CURRENT_RGB_ADDR
                 CURRENT_RGB_ADDR = PREV_RGB_ADDR
                 PREV_RGB_ADDR = temp
@@ -1000,193 +1047,154 @@ try {
             }
             else if (packetType === TAV_PACKET_GOP_UNIFIED) {
                 // GOP Unified packet (temporal 3D DWT)
+                // DOUBLE-BUFFERING: Decode GOP N+1 while playing GOP N to eliminate hiccups
 
-                // Read GOP size (number of frames in this GOP, 1-16)
+                // Read GOP packet data
                 const gopSize = seqread.readOneByte()
-
-                // Read canvas expansion margins (4 bytes)
-                // Encoder expands canvas to preserve all original pixels from all aligned frames
                 const marginLeft = seqread.readOneByte()
                 const marginRight = seqread.readOneByte()
                 const marginTop = seqread.readOneByte()
                 const marginBottom = seqread.readOneByte()
 
-                // Calculate expanded canvas dimensions
                 const canvasWidth = header.width + marginLeft + marginRight
                 const canvasHeight = header.height + marginTop + marginBottom
 
                 // Read motion vectors (1/16-pixel units, int16)
-                // Encoder writes ALL motion vectors including frame 0
                 let motionX = new Array(gopSize)
                 let motionY = new Array(gopSize)
 
                 for (let i = 0; i < gopSize; i++) {
-                    // readShort() returns unsigned 16-bit, but motion vectors are signed int16
                     let mx = seqread.readShort()
                     let my = seqread.readShort()
-                    // Convert to signed: if > 32767, it's negative
                     motionX[i] = (mx > 32767) ? (mx - 65536) : mx
                     motionY[i] = (my > 32767) ? (my - 65536) : my
                 }
 
-                // Read compressed data size
                 const compressedSize = seqread.readInt()
-
-                // Read compressed data
                 let compressedPtr = seqread.readBytes(compressedSize)
                 updateDataRateBin(compressedSize)
 
-                // Check if GOP fits in VM memory
-                const gopMemoryNeeded = gopSize * FRAME_SIZE
-                if (gopMemoryNeeded > MAXMEM) {
-                    throw new Error(`GOP too large: ${gopSize} frames needs ${(gopMemoryNeeded / 1048576).toFixed(2)}MB, but VM has only ${(MAXMEM / 1048576).toFixed(1)}MB. Max GOP size: 8 frames for 8MB system.`)
+                // DOUBLE-BUFFERING LOGIC:
+                // - If no GOP is currently playing: decode immediately to current slot
+                // - Otherwise: buffer this GOP for decode during next GOP's playback
+
+                // Check GOP size fits in slot
+                if (gopSize > MAX_GOP_SIZE) {
+                    console.log(`[GOP] Error: GOP size ${gopSize} exceeds max ${MAX_GOP_SIZE} frames`)
+                    sys.free(compressedPtr)
+                    break
                 }
 
-                // Allocate GOP buffers outside try block so finally can free them
-                let gopRGBBuffers = new Array(gopSize)
-                for (let i = 0; i < gopSize; i++) {
-                    gopRGBBuffers[i] = sys.malloc(FRAME_SIZE)
-                    if (gopRGBBuffers[i] === 0) {
-                        // Malloc failed - free what we allocated and bail out
-                        for (let j = 0; j < i; j++) {
-                            sys.free(gopRGBBuffers[j])
-                        }
-                        throw new Error(`Failed to allocate GOP buffer ${i}/${gopSize}. Out of memory.`)
+                if (currentGopSize === 0 && !asyncDecodeInProgress) {
+                    // No active GOP and no decode in progress: decode asynchronously and start playback when ready
+                    const bufferSlot = currentGopBufferSlot
+                    const bufferOffset = bufferSlot * SLOT_SIZE
+
+                    // Defensive: free any old async decode memory (shouldn't happen but be safe)
+                    if (asyncDecodePtr !== 0) {
+                        sys.free(asyncDecodePtr)
+                        asyncDecodePtr = 0
                     }
-                }
 
-                try {
-                    let decodeStart = sys.nanoTime()
-
-                    // Call GOP decoder with canvas expansion information
-                    const [r1, r2] = graphics.tavDecodeGopUnified(
-                        compressedPtr,
-                        compressedSize,
-                        gopSize,
-                        motionX,
-                        motionY,
-                        gopRGBBuffers,  // Array of output buffer addresses
-                        header.width,   // Original frame width
-                        header.height,  // Original frame height
-                        canvasWidth,    // Expanded canvas width (preserves all pixels)
-                        canvasHeight,   // Expanded canvas height (preserves all pixels)
-                        marginLeft,     // Left margin
-                        marginTop,      // Top margin
+                    // Start async decode
+                    graphics.tavDecodeGopToVideoBufferAsync(
+                        compressedPtr, compressedSize, gopSize,
+                        motionX, motionY,
+                        header.width, header.height,
+                        canvasWidth, canvasHeight,
+                        marginLeft, marginTop,
                         header.qualityLevel,
-                        QLUT[header.qualityY],
-                        QLUT[header.qualityCo],
-                        QLUT[header.qualityCg],
+                        QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter,
-                        header.decompLevels,
-                        2,              // temporalLevels (hardcoded for now, could be in header)
-                        header.entropyCoder  // Entropy coder: 0 = Twobit-map, 1 = EZBC
+                        header.waveletFilter, header.decompLevels, 2,
+                        header.entropyCoder,
+                        bufferOffset
                     )
 
-                    const framesDecoded = r1
-                    decoderDbgInfo = r2
+                    asyncDecodeInProgress = true
+                    asyncDecodeSlot = bufferSlot
+                    asyncDecodeGopSize = gopSize
+                    asyncDecodePtr = compressedPtr  // Will free after decode completes
+                    asyncDecodeStartTime = sys.nanoTime()
 
-                    decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
-                    decompressTime = 0  // Included in decode time
+                    // Note: compressedPtr will be freed after decode completes
+                    // We'll check for completion in main loop and start playback then
+                    if (interactive) {
+                        console.log(`[GOP] Started async decode of first GOP (slot ${bufferSlot}, ${gopSize} frames)`)
+                    }
+                } else if (currentGopSize === 0 && asyncDecodeInProgress) {
+                    // First GOP still decoding but another arrived - ignore it to avoid cancelling first GOP
+                    if (interactive) {
+                        console.log(`[GOP] Warning: GOP arrived while first GOP still decoding - ignoring to avoid cancellation`)
+                    }
+                    sys.free(compressedPtr)
+                } else if (currentGopSize > 0 && !asyncDecodeInProgress) {
+                    // GOP is playing and first GOP decode is done: decode this one to other slot in background (async)
+                    const nextSlot = 1 - currentGopBufferSlot
+                    const nextOffset = nextSlot * SLOT_SIZE
 
-                    // Display each decoded frame with proper timing
-                    for (let i = 0; i < framesDecoded; i++) {
-                        let frameStart = sys.nanoTime()
-                        let uploadStart = frameStart
+                    // DIAGNOSTIC: Measure background decode timing
+                    const framesRemaining = currentGopSize - currentGopFrameIndex
+                    const timeRemaining = framesRemaining * FRAME_TIME * 1000.0  // milliseconds
 
-                        // Upload GOP frame directly (no copy needed - already in RGB24 format)
-                        graphics.uploadRGBToFramebuffer(gopRGBBuffers[i], header.width, header.height, trueFrameCount + i, false)
-                        uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
-
-                        // Apply bias lighting (only for first/last frame to save CPU)
-                        let biasStart = sys.nanoTime()
-                        if (i === 0 || i === framesDecoded - 1) {
-                            setBiasLighting()
+                    // If previous GOP still decoding, free its memory (will be overwritten)
+                    if (nextGopData !== null && !nextGopData.decoded && nextGopData.compressedPtr && nextGopData.compressedPtr !== 0) {
+                        if (interactive) {
+                            console.log(`[GOP] Warning: New GOP arrived before previous decode completed - freeing old data`)
                         }
-                        biasTime = (sys.nanoTime() - biasStart) / 1000000.0
-
-                        // Fire audio on first frame
-                        if (!audioFired && (frameCount > 0 || i > 0)) {
-                            audio.play(0)
-                            audioFired = true
-                        }
-
-                        // Calculate how much time we've used so far for this frame
-                        let frameElapsed = (sys.nanoTime() - frameStart) / 1000000000.0
-
-                        // Wait for the remainder of FRAME_TIME (busy wait for accurate timing)
-                        let waitNeeded = FRAME_TIME - frameElapsed
-                        if (waitNeeded > 0) {
-                            let waitStart = sys.nanoTime()
-                            while ((sys.nanoTime() - waitStart) / 1000000000.0 < waitNeeded && !stopPlay && !paused) {
-                                sys.sleep(0) // Busy wait
-                            }
-                        }
-
-                        // Update global time tracking to keep main loop synchronized
-                        let frameEnd = sys.nanoTime()
-                        let frameTotalTime = (frameEnd - frameStart) / 1000000000.0
-                        akku2 += frameTotalTime
-                        t1 = frameEnd  // Keep t1 synchronized with actual time
-
-                        frameCount++
-                        trueFrameCount++
-
-                        // Swap ping-pong buffers for P-frame reference
-                        let temp = CURRENT_RGB_ADDR
-                        CURRENT_RGB_ADDR = PREV_RGB_ADDR
-                        PREV_RGB_ADDR = temp
-
-                        // Log performance for first frame of GOP
-                        if (i === 0 && (frameCount % 60 == 0 || frameCount == 0)) {
-                            let totalTime = decompressTime + decodeTime + uploadTime + biasTime
-                            console.log(`GOP Frame ${frameCount}: Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms (${gopSize} frames)`)
-                        }
+                        sys.free(nextGopData.compressedPtr)
+                        nextGopData.compressedPtr = 0
                     }
 
-                    // Note: frameCount and trueFrameCount will be incremented by GOP_SYNC packet
-                    // Note: GOP buffers will be freed in finally block
+                    if (interactive) {
+                        console.log(`[GOP] Background decode started: frame ${currentGopFrameIndex}/${currentGopSize}, ${framesRemaining} frames (${timeRemaining.toFixed(0)}ms) remaining`)
+                    }
 
-                } catch (e) {
-                    console.log(`GOP Frame ${frameCount}: decode failed: ${e}`)
-                    // Try to get more details from the exception
-                    if (e.stack) {
-                        console.log(`Stack trace: ${e.stack}`)
+                    // Start async background decode
+                    graphics.tavDecodeGopToVideoBufferAsync(
+                        compressedPtr, compressedSize, gopSize,
+                        motionX, motionY,
+                        header.width, header.height,
+                        canvasWidth, canvasHeight,
+                        marginLeft, marginTop,
+                        header.qualityLevel,
+                        QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
+                        header.channelLayout,
+                        header.waveletFilter, header.decompLevels, 2,
+                        header.entropyCoder,
+                        nextOffset
+                    )
+
+                    // Mark as decoding (will check completion in main loop)
+                    nextGopData = {
+                        gopSize: gopSize,
+                        decoded: false,  // Will be set to true when async decode completes
+                        slot: nextSlot,
+                        compressedPtr: compressedPtr,  // Will free after decode completes
+                        startTime: sys.nanoTime(),
+                        timeRemaining: timeRemaining
                     }
-                    if (e.javaException) {
-                        console.log(`Java exception: ${e.javaException}`)
-                        if (e.javaException.printStackTrace) {
-                            serial.println("Java stack trace:")
-                            e.javaException.printStackTrace()
-                        }
-                    }
-                    // Print exception properties
-                    try {
-                        const props = Object.keys(e)
-                        if (props.length > 0) {
-                            console.log(`Exception properties: ${props.join(', ')}`)
-                            e.printStackTrace()
-                            let ee = e.getStackTrace()
-                            console.log(ee.length)
-                            console.log(ee.slice(0, 10).join('\n'))
-                        }
-                    } catch (ex) {}
-                } finally {
-                    // Always free GOP buffers even on error
-                    for (let i = 0; i < gopSize; i++) {
-                        sys.free(gopRGBBuffers[i])
+                } else {
+                    // Fallback: unexpected state, just free the memory
+                    if (interactive) {
+                        console.log(`[GOP] Warning: Unexpected state - currentGopSize=${currentGopSize}, asyncDecodeInProgress=${asyncDecodeInProgress} - freeing GOP data`)
                     }
                     sys.free(compressedPtr)
                 }
             }
             else if (packetType === TAV_PACKET_GOP_SYNC) {
-                // GOP sync packet - increment frame counters by number of frames decoded
+                // GOP sync packet - just skip it, frame display is time-based
                 const framesInGOP = seqread.readOneByte()
+                // Ignore - we display frames based on time accumulator, not this packet
 
-                frameCount += framesInGOP
-                trueFrameCount += framesInGOP
-
-                // Note: Buffer swapping already handled in GOP_UNIFIED handler
+                // CRITICAL: Stop reading packets if both buffers are full
+                // (one GOP playing + one GOP ready/decoding)
+                if (currentGopSize > 0 && nextGopData !== null) {
+                    shouldReadPackets = false
+                    if (interactive) {
+                        console.log(`[GOP] Both buffers full - stopping packet reading until current GOP finishes`)
+                    }
+                }
             }
             else if (packetType === TAV_PACKET_AUDIO_MP2) {
                 // MP2 Audio packet
@@ -1281,13 +1289,136 @@ try {
                 println(`Unknown packet type: 0x${packetType.toString(16)}`)
                 break
             }
-            } // end of !paused block
-        }
+        } // end of !paused packet read block
 
         let t2 = sys.nanoTime()
         if (!paused) {
-            akku += (t2 - t1) / 1000000000.0
+            // Only accumulate time if we have a GOP to play
+            // Don't accumulate during first GOP decode or we'll get fast playback
+            if (currentGopSize > 0) {
+                akku += (t2 - t1) / 1000000000.0
+            }
             akku2 += (t2 - t1) / 1000000000.0
+        }
+
+        // STATE MACHINE: Explicit GOP playback with spin-waits
+
+        // Step 1: If first GOP decode in progress AND no GOP is currently playing, wait for it
+        if (asyncDecodeInProgress && currentGopSize === 0) {
+            if (!graphics.tavDecodeGopIsComplete()) {
+                // Spin-wait for first GOP decode (nothing else to do)
+                sys.sleep(1)
+            }
+            else {
+                // First GOP decode completed, start playback
+                const [r1, r2] = graphics.tavDecodeGopGetResult()
+                decodeTime = (sys.nanoTime() - asyncDecodeStartTime) / 1000000.0
+                decoderDbgInfo = r2
+
+                currentGopSize = asyncDecodeGopSize
+                currentGopFrameIndex = 0
+                currentGopBufferSlot = asyncDecodeSlot
+                asyncDecodeInProgress = false
+
+                // Set first frame time to NOW
+                nextFrameTime = sys.nanoTime()
+
+                // Resume packet reading to get next GOP (only one buffer occupied now)
+                shouldReadPackets = true
+
+                if (interactive) {
+                    console.log(`[GOP] First GOP ready (slot ${asyncDecodeSlot}, ${asyncDecodeGopSize} frames) in ${decodeTime.toFixed(1)}ms - starting playback`)
+                }
+
+                // Free compressed data
+                sys.free(asyncDecodePtr)
+                asyncDecodePtr = 0
+                asyncDecodeGopSize = 0
+            }
+        }
+
+        // Step 2 & 3: Display current GOP frame if it's time
+        if (!paused && currentGopSize > 0 && currentGopFrameIndex < currentGopSize) {
+            // Spin-wait for next frame time
+            while (sys.nanoTime() < nextFrameTime && !paused) {
+                sys.sleep(1)
+            }
+
+            if (!paused) {
+                const bufferSlot = currentGopBufferSlot
+                const bufferOffset = bufferSlot * SLOT_SIZE
+
+                let uploadStart = sys.nanoTime()
+                graphics.uploadVideoBufferFrameToFramebuffer(currentGopFrameIndex, header.width, header.height, trueFrameCount, bufferOffset)
+                uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
+
+                // Apply bias lighting
+                let biasStart = sys.nanoTime()
+                if (currentGopFrameIndex === 0 || currentGopFrameIndex === currentGopSize - 1) {
+                    setBiasLighting()
+                }
+                biasTime = (sys.nanoTime() - biasStart) / 1000000.0
+
+                // Fire audio on first frame
+                if (!audioFired) {
+                    audio.play(0)
+                    audioFired = true
+                }
+
+                currentGopFrameIndex++
+                frameCount++
+                trueFrameCount++
+
+                // Schedule next frame
+                nextFrameTime += (frametime)  // frametime is in nanoseconds from header
+            }
+        }
+
+        // Step 4 & 7: GOP finished? Wait for background decode, then transition
+        if (!paused && currentGopSize > 0 && currentGopFrameIndex >= currentGopSize) {
+            if (nextGopData !== null) {
+                // Wait for background decode to complete
+                while (!graphics.tavDecodeGopIsComplete() && !paused) {
+                    sys.sleep(1)
+                }
+
+                if (!paused) {
+                    const [r1, r2] = graphics.tavDecodeGopGetResult()
+                    decodeTime = (sys.nanoTime() - nextGopData.startTime) / 1000000.0
+
+                    if (interactive) {
+                        const margin = nextGopData.timeRemaining - decodeTime
+                        const status = margin > 0 ? "✓ ON TIME" : "✗ TOO LATE"
+                        console.log(`[GOP] Background decode finished in ${decodeTime.toFixed(1)}ms (margin: ${margin.toFixed(0)}ms) ${status}`)
+                    }
+
+                    // Free compressed data
+                    sys.free(nextGopData.compressedPtr)
+
+                    // Transition to next GOP
+                    currentGopBufferSlot = 1 - currentGopBufferSlot
+                    currentGopSize = nextGopData.gopSize
+                    currentGopFrameIndex = 0
+                    nextGopData = null
+
+                    // Resume packet reading now that one buffer is free
+                    shouldReadPackets = true
+
+                    if (interactive) {
+                        console.log(`[GOP] ✓ SEAMLESS TRANSITION to next GOP (slot ${currentGopBufferSlot}, ${currentGopSize} frames)`)
+                    }
+                }
+            } else {
+                // No next GOP available, pause playback
+                if (interactive) {
+                    console.log(`[GOP] ✗ HICCUP - next GOP NOT READY! Playback paused.`)
+                }
+                currentGopSize = 0
+                currentGopFrameIndex = 0
+
+                // Resume packet reading to get next GOP
+                shouldReadPackets = true
+            }
         }
 
         // Simple progress display
@@ -1318,6 +1449,10 @@ try {
             gui.printBottomBar(guiStatus)
             gui.printTopBar(guiStatus, 1)
         }
+
+        // Small sleep to prevent 100% CPU and control loop rate
+        // Allows continuous packet reading while maintaining proper frame timing
+        sys.sleep(1)
 
         t1 = t2
     }
