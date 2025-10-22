@@ -260,7 +260,7 @@ void print_extended_header(FILE *fp, int verbose) {
 
             if (verbose) {
                 if (strcmp(key, "CDAT") == 0) {
-                    time_t time_sec = value / 1000000000ULL;
+                    time_t time_sec = value / 1000000ULL; // microseconds
                     struct tm *time_info = gmtime(&time_sec);
                     if (time_info) {
                         char time_str[64];
@@ -268,7 +268,7 @@ void print_extended_header(FILE *fp, int verbose) {
                         printf("%s", time_str);
                     }
                 } else {
-                    printf("%.6f seconds", value / 1000000000.0);
+                    printf("%.6f seconds", value / 1000000000.0); // nanoseconds
                 }
             }
         } else if (value_type == 0x10) {  // Bytes

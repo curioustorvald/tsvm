@@ -121,7 +121,11 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_ZSTD_LEVEL 3
 #define DEFAULT_PCM_ZSTD_LEVEL 3
 #define TEMPORAL_GOP_SIZE 20
+#define TEMPORAL_GOP_SIZE_MIN 8 // Minimum GOP size to avoid decoder hiccups
 #define TEMPORAL_DECOMP_LEVEL 2
+
+#define SCENE_CHANGE_THRESHOLD_SOFT 0.6
+#define SCENE_CHANGE_THRESHOLD_HARD 0.8
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
@@ -1897,7 +1901,7 @@ typedef struct tav_encoder_s {
 
     // Extended header support
     char *ffmpeg_version;  // FFmpeg version string
-    uint64_t creation_time_ns;  // Creation time in nanoseconds since UNIX epoch
+    uint64_t creation_time_us;  // Creation time in nanoseconds since UNIX epoch
     long extended_header_offset;  // File offset of extended header for ENDT update
 
 } tav_encoder_t;
@@ -2267,7 +2271,7 @@ static void show_usage(const char *program_name) {
     printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  --separate-audio-track  Write entire MP2 file as single packet 0x40 (instead of interleaved)\n");
-    printf("  --pcm8-audio            Use 8-bit PCM audio (packet 0x21, zstd compressed, per-frame packets)\n");
+    printf("  --pcm8-audio            Use 8-bit PCM audio instead of MP2 (TSVM native audio format)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
     printf("  --fontrom-hi FILE       High font ROM file for internationalised subtitles\n");
@@ -4063,7 +4067,7 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     if (enc->enable_ezbc) {
         // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
         // EZBC will compress by encoding only significant bitplanes
-        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantization without normalization\n");
+//        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantization without normalization\n");
         quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_y_dwt, quantised_y, frame_size,
                                                       qY, enc->width, enc->height,
                                                       enc->decomp_levels, 0, 0);
@@ -4081,7 +4085,7 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
             if (abs(quantised_co[i]) > max_co) max_co = abs(quantised_co[i]);
             if (abs(quantised_cg[i]) > max_cg) max_cg = abs(quantised_cg[i]);
         }
-        fprintf(stderr, "[EZBC-QUANT-PFRAME] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
+//        fprintf(stderr, "[EZBC-QUANT-PFRAME] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
     } else {
         // Twobit-map mode: Use traditional quantization
         quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
@@ -5396,9 +5400,84 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
     // Trim GOP if scene change detected
     if (scene_change_frame > 0) {
         actual_gop_size = scene_change_frame;
-        if (enc->verbose) {
-            printf("Trimming GOP from %d to %d frames due to scene change\n",
-                   enc->temporal_gop_frame_count, actual_gop_size);
+
+        // If trimmed GOP would be too small, encode as separate I-frames instead
+        if (actual_gop_size < TEMPORAL_GOP_SIZE_MIN) {
+            if (enc->verbose) {
+                printf("Scene change at frame %d would create GOP of %d frames (< %d), encoding as I-frames instead\n",
+                       frame_numbers[scene_change_frame], actual_gop_size, TEMPORAL_GOP_SIZE_MIN);
+            }
+
+            // Encode each frame before scene change as separate I-frame
+            size_t total_bytes = 0;
+            int original_gop_frame_count = enc->temporal_gop_frame_count;
+
+            for (int i = 0; i < actual_gop_size; i++) {
+                // Temporarily set up single-frame GOP
+                uint8_t *saved_rgb_frame0 = enc->temporal_gop_rgb_frames[0];
+                float *saved_y_frame0 = enc->temporal_gop_y_frames[0];
+                float *saved_co_frame0 = enc->temporal_gop_co_frames[0];
+                float *saved_cg_frame0 = enc->temporal_gop_cg_frames[0];
+
+                // Set up single-frame GOP by moving frame i to position 0
+                enc->temporal_gop_rgb_frames[0] = enc->temporal_gop_rgb_frames[i];
+                enc->temporal_gop_y_frames[0] = enc->temporal_gop_y_frames[i];
+                enc->temporal_gop_co_frames[0] = enc->temporal_gop_co_frames[i];
+                enc->temporal_gop_cg_frames[0] = enc->temporal_gop_cg_frames[i];
+                enc->temporal_gop_frame_count = 1;
+
+                // Encode as I-frame
+                size_t bytes = gop_flush(enc, output, base_quantiser, &frame_numbers[i], 1);
+                if (bytes == 0) {
+                    fprintf(stderr, "Error: Failed to encode I-frame during GOP trimming\n");
+                    enc->temporal_gop_frame_count = original_gop_frame_count;
+                    return 0;
+                }
+                total_bytes += bytes;
+
+                // Restore position 0 (but keep frame i in place for the shift operation below)
+                enc->temporal_gop_rgb_frames[0] = saved_rgb_frame0;
+                enc->temporal_gop_y_frames[0] = saved_y_frame0;
+                enc->temporal_gop_co_frames[0] = saved_co_frame0;
+                enc->temporal_gop_cg_frames[0] = saved_cg_frame0;
+            }
+
+            // Restore original frame count
+            enc->temporal_gop_frame_count = original_gop_frame_count;
+
+            // Shift remaining frames (after scene change) to start of buffer
+            int remaining_frames = original_gop_frame_count - scene_change_frame;
+            for (int i = 0; i < remaining_frames; i++) {
+                int src = scene_change_frame + i;
+                // Swap pointers
+                uint8_t *temp_rgb = enc->temporal_gop_rgb_frames[i];
+                float *temp_y = enc->temporal_gop_y_frames[i];
+                float *temp_co = enc->temporal_gop_co_frames[i];
+                float *temp_cg = enc->temporal_gop_cg_frames[i];
+
+                enc->temporal_gop_rgb_frames[i] = enc->temporal_gop_rgb_frames[src];
+                enc->temporal_gop_y_frames[i] = enc->temporal_gop_y_frames[src];
+                enc->temporal_gop_co_frames[i] = enc->temporal_gop_co_frames[src];
+                enc->temporal_gop_cg_frames[i] = enc->temporal_gop_cg_frames[src];
+
+                enc->temporal_gop_rgb_frames[src] = temp_rgb;
+                enc->temporal_gop_y_frames[src] = temp_y;
+                enc->temporal_gop_co_frames[src] = temp_co;
+                enc->temporal_gop_cg_frames[src] = temp_cg;
+
+                enc->temporal_gop_translation_x[i] = enc->temporal_gop_translation_x[src];
+                enc->temporal_gop_translation_y[i] = enc->temporal_gop_translation_y[src];
+            }
+            enc->temporal_gop_frame_count = remaining_frames;
+
+            return total_bytes;
+
+        } else {
+            // GOP large enough after trimming - proceed normally
+            if (enc->verbose) {
+                printf("Trimming GOP from %d to %d frames due to scene change\n",
+                       enc->temporal_gop_frame_count, actual_gop_size);
+            }
         }
     }
 
@@ -7017,7 +7096,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         // INTRA mode: quantise coefficients directly and store for future reference
         if (enc->enable_ezbc) {
             // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
-            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantization without normalization\n");
+//            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantization without normalization\n");
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
@@ -7029,7 +7108,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                 if (abs(quantised_co[i]) > max_co) max_co = abs(quantised_co[i]);
                 if (abs(quantised_cg[i]) > max_cg) max_cg = abs(quantised_cg[i]);
             }
-            fprintf(stderr, "[EZBC-QUANT-INTRA] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
+//            fprintf(stderr, "[EZBC-QUANT-INTRA] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
         } else if (enc->perceptual_tuning) {
             // Perceptual quantisation: EXACTLY like uniform but with per-coefficient weights
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
@@ -8627,7 +8706,7 @@ static long write_extended_header(tav_encoder_t *enc) {
     WRITE_KV_UINT64("ENDT", 0ULL);
 
     // CDAT: Creation time in nanoseconds since UNIX epoch
-    WRITE_KV_UINT64("CDAT", enc->creation_time_ns);
+    WRITE_KV_UINT64("CDAT", enc->creation_time_us);
 
     // VNDR: Encoder name and version
     const char *vendor_str = ENCODER_VENDOR_STRING;
@@ -9157,15 +9236,13 @@ static int detect_scene_change_between_frames(
     if (out_avg_diff) *out_avg_diff = avg_diff;
     if (out_changed_ratio) *out_changed_ratio = changed_ratio;
 
-    // Scene change threshold
-    double threshold = 0.50;
-
-    return changed_ratio > threshold;
+    return changed_ratio > SCENE_CHANGE_THRESHOLD_SOFT;
 }
 
 // Wrapper for normal mode: compare current frame with previous frame
-static int detect_scene_change(tav_encoder_t *enc) {
+static int detect_scene_change(tav_encoder_t *enc, double *out_changed_ratio) {
     if (!enc->current_frame_rgb || enc->intra_only) {
+        if (out_changed_ratio) *out_changed_ratio = 0.0;
         return 0; // No current frame to compare
     }
 
@@ -9178,6 +9255,8 @@ static int detect_scene_change(tav_encoder_t *enc) {
         &avg_diff,
         &changed_ratio
     );
+
+    if (out_changed_ratio) *out_changed_ratio = changed_ratio;
 
     if (is_scene_change) {
         printf("Scene change detection: avg_diff=%.2f\tchanged_ratio=%.4f\n", avg_diff, changed_ratio);
@@ -9364,6 +9443,9 @@ int main(int argc, char *argv[]) {
         {"ezbc", no_argument, 0, 1025},
         {"separate-audio-track", no_argument, 0, 1026},
         {"pcm8-audio", no_argument, 0, 1027},
+        {"pcm-audio", no_argument, 0, 1027},
+        {"native-audio", no_argument, 0, 1027},
+        {"native-audio-format", no_argument, 0, 1027},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -9478,6 +9560,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 1006: // --intra-only
                 enc->intra_only = 1;
+                enc->enable_temporal_dwt = 0;
                 break;
             case 1007: // --no-perceptual-tuning
                 enc->perceptual_tuning = 0;
@@ -9518,6 +9601,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 1017: // --enable-delta
                 enc->use_delta_encoding = 1;
+                enc->enable_temporal_dwt = 0;
                 break;
             case 1018: // --delta-haar
                 enc->delta_haar_levels = CLAMP(atoi(optarg), 0, 6);
@@ -9697,7 +9781,7 @@ int main(int argc, char *argv[]) {
     enc->ffmpeg_version = get_ffmpeg_version();
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    enc->creation_time_ns = (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+    enc->creation_time_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec * 1ULL;
 
     // Start FFmpeg process for video input (using TEV-compatible filtergraphs)
     if (enc->test_mode) {
@@ -9862,7 +9946,8 @@ int main(int argc, char *argv[]) {
         }
 
         // Determine frame type
-        int is_scene_change = detect_scene_change(enc);
+        double scene_change_ratio = 0.0;
+        int is_scene_change = detect_scene_change(enc, &scene_change_ratio);
         int is_time_keyframe = (frame_count % TEMPORAL_GOP_SIZE) == 0;
 
         // Check if we can use SKIP mode (DWT coefficient-based detection)
@@ -9926,6 +10011,109 @@ int main(int argc, char *argv[]) {
 
         if (enc->enable_temporal_dwt) {
             // GOP-based temporal 3D DWT encoding path
+
+            // Two-tier scene change handling:
+            // - Hard scene change (ratio >= 0.7): Force I-frames for current GOP, then flush
+            // - Soft scene change (0.5 <= ratio < 0.7): Only flush if GOP >= 10 frames (enforce minimum GOP size)
+            // - No scene change (ratio < 0.5): Don't flush
+
+            int should_flush_scene_change = 0;
+            int force_iframes_for_scene_change = 0;
+
+            if (is_scene_change && enc->temporal_gop_frame_count > 0) {
+
+                if (scene_change_ratio >= SCENE_CHANGE_THRESHOLD_HARD) {
+                    // Hard scene change: Force current GOP to be I-frames, then flush immediately
+                    should_flush_scene_change = 1;
+                    force_iframes_for_scene_change = 1;
+                    if (enc->verbose) {
+                        printf("Hard scene change (ratio=%.4f) at frame %d, forcing I-frames and flushing GOP...\n",
+                               scene_change_ratio, frame_count);
+                    }
+                } else if (enc->temporal_gop_frame_count >= TEMPORAL_GOP_SIZE_MIN) {
+                    // Soft scene change with sufficient GOP size: Flush normally
+                    should_flush_scene_change = 1;
+                    if (enc->verbose) {
+                        printf("Soft scene change (ratio=%.4f) at frame %d with GOP size %d >= %d, flushing GOP...\n",
+                               scene_change_ratio, frame_count, enc->temporal_gop_frame_count, TEMPORAL_GOP_SIZE_MIN);
+                    }
+                } else {
+                    // Soft scene change with small GOP: Ignore to enforce minimum GOP size
+                    if (enc->verbose) {
+                        printf("Soft scene change (ratio=%.4f) at frame %d ignored (GOP size %d < %d)\n",
+                               scene_change_ratio, frame_count, enc->temporal_gop_frame_count, TEMPORAL_GOP_SIZE_MIN);
+                    }
+                }
+            }
+
+            if (should_flush_scene_change) {
+                // Get quantiser
+                int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
+
+                if (force_iframes_for_scene_change) {
+                    // Hard scene change: Encode each frame in GOP as separate I-frame (GOP size = 1)
+                    // This ensures clean cut at major scene transitions
+                    size_t total_bytes = 0;
+                    int original_gop_frame_count = enc->temporal_gop_frame_count;
+
+                    for (int i = 0; i < original_gop_frame_count; i++) {
+                        // Temporarily set up GOP to contain only this single frame
+                        // Save position 0 pointers
+                        uint8_t *saved_rgb_frame0 = enc->temporal_gop_rgb_frames[0];
+                        float *saved_y_frame0 = enc->temporal_gop_y_frames[0];
+                        float *saved_co_frame0 = enc->temporal_gop_co_frames[0];
+                        float *saved_cg_frame0 = enc->temporal_gop_cg_frames[0];
+
+                        // Set up single-frame GOP by moving frame i to position 0
+                        enc->temporal_gop_rgb_frames[0] = enc->temporal_gop_rgb_frames[i];
+                        enc->temporal_gop_y_frames[0] = enc->temporal_gop_y_frames[i];
+                        enc->temporal_gop_co_frames[0] = enc->temporal_gop_co_frames[i];
+                        enc->temporal_gop_cg_frames[0] = enc->temporal_gop_cg_frames[i];
+                        enc->temporal_gop_frame_count = 1;
+
+                        // Encode single frame as I-frame (GOP size 1)
+                        int frame_num = frame_count - original_gop_frame_count + i;
+                        size_t bytes = gop_flush(enc, enc->output_fp, qY, &frame_num, 1);
+
+                        if (bytes == 0) {
+                            fprintf(stderr, "Error: Failed to encode I-frame %d during hard scene change\n", frame_num);
+                            enc->temporal_gop_frame_count = original_gop_frame_count;
+                            break;
+                        }
+                        total_bytes += bytes;
+
+                        // Restore position 0 pointers
+                        enc->temporal_gop_rgb_frames[0] = saved_rgb_frame0;
+                        enc->temporal_gop_y_frames[0] = saved_y_frame0;
+                        enc->temporal_gop_co_frames[0] = saved_co_frame0;
+                        enc->temporal_gop_cg_frames[0] = saved_cg_frame0;
+                    }
+
+                    // Restore original frame count
+                    enc->temporal_gop_frame_count = original_gop_frame_count;
+                    packet_size = total_bytes;
+
+                } else {
+                    // Soft scene change: Flush GOP normally as temporal GOP
+                    int *gop_frame_numbers = malloc(enc->temporal_gop_frame_count * sizeof(int));
+                    for (int i = 0; i < enc->temporal_gop_frame_count; i++) {
+                        gop_frame_numbers[i] = frame_count - enc->temporal_gop_frame_count + i;
+                    }
+
+                    packet_size = gop_process_and_flush(enc, enc->output_fp, qY,
+                                                       gop_frame_numbers, 1);
+                    free(gop_frame_numbers);
+                }
+
+                if (packet_size == 0) {
+                    fprintf(stderr, "Error: Failed to flush GOP before scene change at frame %d\n", frame_count);
+                    break;
+                }
+
+                gop_reset(enc);
+            }
+
+            // Now add current frame to GOP (will be first frame of new GOP if scene change)
             int add_result = temporal_gop_add_frame(enc, enc->current_frame_rgb,
                                           enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg);
 
@@ -9934,7 +10122,7 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            // Check if GOP should be flushed
+            // Check if GOP should be flushed (after adding frame)
             int should_flush = 0;
             int force_flush = 0;
 
@@ -9945,23 +10133,24 @@ int main(int argc, char *argv[]) {
                     printf("GOP buffer full (%d frames), flushing...\n", enc->temporal_gop_frame_count);
                 }
             }
-            // Flush if large motion detected (breaks temporal coherence)
-            else if (gop_should_flush_motion(enc)) {
+            // Flush if large motion detected (breaks temporal coherence) AND GOP is large enough
+            else if (gop_should_flush_motion(enc) && enc->temporal_gop_frame_count >= TEMPORAL_GOP_SIZE_MIN) {
                 should_flush = 1;
                 if (enc->verbose) {
-                    printf("Large motion detected (>24 pixels), flushing GOP early...\n");
+                    printf("Large motion detected (>24 pixels) with GOP size %d >= %d, flushing GOP early...\n",
+                           enc->temporal_gop_frame_count, TEMPORAL_GOP_SIZE_MIN);
                 }
             }
-            // Flush if scene change detected
-            else if (is_scene_change && enc->temporal_gop_frame_count > 1) {
-                should_flush = 1;
-                force_flush = 1;  // Skip internal scene change detection (already detected)
+            else if (gop_should_flush_motion(enc) && enc->temporal_gop_frame_count < TEMPORAL_GOP_SIZE_MIN) {
+                // Large motion but GOP too small - keep accumulating
                 if (enc->verbose) {
-                    printf("Scene change detected, flushing GOP early...\n");
+                    printf("Large motion detected but GOP size %d < %d, continuing to accumulate...\n",
+                           enc->temporal_gop_frame_count, TEMPORAL_GOP_SIZE_MIN);
                 }
             }
+            // Note: Scene change flush is now handled BEFORE adding frame (above)
 
-            // Flush GOP if needed
+            // Flush GOP if needed (for reasons other than scene change)
             if (should_flush) {
                 // Build frame number array for this GOP
                 int *gop_frame_numbers = malloc(enc->temporal_gop_frame_count * sizeof(int));
@@ -9982,9 +10171,10 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Failed to flush GOP at frame %d\n", frame_count);
                     break;
                 }
-            } else {
+            } else if (packet_size == 0) {
                 // Frame added to GOP buffer but not flushed yet
                 // Skip normal packet processing (no packet written yet)
+                // Note: packet_size might already be > 0 from scene change flush above
                 packet_size = 0;
             }
         } else if (enc->enable_residual_coding) {

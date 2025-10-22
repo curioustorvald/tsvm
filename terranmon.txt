@@ -1038,9 +1038,9 @@ transmission capability, and region-of-interest coding.
     type_t Value
 
     ### List of Keys
-    - Uint64 BGNT: Video begin time (must be equal to the value of the first Timecode packet)
-    - Uint64 ENDT: Video end time (must be equal to the value of the last Timecode packet)
-    - Uint64 CDAT: Creation time in nanoseconds since UNIX Epoch (must be in UTC timezone)
+    - Uint64 BGNT: Video begin time in nanoseconds (must be equal to the value of the first Timecode packet)
+    - Uint64 ENDT: Video end time in nanoseconds (must be equal to the value of the last Timecode packet)
+    - Uint64 CDAT: Creation time in microseconds since UNIX Epoch (must be in UTC timezone)
     - Bytes VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014 (list,of,features)")
     - Bytes FMPG: FFmpeg version (typically "ffmpeg version 8.0 Copyright (c) 2000-2025 the FFmpeg developers"; the first line of text FFmpeg emits)
 
@@ -1067,7 +1067,6 @@ transmission capability, and region-of-interest coding.
 
 ## GOP Unified Packet Structure (0x12)
 Implemented on 2025-10-15 for temporal 3D DWT with unified preprocessing.
-Updated on 2025-10-17 to include canvas expansion margins.
 
 This packet contains multiple frames encoded as a single spacetime block for optimal
 temporal compression.
@@ -1084,6 +1083,7 @@ temporal compression.
 ### Unified Block Data Format
 The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single block:
 
+    <if significance maps are used>
     uint8  Y Significance Maps[(width*height + 7) / 8 * GOP Size]     // All Y frames concatenated
     uint8  Co Significance Maps[(width*height + 7) / 8 * GOP Size]    // All Co frames concatenated
     uint8  Cg Significance Maps[(width*height + 7) / 8 * GOP Size]    // All Cg frames concatenated
@@ -1091,27 +1091,16 @@ The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single
     int16  Co Non-zero Values[variable length]                         // All Co non-zero coefficients
     int16  Cg Non-zero Values[variable length]                         // All Cg non-zero coefficients
 
+    <if EZBC is used>
+    uint32 EZBC Size for Y
+    *      EZBC Structure for Y
+    uint32 EZBC Size for Co
+    *      EZBC Structure for Co
+    uint32 EZBC Size for Cg
+    *      EZBC Structure for Cg
+
 This layout enables Zstd to find patterns across both spatial and temporal dimensions,
 resulting in superior compression compared to per-frame encoding.
-
-### Canvas Expansion for Motion Compensation
-When frames in a GOP have camera motion, they must be aligned before temporal DWT.
-However, alignment creates "gaps" at frame edges. To preserve ALL original pixels:
-
-1. **Calculate motion range**: Determine the total shift range across all GOP frames
-   - Example: If frames shift by ±3 pixels horizontally, total range = 6 pixels
-2. **Expand canvas**: Create a larger canvas = original_size + margin
-   - Canvas width = header.width + margin_left + margin_right
-   - Canvas height = header.height + margin_top + margin_bottom
-3. **Place aligned frames**: Each frame is positioned on the expanded canvas
-   - All original pixels from all frames are preserved
-   - No artificial padding or cropping occurs
-4. **Encode expanded canvas**: Apply 3D DWT to the larger canvas dimensions
-5. **Store margins**: 4 bytes (L/R/T/B) tell decoder the canvas expansion
-6. **Decoder extraction**: Decoder extracts display region for each frame based on
-   motion vectors and margins
-
-This approach ensures lossless preservation of original video content during GOP encoding.
 
 ### Motion Vectors
 - Stored in 1/16-pixel units (divide by 16.0 for pixel displacement)

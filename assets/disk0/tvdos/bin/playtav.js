@@ -1143,6 +1143,9 @@ try {
                             startTime: 0,
                             timeRemaining: 0
                         }
+                        if (interactive) {
+                            console.log(`[GOP] Buffered GOP ${gopSize} frames to ready slot during first GOP decode`)
+                        }
                     } else if (decodingGopData === null) {
                         // Buffer as decoding GOP (will decode after ready GOP)
                         const decodingSlot = (currentGopBufferSlot + 2) % BUFFER_SLOTS
@@ -1155,8 +1158,20 @@ try {
                             startTime: 0,
                             timeRemaining: 0
                         }
+                        if (interactive) {
+                            console.log(`[GOP] Buffered GOP ${gopSize} frames to decoding slot during first GOP decode`)
+                        }
+
+                        // CRITICAL: Stop reading packets now that all 3 buffers are full
+                        shouldReadPackets = false
+                        if (interactive) {
+                            console.log(`[GOP] All 3 buffers full during first GOP decode - stopping packet reading`)
+                        }
                     } else {
-                        // All 3 buffers full - discard this GOP
+                        // All 3 buffers full - discard this GOP (shouldn't happen now with gate)
+                        if (interactive) {
+                            console.log(`[GOP] WARNING: All 3 buffers full during first GOP decode - discarding GOP ${gopSize} frames`)
+                        }
                         sys.free(compressedPtr)
                     }
 
@@ -1180,12 +1195,26 @@ try {
                         nextOffset
                     )
 
+                    // Set async decode tracking variables
+                    asyncDecodeInProgress = true
+                    asyncDecodeSlot = nextSlot
+                    asyncDecodeGopSize = gopSize
+                    asyncDecodePtr = compressedPtr
+                    asyncDecodeStartTime = sys.nanoTime()
+
                     readyGopData = {
                         gopSize: gopSize,
                         slot: nextSlot,
                         compressedPtr: compressedPtr,
-                        startTime: sys.nanoTime(),
+                        startTime: asyncDecodeStartTime,
                         timeRemaining: timeRemaining
+                    }
+
+                    // CRITICAL: Stop reading packets immediately after starting decode
+                    // to prevent next GOP from being discarded in Case 5
+                    shouldReadPackets = false
+                    if (interactive) {
+                        console.log(`[GOP] Case 3: Started decode to ready slot - stopping packet reading`)
                     }
 
                 } else if (currentGopSize > 0 && readyGopData !== null && decodingGopData === null && !asyncDecodeInProgress && graphics.tavDecodeGopIsComplete()) {
@@ -1208,16 +1237,33 @@ try {
                         decodingOffset
                     )
 
+                    // Set async decode tracking variables
+                    asyncDecodeInProgress = true
+                    asyncDecodeSlot = decodingSlot
+                    asyncDecodeGopSize = gopSize
+                    asyncDecodePtr = compressedPtr
+                    asyncDecodeStartTime = sys.nanoTime()
+
                     decodingGopData = {
                         gopSize: gopSize,
                         slot: decodingSlot,
                         compressedPtr: compressedPtr,
-                        startTime: sys.nanoTime(),
+                        startTime: asyncDecodeStartTime,
                         timeRemaining: timeRemaining
+                    }
+
+                    // CRITICAL: Stop reading packets immediately after starting decode
+                    // All 3 buffers are now full (playing + ready + decoding)
+                    shouldReadPackets = false
+                    if (interactive) {
+                        console.log(`[GOP] Case 4: Started decode to decoding slot - all buffers full, stopping packet reading`)
                     }
 
                 } else {
                     // Case 5: All 3 buffers full (playing + ready + decoding) - ignore packet
+                    if (interactive) {
+                        console.log(`[GOP] Case 5: Discarding GOP ${gopSize} frames (current=${currentGopSize}, ready=${readyGopData !== null}, decoding=${decodingGopData !== null}, asyncInProgress=${asyncDecodeInProgress})`)
+                    }
                     sys.free(compressedPtr)
                 }
             }
@@ -1230,6 +1276,9 @@ try {
                 // (one GOP playing + ready GOP + decoding GOP)
                 if (currentGopSize > 0 && readyGopData !== null && decodingGopData !== null) {
                     shouldReadPackets = false
+                    if (interactive) {
+                        console.log(`[GOP] All 3 buffers full - stopping packet reading`)
+                    }
                 }
             }
             else if (packetType === TAV_PACKET_AUDIO_BUNDLED) {
@@ -1433,8 +1482,18 @@ try {
                 // Set first frame time to NOW
                 nextFrameTime = sys.nanoTime()
 
-                // Resume packet reading to get next GOP (only one buffer occupied now)
-                shouldReadPackets = true
+                // Resume packet reading only if not all 3 buffers are full
+                // (might have buffered GOP 2 and 3 during GOP 1 decode)
+                if (!(currentGopSize > 0 && readyGopData !== null && decodingGopData !== null)) {
+                    shouldReadPackets = true
+                    if (interactive) {
+                        console.log(`[GOP] First GOP ready - resuming packet reading (ready=${readyGopData !== null}, decoding=${decodingGopData !== null})`)
+                    }
+                } else {
+                    if (interactive) {
+                        console.log(`[GOP] First GOP ready - all 3 buffers full, keeping packet reading paused`)
+                    }
+                }
 
 //                if (interactive) {
 //                    console.log(`[GOP] First GOP ready (slot ${asyncDecodeSlot}, ${asyncDecodeGopSize} frames) in ${decodeTime.toFixed(1)}ms - starting playback`)
@@ -1461,11 +1520,28 @@ try {
                         readyGopData.slot * SLOT_SIZE
                     )
 
+                    // CRITICAL FIX: Set async decode tracking variables so decode is properly tracked
+                    asyncDecodeInProgress = true
+                    asyncDecodeSlot = readyGopData.slot
+                    asyncDecodeGopSize = readyGopData.gopSize
+                    asyncDecodePtr = readyGopData.compressedPtr
+                    asyncDecodeStartTime = sys.nanoTime()
+
                     readyGopData.needsDecode = false
-                    readyGopData.startTime = sys.nanoTime()
+                    readyGopData.startTime = asyncDecodeStartTime
                     readyGopData.timeRemaining = timeRemaining
+
+                    if (interactive) {
+                        console.log(`[GOP] Started decode of buffered GOP ${readyGopData.gopSize} frames (slot ${readyGopData.slot})`)
+                    }
                 }
             }
+        }
+
+        // Fire audio on first frame
+        if (!audioFired) {
+            audio.play(0)
+            audioFired = true
         }
 
         // Step 2 & 3: Display current GOP frame if it's time
@@ -1482,6 +1558,10 @@ try {
                 let uploadStart = sys.nanoTime()
                 graphics.uploadVideoBufferFrameToFramebuffer(currentGopFrameIndex, header.width, header.height, trueFrameCount, bufferOffset)
                 uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
+
+                if (interactive && currentGopFrameIndex === 0) {
+                    console.log(`[GOP] Playing GOP: ${currentGopSize} frames from slot ${currentGopBufferSlot}`)
+                }
 
                 // Apply bias lighting
                 let biasStart = sys.nanoTime()
@@ -1531,9 +1611,20 @@ try {
                         decodingGopData.slot * SLOT_SIZE
                     )
 
+                    // CRITICAL FIX: Set async decode tracking variables so decode is properly tracked
+                    asyncDecodeInProgress = true
+                    asyncDecodeSlot = decodingGopData.slot
+                    asyncDecodeGopSize = decodingGopData.gopSize
+                    asyncDecodePtr = decodingGopData.compressedPtr
+                    asyncDecodeStartTime = sys.nanoTime()
+
                     decodingGopData.needsDecode = false
-                    decodingGopData.startTime = sys.nanoTime()
+                    decodingGopData.startTime = asyncDecodeStartTime
                     decodingGopData.timeRemaining = timeRemaining
+
+                    if (interactive) {
+                        console.log(`[GOP] Started decode of buffered GOP ${decodingGopData.gopSize} frames from decoding slot (slot ${decodingGopData.slot})`)
+                    }
                 }
 
                 // Schedule next frame
@@ -1543,6 +1634,9 @@ try {
 
         // Step 4-7: GOP finished? Transition to ready GOP (triple-buffering)
         if (!paused && currentGopSize > 0 && currentGopFrameIndex >= currentGopSize) {
+            if (interactive) {
+                console.log(`[GOP] GOP finished: played ${currentGopFrameIndex}/${currentGopSize} frames from slot ${currentGopBufferSlot}`)
+            }
             if (readyGopData !== null) {
                 // If ready GOP still needs decode, start it now (defensive - should already be started)
                 if (readyGopData.needsDecode) {
@@ -1581,8 +1675,19 @@ try {
                     readyGopData = decodingGopData
                     decodingGopData = null
 
+                    // CRITICAL: Only clear async decode tracking if NO decode is in progress
+                    // (the promoted readyGop might be decoding from Case 4)
+                    if (graphics.tavDecodeGopIsComplete()) {
+                        asyncDecodeInProgress = false
+                        asyncDecodePtr = 0
+                        asyncDecodeGopSize = 0
+                    }
+
                     // Resume packet reading now that one buffer is free (decoding slot available)
                     shouldReadPackets = true
+                    if (interactive) {
+                        console.log(`[GOP] Transition complete - resuming packet reading (asyncInProgress=${asyncDecodeInProgress})`)
+                    }
                 }
             } else {
                 // No ready GOP available - hiccup (shouldn't happen with triple-buffering)
