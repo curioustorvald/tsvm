@@ -1,5 +1,5 @@
 // TSVM Universal Cue Format (UCF) Player
-// Created by Claude on 2025-09-22
+// Created by CuriousTorvald and Claude on 2025-09-22
 // Usage: playucf cuefile.ucf [options]
 // Options: -i (interactive mode)
 

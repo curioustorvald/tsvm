@@ -23,7 +23,7 @@ class CompressorDelegate(private val vm: VM) {
         val bytes = comp(inbytes)
         vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
             if (it != null) {
-                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
                 UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
             else {
@@ -39,7 +39,7 @@ class CompressorDelegate(private val vm: VM) {
         val bytes = comp(str)
         vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
             if (it != null) {
-                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
                 UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
             else {
@@ -55,7 +55,7 @@ class CompressorDelegate(private val vm: VM) {
         val bytes = comp(ba)
         vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
             if (it != null) {
-                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
                 UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
             else {
@@ -75,7 +75,7 @@ class CompressorDelegate(private val vm: VM) {
         val bytes = decomp(str)
         vm.getDev(pointer.toLong(), bytes.size.toLong(), true).let {
             if (it != null) {
-                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
                 UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, pointer.toLong() - bytes.size, bytes.size.toLong())
             }
             else {
@@ -91,7 +91,7 @@ class CompressorDelegate(private val vm: VM) {
         val bytes = decomp(ba)
         vm.getDev(pointer.toLong(), bytes.size.toLong(), true).let {
             if (it != null) {
-                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
                 UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, pointer.toLong() - bytes.size, bytes.size.toLong())
             }
             else {
@@ -110,15 +110,15 @@ class CompressorDelegate(private val vm: VM) {
         val inbytes = ByteArray(len) { vm.peek(input.toLong() + it)!! }
         val bytes = decomp(inbytes)
         vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
-            if (it != null) {
-                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
-                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
-            }
-            else {
+//            if (it != null) {
+//                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
+//                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
+//            }
+//            else {
                 bytes.forEachIndexed { index, byte ->
                     vm.poke(output.toLong() + index, byte)
                 }
-            }
+//            }
         }
         return bytes.size
     }

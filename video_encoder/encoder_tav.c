@@ -1,4 +1,4 @@
-// Created by Claude on 2025-09-13.
+// Created by CuriousTorvald and Claude on 2025-09-13.
 // TAV (TSVM Advanced Video) Encoder - DWT-based compression with full resolution YCoCg-R
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +54,7 @@
 #define TAV_PACKET_PFRAME_ADAPTIVE 0x16  // P-frame with adaptive quad-tree block partitioning
 #define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2       0x20  // MP2 audio
+#define TAV_PACKET_AUDIO_PCM8      0x21  // 8-bit PCM audio (zstd compressed)
 #define TAV_PACKET_SUBTITLE        0x30  // Subtitle packet
 #define TAV_PACKET_AUDIO_TRACK     0x40  // Separate audio track (full MP2 file)
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
@@ -118,6 +119,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 3
+#define DEFAULT_PCM_ZSTD_LEVEL 3
 #define TEMPORAL_GOP_SIZE 20
 #define TEMPORAL_DECOMP_LEVEL 2
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
@@ -159,6 +161,7 @@ static void generate_random_filename(char *filename) {
 }
 
 char TEMP_AUDIO_FILE[42];
+char TEMP_PCM_FILE[42];
 
 // Utility macros
 static inline int CLAMP(int x, int min, int max) {
@@ -1694,7 +1697,8 @@ typedef struct tav_encoder_s {
     FILE *output_fp;
     FILE *mp2_file;
     FILE *ffmpeg_video_pipe;
-    
+    FILE *pcm_file;  // PCM16LE audio file for PCM8 mode
+
     // Video parameters
     int width, height;
     int fps;
@@ -1744,6 +1748,7 @@ typedef struct tav_encoder_s {
     int use_delta_encoding;
     int delta_haar_levels; // Number of Haar DWT levels to apply to delta coefficients (0 = disabled)
     int separate_audio_track; // 1 = write entire MP2 file as packet 0x40 after header, 0 = interleave audio (default)
+    int pcm8_audio; // 1 = use 8-bit PCM audio (packet 0x21), 0 = use MP2 (default)
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -1846,6 +1851,12 @@ typedef struct tav_encoder_s {
     int audio_bitrate;  // Custom audio bitrate (0 = use quality table)
     int target_audio_buffer_size;
     double audio_frames_in_buffer;
+
+    // PCM8 audio processing
+    int samples_per_frame;  // Number of stereo samples per video frame
+    int16_t *pcm16_buffer;  // Buffer for reading PCM16LE data
+    uint8_t *pcm8_buffer;   // Buffer for converted PCM8 data
+    int16_t dither_error[2]; // Dithering error for stereo channels [L, R]
     
     // Subtitle processing  
     subtitle_entry_t *subtitles;
@@ -2256,6 +2267,7 @@ static void show_usage(const char *program_name) {
     printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
     printf("  --separate-audio-track  Write entire MP2 file as single packet 0x40 (instead of interleaved)\n");
+    printf("  --pcm8-audio            Use 8-bit PCM audio (packet 0x21, zstd compressed, per-frame packets)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
     printf("  --fontrom-hi FILE       High font ROM file for internationalised subtitles\n");
@@ -2344,6 +2356,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->use_delta_encoding = 0;
     enc->delta_haar_levels = TEMPORAL_DECOMP_LEVEL;
     enc->separate_audio_track = 0;  // Default: interleave audio packets
+    enc->pcm8_audio = 0;  // Default: use MP2 audio
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
@@ -7957,28 +7970,61 @@ static int start_audio_conversion(tav_encoder_t *enc) {
     if (!enc->has_audio) return 1;
 
     char command[2048];
-    int bitrate;
-    if (enc->audio_bitrate > 0) {
-        bitrate = enc->audio_bitrate;
-    } else {
-        bitrate = enc->lossless ? 384 : MP2_RATE_TABLE[enc->quality_level];
-    }
-    printf("  Audio format: MP2 %dkbps (via libtwolame)\n", bitrate);
-    snprintf(command, sizeof(command),
-        "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar 32000 -ac 2 -y \"%s\" 2>/dev/null",
-        enc->input_file, bitrate, TEMP_AUDIO_FILE);
 
-    int result = system(command);
-    if (result == 0) {
-        enc->mp2_file = fopen(TEMP_AUDIO_FILE, "rb");
-        if (enc->mp2_file) {
-            fseek(enc->mp2_file, 0, SEEK_END);
-            enc->audio_remaining = ftell(enc->mp2_file);
-            fseek(enc->mp2_file, 0, SEEK_SET);
+    if (enc->pcm8_audio) {
+        // Extract PCM16LE for PCM8 mode
+        printf("  Audio format: PCM16LE 32kHz stereo (will be converted to 8-bit)\n");
+        snprintf(command, sizeof(command),
+            "ffmpeg -v quiet -i \"%s\" -f s16le -acodec pcm_s16le -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+            enc->input_file, TSVM_AUDIO_SAMPLE_RATE, TEMP_PCM_FILE);
+
+        int result = system(command);
+        if (result == 0) {
+            enc->pcm_file = fopen(TEMP_PCM_FILE, "rb");
+            if (enc->pcm_file) {
+                fseek(enc->pcm_file, 0, SEEK_END);
+                enc->audio_remaining = ftell(enc->pcm_file);
+                fseek(enc->pcm_file, 0, SEEK_SET);
+
+                // Calculate samples per frame: ceil(sample_rate / fps)
+                enc->samples_per_frame = (TSVM_AUDIO_SAMPLE_RATE + enc->output_fps - 1) / enc->output_fps;
+
+                // Initialize dithering error
+                enc->dither_error[0] = 0;
+                enc->dither_error[1] = 0;
+
+                if (enc->verbose) {
+                    printf("  PCM8: %d samples per frame\n", enc->samples_per_frame);
+                }
+            }
+            return 1;
         }
-        return 1;
+        return 0;
+    } else {
+        // Extract MP2 for normal mode
+        int bitrate;
+        if (enc->audio_bitrate > 0) {
+            bitrate = enc->audio_bitrate;
+        } else {
+            bitrate = enc->lossless ? 384 : MP2_RATE_TABLE[enc->quality_level];
+        }
+        printf("  Audio format: MP2 %dkbps (via libtwolame)\n", bitrate);
+        snprintf(command, sizeof(command),
+            "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a %dk -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+            enc->input_file, bitrate, TSVM_AUDIO_SAMPLE_RATE, TEMP_AUDIO_FILE);
+
+        int result = system(command);
+        if (result == 0) {
+            enc->mp2_file = fopen(TEMP_AUDIO_FILE, "rb");
+            if (enc->mp2_file) {
+                fseek(enc->mp2_file, 0, SEEK_END);
+                enc->audio_remaining = ftell(enc->mp2_file);
+                fseek(enc->mp2_file, 0, SEEK_SET);
+            }
+            return 1;
+        }
+        return 0;
     }
-    return 0;
 }
 
 // Get MP2 packet size from header (copied from TEV)
@@ -8599,6 +8645,36 @@ static long write_extended_header(tav_encoder_t *enc) {
     return endt_offset + 4 + 1;  // 4 bytes for "ENDT", 1 byte for type
 }
 
+// Convert PCM16LE to unsigned 8-bit PCM with error-diffusion dithering
+static void convert_pcm16_to_pcm8_dithered(tav_encoder_t *enc, const int16_t *pcm16, uint8_t *pcm8, int num_samples) {
+    for (int i = 0; i < num_samples; i++) {
+        for (int ch = 0; ch < 2; ch++) {  // Stereo: L and R
+            int idx = i * 2 + ch;
+
+            // Convert signed 16-bit [-32768, 32767] to unsigned 8-bit [0, 255]
+            // First scale to [0, 65535], then add dithering error
+            int32_t sample = (int32_t)pcm16[idx] + 32768;  // Now in [0, 65535]
+
+            // Add accumulated dithering error
+            sample += enc->dither_error[ch];
+
+            // Quantize to 8-bit (divide by 256)
+            int32_t quantized = sample >> 8;
+
+            // Clamp to [0, 255]
+            if (quantized < 0) quantized = 0;
+            if (quantized > 255) quantized = 255;
+
+            // Store 8-bit value
+            pcm8[idx] = (uint8_t)quantized;
+
+            // Calculate quantization error for next sample (error diffusion)
+            // Error = original - (quantized * 256)
+            enc->dither_error[ch] = sample - (quantized << 8);
+        }
+    }
+}
+
 // Write separate audio track packet (0x40) - entire MP2 file in one packet
 static int write_separate_audio_track(tav_encoder_t *enc, FILE *output) {
     if (!enc->has_audio || !enc->mp2_file) {
@@ -8651,6 +8727,97 @@ static int write_separate_audio_track(tav_encoder_t *enc, FILE *output) {
     return 1;
 }
 
+// Write PCM8 audio packet (0x21) with specified sample count
+static int write_pcm8_packet_samples(tav_encoder_t *enc, FILE *output, int samples_to_read) {
+    if (!enc->pcm_file || enc->audio_remaining <= 0 || samples_to_read <= 0) {
+        return 0;
+    }
+    size_t bytes_to_read = samples_to_read * 2 * sizeof(int16_t);  // Stereo PCM16LE
+
+    // Don't read more than what's available
+    if (bytes_to_read > enc->audio_remaining) {
+        bytes_to_read = enc->audio_remaining;
+        samples_to_read = bytes_to_read / (2 * sizeof(int16_t));
+    }
+
+    if (samples_to_read == 0) {
+        return 0;
+    }
+
+    // Allocate buffers if needed (size for max samples: 32768)
+    int max_samples = 32768;  // Maximum samples per packet
+    if (!enc->pcm16_buffer) {
+        enc->pcm16_buffer = malloc(max_samples * 2 * sizeof(int16_t));
+    }
+    if (!enc->pcm8_buffer) {
+        enc->pcm8_buffer = malloc(max_samples * 2);
+    }
+
+    // Read PCM16LE data
+    size_t bytes_read = fread(enc->pcm16_buffer, 1, bytes_to_read, enc->pcm_file);
+    if (bytes_read == 0) {
+        return 0;
+    }
+
+    int samples_read = bytes_read / (2 * sizeof(int16_t));
+
+    // Convert to PCM8 with dithering
+    convert_pcm16_to_pcm8_dithered(enc, enc->pcm16_buffer, enc->pcm8_buffer, samples_read);
+
+    // Compress with zstd
+    size_t pcm8_size = samples_read * 2;  // Stereo
+    size_t max_compressed_size = ZSTD_compressBound(pcm8_size);
+    uint8_t *compressed_buffer = malloc(max_compressed_size);
+
+    size_t compressed_size = ZSTD_compress(compressed_buffer, max_compressed_size,
+                                           enc->pcm8_buffer, pcm8_size,
+                                           (DEFAULT_PCM_ZSTD_LEVEL > enc->zstd_level) ? DEFAULT_PCM_ZSTD_LEVEL : enc->zstd_level);
+
+    if (ZSTD_isError(compressed_size)) {
+        fprintf(stderr, "Error: Zstd compression failed for PCM8 audio\n");
+        free(compressed_buffer);
+        return 0;
+    }
+
+    // Write packet: [0x21][uint32 compressed_size][compressed_data]
+    uint8_t packet_type = TAV_PACKET_AUDIO_PCM8;
+    fwrite(&packet_type, 1, 1, output);
+
+    uint32_t compressed_size_32 = (uint32_t)compressed_size;
+    fwrite(&compressed_size_32, sizeof(uint32_t), 1, output);
+
+    fwrite(compressed_buffer, 1, compressed_size, output);
+
+    // Cleanup
+    free(compressed_buffer);
+
+    // Update audio remaining
+    enc->audio_remaining -= bytes_read;
+
+    if (enc->verbose) {
+        printf("PCM8 packet: %d samples, %zu bytes raw, %zu bytes compressed\n",
+               samples_read, pcm8_size, compressed_size);
+
+        // Debug: Show first few samples
+        if (samples_read > 0) {
+            printf("  First samples (PCM16→PCM8): ");
+            for (int i = 0; i < 4 && i < samples_read; i++) {
+                printf("[%d,%d]→[%d,%d] ",
+                    enc->pcm16_buffer[i*2], enc->pcm16_buffer[i*2+1],
+                    enc->pcm8_buffer[i*2], enc->pcm8_buffer[i*2+1]);
+            }
+            printf("\n");
+        }
+    }
+
+    return 1;
+}
+
+// Write PCM8 audio packet (0x21) for one frame's worth of audio
+static int write_pcm8_packet(tav_encoder_t *enc, FILE *output) {
+    return write_pcm8_packet_samples(enc, output, enc->samples_per_frame);
+}
+
 // Process audio for current frame (copied and adapted from TEV)
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     // Skip if separate audio track mode is enabled
@@ -8658,6 +8825,16 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
         return 1;
     }
 
+    // Handle PCM8 mode
+    if (enc->pcm8_audio) {
+        if (!enc->has_audio || !enc->pcm_file) {
+            return 1;
+        }
+        // Write one PCM8 packet per frame
+        return write_pcm8_packet(enc, output);
+    }
+
+    // Handle MP2 mode
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
         return 1;
     }
@@ -8764,6 +8941,41 @@ static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num
         return 1;
     }
 
+    // Handle PCM8 mode: emit mega packet(s) evenly divided if exceeding 32768 samples
+    if (enc->pcm8_audio) {
+        if (!enc->has_audio || !enc->pcm_file || num_frames == 0) {
+            return 1;
+        }
+
+        // Calculate total samples for this GOP
+        int total_samples = num_frames * enc->samples_per_frame;
+        int max_samples_per_packet = 32768;  // Architectural limit
+
+        // Calculate how many packets we need
+        int num_packets = (total_samples + max_samples_per_packet - 1) / max_samples_per_packet;
+
+        // Divide samples evenly across packets
+        int samples_per_packet = total_samples / num_packets;
+        int remainder = total_samples % num_packets;
+
+        if (enc->verbose) {
+            printf("PCM8 GOP: %d frames, %d total samples, %d packets (%d samples/packet)\n",
+                   num_frames, total_samples, num_packets, samples_per_packet);
+        }
+
+        // Emit evenly-divided packets
+        for (int i = 0; i < num_packets; i++) {
+            // Distribute remainder across first packets
+            int samples_this_packet = samples_per_packet + (i < remainder ? 1 : 0);
+            if (!write_pcm8_packet_samples(enc, output, samples_this_packet)) {
+                break;  // No more audio data
+            }
+        }
+
+        return 1;
+    }
+
+    // Handle MP2 mode
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0 || num_frames == 0) {
         return 1;
     }
@@ -9094,6 +9306,9 @@ static int detect_still_frame_dwt(tav_encoder_t *enc) {
 // Main function
 int main(int argc, char *argv[]) {
     generate_random_filename(TEMP_AUDIO_FILE);
+    generate_random_filename(TEMP_PCM_FILE);
+    // Change extension to .pcm
+    strcpy(TEMP_PCM_FILE + 37, ".pcm");
 
     printf("Initialising encoder...\n");
     tav_encoder_t *enc = create_encoder();
@@ -9148,6 +9363,7 @@ int main(int argc, char *argv[]) {
         {"gop-size", required_argument, 0, 1024},
         {"ezbc", no_argument, 0, 1025},
         {"separate-audio-track", no_argument, 0, 1026},
+        {"pcm8-audio", no_argument, 0, 1027},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -9360,6 +9576,10 @@ int main(int argc, char *argv[]) {
             case 1026: // --separate-audio-track
                 enc->separate_audio_track = 1;
                 printf("Separate audio track mode enabled (packet 0x40)\n");
+                break;
+            case 1027: // --pcm8-audio
+                enc->pcm8_audio = 1;
+                printf("8-bit PCM audio mode enabled (packet 0x21)\n");
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -10095,9 +10315,17 @@ static void cleanup_encoder(tav_encoder_t *enc) {
         fclose(enc->mp2_file);
         unlink(TEMP_AUDIO_FILE);
     }
+    if (enc->pcm_file) {
+        fclose(enc->pcm_file);
+        unlink(TEMP_PCM_FILE);
+    }
     if (enc->output_fp) {
         fclose(enc->output_fp);
     }
+
+    // Free PCM8 buffers
+    free(enc->pcm16_buffer);
+    free(enc->pcm8_buffer);
 
     free(enc->input_file);
     free(enc->output_file);

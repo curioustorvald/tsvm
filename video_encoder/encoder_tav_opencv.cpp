@@ -1,4 +1,4 @@
-// Created by Claude on 2025-10-17
+// Created by CuriousTorvald and Claude on 2025-10-17
 // MPEG-style bidirectional block motion compensation for TAV encoder
 // Simplified: Single-level diamond search, variable blocks, overlaps, sub-pixel refinement
 

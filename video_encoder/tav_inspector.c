@@ -1,6 +1,6 @@
 // TAV Packet Inspector - Comprehensive packet analysis tool for TAV files
 // to compile: gcc -o tav_inspector tav_inspector.c -lzstd -lm
-// Created by Claude on 2025-10-14
+// Created by CuriousTorvald and Claude on 2025-10-14
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,6 +24,7 @@
 #define TAV_PACKET_PFRAME_ADAPTIVE 0x16  // P-frame with adaptive quad-tree block partitioning
 #define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2      0x20
+#define TAV_PACKET_AUDIO_PCM8     0x21
 #define TAV_PACKET_SUBTITLE       0x30
 #define TAV_PACKET_SUBTITLE_KAR   0x31
 #define TAV_PACKET_AUDIO_TRACK    0x40
@@ -107,6 +108,7 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_PFRAME_ADAPTIVE: return "P-FRAME (quadtree)";
         case TAV_PACKET_BFRAME_ADAPTIVE: return "B-FRAME (quadtree)";
         case TAV_PACKET_AUDIO_MP2: return "AUDIO MP2";
+        case TAV_PACKET_AUDIO_PCM8: return "AUDIO PCM8 (zstd)";
         case TAV_PACKET_SUBTITLE: return "SUBTITLE (Simple)";
         case TAV_PACKET_SUBTITLE_KAR: return "SUBTITLE (Karaoke)";
         case TAV_PACKET_AUDIO_TRACK: return "AUDIO TRACK (Separate MP2)";
@@ -626,6 +628,19 @@ int main(int argc, char *argv[]) {
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes", size);
+                }
+                fseek(fp, size, SEEK_CUR);
+                break;
+            }
+
+            case TAV_PACKET_AUDIO_PCM8: {
+                stats.audio_count++;
+                uint32_t size;
+                if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
+                stats.total_audio_bytes += size;
+
+                if (!opts.summary_only && display) {
+                    printf(" - size=%u bytes (zstd compressed)", size);
                 }
                 fseek(fp, size, SEEK_CUR);
                 break;

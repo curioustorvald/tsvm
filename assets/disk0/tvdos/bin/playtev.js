@@ -1,4 +1,4 @@
-// Created by Claude on 2025-08-18.
+// Created by CuriousTorvald and Claude on 2025-08-18.
 // TSVM Enhanced Video (TEV) Format Decoder - YCoCg-R 4:2:0 Version
 // Usage: playtev moviefile.tev [options]
 // Options: -i (interactive), -debug-mv (show motion vector debug visualization)

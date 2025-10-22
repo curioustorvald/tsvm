@@ -1,4 +1,4 @@
-// Created by Claude on 2025-08-18.
+// Created by CuriousTorvald and Claude on 2025-08-18.
 // TEV (TSVM Enhanced Video) Encoder - YCoCg-R/ICtCp 4:2:0 16x16 Block Version
 #include <stdio.h>
 #include <stdlib.h>

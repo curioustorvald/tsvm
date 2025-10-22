@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // High Speed Disk Peripheral Adapter (HSDPA) Driver for TVDOS
 // This driver treats each disk from HSDPA as a single large file
-// Created by Claude on 2025-08-16
+// Created by CuriousTorvald and Claude on 2025-08-16
 ///////////////////////////////////////////////////////////////////////////////
 
 // Add TAPE device names to reserved names

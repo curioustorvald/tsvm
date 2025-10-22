@@ -1348,7 +1348,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private val END = 0xFF.toByte()
 
     // TEV (TSVM Enhanced Video) format support
-    // Created by Claude on 2025-08-17
+    // Created by CuriousTorvald and Claude on 2025-08-17
 
     // Reusable working arrays to reduce allocation overhead
     private val tevIdct8TempBuffer = FloatArray(64)

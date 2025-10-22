@@ -1,4 +1,4 @@
-// Created by Claude on 2025-09-13.
+// Created by CuriousTorvald and Claude on 2025-09-13.
 // TSVM Advanced Video (TAV) Format Decoder - DWT-based compression
 // Adapted from the working playtev.js decoder
 // Usage: playtav moviefile.tav [options]
@@ -1279,10 +1279,18 @@ try {
                 let zstdLen = seqread.readInt()
                 let zstdPtr = sys.malloc(zstdLen)
                 seqread.readBytes(zstdLen, zstdPtr)
-                let pcmLen = gzip.decompFromTo(zstdPtr, zstdLen, SND_BASE_ADDR - 65536)
+//                serial.println(`PCM8 audio (${zstdLen} -> ????)`)
+                let pcmPtr = sys.malloc(65536) //SND_BASE_ADDR - 65536
+                let pcmLen = gzip.decompFromTo(zstdPtr, zstdLen, pcmPtr) // <- segfaults!
                 if (pcmLen > 65536) throw Error(`PCM data too long -- got ${pcmLen} bytes`)
+
+                audio.putPcmDataByPtr(pcmPtr, pcmLen, 0)
+
                 audio.setSampleUploadLength(0, pcmLen)
                 audio.startSampleUpload(0)
+                sys.free(zstdPtr)
+
+                sys.free(pcmPtr)
             }
             else if (packetType === TAV_PACKET_SUBTITLE) {
                 // Subtitle packet - same format as TEV

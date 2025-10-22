@@ -12,7 +12,7 @@ import java.nio.channels.FileChannel
  * A testing version of HSDPA that uses actual files on the host computer as disk sources.
  * Each disk corresponds to a single file on the host filesystem.
  * 
- * Created by Claude on 2025-08-16.
+ * Created by CuriousTorvald and Claude on 2025-08-16.
  */
 class HostFileHSDPA : HSDPA {
     

@@ -1,4 +1,4 @@
-# Created by Claude on 2025-08-17.
+# Created by CuriousTorvald and Claude on 2025-08-17.
 # Makefile for TSVM Enhanced Video (TEV) encoder
 
 CC = gcc

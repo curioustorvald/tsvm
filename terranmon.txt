@@ -674,7 +674,7 @@ Delta block format:
 --------------------------------------------------------------------------------
 
 TSVM Enhanced Video (TEV) Format
-Created by Claude on 2025-08-17
+Created by CuriousTorvald and Claude on 2025-08-17
 
 TEV is a modern video codec optimized for TSVM's 4096-color hardware, featuring
 DCT-based compression, motion compensation, and efficient temporal coding.
@@ -877,7 +877,7 @@ When KSF is interleaved with MP2 audio, the payload must be inserted in-between 
 --------------------------------------------------------------------------------
 
 TSVM Advanced Video (TAV) Format
-Created by Claude on 2025-09-13
+Created by CuriousTorvald and Claude on 2025-09-13
 
 TAV is a next-generation video codec for TSVM utilizing Discrete Wavelet Transform (DWT)
 similar to JPEG2000, providing superior compression efficiency and scalability compared
