@@ -932,7 +932,7 @@ transmission capability, and region-of-interest coding.
             - 6-7 = Reserved/invalid (would indicate no luma and no chroma)
     uint8  Entropy Coder
             - 0 = Twobit-plane significance map
-            - 1 = Embedded Zero Block Coding
+            - 1 = Embedded Zero Block Coding (EZBC, experimental)
     uint8  Reserved[2]: fill with zeros
     uint8  Device Orientation
             - 0 = No rotation

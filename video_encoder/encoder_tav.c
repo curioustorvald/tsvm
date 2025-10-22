@@ -18,7 +18,7 @@
 #include <float.h>
 #include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251022 (3d-dwt,ezbc)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251023 (3d-dwt)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -118,7 +118,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_HEIGHT 448
 #define DEFAULT_FPS 30
 #define DEFAULT_QUALITY 3
-#define DEFAULT_ZSTD_LEVEL 3
+#define DEFAULT_ZSTD_LEVEL 15
 #define DEFAULT_PCM_ZSTD_LEVEL 3
 #define TEMPORAL_GOP_SIZE 20
 #define TEMPORAL_GOP_SIZE_MIN 8 // Minimum GOP size to avoid decoder hiccups
@@ -2270,7 +2270,7 @@ static void show_usage(const char *program_name) {
     printf("  -c, --channel-layout N  Channel layout: 0=Y-Co-Cg, 1=Y-Co-Cg-A, 2=Y-only, 3=Y-A, 4=Co-Cg, 5=Co-Cg-A (default: 0)\n");
     printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
-    printf("  --separate-audio-track  Write entire MP2 file as single packet 0x40 (instead of interleaved)\n");
+//    printf("  --separate-audio-track  Write entire audio track as single packet instead of interleaved\n");
     printf("  --pcm8-audio            Use 8-bit PCM audio instead of MP2 (TSVM native audio format)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
@@ -2281,9 +2281,9 @@ static void show_usage(const char *program_name) {
     printf("  --intra-only            Disable delta and skip encoding\n");
     printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
-    printf("  --temporal-dwt          Enable temporal 3D DWT (GOP-based encoding with temporal transform)\n");
-    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt)\n");
-    printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) for significance maps\n");
+    printf("  --3d-dwt                Enable temporal 3D DWT (GOP-based encoding with temporal transform)\n");
+    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt, implies --ezbc)\n");
+    printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) entropy coding\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -2350,7 +2350,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
-    enc->enable_ezbc = 1;  // Default to EZBC over twobit-map
+    enc->enable_ezbc = 0;  // default to twobit-map as EZBC+Zstd 3 = Twobitmap+Zstd 15, and Twobitmap is faster to decode
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
@@ -9435,6 +9435,8 @@ int main(int argc, char *argv[]) {
         {"delta-haar", required_argument, 0, 1018},
         {"temporal-dwt", no_argument, 0, 1019},
         {"temporal-3d", no_argument, 0, 1019},
+        {"dwt-3d", no_argument, 0, 1019},
+        {"3d-dwt", no_argument, 0, 1019},
         {"mc-ezbc", no_argument, 0, 1020},
         {"residual-coding", no_argument, 0, 1021},
         {"adaptive-blocks", no_argument, 0, 1022},
@@ -9616,6 +9618,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 1020: // --mc-ezbc
                 enc->temporal_enable_mcezbc = 1;
+                enc->enable_ezbc = 1;
                 printf("MC-EZBC block-based motion compensation enabled (requires --temporal-dwt)\n");
                 break;
             case 1021: // --residual-coding
@@ -10009,6 +10012,16 @@ int main(int argc, char *argv[]) {
         // Choose encoding path based on configuration
         size_t packet_size = 0;
 
+        // For GOP encoding, audio/subtitles are handled in gop_flush() for all GOP frames
+        // For traditional encoding, process audio/subtitles for this single frame
+        if (!enc->enable_temporal_dwt) {
+            // Process audio for this frame
+            process_audio(enc, true_frame_count, enc->output_fp);
+
+            // Process subtitles for this frame
+            process_subtitles(enc, true_frame_count, enc->output_fp);
+        }
+
         if (enc->enable_temporal_dwt) {
             // GOP-based temporal 3D DWT encoding path
 
@@ -10177,7 +10190,8 @@ int main(int argc, char *argv[]) {
                 // Note: packet_size might already be > 0 from scene change flush above
                 packet_size = 0;
             }
-        } else if (enc->enable_residual_coding) {
+        }
+        else if (enc->enable_residual_coding) {
             // MPEG-style residual coding path (I/P/B frames with motion compensation)
             // Get quantiser (use adjusted quantiser from bitrate control if applicable)
             int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
@@ -10344,7 +10358,8 @@ int main(int argc, char *argv[]) {
                     }
                 }
             }
-        } else {
+        }
+        else {
             // Traditional 2D DWT encoding path (no temporal transform, no motion compensation)
             uint8_t packet_type = is_keyframe ? TAV_PACKET_IFRAME : TAV_PACKET_PFRAME;
             packet_size = compress_and_write_frame(enc, packet_type);
@@ -10366,16 +10381,6 @@ int main(int argc, char *argv[]) {
                 size_t video_data_size = packet_size;
                 update_video_rate_bin(enc, video_data_size);
                 adjust_quantiser_for_bitrate(enc);
-            }
-
-            // For GOP encoding, audio/subtitles are handled in gop_flush() for all GOP frames
-            // For traditional encoding, process audio/subtitles for this single frame
-            if (!enc->enable_temporal_dwt) {
-                // Process audio for this frame
-                process_audio(enc, true_frame_count, enc->output_fp);
-
-                // Process subtitles for this frame
-                process_subtitles(enc, true_frame_count, enc->output_fp);
             }
 
             // Write a sync packet only after a video is been coded

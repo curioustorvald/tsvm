@@ -4520,15 +4520,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Read entropy coder from header: 0 = Twobit-map, 1 = EZBC
         val isEZBC = (entropyCoder == 1)
 
-        /*if (isEZBC) {
-            println("[AUTO] Using EZBC decoder")
+        if (isEZBC) {
             postprocessCoefficientsEZBC(compressedData, compressedOffset, coeffCount,
                                        channelLayout, outputY, outputCo, outputCg, outputAlpha)
         } else {
-            println("[AUTO] Using twobit-map decoder")
             postprocessCoefficientsVariableLayout(compressedData, compressedOffset, coeffCount,
                                                  channelLayout, outputY, outputCo, outputCg, outputAlpha)
-        }*/
+        }
 
         return isEZBC
     }
@@ -5323,7 +5321,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // First, we need to determine the size of compressed data for each channel
         // Read a large buffer to work with significance map format
-        val maxPossibleSize = coeffCount * 3 * 2 + (coeffCount + 7) / 8 * 3  // Worst case: original size + maps
+        val maxPossibleSize = coeffCount * 4 * 2 + (coeffCount + 7) / 8 * 4  // Worst case: original size + maps
         val coeffBuffer = ByteArray(maxPossibleSize)
         UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, coeffBuffer, UnsafeHelper.getArrayOffset(coeffBuffer), maxPossibleSize.toLong())
 
@@ -6214,7 +6212,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
     // normal/strong sharpen filters make horizontal/vertical hairline artefacts
 
-    private val TavSharpenLuma = TavSharpenWeak
+    private val TavSharpenLuma = TavNullFilter
 
     private object TavNullFilter : TavWaveletFilter {
         override fun getCoeffMultiplier(level: Int): Float = 1.0f
@@ -6247,7 +6245,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     if (coeff > maxCoeff) maxCoeff = coeff
                     if (coeff > 0.1f) nonzeroCoeff++
                 }
-                println("[IDWT-LEVEL-$level] BEFORE: ${currentWidth}x${currentHeight}, max=${maxCoeff.toInt()}, nonzero=$nonzeroCoeff/$sampleSize")
+//                println("[IDWT-LEVEL-$level] BEFORE: ${currentWidth}x${currentHeight}, max=${maxCoeff.toInt()}, nonzero=$nonzeroCoeff/$sampleSize")
             }
 
             // Apply inverse DWT to current subband region - EXACT match to encoder
@@ -7101,12 +7099,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         temporalLevels: Int,
         spatialFilter: Int
     ) {
-        if (numFrames < 2) return
-
         val numPixels = width * height
-        val temporalLine = FloatArray(numFrames)
 
         // Step 1: Apply inverse 2D spatial DWT to each temporal subband (each frame)
+        // This is required even for single frames (I-frames) to convert from DWT coefficients to pixel space
         for (t in 0 until numFrames) {
             tavApplyDWTInverseMultiLevel(
                 gopData[t], width, height,
@@ -7116,6 +7112,10 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Step 2: Apply inverse temporal DWT to each spatial location
+        // Only needed for GOPs with multiple frames (skip for I-frames)
+        if (numFrames < 2) return
+
+        val temporalLine = FloatArray(numFrames)
         for (y in 0 until height) {
             for (x in 0 until width) {
                 val pixelIdx = y * width + x

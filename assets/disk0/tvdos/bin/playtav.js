@@ -497,6 +497,9 @@ let readyGopData = null        // GOP that's already decoded and ready to play (
 let decodingGopData = null     // GOP currently being decoded in background
 let asyncDecodeInProgress = false  // Track if async decode is running
 let asyncDecodeSlot = 0        // Which slot the async decode is targeting
+
+// I-frame (non-GOP) timing control
+let iframeReady = false        // Track if an I-frame/P-frame is decoded and ready to display
 let asyncDecodeGopSize = 0     // Size of GOP being decoded async
 let asyncDecodePtr = 0         // Compressed data pointer to free after decode
 let asyncDecodeStartTime = 0   // When async decode started (for diagnostics)
@@ -773,6 +776,7 @@ function tryReadNextTAVHeader() {
 let lastKey = 0
 let skipped = false
 let paused = false
+let debugPrintAkku = 0
 
 // Playback loop - properly adapted from TEV with multi-file support
 try {
@@ -1040,39 +1044,15 @@ try {
                         }
                     }
 
-                    graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, trueFrameCount, false)
-                    uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
+                    // Don't upload immediately - let timing loop handle it
+                    // Mark frame as ready for time-based display
+                    iframeReady = true
+                    uploadTime = 0  // Upload will happen in timing section below
 
-                    // Defer audio playback until a first frame is sent
-                    if (isInterlaced) {
-                        // fire audio after frame 1
-                        if (!audioFired && frameCount > 0) {
-                            audio.play(0)
-                            audioFired = true
-                        }
-                    }
-                    else {
-                        // fire audio after frame 0
-                        if (!audioFired) {
-                            audio.play(0)
-                            audioFired = true
-                        }
-                    }
                 } catch (e) {
                     console.log(`Frame ${frameCount}: decode failed: ${e}`)
                 } finally {
                     sys.free(compressedPtr)
-                }
-
-
-                let biasStart = sys.nanoTime()
-                setBiasLighting()
-                biasTime = (sys.nanoTime() - biasStart) / 1000000.0
-
-                // Log performance data every 60 frames
-                if (frameCount % 60 == 0 || frameCount == 0) {
-                    let totalTime = decompressTime + decodeTime + uploadTime + biasTime
-                    console.log(`Frame ${frameCount}: Decompress=${decompressTime.toFixed(1)}ms, Decode=${decodeTime.toFixed(1)}ms, Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms, Total=${totalTime.toFixed(1)}ms`)
                 }
 
             }
@@ -1544,6 +1524,53 @@ try {
             audioFired = true
         }
 
+        // Step 2a: Display I-frame/P-frame with proper frame timing
+        if (!paused && iframeReady && currentGopSize === 0) {
+            // Initialize timing on first I-frame
+            if (nextFrameTime === 0) {
+                nextFrameTime = sys.nanoTime()
+            }
+
+            // Spin-wait for next frame time
+            while (sys.nanoTime() < nextFrameTime && !paused) {
+                sys.sleep(1)
+            }
+
+            if (!paused) {
+                let uploadStart = sys.nanoTime()
+                graphics.uploadRGBToFramebuffer(CURRENT_RGB_ADDR, header.width, header.height, trueFrameCount, false)
+                uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
+
+                // Apply bias lighting
+                let biasStart = sys.nanoTime()
+                setBiasLighting()
+                biasTime = (sys.nanoTime() - biasStart) / 1000000.0
+
+                // Fire audio on first frame
+                if (!audioFired) {
+                    audio.play(0)
+                    audioFired = true
+                }
+
+                frameCount++
+                trueFrameCount++
+                iframeReady = false
+
+                // Swap ping-pong buffers for next frame
+                let temp = CURRENT_RGB_ADDR
+                CURRENT_RGB_ADDR = PREV_RGB_ADDR
+                PREV_RGB_ADDR = temp
+
+                // Schedule next frame
+                nextFrameTime += (frametime)  // frametime is in nanoseconds from header
+
+                // Log performance data every 60 frames
+                if (frameCount % 60 == 0) {
+                    console.log(`Frame ${frameCount}: Upload=${uploadTime.toFixed(1)}ms, Bias=${biasTime.toFixed(1)}ms`)
+                }
+            }
+        }
+
         // Step 2 & 3: Display current GOP frame if it's time
         if (!paused && currentGopSize > 0 && currentGopFrameIndex < currentGopSize) {
             // Spin-wait for next frame time
@@ -1729,6 +1756,13 @@ try {
             }
             gui.printBottomBar(guiStatus)
             gui.printTopBar(guiStatus, 1)
+        }
+
+
+        debugPrintAkku += (t2 - t1)
+        if (debugPrintAkku > 5000000000) {
+            debugPrintAkku -= 5000000000
+            serial.println(`[PLAYTAV] decoding time = ${(decodeTime).toFixed(2)} ms`)
         }
 
         // Small sleep to prevent 100% CPU and control loop rate
