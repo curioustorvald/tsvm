@@ -29,7 +29,11 @@ const TAV_PACKET_IFRAME = 0x10
 const TAV_PACKET_PFRAME = 0x11
 const TAV_PACKET_GOP_UNIFIED = 0x12  // Unified 3D DWT GOP (temporal + spatial)
 const TAV_PACKET_AUDIO_MP2 = 0x20
+const TAV_PACKET_AUDIO_NATIVE = 0x21
+const TAV_PACKET_AUDIO_PCM_16LE = 0x22
+const TAV_PACKET_AUDIO_ADPCM = 0x23
 const TAV_PACKET_SUBTITLE = 0x30
+const TAV_PACKET_AUDIO_BUNDLED = 0x40  // Entire MP2 audio file in single packet
 const TAV_PACKET_EXTENDED_HDR = 0xEF
 const TAV_PACKET_GOP_SYNC = 0xFC  // GOP sync (N frames decoded from GOP block)
 const TAV_PACKET_TIMECODE = 0xFD
@@ -498,6 +502,12 @@ let asyncDecodePtr = 0         // Compressed data pointer to free after decode
 let asyncDecodeStartTime = 0   // When async decode started (for diagnostics)
 let shouldReadPackets = true   // Gate packet reading: false when all 3 buffers are full
 
+// Pre-decoded audio state (for bundled audio packet 0x40)
+let predecodedPcmBuffer = null  // Buffer holding pre-decoded PCM data
+let predecodedPcmSize = 0       // Total size of pre-decoded PCM
+let predecodedPcmOffset = 0     // Current position in PCM buffer for streaming
+const PCM_UPLOAD_CHUNK = 2304   // Upload 1152 stereo samples per chunk (one MP2 frame worth)
+
 let cueElements = []
 let currentCueIndex = -1  // Track current cue position
 let iframePositions = []  // Track I-frame positions for seeking: [{offset, frameNum}]
@@ -525,6 +535,14 @@ function cleanupAsyncDecode() {
         decodingGopData.compressedPtr = 0
     }
     decodingGopData = null
+
+    // Free pre-decoded PCM buffer if present
+    if (predecodedPcmBuffer !== null) {
+        sys.free(predecodedPcmBuffer)
+        predecodedPcmBuffer = null
+        predecodedPcmSize = 0
+        predecodedPcmOffset = 0
+    }
 
     // Reset GOP playback state
     currentGopSize = 0
@@ -1186,8 +1204,64 @@ try {
                     shouldReadPackets = false
                 }
             }
+            else if (packetType === TAV_PACKET_AUDIO_BUNDLED) {
+                // Bundled audio packet - entire MP2 file pre-decoded to PCM
+                // This removes MP2 decoding from the frame timing loop
+                let totalAudioSize = seqread.readInt()
+
+                if (!mp2Initialised) {
+                    mp2Initialised = true
+                    audio.mp2Init()
+                }
+
+                if (interactive) {
+                    serial.println(`Pre-decoding ${(totalAudioSize / 1024).toFixed(1)} KB of MP2 audio...`)
+                }
+
+                // Allocate temporary buffer for MP2 data
+                let mp2Buffer = sys.malloc(totalAudioSize)
+                seqread.readBytes(totalAudioSize, mp2Buffer)
+
+                // Estimate PCM size: MP2 ~10:1 compression ratio, so PCM ~10x larger
+                // Each MP2 frame decodes to 2304 bytes PCM (1152 stereo 16-bit samples)
+                // Allocate generous buffer (12x MP2 size to be safe)
+                const estimatedPcmSize = totalAudioSize * 12
+                predecodedPcmBuffer = sys.malloc(estimatedPcmSize)
+                predecodedPcmSize = 0
+                predecodedPcmOffset = 0
+
+                // Decode entire MP2 file to PCM
+                const MP2_DECODE_CHUNK = 2304  // ~2 MP2 frames at 192kbps
+                let srcOffset = 0
+
+                while (srcOffset < totalAudioSize) {
+                    let remaining = totalAudioSize - srcOffset
+                    let chunkSize = Math.min(MP2_DECODE_CHUNK, remaining)
+
+                    // Copy MP2 chunk to audio peripheral decode buffer
+                    sys.memcpy(mp2Buffer + srcOffset, SND_BASE_ADDR - 2368, chunkSize)
+
+                    // Decode to PCM (goes to SND_BASE_ADDR)
+                    audio.mp2Decode()
+
+                    // Copy decoded PCM from peripheral to our storage buffer
+                    // Each decode produces 2304 bytes of PCM
+                    sys.memcpy(SND_BASE_ADDR, predecodedPcmBuffer + predecodedPcmSize, 2304)
+                    predecodedPcmSize += 2304
+
+                    srcOffset += chunkSize
+                }
+
+                // Free MP2 buffer (no longer needed)
+                sys.free(mp2Buffer)
+
+                if (interactive) {
+                    serial.println(`Pre-decoded ${(predecodedPcmSize / 1024).toFixed(1)} KB PCM (from ${(totalAudioSize / 1024).toFixed(1)} KB MP2)`)
+                }
+
+            }
             else if (packetType === TAV_PACKET_AUDIO_MP2) {
-                // MP2 Audio packet
+                // Legacy MP2 Audio packet (for backwards compatibility)
                 let audioLen = seqread.readInt()
 
                 if (!mp2Initialised) {
@@ -1199,6 +1273,16 @@ try {
                 audio.mp2Decode()
                 audio.mp2UploadDecoded(0)
 
+            }
+            else if (packetType === TAV_PACKET_AUDIO_NATIVE) {
+                // PCM length must not exceed 65536 bytes!
+                let zstdLen = seqread.readInt()
+                let zstdPtr = sys.malloc(zstdLen)
+                seqread.readBytes(zstdLen, zstdPtr)
+                let pcmLen = gzip.decompFromTo(zstdPtr, zstdLen, SND_BASE_ADDR - 65536)
+                if (pcmLen > 65536) throw Error(`PCM data too long -- got ${pcmLen} bytes`)
+                audio.setSampleUploadLength(0, pcmLen)
+                audio.startSampleUpload(0)
             }
             else if (packetType === TAV_PACKET_SUBTITLE) {
                 // Subtitle packet - same format as TEV
@@ -1359,6 +1443,21 @@ try {
                 frameCount++
                 trueFrameCount++
 
+                // Upload pre-decoded PCM audio if available (keeps audio queue fed)
+                if (predecodedPcmBuffer !== null && predecodedPcmOffset < predecodedPcmSize) {
+                    let remaining = predecodedPcmSize - predecodedPcmOffset
+                    let uploadSize = Math.min(PCM_UPLOAD_CHUNK, remaining)
+
+                    // Copy PCM chunk to audio peripheral memory
+                    sys.memcpy(predecodedPcmBuffer + predecodedPcmOffset, SND_BASE_ADDR, uploadSize)
+
+                    // Set upload parameters and trigger upload to queue
+                    audio.setSampleUploadLength(0, uploadSize)
+                    audio.startSampleUpload(0)
+
+                    predecodedPcmOffset += uploadSize
+                }
+
                 // Schedule next frame
                 nextFrameTime += (frametime)  // frametime is in nanoseconds from header
             }
@@ -1454,6 +1553,11 @@ finally {
         sys.free(CURR_FIELD_BUFFER)
         sys.free(PREV_FIELD_BUFFER)
         sys.free(NEXT_FIELD_BUFFER)
+    }
+
+    // Free pre-decoded PCM buffer if present
+    if (predecodedPcmBuffer !== null) {
+        sys.free(predecodedPcmBuffer)
     }
 
     con.curs_set(1)

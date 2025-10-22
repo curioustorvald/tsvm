@@ -26,6 +26,7 @@
 #define TAV_PACKET_AUDIO_MP2      0x20
 #define TAV_PACKET_SUBTITLE       0x30
 #define TAV_PACKET_SUBTITLE_KAR   0x31
+#define TAV_PACKET_AUDIO_TRACK    0x40
 #define TAV_PACKET_VIDEO_CH2_I    0x70
 #define TAV_PACKET_VIDEO_CH2_P    0x71
 #define TAV_PACKET_VIDEO_CH3_I    0x72
@@ -108,6 +109,7 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_AUDIO_MP2: return "AUDIO MP2";
         case TAV_PACKET_SUBTITLE: return "SUBTITLE (Simple)";
         case TAV_PACKET_SUBTITLE_KAR: return "SUBTITLE (Karaoke)";
+        case TAV_PACKET_AUDIO_TRACK: return "AUDIO TRACK (Separate MP2)";
         case TAV_PACKET_EXIF: return "METADATA (EXIF)";
         case TAV_PACKET_ID3V1: return "METADATA (ID3v1)";
         case TAV_PACKET_ID3V2: return "METADATA (ID3v2)";
@@ -624,6 +626,19 @@ int main(int argc, char *argv[]) {
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes", size);
+                }
+                fseek(fp, size, SEEK_CUR);
+                break;
+            }
+
+            case TAV_PACKET_AUDIO_TRACK: {
+                stats.audio_count++;
+                uint32_t size;
+                if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
+                stats.total_audio_bytes += size;
+
+                if (!opts.summary_only && display) {
+                    printf(" - size=%u bytes (separate track)", size);
                 }
                 fseek(fp, size, SEEK_CUR);
                 break;

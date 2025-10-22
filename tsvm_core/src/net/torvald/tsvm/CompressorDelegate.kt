@@ -3,6 +3,7 @@ package net.torvald.tsvm
 import com.badlogic.gdx.utils.compression.Lzma
 import io.airlift.compress.zstd.ZstdInputStream
 import io.airlift.compress.zstd.ZstdOutputStream
+import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -19,30 +20,51 @@ class CompressorDelegate(private val vm: VM) {
      */
     fun compFromTo(input: Int, len: Int, output: Int): Int {
         val inbytes = ByteArray(len) { vm.peek(input.toLong() + it)!! }
-        comp(inbytes).let {
-            it.forEachIndexed { index, byte ->
-                vm.poke(output.toLong() + index, byte)
+        val bytes = comp(inbytes)
+        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
+            if (it != null) {
+                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
-            return it.size
+            else {
+                bytes.forEachIndexed { index, byte ->
+                    vm.poke(output.toLong() + index, byte)
+                }
+            }
         }
+        return bytes.size
     }
 
     fun compTo(str: String, output: Int): Int {
-        comp(str).let {
-            it.forEachIndexed { index, byte ->
-                vm.poke(output.toLong() + index, byte)
+        val bytes = comp(str)
+        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
+            if (it != null) {
+                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
-            return it.size
+            else {
+                bytes.forEachIndexed { index, byte ->
+                    vm.poke(output.toLong() + index, byte)
+                }
+            }
         }
+        return bytes.size
     }
 
     fun compTo(ba: ByteArray, output: Int): Int {
-        comp(ba).let {
-            it.forEachIndexed { index, byte ->
-                vm.poke(output.toLong() + index, byte)
+        val bytes = comp(ba)
+        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
+            if (it != null) {
+                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
-            return it.size
+            else {
+                bytes.forEachIndexed { index, byte ->
+                    vm.poke(output.toLong() + index, byte)
+                }
+            }
         }
+        return bytes.size
     }
 
 
@@ -51,16 +73,32 @@ class CompressorDelegate(private val vm: VM) {
 
     fun decompTo(str: String, pointer: Int): Int {
         val bytes = decomp(str)
-        bytes.forEachIndexed { index, byte ->
-            vm.poke(pointer.toLong() + index, byte)
+        vm.getDev(pointer.toLong(), bytes.size.toLong(), true).let {
+            if (it != null) {
+                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, pointer.toLong() - bytes.size, bytes.size.toLong())
+            }
+            else {
+                bytes.forEachIndexed { index, byte ->
+                    vm.poke(pointer.toLong() + index, byte)
+                }
+            }
         }
         return bytes.size
     }
 
     fun decompTo(ba: ByteArray, pointer: Int): Int {
         val bytes = decomp(ba)
-        bytes.forEachIndexed { index, byte ->
-            vm.poke(pointer.toLong() + index, byte)
+        vm.getDev(pointer.toLong(), bytes.size.toLong(), true).let {
+            if (it != null) {
+                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, pointer.toLong() - bytes.size, bytes.size.toLong())
+            }
+            else {
+                bytes.forEachIndexed { index, byte ->
+                    vm.poke(pointer.toLong() + index, byte)
+                }
+            }
         }
         return bytes.size
     }
@@ -70,12 +108,19 @@ class CompressorDelegate(private val vm: VM) {
      */
     fun decompFromTo(input: Int, len: Int, output: Int): Int {
         val inbytes = ByteArray(len) { vm.peek(input.toLong() + it)!! }
-        decomp(inbytes).let {
-            it.forEachIndexed { index, byte ->
-                vm.poke(output.toLong() + index, byte)
+        val bytes = decomp(inbytes)
+        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
+            if (it != null) {
+                val bytesReversed = bytes.reversedArray() // copy over reversed bytes starting from the end of the destination
+                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
             }
-            return it.size
+            else {
+                bytes.forEachIndexed { index, byte ->
+                    vm.poke(output.toLong() + index, byte)
+                }
+            }
         }
+        return bytes.size
     }
 
     companion object {

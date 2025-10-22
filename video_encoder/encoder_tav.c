@@ -55,6 +55,7 @@
 #define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2       0x20  // MP2 audio
 #define TAV_PACKET_SUBTITLE        0x30  // Subtitle packet
+#define TAV_PACKET_AUDIO_TRACK     0x40  // Separate audio track (full MP2 file)
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
 #define TAV_PACKET_GOP_SYNC        0xFC  // GOP sync packet (N frames decoded)
 #define TAV_PACKET_TIMECODE        0xFD  // Timecode packet
@@ -122,9 +123,9 @@ static int needs_alpha_channel(int channel_layout) {
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
-#define MP2_SAMPLE_RATE 32000
+#define TSVM_AUDIO_SAMPLE_RATE 32000
 #define MP2_DEFAULT_PACKET_SIZE 1152
-#define PACKET_AUDIO_TIME ((double)MP2_DEFAULT_PACKET_SIZE / MP2_SAMPLE_RATE)
+#define PACKET_AUDIO_TIME ((double)MP2_DEFAULT_PACKET_SIZE / TSVM_AUDIO_SAMPLE_RATE)
 #define MAX_SUBTITLE_LENGTH 2048
 
 int debugDumpMade = 0;
@@ -1742,6 +1743,7 @@ typedef struct tav_encoder_s {
     int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
     int use_delta_encoding;
     int delta_haar_levels; // Number of Haar DWT levels to apply to delta coefficients (0 = disabled)
+    int separate_audio_track; // 1 = write entire MP2 file as packet 0x40 after header, 0 = interleave audio (default)
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -2253,6 +2255,7 @@ static void show_usage(const char *program_name) {
     printf("  -c, --channel-layout N  Channel layout: 0=Y-Co-Cg, 1=Y-Co-Cg-A, 2=Y-only, 3=Y-A, 4=Co-Cg, 5=Co-Cg-A (default: 0)\n");
     printf("  -a, --arate N           MP2 audio bitrate in kbps (overrides quality-based audio rate)\n");
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
+    printf("  --separate-audio-track  Write entire MP2 file as single packet 0x40 (instead of interleaved)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
     printf("  --fontrom-hi FILE       High font ROM file for internationalised subtitles\n");
@@ -2340,6 +2343,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
     enc->use_delta_encoding = 0;
     enc->delta_haar_levels = TEMPORAL_DECOMP_LEVEL;
+    enc->separate_audio_track = 0;  // Default: interleave audio packets
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
@@ -8595,8 +8599,65 @@ static long write_extended_header(tav_encoder_t *enc) {
     return endt_offset + 4 + 1;  // 4 bytes for "ENDT", 1 byte for type
 }
 
+// Write separate audio track packet (0x40) - entire MP2 file in one packet
+static int write_separate_audio_track(tav_encoder_t *enc, FILE *output) {
+    if (!enc->has_audio || !enc->mp2_file) {
+        return 0;  // No audio to write
+    }
+
+    // Get file size
+    fseek(enc->mp2_file, 0, SEEK_END);
+    size_t mp2_size = ftell(enc->mp2_file);
+    fseek(enc->mp2_file, 0, SEEK_SET);
+
+    if (mp2_size == 0) {
+        fprintf(stderr, "Warning: MP2 file is empty\n");
+        return 0;
+    }
+
+    // Allocate buffer for entire MP2 file
+    uint8_t *mp2_buffer = malloc(mp2_size);
+    if (!mp2_buffer) {
+        fprintf(stderr, "Error: Failed to allocate buffer for separate audio track (%zu bytes)\n", mp2_size);
+        return 0;
+    }
+
+    // Read entire MP2 file
+    size_t bytes_read = fread(mp2_buffer, 1, mp2_size, enc->mp2_file);
+    if (bytes_read != mp2_size) {
+        fprintf(stderr, "Error: Failed to read MP2 file (expected %zu bytes, got %zu)\n", mp2_size, bytes_read);
+        free(mp2_buffer);
+        return 0;
+    }
+
+    // Write packet type 0x40
+    uint8_t packet_type = TAV_PACKET_AUDIO_TRACK;
+    fwrite(&packet_type, 1, 1, output);
+
+    // Write payload size (uint32)
+    uint32_t payload_size = (uint32_t)mp2_size;
+    fwrite(&payload_size, sizeof(uint32_t), 1, output);
+
+    // Write MP2 data
+    fwrite(mp2_buffer, 1, mp2_size, output);
+
+    // Cleanup
+    free(mp2_buffer);
+
+    if (enc->verbose) {
+        printf("Separate audio track written: %zu bytes (packet 0x40)\n", mp2_size);
+    }
+
+    return 1;
+}
+
 // Process audio for current frame (copied and adapted from TEV)
 static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
+    // Skip if separate audio track mode is enabled
+    if (enc->separate_audio_track) {
+        return 1;
+    }
+
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0) {
         return 1;
     }
@@ -8698,6 +8759,11 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
 // Process audio for a GOP (multiple frames at once)
 // Accumulates deficit for N frames and emits all necessary audio packets
 static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num_frames, FILE *output) {
+    // Skip if separate audio track mode is enabled
+    if (enc->separate_audio_track) {
+        return 1;
+    }
+
     if (!enc->has_audio || !enc->mp2_file || enc->audio_remaining <= 0 || num_frames == 0) {
         return 1;
     }
@@ -9081,6 +9147,7 @@ int main(int argc, char *argv[]) {
         {"bframes", required_argument, 0, 1023},
         {"gop-size", required_argument, 0, 1024},
         {"ezbc", no_argument, 0, 1025},
+        {"separate-audio-track", no_argument, 0, 1026},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -9290,6 +9357,10 @@ int main(int argc, char *argv[]) {
                 enc->enable_ezbc = 1;
                 printf("EZBC (Embedded Zero Block Coding) enabled for significance maps\n");
                 break;
+            case 1026: // --separate-audio-track
+                enc->separate_audio_track = 1;
+                printf("Separate audio track mode enabled (packet 0x40)\n");
+                break;
             case 'a':
                 int bitrate = atoi(optarg);
                 int valid_bitrate = validate_mp2_bitrate(bitrate);
@@ -9460,6 +9531,11 @@ int main(int argc, char *argv[]) {
     // Write extended header packet (before first timecode)
     gettimeofday(&enc->start_time, NULL);
     enc->extended_header_offset = write_extended_header(enc);
+
+    // Write separate audio track if enabled (packet 0x40)
+    if (enc->separate_audio_track) {
+        write_separate_audio_track(enc, enc->output_fp);
+    }
 
     // Write font ROM packets if provided
     if (enc->fontrom_lo_file) {

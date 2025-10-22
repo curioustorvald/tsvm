@@ -725,7 +725,7 @@ class VM(
     private fun relPtrInDev(from: Long, len: Long, start: Int, end: Int) =
         (from in start..end && (from + len) in start..end)
 
-    private fun getDev(from: Long, len: Long, isDest: Boolean): Long? {
+    internal fun getDev(from: Long, len: Long, isDest: Boolean): Long? {
         return if (from >= 0) usermem.ptr + from
         // MMIO area
         else if (from in -1048576..-1 && (from - len) in -1048577..-1) {
@@ -745,6 +745,7 @@ class VM(
             else if (dev is AudioAdapter) {
                 if (relPtrInDev(fromRel, len, 64, 2367)) dev.mediaDecodedBin.ptr + fromRel - 64
                 else if (relPtrInDev(fromRel, len, 2368, 4096)) dev.mediaFrameBin.ptr + fromRel - 2368
+                else if (relPtrInDev(fromRel, len, 65536, 131072)) dev.pcmBin.ptr + fromRel - 65536
                 else null
             }
             else if (dev is GraphicsAdapter) {
@@ -770,7 +771,9 @@ class VM(
                 if (relPtrInDev(fromRel, len, 0, 250879)) dev.framebuffer.ptr + fromRel - 0
                 else if (relPtrInDev(fromRel, len, 250880, 251903)) dev.unusedArea.ptr + fromRel - 250880
                 else if (relPtrInDev(fromRel, len, 253950, 261631)) dev.textArea.ptr + fromRel - 253950
-                else if (relPtrInDev(fromRel, len, 262144, 513023)) dev.framebuffer2?.ptr?.plus(fromRel)?.minus(253950)
+                else if (relPtrInDev(fromRel, len, 262144, 513023)) dev.framebuffer2?.ptr?.plus(fromRel)?.minus(262144)
+                else if (relPtrInDev(fromRel, len, 524288, 775167)) dev.framebuffer3?.ptr?.plus(fromRel)?.minus(524288)
+                else if (relPtrInDev(fromRel, len, 786432, 1037371)) dev.framebuffer4?.ptr?.plus(fromRel)?.minus(786432)
                 else null
             }
             else if (dev is RamBank) {

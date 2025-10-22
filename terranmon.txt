@@ -960,9 +960,19 @@ transmission capability, and region-of-interest coding.
     0x11: P-frame (delta/skip frame)
     0x12: GOP Unified (temporal 3D DWT with unified preprocessing)
     0x1F: (prohibited)
+    <audio packets>
     0x20: MP2 audio packet
+    0x21: Zstd-compressed 8-bit PCM (32 KHz, audio hardware's native format)
+    0x22: Zstd-compressed 16-bit PCM (32 KHz, little endian)
+    0x23: Zstd-compressed ADPCM
+    <subtitles>
     0x30: Subtitle in "Simple" format
     0x31: Subtitle in "Karaoke" format
+    <synchronised tracks>
+    0x40: MP2 audio track
+    0x41: Zstd-compressed 8-bit PCM (32 KHz, audio hardware's native format)
+    0x42: Zstd-compressed 16-bit PCM (32 KHz, little endian)
+    0x43: Zstd-compressed ADPCM
     <multiplexed video>
     0x70/71: Video channel 2 I/P-frame
     0x72/73: Video channel 3 I/P-frame
