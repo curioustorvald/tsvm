@@ -1129,8 +1129,36 @@ try {
                     asyncDecodeStartTime = sys.nanoTime()
 
                 } else if (currentGopSize === 0 && asyncDecodeInProgress) {
-                    // Case 2: First GOP still decoding - ignore to avoid cancellation
-                    sys.free(compressedPtr)
+                    // Case 2: First GOP still decoding - buffer GOPs without starting decode
+                    // These will be decoded once playback starts
+                    if (readyGopData === null) {
+                        // Buffer as ready GOP (will decode when first GOP finishes)
+                        const nextSlot = (currentGopBufferSlot + 1) % BUFFER_SLOTS
+                        readyGopData = {
+                            gopSize: gopSize,
+                            slot: nextSlot,
+                            compressedPtr: compressedPtr,
+                            compressedSize: compressedSize,
+                            needsDecode: true,  // Flag that decode hasn't started yet
+                            startTime: 0,
+                            timeRemaining: 0
+                        }
+                    } else if (decodingGopData === null) {
+                        // Buffer as decoding GOP (will decode after ready GOP)
+                        const decodingSlot = (currentGopBufferSlot + 2) % BUFFER_SLOTS
+                        decodingGopData = {
+                            gopSize: gopSize,
+                            slot: decodingSlot,
+                            compressedPtr: compressedPtr,
+                            compressedSize: compressedSize,
+                            needsDecode: true,  // Flag that decode hasn't started yet
+                            startTime: 0,
+                            timeRemaining: 0
+                        }
+                    } else {
+                        // All 3 buffers full - discard this GOP
+                        sys.free(compressedPtr)
+                    }
 
                 } else if (currentGopSize > 0 && readyGopData === null && !asyncDecodeInProgress && graphics.tavDecodeGopIsComplete()) {
                     // Case 3: GOP playing, no ready GOP, no decode in progress - decode to ready slot
@@ -1416,6 +1444,27 @@ try {
                 sys.free(asyncDecodePtr)
                 asyncDecodePtr = 0
                 asyncDecodeGopSize = 0
+
+                // Start decode of buffered ready GOP if it exists
+                if (readyGopData !== null && readyGopData.needsDecode) {
+                    const framesRemaining = currentGopSize - currentGopFrameIndex
+                    const timeRemaining = framesRemaining * FRAME_TIME * 1000.0
+
+                    graphics.tavDecodeGopToVideoBufferAsync(
+                        readyGopData.compressedPtr, readyGopData.compressedSize, readyGopData.gopSize,
+                        header.width, header.height,
+                        header.qualityLevel,
+                        QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
+                        header.channelLayout,
+                        header.waveletFilter, header.decompLevels, 2,
+                        header.entropyCoder,
+                        readyGopData.slot * SLOT_SIZE
+                    )
+
+                    readyGopData.needsDecode = false
+                    readyGopData.startTime = sys.nanoTime()
+                    readyGopData.timeRemaining = timeRemaining
+                }
             }
         }
 
@@ -1466,6 +1515,27 @@ try {
                     predecodedPcmOffset += uploadSize
                 }
 
+                // Start decode of buffered decoding GOP if ready GOP decode is complete
+                if (decodingGopData !== null && decodingGopData.needsDecode && graphics.tavDecodeGopIsComplete()) {
+                    const framesRemaining = currentGopSize - currentGopFrameIndex
+                    const timeRemaining = framesRemaining * FRAME_TIME * 1000.0
+
+                    graphics.tavDecodeGopToVideoBufferAsync(
+                        decodingGopData.compressedPtr, decodingGopData.compressedSize, decodingGopData.gopSize,
+                        header.width, header.height,
+                        header.qualityLevel,
+                        QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
+                        header.channelLayout,
+                        header.waveletFilter, header.decompLevels, 2,
+                        header.entropyCoder,
+                        decodingGopData.slot * SLOT_SIZE
+                    )
+
+                    decodingGopData.needsDecode = false
+                    decodingGopData.startTime = sys.nanoTime()
+                    decodingGopData.timeRemaining = timeRemaining
+                }
+
                 // Schedule next frame
                 nextFrameTime += (frametime)  // frametime is in nanoseconds from header
             }
@@ -1474,6 +1544,22 @@ try {
         // Step 4-7: GOP finished? Transition to ready GOP (triple-buffering)
         if (!paused && currentGopSize > 0 && currentGopFrameIndex >= currentGopSize) {
             if (readyGopData !== null) {
+                // If ready GOP still needs decode, start it now (defensive - should already be started)
+                if (readyGopData.needsDecode) {
+                    graphics.tavDecodeGopToVideoBufferAsync(
+                        readyGopData.compressedPtr, readyGopData.compressedSize, readyGopData.gopSize,
+                        header.width, header.height,
+                        header.qualityLevel,
+                        QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
+                        header.channelLayout,
+                        header.waveletFilter, header.decompLevels, 2,
+                        header.entropyCoder,
+                        readyGopData.slot * SLOT_SIZE
+                    )
+                    readyGopData.needsDecode = false
+                    readyGopData.startTime = sys.nanoTime()
+                }
+
                 // Ready GOP exists - wait for it to finish decoding if still in progress
                 while (!graphics.tavDecodeGopIsComplete() && !paused) {
                     sys.sleep(1)
