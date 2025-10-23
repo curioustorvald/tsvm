@@ -78,7 +78,7 @@ debug: $(TARGETS)
 
 # Clean build artifacts
 clean:
-	rm -f $(TARGETS) $(TAD_TARGETS) *.o
+	rm -f $(TARGETS) $(TAD_TARGETS) $(TAD16_TARGETS) $(TAD10_TARGETS) *.o
 
 # Install (copy to PATH)
 install: $(TARGETS) $(TAD_TARGETS)
@@ -106,6 +106,12 @@ help:
 	@echo "  tad          - Build all TAD audio tools (encoder, decoder)"
 	@echo "  encoder_tad  - Build TAD audio encoder"
 	@echo "  decoder_tad  - Build TAD audio decoder"
+	@echo "  tad16        - Build TAD16 tools (PCM16 alternative for comparison)"
+	@echo "  encoder_tad16- Build TAD16 audio encoder (PCM16 version)"
+	@echo "  decoder_tad16- Build TAD16 audio decoder (PCM16 version)"
+	@echo "  tad10        - Build TAD10 tools (PCM10 alternative for comparison)"
+	@echo "  encoder_tad10- Build TAD10 audio encoder (PCM10 version)"
+	@echo "  decoder_tad10- Build TAD10 audio decoder (PCM10 version)"
 	@echo "  debug        - Build with debug symbols"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  install      - Install to /usr/local/bin"
@@ -117,6 +123,8 @@ help:
 	@echo "  make tev           # Build TEV encoder"
 	@echo "  make tav           # Build TAV encoder"
 	@echo "  make tad           # Build all TAD audio tools"
+	@echo "  make tad16         # Build TAD16 tools (for comparison testing)"
+	@echo "  make tad10         # Build TAD10 tools (for comparison testing)"
 	@echo "  sudo make install  # Install all encoders"
 
-.PHONY: all clean install check-deps help debug tad
+.PHONY: all clean install check-deps help debug tad tad16 tad10

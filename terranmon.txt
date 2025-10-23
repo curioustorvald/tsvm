@@ -1550,7 +1550,7 @@ is stored separately and quality index is shared with that of the video.
 ## Audio Properties
 - **Sample Rate**: 32000 Hz (TSVM audio hardware native format)
 - **Channels**: 2 (stereo)
-- **Input Format**: PCM16LE (16-bit signed little-endian PCM)
+- **Input Format**: PCM32fLE (32-bit float little-endian PCM)
 - **Preprocessing**: 16 Hz highpass filter applied during extraction
 - **Internal Representation**: Signed PCM8 with error-diffusion dithering
 - **Chunk Size**: Variable (1024-32768+ samples per channel, must be power of 2)
@@ -1565,8 +1565,6 @@ Default is 32768 samples (65536 total samples, 1.024 seconds).
 If the audio duration doesn't align to chunk boundaries, the final chunk can use
 a smaller power-of-2 size or be zero-padded.
 
-    uint8  Significance Map Method: always 1 (2-bit twobitmap)
-    uint8  Compression Flag: 1=Zstd compressed, 0=uncompressed
     uint16 Sample Count: number of samples per channel (must be power of 2, min 1024)
     uint32 Chunk Payload Size: size of following payload in bytes
     *      Chunk Payload: encoded M/S stereo data (Zstd compressed if flag set)
@@ -1592,13 +1590,9 @@ as int16 in the order they appear.
 
 ## Encoding Pipeline
 
-### Step 1: PCM16 to PCM8 Conversion with Error-Diffusion Dithering
-Input stereo PCM16LE is converted to signed PCM8 using error-diffusion dithering
-to minimize quantization noise:
-
-    dithered_value = pcm16_value / 256 + error
-    pcm8_value = clamp(round(dithered_value), -128, 127)
-    error = dithered_value - pcm8_value
+### Step 1: PCM32f to PCM8 Conversion with Error-Diffusion Dithering
+Input stereo PCM32fLE is converted to signed PCM8 using second-order noise-shaped
+error-diffusion dithering to minimize quantization noise.
 
 Error is propagated to the next sample (alternating between left/right channels).
 
@@ -1632,18 +1626,7 @@ For 32768 samples with 14 levels: boundaries at 0, 2, 4, 8, 16, 32, 64, 128, 256
 For 1024 samples with 9 levels: boundaries at 0, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
 
 ### Step 4: Frequency-Dependent Quantization
-DWT coefficients are quantized using perceptually-tuned frequency-dependent weights:
-
-    Base Weights by Level:
-    Level 0 (16-8 KHz):     3.0
-    Level 1 (8-4 KHz):      2.0
-    Level 2 (4-2 KHz):      1.5
-    Level 3 (2-1 KHz):      1.0
-    Level 4 (1-0.5 KHz):    0.75
-    Level 5 (0.5-0.25 KHz): 0.5
-    Level 6-7 (DC-0.25 KHz): 0.25
-
-Quality scaling factor: 1.0 + (5 - quality) * 0.3
+DWT coefficients are quantized using perceptually-tuned frequency-dependent weights.
 
 Final quantization step: base_weight * quality_scale
 
@@ -1690,13 +1673,8 @@ Convert Mid/Side back to Left/Right stereo:
     Left = Mid + Side
     Right = Mid - Side
 
-### Step 6: PCM8 to PCM16 Upsampling
-Convert signed PCM8 back to PCM16LE by multiplying by 256:
-
-    pcm16_value = pcm8_value * 256
-
 ## Compression Performance
-- **Target Ratio**: 2:1 against PCMu8 (4:1 against PCM16LE input)
+- **Target Ratio**: 2:1 against PCMu8
 - **Achieved Ratio**: 2.51:1 against PCMu8 at quality level 3
 - **Quality**: Perceptually transparent at Q3+, preserves full 0-16 KHz bandwidth
 - **Sparsity**: 86.9% zeros in Mid channel, 97.8% in Side channel (typical)
@@ -1721,10 +1699,10 @@ This allows TAV video files to embed TAD-compressed audio using packet type 0x24
 TAD encoder uses two-pass FFmpeg extraction for optimal quality:
 
     # Pass 1: Extract at original sample rate
-    ffmpeg -i input.mp4 -f s16le -ac 2 temp.pcm
+    ffmpeg -i input.mp4 -f f32le -ac 2 temp.pcm
 
     # Pass 2: High-quality resample with SoXR and highpass filter
-    ffmpeg -f s16le -ar {original_rate} -ac 2 -i temp.pcm \
+    ffmpeg -f f32le -ar {original_rate} -ac 2 -i temp.pcm \
            -ar 32000 -af "aresample=resampler=soxr:precision=28:cutoff=0.99,highpass=f=16" \
            output.pcm
 
