@@ -11,14 +11,14 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <getopt.h>
+#include "encoder_tad.h"  // TAD audio encoder
 #include <ctype.h>
 #include <sys/time.h>
 #include <time.h>
 #include <limits.h>
 #include <float.h>
-#include <fftw3.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251023 (3d-dwt)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251024 (3d-dwt,tad)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -55,6 +55,7 @@
 #define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2       0x20  // MP2 audio
 #define TAV_PACKET_AUDIO_PCM8      0x21  // 8-bit PCM audio (zstd compressed)
+#define TAV_PACKET_AUDIO_TAD       0x24  // TAD audio (DWT-based perceptual codec)
 #define TAV_PACKET_SUBTITLE        0x30  // Subtitle packet
 #define TAV_PACKET_AUDIO_TRACK     0x40  // Separate audio track (full MP2 file)
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
@@ -62,6 +63,15 @@
 #define TAV_PACKET_TIMECODE        0xFD  // Timecode packet
 #define TAV_PACKET_SYNC_NTSC       0xFE  // NTSC Sync packet
 #define TAV_PACKET_SYNC            0xFF  // Sync packet
+
+// TAD (Terrarum Advanced Audio) settings
+#define TAD_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples (supports non-power-of-2)
+#define TAD_SAMPLE_RATE 32000
+#define TAD_CHANNELS 2  // Stereo
+#define TAD_SIGMAP_2BIT 1  // 2-bit: 00=0, 01=+1, 10=-1, 11=other
+#define TAD_QUALITY_MIN 0
+#define TAD_QUALITY_MAX 5
+#define TAD_ZSTD_LEVEL 7
 
 // DWT settings
 #define TILE_SIZE_X 640
@@ -1753,6 +1763,7 @@ typedef struct tav_encoder_s {
     int delta_haar_levels; // Number of Haar DWT levels to apply to delta coefficients (0 = disabled)
     int separate_audio_track; // 1 = write entire MP2 file as packet 0x40 after header, 0 = interleave audio (default)
     int pcm8_audio; // 1 = use 8-bit PCM audio (packet 0x21), 0 = use MP2 (default)
+    int tad_audio; // 1 = use TAD audio (packet 0x24), 0 = use MP2/PCM8 (default, quality follows quality_level)
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -2272,6 +2283,7 @@ static void show_usage(const char *program_name) {
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
 //    printf("  --separate-audio-track  Write entire audio track as single packet instead of interleaved\n");
     printf("  --pcm8-audio            Use 8-bit PCM audio instead of MP2 (TSVM native audio format)\n");
+    printf("  --tad-audio             Use TAD (DWT-based perceptual) audio codec (packet 0x24, quality follows -q)\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
     printf("  --fontrom-hi FILE       High font ROM file for internationalised subtitles\n");
@@ -2361,6 +2373,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->delta_haar_levels = TEMPORAL_DECOMP_LEVEL;
     enc->separate_audio_track = 0;  // Default: interleave audio packets
     enc->pcm8_audio = 0;  // Default: use MP2 audio
+    enc->tad_audio = 0;  // Default: use MP2 audio (TAD quality follows quality_level)
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
@@ -8050,11 +8063,15 @@ static int start_audio_conversion(tav_encoder_t *enc) {
 
     char command[2048];
 
-    if (enc->pcm8_audio) {
-        // Extract PCM16LE for PCM8 mode
-        printf("  Audio format: PCM16LE 32kHz stereo (will be converted to 8-bit)\n");
+    if (enc->pcm8_audio || enc->tad_audio) {
+        // Extract PCM16LE for PCM8/TAD mode
+        if (enc->pcm8_audio) {
+            printf("  Audio format: PCM16LE 32kHz stereo (will be converted to 8-bit PCM)\n");
+        } else {
+            printf("  Audio format: PCM16LE 32kHz stereo (will be encoded with TAD codec)\n");
+        }
         snprintf(command, sizeof(command),
-            "ffmpeg -v quiet -i \"%s\" -f s16le -acodec pcm_s16le -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+            "ffmpeg -v quiet -i \"%s\" -f s16le -acodec pcm_s16le -ar %d -ac 2 -af \"aresample=resampler=soxr:precision=28:cutoff=0.99:dither_scale=0,highpass=f=16\" -y \"%s\" 2>/dev/null",
             enc->input_file, TSVM_AUDIO_SAMPLE_RATE, TEMP_PCM_FILE);
 
         int result = system(command);
@@ -8806,6 +8823,95 @@ static int write_separate_audio_track(tav_encoder_t *enc, FILE *output) {
     return 1;
 }
 
+// Write TAD audio packet (0x24) with specified sample count
+// Uses linked TAD encoder (encoder_tad.c)
+static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int samples_to_read) {
+    if (!enc->pcm_file || enc->audio_remaining <= 0 || samples_to_read <= 0) {
+        return 0;
+    }
+    size_t bytes_to_read = samples_to_read * 2 * sizeof(int16_t);  // Stereo PCM16LE
+
+    // Don't read more than what's available
+    if (bytes_to_read > enc->audio_remaining) {
+        bytes_to_read = enc->audio_remaining;
+        samples_to_read = bytes_to_read / (2 * sizeof(int16_t));
+    }
+
+    if (samples_to_read < TAD_MIN_CHUNK_SIZE) {
+        // Pad to minimum size
+        samples_to_read = TAD_MIN_CHUNK_SIZE;
+    }
+
+    // Allocate PCM16 input buffer
+    int16_t *pcm16_buffer = malloc(samples_to_read * 2 * sizeof(int16_t));
+
+    // Read PCM16LE data
+    size_t bytes_read = fread(pcm16_buffer, 1, bytes_to_read, enc->pcm_file);
+    if (bytes_read == 0) {
+        free(pcm16_buffer);
+        return 0;
+    }
+
+    int samples_read = bytes_read / (2 * sizeof(int16_t));
+
+    // Zero-pad if needed
+    if (samples_read < samples_to_read) {
+        memset(&pcm16_buffer[samples_read * 2], 0,
+               (samples_to_read - samples_read) * 2 * sizeof(int16_t));
+    }
+
+    // Encode with TAD encoder (linked from encoder_tad.o)
+    int tad_quality = enc->quality_level;  // Use video quality level for audio
+    if (tad_quality > TAD_QUALITY_MAX) tad_quality = TAD_QUALITY_MAX;
+    if (tad_quality < TAD_QUALITY_MIN) tad_quality = TAD_QUALITY_MIN;
+
+    // Allocate output buffer (generous size for TAD chunk)
+    size_t max_output_size = samples_to_read * 4 * sizeof(int16_t) + 1024;
+    uint8_t *tad_output = malloc(max_output_size);
+
+    size_t tad_encoded_size = tad_encode_chunk(pcm16_buffer, samples_to_read, tad_quality, 1, tad_output);
+
+    if (tad_encoded_size == 0) {
+        fprintf(stderr, "Error: TAD encoding failed\n");
+        free(pcm16_buffer);
+        free(tad_output);
+        return 0;
+    }
+
+    // Parse TAD chunk format: [sample_count][payload_size][payload]
+    uint8_t *read_ptr = tad_output;
+    uint16_t sample_count = *((uint16_t*)read_ptr);
+    read_ptr += sizeof(uint16_t);
+    uint32_t tad_payload_size = *((uint32_t*)read_ptr);
+    read_ptr += sizeof(uint32_t);
+    uint8_t *tad_payload = read_ptr;
+
+    // Write TAV packet 0x24: [0x24][payload_size+2][sample_count][compressed_size][compressed_data]
+    uint8_t packet_type = TAV_PACKET_AUDIO_TAD;
+    fwrite(&packet_type, 1, 1, output);
+
+    uint32_t tav_payload_size = (uint32_t)tad_payload_size;
+    uint32_t tav_payload_size_plus_two = (uint32_t)tad_payload_size + 2;
+    fwrite(&tav_payload_size_plus_two, sizeof(uint32_t), 1, output);
+    fwrite(&sample_count, sizeof(uint16_t), 1, output);
+    fwrite(&tav_payload_size, sizeof(uint32_t), 1, output);
+    fwrite(tad_payload, 1, tad_payload_size, output);
+
+    // Update audio remaining
+    enc->audio_remaining -= bytes_read;
+
+    if (enc->verbose) {
+        printf("TAD packet: %d samples, %u bytes compressed (Q%d)\n",
+               sample_count, tad_payload_size, tad_quality);
+    }
+
+    // Cleanup
+    free(pcm16_buffer);
+    free(tad_output);
+
+    return 1;
+}
+
 // Write PCM8 audio packet (0x21) with specified sample count
 static int write_pcm8_packet_samples(tav_encoder_t *enc, FILE *output, int samples_to_read) {
     if (!enc->pcm_file || enc->audio_remaining <= 0 || samples_to_read <= 0) {
@@ -8902,6 +9008,15 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     // Skip if separate audio track mode is enabled
     if (enc->separate_audio_track) {
         return 1;
+    }
+
+    // Handle TAD mode
+    if (enc->tad_audio) {
+        if (!enc->has_audio || !enc->pcm_file) {
+            return 1;
+        }
+        // Write one TAD packet per frame
+        return write_tad_packet_samples(enc, output, enc->samples_per_frame);
     }
 
     // Handle PCM8 mode
@@ -9017,6 +9132,29 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
 static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num_frames, FILE *output) {
     // Skip if separate audio track mode is enabled
     if (enc->separate_audio_track) {
+        return 1;
+    }
+
+    // Handle TAD mode: variable chunk size support
+    if (enc->tad_audio) {
+        if (!enc->has_audio || !enc->pcm_file || num_frames == 0) {
+            return 1;
+        }
+
+        // Calculate total samples for this GOP
+        int total_samples = num_frames * enc->samples_per_frame;
+
+        // TAD supports variable chunk sizes (non-power-of-2)
+        // We can write the entire GOP in one packet (up to 32768+ samples)
+        if (enc->verbose) {
+            printf("TAD GOP: %d frames, %d total samples\n", num_frames, total_samples);
+        }
+
+        // Write one TAD packet for the entire GOP
+        if (!write_tad_packet_samples(enc, output, total_samples)) {
+            // No more audio data
+        }
+
         return 1;
     }
 
@@ -9448,6 +9586,7 @@ int main(int argc, char *argv[]) {
         {"pcm-audio", no_argument, 0, 1027},
         {"native-audio", no_argument, 0, 1027},
         {"native-audio-format", no_argument, 0, 1027},
+        {"tad-audio", no_argument, 0, 1028},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -9667,6 +9806,10 @@ int main(int argc, char *argv[]) {
             case 1027: // --pcm8-audio
                 enc->pcm8_audio = 1;
                 printf("8-bit PCM audio mode enabled (packet 0x21)\n");
+                break;
+            case 1028: // --tad-audio
+                enc->tad_audio = 1;
+                printf("TAD audio mode enabled (packet 0x24, quality follows -q)\n");
                 break;
             case 'a':
                 int bitrate = atoi(optarg);

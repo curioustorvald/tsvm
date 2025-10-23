@@ -13,6 +13,7 @@ OPENCV_LIBS = $(shell pkg-config --libs opencv4)
 
 # Source files and targets
 TARGETS = tev tav tav_decoder
+TAD_TARGETS = encoder_tad decoder_tad
 TEST_TARGETS = test_mesh_warp test_mesh_roundtrip
 
 # Build all encoders
@@ -23,16 +24,30 @@ tev: encoder_tev.c
 	rm -f encoder_tev
 	$(CC) $(CFLAGS) -o encoder_tev $< $(LIBS)
 
-tav: encoder_tav.c encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp
-	rm -f encoder_tav encoder_tav.o encoder_tav_opencv.o estimate_affine_from_blocks.o
+tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp
+	rm -f encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o
 	$(CC) $(CFLAGS) -c encoder_tav.c -o encoder_tav.o
+	$(CC) $(CFLAGS) -c encoder_tad.c -o encoder_tad.o
 	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -c encoder_tav_opencv.cpp -o encoder_tav_opencv.o
-	$(CXX) $(CXXFLAGS) -c estimate_affine_from_blocks.cpp -o estimate_affine_from_blocks.o
-	$(CXX) -o encoder_tav encoder_tav.o encoder_tav_opencv.o estimate_affine_from_blocks.o $(LIBS) -lfftw3f $(OPENCV_LIBS)
+	$(CXX) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
 
 tav_decoder: decoder_tav.c
 	rm -f decoder_tav
 	$(CC) $(CFLAGS) -o decoder_tav $< $(LIBS)
+
+# Build TAD (Terrarum Advanced Audio) tools
+encoder_tad: encoder_tad_standalone.c encoder_tad.c encoder_tad.h
+	rm -f encoder_tad encoder_tad_standalone.o encoder_tad.o
+	$(CC) $(CFLAGS) -c encoder_tad.c -o encoder_tad.o
+	$(CC) $(CFLAGS) -c encoder_tad_standalone.c -o encoder_tad_standalone.o
+	$(CC) -o encoder_tad encoder_tad_standalone.o encoder_tad.o $(LIBS)
+
+decoder_tad: decoder_tad.c
+	rm -f decoder_tad
+	$(CC) $(CFLAGS) -o decoder_tad $< $(LIBS)
+
+# Build all TAD tools
+tad: $(TAD_TARGETS)
 
 # Build test programs
 test_mesh_warp: test_mesh_warp.cpp encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp
@@ -63,31 +78,34 @@ debug: $(TARGETS)
 
 # Clean build artifacts
 clean:
-	rm -f $(TARGETS) *.o
+	rm -f $(TARGETS) $(TAD_TARGETS) *.o
 
 # Install (copy to PATH)
-install: $(TARGETS)
+install: $(TARGETS) $(TAD_TARGETS)
 	cp encoder_tev /usr/local/bin/
 	cp encoder_tav /usr/local/bin/
 	cp decoder_tav /usr/local/bin/
+	cp encoder_tad /usr/local/bin/
+	cp decoder_tad /usr/local/bin/
 
 # Check for required dependencies
 check-deps:
 	@echo "Checking dependencies..."
-	@echo "Using Zstd compression for better efficiency"
 	@pkg-config --exists libzstd || (echo "Error: libzstd-dev not found. Install with: sudo apt install libzstd-dev" && exit 1)
-	@pkg-config --exists fftw3f || (echo "Error: libfftw3-dev not found. Install with: sudo apt install libfftw3-dev" && exit 1)
 	@pkg-config --exists opencv4 || (echo "Error: OpenCV 4 not found. Install with: sudo apt install libopencv-dev" && exit 1)
 	@echo "All dependencies found."
 
 # Help
 help:
-	@echo "TSVM Enhanced Video (TEV) Encoder"
+	@echo "TSVM Enhanced Video (TEV) and Audio (TAD) Encoders"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all          - Build both encoders (default)"
-	@echo "  tev          - Build the main TEV encoder"
-	@echo "  tav          - Build the advanced TAV encoder"
+	@echo "  all          - Build video encoders (default)"
+	@echo "  tev          - Build the TEV video encoder"
+	@echo "  tav          - Build the TAV advanced video encoder"
+	@echo "  tad          - Build all TAD audio tools (encoder, decoder)"
+	@echo "  encoder_tad  - Build TAD audio encoder"
+	@echo "  decoder_tad  - Build TAD audio decoder"
 	@echo "  debug        - Build with debug symbols"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  install      - Install to /usr/local/bin"
@@ -95,9 +113,10 @@ help:
 	@echo "  help         - Show this help"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make               # Build both encoders"
+	@echo "  make               # Build video encoders"
 	@echo "  make tev           # Build TEV encoder"
 	@echo "  make tav           # Build TAV encoder"
-	@echo "  sudo make install  # Install both encoders"
+	@echo "  make tad           # Build all TAD audio tools"
+	@echo "  sudo make install  # Install all encoders"
 
-.PHONY: all clean install check-deps help debug
+.PHONY: all clean install check-deps help debug tad

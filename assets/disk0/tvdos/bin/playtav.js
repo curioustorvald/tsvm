@@ -15,6 +15,7 @@ const UCF_VERSION = 1
 const ADDRESSING_EXTERNAL = 0x01
 const ADDRESSING_INTERNAL = 0x02
 const SND_BASE_ADDR = audio.getBaseAddr()
+const SND_MEM_ADDR = audio.getMemAddr()
 const pcm = require("pcm")
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
 
@@ -32,6 +33,7 @@ const TAV_PACKET_AUDIO_MP2 = 0x20
 const TAV_PACKET_AUDIO_NATIVE = 0x21
 const TAV_PACKET_AUDIO_PCM_16LE = 0x22
 const TAV_PACKET_AUDIO_ADPCM = 0x23
+const TAV_PACKET_AUDIO_TAD = 0x24
 const TAV_PACKET_SUBTITLE = 0x30
 const TAV_PACKET_AUDIO_BUNDLED = 0x40  // Entire MP2 audio file in single packet
 const TAV_PACKET_EXTENDED_HDR = 0xEF
@@ -396,6 +398,7 @@ let audioBufferBytesLastFrame = 0
 let frame_cnt = 0
 let frametime = 1000000000.0 / header.fps
 let mp2Initialised = false
+let tadInitialised = false
 let audioFired = false
 
 
@@ -1336,6 +1339,20 @@ try {
                 seqread.readBytes(audioLen, SND_BASE_ADDR - 2368)
                 audio.mp2Decode()
                 audio.mp2UploadDecoded(0)
+
+            }
+            else if (packetType === TAV_PACKET_AUDIO_TAD) {
+                // Legacy MP2 Audio packet (for backwards compatibility)
+                let payloadLen = seqread.readInt()
+
+                if (!tadInitialised) {
+                    tadInitialised = true
+                    audio.tadSetQuality(header.qualityLevel)
+                }
+
+                seqread.readBytes(payloadLen, SND_MEM_ADDR - 262144)
+                audio.tadDecode()
+                audio.tadUploadDecoded(0)
 
             }
             else if (packetType === TAV_PACKET_AUDIO_NATIVE) {

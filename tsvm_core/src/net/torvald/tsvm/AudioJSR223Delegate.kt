@@ -82,6 +82,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 //    fun mp2DecodeFrame(mp2: MP2Env.MP2, framePtr: Long?, pcm: Boolean, outL: Long, outR: Long) = getFirstSnd()?.mp2Env?.decodeFrame(mp2, framePtr, pcm, outL, outR)
 
     fun getBaseAddr(): Int? = getFirstSnd()?.let { return it.vm.findPeriSlotNum(it)?.times(-131072)?.minus(1) }
+    fun getMemAddr(): Int? = getFirstSnd()?.let { return it.vm.findPeriSlotNum(it)?.times(-1048576)?.minus(1) }
     fun mp2Init() = getFirstSnd()?.mmio_write(40L, 16)
     fun mp2Decode() = getFirstSnd()?.mmio_write(40L, 1)
     fun mp2InitThenDecode() = getFirstSnd()?.mmio_write(40L, 17)
@@ -92,6 +93,39 @@ class AudioJSR223Delegate(private val vm: VM) {
             snd.playheads[playhead].pcmQueue.addLast(ba)
         }
     }
+
+    // TAD (Terrarum Advanced Audio) decoder functions
+    fun tadSetQuality(quality: Int) {
+        getFirstSnd()?.mmio_write(43L, quality.toByte())
+    }
+
+    fun tadGetQuality() = getFirstSnd()?.mmio_read(43L)?.toInt()
+
+    fun tadDecode() {
+        getFirstSnd()?.mmio_write(42L, 1)
+    }
+
+    fun tadIsBusy() = getFirstSnd()?.mmio_read(44L)?.toInt() == 1
+
+    fun tadUploadDecoded(playhead: Int) {
+        getFirstSnd()?.let { snd ->
+            val ba = ByteArray(65536)  // 32768 samples * 2 channels
+            UnsafeHelper.memcpyRaw(null, snd.tadDecodedBin.ptr, ba, UnsafeHelper.getArrayOffset(ba), 65536)
+            snd.playheads[playhead].pcmQueue.addLast(ba)
+        }
+    }
+
+    fun putTadDataByPtr(ptr: Int, length: Int, destOffset: Int) {
+        getFirstSnd()?.let { snd ->
+            val vkMult = if (ptr >= 0) 1 else -1
+            for (k in 0L until length) {
+                val vk = k * vkMult
+                snd.tadInputBin[k + destOffset] = vm.peek(ptr + vk)!!
+            }
+        }
+    }
+
+    fun getTadData(index: Int) = getFirstSnd()?.tadDecodedBin?.get(index.toLong())
 
 
 
