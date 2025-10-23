@@ -120,7 +120,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_QUALITY 3
 #define DEFAULT_ZSTD_LEVEL 15
 #define DEFAULT_PCM_ZSTD_LEVEL 3
-#define TEMPORAL_GOP_SIZE 20
+#define TEMPORAL_GOP_SIZE 24
 #define TEMPORAL_GOP_SIZE_MIN 8 // Minimum GOP size to avoid decoder hiccups
 #define TEMPORAL_DECOMP_LEVEL 2
 

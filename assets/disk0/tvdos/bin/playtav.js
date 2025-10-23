@@ -361,7 +361,7 @@ const FRAME_SIZE = FRAME_PIXELS * 3  // RGB buffer size
 
 // Triple-buffering: Fixed slot sizes in videoBuffer (48 MB total)
 const BUFFER_SLOTS = 3  // Three slots: playing, ready, decoding
-const MAX_GOP_SIZE = 21  // Maximum frames per slot (21 * 752KB = ~15.8MB per slot)
+const MAX_GOP_SIZE = 24  // Maximum frames per slot (24 * 752KB = ~18.1MB per slot)
 const SLOT_SIZE = MAX_GOP_SIZE * FRAME_SIZE  // Fixed slot size regardless of actual GOP size
 
 console.log(`Triple-buffering: ${BUFFER_SLOTS} slots, max ${MAX_GOP_SIZE} frames/slot, ${(SLOT_SIZE / 1048576).toFixed(1)}MB per slot`)
@@ -504,6 +504,9 @@ let asyncDecodeGopSize = 0     // Size of GOP being decoded async
 let asyncDecodePtr = 0         // Compressed data pointer to free after decode
 let asyncDecodeStartTime = 0   // When async decode started (for diagnostics)
 let shouldReadPackets = true   // Gate packet reading: false when all 3 buffers are full
+
+// Overflow queue for GOPs when all 3 buffers are full (prevents Case 5 discards)
+let overflowQueue = []         // Queue of {gopSize, compressedPtr, compressedSize}
 
 // Pre-decoded audio state (for bundled audio packet 0x40)
 let predecodedPcmBuffer = null  // Buffer holding pre-decoded PCM data
@@ -1240,11 +1243,15 @@ try {
                     }
 
                 } else {
-                    // Case 5: All 3 buffers full (playing + ready + decoding) - ignore packet
+                    // Case 5: All 3 buffers full - add to overflow queue instead of discarding
+                    overflowQueue.push({
+                        gopSize: gopSize,
+                        compressedPtr: compressedPtr,
+                        compressedSize: compressedSize
+                    })
                     if (interactive) {
-                        console.log(`[GOP] Case 5: Discarding GOP ${gopSize} frames (current=${currentGopSize}, ready=${readyGopData !== null}, decoding=${decodingGopData !== null}, asyncInProgress=${asyncDecodeInProgress})`)
+                        console.log(`[GOP] Case 5: Buffered GOP ${gopSize} frames to overflow queue (queue size: ${overflowQueue.length})`)
                     }
-                    sys.free(compressedPtr)
                 }
             }
             else if (packetType === TAV_PACKET_GOP_SYNC) {
@@ -1715,6 +1722,77 @@ try {
                     if (interactive) {
                         console.log(`[GOP] Transition complete - resuming packet reading (asyncInProgress=${asyncDecodeInProgress})`)
                     }
+
+                    // Process overflow queue if it has GOPs waiting
+                    if (overflowQueue.length > 0 && !asyncDecodeInProgress && graphics.tavDecodeGopIsComplete()) {
+                        const overflow = overflowQueue.shift()
+
+                        // Determine which slot to decode to
+                        let targetSlot
+                        if (readyGopData === null) {
+                            // Decode to ready slot
+                            targetSlot = (currentGopBufferSlot + 1) % BUFFER_SLOTS
+                        } else if (decodingGopData === null) {
+                            // Decode to decoding slot
+                            targetSlot = (currentGopBufferSlot + 2) % BUFFER_SLOTS
+                        } else {
+                            // This shouldn't happen - put it back in queue
+                            overflowQueue.unshift(overflow)
+                            if (interactive) {
+                                console.log(`[GOP] Overflow queue: no slots available, keeping in queue`)
+                            }
+                            targetSlot = -1  // Skip decode
+                        }
+
+                        // Only proceed if we got a valid slot
+                        if (targetSlot >= 0) {
+                            const targetOffset = targetSlot * SLOT_SIZE
+                            const framesRemaining = currentGopSize - currentGopFrameIndex
+                            const timeRemaining = framesRemaining * FRAME_TIME * 1000.0
+
+                            // Start async decode
+                            graphics.tavDecodeGopToVideoBufferAsync(
+                            overflow.compressedPtr, overflow.compressedSize, overflow.gopSize,
+                            header.width, header.height,
+                            header.qualityLevel,
+                            QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
+                            header.channelLayout,
+                            header.waveletFilter, header.decompLevels, 2,
+                            header.entropyCoder,
+                            targetOffset
+                        )
+
+                        asyncDecodeInProgress = true
+                        asyncDecodeSlot = targetSlot
+                        asyncDecodeGopSize = overflow.gopSize
+                        asyncDecodePtr = overflow.compressedPtr
+                        asyncDecodeStartTime = sys.nanoTime()
+
+                        if (readyGopData === null) {
+                            readyGopData = {
+                                gopSize: overflow.gopSize,
+                                slot: targetSlot,
+                                compressedPtr: overflow.compressedPtr,
+                                startTime: asyncDecodeStartTime,
+                                timeRemaining: timeRemaining
+                            }
+                            if (interactive) {
+                                console.log(`[GOP] Overflow: Started decode of queued GOP ${overflow.gopSize} frames to ready slot ${targetSlot} (${overflowQueue.length} left in queue)`)
+                            }
+                        } else {
+                            decodingGopData = {
+                                gopSize: overflow.gopSize,
+                                slot: targetSlot,
+                                compressedPtr: overflow.compressedPtr,
+                                startTime: asyncDecodeStartTime,
+                                timeRemaining: timeRemaining
+                            }
+                            if (interactive) {
+                                console.log(`[GOP] Overflow: Started decode of queued GOP ${overflow.gopSize} frames to decoding slot ${targetSlot} (${overflowQueue.length} left in queue)`)
+                            }
+                        }
+                        }  // End if (targetSlot >= 0)
+                    }
                 }
             } else {
                 // No ready GOP available - hiccup (shouldn't happen with triple-buffering)
@@ -1791,6 +1869,12 @@ finally {
     // Free pre-decoded PCM buffer if present
     if (predecodedPcmBuffer !== null) {
         sys.free(predecodedPcmBuffer)
+    }
+
+    // Free any remaining overflow queue GOPs
+    while (overflowQueue.length > 0) {
+        const overflow = overflowQueue.shift()
+        sys.free(overflow.compressedPtr)
     }
 
     con.curs_set(1)
