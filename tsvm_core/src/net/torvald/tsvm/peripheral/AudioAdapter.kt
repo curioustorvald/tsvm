@@ -13,6 +13,7 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.getHashStr
 import net.torvald.tsvm.toInt
 import java.io.ByteArrayInputStream
+import kotlin.math.roundToInt
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
@@ -132,6 +133,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal val tadDecodedBin = UnsafeHelper.allocate(65536L, this) // Output: PCMu8 stereo (32768 samples * 2 channels)
     internal var tadQuality = 2  // Quality level used during encoding (0-5)
     @Volatile private var tadBusy = false
+
+    // TAD decoder constants
+    private val TAD_COEFF_SCALAR = 1024.0f
+
+    // Dither state for noise shaping (2 channels, 2 history samples each)
+    private val ditherError = Array(2) { FloatArray(2) }
 
     private val renderRunnables: Array<RenderRunnable>
     private val renderThreads: Array<Thread>
@@ -333,6 +340,56 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // TAD (Terrarum Advanced Audio) Decoder
     //=============================================================================
 
+    // Uniform random in [0, 1)
+    private fun frand01(): Float {
+        return Math.random().toFloat()
+    }
+
+    // TPDF (Triangular Probability Density Function) noise in [-1, +1)
+    private fun tpdf1(): Float {
+        return frand01() - frand01()
+    }
+
+    // M/S stereo correlation with noise-shaped dithering (matches C implementation)
+    private fun msCorrelate(mid: FloatArray, side: FloatArray, sampleCount: Int) {
+        val b1 = 1.5f   // 1st feedback coefficient
+        val b2 = -0.75f // 2nd feedback coefficient
+        val scale = 127.5f
+        val bias = 128
+
+        for (i in 0 until sampleCount) {
+            // Decode M/S → L/R
+            val m = mid[i]
+            val s = side[i]
+            val l = (m + s).coerceIn(-1.0f, 1.0f)
+            val r = (m - s).coerceIn(-1.0f, 1.0f)
+
+            // --- LEFT channel ---
+            val feedbackL = b1 * ditherError[0][0] + b2 * ditherError[0][1]
+            val ditherL = 0.5f * tpdf1() // ±0.5 LSB TPDF
+            val shapedL = (l + feedbackL + ditherL / scale).coerceIn(-1.0f, 1.0f)
+
+            val qL = (shapedL * scale).roundToInt().coerceIn(-128, 127)
+            tadDecodedBin[i * 2L] = (qL + bias).toByte()
+
+            val qerrL = shapedL - qL.toFloat() / scale
+            ditherError[0][1] = ditherError[0][0] // shift history
+            ditherError[0][0] = qerrL
+
+            // --- RIGHT channel ---
+            val feedbackR = b1 * ditherError[1][0] + b2 * ditherError[1][1]
+            val ditherR = 0.5f * tpdf1()
+            val shapedR = (r + feedbackR + ditherR / scale).coerceIn(-1.0f, 1.0f)
+
+            val qR = (shapedR * scale).roundToInt().coerceIn(-128, 127)
+            tadDecodedBin[i * 2L + 1] = (qR + bias).toByte()
+
+            val qerrR = shapedR - qR.toFloat() / scale
+            ditherError[1][1] = ditherError[1][0]
+            ditherError[1][0] = qerrR
+        }
+    }
+
     private fun decodeTad() {
         tadBusy = true
         try {
@@ -350,7 +407,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                             ((tadInputBin[offset++].toInt() and 0xFF) shl 24)
                     )
 
-            // Decompress payload if needed
+            // Decompress payload
             val compressed = ByteArray(payloadSize)
             UnsafeHelper.memcpyRaw(null, tadInputBin.ptr + offset, compressed, UnsafeHelper.getArrayOffset(compressed), payloadSize.toLong())
 
@@ -360,7 +417,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 }
             } catch (e: Exception) {
                 println("ERROR: Zstd decompression failed: ${e.message}")
-            } as ByteArray
+                return
+            }
 
             // Decode significance maps
             val quantMid = ShortArray(sampleCount)
@@ -375,39 +433,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Calculate DWT levels from sample count
             val dwtLevels = calculateDwtLevels(sampleCount)
 
-            // Dequantize
+            // Dequantize to Float32
             val dwtMid = FloatArray(sampleCount)
             val dwtSide = FloatArray(sampleCount)
             dequantizeDwtCoefficients(quantMid, dwtMid, sampleCount, tadQuality, dwtLevels)
             dequantizeDwtCoefficients(quantSide, dwtSide, sampleCount, tadQuality, dwtLevels)
 
-            // Inverse DWT
+            // Inverse DWT (produces Float32 samples in range [-1.0, 1.0])
             dwtDD4InverseMultilevel(dwtMid, sampleCount, dwtLevels)
             dwtDD4InverseMultilevel(dwtSide, sampleCount, dwtLevels)
 
-            // Convert to signed PCM8
-            val pcm8Mid = ByteArray(sampleCount)
-            val pcm8Side = ByteArray(sampleCount)
-            for (i in 0 until sampleCount) {
-                pcm8Mid[i] = dwtMid[i].coerceIn(-128f, 127f).toInt().toByte()
-                pcm8Side[i] = dwtSide[i].coerceIn(-128f, 127f).toInt().toByte()
-            }
-
-            // M/S to L/R correlation and write to tadDecodedBin
-            for (i in 0 until sampleCount) {
-                val m = pcm8Mid[i].toInt()
-                val s = pcm8Side[i].toInt()
-                var l = m + s
-                var r = m - s
-
-                if (l < -128) l = -128
-                if (l > 127) l = 127
-                if (r < -128) r = -128
-                if (r > 127) r = 127
-
-                tadDecodedBin[i * 2L] = (l + 128).toByte()      // Left (PCMu8)
-                tadDecodedBin[i * 2L + 1] = (r + 128).toByte()  // Right (PCMu8)
-            }
+            // M/S to L/R correlation with noise-shaped dithering
+            // Output is PCMu8 stereo written directly to tadDecodedBin
+            msCorrelate(dwtMid, dwtSide, sampleCount)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -487,7 +525,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             /*15*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f),
             /*16*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f)
         )
-        val qualityScale = 1.0f + ((3 - quality) * 0.5f).coerceAtLeast(0.0f)
+        // Updated quality scale to match C implementation
+        val qualityScale = 4.0f + ((3 - quality) * 0.5f).coerceIn(0.0f, 1000.0f)
         return FloatArray(dwtLevels) { i -> (baseWeights[dwtLevels][i.coerceIn(0, 15)] * qualityScale).coerceAtLeast(1.0f) }
     }
 
@@ -514,7 +553,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             val weightIdx = if (sideband == 0) 0 else sideband - 1
             val weight = weights[weightIdx.coerceIn(0, dwtLevels - 1)]
-            coeffs[i] = quantized[i].toFloat() * weight
+            // Updated to match C implementation: divide by TAD_COEFF_SCALAR
+            coeffs[i] = quantized[i].toFloat() * weight / TAD_COEFF_SCALAR
         }
     }
 
