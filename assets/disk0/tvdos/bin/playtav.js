@@ -482,11 +482,12 @@ function getVideoRate() {
 
 let FRAME_TIME = 1.0 / header.fps
 
-let frameCount = 0 
+let frameCount = 0
 let trueFrameCount = 0
 let stopPlay = false
 let akku = FRAME_TIME
 let akku2 = 0.0
+let firstFrameIssued = false  // Track when first frame has been displayed
 let nextFrameTime = 0  // Absolute time when next frame should display (nanoseconds)
 let currentFileIndex = 1  // Track which file we're playing in concatenated stream
 let totalFilesProcessed = 0
@@ -825,6 +826,7 @@ try {
                         frameCount = 0
                         akku = FRAME_TIME
                         akku2 = 0.0
+                        firstFrameIssued = false
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -844,6 +846,7 @@ try {
                         frameCount = 0
                         akku = FRAME_TIME
                         akku2 = 0.0
+                        firstFrameIssued = false
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -863,6 +866,7 @@ try {
                         frameCount = seekTarget.frameNum
                         akku = FRAME_TIME
                         akku2 -= 5.5
+                        firstFrameIssued = false
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -890,6 +894,7 @@ try {
                         frameCount = seekTarget.frameNum
                         akku = FRAME_TIME
                         akku2 += 5.0
+                        firstFrameIssued = false
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -925,6 +930,7 @@ try {
                     frameCount = 0
                     akku = 0.0
                     akku2 = 0.0
+                    firstFrameIssued = false
                     FRAME_TIME = 1.0 / header.fps
                     audio.purgeQueue(0)
                     currentFileIndex++
@@ -952,19 +958,16 @@ try {
             }
 
             if (packetType === TAV_PACKET_SYNC || packetType == TAV_PACKET_SYNC_NTSC) {
-                // Sync packet - no additional data (for I/P frames, not GOPs)
-                akku -= FRAME_TIME
-                if (packetType == TAV_PACKET_SYNC) {
-                    frameCount++
-                }
-
-                trueFrameCount++
-
-                // Swap ping-pong buffers
-                let temp = CURRENT_RGB_ADDR
-                CURRENT_RGB_ADDR = PREV_RGB_ADDR
-                PREV_RGB_ADDR = temp
-
+                // SYNC packets are vestigial in TAV's time-based playback model
+                // (legacy from TEV's synchronous display model)
+                //
+                // Frame display timing is controlled by nextFrameTime, not SYNC packets:
+                // - I/P frames: Display logic at line 1553-1597
+                // - GOP frames: Display logic at line 1600-1684
+                //
+                // NTSC sync (frame duplication): Handled automatically by audio queue timing
+                //
+                // Do nothing - skip to next packet
             }
             else if (packetType === TAV_PACKET_IFRAME || packetType === TAV_PACKET_PFRAME) {
                 // Record I-frame position for seeking
@@ -1072,7 +1075,7 @@ try {
                 const gopSize = seqread.readOneByte()
                 const compressedSize = seqread.readInt()
                 let compressedPtr = seqread.readBytes(compressedSize)
-                updateDataRateBin(compressedSize)
+                updateDataRateBin(compressedSize / gopSize)
 
                 // TRIPLE-BUFFERING LOGIC (3 slots: playing, ready, decoding):
                 // - If no GOP playing: decode first GOP to slot 0
@@ -1456,7 +1459,7 @@ try {
         } // end of !paused packet read block
 
         let t2 = sys.nanoTime()
-        if (!paused) {
+        if (!paused && firstFrameIssued) {
             // Only accumulate time if we have a GOP to play
             // Don't accumulate during first GOP decode or we'll get fast playback
             if (currentGopSize > 0) {
@@ -1484,8 +1487,12 @@ try {
                 currentGopBufferSlot = asyncDecodeSlot
                 asyncDecodeInProgress = false
 
-                // Set first frame time to NOW
-                nextFrameTime = sys.nanoTime()
+                // Initialize timing ONLY if this is the very first frame of the video
+                // If we're transitioning from I-frames, preserve timing continuity
+                if (nextFrameTime === 0) {
+                    nextFrameTime = sys.nanoTime()
+                }
+                // Otherwise keep existing nextFrameTime from previous I-frame/GOP
 
                 // Resume packet reading only if not all 3 buffers are full
                 // (might have buffered GOP 2 and 3 during GOP 1 decode)
@@ -1577,6 +1584,11 @@ try {
                     audioFired = true
                 }
 
+                // Mark first frame as issued (starts akku/akku2 timers)
+                if (!firstFrameIssued) {
+                    firstFrameIssued = true
+                }
+
                 frameCount++
                 trueFrameCount++
                 iframeReady = false
@@ -1586,7 +1598,7 @@ try {
                 CURRENT_RGB_ADDR = PREV_RGB_ADDR
                 PREV_RGB_ADDR = temp
 
-                // Schedule next frame
+                // Schedule next frame (advance AFTER display, consistent with GOP timing)
                 nextFrameTime += (frametime)  // frametime is in nanoseconds from header
 
                 // Log performance data every 60 frames
@@ -1626,6 +1638,11 @@ try {
                 if (!audioFired) {
                     audio.play(0)
                     audioFired = true
+                }
+
+                // Mark first frame as issued (starts akku/akku2 timers)
+                if (!firstFrameIssued) {
+                    firstFrameIssued = true
                 }
 
                 currentGopFrameIndex++
@@ -1836,7 +1853,7 @@ try {
             con.color_pair(253, 0)
             let guiStatus = {
                 fps: header.fps,
-                videoRate: getVideoRate(),
+                videoRate: getVideoRate().toFixed(0),
                 frameCount: frameCount,
                 totalFrames: header.totalFrames,
                 frameMode: decoderDbgInfo.frameMode,
