@@ -2160,6 +2160,7 @@ static int parse_resolution(const char *res_str, int *width, int *height) {
 static size_t count_intra = 0;
 static size_t count_delta = 0;
 static size_t count_skip = 0;
+static size_t count_gop = 0;  // Frames encoded in GOP blocks (3D-DWT mode)
 
 // Function prototypes
 static void show_usage(const char *program_name);
@@ -5354,6 +5355,15 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
             }
         }
     }  // End of if/else for single-frame vs multi-frame GOP
+
+    // Tally frame statistics
+    if (actual_gop_size == 1) {
+        // Single frame encoded as INTRA
+        count_intra++;
+    } else {
+        // Multiple frames encoded in GOP block - count individual frames
+        count_gop += actual_gop_size;
+    }
 
     // Cleanup GOP buffers
     for (int i = 0; i < actual_gop_size; i++) {
@@ -10301,6 +10311,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
 
+                // Update total compressed size with GOP packet
+                enc->total_compressed_size += packet_size;
+
                 gop_reset(enc);
             }
 
@@ -10362,6 +10375,9 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Failed to flush GOP at frame %d\n", frame_count);
                     break;
                 }
+
+                // Update total compressed size with GOP packet
+                enc->total_compressed_size += packet_size;
             } else if (packet_size == 0) {
                 // Frame added to GOP buffer but not flushed yet
                 // Skip normal packet processing (no packet written yet)
@@ -10625,6 +10641,8 @@ int main(int argc, char *argv[]) {
         if (final_packet_size == 0) {
             fprintf(stderr, "Warning: Failed to flush final GOP frames\n");
         } else {
+            // Update total compressed size with final GOP packet
+            enc->total_compressed_size += final_packet_size;
             // GOP_SYNC packet already written by gop_process_and_flush - no additional SYNC needed
             printf("Final GOP flushed successfully (%zu bytes)\n", final_packet_size);
         }
@@ -10668,9 +10686,18 @@ int main(int argc, char *argv[]) {
     printf("\nEncoding complete!\n");
     printf("  Frames encoded: %d\n", frame_count);
     printf("  Framerate: %d\n", enc->output_fps);
-    printf("  Output size: %zu bytes\n", enc->total_compressed_size);
+
+    // Get actual output size from file position (includes all data: headers, video, audio, sync packets, etc.)
+    size_t actual_output_size = 0;
+    if (enc->output_fp != stdout) {
+        actual_output_size = ftell(enc->output_fp);
+    } else {
+        // For stdout, use tracked size (may be incomplete but better than nothing)
+        actual_output_size = enc->total_compressed_size;
+    }
+    printf("  Output size: %zu bytes\n", actual_output_size);
     printf("  Encoding time: %.2fs (%.1f fps)\n", total_time, frame_count / total_time);
-    printf("  Frame statistics: INTRA=%lu, DELTA=%lu, SKIP=%lu\n", count_intra, count_delta, count_skip);
+    printf("  Frame statistics: INTRA=%lu, DELTA=%lu, SKIP=%lu, GOP=%lu\n", count_intra, count_delta, count_skip, count_gop);
 
 
     cleanup_encoder(enc);
