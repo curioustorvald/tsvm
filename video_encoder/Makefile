@@ -12,7 +12,7 @@ OPENCV_CFLAGS = $(shell pkg-config --cflags opencv4)
 OPENCV_LIBS = $(shell pkg-config --libs opencv4)
 
 # Source files and targets
-TARGETS = tev tav tav_decoder
+TARGETS = tev tav tav_decoder tav_inspector
 TAD_TARGETS = encoder_tad decoder_tad
 TEST_TARGETS = test_mesh_warp test_mesh_roundtrip
 
@@ -34,6 +34,10 @@ tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp estimate_affine_from_blo
 tav_decoder: decoder_tav.c
 	rm -f decoder_tav
 	$(CC) $(CFLAGS) -o decoder_tav $< $(LIBS)
+
+tav_inspector: tav_inspector.c
+	rm -f tav_inspector
+	$(CC) $(CFLAGS) -o tav_inspector $< $(LIBS)
 
 # Build TAD (Terrarum Advanced Audio) tools
 encoder_tad: encoder_tad_standalone.c encoder_tad.c encoder_tad.h

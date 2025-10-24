@@ -1068,7 +1068,7 @@ transmission capability, and region-of-interest coding.
 
 ## TAD Packet Structure
     uint8  Packet type (0x24)
-    uint32 Compressed Size + 2
+    uint32 Compressed Size + 6
     uint16 Sample Count
     uint32 Compressed Size
     *      Zstd-compressed TAD
@@ -1781,6 +1781,8 @@ Memory Space
 114688..131071 RW: Instrument bin (256 instruments, 64 bytes each)
 131072..196607 RW: Play data 1
 196608..262143 RW: Play data 2
+262144..327679 RW: TAD Input Buffer
+327680..393215 RW: TAD Decode Output
 
 Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample
 
@@ -1823,7 +1825,7 @@ Sound Adapter MMIO
 
 ... auto-fill to Play head #4
 
-40 WO: Media Decoder Control
+40 WO: MP2 Decoder Control
     Write 16 to initialise the MP2 context (call this before the decoding of NEW music)
     Write 1 to decode the frame as MP2
 
@@ -1831,6 +1833,11 @@ Sound Adapter MMIO
 
 41 RO: Media Decoder Status
     Non-zero value indicates the decoder is busy
+
+42 WO: TAD Decoder Control
+    Write 1 to decode TAD data
+43 RW: TAD Quality
+    Must be set to appropriate value before decoding
 
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded

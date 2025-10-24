@@ -146,7 +146,7 @@ static void get_quantization_weights(int quality, int dwt_levels, float *weights
         /*15*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f}
     };
 
-    float quality_scale = 4.0f * (1.0f + FCLAMP((3 - quality) * 0.5f, 0.0f, 1000.0f));
+    float quality_scale = 4.0f * (1.0f + FCLAMP((4 - quality) * 0.5f, 0.0f, 1000.0f));
 
     for (int i = 0; i < dwt_levels; i++) {
         weights[i] = base_weights[dwt_levels][i] * quality_scale;
@@ -154,7 +154,7 @@ static void get_quantization_weights(int quality, int dwt_levels, float *weights
 }
 
 static int get_deadzone_threshold(int quality) {
-    const int thresholds[] = {1,1,1,1,1,1};  // Q0 to Q5
+    const int thresholds[] = {0,0,0,0,0,0};  // Q0 to Q5
     return thresholds[quality];
 }
 

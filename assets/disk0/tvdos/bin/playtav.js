@@ -1342,8 +1342,7 @@ try {
 
             }
             else if (packetType === TAV_PACKET_AUDIO_TAD) {
-                // Legacy MP2 Audio packet (for backwards compatibility)
-                let payloadLen = seqread.readInt()
+                let payloadLen = seqread.readInt() // compressed size + 6
 
                 if (!tadInitialised) {
                     tadInitialised = true

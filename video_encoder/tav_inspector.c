@@ -25,6 +25,7 @@
 #define TAV_PACKET_BFRAME_ADAPTIVE 0x17  // B-frame with adaptive quad-tree block partitioning (bidirectional prediction)
 #define TAV_PACKET_AUDIO_MP2      0x20
 #define TAV_PACKET_AUDIO_PCM8     0x21
+#define TAV_PACKET_AUDIO_TAD      0x24
 #define TAV_PACKET_SUBTITLE       0x30
 #define TAV_PACKET_SUBTITLE_KAR   0x31
 #define TAV_PACKET_AUDIO_TRACK    0x40
@@ -70,6 +71,10 @@ typedef struct {
     int gop_sync_count;
     int total_gop_frames;
     int audio_count;
+    int audio_mp2_count;
+    int audio_pcm8_count;
+    int audio_tad_count;
+    int audio_track_count;
     int subtitle_count;
     int timecode_count;
     int sync_count;
@@ -81,6 +86,10 @@ typedef struct {
     int unknown_count;
     uint64_t total_video_bytes;
     uint64_t total_audio_bytes;
+    uint64_t audio_mp2_bytes;
+    uint64_t audio_pcm8_bytes;
+    uint64_t audio_tad_bytes;
+    uint64_t audio_track_bytes;
 } packet_stats_t;
 
 // Display options
@@ -109,6 +118,7 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_BFRAME_ADAPTIVE: return "B-FRAME (quadtree)";
         case TAV_PACKET_AUDIO_MP2: return "AUDIO MP2";
         case TAV_PACKET_AUDIO_PCM8: return "AUDIO PCM8 (zstd)";
+        case TAV_PACKET_AUDIO_TAD: return "AUDIO TAD (zstd)";
         case TAV_PACKET_SUBTITLE: return "SUBTITLE (Simple)";
         case TAV_PACKET_SUBTITLE_KAR: return "SUBTITLE (Karaoke)";
         case TAV_PACKET_AUDIO_TRACK: return "AUDIO TRACK (Separate MP2)";
@@ -139,7 +149,8 @@ int should_display_packet(uint8_t type, display_options_t *opts) {
     if (opts->show_video && (type == TAV_PACKET_IFRAME || type == TAV_PACKET_PFRAME ||
         type == TAV_PACKET_GOP_UNIFIED || type == TAV_PACKET_GOP_SYNC ||
         (type >= 0x70 && type <= 0x7F))) return 1;
-    if (opts->show_audio && type == TAV_PACKET_AUDIO_MP2) return 1;
+    if (opts->show_audio && (type == TAV_PACKET_AUDIO_MP2 || type == TAV_PACKET_AUDIO_PCM8 ||
+        type == TAV_PACKET_AUDIO_TAD || type == TAV_PACKET_AUDIO_TRACK)) return 1;
     if (opts->show_subtitles && (type == TAV_PACKET_SUBTITLE || type == TAV_PACKET_SUBTITLE_KAR)) return 1;
     if (opts->show_timecode && type == TAV_PACKET_TIMECODE) return 1;
     if (opts->show_metadata && (type >= 0xE0 && type <= 0xE4)) return 1;
@@ -439,13 +450,87 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Skip header (32 bytes)
-    fseek(fp, 32, SEEK_SET);
-
+    // Parse and display header
     if (!opts.summary_only) {
         printf("TAV Packet Inspector\n");
         printf("File: %s\n", filename);
         printf("==================================================\n\n");
+    }
+
+    // Read TAV header (32 bytes)
+    uint8_t header[32];
+    if (fread(header, 1, 32, fp) != 32) {
+        fprintf(stderr, "Error: Failed to read TAV header\n");
+        fclose(fp);
+        return 1;
+    }
+
+    // Verify magic number
+    const char *magic = "\x1F\x54\x53\x56\x4D\x54\x41\x56";  // "\x1FTSVM TAV"
+    if (memcmp(header, magic, 8) != 0) {
+        fprintf(stderr, "Error: Invalid TAV magic number\n");
+        fclose(fp);
+        return 1;
+    }
+
+    if (!opts.summary_only) {
+        // Parse header fields
+        uint8_t version = header[8];
+        uint16_t width = *((uint16_t*)&header[9]);
+        uint16_t height = *((uint16_t*)&header[11]);
+        uint8_t fps = header[13];
+        uint32_t total_frames = *((uint32_t*)&header[14]);
+        uint8_t wavelet = header[18];
+        uint8_t decomp_levels = header[19];
+        uint8_t quant_y = header[20];
+        uint8_t quant_co = header[21];
+        uint8_t quant_cg = header[22];
+        uint8_t extra_flags = header[23];
+        uint8_t video_flags = header[24];
+        uint8_t quality = header[25];
+        uint8_t channel_layout = header[26];
+        uint8_t entropy_coder = header[27];
+
+static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,66,68,70,72,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104,106,108,110,112,114,116,118,120,122,124,126,128,132,136,140,144,148,152,156,160,164,168,172,176,180,184,188,192,196,200,204,208,212,216,220,224,228,232,236,240,244,248,252,256,264,272,280,288,296,304,312,320,328,336,344,352,360,368,376,384,392,400,408,416,424,432,440,448,456,464,472,480,488,496,504,512,528,544,560,576,592,608,624,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1056,1088,1120,1152,1184,1216,1248,1280,1312,1344,1376,1408,1440,1472,1504,1536,1568,1600,1632,1664,1696,1728,1760,1792,1824,1856,1888,1920,1952,1984,2016,2048,2112,2176,2240,2304,2368,2432,2496,2560,2624,2688,2752,2816,2880,2944,3008,3072,3136,3200,3264,3328,3392,3456,3520,3584,3648,3712,3776,3840,3904,3968,4032,4096};
+static const char* CLAYOUT[] = {"Luma-Chroma", "Luma-Chroma-Alpha", "Luma", "Luma-Alpha", "Chroma", "Chroma-Alpha"};
+
+        int is_monoblock = (3 <= version && version <= 6);
+        int is_perceptual = (5 <= version && version <= 8);
+
+static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, uniform", "YCoCg monoblock, uniform", "ICtCp monoblock, uniform", "YCoCg monoblock, perceptual", "ICtCp monoblock, perceptual", "YCoCg tiled, perceptual", "ICtCp tiled, perceptual"};
+
+        printf("TAV Header:\n");
+        printf("  Version:          %d (%s)\n", version, VERDESC[version]);
+        printf("  Resolution:       %dx%d\n", width, height);
+        printf("  Frame rate:       %d fps", fps);
+        if (video_flags & 0x02) printf(" (NTSC)");
+        printf("\n");
+        printf("  Total frames:     %u\n", total_frames);
+        printf("  Wavelet:          %d", wavelet);
+        const char *wavelet_names[] = {"LGT 5/3", "CDF 9/7", "CDF 13/7", "Reserved", "Reserved",
+                                       "Reserved", "Reserved", "Reserved", "Reserved",
+                                       "Reserved", "Reserved", "Reserved", "Reserved",
+                                       "Reserved", "Reserved", "Reserved", "DD-4"};
+        if (wavelet < 17) printf(" (%s)", wavelet_names[wavelet == 16 ? 16 : (wavelet > 16 ? wavelet : wavelet)]);
+        if (wavelet == 255) printf(" (Haar)");
+        printf("\n");
+        printf("  Decomp levels:    %d\n", decomp_levels);
+        printf("  Quantizers:       Y=%d, Co=%d, Cg=%d (Index=%d,%d,%d)\n", QLUT[quant_y], QLUT[quant_co], QLUT[quant_cg], quant_y, quant_co, quant_cg);
+        if (quality > 0)
+            printf("  Quality:          %d\n", quality - 1);
+        else
+            printf("  Quality:          n/a\n");
+        printf("  Channel layout:   %s\n", CLAYOUT[channel_layout]);
+        printf("  Entropy coder:    %s\n", entropy_coder == 0 ? "Twobit-map" : "EZBC");
+        printf("  Flags:\n");
+        printf("    Has audio:      %s\n", (extra_flags & 0x01) ? "Yes" : "No");
+        printf("    Has subtitles:  %s\n", (extra_flags & 0x02) ? "Yes" : "No");
+        printf("    Progressive:    %s\n", (video_flags & 0x01) ? "No (interlaced)" : "Yes");
+        printf("    Lossless:       %s\n", (video_flags & 0x04) ? "Yes" : "No");
+        if (extra_flags & 0x04) printf("    Progressive TX: Enabled\n");
+        if (extra_flags & 0x08) printf("    ROI encoding:   Enabled\n");
+        printf("\nPackets:\n");
+        printf("==================================================\n");
     }
 
     packet_stats_t stats = {0};
@@ -622,9 +707,11 @@ int main(int argc, char *argv[]) {
 
             case TAV_PACKET_AUDIO_MP2: {
                 stats.audio_count++;
+                stats.audio_mp2_count++;
                 uint32_t size;
                 if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
                 stats.total_audio_bytes += size;
+                stats.audio_mp2_bytes += size;
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes", size);
@@ -635,9 +722,11 @@ int main(int argc, char *argv[]) {
 
             case TAV_PACKET_AUDIO_PCM8: {
                 stats.audio_count++;
+                stats.audio_pcm8_count++;
                 uint32_t size;
                 if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
                 stats.total_audio_bytes += size;
+                stats.audio_pcm8_bytes += size;
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes (zstd compressed)", size);
@@ -646,11 +735,41 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
+            case TAV_PACKET_AUDIO_TAD: {
+                stats.audio_count++;
+                stats.audio_tad_count++;
+                // Read payload_size + 2
+                uint32_t payload_size_plus_6;
+                if (fread(&payload_size_plus_6, sizeof(uint32_t), 1, fp) != 1) break;
+
+                // Read sample count
+                uint16_t sample_count;
+                if (fread(&sample_count, sizeof(uint16_t), 1, fp) != 1) break;
+
+                // Read compressed size
+                uint32_t compressed_size;
+                if (fread(&compressed_size, sizeof(uint32_t), 1, fp) != 1) break;
+
+                stats.total_audio_bytes += compressed_size;
+                stats.audio_tad_bytes += compressed_size;
+
+                if (!opts.summary_only && display) {
+                    printf(" - samples=%u, size=%u bytes (zstd compressed TAD32)",
+                           sample_count, compressed_size);
+                }
+
+                // Skip compressed data
+                fseek(fp, compressed_size, SEEK_CUR);
+                break;
+            }
+
             case TAV_PACKET_AUDIO_TRACK: {
                 stats.audio_count++;
+                stats.audio_track_count++;
                 uint32_t size;
                 if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
                 stats.total_audio_bytes += size;
+                stats.audio_track_bytes += size;
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes (separate track)", size);
@@ -756,7 +875,31 @@ int main(int argc, char *argv[]) {
            (unsigned long long)stats.total_video_bytes,
            stats.total_video_bytes / 1024.0 / 1024.0);
     printf("\nAudio:\n");
-    printf("  MP2 packets:        %d\n", stats.audio_count);
+    printf("  Total packets:      %d\n", stats.audio_count);
+    if (stats.audio_mp2_count > 0) {
+        printf("    MP2:              %d packets, %llu bytes (%.2f MB)\n",
+               stats.audio_mp2_count,
+               (unsigned long long)stats.audio_mp2_bytes,
+               stats.audio_mp2_bytes / 1024.0 / 1024.0);
+    }
+    if (stats.audio_pcm8_count > 0) {
+        printf("    PCM8 (zstd):      %d packets, %llu bytes (%.2f MB)\n",
+               stats.audio_pcm8_count,
+               (unsigned long long)stats.audio_pcm8_bytes,
+               stats.audio_pcm8_bytes / 1024.0 / 1024.0);
+    }
+    if (stats.audio_tad_count > 0) {
+        printf("    TAD32 (zstd):     %d packets, %llu bytes (%.2f MB)\n",
+               stats.audio_tad_count,
+               (unsigned long long)stats.audio_tad_bytes,
+               stats.audio_tad_bytes / 1024.0 / 1024.0);
+    }
+    if (stats.audio_track_count > 0) {
+        printf("    Separate track:   %d packets, %llu bytes (%.2f MB)\n",
+               stats.audio_track_count,
+               (unsigned long long)stats.audio_track_bytes,
+               stats.audio_track_bytes / 1024.0 / 1024.0);
+    }
     printf("  Total audio bytes:  %llu (%.2f MB)\n",
            (unsigned long long)stats.total_audio_bytes,
            stats.total_audio_bytes / 1024.0 / 1024.0);

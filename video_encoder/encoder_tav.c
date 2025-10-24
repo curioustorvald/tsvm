@@ -65,13 +65,14 @@
 #define TAV_PACKET_SYNC            0xFF  // Sync packet
 
 // TAD (Terrarum Advanced Audio) settings
-#define TAD_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples (supports non-power-of-2)
-#define TAD_SAMPLE_RATE 32000
-#define TAD_CHANNELS 2  // Stereo
-#define TAD_SIGMAP_2BIT 1  // 2-bit: 00=0, 01=+1, 10=-1, 11=other
-#define TAD_QUALITY_MIN 0
-#define TAD_QUALITY_MAX 5
-#define TAD_ZSTD_LEVEL 7
+// TAD32 constants (updated to match Float32 version)
+#define TAD32_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples
+#define TAD32_SAMPLE_RATE 32000
+#define TAD32_CHANNELS 2  // Stereo
+#define TAD32_SIGMAP_2BIT 1  // 2-bit: 00=0, 01=+1, 10=-1, 11=other
+#define TAD32_QUALITY_MIN 0
+#define TAD32_QUALITY_MAX 5
+#define TAD32_ZSTD_LEVEL 7
 
 // DWT settings
 #define TILE_SIZE_X 640
@@ -1711,7 +1712,7 @@ typedef struct tav_encoder_s {
     FILE *output_fp;
     FILE *mp2_file;
     FILE *ffmpeg_video_pipe;
-    FILE *pcm_file;  // PCM16LE audio file for PCM8 mode
+    FILE *pcm_file;  // Float32LE audio file for PCM8/TAD32 mode
 
     // Video parameters
     int width, height;
@@ -1869,9 +1870,9 @@ typedef struct tav_encoder_s {
 
     // PCM8 audio processing
     int samples_per_frame;  // Number of stereo samples per video frame
-    int16_t *pcm16_buffer;  // Buffer for reading PCM16LE data
+    float *pcm32_buffer;  // Buffer for reading Float32LE data
     uint8_t *pcm8_buffer;   // Buffer for converted PCM8 data
-    int16_t dither_error[2]; // Dithering error for stereo channels [L, R]
+    float dither_error[2][2]; // 2nd-order noise shaping error: [channel][history]
     
     // Subtitle processing  
     subtitle_entry_t *subtitles;
@@ -8064,14 +8065,14 @@ static int start_audio_conversion(tav_encoder_t *enc) {
     char command[2048];
 
     if (enc->pcm8_audio || enc->tad_audio) {
-        // Extract PCM16LE for PCM8/TAD mode
+        // Extract Float32LE for PCM8/TAD32 mode
         if (enc->pcm8_audio) {
-            printf("  Audio format: PCM16LE 32kHz stereo (will be converted to 8-bit PCM)\n");
+            printf("  Audio format: Float32LE 32kHz stereo (will be converted to 8-bit PCM)\n");
         } else {
-            printf("  Audio format: PCM16LE 32kHz stereo (will be encoded with TAD codec)\n");
+            printf("  Audio format: Float32LE 32kHz stereo (will be encoded with TAD32 codec)\n");
         }
         snprintf(command, sizeof(command),
-            "ffmpeg -v quiet -i \"%s\" -f s16le -acodec pcm_s16le -ar %d -ac 2 -af \"aresample=resampler=soxr:precision=28:cutoff=0.99:dither_scale=0,highpass=f=16\" -y \"%s\" 2>/dev/null",
+            "ffmpeg -v quiet -i \"%s\" -f f32le -acodec pcm_f32le -ar %d -ac 2 -af \"aresample=resampler=soxr:precision=28:cutoff=0.99:dither_scale=0,highpass=f=16\" -y \"%s\" 2>/dev/null",
             enc->input_file, TSVM_AUDIO_SAMPLE_RATE, TEMP_PCM_FILE);
 
         int result = system(command);
@@ -8085,9 +8086,11 @@ static int start_audio_conversion(tav_encoder_t *enc) {
                 // Calculate samples per frame: ceil(sample_rate / fps)
                 enc->samples_per_frame = (TSVM_AUDIO_SAMPLE_RATE + enc->output_fps - 1) / enc->output_fps;
 
-                // Initialize dithering error
-                enc->dither_error[0] = 0;
-                enc->dither_error[1] = 0;
+                // Initialize 2nd-order noise shaping error history
+                enc->dither_error[0][0] = 0.0f;
+                enc->dither_error[0][1] = 0.0f;
+                enc->dither_error[1][0] = 0.0f;
+                enc->dither_error[1][1] = 0.0f;
 
                 if (enc->verbose) {
                     printf("  PCM8: %d samples per frame\n", enc->samples_per_frame);
@@ -8741,32 +8744,62 @@ static long write_extended_header(tav_encoder_t *enc) {
     return endt_offset + 4 + 1;  // 4 bytes for "ENDT", 1 byte for type
 }
 
-// Convert PCM16LE to unsigned 8-bit PCM with error-diffusion dithering
-static void convert_pcm16_to_pcm8_dithered(tav_encoder_t *enc, const int16_t *pcm16, uint8_t *pcm8, int num_samples) {
+// Uniform random in [0, 1) for TPDF dithering
+static inline float frand01(void) {
+    return (float)rand() / ((float)RAND_MAX + 1.0f);
+}
+
+// TPDF (Triangular Probability Density Function) noise in [-1, +1)
+static inline float tpdf1(void) {
+    return (frand01() - frand01());
+}
+
+// Convert Float32LE to unsigned 8-bit PCM with 2nd-order noise-shaped dithering
+// Matches decoder_tad.c dithering algorithm for optimal quality
+static void convert_pcm32_to_pcm8_dithered(tav_encoder_t *enc, const float *pcm32, uint8_t *pcm8, int num_samples) {
+    const float b1 = 1.5f;   // 1st feedback coefficient
+    const float b2 = -0.75f; // 2nd feedback coefficient
+    const float scale = 127.5f;
+    const float bias = 128.0f;
+
     for (int i = 0; i < num_samples; i++) {
         for (int ch = 0; ch < 2; ch++) {  // Stereo: L and R
             int idx = i * 2 + ch;
 
-            // Convert signed 16-bit [-32768, 32767] to unsigned 8-bit [0, 255]
-            // First scale to [0, 65535], then add dithering error
-            int32_t sample = (int32_t)pcm16[idx] + 32768;  // Now in [0, 65535]
+            // Input float in range [-1.0, 1.0]
+            float sample = pcm32[idx];
 
-            // Add accumulated dithering error
-            sample += enc->dither_error[ch];
+            // Clamp to valid range
+            if (sample < -1.0f) sample = -1.0f;
+            if (sample > 1.0f) sample = 1.0f;
 
-            // Quantize to 8-bit (divide by 256)
-            int32_t quantized = sample >> 8;
+            // Apply 2nd-order noise shaping feedback
+            float feedback = b1 * enc->dither_error[ch][0] + b2 * enc->dither_error[ch][1];
 
-            // Clamp to [0, 255]
-            if (quantized < 0) quantized = 0;
-            if (quantized > 255) quantized = 255;
+            // Add TPDF dither (±0.5 LSB)
+            float dither = 0.5f * tpdf1();
 
-            // Store 8-bit value
-            pcm8[idx] = (uint8_t)quantized;
+            // Shaped signal
+            float shaped = sample + feedback + dither / scale;
 
-            // Calculate quantization error for next sample (error diffusion)
-            // Error = original - (quantized * 256)
-            enc->dither_error[ch] = sample - (quantized << 8);
+            // Clamp shaped signal
+            if (shaped < -1.0f) shaped = -1.0f;
+            if (shaped > 1.0f) shaped = 1.0f;
+
+            // Quantize to signed 8-bit range [-128, 127]
+            int q = (int)lrintf(shaped * scale);
+            if (q < -128) q = -128;
+            else if (q > 127) q = 127;
+
+            // Convert to unsigned 8-bit [0, 255]
+            pcm8[idx] = (uint8_t)(q + (int)bias);
+
+            // Calculate quantization error for feedback
+            float qerr = shaped - (float)q / scale;
+
+            // Update error history (shift and store)
+            enc->dither_error[ch][1] = enc->dither_error[ch][0];
+            enc->dither_error[ch][0] = qerr;
         }
     }
 }
@@ -8824,56 +8857,57 @@ static int write_separate_audio_track(tav_encoder_t *enc, FILE *output) {
 }
 
 // Write TAD audio packet (0x24) with specified sample count
-// Uses linked TAD encoder (encoder_tad.c)
+// Uses linked TAD32 encoder (encoder_tad.c) - Float32 version
 static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int samples_to_read) {
     if (!enc->pcm_file || enc->audio_remaining <= 0 || samples_to_read <= 0) {
         return 0;
     }
-    size_t bytes_to_read = samples_to_read * 2 * sizeof(int16_t);  // Stereo PCM16LE
+    size_t bytes_to_read = samples_to_read * 2 * sizeof(float);  // Stereo Float32LE
 
     // Don't read more than what's available
     if (bytes_to_read > enc->audio_remaining) {
         bytes_to_read = enc->audio_remaining;
-        samples_to_read = bytes_to_read / (2 * sizeof(int16_t));
+        samples_to_read = bytes_to_read / (2 * sizeof(float));
     }
 
-    if (samples_to_read < TAD_MIN_CHUNK_SIZE) {
+    if (samples_to_read < TAD32_MIN_CHUNK_SIZE) {
         // Pad to minimum size
-        samples_to_read = TAD_MIN_CHUNK_SIZE;
+        samples_to_read = TAD32_MIN_CHUNK_SIZE;
     }
 
-    // Allocate PCM16 input buffer
-    int16_t *pcm16_buffer = malloc(samples_to_read * 2 * sizeof(int16_t));
+    // Allocate Float32 input buffer
+    float *pcm32_buffer = malloc(samples_to_read * 2 * sizeof(float));
 
-    // Read PCM16LE data
-    size_t bytes_read = fread(pcm16_buffer, 1, bytes_to_read, enc->pcm_file);
+    // Read Float32LE data
+    size_t bytes_read = fread(pcm32_buffer, 1, bytes_to_read, enc->pcm_file);
     if (bytes_read == 0) {
-        free(pcm16_buffer);
+        free(pcm32_buffer);
         return 0;
     }
 
-    int samples_read = bytes_read / (2 * sizeof(int16_t));
+    int samples_read = bytes_read / (2 * sizeof(float));
 
     // Zero-pad if needed
     if (samples_read < samples_to_read) {
-        memset(&pcm16_buffer[samples_read * 2], 0,
-               (samples_to_read - samples_read) * 2 * sizeof(int16_t));
+        memset(&pcm32_buffer[samples_read * 2], 0,
+               (samples_to_read - samples_read) * 2 * sizeof(float));
     }
 
-    // Encode with TAD encoder (linked from encoder_tad.o)
+    // Encode with TAD32 encoder (linked from encoder_tad.o)
+    // Input is already Float32LE in range [-1.0, 1.0] from FFmpeg
     int tad_quality = enc->quality_level;  // Use video quality level for audio
-    if (tad_quality > TAD_QUALITY_MAX) tad_quality = TAD_QUALITY_MAX;
-    if (tad_quality < TAD_QUALITY_MIN) tad_quality = TAD_QUALITY_MIN;
+    if (tad_quality > TAD32_QUALITY_MAX) tad_quality = TAD32_QUALITY_MAX;
+    if (tad_quality < TAD32_QUALITY_MIN) tad_quality = TAD32_QUALITY_MIN;
 
     // Allocate output buffer (generous size for TAD chunk)
     size_t max_output_size = samples_to_read * 4 * sizeof(int16_t) + 1024;
     uint8_t *tad_output = malloc(max_output_size);
 
-    size_t tad_encoded_size = tad_encode_chunk(pcm16_buffer, samples_to_read, tad_quality, 1, tad_output);
+    size_t tad_encoded_size = tad32_encode_chunk(pcm32_buffer, samples_to_read, tad_quality, 1, tad_output);
 
     if (tad_encoded_size == 0) {
-        fprintf(stderr, "Error: TAD encoding failed\n");
-        free(pcm16_buffer);
+        fprintf(stderr, "Error: TAD32 encoding failed\n");
+        free(pcm32_buffer);
         free(tad_output);
         return 0;
     }
@@ -8891,8 +8925,8 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
     fwrite(&packet_type, 1, 1, output);
 
     uint32_t tav_payload_size = (uint32_t)tad_payload_size;
-    uint32_t tav_payload_size_plus_two = (uint32_t)tad_payload_size + 2;
-    fwrite(&tav_payload_size_plus_two, sizeof(uint32_t), 1, output);
+    uint32_t tav_payload_size_plus_6 = (uint32_t)tad_payload_size + 6;
+    fwrite(&tav_payload_size_plus_6, sizeof(uint32_t), 1, output);
     fwrite(&sample_count, sizeof(uint16_t), 1, output);
     fwrite(&tav_payload_size, sizeof(uint32_t), 1, output);
     fwrite(tad_payload, 1, tad_payload_size, output);
@@ -8901,12 +8935,12 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
     enc->audio_remaining -= bytes_read;
 
     if (enc->verbose) {
-        printf("TAD packet: %d samples, %u bytes compressed (Q%d)\n",
+        printf("TAD32 packet: %d samples, %u bytes compressed (Q%d)\n",
                sample_count, tad_payload_size, tad_quality);
     }
 
     // Cleanup
-    free(pcm16_buffer);
+    free(pcm32_buffer);
     free(tad_output);
 
     return 1;
@@ -8917,12 +8951,12 @@ static int write_pcm8_packet_samples(tav_encoder_t *enc, FILE *output, int sampl
     if (!enc->pcm_file || enc->audio_remaining <= 0 || samples_to_read <= 0) {
         return 0;
     }
-    size_t bytes_to_read = samples_to_read * 2 * sizeof(int16_t);  // Stereo PCM16LE
+    size_t bytes_to_read = samples_to_read * 2 * sizeof(float);  // Stereo Float32LE
 
     // Don't read more than what's available
     if (bytes_to_read > enc->audio_remaining) {
         bytes_to_read = enc->audio_remaining;
-        samples_to_read = bytes_to_read / (2 * sizeof(int16_t));
+        samples_to_read = bytes_to_read / (2 * sizeof(float));
     }
 
     if (samples_to_read == 0) {
@@ -8931,23 +8965,23 @@ static int write_pcm8_packet_samples(tav_encoder_t *enc, FILE *output, int sampl
 
     // Allocate buffers if needed (size for max samples: 32768)
     int max_samples = 32768;  // Maximum samples per packet
-    if (!enc->pcm16_buffer) {
-        enc->pcm16_buffer = malloc(max_samples * 2 * sizeof(int16_t));
+    if (!enc->pcm32_buffer) {
+        enc->pcm32_buffer = malloc(max_samples * 2 * sizeof(float));
     }
     if (!enc->pcm8_buffer) {
         enc->pcm8_buffer = malloc(max_samples * 2);
     }
 
-    // Read PCM16LE data
-    size_t bytes_read = fread(enc->pcm16_buffer, 1, bytes_to_read, enc->pcm_file);
+    // Read Float32LE data
+    size_t bytes_read = fread(enc->pcm32_buffer, 1, bytes_to_read, enc->pcm_file);
     if (bytes_read == 0) {
         return 0;
     }
 
-    int samples_read = bytes_read / (2 * sizeof(int16_t));
+    int samples_read = bytes_read / (2 * sizeof(float));
 
     // Convert to PCM8 with dithering
-    convert_pcm16_to_pcm8_dithered(enc, enc->pcm16_buffer, enc->pcm8_buffer, samples_read);
+    convert_pcm32_to_pcm8_dithered(enc, enc->pcm32_buffer, enc->pcm8_buffer, samples_read);
 
     // Compress with zstd
     size_t pcm8_size = samples_read * 2;  // Stereo
@@ -8985,10 +9019,10 @@ static int write_pcm8_packet_samples(tav_encoder_t *enc, FILE *output, int sampl
 
         // Debug: Show first few samples
         if (samples_read > 0) {
-            printf("  First samples (PCM16→PCM8): ");
+            printf("  First samples (Float32→PCM8): ");
             for (int i = 0; i < 4 && i < samples_read; i++) {
-                printf("[%d,%d]→[%d,%d] ",
-                    enc->pcm16_buffer[i*2], enc->pcm16_buffer[i*2+1],
+                printf("[%.3f,%.3f]→[%d,%d] ",
+                    enc->pcm32_buffer[i*2], enc->pcm32_buffer[i*2+1],
                     enc->pcm8_buffer[i*2], enc->pcm8_buffer[i*2+1]);
             }
             printf("\n");
@@ -10662,7 +10696,7 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     }
 
     // Free PCM8 buffers
-    free(enc->pcm16_buffer);
+    free(enc->pcm32_buffer);
     free(enc->pcm8_buffer);
 
     free(enc->input_file);
