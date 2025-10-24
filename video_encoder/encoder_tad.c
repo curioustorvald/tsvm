@@ -146,7 +146,7 @@ static void get_quantization_weights(int quality, int dwt_levels, float *weights
         /*15*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f}
     };
 
-    float quality_scale = 4.0f * (1.0f + FCLAMP((4 - quality) * 0.5f, 0.0f, 1000.0f));
+    float quality_scale = 4.0f * (1.0f + FCLAMP((5 - quality) * 0.5f, 0.0f, 1000.0f));
 
     for (int i = 0; i < dwt_levels; i++) {
         weights[i] = base_weights[dwt_levels][i] * quality_scale;

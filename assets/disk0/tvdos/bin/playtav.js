@@ -1063,6 +1063,8 @@ try {
 
             }
             else if (packetType === TAV_PACKET_GOP_UNIFIED) {
+                decoderDbgInfo.frameMode = " "
+
                 // GOP Unified packet (temporal 3D DWT)
                 // DOUBLE-BUFFERING: Decode GOP N+1 while playing GOP N to eliminate hiccups
 
@@ -1342,6 +1344,7 @@ try {
 
             }
             else if (packetType === TAV_PACKET_AUDIO_TAD) {
+                let sampleLen = seqread.readShort()
                 let payloadLen = seqread.readInt() // compressed size + 6
 
                 if (!tadInitialised) {
@@ -1351,8 +1354,7 @@ try {
 
                 seqread.readBytes(payloadLen, SND_MEM_ADDR - 262144)
                 audio.tadDecode()
-                audio.tadUploadDecoded(0)
-
+                audio.tadUploadDecoded(0, sampleLen)
             }
             else if (packetType === TAV_PACKET_AUDIO_NATIVE) {
                 // PCM length must not exceed 65536 bytes!

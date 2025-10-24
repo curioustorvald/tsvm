@@ -107,10 +107,11 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun tadIsBusy() = getFirstSnd()?.mmio_read(44L)?.toInt() == 1
 
-    fun tadUploadDecoded(playhead: Int) {
+    fun tadUploadDecoded(playhead: Int, sampleLength: Int) {
+        if (sampleLength > 32768) throw Error("Sample size too long: expected <= 32768, got $sampleLength")
         getFirstSnd()?.let { snd ->
-            val ba = ByteArray(65536)  // 32768 samples * 2 channels
-            UnsafeHelper.memcpyRaw(null, snd.tadDecodedBin.ptr, ba, UnsafeHelper.getArrayOffset(ba), 65536)
+            val ba = ByteArray(sampleLength * 2)  // 32768 samples * 2 channels
+            UnsafeHelper.memcpyRaw(null, snd.tadDecodedBin.ptr, ba, UnsafeHelper.getArrayOffset(ba), sampleLength * 2L)
             snd.playheads[playhead].pcmQueue.addLast(ba)
         }
     }

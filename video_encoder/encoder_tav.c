@@ -132,11 +132,11 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_ZSTD_LEVEL 15
 #define DEFAULT_PCM_ZSTD_LEVEL 3
 #define TEMPORAL_GOP_SIZE 24
-#define TEMPORAL_GOP_SIZE_MIN 8 // Minimum GOP size to avoid decoder hiccups
+#define TEMPORAL_GOP_SIZE_MIN 10 // Minimum GOP size to avoid decoder hiccups
 #define TEMPORAL_DECOMP_LEVEL 2
 
-#define SCENE_CHANGE_THRESHOLD_SOFT 0.6
-#define SCENE_CHANGE_THRESHOLD_HARD 0.8
+#define SCENE_CHANGE_THRESHOLD_SOFT 0.72
+#define SCENE_CHANGE_THRESHOLD_HARD 0.90
 #define MOTION_THRESHOLD 24.0f // Flush if motion exceeds 24 pixels in any direction
 
 // Audio/subtitle constants (reused from TEV)
@@ -8926,6 +8926,7 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
 
     uint32_t tav_payload_size = (uint32_t)tad_payload_size;
     uint32_t tav_payload_size_plus_6 = (uint32_t)tad_payload_size + 6;
+    fwrite(&sample_count, sizeof(uint16_t), 1, output);
     fwrite(&tav_payload_size_plus_6, sizeof(uint32_t), 1, output);
     fwrite(&sample_count, sizeof(uint16_t), 1, output);
     fwrite(&tav_payload_size, sizeof(uint32_t), 1, output);

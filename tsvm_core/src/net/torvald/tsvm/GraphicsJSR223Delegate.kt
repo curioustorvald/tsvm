@@ -6691,7 +6691,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         dbgOut["qY"] = qYGlobal
         dbgOut["qCo"] = qCoGlobal
         dbgOut["qCg"] = qCgGlobal
-        dbgOut["frameMode"] = "G"
+        dbgOut["frameMode"] = " "
 
         val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
 
