@@ -1,6 +1,6 @@
 // Created by CuriousTorvald and Claude on 2025-10-24.
-// TAD32 (Terrarum Advanced Audio - PCM16 version) Encoder - Standalone program
-// Alternative version: PCM16 throughout encoding, PCM8 conversion only at decoder
+// TAD32 (Terrarum Advanced Audio - PCM32 version) Encoder - Standalone program
+// Alternative version: PCM32 throughout encoding, PCM8 conversion only at decoder
 // Uses encoder_tad32.c library for encoding functions
 
 #include <stdio.h>
@@ -11,7 +11,7 @@
 #include <time.h>
 #include "encoder_tad.h"
 
-#define ENCODER_VENDOR_STRING "Encoder-TAD32 (PCM32f version) 20251024"
+#define ENCODER_VENDOR_STRING "Encoder-TAD32 (PCM32f version) 20251026"
 
 // TAD32 format constants
 #define TAD32_DEFAULT_CHUNK_SIZE 32768  // Default: power of 2 for optimal performance (2^15)
@@ -52,8 +52,8 @@ static void print_usage(const char *prog_name) {
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
     printf("\nVersion: %s\n", ENCODER_VENDOR_STRING);
-    printf("Note: This is the PCM16 alternative version for comparison testing.\n");
-    printf("      PCM16 is processed throughout encoding; PCM8 conversion happens at decoder.\n");
+    printf("Note: This is the PCM32 alternative version for comparison testing.\n");
+    printf("      PCM32 is processed throughout encoding; PCM8 conversion happens at decoder.\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -268,6 +268,10 @@ int main(int argc, char *argv[]) {
     if (verbose) {
         printf("\n");
     }
+
+    // Print coefficient statistics if enabled
+    tad32_print_statistics();
+    tad32_free_statistics();
 
     // Cleanup
     free(chunk_buffer);

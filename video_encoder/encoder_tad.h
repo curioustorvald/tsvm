@@ -9,7 +9,7 @@
 // Alternative version: PCM32f throughout encoding, PCM8 conversion only at decoder
 
 // Constants
-#define TAD32_COEFF_SCALAR 1024.0f
+#define TAD32_COEFF_SCALARS {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f} // value only valid for CDF 9/7 with decomposition level 9. Index 0 = LL band
 #define TAD32_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples
 #define TAD32_SAMPLE_RATE 32000
 #define TAD32_CHANNELS 2  // Stereo
@@ -36,5 +36,17 @@
  */
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples, int quality,
                           int use_zstd, uint8_t *output);
+
+/**
+ * Print accumulated coefficient statistics
+ * Only effective if TAD_COEFF_STATS environment variable is set
+ */
+void tad32_print_statistics(void);
+
+/**
+ * Free accumulated statistics memory
+ * Should be called after tad32_print_statistics()
+ */
+void tad32_free_statistics(void);
 
 #endif // TAD32_ENCODER_H
