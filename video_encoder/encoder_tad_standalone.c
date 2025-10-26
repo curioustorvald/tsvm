@@ -85,8 +85,8 @@ int main(int argc, char *argv[]) {
                 break;
             case 'q':
                 quant_bits = atoi(optarg);
-                if (quant_bits < 4 || quant_bits > 12) {
-                    fprintf(stderr, "Error: Quantization bits must be between 4 and 12\n");
+                if (quant_bits < 2 || quant_bits > 12) {
+                    fprintf(stderr, "Error: Quantization bits must be between 2 and 12\n");
                     return 1;
                 }
                 break;

@@ -277,6 +277,18 @@ static void expand_gamma(float *left, float *right, size_t count) {
     }
 }
 
+static void expand_mu_law(float *left, float *right, size_t count) {
+    static float MU = 255.0f;
+
+    for (size_t i = 0; i < count; i++) {
+        // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
+        float x = left[i];
+        left[i] = signum(x) * (powf(1.0f + MU, fabsf(x)) - 1.0f) / MU;
+        float y = right[i];
+        right[i] = signum(y) * (powf(1.0f + MU, fabsf(y)) - 1.0f) / MU;
+    }
+}
+
 static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *left, uint8_t *right, size_t count, float dither_error[2][2]) {
     const float b1 = 1.5f;   // 1st feedback coefficient
     const float b2 = -0.75f; // 2nd feedback coefficient
@@ -321,7 +333,7 @@ static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *lef
 //=============================================================================
 
 
-#define LAMBDA_FIXED 5.8f
+#define LAMBDA_FIXED 5.0f
 
 // Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
 // Converts quantized index back to normalized float in [-1, 1]
@@ -523,7 +535,7 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     ms_correlate(dwt_mid, dwt_side, pcm32_left, pcm32_right, sample_count);
 
     // expand dynamic range
-//    expand_gamma(pcm32_left, pcm32_right, sample_count);
+    expand_gamma(pcm32_left, pcm32_right, sample_count);
 
     // dither to 8-bit
     pcm32f_to_pcm8(pcm32_left, pcm32_right, pcm8_left, pcm8_right, sample_count, err);

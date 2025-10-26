@@ -215,11 +215,23 @@ static void compress_gamma(float *left, float *right, size_t count) {
     }
 }
 
+static void compress_mu_law(float *left, float *right, size_t count) {
+    static float MU = 255.0f;
+
+    for (size_t i = 0; i < count; i++) {
+        // encode(x) = sign(x) * |x|^γ where γ=0.5
+        float x = left[i];
+        left[i] = signum(x) * logf(1.0f + MU * fabsf(x)) / logf(1.0f + MU);
+        float y = right[i];
+        right[i] = signum(y) * logf(1.0f + MU * fabsf(y)) / logf(1.0f + MU);
+    }
+}
+
 //=============================================================================
 // Quantization with Frequency-Dependent Weighting
 //=============================================================================
 
-#define LAMBDA_FIXED 5.8f
+#define LAMBDA_FIXED 5.0f
 
 // Lambda-based companding encoder (based on Laplacian distribution CDF)
 // val must be normalised to [-1,1]
@@ -651,7 +663,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     }
 
     // Step 1.1: Compress dynamic range
-//    compress_gamma(pcm32_left, pcm32_right, num_samples);
+    compress_gamma(pcm32_left, pcm32_right, num_samples);
 
     // Step 2: M/S decorrelation
     ms_decorrelate(pcm32_left, pcm32_right, pcm32_mid, pcm32_side, num_samples);
