@@ -62,7 +62,6 @@ int main(int argc, char *argv[]) {
 
     char *input_file = NULL;
     char *output_file = NULL;
-    int quality = TAD32_QUALITY_DEFAULT;
     int quant_bits = 7;  // Default QUANT_BITS
     int use_zstd = 1;
     int verbose = 0;
@@ -86,8 +85,8 @@ int main(int argc, char *argv[]) {
                 break;
             case 'q':
                 quant_bits = atoi(optarg);
-                if (quant_bits < 4 || quant_bits > 8) {
-                    fprintf(stderr, "Error: Quantization bits must be between 4 and 8\n");
+                if (quant_bits < 4 || quant_bits > 12) {
+                    fprintf(stderr, "Error: Quantization bits must be between 4 and 12\n");
                     return 1;
                 }
                 break;
@@ -116,7 +115,8 @@ int main(int argc, char *argv[]) {
         printf("%s\n", ENCODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
-        printf("Significance map: 2-bit\n");
+        printf("Quant: %d\n", quant_bits);
+        printf("Encoding method: Pure bitplanes (%d bits per coefficient)\n", quant_bits + 1);
         printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
     }
 

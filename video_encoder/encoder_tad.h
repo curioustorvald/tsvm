@@ -17,7 +17,7 @@
 #define TAD32_QUALITY_MIN 0
 #define TAD32_QUALITY_MAX 5
 #define TAD32_QUALITY_DEFAULT 3
-#define TAD32_ZSTD_LEVEL 7
+#define TAD32_ZSTD_LEVEL 15
 
 /**
  * Encode audio chunk with TAD32 codec (PCM32f version)

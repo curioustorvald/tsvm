@@ -389,38 +389,60 @@ static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs,
 }
 
 //=============================================================================
-// Significance Map Decoding
+// Bitplane Decoding with Delta Prediction
 //=============================================================================
 
-static size_t decode_sigmap_2bit(const uint8_t *input, int16_t *values, size_t count) {
-    size_t map_bytes = (count * 2 + 7) / 8;
-    const uint8_t *map = input;
-    const uint8_t *read_ptr = input + map_bytes;
+// Pure bitplane decoding with delta prediction: each coefficient uses exactly (quant_bits + 1) bits
+// Bit layout: 1 sign bit + quant_bits magnitude bits
+// Sign bit: 0 = positive/zero, 1 = negative
+// Magnitude: unsigned value [0, 2^quant_bits - 1]
+// Delta prediction: plane[i] ^= plane[i-1] (reversed by same operation)
+static size_t decode_bitplanes(const uint8_t *input, int16_t *values, size_t count, int quant_bits) {
+    int bits_per_coeff = quant_bits + 1;  // 1 sign bit + quant_bits magnitude bits
+    size_t plane_bytes = (count + 7) / 8;  // Bytes needed for one bitplane
+    size_t input_bytes = plane_bytes * bits_per_coeff;
 
-    const int16_t *value_ptr = (const int16_t*)read_ptr;
-    uint32_t other_idx = 0;
+    // Allocate temporary bitplanes
+    uint8_t **bitplanes = malloc(bits_per_coeff * sizeof(uint8_t*));
+    for (int plane = 0; plane < bits_per_coeff; plane++) {
+        bitplanes[plane] = malloc(plane_bytes);
+        memcpy(bitplanes[plane], input + (plane * plane_bytes), plane_bytes);
+    }
 
-    for (size_t i = 0; i < count; i++) {
-        size_t bit_pos = i * 2;
-        size_t byte_idx = bit_pos / 8;
-        size_t bit_offset = bit_pos % 8;
-
-        uint8_t code = (map[byte_idx] >> bit_offset) & 0x03;
-
-        // Handle bit spillover
-        if (bit_offset == 7) {
-            code = (map[byte_idx] >> 7) | ((map[byte_idx + 1] & 0x01) << 1);
-        }
-
-        switch (code) {
-            case 0: values[i] = 0; break;
-            case 1: values[i] = 1; break;
-            case 2: values[i] = -1; break;
-            case 3: values[i] = value_ptr[other_idx++]; break;
+    // Reverse delta prediction: plane[i] ^= plane[i-1]
+    for (int plane = 0; plane < bits_per_coeff; plane++) {
+        for (size_t byte = 1; byte < plane_bytes; byte++) {
+            bitplanes[plane][byte] ^= bitplanes[plane][byte - 1];
         }
     }
 
-    return map_bytes + other_idx * sizeof(int16_t);
+    // Reconstruct coefficients from bitplanes
+    for (size_t i = 0; i < count; i++) {
+        size_t byte_idx = i / 8;
+        size_t bit_offset = i % 8;
+
+        // Read sign bit (plane 0)
+        uint8_t sign_bit = (bitplanes[0][byte_idx] >> bit_offset) & 0x01;
+
+        // Read magnitude bits (planes 1 to quant_bits)
+        uint16_t magnitude = 0;
+        for (int b = 0; b < quant_bits; b++) {
+            if (bitplanes[b + 1][byte_idx] & (1 << bit_offset)) {
+                magnitude |= (1 << b);
+            }
+        }
+
+        // Reconstruct signed value
+        values[i] = sign_bit ? -(int16_t)magnitude : (int16_t)magnitude;
+    }
+
+    // Free temporary bitplanes
+    for (int plane = 0; plane < bits_per_coeff; plane++) {
+        free(bitplanes[plane]);
+    }
+    free(bitplanes);
+
+    return input_bytes;
 }
 
 //=============================================================================
@@ -480,12 +502,12 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     uint8_t *pcm8_left = malloc(sample_count * sizeof(uint8_t));
     uint8_t *pcm8_right = malloc(sample_count * sizeof(uint8_t));
 
-    // Decode significance maps
+    // Decode bitplanes
     const uint8_t *payload_ptr = payload;
     size_t mid_bytes, side_bytes;
 
-    mid_bytes = decode_sigmap_2bit(payload_ptr, quant_mid, sample_count);
-    side_bytes = decode_sigmap_2bit(payload_ptr + mid_bytes, quant_side, sample_count);
+    mid_bytes = decode_bitplanes(payload_ptr, quant_mid, sample_count, quant_bits);
+    side_bytes = decode_bitplanes(payload_ptr + mid_bytes, quant_side, sample_count, quant_bits);
 
     // Dequantize
     dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, quant_bits);

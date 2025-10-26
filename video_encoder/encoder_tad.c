@@ -290,41 +290,66 @@ static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, s
 }
 
 //=============================================================================
-// Significance Map Encoding
+// Bitplane Encoding with Delta Prediction
 //=============================================================================
 
-static size_t encode_sigmap_2bit(const int16_t *values, size_t count, uint8_t *output) {
-    size_t map_bytes = (count * 2 + 7) / 8;
-    uint8_t *map = output;
-    memset(map, 0, map_bytes);
+// Pure bitplane encoding with delta prediction: each coefficient uses exactly (quant_bits + 1) bits
+// Bit layout: 1 sign bit + quant_bits magnitude bits
+// Sign bit: 0 = positive/zero, 1 = negative
+// Magnitude: unsigned value [0, 2^quant_bits - 1]
+// Delta prediction: plane[i] ^= plane[i-1] for better compression
+static size_t encode_bitplanes(const int16_t *values, size_t count, uint8_t *output, int quant_bits) {
+    int bits_per_coeff = quant_bits + 1;  // 1 sign bit + quant_bits magnitude bits
+    size_t plane_bytes = (count + 7) / 8;  // Bytes needed for one bitplane
+    size_t output_bytes = plane_bytes * bits_per_coeff;
 
-    uint8_t *write_ptr = output + map_bytes;
-    int16_t *value_ptr = (int16_t*)write_ptr;
-    uint32_t other_count = 0;
+    memset(output, 0, output_bytes);
 
+    // Separate bitplanes (sign + magnitude)
+    uint8_t **bitplanes = malloc(bits_per_coeff * sizeof(uint8_t*));
+    for (int plane = 0; plane < bits_per_coeff; plane++) {
+        bitplanes[plane] = output + (plane * plane_bytes);
+    }
+
+    // Extract coefficients into bitplanes
     for (size_t i = 0; i < count; i++) {
         int16_t val = values[i];
-        uint8_t code;
 
-        if (val == 0) code = 0;       // 00
-        else if (val == 1) code = 1;  // 01
-        else if (val == -1) code = 2; // 10
-        else {
-            code = 3;  // 11
-            value_ptr[other_count++] = val;
+        // Extract sign and magnitude
+        uint8_t sign_bit = (val < 0) ? 1 : 0;
+        uint16_t magnitude = (val < 0) ? -val : val;
+
+        // Clamp magnitude to max value for quant_bits
+        uint16_t max_magnitude = (1 << quant_bits) - 1;
+        if (magnitude > max_magnitude) {
+            magnitude = max_magnitude;
         }
 
-        size_t bit_pos = i * 2;
-        size_t byte_idx = bit_pos / 8;
-        size_t bit_offset = bit_pos % 8;
+        size_t byte_idx = i / 8;
+        size_t bit_offset = i % 8;
 
-        map[byte_idx] |= (code << bit_offset);
-        if (bit_offset == 7 && byte_idx + 1 < map_bytes) {
-            map[byte_idx + 1] |= (code >> 1);
+        // Sign bitplane (plane 0)
+        if (sign_bit) {
+            bitplanes[0][byte_idx] |= (1 << bit_offset);
+        }
+
+        // Magnitude bitplanes (planes 1 to quant_bits)
+        for (int b = 0; b < quant_bits; b++) {
+            if (magnitude & (1 << b)) {
+                bitplanes[b + 1][byte_idx] |= (1 << bit_offset);
+            }
         }
     }
 
-    return map_bytes + other_count * sizeof(int16_t);
+    // Apply delta prediction: plane[i] ^= plane[i-1]
+    for (int plane = 0; plane < bits_per_coeff; plane++) {
+        for (size_t byte = plane_bytes - 1; byte > 0; byte--) {
+            bitplanes[plane][byte] ^= bitplanes[plane][byte - 1];
+        }
+    }
+
+    free(bitplanes);
+    return output_bytes;
 }
 
 //=============================================================================
@@ -657,10 +682,10 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, quant_bits, NULL);
     quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, quant_bits, NULL);
 
-    // Step 5: Encode with 2-bit significance map (32-bit version)
+    // Step 5: Encode with pure bitplanes (quant_bits + 1 bits per coefficient)
     uint8_t *temp_buffer = malloc(num_samples * 4 * sizeof(int32_t));
-    size_t mid_size = encode_sigmap_2bit(quant_mid, num_samples, temp_buffer);
-    size_t side_size = encode_sigmap_2bit(quant_side, num_samples, temp_buffer + mid_size);
+    size_t mid_size = encode_bitplanes(quant_mid, num_samples, temp_buffer, quant_bits);
+    size_t side_size = encode_bitplanes(quant_side, num_samples, temp_buffer + mid_size, quant_bits);
 
     size_t uncompressed_size = mid_size + side_size;
 

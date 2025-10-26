@@ -72,7 +72,7 @@
 #define TAD32_SIGMAP_2BIT 1  // 2-bit: 00=0, 01=+1, 10=-1, 11=other
 #define TAD32_QUALITY_MIN 0
 #define TAD32_QUALITY_MAX 5
-#define TAD32_ZSTD_LEVEL 7
+#define TAD32_ZSTD_LEVEL 15
 
 // DWT settings
 #define TILE_SIZE_X 640
