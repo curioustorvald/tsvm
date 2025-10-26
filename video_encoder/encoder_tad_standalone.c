@@ -47,7 +47,8 @@ static void print_usage(const char *prog_name) {
     printf("Options:\n");
     printf("  -i <file>       Input audio file (any format supported by FFmpeg)\n");
     printf("  -o <file>       Output TAD32 file\n");
-    printf("  -q <0-5>        Quality level (default: %d, higher = better quality)\n", TAD32_QUALITY_DEFAULT);
+    printf("  -q <bits>       Quantization bits (default: 7, range: 4-8)\n");
+    printf("                  Higher = more precision, larger files\n");
     printf("  --no-zstd       Disable Zstd compression\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
@@ -62,6 +63,7 @@ int main(int argc, char *argv[]) {
     char *input_file = NULL;
     char *output_file = NULL;
     int quality = TAD32_QUALITY_DEFAULT;
+    int quant_bits = 7;  // Default QUANT_BITS
     int use_zstd = 1;
     int verbose = 0;
 
@@ -83,10 +85,9 @@ int main(int argc, char *argv[]) {
                 output_file = optarg;
                 break;
             case 'q':
-                quality = atoi(optarg);
-                if (quality < TAD32_QUALITY_MIN || quality > TAD32_QUALITY_MAX) {
-                    fprintf(stderr, "Error: Quality must be between %d and %d\n",
-                            TAD32_QUALITY_MIN, TAD32_QUALITY_MAX);
+                quant_bits = atoi(optarg);
+                if (quant_bits < 4 || quant_bits > 8) {
+                    fprintf(stderr, "Error: Quantization bits must be between 4 and 8\n");
                     return 1;
                 }
                 break;
@@ -115,7 +116,6 @@ int main(int argc, char *argv[]) {
         printf("%s\n", ENCODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
-        printf("Quality: %d\n", quality);
         printf("Significance map: 2-bit\n");
         printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
     }
@@ -242,8 +242,8 @@ int main(int argc, char *argv[]) {
         }
 
         // Encode chunk using linked tad32_encode_chunk() from encoder_tad32.c
-        size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE, quality,
-                                                 use_zstd, output_buffer);
+        size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE,
+                                                 quant_bits, use_zstd, output_buffer);
 
         if (encoded_size == 0) {
             fprintf(stderr, "Error: Chunk encoding failed at chunk %zu\n", chunk_idx);
@@ -291,7 +291,7 @@ int main(int argc, char *argv[]) {
            compression_ratio, (total_output_size * 100.0) / pcmu8_size);
 
     if (compression_ratio < 1.8) {
-        printf("Warning: Compression ratio below 2:1 target. Try higher quality or different settings.\n");
+        printf("Warning: Compression ratio below 2:1 target. Try lower quantisation bits or different settings.\n");
     }
 
     return 0;

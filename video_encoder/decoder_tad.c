@@ -256,8 +256,8 @@ static void ms_correlate(const float *mid, const float *side, float *left, float
         // Decode M/S → L/R
         float m = mid[i];
         float s = side[i];
-        left[i] = FCLAMP((m + s) * 1.7321f, -1.0f, 1.0f);
-        right[i] = FCLAMP((m - s) * 1.7321f, -1.0f, 1.0f);
+        left[i] = FCLAMP((m + s), -1.0f, 1.0f);
+        right[i] = FCLAMP((m - s), -1.0f, 1.0f);
     }
 }
 
@@ -320,38 +320,44 @@ static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *lef
 // Dequantization (inverse of quantization)
 //=============================================================================
 
-static void get_quantization_weights(int quality, int dwt_levels, float *weights) {
-    const float base_weights[16][16] = {
-        /* 0*/{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        /* 1*/{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        /* 2*/{1.0f, 1.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 3*/{0.2f, 1.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 4*/{0.2f, 0.8f, 1.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 5*/{0.2f, 0.8f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 6*/{0.2f, 0.2f, 0.8f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 7*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 8*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /* 9*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /*10*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /*11*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /*12*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /*13*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f},
-        /*14*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f},
-        /*15*/{0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f}
-    };
 
-    float quality_scale = 1.0f * (1.0f + FCLAMP((5 - quality) * 0.5f, 0.0f, 1000.0f));
+#define LAMBDA_FIXED 5.8f
 
-    for (int i = 0; i < dwt_levels; i++) {
-        weights[i] = 1.0f;//base_weights[dwt_levels][i] * quality_scale;
+// Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
+// Converts quantized index back to normalized float in [-1, 1]
+static float lambda_decompanding(int16_t quant_val, int quant_bits) {
+    // Handle zero
+    if (quant_val == 0) {
+        return 0.0f;
     }
+
+    int sign = (quant_val < 0) ? -1 : 1;
+    int abs_index = abs(quant_val);
+
+    // Maximum index for the given quant_bits
+    int max_index = (1 << (quant_bits - 1)) - 1;
+
+    // Clamp to valid range
+    if (abs_index > max_index) abs_index = max_index;
+
+    // Map index back to normalized CDF [0, 1]
+    float normalized_cdf = (float)abs_index / max_index;
+
+    // Map from [0, 1] back to [0.5, 1.0] (CDF range for positive half)
+    float cdf = 0.5f + normalized_cdf * 0.5f;
+
+    // Inverse Laplacian CDF for x >= 0: x = -(1/λ) * ln(2*(1-F))
+    // For F in [0.5, 1.0]: x = -(1/λ) * ln(2*(1-F))
+    float abs_val = -(1.0f / LAMBDA_FIXED) * logf(2.0f * (1.0f - cdf));
+
+    // Clamp to [0, 1]
+    if (abs_val > 1.0f) abs_val = 1.0f;
+    if (abs_val < 0.0f) abs_val = 0.0f;
+
+    return sign * abs_val;
 }
 
-#define QUANT_STEPS 8.0f // 64 -> [-64..64] -> 7 bits for LL
-
-static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs, size_t count, int quality, int chunk_size, int dwt_levels) {
-    float weights[16];
-    get_quantization_weights(quality, dwt_levels, weights);
+static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int quant_bits) {
 
     // Calculate sideband boundaries dynamically
     int first_band_size = chunk_size >> dwt_levels;
@@ -372,12 +378,11 @@ static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs,
             }
         }
 
-        // Map (dwt_levels+1) sidebands to dwt_levels weights
-        int weight_idx = (sideband == 0) ? 0 : sideband - 1;
-        if (weight_idx >= dwt_levels) weight_idx = dwt_levels - 1;
+        // Decode using lambda companding
+        float normalized_val = lambda_decompanding(quantized[i], quant_bits);
 
-        float weight = weights[weight_idx];
-        coeffs[i] = ((float)quantized[i] * TAD32_COEFF_SCALARS[sideband]) / (QUANT_STEPS * weight);
+        // Denormalize using the subband scalar
+        coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband];
     }
 
     free(sideband_starts);
@@ -423,12 +428,16 @@ static size_t decode_sigmap_2bit(const uint8_t *input, int16_t *values, size_t c
 //=============================================================================
 
 static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_stereo,
-                        int quality, size_t *bytes_consumed, size_t *samples_decoded) {
+                        size_t *bytes_consumed, size_t *samples_decoded) {
     const uint8_t *read_ptr = input;
 
     // Read chunk header
     uint16_t sample_count = *((const uint16_t*)read_ptr);
     read_ptr += sizeof(uint16_t);
+
+    uint8_t quant_bits = *read_ptr;
+    read_ptr += sizeof(uint8_t);
+
     uint32_t payload_size = *((const uint32_t*)read_ptr);
     read_ptr += sizeof(uint32_t);
 
@@ -479,8 +488,8 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     side_bytes = decode_sigmap_2bit(payload_ptr + mid_bytes, quant_side, sample_count);
 
     // Dequantize
-    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, quality, sample_count, dwt_levels);
-    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, quality, sample_count, dwt_levels);
+    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, quant_bits);
+    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, quant_bits);
 
     // Inverse DWT
     dwt_haar_inverse_multilevel(dwt_mid, sample_count, dwt_levels);
@@ -520,7 +529,6 @@ static void print_usage(const char *prog_name) {
     printf("Options:\n");
     printf("  -i <file>       Input TAD file\n");
     printf("  -o <file>       Output PCMu8 file (raw 8-bit unsigned stereo @ 32kHz)\n");
-    printf("  -q <0-5>        Quality level used during encoding (default: 3)\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
     printf("\nVersion: %s\n", DECODER_VENDOR_STRING);
@@ -531,25 +539,16 @@ static void print_usage(const char *prog_name) {
 int main(int argc, char *argv[]) {
     char *input_file = NULL;
     char *output_file = NULL;
-    int quality = 3;  // Must match encoder quality
     int verbose = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "i:o:q:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "i:o:vh")) != -1) {
         switch (opt) {
             case 'i':
                 input_file = optarg;
                 break;
             case 'o':
                 output_file = optarg;
-                break;
-            case 'q':
-                quality = atoi(optarg);
-                if (quality < TAD_QUALITY_MIN || quality > TAD_QUALITY_MAX) {
-                    fprintf(stderr, "Error: Quality must be between %d and %d\n",
-                            TAD_QUALITY_MIN, TAD_QUALITY_MAX);
-                    return 1;
-                }
                 break;
             case 'v':
                 verbose = 1;
@@ -573,7 +572,6 @@ int main(int argc, char *argv[]) {
         printf("%s\n", DECODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
-        printf("Quality: %d\n", quality);
     }
 
     // Open input file
@@ -611,7 +609,7 @@ int main(int argc, char *argv[]) {
     while (offset < input_size) {
         size_t bytes_consumed, samples_decoded;
         int result = decode_chunk(input_data + offset, input_size - offset,
-                                  chunk_output, quality, &bytes_consumed, &samples_decoded);
+                                  chunk_output, &bytes_consumed, &samples_decoded);
 
         if (result != 0) {
             fprintf(stderr, "Error: Chunk decoding failed at offset %zu\n", offset);

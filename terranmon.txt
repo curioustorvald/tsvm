@@ -1068,9 +1068,12 @@ transmission capability, and region-of-interest coding.
 
 ## TAD Packet Structure
     uint8  Packet type (0x24)
+    <header for decoding packet>
     uint16 Sample Count
-    uint32 Compressed Size + 6
+    uint32 Compressed Size + 7
+    <header for decoding TAD chunk>
     uint16 Sample Count
+    uint8  Quantiser Bits
     uint32 Compressed Size
     *      Zstd-compressed TAD
 

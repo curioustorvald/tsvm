@@ -24,18 +24,19 @@
  *
  * @param pcm32_stereo  Input PCM32fLE stereo samples (interleaved L,R)
  * @param num_samples   Number of samples per channel (min 1024)
- * @param quality       Quality level 0-5 (0=lowest, 5=highest)
+ * @param quant_bits    Quantization bits 4-12 (default: 7)
  * @param use_zstd      1=enable Zstd compression, 0=disable
  * @param output        Output buffer (must be large enough)
  * @return              Number of bytes written to output, or 0 on error
  *
  * Output format:
  *   uint16 sample_count (samples per channel)
+ *   uint8  quant_bits (quantization bits used)
  *   uint32 payload_size (bytes in payload)
  *   *      payload (encoded M/S data, optionally Zstd-compressed)
  */
-size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples, int quality,
-                          int use_zstd, uint8_t *output);
+size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
+                          int quant_bits, int use_zstd, uint8_t *output);
 
 /**
  * Print accumulated coefficient statistics
