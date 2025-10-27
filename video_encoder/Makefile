@@ -5,7 +5,11 @@ CC = gcc
 CXX = g++
 CFLAGS = -std=c99 -Wall -Wextra -O2 -D_GNU_SOURCE
 CXXFLAGS = -std=c++11 -Wall -Wextra -O2 -D_GNU_SOURCE
-LIBS = -lm -lzstd
+
+# Zstd flags (use pkg-config if available, fallback for cross-platform compatibility)
+ZSTD_CFLAGS = $(shell pkg-config --cflags libzstd 2>/dev/null || echo "")
+ZSTD_LIBS = $(shell pkg-config --libs libzstd 2>/dev/null || echo "-lzstd")
+LIBS = -lm $(ZSTD_LIBS)
 
 # OpenCV flags (for TAV encoder with mesh warping)
 OPENCV_CFLAGS = $(shell pkg-config --cflags opencv4)
@@ -22,33 +26,33 @@ all: $(TARGETS)
 # Build main encoder
 tev: encoder_tev.c
 	rm -f encoder_tev
-	$(CC) $(CFLAGS) -o encoder_tev $< $(LIBS)
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o encoder_tev $< $(LIBS)
 
 tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp
 	rm -f encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o
-	$(CC) $(CFLAGS) -c encoder_tav.c -o encoder_tav.o
-	$(CC) $(CFLAGS) -c encoder_tad.c -o encoder_tad.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -c encoder_tav_opencv.cpp -o encoder_tav_opencv.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav.c -o encoder_tav.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad.c -o encoder_tad.o
+	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav_opencv.cpp -o encoder_tav_opencv.o
 	$(CXX) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
 
 tav_decoder: decoder_tav.c
 	rm -f decoder_tav
-	$(CC) $(CFLAGS) -o decoder_tav $< $(LIBS)
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o decoder_tav $< $(LIBS)
 
 tav_inspector: tav_inspector.c
 	rm -f tav_inspector
-	$(CC) $(CFLAGS) -o tav_inspector $< $(LIBS)
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o tav_inspector $< $(LIBS)
 
 # Build TAD (Terrarum Advanced Audio) tools
 encoder_tad: encoder_tad_standalone.c encoder_tad.c encoder_tad.h
 	rm -f encoder_tad encoder_tad_standalone.o encoder_tad.o
-	$(CC) $(CFLAGS) -c encoder_tad.c -o encoder_tad.o
-	$(CC) $(CFLAGS) -c encoder_tad_standalone.c -o encoder_tad_standalone.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad.c -o encoder_tad.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad_standalone.c -o encoder_tad_standalone.o
 	$(CC) -o encoder_tad encoder_tad_standalone.o encoder_tad.o $(LIBS)
 
 decoder_tad: decoder_tad.c
 	rm -f decoder_tad
-	$(CC) $(CFLAGS) -o decoder_tad $< $(LIBS)
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o decoder_tad $< $(LIBS)
 
 # Build all TAD tools
 tad: $(TAD_TARGETS)
