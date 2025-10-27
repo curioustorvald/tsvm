@@ -382,9 +382,17 @@ typedef struct {
     size_t capacity;
 } CoeffAccumulator;
 
+typedef struct {
+    int16_t *data;
+    size_t count;
+    size_t capacity;
+} QuantAccumulator;
+
 // Global accumulators for statistics
 static CoeffAccumulator *mid_accumulators = NULL;
 static CoeffAccumulator *side_accumulators = NULL;
+static QuantAccumulator *mid_quant_accumulators = NULL;
+static QuantAccumulator *side_quant_accumulators = NULL;
 static int num_subbands = 0;
 static int stats_initialized = 0;
 static int stats_dwt_levels = 0;
@@ -397,6 +405,8 @@ static void init_statistics(int dwt_levels) {
 
     mid_accumulators = calloc(num_subbands, sizeof(CoeffAccumulator));
     side_accumulators = calloc(num_subbands, sizeof(CoeffAccumulator));
+    mid_quant_accumulators = calloc(num_subbands, sizeof(QuantAccumulator));
+    side_quant_accumulators = calloc(num_subbands, sizeof(QuantAccumulator));
 
     for (int i = 0; i < num_subbands; i++) {
         mid_accumulators[i].capacity = 1024;
@@ -406,6 +416,14 @@ static void init_statistics(int dwt_levels) {
         side_accumulators[i].capacity = 1024;
         side_accumulators[i].data = malloc(side_accumulators[i].capacity * sizeof(float));
         side_accumulators[i].count = 0;
+
+        mid_quant_accumulators[i].capacity = 1024;
+        mid_quant_accumulators[i].data = malloc(mid_quant_accumulators[i].capacity * sizeof(int16_t));
+        mid_quant_accumulators[i].count = 0;
+
+        side_quant_accumulators[i].capacity = 1024;
+        side_quant_accumulators[i].data = malloc(side_quant_accumulators[i].capacity * sizeof(int16_t));
+        side_quant_accumulators[i].count = 0;
     }
 
     stats_initialized = 1;
@@ -436,6 +454,37 @@ static void accumulate_coefficients(const float *coeffs, int dwt_levels, int chu
         // Copy coefficients
         memcpy(accumulators[s].data + accumulators[s].count,
                coeffs + start, band_size * sizeof(float));
+        accumulators[s].count += band_size;
+    }
+
+    free(sideband_starts);
+}
+
+static void accumulate_quantized(const int16_t *quant, int dwt_levels, int chunk_size, QuantAccumulator *accumulators) {
+    int first_band_size = chunk_size >> dwt_levels;
+
+    int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
+    sideband_starts[0] = 0;
+    sideband_starts[1] = first_band_size;
+    for (int i = 2; i <= dwt_levels + 1; i++) {
+        sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
+    }
+
+    for (int s = 0; s <= dwt_levels; s++) {
+        size_t start = sideband_starts[s];
+        size_t end = sideband_starts[s + 1];
+        size_t band_size = end - start;
+
+        // Expand capacity if needed
+        while (accumulators[s].count + band_size > accumulators[s].capacity) {
+            accumulators[s].capacity *= 2;
+            accumulators[s].data = realloc(accumulators[s].data,
+                                          accumulators[s].capacity * sizeof(int16_t));
+        }
+
+        // Copy coefficients
+        memcpy(accumulators[s].data + accumulators[s].count,
+               quant + start, band_size * sizeof(int16_t));
         accumulators[s].count += band_size;
     }
 
@@ -531,6 +580,77 @@ static void print_histogram(const float *coeffs, size_t count, const char *title
     fprintf(stderr, "\n");
 }
 
+typedef struct {
+    int16_t value;
+    size_t count;
+    float percentage;
+} ValueFrequency;
+
+static int compare_value_frequency(const void *a, const void *b) {
+    const ValueFrequency *va = (const ValueFrequency*)a;
+    const ValueFrequency *vb = (const ValueFrequency*)b;
+    // Sort by count descending
+    if (vb->count > va->count) return 1;
+    if (vb->count < va->count) return -1;
+    return 0;
+}
+
+static void print_top5_quantized_values(const int16_t *quant, size_t count, const char *title) {
+    if (count == 0) {
+        fprintf(stderr, "  %s: No data\n", title);
+        return;
+    }
+
+    // Create a hash map to count frequencies
+    // For simplicity, we'll use an array with a reasonable range
+    // Find min/max first
+    int16_t min_val = quant[0];
+    int16_t max_val = quant[0];
+    for (size_t i = 1; i < count; i++) {
+        if (quant[i] < min_val) min_val = quant[i];
+        if (quant[i] > max_val) max_val = quant[i];
+    }
+
+    int range = max_val - min_val + 1;
+    if (range > 100000) {
+        fprintf(stderr, "  %s: Value range too large for analysis\n", title);
+        return;
+    }
+
+    // Count frequencies
+    size_t *freq = calloc(range, sizeof(size_t));
+    for (size_t i = 0; i < count; i++) {
+        freq[quant[i] - min_val]++;
+    }
+
+    // Find all unique values with their frequencies
+    ValueFrequency *values = malloc(range * sizeof(ValueFrequency));
+    int unique_count = 0;
+    for (int i = 0; i < range; i++) {
+        if (freq[i] > 0) {
+            values[unique_count].value = min_val + i;
+            values[unique_count].count = freq[i];
+            values[unique_count].percentage = (float)(freq[i] * 100.0) / count;
+            unique_count++;
+        }
+    }
+
+    // Sort by frequency
+    qsort(values, unique_count, sizeof(ValueFrequency), compare_value_frequency);
+
+    // Print top 5
+    fprintf(stderr, "  %s Top 5 Values:\n", title);
+    int print_count = (unique_count < 5) ? unique_count : 10;
+    for (int i = 0; i < print_count; i++) {
+        fprintf(stderr, "    %6d: %8zu occurrences (%5.2f%%)\n",
+                values[i].value, values[i].count, values[i].percentage);
+    }
+    fprintf(stderr, "\n");
+
+    free(freq);
+    free(values);
+}
+
 void tad32_print_statistics(void) {
     if (!stats_initialized) return;
 
@@ -604,6 +724,33 @@ void tad32_print_statistics(void) {
         print_histogram(side_accumulators[s].data, side_accumulators[s].count, band_name);
     }
 
+    // Print quantized values statistics
+    fprintf(stderr, "\n=== TAD Quantized Values Statistics (after quantization) ===\n");
+
+    // Print Mid channel quantized values
+    fprintf(stderr, "\nMid Channel Quantized Values:\n");
+    for (int s = 0; s < num_subbands; s++) {
+        char band_name[32];
+        if (s == 0) {
+            snprintf(band_name, sizeof(band_name), "LL (L%d)", stats_dwt_levels);
+        } else {
+            snprintf(band_name, sizeof(band_name), "H (L%d)", stats_dwt_levels - s + 1);
+        }
+        print_top5_quantized_values(mid_quant_accumulators[s].data, mid_quant_accumulators[s].count, band_name);
+    }
+
+    // Print Side channel quantized values
+    fprintf(stderr, "\nSide Channel Quantized Values:\n");
+    for (int s = 0; s < num_subbands; s++) {
+        char band_name[32];
+        if (s == 0) {
+            snprintf(band_name, sizeof(band_name), "LL (L%d)", stats_dwt_levels);
+        } else {
+            snprintf(band_name, sizeof(band_name), "H (L%d)", stats_dwt_levels - s + 1);
+        }
+        print_top5_quantized_values(side_quant_accumulators[s].data, side_quant_accumulators[s].count, band_name);
+    }
+
     fprintf(stderr, "\n");
 }
 
@@ -613,12 +760,18 @@ void tad32_free_statistics(void) {
     for (int i = 0; i < num_subbands; i++) {
         free(mid_accumulators[i].data);
         free(side_accumulators[i].data);
+        free(mid_quant_accumulators[i].data);
+        free(side_quant_accumulators[i].data);
     }
     free(mid_accumulators);
     free(side_accumulators);
+    free(mid_quant_accumulators);
+    free(side_quant_accumulators);
 
     mid_accumulators = NULL;
     side_accumulators = NULL;
+    mid_quant_accumulators = NULL;
+    side_quant_accumulators = NULL;
     stats_initialized = 0;
 }
 
@@ -671,7 +824,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     // Step 3.5: Accumulate coefficient statistics if enabled
     static int stats_enabled = -1;
     if (stats_enabled == -1) {
-        stats_enabled = getenv("TAD_COEFF_STATS") != NULL;
+        stats_enabled = 1;//getenv("TAD_COEFF_STATS") != NULL;
         if (stats_enabled) {
             init_statistics(dwt_levels);
         }
@@ -684,6 +837,12 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     // Step 4: Quantize with frequency-dependent weights and dead zone
     quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL);
     quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL);
+
+    // Step 4.5: Accumulate quantized coefficient statistics if enabled
+    if (stats_enabled) {
+        accumulate_quantized(quant_mid, dwt_levels, num_samples, mid_quant_accumulators);
+        accumulate_quantized(quant_side, dwt_levels, num_samples, side_quant_accumulators);
+    }
 
     // Step 5: Encode with pure bitplanes (quant_bits + 1 bits per coefficient)
     uint8_t *temp_buffer = malloc(num_samples * 4 * sizeof(int32_t));
