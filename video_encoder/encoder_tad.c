@@ -236,7 +236,7 @@ static void compress_mu_law(float *left, float *right, size_t count) {
 // Lambda-based companding encoder (based on Laplacian distribution CDF)
 // val must be normalised to [-1,1]
 // Returns quantized index in range [-(2^quant_bits-1), +(2^quant_bits-1)]
-static int16_t lambda_companding(float val, int quant_bits) {
+static int16_t lambda_companding(float val, int max_index) {
     // Handle zero
     if (fabsf(val) < 1e-9f) {
         return 0;
@@ -248,8 +248,6 @@ static int16_t lambda_companding(float val, int quant_bits) {
     // Clamp to [0, 1]
     if (abs_val > 1.0f) abs_val = 1.0f;
 
-    // Maximum index for the given quant_bits
-    int max_index = (1 << (quant_bits - 1)) - 1;
 
     // Laplacian CDF for x >= 0: F(x) = 1 - 0.5 * exp(-λ*x)
     // Map to [0.5, 1.0] range (half of CDF for positive values)
@@ -268,7 +266,7 @@ static int16_t lambda_companding(float val, int quant_bits) {
     return (int16_t)(sign * index);
 }
 
-static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index) {
+static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -293,7 +291,7 @@ static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, s
         }
 
         float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband])); // val is normalised to [-1,1]
-        int16_t quant_val = lambda_companding(val, quant_bits);
+        int16_t quant_val = lambda_companding(val, max_index);
 
         quantized[i] = quant_val;
     }
@@ -310,8 +308,8 @@ static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, s
 // Sign bit: 0 = positive/zero, 1 = negative
 // Magnitude: unsigned value [0, 2^quant_bits - 1]
 // Delta prediction: plane[i] ^= plane[i-1] for better compression
-static size_t encode_bitplanes(const int16_t *values, size_t count, uint8_t *output, int quant_bits) {
-    int bits_per_coeff = quant_bits + 1;  // 1 sign bit + quant_bits magnitude bits
+static size_t encode_bitplanes(const int16_t *values, size_t count, uint8_t *output, int max_index) {
+    int bits_per_coeff = ((int)ceilf(log2f(max_index))) + 1;  // 1 sign bit + quant_bits magnitude bits
     size_t plane_bytes = (count + 7) / 8;  // Bytes needed for one bitplane
     size_t output_bytes = plane_bytes * bits_per_coeff;
 
@@ -332,7 +330,7 @@ static size_t encode_bitplanes(const int16_t *values, size_t count, uint8_t *out
         uint16_t magnitude = (val < 0) ? -val : val;
 
         // Clamp magnitude to max value for quant_bits
-        uint16_t max_magnitude = (1 << quant_bits) - 1;
+        uint16_t max_magnitude = max_index;
         if (magnitude > max_magnitude) {
             magnitude = max_magnitude;
         }
@@ -346,17 +344,10 @@ static size_t encode_bitplanes(const int16_t *values, size_t count, uint8_t *out
         }
 
         // Magnitude bitplanes (planes 1 to quant_bits)
-        for (int b = 0; b < quant_bits; b++) {
+        for (int b = 0; b < bits_per_coeff - 1; b++) {
             if (magnitude & (1 << b)) {
                 bitplanes[b + 1][byte_idx] |= (1 << bit_offset);
             }
-        }
-    }
-
-    // Apply delta prediction: plane[i] ^= plane[i-1]
-    for (int plane = 0; plane < bits_per_coeff; plane++) {
-        for (size_t byte = plane_bytes - 1; byte > 0; byte--) {
-            bitplanes[plane][byte] ^= bitplanes[plane][byte - 1];
         }
     }
 
@@ -636,7 +627,7 @@ void tad32_free_statistics(void) {
 //=============================================================================
 
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
-                          int quant_bits, int use_zstd, uint8_t *output) {
+                          int max_index, int use_zstd, uint8_t *output) {
     // Calculate DWT levels from chunk size
     int dwt_levels = calculate_dwt_levels(num_samples);
     if (dwt_levels < 0) {
@@ -680,7 +671,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     // Step 3.5: Accumulate coefficient statistics if enabled
     static int stats_enabled = -1;
     if (stats_enabled == -1) {
-        stats_enabled = 1;//getenv("TAD_COEFF_STATS") != NULL;
+        stats_enabled = getenv("TAD_COEFF_STATS") != NULL;
         if (stats_enabled) {
             init_statistics(dwt_levels);
         }
@@ -691,13 +682,13 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     }
 
     // Step 4: Quantize with frequency-dependent weights and dead zone
-    quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, quant_bits, NULL);
-    quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, quant_bits, NULL);
+    quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL);
+    quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL);
 
     // Step 5: Encode with pure bitplanes (quant_bits + 1 bits per coefficient)
     uint8_t *temp_buffer = malloc(num_samples * 4 * sizeof(int32_t));
-    size_t mid_size = encode_bitplanes(quant_mid, num_samples, temp_buffer, quant_bits);
-    size_t side_size = encode_bitplanes(quant_side, num_samples, temp_buffer + mid_size, quant_bits);
+    size_t mid_size = encode_bitplanes(quant_mid, num_samples, temp_buffer, max_index);
+    size_t side_size = encode_bitplanes(quant_side, num_samples, temp_buffer + mid_size, max_index);
 
     size_t uncompressed_size = mid_size + side_size;
 
@@ -708,7 +699,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     *((uint16_t*)write_ptr) = (uint16_t)num_samples;
     write_ptr += sizeof(uint16_t);
 
-    *write_ptr = (uint8_t)quant_bits;
+    *write_ptr = (uint8_t)max_index;
     write_ptr += sizeof(uint8_t);
 
     uint32_t *payload_size_ptr = (uint32_t*)write_ptr;

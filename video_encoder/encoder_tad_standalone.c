@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <getopt.h>
+#include <math.h>
 #include <time.h>
 #include "encoder_tad.h"
 
@@ -62,7 +63,7 @@ int main(int argc, char *argv[]) {
 
     char *input_file = NULL;
     char *output_file = NULL;
-    int quant_bits = 7;  // Default QUANT_BITS
+    int max_index = 7;  // Default QUANT_BITS
     int use_zstd = 1;
     int verbose = 0;
 
@@ -84,11 +85,8 @@ int main(int argc, char *argv[]) {
                 output_file = optarg;
                 break;
             case 'q':
-                quant_bits = atoi(optarg);
-                if (quant_bits < 2 || quant_bits > 12) {
-                    fprintf(stderr, "Error: Quantization bits must be between 2 and 12\n");
-                    return 1;
-                }
+                max_index = atoi(optarg);
+
                 break;
             case 'z':
                 use_zstd = 0;
@@ -115,8 +113,8 @@ int main(int argc, char *argv[]) {
         printf("%s\n", ENCODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
-        printf("Quant: %d\n", quant_bits);
-        printf("Encoding method: Pure bitplanes (%d bits per coefficient)\n", quant_bits + 1);
+        printf("Quant: %d\n", max_index);
+        printf("Encoding method: Pure bitplanes (%d bits per coefficient)\n", ((int)ceilf(log2f(max_index))) + 1);
         printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
     }
 
@@ -243,7 +241,7 @@ int main(int argc, char *argv[]) {
 
         // Encode chunk using linked tad32_encode_chunk() from encoder_tad32.c
         size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE,
-                                                 quant_bits, use_zstd, output_buffer);
+                                                 max_index, use_zstd, output_buffer);
 
         if (encoded_size == 0) {
             fprintf(stderr, "Error: Chunk encoding failed at chunk %zu\n", chunk_idx);

@@ -337,7 +337,7 @@ static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *lef
 
 // Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
 // Converts quantized index back to normalized float in [-1, 1]
-static float lambda_decompanding(int16_t quant_val, int quant_bits) {
+static float lambda_decompanding(int16_t quant_val, int max_index) {
     // Handle zero
     if (quant_val == 0) {
         return 0.0f;
@@ -345,9 +345,6 @@ static float lambda_decompanding(int16_t quant_val, int quant_bits) {
 
     int sign = (quant_val < 0) ? -1 : 1;
     int abs_index = abs(quant_val);
-
-    // Maximum index for the given quant_bits
-    int max_index = (1 << (quant_bits - 1)) - 1;
 
     // Clamp to valid range
     if (abs_index > max_index) abs_index = max_index;
@@ -369,7 +366,7 @@ static float lambda_decompanding(int16_t quant_val, int quant_bits) {
     return sign * abs_val;
 }
 
-static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int quant_bits) {
+static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index) {
 
     // Calculate sideband boundaries dynamically
     int first_band_size = chunk_size >> dwt_levels;
@@ -391,7 +388,7 @@ static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs,
         }
 
         // Decode using lambda companding
-        float normalized_val = lambda_decompanding(quantized[i], quant_bits);
+        float normalized_val = lambda_decompanding(quantized[i], max_index);
 
         // Denormalize using the subband scalar
         coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband];
@@ -409,8 +406,8 @@ static void dequantize_dwt_coefficients(const int16_t *quantized, float *coeffs,
 // Sign bit: 0 = positive/zero, 1 = negative
 // Magnitude: unsigned value [0, 2^quant_bits - 1]
 // Delta prediction: plane[i] ^= plane[i-1] (reversed by same operation)
-static size_t decode_bitplanes(const uint8_t *input, int16_t *values, size_t count, int quant_bits) {
-    int bits_per_coeff = quant_bits + 1;  // 1 sign bit + quant_bits magnitude bits
+static size_t decode_bitplanes(const uint8_t *input, int16_t *values, size_t count, int max_index) {
+    int bits_per_coeff = ((int)ceilf(log2f(max_index))) + 1;  // 1 sign bit + quant_bits magnitude bits
     size_t plane_bytes = (count + 7) / 8;  // Bytes needed for one bitplane
     size_t input_bytes = plane_bytes * bits_per_coeff;
 
@@ -419,13 +416,6 @@ static size_t decode_bitplanes(const uint8_t *input, int16_t *values, size_t cou
     for (int plane = 0; plane < bits_per_coeff; plane++) {
         bitplanes[plane] = malloc(plane_bytes);
         memcpy(bitplanes[plane], input + (plane * plane_bytes), plane_bytes);
-    }
-
-    // Reverse delta prediction: plane[i] ^= plane[i-1]
-    for (int plane = 0; plane < bits_per_coeff; plane++) {
-        for (size_t byte = 1; byte < plane_bytes; byte++) {
-            bitplanes[plane][byte] ^= bitplanes[plane][byte - 1];
-        }
     }
 
     // Reconstruct coefficients from bitplanes
@@ -438,7 +428,7 @@ static size_t decode_bitplanes(const uint8_t *input, int16_t *values, size_t cou
 
         // Read magnitude bits (planes 1 to quant_bits)
         uint16_t magnitude = 0;
-        for (int b = 0; b < quant_bits; b++) {
+        for (int b = 0; b < bits_per_coeff - 1; b++) {
             if (bitplanes[b + 1][byte_idx] & (1 << bit_offset)) {
                 magnitude |= (1 << b);
             }
@@ -469,7 +459,7 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     uint16_t sample_count = *((const uint16_t*)read_ptr);
     read_ptr += sizeof(uint16_t);
 
-    uint8_t quant_bits = *read_ptr;
+    uint8_t max_index = *read_ptr;
     read_ptr += sizeof(uint8_t);
 
     uint32_t payload_size = *((const uint32_t*)read_ptr);
@@ -518,12 +508,12 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     const uint8_t *payload_ptr = payload;
     size_t mid_bytes, side_bytes;
 
-    mid_bytes = decode_bitplanes(payload_ptr, quant_mid, sample_count, quant_bits);
-    side_bytes = decode_bitplanes(payload_ptr + mid_bytes, quant_side, sample_count, quant_bits);
+    mid_bytes = decode_bitplanes(payload_ptr, quant_mid, sample_count, max_index);
+    side_bytes = decode_bitplanes(payload_ptr + mid_bytes, quant_side, sample_count, max_index);
 
     // Dequantize
-    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, quant_bits);
-    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, quant_bits);
+    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index);
+    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index);
 
     // Inverse DWT
     dwt_haar_inverse_multilevel(dwt_mid, sample_count, dwt_levels);
