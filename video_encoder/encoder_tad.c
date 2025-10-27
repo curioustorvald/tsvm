@@ -21,10 +21,8 @@ static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0
 // Forward declarations for internal functions
 static void dwt_dd4_forward_1d(float *data, int length);
 static void dwt_dd4_forward_multilevel(float *data, int length, int levels);
-static void ms_decorrelate_16(const float *left, const float *right, float *mid, float *side, size_t count);
-static void get_quantization_weights(int dwt_levels, float *weights);
-static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index);
-static size_t encode_sigmap_2bit(const int16_t *values, size_t count, uint8_t *output);
+static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index);
+static size_t encode_twobitmap(const int8_t *values, size_t count, uint8_t *output);
 
 static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
@@ -235,8 +233,8 @@ static void compress_mu_law(float *left, float *right, size_t count) {
 
 // Lambda-based companding encoder (based on Laplacian distribution CDF)
 // val must be normalised to [-1,1]
-// Returns quantized index in range [-(2^quant_bits-1), +(2^quant_bits-1)]
-static int16_t lambda_companding(float val, int max_index) {
+// Returns quantized index in range [-127, +127]
+static int8_t lambda_companding(float val, int max_index) {
     // Handle zero
     if (fabsf(val) < 1e-9f) {
         return 0;
@@ -263,10 +261,10 @@ static int16_t lambda_companding(float val, int max_index) {
     if (index < 0) index = 0;
     if (index > max_index) index = max_index;
 
-    return (int16_t)(sign * index);
+    return (int8_t)(sign * index);
 }
 
-static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index) {
+static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -300,59 +298,58 @@ static void quantize_dwt_coefficients(const float *coeffs, int16_t *quantized, s
 }
 
 //=============================================================================
-// Bitplane Encoding with Delta Prediction
+// Twobit-map Significance Map Encoding
 //=============================================================================
 
-// Pure bitplane encoding with delta prediction: each coefficient uses exactly (quant_bits + 1) bits
-// Bit layout: 1 sign bit + quant_bits magnitude bits
-// Sign bit: 0 = positive/zero, 1 = negative
-// Magnitude: unsigned value [0, 2^quant_bits - 1]
-// Delta prediction: plane[i] ^= plane[i-1] for better compression
-static size_t encode_bitplanes(const int16_t *values, size_t count, uint8_t *output, int max_index) {
-    int bits_per_coeff = ((int)ceilf(log2f(max_index))) + 1;  // 1 sign bit + quant_bits magnitude bits
-    size_t plane_bytes = (count + 7) / 8;  // Bytes needed for one bitplane
-    size_t output_bytes = plane_bytes * bits_per_coeff;
+// Twobit-map encoding: 2 bits per coefficient for common values
+// 00 = 0
+// 01 = +1
+// 10 = -1
+// 11 = other value (followed by int8_t in separate array)
+static size_t encode_twobitmap(const int8_t *values, size_t count, uint8_t *output) {
+    // Calculate size needed for twobit map
+    size_t map_bytes = (count * 2 + 7) / 8;  // 2 bits per coefficient
 
-    memset(output, 0, output_bytes);
+    // First pass: create significance map and count "other" values
+    uint8_t *map = output;
+    memset(map, 0, map_bytes);
 
-    // Separate bitplanes (sign + magnitude)
-    uint8_t **bitplanes = malloc(bits_per_coeff * sizeof(uint8_t*));
-    for (int plane = 0; plane < bits_per_coeff; plane++) {
-        bitplanes[plane] = output + (plane * plane_bytes);
-    }
-
-    // Extract coefficients into bitplanes
+    size_t other_count = 0;
     for (size_t i = 0; i < count; i++) {
-        int16_t val = values[i];
+        int8_t val = values[i];
+        uint8_t code;
 
-        // Extract sign and magnitude
-        uint8_t sign_bit = (val < 0) ? 1 : 0;
-        uint16_t magnitude = (val < 0) ? -val : val;
-
-        // Clamp magnitude to max value for quant_bits
-        uint16_t max_magnitude = max_index;
-        if (magnitude > max_magnitude) {
-            magnitude = max_magnitude;
+        if (val == 0) {
+            code = 0;  // 00
+        } else if (val == 1) {
+            code = 1;  // 01
+        } else if (val == -1) {
+            code = 2;  // 10
+        } else {
+            code = 3;  // 11
+            other_count++;
         }
 
-        size_t byte_idx = i / 8;
-        size_t bit_offset = i % 8;
+        // Write 2-bit code into map
+        size_t bit_offset = i * 2;
+        size_t byte_idx = bit_offset / 8;
+        size_t bit_in_byte = bit_offset % 8;
 
-        // Sign bitplane (plane 0)
-        if (sign_bit) {
-            bitplanes[0][byte_idx] |= (1 << bit_offset);
-        }
+        map[byte_idx] |= (code << bit_in_byte);
+    }
 
-        // Magnitude bitplanes (planes 1 to quant_bits)
-        for (int b = 0; b < bits_per_coeff - 1; b++) {
-            if (magnitude & (1 << b)) {
-                bitplanes[b + 1][byte_idx] |= (1 << bit_offset);
-            }
+    // Second pass: write "other" values
+    int8_t *other_values = (int8_t*)(output + map_bytes);
+    size_t other_idx = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        int8_t val = values[i];
+        if (val != 0 && val != 1 && val != -1) {
+            other_values[other_idx++] = val;
         }
     }
 
-    free(bitplanes);
-    return output_bytes;
+    return map_bytes + other_count;
 }
 
 //=============================================================================
@@ -383,7 +380,7 @@ typedef struct {
 } CoeffAccumulator;
 
 typedef struct {
-    int16_t *data;
+    int8_t *data;
     size_t count;
     size_t capacity;
 } QuantAccumulator;
@@ -418,11 +415,11 @@ static void init_statistics(int dwt_levels) {
         side_accumulators[i].count = 0;
 
         mid_quant_accumulators[i].capacity = 1024;
-        mid_quant_accumulators[i].data = malloc(mid_quant_accumulators[i].capacity * sizeof(int16_t));
+        mid_quant_accumulators[i].data = malloc(mid_quant_accumulators[i].capacity * sizeof(int8_t));
         mid_quant_accumulators[i].count = 0;
 
         side_quant_accumulators[i].capacity = 1024;
-        side_quant_accumulators[i].data = malloc(side_quant_accumulators[i].capacity * sizeof(int16_t));
+        side_quant_accumulators[i].data = malloc(side_quant_accumulators[i].capacity * sizeof(int8_t));
         side_quant_accumulators[i].count = 0;
     }
 
@@ -460,7 +457,7 @@ static void accumulate_coefficients(const float *coeffs, int dwt_levels, int chu
     free(sideband_starts);
 }
 
-static void accumulate_quantized(const int16_t *quant, int dwt_levels, int chunk_size, QuantAccumulator *accumulators) {
+static void accumulate_quantized(const int8_t *quant, int dwt_levels, int chunk_size, QuantAccumulator *accumulators) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -479,12 +476,12 @@ static void accumulate_quantized(const int16_t *quant, int dwt_levels, int chunk
         while (accumulators[s].count + band_size > accumulators[s].capacity) {
             accumulators[s].capacity *= 2;
             accumulators[s].data = realloc(accumulators[s].data,
-                                          accumulators[s].capacity * sizeof(int16_t));
+                                          accumulators[s].capacity * sizeof(int8_t));
         }
 
         // Copy coefficients
         memcpy(accumulators[s].data + accumulators[s].count,
-               quant + start, band_size * sizeof(int16_t));
+               quant + start, band_size * sizeof(int8_t));
         accumulators[s].count += band_size;
     }
 
@@ -581,7 +578,7 @@ static void print_histogram(const float *coeffs, size_t count, const char *title
 }
 
 typedef struct {
-    int16_t value;
+    int8_t value;
     size_t count;
     float percentage;
 } ValueFrequency;
@@ -595,40 +592,27 @@ static int compare_value_frequency(const void *a, const void *b) {
     return 0;
 }
 
-static void print_top5_quantized_values(const int16_t *quant, size_t count, const char *title) {
+static void print_top5_quantized_values(const int8_t *quant, size_t count, const char *title) {
     if (count == 0) {
         fprintf(stderr, "  %s: No data\n", title);
         return;
     }
 
-    // Create a hash map to count frequencies
-    // For simplicity, we'll use an array with a reasonable range
-    // Find min/max first
-    int16_t min_val = quant[0];
-    int16_t max_val = quant[0];
-    for (size_t i = 1; i < count; i++) {
-        if (quant[i] < min_val) min_val = quant[i];
-        if (quant[i] > max_val) max_val = quant[i];
-    }
+    // For int8_t range is at most 256, so we can use direct indexing
+    // Map from [-128, 127] to [0, 255]
+    size_t freq[256] = {0};
 
-    int range = max_val - min_val + 1;
-    if (range > 100000) {
-        fprintf(stderr, "  %s: Value range too large for analysis\n", title);
-        return;
-    }
-
-    // Count frequencies
-    size_t *freq = calloc(range, sizeof(size_t));
     for (size_t i = 0; i < count; i++) {
-        freq[quant[i] - min_val]++;
+        int idx = (int)quant[i] + 128;
+        freq[idx]++;
     }
 
     // Find all unique values with their frequencies
-    ValueFrequency *values = malloc(range * sizeof(ValueFrequency));
+    ValueFrequency values[256];
     int unique_count = 0;
-    for (int i = 0; i < range; i++) {
+    for (int i = 0; i < 256; i++) {
         if (freq[i] > 0) {
-            values[unique_count].value = min_val + i;
+            values[unique_count].value = (int8_t)(i - 128);
             values[unique_count].count = freq[i];
             values[unique_count].percentage = (float)(freq[i] * 100.0) / count;
             unique_count++;
@@ -638,17 +622,14 @@ static void print_top5_quantized_values(const int16_t *quant, size_t count, cons
     // Sort by frequency
     qsort(values, unique_count, sizeof(ValueFrequency), compare_value_frequency);
 
-    // Print top 5
-    fprintf(stderr, "  %s Top 5 Values:\n", title);
-    int print_count = (unique_count < 5) ? unique_count : 10;
+    // Print top 10
+    fprintf(stderr, "  %s Top 10 Values:\n", title);
+    int print_count = (unique_count < 10) ? unique_count : 10;
     for (int i = 0; i < print_count; i++) {
         fprintf(stderr, "    %6d: %8zu occurrences (%5.2f%%)\n",
                 values[i].value, values[i].count, values[i].percentage);
     }
     fprintf(stderr, "\n");
-
-    free(freq);
-    free(values);
 }
 
 void tad32_print_statistics(void) {
@@ -797,8 +778,8 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     float *dwt_mid = malloc(num_samples * sizeof(float));
     float *dwt_side = malloc(num_samples * sizeof(float));
 
-    int16_t *quant_mid = malloc(num_samples * sizeof(int16_t));
-    int16_t *quant_side = malloc(num_samples * sizeof(int16_t));
+    int8_t *quant_mid = malloc(num_samples * sizeof(int8_t));
+    int8_t *quant_side = malloc(num_samples * sizeof(int8_t));
 
     // Step 1: Deinterleave stereo
     for (size_t i = 0; i < num_samples; i++) {
@@ -844,10 +825,10 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         accumulate_quantized(quant_side, dwt_levels, num_samples, side_quant_accumulators);
     }
 
-    // Step 5: Encode with pure bitplanes (quant_bits + 1 bits per coefficient)
-    uint8_t *temp_buffer = malloc(num_samples * 4 * sizeof(int32_t));
-    size_t mid_size = encode_bitplanes(quant_mid, num_samples, temp_buffer, max_index);
-    size_t side_size = encode_bitplanes(quant_side, num_samples, temp_buffer + mid_size, max_index);
+    // Step 5: Encode with twobit-map significance map
+    uint8_t *temp_buffer = malloc(num_samples * 4);  // Generous buffer for twobitmap + other values
+    size_t mid_size = encode_twobitmap(quant_mid, num_samples, temp_buffer);
+    size_t side_size = encode_twobitmap(quant_side, num_samples, temp_buffer + mid_size);
 
     size_t uncompressed_size = mid_size + side_size;
 

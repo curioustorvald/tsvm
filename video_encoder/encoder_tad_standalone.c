@@ -114,7 +114,7 @@ int main(int argc, char *argv[]) {
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
         printf("Quant: %d\n", max_index);
-        printf("Encoding method: Pure bitplanes (%d bits per coefficient)\n", ((int)ceilf(log2f(max_index))) + 1);
+        printf("Encoding method: Twobit-map significance map (int8_t coefficients)\n");
         printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
     }
 
