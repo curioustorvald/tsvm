@@ -51,6 +51,7 @@ static void print_usage(const char *prog_name) {
     printf("  -q <bits>       Quantization bits (default: 7, range: 4-8)\n");
     printf("                  Higher = more precision, larger files\n");
     printf("  --no-zstd       Disable Zstd compression\n");
+    printf("  --no-twobitmap  Disable twobitmap encoding (use raw int8_t storage)\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
     printf("\nVersion: %s\n", ENCODER_VENDOR_STRING);
@@ -65,11 +66,13 @@ int main(int argc, char *argv[]) {
     char *output_file = NULL;
     int max_index = 7;  // Default QUANT_BITS
     int use_zstd = 1;
+    int use_twobitmap = 1;
     int verbose = 0;
 
     // Parse command line arguments
     static struct option long_options[] = {
         {"no-zstd", no_argument, 0, 'z'},
+        {"no-twobitmap", no_argument, 0, 't'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -90,6 +93,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'z':
                 use_zstd = 0;
+                break;
+            case 't':
+                use_twobitmap = 0;
                 break;
             case 'v':
                 verbose = 1;
@@ -114,7 +120,8 @@ int main(int argc, char *argv[]) {
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
         printf("Quant: %d\n", max_index);
-        printf("Encoding method: Twobit-map significance map (int8_t coefficients)\n");
+        printf("Encoding method: %s (int8_t coefficients)\n",
+               use_twobitmap ? "Twobit-map significance map" : "Raw int8_t storage");
         printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
     }
 
@@ -241,7 +248,7 @@ int main(int argc, char *argv[]) {
 
         // Encode chunk using linked tad32_encode_chunk() from encoder_tad32.c
         size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE,
-                                                 max_index, use_zstd, output_buffer);
+                                                 max_index, use_zstd, use_twobitmap, output_buffer);
 
         if (encoded_size == 0) {
             fprintf(stderr, "Error: Chunk encoding failed at chunk %zu\n", chunk_idx);

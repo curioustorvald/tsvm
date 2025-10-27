@@ -623,8 +623,8 @@ static void print_top5_quantized_values(const int8_t *quant, size_t count, const
     qsort(values, unique_count, sizeof(ValueFrequency), compare_value_frequency);
 
     // Print top 10
-    fprintf(stderr, "  %s Top 10 Values:\n", title);
-    int print_count = (unique_count < 10) ? unique_count : 10;
+    fprintf(stderr, "  %s Top 100 Values:\n", title);
+    int print_count = (unique_count < 100) ? unique_count : 100;
     for (int i = 0; i < print_count; i++) {
         fprintf(stderr, "    %6d: %8zu occurrences (%5.2f%%)\n",
                 values[i].value, values[i].count, values[i].percentage);
@@ -761,7 +761,7 @@ void tad32_free_statistics(void) {
 //=============================================================================
 
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
-                          int max_index, int use_zstd, uint8_t *output) {
+                          int max_index, int use_zstd, int use_twobitmap, uint8_t *output) {
     // Calculate DWT levels from chunk size
     int dwt_levels = calculate_dwt_levels(num_samples);
     if (dwt_levels < 0) {
@@ -825,10 +825,20 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         accumulate_quantized(quant_side, dwt_levels, num_samples, side_quant_accumulators);
     }
 
-    // Step 5: Encode with twobit-map significance map
-    uint8_t *temp_buffer = malloc(num_samples * 4);  // Generous buffer for twobitmap + other values
-    size_t mid_size = encode_twobitmap(quant_mid, num_samples, temp_buffer);
-    size_t side_size = encode_twobitmap(quant_side, num_samples, temp_buffer + mid_size);
+    // Step 5: Encode with twobit-map significance map or raw int8_t storage
+    uint8_t *temp_buffer = malloc(num_samples * 4);  // Generous buffer
+    size_t mid_size, side_size;
+
+    if (use_twobitmap) {
+        mid_size = encode_twobitmap(quant_mid, num_samples, temp_buffer);
+        side_size = encode_twobitmap(quant_side, num_samples, temp_buffer + mid_size);
+    } else {
+        // Raw int8_t storage
+        memcpy(temp_buffer, quant_mid, num_samples);
+        mid_size = num_samples;
+        memcpy(temp_buffer + mid_size, quant_side, num_samples);
+        side_size = num_samples;
+    }
 
     size_t uncompressed_size = mid_size + side_size;
 
