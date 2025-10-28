@@ -50,6 +50,9 @@ static void print_usage(const char *prog_name) {
     printf("  -o <file>       Output TAD32 file\n");
     printf("  -q <bits>       Quantization bits (default: 7, range: 4-8)\n");
     printf("                  Higher = more precision, larger files\n");
+    printf("  -s <scale>      Quantiser scaling factor (default: 1.0, range: 0.5-4.0)\n");
+    printf("                  Higher = more aggressive quantization, smaller files\n");
+    printf("                  2.0 = quantize 2x coarser than baseline\n");
     printf("  --no-zstd       Disable Zstd compression\n");
     printf("  --no-twobitmap  Disable twobitmap encoding (use raw int8_t storage)\n");
     printf("  -v              Verbose output\n");
@@ -65,6 +68,7 @@ int main(int argc, char *argv[]) {
     char *input_file = NULL;
     char *output_file = NULL;
     int max_index = 7;  // Default QUANT_BITS
+    float quantiser_scale = 1.0f;  // Default quantiser scaling
     int use_zstd = 1;
     int use_twobitmap = 1;
     int verbose = 0;
@@ -79,7 +83,7 @@ int main(int argc, char *argv[]) {
 
     int opt;
     int option_index = 0;
-    while ((opt = getopt_long(argc, argv, "i:o:q:vh", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:q:s:vh", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'i':
                 input_file = optarg;
@@ -89,7 +93,13 @@ int main(int argc, char *argv[]) {
                 break;
             case 'q':
                 max_index = atoi(optarg);
-
+                break;
+            case 's':
+                quantiser_scale = atof(optarg);
+                if (quantiser_scale < 0.5f || quantiser_scale > 4.0f) {
+                    fprintf(stderr, "Error: Quantiser scale must be in range 0.5-4.0\n");
+                    return 1;
+                }
                 break;
             case 'z':
                 use_zstd = 0;
@@ -119,7 +129,8 @@ int main(int argc, char *argv[]) {
         printf("%s\n", ENCODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
-        printf("Quant: %d\n", max_index);
+        printf("Quant bits: %d\n", max_index);
+        printf("Quantiser scale: %.2f\n", quantiser_scale);
         printf("Encoding method: %s (int8_t coefficients)\n",
                use_twobitmap ? "Twobit-map significance map" : "Raw int8_t storage");
         printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
@@ -248,7 +259,8 @@ int main(int argc, char *argv[]) {
 
         // Encode chunk using linked tad32_encode_chunk() from encoder_tad32.c
         size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE,
-                                                 max_index, use_zstd, use_twobitmap, output_buffer);
+                                                 max_index, use_zstd, use_twobitmap,
+                                                 quantiser_scale, output_buffer);
 
         if (encoded_size == 0) {
             fprintf(stderr, "Error: Chunk encoding failed at chunk %zu\n", chunk_idx);

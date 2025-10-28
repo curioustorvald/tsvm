@@ -18,10 +18,26 @@
 // Index 0 = LL band, Index 1-9 = H bands (L9 to L1)
 static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f};
 
+// Base quantiser weight table (10 subbands: LL + 9 H bands)
+// Linearly spaced from 1.0 (LL) to 2.0 (H9)
+// These weights are multiplied by quantiser_scale during quantization
+static const float BASE_QUANTISER_WEIGHTS[] = {
+    1.0f,      // LL (L9) - finest preservation
+    1.111f,    // H (L9)
+    1.222f,    // H (L8)
+    1.333f,    // H (L7)
+    1.444f,    // H (L6)
+    1.556f,    // H (L5)
+    1.667f,    // H (L4)
+    1.778f,    // H (L3)
+    1.889f,    // H (L2)
+    2.0f       // H (L1) - coarsest quantization
+};
+
 // Forward declarations for internal functions
 static void dwt_dd4_forward_1d(float *data, int length);
 static void dwt_dd4_forward_multilevel(float *data, int length, int levels);
-static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index);
+static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index, float quantiser_scale);
 static size_t encode_twobitmap(const int8_t *values, size_t count, uint8_t *output);
 
 static inline float FCLAMP(float x, float min, float max) {
@@ -229,7 +245,7 @@ static void compress_mu_law(float *left, float *right, size_t count) {
 // Quantization with Frequency-Dependent Weighting
 //=============================================================================
 
-#define LAMBDA_FIXED 5.0f
+#define LAMBDA_FIXED 6.0f
 
 // Lambda-based companding encoder (based on Laplacian distribution CDF)
 // val must be normalised to [-1,1]
@@ -264,7 +280,7 @@ static int8_t lambda_companding(float val, int max_index) {
     return (int8_t)(sign * index);
 }
 
-static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index) {
+static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index, float quantiser_scale) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -288,8 +304,10 @@ static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, si
             current_subband_index[i] = sideband;
         }
 
-        float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband])); // val is normalised to [-1,1]
-        int16_t quant_val = lambda_companding(val, max_index);
+        // Apply base weight and quantiser scaling
+        float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
+        float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband] * weight)); // val is normalised to [-1,1]
+        int8_t quant_val = lambda_companding(val, max_index);
 
         quantized[i] = quant_val;
     }
@@ -761,7 +779,8 @@ void tad32_free_statistics(void) {
 //=============================================================================
 
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
-                          int max_index, int use_zstd, int use_twobitmap, uint8_t *output) {
+                          int max_index, int use_zstd, int use_twobitmap,
+                          float quantiser_scale, uint8_t *output) {
     // Calculate DWT levels from chunk size
     int dwt_levels = calculate_dwt_levels(num_samples);
     if (dwt_levels < 0) {
@@ -815,9 +834,9 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         accumulate_coefficients(dwt_side, dwt_levels, num_samples, side_accumulators);
     }
 
-    // Step 4: Quantize with frequency-dependent weights and dead zone
-    quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL);
-    quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL);
+    // Step 4: Quantize with frequency-dependent weights and quantiser scaling
+    quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
+    quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
 
     // Step 4.5: Accumulate quantized coefficient statistics if enabled
     if (stats_enabled) {
@@ -829,16 +848,11 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     uint8_t *temp_buffer = malloc(num_samples * 4);  // Generous buffer
     size_t mid_size, side_size;
 
-    if (use_twobitmap) {
-        mid_size = encode_twobitmap(quant_mid, num_samples, temp_buffer);
-        side_size = encode_twobitmap(quant_side, num_samples, temp_buffer + mid_size);
-    } else {
-        // Raw int8_t storage
-        memcpy(temp_buffer, quant_mid, num_samples);
-        mid_size = num_samples;
-        memcpy(temp_buffer + mid_size, quant_side, num_samples);
-        side_size = num_samples;
-    }
+    // Raw int8_t storage
+    memcpy(temp_buffer, quant_mid, num_samples);
+    mid_size = num_samples;
+    memcpy(temp_buffer + mid_size, quant_side, num_samples);
+    side_size = num_samples;
 
     size_t uncompressed_size = mid_size + side_size;
 
