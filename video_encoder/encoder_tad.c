@@ -22,16 +22,16 @@ static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0
 // Linearly spaced from 1.0 (LL) to 2.0 (H9)
 // These weights are multiplied by quantiser_scale during quantization
 static const float BASE_QUANTISER_WEIGHTS[] = {
-    1.0f,      // LL (L9) - finest preservation
-    1.111f,    // H (L9)
-    1.222f,    // H (L8)
-    1.333f,    // H (L7)
-    1.444f,    // H (L6)
-    1.556f,    // H (L5)
-    1.667f,    // H (L4)
-    1.778f,    // H (L3)
-    1.889f,    // H (L2)
-    2.0f       // H (L1) - coarsest quantization
+    1.0f,    // LL (L9) - finest preservation
+    1.0f,    // H (L9)
+    1.0f,    // H (L8)
+    1.0f,    // H (L7)
+    1.0f,    // H (L6)
+    1.1f,    // H (L5)
+    1.2f,    // H (L4)
+    1.3f,    // H (L3)
+    1.4f,    // H (L2)
+    1.5f     // H (L1) - coarsest quantization
 };
 
 // Forward declarations for internal functions
@@ -223,9 +223,9 @@ static void compress_gamma(float *left, float *right, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // encode(x) = sign(x) * |x|^γ where γ=0.5
         float x = left[i];
-        left[i] = signum(x) * sqrtf(fabsf(x));
+        left[i] = signum(x) * powf(fabsf(x), 1.0f / 1.4142f);
         float y = right[i];
-        right[i] = signum(y) * sqrtf(fabsf(y));
+        right[i] = signum(y) * powf(fabsf(y), 1.0f / 1.4142f);
     }
 }
 

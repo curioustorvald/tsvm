@@ -22,16 +22,16 @@ static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0
 // Linearly spaced from 1.0 (LL) to 2.0 (H9)
 // These weights are multiplied by quantiser_scale during dequantization
 static const float BASE_QUANTISER_WEIGHTS[] = {
-    1.0f,      // LL (L9) - finest preservation
-    1.111f,    // H (L9)
-    1.222f,    // H (L8)
-    1.333f,    // H (L7)
-    1.444f,    // H (L6)
-    1.556f,    // H (L5)
-    1.667f,    // H (L4)
-    1.778f,    // H (L3)
-    1.889f,    // H (L2)
-    2.0f       // H (L1) - coarsest quantization
+    1.0f,    // LL (L9) - finest preservation
+    1.0f,    // H (L9)
+    1.0f,    // H (L8)
+    1.0f,    // H (L7)
+    1.0f,    // H (L6)
+    1.1f,    // H (L5)
+    1.2f,    // H (L4)
+    1.3f,    // H (L3)
+    1.4f,    // H (L2)
+    1.5f     // H (L1) - coarsest quantization
 };
 
 #define TAD_DEFAULT_CHUNK_SIZE 32768
@@ -50,6 +50,37 @@ static const float BASE_QUANTISER_WEIGHTS[] = {
 
 static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
+}
+
+//=============================================================================
+// WAV Header Writing
+//=============================================================================
+
+static void write_wav_header(FILE *output, uint32_t data_size, uint16_t channels, uint32_t sample_rate, uint16_t bits_per_sample) {
+    uint32_t byte_rate = sample_rate * channels * bits_per_sample / 8;
+    uint16_t block_align = channels * bits_per_sample / 8;
+    uint32_t chunk_size = 36 + data_size;
+
+    // RIFF header
+    fwrite("RIFF", 1, 4, output);
+    fwrite(&chunk_size, 4, 1, output);
+    fwrite("WAVE", 1, 4, output);
+
+    // fmt chunk
+    fwrite("fmt ", 1, 4, output);
+    uint32_t fmt_size = 16;
+    fwrite(&fmt_size, 4, 1, output);
+    uint16_t audio_format = 1;  // PCM
+    fwrite(&audio_format, 2, 1, output);
+    fwrite(&channels, 2, 1, output);
+    fwrite(&sample_rate, 4, 1, output);
+    fwrite(&byte_rate, 4, 1, output);
+    fwrite(&block_align, 2, 1, output);
+    fwrite(&bits_per_sample, 2, 1, output);
+
+    // data chunk header
+    fwrite("data", 1, 4, output);
+    fwrite(&data_size, 4, 1, output);
 }
 
 // Calculate DWT levels from chunk size (must be power of 2, >= 1024)
@@ -287,9 +318,9 @@ static void expand_gamma(float *left, float *right, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
         float x = left[i]; float a = fabsf(x);
-        left[i] = signum(x) * a * a;
+        left[i] = signum(x) * powf(a, 1.4142f);
         float y = right[i]; float b = fabsf(y);
-        right[i] = signum(y) * b * b;
+        right[i] = signum(y) * powf(b, 1.4142f);
     }
 }
 
@@ -514,30 +545,43 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
 //=============================================================================
 
 static void print_usage(const char *prog_name) {
-    printf("Usage: %s -i <input> -o <output> [options]\n", prog_name);
+    printf("Usage: %s -i <input> [options]\n", prog_name);
     printf("Options:\n");
     printf("  -i <file>       Input TAD file\n");
-    printf("  -o <file>       Output PCMu8 file (raw 8-bit unsigned stereo @ 32kHz)\n");
+    printf("  -o <file>       Output file (optional, auto-generated from input)\n");
+    printf("                  Default: input_qNN.wav (or .pcm with --raw-pcm)\n");
+    printf("  --raw-pcm       Output raw PCMu8 instead of WAV file\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
     printf("\nVersion: %s\n", DECODER_VENDOR_STRING);
-    printf("Output format: PCMu8 (unsigned 8-bit) stereo @ 32000 Hz\n");
-    printf("To convert to WAV: ffmpeg -f u8 -ar 32000 -ac 2 -i output.raw output.wav\n");
+    printf("Default output: WAV file (8-bit unsigned PCM, stereo @ 32000 Hz)\n");
+    printf("With --raw-pcm: PCMu8 raw file (8-bit unsigned stereo @ 32000 Hz)\n");
 }
 
 int main(int argc, char *argv[]) {
     char *input_file = NULL;
     char *output_file = NULL;
     int verbose = 0;
+    int raw_pcm = 0;
+
+    static struct option long_options[] = {
+        {"raw-pcm", no_argument, 0, 'r'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
 
     int opt;
-    while ((opt = getopt(argc, argv, "i:o:vh")) != -1) {
+    int option_index = 0;
+    while ((opt = getopt_long(argc, argv, "i:o:vh", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'i':
                 input_file = optarg;
                 break;
             case 'o':
                 output_file = optarg;
+                break;
+            case 'r':
+                raw_pcm = 1;
                 break;
             case 'v':
                 verbose = 1;
@@ -551,10 +595,50 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!input_file || !output_file) {
-        fprintf(stderr, "Error: Input and output files are required\n");
+    if (!input_file) {
+        fprintf(stderr, "Error: Input file is required\n");
         print_usage(argv[0]);
         return 1;
+    }
+
+    // Generate output filename if not provided
+    if (!output_file) {
+        size_t input_len = strlen(input_file);
+        output_file = malloc(input_len + 32);  // Extra space for extension
+
+        // Find the last directory separator
+        const char *basename_start = strrchr(input_file, '/');
+        if (!basename_start) basename_start = strrchr(input_file, '\\');
+        basename_start = basename_start ? basename_start + 1 : input_file;
+
+        // Copy directory part
+        size_t dir_len = basename_start - input_file;
+        strncpy(output_file, input_file, dir_len);
+
+        // Find the .tad extension
+        const char *ext = strrchr(basename_start, '.');
+        if (ext && strcmp(ext, ".tad") == 0) {
+            // Copy basename without .tad
+            size_t name_len = ext - basename_start;
+            strncpy(output_file + dir_len, basename_start, name_len);
+            output_file[dir_len + name_len] = '\0';
+
+            // Replace last dot with underscore (for .qNN pattern)
+            char *last_dot = strrchr(output_file, '.');
+            if (last_dot && last_dot > output_file + dir_len) {
+                *last_dot = '_';
+            }
+        } else {
+            // No .tad extension, copy entire basename
+            strcpy(output_file + dir_len, basename_start);
+        }
+
+        // Append appropriate extension
+        strcat(output_file, raw_pcm ? ".pcm" : ".wav");
+
+        if (verbose) {
+            printf("Auto-generated output path: %s\n", output_file);
+        }
     }
 
     if (verbose) {
@@ -586,6 +670,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Could not open output file: %s\n", output_file);
         free(input_data);
         return 1;
+    }
+
+    // Write placeholder WAV header if not in raw PCM mode
+    if (!raw_pcm) {
+        write_wav_header(output, 0, TAD_CHANNELS, TAD_SAMPLE_RATE, 8);
     }
 
     // Decode chunks
@@ -629,13 +718,24 @@ int main(int argc, char *argv[]) {
                total_samples / (double)TAD_SAMPLE_RATE);
     }
 
+    // Update WAV header with correct size if not in raw PCM mode
+    if (!raw_pcm) {
+        uint32_t data_size = total_samples * TAD_CHANNELS;
+        fseek(output, 0, SEEK_SET);
+        write_wav_header(output, data_size, TAD_CHANNELS, TAD_SAMPLE_RATE, 8);
+    }
+
     // Cleanup
     free(input_data);
     free(chunk_output);
     fclose(output);
 
     printf("Output written to: %s\n", output_file);
-    printf("Format: PCMu8 stereo @ %d Hz\n", TAD_SAMPLE_RATE);
+    if (raw_pcm) {
+        printf("Format: PCMu8 stereo @ %d Hz (raw PCM)\n", TAD_SAMPLE_RATE);
+    } else {
+        printf("Format: WAV file (8-bit unsigned PCM, stereo @ %d Hz)\n", TAD_SAMPLE_RATE);
+    }
 
     return 0;
 }

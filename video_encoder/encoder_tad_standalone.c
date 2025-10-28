@@ -44,10 +44,10 @@ static void generate_random_filename(char *filename) {
 //=============================================================================
 
 static void print_usage(const char *prog_name) {
-    printf("Usage: %s -i <input> -o <output> [options]\n", prog_name);
+    printf("Usage: %s -i <input> [options]\n", prog_name);
     printf("Options:\n");
     printf("  -i <file>       Input audio file (any format supported by FFmpeg)\n");
-    printf("  -o <file>       Output TAD32 file\n");
+    printf("  -o <file>       Output TAD32 file (optional, auto-generated as input.qN.tad)\n");
     printf("  -q <bits>       Quantization bits (default: 7, range: 4-8)\n");
     printf("                  Higher = more precision, larger files\n");
     printf("  -s <scale>      Quantiser scaling factor (default: 1.0, range: 0.5-4.0)\n");
@@ -119,10 +119,45 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!input_file || !output_file) {
-        fprintf(stderr, "Error: Input and output files are required\n");
+    if (!input_file) {
+        fprintf(stderr, "Error: Input file is required\n");
         print_usage(argv[0]);
         return 1;
+    }
+
+    // Generate output filename if not provided
+    if (!output_file) {
+        // Allocate space for output filename
+        size_t input_len = strlen(input_file);
+        output_file = malloc(input_len + 32);  // Extra space for .qNN.tad
+
+        // Find the last directory separator
+        const char *basename_start = strrchr(input_file, '/');
+        if (!basename_start) basename_start = strrchr(input_file, '\\');
+        basename_start = basename_start ? basename_start + 1 : input_file;
+
+        // Copy directory part
+        size_t dir_len = basename_start - input_file;
+        strncpy(output_file, input_file, dir_len);
+
+        // Find the extension (last dot after basename)
+        const char *ext = strrchr(basename_start, '.');
+        if (ext && ext > basename_start) {
+            // Copy basename without extension
+            size_t name_len = ext - basename_start;
+            strncpy(output_file + dir_len, basename_start, name_len);
+            output_file[dir_len + name_len] = '\0';
+        } else {
+            // No extension, copy entire basename
+            strcpy(output_file + dir_len, basename_start);
+        }
+
+        // Append .qNN.tad
+        sprintf(output_file + strlen(output_file), ".q%d.tad", max_index);
+
+        if (verbose) {
+            printf("Auto-generated output path: %s\n", output_file);
+        }
     }
 
     if (verbose) {
