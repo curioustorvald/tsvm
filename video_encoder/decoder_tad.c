@@ -342,10 +342,15 @@ static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *lef
     const float scale = 127.5f;
     const float bias  = 128.0f;
 
+    // Reduced dither amplitude to coordinate with coefficient-domain dithering
+    // The encoder now adds TPDF dither in coefficient domain, so we reduce
+    // sample-domain dither by ~60% to avoid doubling the noise floor
+    const float dither_scale = 0.2f;  // Reduced from 0.5 (was ±0.5 LSB, now ±0.2 LSB)
+
     for (size_t i = 0; i < count; i++) {
         // --- LEFT channel ---
         float feedbackL = b1 * dither_error[0][0] + b2 * dither_error[0][1];
-        float ditherL = 0.5f * tpdf1(); // ±0.5 LSB TPDF
+        float ditherL = dither_scale * tpdf1(); // Reduced TPDF dither
         float shapedL = fleft[i] + feedbackL + ditherL / scale;
         shapedL = FCLAMP(shapedL, -1.0f, 1.0f);
 
@@ -360,7 +365,7 @@ static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *lef
 
         // --- RIGHT channel ---
         float feedbackR = b1 * dither_error[1][0] + b2 * dither_error[1][1];
-        float ditherR = 0.5f * tpdf1();
+        float ditherR = dither_scale * tpdf1(); // Reduced TPDF dither
         float shapedR = fright[i] + feedbackR + ditherR / scale;
         shapedR = FCLAMP(shapedR, -1.0f, 1.0f);
 
