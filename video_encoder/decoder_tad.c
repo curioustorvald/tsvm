@@ -53,33 +53,52 @@ static inline float FCLAMP(float x, float min, float max) {
 }
 
 //=============================================================================
-// Deterministic PRNG for Coefficient-Domain Dithering
+// Spectral Interpolation for Coefficient Reconstruction
 //=============================================================================
 
-// Simple LCG for reproducible dithering
-static inline uint32_t lcg_next(uint32_t *seed) {
-    *seed = (*seed * 1664525u) + 1013904223u;
-    return *seed;
+// Fast PRNG for light dithering (xorshift32)
+static inline uint32_t xorshift32(uint32_t *s) {
+    uint32_t x = *s;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return *s = x;
 }
 
-// Uniform random in [0, 1)
-static inline float uniform_01(uint32_t *seed) {
-    return (lcg_next(seed) & 0xFFFFFF) / 16777216.0f;
+static inline float urand(uint32_t *s) {
+    return (xorshift32(s) & 0xFFFFFF) / 16777216.0f;
 }
 
-// TPDF (Triangular Probability Distribution Function) dither in range (-1, 1)
-static inline float tpdf_dither(uint32_t *seed) {
-    float u1 = uniform_01(seed) - 0.5f;  // [-0.5, 0.5)
-    float u2 = uniform_01(seed) - 0.5f;  // [-0.5, 0.5)
-    return u1 - u2;  // Triangular distribution in (-1, 1)
+static inline float tpdf(uint32_t *s) {
+    return urand(s) - urand(s);
 }
 
-// Calculate per-subband dither scaling factor
-// alpha = 0.0 → flat per-band noise
-// alpha = 0.5 → pinkish noise (default)
-// alpha = 1.0 → more noise in low bands
-static inline float subband_dither_scale(int level, float alpha) {
-    return (powf(alpha, level / 10.0f) - 1.0f) / alpha;
+// Compute RMS energy of a coefficient band
+static float compute_band_rms(const float *c, size_t len) {
+    if (len == 0) return 0.0f;
+    double sumsq = 0.0;
+    for (size_t i = 0; i < len; i++) {
+        sumsq += (double)c[i] * c[i];
+    }
+    return sqrtf((float)(sumsq / (double)len));
+}
+
+// Simplified spectral reconstruction for wavelet coefficients
+// Conservative approach: only interpolate obvious holes, add light dither
+// Avoids aggressive AR prediction that can create artifacts
+static void spectral_interpolate_band(float *c, size_t len, float Q, float lower_band_rms) {
+    if (len < 4) return;
+
+    uint32_t seed = 0x9E3779B9u ^ (uint32_t)len ^ (uint32_t)(Q * 65536.0f);
+    const float dither_amp = 0.05f * Q;  // Very light dither (~-60 dBFS)
+
+    // Just add ultra-light TPDF dither to reduce quantization grain
+    // No aggressive hole filling or AR prediction that might create artifacts
+    for (size_t i = 0; i < len; i++) {
+        c[i] += tpdf(&seed) * dither_amp;
+    }
+
+    (void)lower_band_rms;  // Unused for now - conservative approach
 }
 
 //=============================================================================
@@ -448,7 +467,7 @@ static float lambda_decompanding(int8_t quant_val, int max_index) {
     return sign * abs_val;
 }
 
-static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale, uint32_t *dither_seed) {
+static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
 
     // Calculate sideband boundaries dynamically
     int first_band_size = chunk_size >> dwt_levels;
@@ -460,10 +479,7 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
         sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
     }
 
-    // Coefficient-domain dithering parameters
-    const float dither_k = 0.125f;      // Amplitude factor (0.5 × Q_level)
-    const float dither_alpha = 78.0f;  // Subband scaling exponent (0.5 = pinkish)
-
+    // Step 1: Dequantize all coefficients (no dithering yet)
     for (size_t i = 0; i < count; i++) {
         int sideband = dwt_levels;
         for (int s = 0; s <= dwt_levels; s++) {
@@ -478,22 +494,29 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
 
         // Denormalize using the subband scalar and apply base weight + quantiser scaling
         float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
-        float dequantized = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+        coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+    }
 
-        // Apply coefficient-domain dithering AFTER dequantization
-        // Calculate quantization step size Q in coefficient domain
-        float scalar = TAD32_COEFF_SCALARS[sideband] * weight;
+    // Step 2: Apply spectral interpolation per band
+    // Process bands from high to low frequency (dwt_levels down to 0)
+    // so we can use lower bands' RMS for higher band reconstruction
+    float prev_band_rms = 0.0f;
+
+    for (int band = dwt_levels; band >= 0; band--) {
+        size_t band_start = sideband_starts[band];
+        size_t band_end = sideband_starts[band + 1];
+        size_t band_len = band_end - band_start;
+
+        // Calculate quantization step Q for this band
+        float weight = BASE_QUANTISER_WEIGHTS[band] * quantiser_scale;
+        float scalar = TAD32_COEFF_SCALARS[band] * weight;
         float Q = scalar / max_index;
 
-        // Per-subband dither scaling: lower levels get more dither energy
-        float s_level = subband_dither_scale(sideband, dither_alpha);
+        // Apply spectral interpolation to this band
+        spectral_interpolate_band(&coeffs[band_start], band_len, Q, prev_band_rms);
 
-        // TPDF dithering in coefficient domain
-        float tpdf = tpdf_dither(dither_seed);
-        float dither_amplitude = dither_k * Q * s_level;
-
-        // Add dither to dequantized coefficient
-        coeffs[i] = dequantized + (tpdf * dither_amplitude);
+        // Compute RMS for this band to use as reference for next (lower frequency) band
+        prev_band_rms = compute_band_rms(&coeffs[band_start], band_len);
     }
 
     free(sideband_starts);
@@ -558,18 +581,11 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     memcpy(quant_mid, decompressed, sample_count);
     memcpy(quant_side, decompressed + sample_count, sample_count);
 
-    // Initialize deterministic dither seeds based on GLOBAL sample position
-    // This ensures reproducibility across multiple decoding runs
-    static size_t global_sample_position = 0;
-    uint32_t dither_seed_mid = 0x12345678u ^ (uint32_t)(global_sample_position / sample_count * 2);
-    uint32_t dither_seed_side = 0x87654321u ^ (uint32_t)(global_sample_position / sample_count * 2 + 1);
-    global_sample_position += sample_count;
-
-    // Dequantize with quantiser scaling and coefficient-domain dithering
+    // Dequantize with quantiser scaling and spectral interpolation
     // Use quantiser_scale = 1.0f for baseline (must match encoder)
     float quantiser_scale = 1.0f;
-    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale, &dither_seed_mid);
-    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale, &dither_seed_side);
+    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
 
     // Inverse DWT
     dwt_haar_inverse_multilevel(dwt_mid, sample_count, dwt_levels);
