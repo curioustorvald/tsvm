@@ -37,41 +37,11 @@ static const float BASE_QUANTISER_WEIGHTS[] = {
 // Forward declarations for internal functions
 static void dwt_dd4_forward_1d(float *data, int length);
 static void dwt_dd4_forward_multilevel(float *data, int length, int levels);
-static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index, float quantiser_scale, uint32_t *dither_seed);
+static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index, float quantiser_scale);
 static size_t encode_twobitmap(const int8_t *values, size_t count, uint8_t *output);
 
 static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
-}
-
-//=============================================================================
-// Deterministic PRNG for Coefficient-Domain Dithering
-//=============================================================================
-
-// Simple LCG for reproducible dithering
-static inline uint32_t lcg_next(uint32_t *seed) {
-    *seed = (*seed * 1664525u) + 1013904223u;
-    return *seed;
-}
-
-// Uniform random in [0, 1)
-static inline float uniform_01(uint32_t *seed) {
-    return (lcg_next(seed) & 0xFFFFFF) / 16777216.0f;
-}
-
-// TPDF (Triangular Probability Distribution Function) dither in range (-1, 1)
-static inline float tpdf_dither(uint32_t *seed) {
-    float u1 = uniform_01(seed) - 0.5f;  // [-0.5, 0.5)
-    float u2 = uniform_01(seed) - 0.5f;  // [-0.5, 0.5)
-    return u1 - u2;  // Triangular distribution in (-1, 1)
-}
-
-// Calculate per-subband dither scaling factor
-// alpha = 0.0 → flat per-band noise
-// alpha = 0.5 → pinkish noise (default)
-// alpha = 1.0 → more noise in low bands
-static inline float subband_dither_scale(int level, float alpha, float scale) {
-    return (powf(alpha, level / 10.0f) - 1.0f) / alpha * scale;
 }
 
 // Calculate DWT levels from chunk size
@@ -310,7 +280,7 @@ static int8_t lambda_companding(float val, int max_index) {
     return (int8_t)(sign * index);
 }
 
-static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index, float quantiser_scale, uint32_t *dither_seed) {
+static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index, float quantiser_scale) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -319,10 +289,6 @@ static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, si
     for (int i = 2; i <= dwt_levels + 1; i++) {
         sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
     }
-
-    // Coefficient-domain dithering parameters
-    const float dither_k = 0.5f;      // Amplitude factor (0.5 × Q_level)
-    const float dither_alpha = 78.0f;  // Subband scaling exponent (0.5 = pinkish)
 
     for (size_t i = 0; i < count; i++) {
         int sideband = dwt_levels;
@@ -340,22 +306,7 @@ static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, si
 
         // Apply base weight and quantiser scaling
         float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
-        float scalar = TAD32_COEFF_SCALARS[sideband] * weight;
-
-        // Calculate quantization step size Q in coefficient domain
-        // Q represents the spacing between quantization levels
-        float Q = scalar / max_index;
-
-        // Per-subband dither scaling: lower levels get more dither energy
-        float s_level = subband_dither_scale(sideband, dither_alpha, 0.3f);
-
-        // TPDF dithering in coefficient domain
-        float tpdf = tpdf_dither(dither_seed);
-        float dither_amplitude = dither_k * Q * s_level;
-        float dithered_coeff = coeffs[i] + (tpdf * dither_amplitude);
-
-        // Normalize dithered coefficient to [-1, 1] range for quantization
-        float val = dithered_coeff / scalar;
+        float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband] * weight)); // val is normalised to [-1,1]
         int8_t quant_val = lambda_companding(val, max_index);
 
         quantized[i] = quant_val;
@@ -883,16 +834,9 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         accumulate_coefficients(dwt_side, dwt_levels, num_samples, side_accumulators);
     }
 
-    // Step 3.75: Initialize deterministic dither seed for coefficient-domain dithering
-    // Using a static counter ensures reproducible dithering per chunk
-    static uint32_t chunk_counter = 0;
-    uint32_t dither_seed_mid = 0x12345678u ^ (chunk_counter * 2);      // Seed for Mid channel
-    uint32_t dither_seed_side = 0x87654321u ^ (chunk_counter * 2 + 1);  // Seed for Side channel
-    chunk_counter++;
-
-    // Step 4: Quantize with frequency-dependent weights, quantiser scaling, and coefficient-domain dithering
-    quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale, &dither_seed_mid);
-    quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale, &dither_seed_side);
+    // Step 4: Quantize with frequency-dependent weights and quantiser scaling
+    quantize_dwt_coefficients(dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
+    quantize_dwt_coefficients(dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
 
     // Step 4.5: Accumulate quantized coefficient statistics if enabled
     if (stats_enabled) {
