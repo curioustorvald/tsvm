@@ -1348,7 +1348,7 @@ try {
             }
             else if (packetType === TAV_PACKET_AUDIO_TAD) {
                 let sampleLen = seqread.readShort()
-                let payloadLen = seqread.readInt() // compressed size + 6
+                let payloadLen = seqread.readInt() // compressed size + 7
 
                 if (!tadInitialised) {
                     tadInitialised = true

@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251024 (3d-dwt,tad)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251030 (3d-dwt,tad)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -8996,11 +8996,15 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
     if (tad_quality > TAD32_QUALITY_MAX) tad_quality = TAD32_QUALITY_MAX;
     if (tad_quality < TAD32_QUALITY_MIN) tad_quality = TAD32_QUALITY_MIN;
 
+    // Convert quality (0-5) to max_index for quantization
+    int max_index = tad32_quality_to_max_index(tad_quality);
+    float quantiser_scale = 1.0f;  // Baseline quantizer scaling
+
     // Allocate output buffer (generous size for TAD chunk)
     size_t max_output_size = samples_to_read * 4 * sizeof(int16_t) + 1024;
     uint8_t *tad_output = malloc(max_output_size);
 
-    size_t tad_encoded_size = tad32_encode_chunk(pcm32_buffer, samples_to_read, tad_quality, 1, tad_output);
+    size_t tad_encoded_size = tad32_encode_chunk(pcm32_buffer, samples_to_read, max_index, quantiser_scale, tad_output);
 
     if (tad_encoded_size == 0) {
         fprintf(stderr, "Error: TAD32 encoding failed\n");
@@ -9009,10 +9013,12 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
         return 0;
     }
 
-    // Parse TAD chunk format: [sample_count][payload_size][payload]
+    // Parse TAD chunk format: [sample_count][quantisation index][payload_size][payload]
     uint8_t *read_ptr = tad_output;
     uint16_t sample_count = *((uint16_t*)read_ptr);
     read_ptr += sizeof(uint16_t);
+    uint8_t quant_size = *((uint8_t*)read_ptr);
+    read_ptr += sizeof(uint8_t);
     uint32_t tad_payload_size = *((uint32_t*)read_ptr);
     read_ptr += sizeof(uint32_t);
     uint8_t *tad_payload = read_ptr;
@@ -9022,10 +9028,11 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
     fwrite(&packet_type, 1, 1, output);
 
     uint32_t tav_payload_size = (uint32_t)tad_payload_size;
-    uint32_t tav_payload_size_plus_6 = (uint32_t)tad_payload_size + 6;
+    uint32_t tav_payload_size_plus_6 = (uint32_t)tad_payload_size + 7;
     fwrite(&sample_count, sizeof(uint16_t), 1, output);
     fwrite(&tav_payload_size_plus_6, sizeof(uint32_t), 1, output);
     fwrite(&sample_count, sizeof(uint16_t), 1, output);
+    fwrite(&quant_size, sizeof(uint8_t), 1, output);
     fwrite(&tav_payload_size, sizeof(uint32_t), 1, output);
     fwrite(tad_payload, 1, tad_payload_size, output);
 
@@ -10579,10 +10586,12 @@ int main(int argc, char *argv[]) {
                 break;
             case 1027: // --pcm8-audio
                 enc->pcm8_audio = 1;
+                enc->tad_audio = 0;
                 printf("8-bit PCM audio mode enabled (packet 0x21)\n");
                 break;
             case 1028: // --tad-audio
                 enc->tad_audio = 1;
+                enc->pcm8_audio = 0;
                 printf("TAD audio mode enabled (packet 0x24, quality follows -q)\n");
                 break;
             case 1050: // --single-pass
@@ -10659,7 +10668,7 @@ int main(int argc, char *argv[]) {
 
     // if temporal-dwt is used, and user did not select suitable audio codec, force PCMu8 (or TAD when it's production-ready)
     if (enc->enable_temporal_dwt && !enc->pcm8_audio && !enc->tad_audio) {
-        enc->pcm8_audio = 1; // TODO replace with tad_audio when it's production-ready
+        enc->tad_audio = 1;
     }
 
     if ((!enc->input_file && !enc->test_mode) || !enc->output_file) {

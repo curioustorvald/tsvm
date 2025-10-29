@@ -48,13 +48,11 @@ static void print_usage(const char *prog_name) {
     printf("Options:\n");
     printf("  -i <file>       Input audio file (any format supported by FFmpeg)\n");
     printf("  -o <file>       Output TAD32 file (optional, auto-generated as input.qN.tad)\n");
-    printf("  -q <bits>       Quantization bits (default: 7, range: 4-8)\n");
+    printf("  -q <bits>       Positive side quantization steps (default: 47, range: up to 127)\n");
     printf("                  Higher = more precision, larger files\n");
     printf("  -s <scale>      Quantiser scaling factor (default: 1.0, range: 0.5-4.0)\n");
     printf("                  Higher = more aggressive quantization, smaller files\n");
     printf("                  2.0 = quantize 2x coarser than baseline\n");
-    printf("  --no-zstd       Disable Zstd compression\n");
-    printf("  --no-twobitmap  Disable twobitmap encoding (use raw int8_t storage)\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
     printf("\nVersion: %s\n", ENCODER_VENDOR_STRING);
@@ -67,7 +65,7 @@ int main(int argc, char *argv[]) {
 
     char *input_file = NULL;
     char *output_file = NULL;
-    int max_index = 7;  // Default QUANT_BITS
+    int max_index = 47;  // Default QUANT_BITS
     float quantiser_scale = 1.0f;  // Default quantiser scaling
     int verbose = 0;
 

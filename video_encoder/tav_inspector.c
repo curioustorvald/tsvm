@@ -738,13 +738,22 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
             case TAV_PACKET_AUDIO_TAD: {
                 stats.audio_count++;
                 stats.audio_tad_count++;
-                // Read payload_size + 2
-                uint32_t payload_size_plus_6;
-                if (fread(&payload_size_plus_6, sizeof(uint32_t), 1, fp) != 1) break;
+
+                // Read sample count
+                uint16_t sample_count0;
+                if (fread(&sample_count0, sizeof(uint16_t), 1, fp) != 1) break;
+
+                // Read payload_size + 7
+                uint32_t payload_size_plus_7;
+                if (fread(&payload_size_plus_7, sizeof(uint32_t), 1, fp) != 1) break;
 
                 // Read sample count
                 uint16_t sample_count;
                 if (fread(&sample_count, sizeof(uint16_t), 1, fp) != 1) break;
+
+                // Read quantiser index
+                uint8_t quantiser;
+                if (fread(&quantiser, sizeof(uint8_t), 1, fp) != 1) break;
 
                 // Read compressed size
                 uint32_t compressed_size;
@@ -754,8 +763,8 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
                 stats.audio_tad_bytes += compressed_size;
 
                 if (!opts.summary_only && display) {
-                    printf(" - samples=%u, size=%u bytes (zstd compressed TAD32)",
-                           sample_count, compressed_size);
+                    printf(" - samples=%u, size=%u bytes, quantiser=%u steps (index %u)",
+                           sample_count, compressed_size, quantiser * 2 + 1, quantiser);
                 }
 
                 // Skip compressed data

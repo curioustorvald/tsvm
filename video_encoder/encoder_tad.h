@@ -20,13 +20,27 @@
 #define TAD32_ZSTD_LEVEL 15
 
 /**
+ * Convert quality level (0-5) to max_index for quantization
+ * Quality 0 = very low quality, small file (max_index=7, 3-bit)
+ * Quality 1 = low quality (max_index=15, 4-bit)
+ * Quality 2 = medium quality (max_index=31, 5-bit)
+ * Quality 3 = good quality (max_index=63, 6-bit) [DEFAULT]
+ * Quality 4 = high quality (max_index=127, 7-bit)
+ * Quality 5 = very high quality (max_index=255, 8-bit)
+ */
+static inline int tad32_quality_to_max_index(int quality) {
+    static const int quality_map[6] = {31, 35, 39, 47, 56, 89};
+    if (quality < 0) quality = 0;
+    if (quality > 5) quality = 5;
+    return quality_map[quality];
+}
+
+/**
  * Encode audio chunk with TAD32 codec (PCM32f version)
  *
  * @param pcm32_stereo    Input PCM32fLE stereo samples (interleaved L,R)
  * @param num_samples     Number of samples per channel (min 1024)
- * @param quant_bits      Quantization bits 4-12 (default: 7)
- * @param use_zstd        1=enable Zstd compression, 0=disable
- * @param use_twobitmap   1=enable twobitmap encoding, 0=raw int8_t storage
+ * @param max_index       Maximum quantization index (7=3bit, 15=4bit, 31=5bit, 63=6bit, 127=7bit)
  * @param quantiser_scale Quantiser scaling factor (1.0=baseline, 2.0=2x coarser quantization)
  *                        Higher values = more aggressive quantization = smaller files
  * @param output          Output buffer (must be large enough)
@@ -34,12 +48,12 @@
  *
  * Output format:
  *   uint16 sample_count (samples per channel)
- *   uint8  quant_bits (quantization bits used)
+ *   uint8  max_index (maximum quantization index)
  *   uint32 payload_size (bytes in payload)
- *   *      payload (encoded M/S data, optionally Zstd-compressed)
+ *   *      payload (encoded M/S data, Zstd-compressed with 2-bit twobitmap)
  */
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
-                          int quant_bits,
+                          int max_index,
                           float quantiser_scale, uint8_t *output);
 
 /**

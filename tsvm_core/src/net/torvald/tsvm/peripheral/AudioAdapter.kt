@@ -13,6 +13,7 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.getHashStr
 import net.torvald.tsvm.toInt
 import java.io.ByteArrayInputStream
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
@@ -134,8 +135,27 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal var tadQuality = 2  // Quality level used during encoding (0-5)
     @Volatile private var tadBusy = false
 
-    // TAD decoder constants
-    private val TAD_COEFF_SCALAR = 1024.0f
+    // TAD decoder constants - Coefficient scalars for each subband (matching C decoder)
+    // Index 0 = LL band, Index 1-9 = H bands (L9 to L1)
+    private val TAD32_COEFF_SCALARS = floatArrayOf(
+        64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f
+    )
+
+    // Base quantiser weight table (10 subbands: LL + 9 H bands)
+    private val BASE_QUANTISER_WEIGHTS = floatArrayOf(
+        1.0f,    // LL (L9) - finest preservation
+        1.0f,    // H (L9)
+        1.0f,    // H (L8)
+        1.0f,    // H (L7)
+        1.0f,    // H (L6)
+        1.1f,    // H (L5)
+        1.2f,    // H (L4)
+        1.3f,    // H (L3)
+        1.4f,    // H (L2)
+        1.5f     // H (L1) - coarsest quantization
+    )
+
+    private val LAMBDA_FIXED = 6.0f
 
     // Dither state for noise shaping (2 channels, 2 history samples each)
     private val ditherError = Array(2) { FloatArray(2) }
@@ -350,24 +370,84 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return frand01() - frand01()
     }
 
-    // M/S stereo correlation with noise-shaped dithering (matches C implementation)
-    private fun msCorrelate(mid: FloatArray, side: FloatArray, sampleCount: Int) {
+    // Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
+    // Converts quantized index back to normalized float in [-1, 1]
+    private fun lambdaDecompanding(quantVal: Short, maxIndex: Int): Float {
+        // Handle zero
+        if (quantVal == 0.toShort()) {
+            return 0.0f
+        }
+
+        val sign = if (quantVal < 0) -1 else 1
+        var absIndex = kotlin.math.abs(quantVal.toInt())
+
+        // Clamp to valid range
+        if (absIndex > maxIndex) absIndex = maxIndex
+
+        // Map index back to normalized CDF [0, 1]
+        val normalizedCdf = absIndex.toFloat() / maxIndex
+
+        // Map from [0, 1] back to [0.5, 1.0] (CDF range for positive half)
+        val cdf = 0.5f + normalizedCdf * 0.5f
+
+        // Inverse Laplacian CDF for x >= 0: x = -(1/λ) * ln(2*(1-F))
+        // For F in [0.5, 1.0]: x = -(1/λ) * ln(2*(1-F))
+        var absVal = -(1.0f / LAMBDA_FIXED) * kotlin.math.ln(2.0f * (1.0f - cdf))
+
+        // Clamp to [0, 1]
+        absVal = absVal.coerceIn(0.0f, 1.0f)
+
+        return sign * absVal
+    }
+
+    private fun signum(x: Float): Float {
+        return when {
+            x > 0.0f -> 1.0f
+            x < 0.0f -> -1.0f
+            else -> 0.0f
+        }
+    }
+
+    // Gamma expansion (inverse of gamma compression)
+    private fun expandGamma(left: FloatArray, right: FloatArray, count: Int) {
+        for (i in 0 until count) {
+            // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
+            val x = left[i]
+            val a = kotlin.math.abs(x)
+            left[i] = signum(x) * a.pow(1.4142f)
+
+            val y = right[i]
+            val b = kotlin.math.abs(y)
+            right[i] = signum(y) * b.pow(1.4142f)
+        }
+    }
+
+    // M/S stereo correlation (no dithering - that's now in spectral interpolation)
+    private fun msCorrelate(mid: FloatArray, side: FloatArray, left: FloatArray, right: FloatArray, sampleCount: Int) {
+        for (i in 0 until sampleCount) {
+            // Decode M/S → L/R
+            val m = mid[i]
+            val s = side[i]
+            left[i] = (m + s).coerceIn(-1.0f, 1.0f)
+            right[i] = (m - s).coerceIn(-1.0f, 1.0f)
+        }
+    }
+
+    // PCM32f to PCM8 conversion with noise-shaped dithering
+    private fun pcm32fToPcm8(fleft: FloatArray, fright: FloatArray, sampleCount: Int) {
         val b1 = 1.5f   // 1st feedback coefficient
         val b2 = -0.75f // 2nd feedback coefficient
         val scale = 127.5f
         val bias = 128
 
-        for (i in 0 until sampleCount) {
-            // Decode M/S → L/R
-            val m = mid[i]
-            val s = side[i]
-            val l = (m + s).coerceIn(-1.0f, 1.0f)
-            val r = (m - s).coerceIn(-1.0f, 1.0f)
+        // Reduced dither amplitude to coordinate with coefficient-domain dithering
+        val ditherScale = 0.2f  // Reduced from 0.5
 
+        for (i in 0 until sampleCount) {
             // --- LEFT channel ---
             val feedbackL = b1 * ditherError[0][0] + b2 * ditherError[0][1]
-            val ditherL = 0.5f * tpdf1() // ±0.5 LSB TPDF
-            val shapedL = (l + feedbackL + ditherL / scale).coerceIn(-1.0f, 1.0f)
+            val ditherL = ditherScale * tpdf1() // Reduced TPDF dither
+            val shapedL = (fleft[i] + feedbackL + ditherL / scale).coerceIn(-1.0f, 1.0f)
 
             val qL = (shapedL * scale).roundToInt().coerceIn(-128, 127)
             tadDecodedBin[i * 2L] = (qL + bias).toByte()
@@ -378,8 +458,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // --- RIGHT channel ---
             val feedbackR = b1 * ditherError[1][0] + b2 * ditherError[1][1]
-            val ditherR = 0.5f * tpdf1()
-            val shapedR = (r + feedbackR + ditherR / scale).coerceIn(-1.0f, 1.0f)
+            val ditherR = ditherScale * tpdf1()
+            val shapedR = (fright[i] + feedbackR + ditherR / scale).coerceIn(-1.0f, 1.0f)
 
             val qR = (shapedR * scale).roundToInt().coerceIn(-128, 127)
             tadDecodedBin[i * 2L + 1] = (qR + bias).toByte()
@@ -400,6 +480,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     (tadInputBin[offset++].toInt() and 0xFF) or
                             ((tadInputBin[offset++].toInt() and 0xFF) shl 8)
                     )
+            val maxIndex = tadInputBin[offset++].toInt() and 0xFF
             val payloadSize = (
                     (tadInputBin[offset++].toInt() and 0xFF) or
                             ((tadInputBin[offset++].toInt() and 0xFF) shl 8) or
@@ -436,16 +517,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Dequantize to Float32
             val dwtMid = FloatArray(sampleCount)
             val dwtSide = FloatArray(sampleCount)
-            dequantizeDwtCoefficients(quantMid, dwtMid, sampleCount, tadQuality, dwtLevels)
-            dequantizeDwtCoefficients(quantSide, dwtSide, sampleCount, tadQuality, dwtLevels)
+            dequantizeDwtCoefficients(quantMid, dwtMid, sampleCount, maxIndex, dwtLevels)
+            dequantizeDwtCoefficients(quantSide, dwtSide, sampleCount, maxIndex, dwtLevels)
 
-            // Inverse DWT (produces Float32 samples in range [-1.0, 1.0])
-            dwtDD4InverseMultilevel(dwtMid, sampleCount, dwtLevels)
-            dwtDD4InverseMultilevel(dwtSide, sampleCount, dwtLevels)
+            // Inverse DWT using CDF 9/7 wavelet (produces Float32 samples in range [-1.0, 1.0])
+            dwt97InverseMultilevel(dwtMid, sampleCount, dwtLevels)
+            dwt97InverseMultilevel(dwtSide, sampleCount, dwtLevels)
 
-            // M/S to L/R correlation with noise-shaped dithering
-            // Output is PCMu8 stereo written directly to tadDecodedBin
-            msCorrelate(dwtMid, dwtSide, sampleCount)
+            // M/S to L/R correlation
+            val pcm32Left = FloatArray(sampleCount)
+            val pcm32Right = FloatArray(sampleCount)
+            msCorrelate(dwtMid, dwtSide, pcm32Left, pcm32Right, sampleCount)
+
+            // Expand dynamic range (gamma expansion)
+            expandGamma(pcm32Left, pcm32Right, sampleCount)
+
+            // Dither to 8-bit PCMu8
+            pcm32fToPcm8(pcm32Left, pcm32Right, sampleCount)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -491,49 +579,58 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun calculateDwtLevels(chunkSize: Int): Int {
-        if (chunkSize < 1024) {
-            throw IllegalArgumentException("Chunk size $chunkSize is below minimum 1024")
-        }
-
-        var levels = 0
-        var size = chunkSize
-        while (size > 1) {
-            size = size shr 1
-            levels++
-        }
-        return levels - 2  // Maximum decomposition leaves 4-sample approximation
+        // Hard-coded to 9 levels to match C decoder
+        return 9
     }
 
-    private fun getQuantizationWeights(quality: Int, dwtLevels: Int): FloatArray {
-        // Extended base weights to support up to 16 DWT levels
-        val baseWeights = arrayOf(
-            /* 0*/floatArrayOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f),
-            /* 1*/floatArrayOf(1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f),
-            /* 2*/floatArrayOf(1.0f, 1.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 3*/floatArrayOf(0.2f, 1.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 4*/floatArrayOf(0.2f, 0.8f, 1.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 5*/floatArrayOf(0.2f, 0.8f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 6*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 7*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 8*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /* 9*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /*10*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /*11*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /*12*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /*13*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f, 1.5f),
-            /*14*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f, 1.5f),
-            /*15*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f, 1.5f),
-            /*16*/floatArrayOf(0.2f, 0.2f, 0.8f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.25f, 1.5f)
-        )
-        // Updated quality scale to match C implementation
-        val qualityScale = 4.0f + ((3 - quality) * 0.5f).coerceIn(0.0f, 1000.0f)
-        return FloatArray(dwtLevels) { i -> (baseWeights[dwtLevels][i.coerceIn(0, 15)] * qualityScale).coerceAtLeast(1.0f) }
+    // Compute RMS energy of a coefficient band
+    private fun computeBandRms(c: FloatArray, start: Int, len: Int): Float {
+        if (len == 0) return 0.0f
+        var sumsq = 0.0
+        for (i in 0 until len) {
+            val v = c[start + i].toDouble()
+            sumsq += v * v
+        }
+        return kotlin.math.sqrt((sumsq / len)).toFloat()
     }
 
-    private fun dequantizeDwtCoefficients(quantized: ShortArray, coeffs: FloatArray, count: Int, quality: Int, dwtLevels: Int) {
-        val weights = getQuantizationWeights(quality, dwtLevels)
+    // Fast PRNG for light dithering (xorshift32)
+    private var xorshift32State = 0x9E3779B9u
 
-        // Calculate sideband boundaries dynamically based on chunk size and DWT levels
+    private fun xorshift32(): UInt {
+        var x = xorshift32State
+        x = x xor (x shl 13)
+        x = x xor (x shr 17)
+        x = x xor (x shl 5)
+        xorshift32State = x
+        return x
+    }
+
+    private fun urand(): Float {
+        return (xorshift32() and 0xFFFFFFu).toFloat() / 16777216.0f
+    }
+
+    private fun tpdf(): Float {
+        return urand() - urand()
+    }
+
+    // Simplified spectral reconstruction for wavelet coefficients
+    // Conservative approach: only add light dither to reduce quantization grain
+    private fun spectralInterpolateBand(c: FloatArray, start: Int, len: Int, Q: Float, lowerBandRms: Float) {
+        if (len < 4) return
+
+        xorshift32State = 0x9E3779B9u xor len.toUInt() xor (Q * 65536.0f).toUInt()
+        val ditherAmp = 0.05f * Q  // Very light dither (~-60 dBFS)
+
+        // Just add ultra-light TPDF dither to reduce quantization grain
+        for (i in 0 until len) {
+            c[start + i] += tpdf() * ditherAmp
+        }
+    }
+
+    private fun dequantizeDwtCoefficients(quantized: ShortArray, coeffs: FloatArray, count: Int,
+                                         maxIndex: Int, dwtLevels: Int) {
+        // Calculate sideband boundaries dynamically
         val firstBandSize = count shr dwtLevels
         val sidebandStarts = IntArray(dwtLevels + 2)
         sidebandStarts[0] = 0
@@ -542,63 +639,131 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             sidebandStarts[i] = sidebandStarts[i - 1] + (firstBandSize shl (i - 2))
         }
 
+        // Step 1: Dequantize all coefficients using lambda decompanding
+        val quantiserScale = 1.0f
         for (i in 0 until count) {
             var sideband = dwtLevels
-            for (s in 0 until dwtLevels + 1) {
+            for (s in 0..dwtLevels) {
                 if (i < sidebandStarts[s + 1]) {
                     sideband = s
                     break
                 }
             }
 
-            val weightIdx = if (sideband == 0) 0 else sideband - 1
-            val weight = weights[weightIdx.coerceIn(0, dwtLevels - 1)]
-            // Updated to match C implementation: divide by TAD_COEFF_SCALAR
-            coeffs[i] = quantized[i].toFloat() * weight / TAD_COEFF_SCALAR
+            // Decode using lambda companding
+            val normalizedVal = lambdaDecompanding(quantized[i], maxIndex)
+
+            // Denormalize using the subband scalar and apply base weight + quantiser scaling
+            val weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiserScale
+            coeffs[i] = normalizedVal * TAD32_COEFF_SCALARS[sideband] * weight
+        }
+
+        // Step 2: Apply spectral interpolation per band
+        // Process bands from high to low frequency (dwtLevels down to 0)
+        var prevBandRms = 0.0f
+
+        for (band in dwtLevels downTo 0) {
+            val bandStart = sidebandStarts[band]
+            val bandEnd = sidebandStarts[band + 1]
+            val bandLen = bandEnd - bandStart
+
+            // Calculate quantization step Q for this band
+            val weight = BASE_QUANTISER_WEIGHTS[band] * quantiserScale
+            val scalar = TAD32_COEFF_SCALARS[band] * weight
+            val Q = scalar / maxIndex
+
+            // Apply spectral interpolation to this band
+            spectralInterpolateBand(coeffs, bandStart, bandLen, Q, prevBandRms)
+
+            // Compute RMS for this band to use as reference for next (lower frequency) band
+            prevBandRms = computeBandRms(coeffs, bandStart, bandLen)
         }
     }
 
-    private fun dwtDD4Inverse1d(data: FloatArray, length: Int) {
+    // 9/7 inverse DWT (CDF 9/7 wavelet - matches C implementation)
+    private fun dwt97Inverse1d(data: FloatArray, length: Int) {
         if (length < 2) return
 
         val temp = FloatArray(length)
         val half = (length + 1) / 2
 
-        // Split into low and high parts
+        // Split into low and high frequency components (matching TSVM layout)
         for (i in 0 until half) {
-            temp[i] = data[i]  // Even (low-pass)
+            temp[i] = data[i]  // Low-pass coefficients (first half)
         }
         for (i in 0 until length / 2) {
-            temp[half + i] = data[half + i]  // Odd (high-pass)
+            if (half + i < length) {
+                temp[half + i] = data[half + i]  // High-pass coefficients (second half)
+            }
         }
 
-        // Undo update step: s[i] -= 0.25 * (d[i-1] + d[i])
+        // 9/7 inverse lifting coefficients from TSVM
+        val alpha = -1.586134342f
+        val beta = -0.052980118f
+        val gamma = 0.882911076f
+        val delta = 0.443506852f
+        val K = 1.230174105f
+
+        // Step 1: Undo scaling
         for (i in 0 until half) {
-            val dCurr = if (i < length / 2) temp[half + i] else 0.0f
-            val dPrev = if (i > 0 && i - 1 < length / 2) temp[half + i - 1] else 0.0f
-            temp[i] -= 0.25f * (dPrev + dCurr)
+            temp[i] /= K  // Low-pass coefficients
         }
-
-        // Undo prediction step: d[i] += P(s[i-1], s[i], s[i+1], s[i+2])
         for (i in 0 until length / 2) {
-            val sM1 = if (i > 0) temp[i - 1] else temp[0]  // mirror boundary
-            val s0 = temp[i]
-            val s1 = if (i + 1 < half) temp[i + 1] else temp[half - 1]
-            val s2 = if (i + 2 < half) temp[i + 2] else if (half > 1) temp[half - 2] else temp[half - 1]
-
-            val prediction = (-1.0f/16.0f)*sM1 + (9.0f/16.0f)*s0 + (9.0f/16.0f)*s1 + (-1.0f/16.0f)*s2
-            temp[half + i] += prediction
+            if (half + i < length) {
+                temp[half + i] *= K  // High-pass coefficients
+            }
         }
 
-        // Merge evens and odds back
+        // Step 2: Undo δ update
         for (i in 0 until half) {
-            data[2 * i] = temp[i]
-            if (2 * i + 1 < length)
-                data[2 * i + 1] = temp[half + i]
+            val dCurr = if (half + i < length) temp[half + i] else 0.0f
+            val dPrev = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else dCurr
+            temp[i] -= delta * (dCurr + dPrev)
+        }
+
+        // Step 3: Undo γ predict
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val sCurr = temp[i]
+                val sNext = if (i + 1 < half) temp[i + 1] else sCurr
+                temp[half + i] -= gamma * (sCurr + sNext)
+            }
+        }
+
+        // Step 4: Undo β update
+        for (i in 0 until half) {
+            val dCurr = if (half + i < length) temp[half + i] else 0.0f
+            val dPrev = if (i > 0 && half + i - 1 < length) temp[half + i - 1] else dCurr
+            temp[i] -= beta * (dCurr + dPrev)
+        }
+
+        // Step 5: Undo α predict
+        for (i in 0 until length / 2) {
+            if (half + i < length) {
+                val sCurr = temp[i]
+                val sNext = if (i + 1 < half) temp[i + 1] else sCurr
+                temp[half + i] -= alpha * (sCurr + sNext)
+            }
+        }
+
+        // Reconstruction - interleave low and high pass
+        for (i in 0 until length) {
+            if (i % 2 == 0) {
+                // Even positions: low-pass coefficients
+                data[i] = temp[i / 2]
+            } else {
+                // Odd positions: high-pass coefficients
+                val idx = i / 2
+                if (half + idx < length) {
+                    data[i] = temp[half + idx]
+                } else {
+                    data[i] = 0.0f
+                }
+            }
         }
     }
 
-    private fun dwtDD4InverseMultilevel(data: FloatArray, length: Int, levels: Int) {
+    private fun dwt97InverseMultilevel(data: FloatArray, length: Int, levels: Int) {
         // Calculate the length at the deepest level
         var currentLength = length
         for (level in 0 until levels) {
@@ -609,7 +774,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         for (level in levels - 1 downTo 0) {
             currentLength *= 2  // MULTIPLY FIRST
             if (currentLength > length) currentLength = length
-            dwtDD4Inverse1d(data, currentLength)  // THEN apply inverse
+            dwt97Inverse1d(data, currentLength)  // THEN apply inverse
         }
     }
 
