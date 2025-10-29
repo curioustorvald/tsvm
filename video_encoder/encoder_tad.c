@@ -779,7 +779,7 @@ void tad32_free_statistics(void) {
 //=============================================================================
 
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
-                          int max_index, int use_zstd, int use_twobitmap,
+                          int max_index,
                           float quantiser_scale, uint8_t *output) {
     // Calculate DWT levels from chunk size
     int dwt_levels = calculate_dwt_levels(num_samples);
@@ -824,7 +824,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     // Step 3.5: Accumulate coefficient statistics if enabled
     static int stats_enabled = -1;
     if (stats_enabled == -1) {
-        stats_enabled = 1;//getenv("TAD_COEFF_STATS") != NULL;
+        stats_enabled = getenv("TAD_COEFF_STATS") != NULL;
         if (stats_enabled) {
             init_statistics(dwt_levels);
         }
@@ -871,27 +871,23 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
 
     size_t payload_size;
 
-    if (use_zstd) {
-        size_t zstd_bound = ZSTD_compressBound(uncompressed_size);
-        uint8_t *zstd_buffer = malloc(zstd_bound);
+    size_t zstd_bound = ZSTD_compressBound(uncompressed_size);
+    uint8_t *zstd_buffer = malloc(zstd_bound);
 
-        payload_size = ZSTD_compress(zstd_buffer, zstd_bound, temp_buffer, uncompressed_size, TAD32_ZSTD_LEVEL);
+    payload_size = ZSTD_compress(zstd_buffer, zstd_bound, temp_buffer, uncompressed_size, TAD32_ZSTD_LEVEL);
 
-        if (ZSTD_isError(payload_size)) {
-            fprintf(stderr, "Error: Zstd compression failed: %s\n", ZSTD_getErrorName(payload_size));
-            free(zstd_buffer);
-            free(pcm32_left); free(pcm32_right);
-            free(pcm32_mid); free(pcm32_side); free(dwt_mid); free(dwt_side);
-            free(quant_mid); free(quant_side); free(temp_buffer);
-            return 0;
-        }
-
-        memcpy(write_ptr, zstd_buffer, payload_size);
+    if (ZSTD_isError(payload_size)) {
+        fprintf(stderr, "Error: Zstd compression failed: %s\n", ZSTD_getErrorName(payload_size));
         free(zstd_buffer);
-    } else {
-        payload_size = uncompressed_size;
-        memcpy(write_ptr, temp_buffer, payload_size);
+        free(pcm32_left); free(pcm32_right);
+        free(pcm32_mid); free(pcm32_side); free(dwt_mid); free(dwt_side);
+        free(quant_mid); free(quant_side); free(temp_buffer);
+        return 0;
     }
+
+    memcpy(write_ptr, zstd_buffer, payload_size);
+    free(zstd_buffer);
+
 
     *payload_size_ptr = (uint32_t)payload_size;
     write_ptr += payload_size;

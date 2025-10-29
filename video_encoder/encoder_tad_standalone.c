@@ -69,14 +69,10 @@ int main(int argc, char *argv[]) {
     char *output_file = NULL;
     int max_index = 7;  // Default QUANT_BITS
     float quantiser_scale = 1.0f;  // Default quantiser scaling
-    int use_zstd = 1;
-    int use_twobitmap = 1;
     int verbose = 0;
 
     // Parse command line arguments
     static struct option long_options[] = {
-        {"no-zstd", no_argument, 0, 'z'},
-        {"no-twobitmap", no_argument, 0, 't'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -100,12 +96,6 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Quantiser scale must be in range 0.5-4.0\n");
                     return 1;
                 }
-                break;
-            case 'z':
-                use_zstd = 0;
-                break;
-            case 't':
-                use_twobitmap = 0;
                 break;
             case 'v':
                 verbose = 1;
@@ -166,9 +156,6 @@ int main(int argc, char *argv[]) {
         printf("Output: %s\n", output_file);
         printf("Quant bits: %d\n", max_index);
         printf("Quantiser scale: %.2f\n", quantiser_scale);
-        printf("Encoding method: %s (int8_t coefficients)\n",
-               use_twobitmap ? "Twobit-map significance map" : "Raw int8_t storage");
-        printf("Zstd compression: %s\n", use_zstd ? "enabled" : "disabled");
     }
 
     // Detect original sample rate for high-quality resampling
@@ -294,7 +281,7 @@ int main(int argc, char *argv[]) {
 
         // Encode chunk using linked tad32_encode_chunk() from encoder_tad32.c
         size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE,
-                                                 max_index, use_zstd, use_twobitmap,
+                                                 max_index,
                                                  quantiser_scale, output_buffer);
 
         if (encoded_size == 0) {

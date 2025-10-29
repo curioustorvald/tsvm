@@ -39,7 +39,7 @@
  *   *      payload (encoded M/S data, optionally Zstd-compressed)
  */
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
-                          int quant_bits, int use_zstd, int use_twobitmap,
+                          int quant_bits,
                           float quantiser_scale, uint8_t *output);
 
 /**

@@ -1570,27 +1570,13 @@ If the audio duration doesn't align to chunk boundaries, the final chunk can use
 a smaller power-of-2 size or be zero-padded.
 
     uint16 Sample Count: number of samples per channel (must be power of 2, min 1024)
+    uint8  Max quantisation index: this number * 2 + 1 is the total steps of quantisation
     uint32 Chunk Payload Size: size of following payload in bytes
     *      Chunk Payload: encoded M/S stereo data (Zstd compressed if flag set)
 
 ### Chunk Payload Structure (before optional Zstd compression)
-    *      Mid Channel Encoded Data
-    *      Side Channel Encoded Data
-
-### Encoded Channel Data (2-bit Twobitmap Significance Map)
-    uint8  Significance Map[(num_samples * 2 + 7) / 8]  // 2 bits per coefficient
-    int16  Other Values[variable length]                // Non-{-1,0,+1} values
-
-#### 2-bit Twobitmap Encoding
-Each DWT coefficient is encoded using 2 bits in the significance map:
-    - 00: coefficient is 0
-    - 01: coefficient is +1
-    - 10: coefficient is -1
-    - 11: coefficient is "other" (value stored in Other Values array)
-
-This encoding exploits the sparsity of quantized DWT coefficients where most
-values are 0, ±1 after quantization. "Other" values are stored sequentially
-as int16 in the order they appear.
+    *      Mid Channel Encoded Data (raw int8 values)
+    *      Side Channel Encoded Data (raw int8 values)
 
 ## Encoding Pipeline
 
