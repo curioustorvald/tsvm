@@ -488,8 +488,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                             ((tadInputBin[offset++].toUint()) shl 24)
                     )
 
-//            println("Q$maxIndex, SampleCount: $sampleCount, payloadSize: $payloadSize")
-            
             // Decompress payload
             val compressed = ByteArray(payloadSize)
             UnsafeHelper.memcpyRaw(null, tadInputBin.ptr + offset, compressed, UnsafeHelper.getArrayOffset(compressed), payloadSize.toLong())
@@ -724,17 +722,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun dwt97InverseMultilevel(data: FloatArray, length: Int, levels: Int) {
-        // Calculate the length at the deepest level
-        var currentLength = length
-        for (level in 0 until levels) {
-            currentLength = (currentLength + 1) / 2
+        // Pre-calculate all intermediate lengths used during forward transform
+        // Forward uses: data[0..length-1], then data[0..(length+1)/2-1], etc.
+        val lengths = IntArray(levels + 1)
+        lengths[0] = length
+        for (i in 1..levels) {
+            lengths[i] = (lengths[i - 1] + 1) / 2
         }
 
-        // Inverse transform: double size FIRST, then apply inverse DWT
+        // Inverse transform: apply inverse DWT using exact forward lengths in reverse order
+        // Forward applied DWT with lengths: [length, (length+1)/2, ((length+1)/2+1)/2, ...]
+        // Inverse must use same lengths in reverse: [..., ((length+1)/2+1)/2, (length+1)/2, length]
         for (level in levels - 1 downTo 0) {
-            currentLength *= 2  // MULTIPLY FIRST
-            if (currentLength > length) currentLength = length
-            dwt97Inverse1d(data, currentLength)  // THEN apply inverse
+            dwt97Inverse1d(data, lengths[level])
         }
     }
 

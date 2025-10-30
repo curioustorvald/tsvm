@@ -313,24 +313,25 @@ static void dwt_dd4_inverse_1d(float *data, int length) {
 }
 
 static void dwt_inverse_multilevel(float *data, int length, int levels) {
-    // Calculate the length at the deepest level (size of low-pass after all forward DWTs)
-    int current_length = length;
-    for (int level = 0; level < levels; level++) {
-        current_length = (current_length + 1) / 2;
+    // Pre-calculate all intermediate lengths used during forward transform
+    // Forward uses: data[0..length-1], then data[0..(length+1)/2-1], etc.
+    int *lengths = malloc((levels + 1) * sizeof(int));
+    lengths[0] = length;
+    for (int i = 1; i <= levels; i++) {
+        lengths[i] = (lengths[i - 1] + 1) / 2;
     }
-    // For 8 levels on 32768: 32768→16384→8192→4096→2048→1024→512→256→128
 
-    // Inverse transform: double size FIRST, then apply inverse DWT
-    // Level 8 inverse: 128 low + 128 high → 256 reconstructed
-    // Level 7 inverse: 256 reconstructed + 256 high → 512 reconstructed
-    // ... Level 1 inverse: 16384 reconstructed + 16384 high → 32768 reconstructed
+    // Inverse transform: apply inverse DWT using exact forward lengths in reverse order
+    // Forward applied DWT with lengths: [length, (length+1)/2, ((length+1)/2+1)/2, ...]
+    // Inverse must use same lengths in reverse: [..., ((length+1)/2+1)/2, (length+1)/2, length]
     for (int level = levels - 1; level >= 0; level--) {
-        current_length *= 2;  // MULTIPLY FIRST: 128→256, 256→512, ..., 16384→32768
-        if (current_length > length) current_length = length;
+        int current_length = lengths[level];
 //        dwt_haar_inverse_1d(data, current_length);  // THEN apply inverse
 //        dwt_dd4_inverse_1d(data, current_length);  // THEN apply inverse
         dwt_97_inverse_1d(data, current_length);  // THEN apply inverse
     }
+
+    free(lengths);
 }
 
 //=============================================================================
