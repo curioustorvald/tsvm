@@ -1352,7 +1352,6 @@ try {
 
                 if (!tadInitialised) {
                     tadInitialised = true
-                    audio.tadSetQuality(header.qualityLevel)
                 }
 
                 seqread.readBytes(payloadLen, SND_MEM_ADDR - 262144)

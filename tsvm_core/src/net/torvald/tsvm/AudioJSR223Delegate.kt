@@ -94,13 +94,6 @@ class AudioJSR223Delegate(private val vm: VM) {
         }
     }
 
-    // TAD (Terrarum Advanced Audio) decoder functions
-    fun tadSetQuality(quality: Int) {
-        getFirstSnd()?.mmio_write(43L, quality.toByte())
-    }
-
-    fun tadGetQuality() = getFirstSnd()?.mmio_read(43L)?.toInt()
-
     fun tadDecode() {
         getFirstSnd()?.mmio_write(42L, 1)
     }

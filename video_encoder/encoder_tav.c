@@ -9041,7 +9041,7 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
 
     if (enc->verbose) {
         printf("TAD32 packet: %d samples, %u bytes compressed (Q%d)\n",
-               sample_count, tad_payload_size, tad_quality);
+               sample_count, tad_payload_size, quant_size);
     }
 
     // Cleanup

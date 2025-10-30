@@ -36,9 +36,8 @@ static const float BASE_QUANTISER_WEIGHTS[] = {
 
 // Forward declarations for internal functions
 static void dwt_dd4_forward_1d(float *data, int length);
-static void dwt_dd4_forward_multilevel(float *data, int length, int levels);
+static void dwt_forward_multilevel(float *data, int length, int levels);
 static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int quant_bits, int *current_subband_index, float quantiser_scale);
-static size_t encode_twobitmap(const int8_t *values, size_t count, uint8_t *output);
 
 static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
@@ -190,7 +189,7 @@ static void dwt_97_forward_1d(float *data, int length) {
 }
 
 // Apply multi-level DWT (using DD-4 wavelet)
-static void dwt_dd4_forward_multilevel(float *data, int length, int levels) {
+static void dwt_forward_multilevel(float *data, int length, int levels) {
     int current_length = length;
     for (int level = 0; level < levels; level++) {
 //        dwt_dd4_forward_1d(data, current_length);
@@ -313,61 +312,6 @@ static void quantize_dwt_coefficients(const float *coeffs, int8_t *quantized, si
     }
 
     free(sideband_starts);
-}
-
-//=============================================================================
-// Twobit-map Significance Map Encoding
-//=============================================================================
-
-// Twobit-map encoding: 2 bits per coefficient for common values
-// 00 = 0
-// 01 = +1
-// 10 = -1
-// 11 = other value (followed by int8_t in separate array)
-static size_t encode_twobitmap(const int8_t *values, size_t count, uint8_t *output) {
-    // Calculate size needed for twobit map
-    size_t map_bytes = (count * 2 + 7) / 8;  // 2 bits per coefficient
-
-    // First pass: create significance map and count "other" values
-    uint8_t *map = output;
-    memset(map, 0, map_bytes);
-
-    size_t other_count = 0;
-    for (size_t i = 0; i < count; i++) {
-        int8_t val = values[i];
-        uint8_t code;
-
-        if (val == 0) {
-            code = 0;  // 00
-        } else if (val == 1) {
-            code = 1;  // 01
-        } else if (val == -1) {
-            code = 2;  // 10
-        } else {
-            code = 3;  // 11
-            other_count++;
-        }
-
-        // Write 2-bit code into map
-        size_t bit_offset = i * 2;
-        size_t byte_idx = bit_offset / 8;
-        size_t bit_in_byte = bit_offset % 8;
-
-        map[byte_idx] |= (code << bit_in_byte);
-    }
-
-    // Second pass: write "other" values
-    int8_t *other_values = (int8_t*)(output + map_bytes);
-    size_t other_idx = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        int8_t val = values[i];
-        if (val != 0 && val != 1 && val != -1) {
-            other_values[other_idx++] = val;
-        }
-    }
-
-    return map_bytes + other_count;
 }
 
 //=============================================================================
@@ -818,8 +762,8 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         dwt_side[i] = pcm32_side[i];
     }
 
-    dwt_dd4_forward_multilevel(dwt_mid, num_samples, dwt_levels);
-    dwt_dd4_forward_multilevel(dwt_side, num_samples, dwt_levels);
+    dwt_forward_multilevel(dwt_mid, num_samples, dwt_levels);
+    dwt_forward_multilevel(dwt_side, num_samples, dwt_levels);
 
     // Step 3.5: Accumulate coefficient statistics if enabled
     static int stats_enabled = -1;

@@ -48,8 +48,13 @@ static void print_usage(const char *prog_name) {
     printf("Options:\n");
     printf("  -i <file>       Input audio file (any format supported by FFmpeg)\n");
     printf("  -o <file>       Output TAD32 file (optional, auto-generated as input.qN.tad)\n");
-    printf("  -q <bits>       Positive side quantization steps (default: 47, range: up to 127)\n");
-    printf("                  Higher = more precision, larger files\n");
+    printf("  -q <level>      Quality level (0-5, default: %d)\n", TAD32_QUALITY_DEFAULT);
+    printf("                  0 = lowest quality/smallest (max_index=31)\n");
+    printf("                  1 = low quality (max_index=35)\n");
+    printf("                  2 = medium quality (max_index=39)\n");
+    printf("                  3 = good quality (max_index=47) [DEFAULT]\n");
+    printf("                  4 = high quality (max_index=56)\n");
+    printf("                  5 = very high quality/largest (max_index=89)\n");
     printf("  -s <scale>      Quantiser scaling factor (default: 1.0, range: 0.5-4.0)\n");
     printf("                  Higher = more aggressive quantization, smaller files\n");
     printf("                  2.0 = quantize 2x coarser than baseline\n");
@@ -65,7 +70,7 @@ int main(int argc, char *argv[]) {
 
     char *input_file = NULL;
     char *output_file = NULL;
-    int max_index = 47;  // Default QUANT_BITS
+    int quality = TAD32_QUALITY_DEFAULT;  // Default quality level (0-5)
     float quantiser_scale = 1.0f;  // Default quantiser scaling
     int verbose = 0;
 
@@ -86,7 +91,11 @@ int main(int argc, char *argv[]) {
                 output_file = optarg;
                 break;
             case 'q':
-                max_index = atoi(optarg);
+                quality = atoi(optarg);
+                if (quality < TAD32_QUALITY_MIN || quality > TAD32_QUALITY_MAX) {
+                    fprintf(stderr, "Error: Quality must be in range %d-%d\n", TAD32_QUALITY_MIN, TAD32_QUALITY_MAX);
+                    return 1;
+                }
                 break;
             case 's':
                 quantiser_scale = atof(optarg);
@@ -112,6 +121,9 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         return 1;
     }
+
+    // Convert quality (0-5) to max_index for quantization
+    int max_index = tad32_quality_to_max_index(quality);
 
     // Generate output filename if not provided
     if (!output_file) {
@@ -140,8 +152,8 @@ int main(int argc, char *argv[]) {
             strcpy(output_file + dir_len, basename_start);
         }
 
-        // Append .qNN.tad
-        sprintf(output_file + strlen(output_file), ".q%d.tad", max_index);
+        // Append .qNN.tad (use quality level for filename)
+        sprintf(output_file + strlen(output_file), ".q%d.tad", quality);
 
         if (verbose) {
             printf("Auto-generated output path: %s\n", output_file);
@@ -152,7 +164,7 @@ int main(int argc, char *argv[]) {
         printf("%s\n", ENCODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
-        printf("Quant bits: %d\n", max_index);
+        printf("Quality level: %d (max_index=%d)\n", quality, max_index);
         printf("Quantiser scale: %.2f\n", quantiser_scale);
     }
 

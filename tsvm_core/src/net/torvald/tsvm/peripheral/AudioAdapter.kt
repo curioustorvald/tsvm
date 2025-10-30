@@ -372,9 +372,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     // Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
     // Converts quantized index back to normalized float in [-1, 1]
-    private fun lambdaDecompanding(quantVal: Short, maxIndex: Int): Float {
+    private fun lambdaDecompanding(quantVal: Byte, maxIndex: Int): Float {
         // Handle zero
-        if (quantVal == 0.toShort()) {
+        if (quantVal == 0.toByte()) {
             return 0.0f
         }
 
@@ -477,17 +477,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             var offset = 0L
 
             val sampleCount = (
-                    (tadInputBin[offset++].toInt() and 0xFF) or
-                            ((tadInputBin[offset++].toInt() and 0xFF) shl 8)
+                    (tadInputBin[offset++].toUint()) or
+                            ((tadInputBin[offset++].toUint()) shl 8)
                     )
-            val maxIndex = tadInputBin[offset++].toInt() and 0xFF
+            val maxIndex = tadInputBin[offset++].toUint()
             val payloadSize = (
-                    (tadInputBin[offset++].toInt() and 0xFF) or
-                            ((tadInputBin[offset++].toInt() and 0xFF) shl 8) or
-                            ((tadInputBin[offset++].toInt() and 0xFF) shl 16) or
-                            ((tadInputBin[offset++].toInt() and 0xFF) shl 24)
+                    (tadInputBin[offset++].toUint()) or
+                            ((tadInputBin[offset++].toUint()) shl 8) or
+                            ((tadInputBin[offset++].toUint()) shl 16) or
+                            ((tadInputBin[offset++].toUint()) shl 24)
                     )
 
+//            println("Q$maxIndex, SampleCount: $sampleCount, payloadSize: $payloadSize")
+            
             // Decompress payload
             val compressed = ByteArray(payloadSize)
             UnsafeHelper.memcpyRaw(null, tadInputBin.ptr + offset, compressed, UnsafeHelper.getArrayOffset(compressed), payloadSize.toLong())
@@ -501,15 +503,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 return
             }
 
-            // Decode significance maps
-            val quantMid = ShortArray(sampleCount)
-            val quantSide = ShortArray(sampleCount)
-
-            var payloadOffset = 0
-            val midBytes = decodeSigmap2bit(payload, payloadOffset, quantMid, sampleCount)
-            payloadOffset += midBytes
-
-            val sideBytes = decodeSigmap2bit(payload, payloadOffset, quantSide, sampleCount)
+            // Decode raw int8_t storage (no significance map - encoder uses raw format)
+            val quantMid = payload.sliceArray(0 until sampleCount)
+            val quantSide = payload.sliceArray(sampleCount until sampleCount*2)
 
             // Calculate DWT levels from sample count
             val dwtLevels = calculateDwtLevels(sampleCount)
@@ -540,42 +536,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         } finally {
             tadBusy = false
         }
-    }
-
-    private fun decodeSigmap2bit(input: ByteArray, offset: Int, values: ShortArray, count: Int): Int {
-        val mapBytes = (count * 2 + 7) / 8
-        var readPtr = offset + mapBytes
-        var otherIdx = 0
-
-        for (i in 0 until count) {
-            val bitPos = i * 2
-            val byteIdx = offset + bitPos / 8
-            val bitOffset = bitPos % 8
-
-            var code = ((input[byteIdx].toInt() and 0xFF) shr bitOffset) and 0x03
-
-            // Handle bit spillover
-            if (bitOffset == 7) {
-                code = ((input[byteIdx].toInt() and 0xFF) shr 7) or
-                       (((input[byteIdx + 1].toInt() and 0xFF) and 0x01) shl 1)
-            }
-
-            values[i] = when (code) {
-                0 -> 0
-                1 -> 1
-                2 -> (-1).toShort()
-                3 -> {
-                    val v = ((input[readPtr].toInt() and 0xFF) or
-                            ((input[readPtr + 1].toInt() and 0xFF) shl 8)).toShort()
-                    readPtr += 2
-                    otherIdx++
-                    v
-                }
-                else -> 0
-            }
-        }
-
-        return mapBytes + otherIdx * 2
     }
 
     private fun calculateDwtLevels(chunkSize: Int): Int {
@@ -628,7 +588,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
-    private fun dequantizeDwtCoefficients(quantized: ShortArray, coeffs: FloatArray, count: Int,
+    private fun dequantizeDwtCoefficients(quantized: ByteArray, coeffs: FloatArray, count: Int,
                                          maxIndex: Int, dwtLevels: Int) {
         // Calculate sideband boundaries dynamically
         val firstBandSize = count shr dwtLevels

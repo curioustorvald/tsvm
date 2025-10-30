@@ -312,7 +312,7 @@ static void dwt_dd4_inverse_1d(float *data, int length) {
     free(temp);
 }
 
-static void dwt_haar_inverse_multilevel(float *data, int length, int levels) {
+static void dwt_inverse_multilevel(float *data, int length, int levels) {
     // Calculate the length at the deepest level (size of low-pass after all forward DWTs)
     int current_length = length;
     for (int level = 0; level < levels; level++) {
@@ -588,8 +588,8 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
 
     // Inverse DWT
-    dwt_haar_inverse_multilevel(dwt_mid, sample_count, dwt_levels);
-    dwt_haar_inverse_multilevel(dwt_side, sample_count, dwt_levels);
+    dwt_inverse_multilevel(dwt_mid, sample_count, dwt_levels);
+    dwt_inverse_multilevel(dwt_side, sample_count, dwt_levels);
 
     float err[2][2] = {{0,0},{0,0}};
 
