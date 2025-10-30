@@ -1086,7 +1086,7 @@ try {
 
                 // Check GOP size fits in slot
                 if (gopSize > MAX_GOP_SIZE) {
-                    console.log(`[GOP] Error: GOP size ${gopSize} exceeds max ${MAX_GOP_SIZE} frames`)
+//                    console.log(`[GOP] Error: GOP size ${gopSize} exceeds max ${MAX_GOP_SIZE} frames`)
                     sys.free(compressedPtr)
                     break
                 }
@@ -1136,7 +1136,7 @@ try {
                             timeRemaining: 0
                         }
                         if (interactive) {
-                            console.log(`[GOP] Buffered GOP ${gopSize} frames to ready slot during first GOP decode`)
+//                            console.log(`[GOP] Buffered GOP ${gopSize} frames to ready slot during first GOP decode`)
                         }
                     } else if (decodingGopData === null) {
                         // Buffer as decoding GOP (will decode after ready GOP)
@@ -1151,18 +1151,18 @@ try {
                             timeRemaining: 0
                         }
                         if (interactive) {
-                            console.log(`[GOP] Buffered GOP ${gopSize} frames to decoding slot during first GOP decode`)
+//                            console.log(`[GOP] Buffered GOP ${gopSize} frames to decoding slot during first GOP decode`)
                         }
 
                         // CRITICAL: Stop reading packets now that all 3 buffers are full
                         shouldReadPackets = false
                         if (interactive) {
-                            console.log(`[GOP] All 3 buffers full during first GOP decode - stopping packet reading`)
+//                            console.log(`[GOP] All 3 buffers full during first GOP decode - stopping packet reading`)
                         }
                     } else {
                         // All 3 buffers full - discard this GOP (shouldn't happen now with gate)
                         if (interactive) {
-                            console.log(`[GOP] WARNING: All 3 buffers full during first GOP decode - discarding GOP ${gopSize} frames`)
+//                            console.log(`[GOP] WARNING: All 3 buffers full during first GOP decode - discarding GOP ${gopSize} frames`)
                         }
                         sys.free(compressedPtr)
                     }
@@ -1206,7 +1206,7 @@ try {
                     // to prevent next GOP from being discarded in Case 5
                     shouldReadPackets = false
                     if (interactive) {
-                        console.log(`[GOP] Case 3: Started decode to ready slot - stopping packet reading`)
+//                        console.log(`[GOP] Case 3: Started decode to ready slot - stopping packet reading`)
                     }
 
                 } else if (currentGopSize > 0 && readyGopData !== null && decodingGopData === null && !asyncDecodeInProgress && graphics.tavDecodeGopIsComplete()) {
@@ -1248,7 +1248,7 @@ try {
                     // All 3 buffers are now full (playing + ready + decoding)
                     shouldReadPackets = false
                     if (interactive) {
-                        console.log(`[GOP] Case 4: Started decode to decoding slot - all buffers full, stopping packet reading`)
+//                        console.log(`[GOP] Case 4: Started decode to decoding slot - all buffers full, stopping packet reading`)
                     }
 
                 } else {
@@ -1259,7 +1259,7 @@ try {
                         compressedSize: compressedSize
                     })
                     if (interactive) {
-                        console.log(`[GOP] Case 5: Buffered GOP ${gopSize} frames to overflow queue (queue size: ${overflowQueue.length})`)
+//                        console.log(`[GOP] Case 5: Buffered GOP ${gopSize} frames to overflow queue (queue size: ${overflowQueue.length})`)
                     }
                 }
             }
@@ -1273,7 +1273,7 @@ try {
                 if (currentGopSize > 0 && readyGopData !== null && decodingGopData !== null) {
                     shouldReadPackets = false
                     if (interactive) {
-                        console.log(`[GOP] All 3 buffers full - stopping packet reading`)
+//                        console.log(`[GOP] All 3 buffers full - stopping packet reading`)
                     }
                 }
             }
@@ -1499,11 +1499,11 @@ try {
                 if (!(currentGopSize > 0 && readyGopData !== null && decodingGopData !== null)) {
                     shouldReadPackets = true
                     if (interactive) {
-                        console.log(`[GOP] First GOP ready - resuming packet reading (ready=${readyGopData !== null}, decoding=${decodingGopData !== null})`)
+//                        console.log(`[GOP] First GOP ready - resuming packet reading (ready=${readyGopData !== null}, decoding=${decodingGopData !== null})`)
                     }
                 } else {
                     if (interactive) {
-                        console.log(`[GOP] First GOP ready - all 3 buffers full, keeping packet reading paused`)
+//                        console.log(`[GOP] First GOP ready - all 3 buffers full, keeping packet reading paused`)
                     }
                 }
 
@@ -1544,7 +1544,7 @@ try {
                     readyGopData.timeRemaining = timeRemaining
 
                     if (interactive) {
-                        console.log(`[GOP] Started decode of buffered GOP ${readyGopData.gopSize} frames (slot ${readyGopData.slot})`)
+//                        console.log(`[GOP] Started decode of buffered GOP ${readyGopData.gopSize} frames (slot ${readyGopData.slot})`)
                     }
                 }
             }
@@ -1624,7 +1624,7 @@ try {
                 uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
 
                 if (interactive && currentGopFrameIndex === 0) {
-                    console.log(`[GOP] Playing GOP: ${currentGopSize} frames from slot ${currentGopBufferSlot}`)
+//                    console.log(`[GOP] Playing GOP: ${currentGopSize} frames from slot ${currentGopBufferSlot}`)
                 }
 
                 // Apply bias lighting
@@ -1692,7 +1692,7 @@ try {
                     decodingGopData.timeRemaining = timeRemaining
 
                     if (interactive) {
-                        console.log(`[GOP] Started decode of buffered GOP ${decodingGopData.gopSize} frames from decoding slot (slot ${decodingGopData.slot})`)
+//                        console.log(`[GOP] Started decode of buffered GOP ${decodingGopData.gopSize} frames from decoding slot (slot ${decodingGopData.slot})`)
                     }
                 }
 
@@ -1704,7 +1704,7 @@ try {
         // Step 4-7: GOP finished? Transition to ready GOP (triple-buffering)
         if (!paused && currentGopSize > 0 && currentGopFrameIndex >= currentGopSize) {
             if (interactive) {
-                console.log(`[GOP] GOP finished: played ${currentGopFrameIndex}/${currentGopSize} frames from slot ${currentGopBufferSlot}`)
+//                console.log(`[GOP] GOP finished: played ${currentGopFrameIndex}/${currentGopSize} frames from slot ${currentGopBufferSlot}`)
             }
             if (readyGopData !== null) {
                 // If ready GOP still needs decode, start it now (defensive - should already be started)
@@ -1755,7 +1755,7 @@ try {
                     // Resume packet reading now that one buffer is free (decoding slot available)
                     shouldReadPackets = true
                     if (interactive) {
-                        console.log(`[GOP] Transition complete - resuming packet reading (asyncInProgress=${asyncDecodeInProgress})`)
+//                        console.log(`[GOP] Transition complete - resuming packet reading (asyncInProgress=${asyncDecodeInProgress})`)
                     }
 
                     // Process overflow queue if it has GOPs waiting
@@ -1774,7 +1774,7 @@ try {
                             // This shouldn't happen - put it back in queue
                             overflowQueue.unshift(overflow)
                             if (interactive) {
-                                console.log(`[GOP] Overflow queue: no slots available, keeping in queue`)
+//                                console.log(`[GOP] Overflow queue: no slots available, keeping in queue`)
                             }
                             targetSlot = -1  // Skip decode
                         }
@@ -1812,7 +1812,7 @@ try {
                                 timeRemaining: timeRemaining
                             }
                             if (interactive) {
-                                console.log(`[GOP] Overflow: Started decode of queued GOP ${overflow.gopSize} frames to ready slot ${targetSlot} (${overflowQueue.length} left in queue)`)
+//                                console.log(`[GOP] Overflow: Started decode of queued GOP ${overflow.gopSize} frames to ready slot ${targetSlot} (${overflowQueue.length} left in queue)`)
                             }
                         } else {
                             decodingGopData = {
@@ -1823,7 +1823,7 @@ try {
                                 timeRemaining: timeRemaining
                             }
                             if (interactive) {
-                                console.log(`[GOP] Overflow: Started decode of queued GOP ${overflow.gopSize} frames to decoding slot ${targetSlot} (${overflowQueue.length} left in queue)`)
+//                                console.log(`[GOP] Overflow: Started decode of queued GOP ${overflow.gopSize} frames to decoding slot ${targetSlot} (${overflowQueue.length} left in queue)`)
                             }
                         }
                         }  // End if (targetSlot >= 0)
@@ -1875,7 +1875,7 @@ try {
         debugPrintAkku += (t2 - t1)
         if (debugPrintAkku > 5000000000) {
             debugPrintAkku -= 5000000000
-            serial.println(`[PLAYTAV] decoding time = ${(decodeTime).toFixed(2)} ms`)
+//            serial.println(`[PLAYTAV] decoding time = ${(decodeTime).toFixed(2)} ms`)
         }
 
         // Small sleep to prevent 100% CPU and control loop rate

@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251030 (3d-dwt,tad)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251031 (3d-dwt,tad)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -11206,7 +11206,7 @@ int main(int argc, char *argv[]) {
 
                         // Encode single frame as I-frame (GOP size 1)
                         int frame_num = frame_count - original_gop_frame_count + i;
-                        size_t bytes = gop_flush(enc, enc->output_fp, qY, &frame_num, 1);
+                        size_t bytes = gop_flush(enc, enc->output_fp, QLUT[qY], &frame_num, 1);
 
                         if (bytes == 0) {
                             fprintf(stderr, "Error: Failed to encode I-frame %d during hard scene change\n", frame_num);
@@ -11233,7 +11233,7 @@ int main(int argc, char *argv[]) {
                         gop_frame_numbers[i] = frame_count - enc->temporal_gop_frame_count + i;
                     }
 
-                    packet_size = gop_process_and_flush(enc, enc->output_fp, qY,
+                    packet_size = gop_process_and_flush(enc, enc->output_fp, QLUT[qY],
                                                        gop_frame_numbers, 1);
                     free(gop_frame_numbers);
                 }
@@ -11319,7 +11319,7 @@ int main(int argc, char *argv[]) {
                 int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
 
                 // Process and flush GOP with scene change detection
-                packet_size = gop_process_and_flush(enc, enc->output_fp, qY,
+                packet_size = gop_process_and_flush(enc, enc->output_fp, QLUT[qY],
                                                    gop_frame_numbers, force_flush);
 
                 free(gop_frame_numbers);
@@ -11599,7 +11599,7 @@ int main(int argc, char *argv[]) {
         int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
 
         // Flush remaining GOP with force_flush=1 to process all frames
-        size_t final_packet_size = gop_process_and_flush(enc, enc->output_fp, qY,
+        size_t final_packet_size = gop_process_and_flush(enc, enc->output_fp, QLUT[qY],
                                                          gop_frame_numbers, 1);
 
         free(gop_frame_numbers);
