@@ -124,6 +124,13 @@ static int needs_alpha_channel(int channel_layout) {
     return channel_layouts[channel_layout].has_alpha;
 }
 
+// Coefficient preprocessing modes
+typedef enum {
+    PREPROCESS_TWOBITMAP = 0,  // Twobit-plane significance map (default, best compression)
+    PREPROCESS_EZBC = 1,       // EZBC embedded zero block coding
+    PREPROCESS_RAW = 2         // No preprocessing - raw coefficients
+} preprocess_mode_t;
+
 // Default settings
 #define DEFAULT_WIDTH 560
 #define DEFAULT_HEIGHT 448
@@ -133,7 +140,7 @@ static int needs_alpha_channel(int channel_layout) {
 #define DEFAULT_PCM_ZSTD_LEVEL 3
 #define TEMPORAL_GOP_SIZE 24
 #define TEMPORAL_GOP_SIZE_MIN 10 // Minimum GOP size to avoid decoder hiccups
-#define TEMPORAL_DECOMP_LEVEL 2
+#define TEMPORAL_DECOMP_LEVEL 2  // 3 levels make too much afterimages and nonmoving pixels
 
 // Single-pass scene change detection constants
 #define SCENE_CHANGE_THRESHOLD_SOFT 0.72
@@ -1804,7 +1811,7 @@ typedef struct tav_encoder_s {
     int intra_only;       // Force all tiles to use INTRA mode (disable delta encoding)
     int monoblock;        // Single DWT tile mode (encode entire frame as one tile)
     int perceptual_tuning; // 1 = perceptual quantisation (default), 0 = uniform quantisation
-    int enable_ezbc;       // 1 = use EZBC (Embedded Zero Block Coding) for significance maps, 0 = use twobit-map (default)
+    preprocess_mode_t preprocess_mode;  // Coefficient preprocessing mode (TWOBITMAP=default, EZBC, RAW)
     int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
     int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
@@ -2302,10 +2309,10 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
                                                            float *coeffs, int16_t *quantised, int size,
                                                            int base_quantiser, int width, int height,
                                                            int decomp_levels, int is_chroma, int frame_count);
-static size_t preprocess_coefficients_variable_layout(int enable_ezbc, int width, int height,
+static size_t preprocess_coefficients_variable_layout(preprocess_mode_t preprocess_mode, int width, int height,
                                                        int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
                                                        int coeff_count, int channel_layout, uint8_t *output_buffer);
-static size_t preprocess_gop_unified(int enable_ezbc, int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
+static size_t preprocess_gop_unified(preprocess_mode_t preprocess_mode, int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
                                      int num_frames, int num_pixels, int width, int height, int channel_layout,
                                      uint8_t *output_buffer);
 
@@ -2357,6 +2364,7 @@ static void show_usage(const char *program_name) {
     printf("  --single-pass           Disable two-pass encoding with wavelet-based scene change detection (optimal GOP boundaries)\n");
     printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt, implies --ezbc)\n");
     printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) entropy coding\n");
+    printf("  --raw-coeffs            Use raw coefficients (no significance map preprocessing, for testing)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -2423,7 +2431,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
-    enc->enable_ezbc = 0;  // default to twobit-map as EZBC+Zstd 3 = Twobitmap+Zstd 15, and Twobitmap is faster to decode
+    enc->preprocess_mode = PREPROCESS_TWOBITMAP;  // default to twobit-map as EZBC+Zstd 3 = Twobitmap+Zstd 15, and Twobitmap is faster to decode
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit
@@ -2438,9 +2446,9 @@ static tav_encoder_t* create_encoder(void) {
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
-    enc->temporal_gop_capacity = TEMPORAL_GOP_SIZE;  // 16 frames
+    enc->temporal_gop_capacity = TEMPORAL_GOP_SIZE;  // 24 frames
     enc->temporal_gop_frame_count = 0;
-    enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 2 levels of temporal DWT (16 -> 4x4 subbands)
+    enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 3 levels of temporal DWT (24 -> 12 -> 6 -> 3 temporal subbands)
     enc->temporal_gop_rgb_frames = NULL;
     enc->temporal_gop_y_frames = NULL;
     enc->temporal_gop_co_frames = NULL;
@@ -3130,33 +3138,35 @@ static void dwt_53_inverse_1d(float *data, int length) {
 // Temporal Subband Quantization
 // =============================================================================
 
-// Determine temporal subband level for a frame index after multi-level temporal DWT
-// With 2 decomposition levels on 16 frames:
-// - Level 0 (tLL): frames 0-3 (4 frames, low-pass)
-// - Level 1 (tLH, tHL, tHH of level 1): frames 4-7, 8-11, 12-15 (12 frames, high-pass level 1)
-// - Level 2 would be: frames in the high-pass of the high-pass (if we had 3 levels)
+// Determine which temporal decomposition level a frame belongs to after 3D DWT
+// With 3 decomposition levels on 24 frames:
+// - Level 0 (tLLL): frames 0-2 (3 frames, coarsest low-pass)
+// - Level 1 (tLLH): frames 3-5 (3 frames, high-pass from 3rd decomposition)
+// - Level 2 (tLH): frames 6-11 (6 frames, high-pass from 2nd decomposition)
+// - Level 3 (tH): frames 12-23 (12 frames, high-pass from 1st decomposition)
 static int get_temporal_subband_level(int frame_idx, int num_frames, int temporal_levels) {
-    // After temporal DWT with 2 levels:
-    // Frames 0...num_frames/(2^2) = tLL (temporal low-low, coarsest)
-    // Remaining frames are temporal high-pass subbands
+    // After temporal DWT with N levels, frames are organized as:
+    // Frames 0...num_frames/(2^N) = tL...L (N low-passes, coarsest)
+    // Remaining frames are temporal high-pass subbands at various levels
 
-    int frames_per_level0 = num_frames >> temporal_levels;  // 16 >> 2 = 4
-
-    if (frame_idx < frames_per_level0) {
-        return 0;  // Coarsest temporal level (tLL)
-    } else if (frame_idx < (num_frames >> 1)) {
-        return 1;  // First level high-pass (tLH, tHL, tHH from level 1)
-    } else {
-        return 2;  // Finest level high-pass
+    // Check each level boundary from coarsest to finest
+    for (int level = 0; level < temporal_levels; level++) {
+        int frames_at_this_level = num_frames >> (temporal_levels - level);
+        if (frame_idx < frames_at_this_level) {
+            return level;
+        }
     }
+
+    // Finest level (first decomposition's high-pass)
+    return temporal_levels;
 }
 
 // Quantize 3D DWT coefficients with SEPARABLE temporal-spatial quantization
 //
 // IMPORTANT: This implements a separable quantization approach (temporal × spatial)
 // After dwt_3d_forward(), the GOP coefficients have this structure:
-//   - Temporal DWT applied first (16 frames → 2 levels)
-//     → Results in temporal subbands: tLL (frames 0-3), tLH (4-7), tHL (8-11), tHH (12-15)
+//   - Temporal DWT applied first (24 frames → 3 levels)
+//     → Results in temporal subbands: tLLL (frames 0-2), tLLH (3-5), tLH (6-11), tH (12-23)
 //   - Then spatial DWT applied to each temporal subband
 //     → Each frame now contains 2D spatial coefficients (LL, LH, HL, HH subbands)
 //
@@ -3177,7 +3187,6 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
                                         int is_chroma) {
     const float BETA = 0.6f;  // Temporal scaling exponent (aggressive for temporal high-pass)
     const float KAPPA = 1.14f;
-    const float TEMPORAL_BASE_SCALE = 1.0f;  // Don't reduce tLL quantization (same as intra)
 
     // Process each temporal subband independently (separable approach)
     for (int t = 0; t < num_frames; t++) {
@@ -3193,7 +3202,7 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         //   - Level 0 (tLL): 16 * 1.0 * 2^0 = 16 (same as intra-only)
         //   - Level 1 (tH):  16 * 1.0 * 2^2.0 = 64 (4× base, aggressive)
         //   - Level 2 (tHH): 16 * 1.0 * 2^4.0 = 256 → clamped to 255 (very aggressive)
-        float temporal_scale = TEMPORAL_BASE_SCALE * powf(2.0f, BETA * powf(temporal_level, KAPPA));
+        float temporal_scale = powf(2.0f, BETA * powf(temporal_level, KAPPA));
         float temporal_quantiser = base_quantiser * temporal_scale;
 
         // Convert to integer for quantization
@@ -3208,8 +3217,8 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         //
         // CRITICAL: Use no_normalisation variant when EZBC is enabled
         // - EZBC mode: coefficients must be denormalized (quantize + multiply back)
-        // - Twobit-map mode: coefficients stay normalized (quantize only)
-        if (enc->enable_ezbc) {
+        // - Twobit-map/raw mode: coefficients stay normalized (quantize only)
+        if (enc->preprocess_mode == PREPROCESS_EZBC) {
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(
                 enc,
                 gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
@@ -4148,7 +4157,7 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
 
-    if (enc->enable_ezbc) {
+    if (enc->preprocess_mode == PREPROCESS_EZBC) {
         // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
         // EZBC will compress by encoding only significant bitplanes
 //        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantization without normalization\n");
@@ -4186,7 +4195,7 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     // Step 6: Preprocess coefficients (significance map compression)
     int total_coeffs = frame_size * 3;  // Y + Co + Cg
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);  // Extra space for map
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
                                                                        quantised_y, quantised_co, quantised_cg,
                                                                        NULL, frame_size, enc->channel_layout,
                                                                        preprocessed);
@@ -4480,7 +4489,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     // Step 8: Preprocess coefficients
     int total_coeffs = frame_size * 3;
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
                                                                        quantised_y, quantised_co, quantised_cg,
                                                                        NULL, frame_size, enc->channel_layout,
                                                                        preprocessed);
@@ -4713,7 +4722,7 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
     // Step 8: Preprocess coefficients
     int total_coeffs = frame_size * 3;
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
                                                                        quantised_y, quantised_co, quantised_cg,
                                                                        NULL, frame_size, enc->channel_layout,
                                                                        preprocessed);
@@ -5382,7 +5391,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         uint8_t *preprocessed_buffer = malloc(max_preprocessed_size);
 
         size_t preprocessed_size = preprocess_gop_unified(
-            enc->enable_ezbc, quant_y, quant_co, quant_cg,
+            enc->preprocess_mode, quant_y, quant_co, quant_cg,
             actual_gop_size, num_pixels, enc->width, enc->height, enc->channel_layout,
             preprocessed_buffer);
 
@@ -6023,6 +6032,14 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
     int num_pixels = width * height;
     float *temporal_line = malloc(num_frames * sizeof(float));
 
+    // Pre-calculate all intermediate lengths for temporal DWT (same fix as TAD)
+    // This ensures correct reconstruction for non-power-of-2 GOP sizes
+    int *temporal_lengths = malloc((temporal_levels + 1) * sizeof(int));
+    temporal_lengths[0] = num_frames;
+    for (int i = 1; i <= temporal_levels; i++) {
+        temporal_lengths[i] = (temporal_lengths[i - 1] + 1) / 2;
+    }
+
     // Step 1: Apply temporal DWT to each spatial location across all GOP frames
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -6033,9 +6050,9 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
                 temporal_line[t] = gop_data[t][pixel_idx];
             }
 
-            // Apply temporal DWT with multiple levels
+            // Apply temporal DWT with multiple levels using pre-calculated lengths
             for (int level = 0; level < temporal_levels; level++) {
-                int level_frames = num_frames >> level;
+                int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
 //                    dwt_temporal_1d_forward_53(temporal_line, level_frames);  // CDF 5/3 worse for motion-compensated frames
                     dwt_haar_forward_1d(temporal_line, level_frames);  // Haar better for imperfect alignment
@@ -6049,6 +6066,7 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
         }
     }
 
+    free(temporal_lengths);
     free(temporal_line);
 
     // Step 2: Apply 2D spatial DWT to each temporal subband (each frame after temporal DWT)
@@ -6080,6 +6098,14 @@ static void dwt_3d_inverse(float **gop_data, int width, int height, int num_fram
     int num_pixels = width * height;
     float *temporal_line = malloc(num_frames * sizeof(float));
 
+    // Pre-calculate all intermediate lengths for temporal DWT (same fix as TAD)
+    // This ensures correct reconstruction for non-power-of-2 GOP sizes
+    int *temporal_lengths = malloc((temporal_levels + 1) * sizeof(int));
+    temporal_lengths[0] = num_frames;
+    for (int i = 1; i <= temporal_levels; i++) {
+        temporal_lengths[i] = (temporal_lengths[i - 1] + 1) / 2;
+    }
+
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             int pixel_idx = y * width + x;
@@ -6089,9 +6115,9 @@ static void dwt_3d_inverse(float **gop_data, int width, int height, int num_fram
                 temporal_line[t] = gop_data[t][pixel_idx];
             }
 
-            // Apply inverse temporal DWT with multiple levels (reverse order)
+            // Apply inverse temporal DWT with multiple levels using pre-calculated lengths (reverse order)
             for (int level = temporal_levels - 1; level >= 0; level--) {
-                int level_frames = num_frames >> level;
+                int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
                     dwt_temporal_1d_inverse_53(temporal_line, level_frames);
                 }
@@ -6104,6 +6130,7 @@ static void dwt_3d_inverse(float **gop_data, int width, int height, int num_fram
         }
     }
 
+    free(temporal_lengths);
     free(temporal_line);
 }
 
@@ -6328,9 +6355,20 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
     float *temp_row = malloc(max_size * sizeof(float));
     float *temp_col = malloc(max_size * sizeof(float));
 
+    // Pre-calculate all intermediate widths and heights (same fix as TAD/temporal)
+    // This ensures correct reconstruction for non-power-of-2 dimensions
+    int *widths = malloc((levels + 1) * sizeof(int));
+    int *heights = malloc((levels + 1) * sizeof(int));
+    widths[0] = width;
+    heights[0] = height;
+    for (int i = 1; i <= levels; i++) {
+        widths[i] = (widths[i - 1] + 1) / 2;
+        heights[i] = (heights[i - 1] + 1) / 2;
+    }
+
     for (int level = 0; level < levels; level++) {
-        int current_width = width >> level;
-        int current_height = height >> level;
+        int current_width = widths[level];
+        int current_height = heights[level];
         if (current_width < 1 || current_height < 1) break;
 
         // Row transform (horizontal)
@@ -6380,6 +6418,8 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
         }
     }
 
+    free(widths);
+    free(heights);
     free(temp_row);
     free(temp_col);
 }
@@ -6391,10 +6431,21 @@ static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height
     float *temp_row = malloc(max_size * sizeof(float));
     float *temp_col = malloc(max_size * sizeof(float));
 
+    // Pre-calculate all intermediate widths and heights (same fix as TAD/temporal/forward)
+    // This ensures correct reconstruction for non-power-of-2 dimensions
+    int *widths = malloc((levels + 1) * sizeof(int));
+    int *heights = malloc((levels + 1) * sizeof(int));
+    widths[0] = width;
+    heights[0] = height;
+    for (int i = 1; i <= levels; i++) {
+        widths[i] = (widths[i - 1] + 1) / 2;
+        heights[i] = (heights[i - 1] + 1) / 2;
+    }
+
     // Apply inverse transform in reverse order of levels
     for (int level = levels - 1; level >= 0; level--) {
-        int current_width = width >> level;
-        int current_height = height >> level;
+        int current_width = widths[level];
+        int current_height = heights[level];
         if (current_width < 1 || current_height < 1) continue;
 
         // Column inverse transform (vertical) - done first to reverse forward order
@@ -6424,6 +6475,8 @@ static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height
         }
     }
 
+    free(widths);
+    free(heights);
     free(temp_row);
     free(temp_col);
 }
@@ -6519,6 +6572,33 @@ static size_t preprocess_coefficients_twobitmap(int16_t *coeffs_y, int16_t *coef
     return map_bytes * total_maps + total_others * sizeof(int16_t);
 }
 
+// Raw preprocessing: no encoding, just copy raw coefficients
+static size_t preprocess_coefficients_raw(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
+                                           int coeff_count, int channel_layout, uint8_t *output_buffer) {
+    const channel_layout_config_t *config = &channel_layouts[channel_layout];
+    size_t offset = 0;
+
+    // Copy each active channel's coefficients directly to output buffer
+    if (config->has_y && coeffs_y) {
+        memcpy(output_buffer + offset, coeffs_y, coeff_count * sizeof(int16_t));
+        offset += coeff_count * sizeof(int16_t);
+    }
+    if (config->has_co && coeffs_co) {
+        memcpy(output_buffer + offset, coeffs_co, coeff_count * sizeof(int16_t));
+        offset += coeff_count * sizeof(int16_t);
+    }
+    if (config->has_cg && coeffs_cg) {
+        memcpy(output_buffer + offset, coeffs_cg, coeff_count * sizeof(int16_t));
+        offset += coeff_count * sizeof(int16_t);
+    }
+    if (config->has_alpha && coeffs_alpha) {
+        memcpy(output_buffer + offset, coeffs_alpha, coeff_count * sizeof(int16_t));
+        offset += coeff_count * sizeof(int16_t);
+    }
+
+    return offset;
+}
+
 // EZBC preprocessing: encode each channel with embedded zero block coding
 static size_t preprocess_coefficients_ezbc(int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
                                             int coeff_count, int width, int height, int channel_layout,
@@ -6555,28 +6635,73 @@ static size_t preprocess_coefficients_ezbc(int16_t *coeffs_y, int16_t *coeffs_co
     return total_size;
 }
 
-// Wrapper: select between EZBC and twobit-map based on encoder settings
-static size_t preprocess_coefficients_variable_layout(int enable_ezbc, int width, int height,
+// Wrapper: select preprocessing mode based on encoder settings
+static size_t preprocess_coefficients_variable_layout(preprocess_mode_t preprocess_mode, int width, int height,
                                                        int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
                                                        int coeff_count, int channel_layout, uint8_t *output_buffer) {
-    if (enable_ezbc) {
-        return preprocess_coefficients_ezbc(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
-                                             coeff_count, width, height, channel_layout, output_buffer);
-    } else {
-        return preprocess_coefficients_twobitmap(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
-                                                 coeff_count, channel_layout, output_buffer);
+    switch (preprocess_mode) {
+        case PREPROCESS_EZBC:
+            return preprocess_coefficients_ezbc(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
+                                                 coeff_count, width, height, channel_layout, output_buffer);
+        case PREPROCESS_RAW:
+            return preprocess_coefficients_raw(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
+                                                coeff_count, channel_layout, output_buffer);
+        case PREPROCESS_TWOBITMAP:
+        default:
+            return preprocess_coefficients_twobitmap(coeffs_y, coeffs_co, coeffs_cg, coeffs_alpha,
+                                                     coeff_count, channel_layout, output_buffer);
     }
 }
 
 // Unified GOP preprocessing: single significance map for all frames and channels
 // Layout (twobit-map): [All_Y_maps][All_Co_maps][All_Cg_maps][All_Y_values][All_Co_values][All_Cg_values]
 // Layout (EZBC): [frame0_size(4)][frame0_ezbc][frame1_size(4)][frame1_ezbc]...
+// Layout (raw): [All_Y_coeffs][All_Co_coeffs][All_Cg_coeffs]
 // This enables optimal cross-frame compression in the temporal dimension
-static size_t preprocess_gop_unified(int enable_ezbc, int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
+static size_t preprocess_gop_unified(preprocess_mode_t preprocess_mode, int16_t **quant_y, int16_t **quant_co, int16_t **quant_cg,
                                      int num_frames, int num_pixels, int width, int height, int channel_layout,
                                      uint8_t *output_buffer) {
+    const channel_layout_config_t *config = &channel_layouts[channel_layout];
+
+    // Raw mode: just concatenate all coefficients
+    if (preprocess_mode == PREPROCESS_RAW) {
+        size_t offset = 0;
+
+        // Copy all Y frames
+        if (config->has_y && quant_y) {
+            for (int frame = 0; frame < num_frames; frame++) {
+                if (quant_y[frame]) {
+                    memcpy(output_buffer + offset, quant_y[frame], num_pixels * sizeof(int16_t));
+                    offset += num_pixels * sizeof(int16_t);
+                }
+            }
+        }
+
+        // Copy all Co frames
+        if (config->has_co && quant_co) {
+            for (int frame = 0; frame < num_frames; frame++) {
+                if (quant_co[frame]) {
+                    memcpy(output_buffer + offset, quant_co[frame], num_pixels * sizeof(int16_t));
+                    offset += num_pixels * sizeof(int16_t);
+                }
+            }
+        }
+
+        // Copy all Cg frames
+        if (config->has_cg && quant_cg) {
+            for (int frame = 0; frame < num_frames; frame++) {
+                if (quant_cg[frame]) {
+                    memcpy(output_buffer + offset, quant_cg[frame], num_pixels * sizeof(int16_t));
+                    offset += num_pixels * sizeof(int16_t);
+                }
+            }
+        }
+
+        return offset;
+    }
+
     // EZBC mode: encode each frame separately with EZBC
-    if (enable_ezbc) {
+    if (preprocess_mode == PREPROCESS_EZBC) {
         size_t total_size = 0;
         uint8_t *write_ptr = output_buffer;
 
@@ -6601,7 +6726,6 @@ static size_t preprocess_gop_unified(int enable_ezbc, int16_t **quant_y, int16_t
     }
 
     // Twobit-map mode: original unified GOP preprocessing
-    const channel_layout_config_t *config = &channel_layouts[channel_layout];
     const int map_bytes_per_frame = (num_pixels * 2 + 7) / 8;  // 2 bits per coefficient
     const int total_coeffs = num_pixels * num_frames;
 
@@ -7205,7 +7329,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
     if (mode == TAV_MODE_INTRA) {
         // INTRA mode: quantise coefficients directly and store for future reference
-        if (enc->enable_ezbc) {
+        if (enc->preprocess_mode == PREPROCESS_EZBC) {
             // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
 //            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantization without normalization\n");
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
@@ -7327,7 +7451,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     }*/
 
     // Preprocess and write quantised coefficients using variable channel layout concatenated significance maps
-    size_t total_compressed_size = preprocess_coefficients_variable_layout(enc->enable_ezbc, enc->width, enc->height,
+    size_t total_compressed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
                                                                            quantised_y, quantised_co, quantised_cg, NULL,
                                                                            tile_size, enc->channel_layout, buffer + offset);
     offset += total_compressed_size;
@@ -7953,8 +8077,8 @@ static int write_tav_header(tav_encoder_t *enc) {
     fputc(enc->quality_level+1, enc->output_fp);
     fputc(enc->channel_layout, enc->output_fp);
 
-    // Entropy Coder (0 = Twobit-map, 1 = EZBC)
-    fputc(enc->enable_ezbc ? 1 : 0, enc->output_fp);
+    // Entropy Coder (0 = Twobit-map, 1 = EZBC, 2 = Raw)
+    fputc(enc->preprocess_mode, enc->output_fp);
 
     // Reserved bytes (2 bytes)
     fputc(0, enc->output_fp);
@@ -10367,6 +10491,7 @@ int main(int argc, char *argv[]) {
         {"native-audio", no_argument, 0, 1027},
         {"native-audio-format", no_argument, 0, 1027},
         {"tad-audio", no_argument, 0, 1028},
+        {"raw-coeffs", no_argument, 0, 1029},
         {"single-pass", no_argument, 0, 1050},  // disable two-pass encoding with wavelet-based scene detection
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
@@ -10538,7 +10663,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 1020: // --mc-ezbc
                 enc->temporal_enable_mcezbc = 1;
-                enc->enable_ezbc = 1;
+                enc->preprocess_mode = PREPROCESS_EZBC;
                 printf("MC-EZBC block-based motion compensation enabled (requires --temporal-dwt)\n");
                 break;
             case 1021: // --residual-coding
@@ -10577,7 +10702,7 @@ int main(int argc, char *argv[]) {
                 printf("GOP size set to %d frames\n", enc->residual_coding_gop_size);
                 break;
             case 1025: // --ezbc
-                enc->enable_ezbc = 1;
+                enc->preprocess_mode = PREPROCESS_EZBC;
                 printf("EZBC (Embedded Zero Block Coding) enabled for significance maps\n");
                 break;
             case 1026: // --separate-audio-track
@@ -10593,6 +10718,10 @@ int main(int argc, char *argv[]) {
                 enc->tad_audio = 1;
                 enc->pcm8_audio = 0;
                 printf("TAD audio mode enabled (packet 0x24, quality follows -q)\n");
+                break;
+            case 1029: // --raw-coeffs
+                enc->preprocess_mode = PREPROCESS_RAW;
+                printf("Raw coefficient mode enabled (no significance map preprocessing)\n");
                 break;
             case 1050: // --single-pass
                 enc->two_pass_mode = 0;

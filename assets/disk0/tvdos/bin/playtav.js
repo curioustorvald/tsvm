@@ -18,6 +18,7 @@ const SND_BASE_ADDR = audio.getBaseAddr()
 const SND_MEM_ADDR = audio.getMemAddr()
 const pcm = require("pcm")
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
+const TAV_TEMPORAL_LEVELS = 2
 
 // Tile encoding modes (same as TEV block modes)
 const TAV_MODE_SKIP = 0x00
@@ -1108,7 +1109,7 @@ try {
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter, header.decompLevels, 2,
+                        header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         bufferOffset
                     )
@@ -1181,7 +1182,7 @@ try {
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter, header.decompLevels, 2,
+                        header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         nextOffset
                     )
@@ -1223,7 +1224,7 @@ try {
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter, header.decompLevels, 2,
+                        header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         decodingOffset
                     )
@@ -1526,7 +1527,7 @@ try {
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter, header.decompLevels, 2,
+                        header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         readyGopData.slot * SLOT_SIZE
                     )
@@ -1674,7 +1675,7 @@ try {
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter, header.decompLevels, 2,
+                        header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         decodingGopData.slot * SLOT_SIZE
                     )
@@ -1714,7 +1715,7 @@ try {
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
-                        header.waveletFilter, header.decompLevels, 2,
+                        header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         readyGopData.slot * SLOT_SIZE
                     )
@@ -1791,7 +1792,7 @@ try {
                             header.qualityLevel,
                             QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                             header.channelLayout,
-                            header.waveletFilter, header.decompLevels, 2,
+                            header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                             header.entropyCoder,
                             targetOffset
                         )

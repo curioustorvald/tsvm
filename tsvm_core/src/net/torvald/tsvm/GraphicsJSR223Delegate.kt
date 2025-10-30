@@ -4960,8 +4960,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     private fun getTemporalQuantizerScale(temporalLevel: Int): Float {
         val BETA = 0.6f // Temporal scaling exponent (aggressive for temporal high-pass)
         val KAPPA = 1.14f
-        val TEMPORAL_BASE_SCALE = 1.0f // Don't reduce tLL quantization (same as intra)
-        return TEMPORAL_BASE_SCALE * 2.0f.pow(BETA * temporalLevel.toFloat().pow(KAPPA))
+        return 2.0f.pow(BETA * temporalLevel.toFloat().pow(KAPPA))
     }
 
     // level is one-based index
@@ -6224,9 +6223,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val tempRow = FloatArray(maxSize)
         val tempCol = FloatArray(maxSize)
 
+        // Pre-calculate all intermediate widths and heights (same fix as TAD/temporal/spatial-forward)
+        // This ensures correct reconstruction for non-power-of-2 dimensions
+        val widths = IntArray(levels + 1)
+        val heights = IntArray(levels + 1)
+        widths[0] = width
+        heights[0] = height
+        for (i in 1..levels) {
+            widths[i] = (widths[i - 1] + 1) / 2
+            heights[i] = (heights[i - 1] + 1) / 2
+        }
+
         for (level in levels - 1 downTo 0) {
-            val currentWidth = width shr level
-            val currentHeight = height shr level
+            val currentWidth = widths[level]
+            val currentHeight = heights[level]
 
             // Handle edge cases for very small decomposition levels
             if (currentWidth < 1 || currentHeight < 1) continue // Skip invalid sizes
@@ -7115,6 +7125,14 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Only needed for GOPs with multiple frames (skip for I-frames)
         if (numFrames < 2) return
 
+        // Pre-calculate all intermediate lengths for temporal DWT (same fix as TAD)
+        // This ensures correct reconstruction for non-power-of-2 GOP sizes
+        val temporalLengths = IntArray(temporalLevels + 1)
+        temporalLengths[0] = numFrames
+        for (i in 1..temporalLevels) {
+            temporalLengths[i] = (temporalLengths[i - 1] + 1) / 2
+        }
+
         val temporalLine = FloatArray(numFrames)
         for (y in 0 until height) {
             for (x in 0 until width) {
@@ -7125,9 +7143,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     temporalLine[t] = gopData[t][pixelIdx]
                 }
 
-                // Apply inverse temporal DWT with multiple levels (reverse order)
+                // Apply inverse temporal DWT with multiple levels using pre-calculated lengths (reverse order)
                 for (level in temporalLevels - 1 downTo 0) {
-                    val levelFrames = numFrames shr level
+                    val levelFrames = temporalLengths[level]
                     if (levelFrames >= 2) {
                         tavApplyTemporalDWTInverse1D(temporalLine, levelFrames)
                     }
