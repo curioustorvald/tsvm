@@ -1523,11 +1523,12 @@ Number|Index
 
 TSVM Advanced Audio (TAD) Format
 Created by CuriousTorvald and Claude on 2025-10-23
+Updated: 2025-10-30 (fixed non-power-of-2 sample count support)
 
 TAD is a perceptual audio codec for TSVM utilizing Discrete Wavelet Transform (DWT)
-with 4-tap interpolating Deslauriers-Dubuc wavelets, providing efficient compression
-through M/S stereo decorrelation, frequency-dependent quantization, and significance
-map encoding. Designed as an includable API for integration with TAV video encoder.
+with CDF 9/7 biorthogonal wavelets, providing efficient compression through M/S stereo
+decorrelation, frequency-dependent quantization, and raw int8 coefficient storage.
+Designed as an includable API for integration with TAV video encoder.
 
 When used inside of a video codec, only zstd-compressed payload is stored, chunk length
 is stored separately and quality index is shared with that of the video.
@@ -1556,20 +1557,21 @@ is stored separately and quality index is shared with that of the video.
 - **Channels**: 2 (stereo)
 - **Input Format**: PCM32fLE (32-bit float little-endian PCM)
 - **Preprocessing**: 16 Hz highpass filter applied during extraction
-- **Internal Representation**: Signed PCM8 with error-diffusion dithering
-- **Chunk Size**: Variable (1024-32768+ samples per channel, must be power of 2)
-  - Default: 32768 samples (1.024 seconds at 32 kHz)
+- **Internal Representation**: Float32 throughout encoding, PCM8 conversion only at decoder
+- **Chunk Size**: Variable (1024-32768+ samples per channel, any size ≥1024 supported)
+  - Default: 32768 samples (1.024 seconds at 32 kHz) for standalone files
+  - TAV integration: Uses exact GOP sample count (e.g., 32016 for 1 second at 32 kHz)
   - Minimum: 1024 samples (32 ms at 32 kHz)
-  - DWT levels calculated dynamically: log2(chunk_size) - 1
+  - DWT levels: Fixed at 9 levels for all chunk sizes
 - **Target Compression**: 2:1 against PCMu8 baseline
+- **Wavelet**: CDF 9/7 biorthogonal
 
 ## Chunk Structure
-Each chunk encodes a variable number of stereo samples (power of 2, minimum 1024).
-Default is 32768 samples (65536 total samples, 1.024 seconds).
-If the audio duration doesn't align to chunk boundaries, the final chunk can use
-a smaller power-of-2 size or be zero-padded.
+Each chunk encodes a variable number of stereo samples (minimum 1024, any size supported).
+Default is 32768 samples (65536 total samples, 1.024 seconds) for standalone files.
+TAV integration uses exact GOP sample counts (e.g., 32016 samples for 1 second at 32 kHz).
 
-    uint16 Sample Count: number of samples per channel (must be power of 2, min 1024)
+    uint16 Sample Count: number of samples per channel (min 1024, any size ≥1024)
     uint8  Max quantisation index: this number * 2 + 1 is the total steps of quantisation
     uint32 Chunk Payload Size: size of following payload in bytes
     *      Chunk Payload: encoded M/S stereo data (Zstd compressed if flag set)
@@ -1580,11 +1582,12 @@ a smaller power-of-2 size or be zero-padded.
 
 ## Encoding Pipeline
 
-### Step 1: PCM32f to PCM8 Conversion with Error-Diffusion Dithering
-Input stereo PCM32fLE is converted to signed PCM8 using second-order noise-shaped
-error-diffusion dithering to minimize quantization noise.
+### Step 1: Dynamic Range Compression (Gamma Compression)
+Input stereo PCM32fLE undergoes gamma compression for perceptual uniformity:
 
-Error is propagated to the next sample (alternating between left/right channels).
+    encode(x) = sign(x) * |x|^γ  where γ=0.707 (1/√2)
+
+This compresses dynamic range before quantization, improving perceptual quality.
 
 ### Step 2: M/S Stereo Decorrelation
 Mid-Side transformation exploits stereo correlation:
@@ -1595,16 +1598,18 @@ Mid-Side transformation exploits stereo correlation:
 This typically concentrates energy in the Mid channel while the Side channel
 contains mostly small values, improving compression efficiency.
 
-### Step 3: Variable-Level DD-4 DWT
-Each channel (Mid and Side) undergoes Deslauriers-Dubuc 4-tap interpolating wavelet
-decomposition. The number of DWT levels is calculated dynamically based on chunk size:
+### Step 3: 9-Level CDF 9/7 DWT
+Each channel (Mid and Side) undergoes CDF 9/7 biorthogonal wavelet decomposition. The codec uses a fixed 9 decomposition levels for all chunk sizes:
 
-    DWT Levels = log2(chunk_size) - 1
+    DWT Levels = 9 (fixed)
 
-For the default 32768-sample chunks, this produces 14 levels with frequency subbands:
+For 32768-sample chunks:
+    - After 9 levels: 64 LL coefficients
+    - Frequency subbands: LL + 9 H bands (L9 to L1)
 
-    Level 0-13: High to low frequency coefficients
-    DC band: Low-frequency approximation coefficients
+For 32016-sample chunks (TAV 1-second GOP):
+    - After 9 levels: 63 LL coefficients
+    - Supports non-power-of-2 sizes through proper length tracking (fixed 2025-10-30)
 
 Sideband boundaries are calculated dynamically:
     first_band_size = chunk_size >> dwt_levels
@@ -1612,8 +1617,12 @@ Sideband boundaries are calculated dynamically:
     sideband[1] = first_band_size
     sideband[i+1] = sideband[i] + (first_band_size << (i-1))
 
-For 32768 samples with 14 levels: boundaries at 0, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768
-For 1024 samples with 9 levels: boundaries at 0, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+CDF 9/7 lifting coefficients:
+    α = -1.586134342
+    β = -0.052980118
+    γ = 0.882911076
+    δ = 0.443506852
+    K = 1.230174105
 
 ### Step 4: Frequency-Dependent Quantization
 DWT coefficients are quantized using perceptually-tuned frequency-dependent weights.
@@ -1630,38 +1639,69 @@ where coefficients smaller than half the quantization step are zeroed:
 This aggressively removes high-frequency noise while preserving important
 mid-frequency content (2-4 KHz critical for speech intelligibility).
 
-### Step 5: 2-bit Significance Map Encoding
-Quantized coefficients are encoded using the 2-bit twobitmap method (see above).
+### Step 5: Raw Int8 Coefficient Storage
+Quantized coefficients are stored directly as signed int8 values (no significance map, better Zstd compression).
+Concatenated format: [Mid_channel_data][Side_channel_data]
 
-### Step 6: Optional Zstd Compression
-If enabled (default), the concatenated Mid+Side encoded data is compressed
-using Zstd level 3 for additional compression without significant CPU overhead.
+### Step 6: Coefficient-Domain Dithering (Encoder)
+Light triangular dithering (±0.5 quantization steps) added to coefficients before
+quantization to reduce banding artifacts.
+
+### Step 7: Zstd Compression
+The concatenated Mid+Side encoded data is compressed
+using Zstd level 7 for additional compression without significant CPU overhead.
 
 ## Decoding Pipeline
 
-### Step 1: Chunk Extraction
-Read chunk header to determine significance map method and compression status.
-If compressed, decompress payload using Zstd.
+### Step 1: Chunk Extraction and Decompression
+Read chunk header (sample_count, max_index, payload_size).
+If compressed (default), decompress payload using Zstd.
 
-### Step 2: Decode Significance Maps
-Decode Mid and Side channel data using 2-bit twobitmap decoder:
-    - Read 2-bit codes from significance map
-    - Reconstruct coefficients: 0, +1, -1, or read from Other Values array
+### Step 2: Coefficient Extraction
+Extract Mid and Side channel int8 data from concatenated payload:
+    - Mid channel: bytes [0..sample_count-1]
+    - Side channel: bytes [sample_count..2*sample_count-1]
 
-### Step 3: Dequantization
-Multiply quantized coefficients by frequency-dependent quantization steps
-(same weights as encoder).
+### Step 3: Dequantization with Lambda Decompanding
+Convert quantized int8 values back to float coefficients using:
+    1. Lambda decompanding (inverse of Laplacian CDF compression)
+    2. Multiply by frequency-dependent quantization steps
+    3. Apply coefficient-domain dithering (TPDF, ~-60 dBFS)
 
-### Step 4: Variable-Level Inverse DD-4 DWT
-Reconstruct PCM8 audio from DWT coefficients using inverse DD-4 transform,
-progressively doubling length from the deepest level to chunk_size samples.
-The number of inverse DWT levels matches the forward transform (log2(chunk_size) - 1).
+### Step 4: 9-Level Inverse CDF 9/7 DWT
+Reconstruct Float32 audio from DWT coefficients using inverse CDF 9/7 transform.
+
+**Critical Implementation (Fixed 2025-10-30)**:
+The multi-level inverse DWT must use the EXACT sequence of lengths from forward
+transform, in reverse order. Using simple doubling (length *= 2) is INCORRECT
+for non-power-of-2 sizes.
+
+Correct approach:
+    1. Pre-calculate all forward transform lengths:
+       lengths[0] = chunk_size
+       lengths[i] = (lengths[i-1] + 1) / 2  for i=1..9
+    2. Apply inverse DWT in reverse order:
+       for level from 8 down to 0:
+           apply inverse_dwt(data, lengths[level])
+
+This ensures correct reconstruction for all chunk sizes including non-power-of-2
+values (e.g., 32016 samples for TAV 1-second GOPs).
 
 ### Step 5: M/S to L/R Conversion
 Convert Mid/Side back to Left/Right stereo:
 
     Left = Mid + Side
     Right = Mid - Side
+
+### Step 6: Gamma Expansion
+Expand dynamic range (inverse of encoder's gamma compression):
+
+    decode(y) = sign(y) * |y|^(1/γ)  where γ=0.707, so 1/γ=√2≈1.414
+
+### Step 7: PCM32f to PCM8 Conversion with Noise-Shaped Dithering
+Convert Float32 samples to unsigned PCM8 (PCMu8) using second-order error-diffusion
+dithering with reduced amplitude (0.2× TPDF) to coordinate with coefficient-domain
+dithering.
 
 ## Compression Performance
 - **Target Ratio**: 2:1 against PCMu8
@@ -1699,10 +1739,18 @@ TAD encoder uses two-pass FFmpeg extraction for optimal quality:
 This ensures resampling happens after extraction with optimal quality parameters.
 
 ## Hardware Acceleration API
-TAD decoder may be accelerated using hardware functions in GraphicsJSR223Delegate:
-- tadDecode(): Main decoding function (chunk-based)
-- tadHaarIDWT(): Fast inverse Haar DWT
-- tadDequantize(): Frequency-dependent dequantization
+TAD decoder is accelerated through AudioAdapter.kt peripheral (backend) and
+AudioJSR223Delegate.kt (JavaScript API):
+
+Backend (AudioAdapter.kt):
+- decodeTad(): Main decoding function (chunk-based, reads from tadInputBin)
+- dwt97Inverse1d(): Single-level inverse CDF 9/7 DWT
+- dwt97InverseMultilevel(): 9-level inverse DWT with non-power-of-2 support
+
+JavaScript API (audio.* functions):
+- audio.tadDecode(): Trigger TAD decoding from peripheral input buffer
+- audio.tadUploadDecoded(offset, count): Upload decoded PCMu8 to playback buffer
+- audio.getMemAddr(): Get peripheral memory base address for buffer access
 
 ## Usage Examples
     # Encode with default quality (Q3)

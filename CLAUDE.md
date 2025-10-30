@@ -316,20 +316,23 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 - **Adaptive GOPs**: Scene change detection ensures optimal GOP boundaries
 
 #### TAD Format (TSVM Advanced Audio)
-- **Perceptual audio codec** for TSVM using DWT with 4-tap interpolating Deslauriers-Dubuc wavelets
+- **Perceptual audio codec** for TSVM using CDF 9/7 biorthogonal wavelets
 - **C Encoder**: `video_encoder/encoder_tad.c` - Core Encoder library; `video_encoder/encoder_tad_standalone.c` - Standalone encoder with FFmpeg integration
   - How to build: `make tad`
   - **Quality Levels**: 0-5 (0=lowest quality/smallest, 5=highest quality/largest; designed to be in sync with TAV encoder)
 - **C Decoder**: `video_encoder/decoder_tad.c` - Standalone decoder for TAD format
+- **Kotlin Decoder**: `AudioAdapter.kt` - Hardware-accelerated TAD decoder for TSVM runtime
 - **Features**:
   - **32 KHz stereo**: TSVM audio hardware native format
-  - **Variable chunk sizes**: 1024-32768+ samples, enables flexible TAV integration
+  - **Variable chunk sizes**: Any size ≥1024 samples, including non-power-of-2 (e.g., 32016 for TAV 1-second GOPs)
   - **M/S stereo decorrelation**: Exploits stereo correlation for better compression
-  - **PCM16→PCM8 conversion**: Error-diffusion dithering to minimize quantization noise
-  - **Variable-level DD-4 DWT**: Dynamic levels (log2(chunk_size) - 2) for frequency domain analysis
-  - **Perceptual quantization**: Frequency-dependent weights preserving critical 2-4 KHz range
-  - **2-bit twobitmap significance map**: Efficient encoding of sparse coefficients
-  - **Optional Zstd compression**: Level 7 for additional compression
+  - **Gamma compression**: Dynamic range compression (γ=0.707) before quantization
+  - **9-level CDF 9/7 DWT**: Fixed 9 decomposition levels for all chunk sizes
+  - **Perceptual quantization**: Frequency-dependent weights with lambda companding
+  - **Raw int8 storage**: Direct coefficient storage (no significance map, better Zstd compression)
+  - **Coefficient-domain dithering**: Light TPDF dithering to reduce banding
+  - **Zstd compression**: Level 7 for additional compression
+  - **Non-power-of-2 support**: Fixed 2025-10-30 to handle arbitrary chunk sizes correctly
 - **Usage Examples**:
   ```bash
   # Encode with default quality (Q3)
@@ -348,7 +351,7 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
   decoder_tad -i input.tad -o output.pcm
   ```
 - **Format documentation**: `terranmon.txt` (search for "TSVM Advanced Audio (TAD) Format")
-- **Version**: 1 (2-bit twobitmap significance map)
+- **Version**: 1.1 (raw int8 storage with non-power-of-2 support, updated 2025-10-30)
 
 **TAD Compression Performance**:
 - **Target Compression**: 2:1 against PCMu8 baseline (4:1 against PCM16LE input)
@@ -358,15 +361,16 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 
 **TAD Encoding Pipeline**:
 1. **FFmpeg Two-Pass Extraction**: High-quality SoXR resampling to 32 KHz with 16 Hz highpass filter
-2. **PCM16→PCM8 with Dithering**: Error-diffusion dithering minimizes quantization noise
+2. **Gamma Compression**: Dynamic range compression (γ=0.707) for perceptual uniformity
 3. **M/S Stereo Decorrelation**: Transforms Left/Right to Mid/Side for better compression
-4. **Variable-Level DD-4 DWT**: Deslauriers-Dubuc 4-tap interpolating wavelets with dynamic levels
-   - Default 32768 samples → 13 DWT levels
-   - Minimum 1024 samples → 8 DWT levels
-5. **Frequency-Dependent Quantization**: Perceptual weights favor 2-4 KHz (speech intelligibility)
+4. **9-Level CDF 9/7 DWT**: biorthogonal wavelets with fixed 9 levels
+   - All chunk sizes use 9 levels (sufficient for ≥512 samples after 9 halvings)
+   - Supports non-power-of-2 sizes through proper length tracking
+5. **Frequency-Dependent Quantization**: Perceptual weights with lambda companding
 6. **Dead Zone Quantization**: Zeros high-frequency noise (highest band)
-7. **2-bit Twobitmap Encoding**: Maps coefficients to 00=0, 01=+1, 10=-1, 11=other
-8. **Optional Zstd Compression**: Level 7 compression on concatenated Mid+Side data
+7. **Coefficient-Domain Dithering**: Light TPDF dithering (±0.5 quantization steps)
+8. **Raw Int8 Storage**: Direct coefficient storage as signed int8 values
+9. **Optional Zstd Compression**: Level 7 compression on concatenated Mid+Side data
 
 **TAD Integration with TAV**:
 TAD is designed as an includable API for TAV video encoder integration. The variable chunk size
@@ -375,7 +379,20 @@ TAV embeds TAD-compressed audio using packet type 0x24 with Zstd compression.
 
 **TAD Hardware Acceleration**:
 TSVM accelerates TAD decoding with AudioAdapter.kt (backend) and AudioJSR223Delegate.kt (API):
-- Backend decoder in AudioAdapter.kt with variable chunk size support
+- Backend decoder in AudioAdapter.kt with non-power-of-2 chunk size support (fixed 2025-10-30)
 - API functions in AudioJSR223Delegate.kt for JavaScript access
-- Supports chunk sizes from 1024 to 32768+ samples
-- Dynamic DWT level calculation for optimal performance
+- Supports chunk sizes from 1024 to 32768+ samples (any size ≥1024)
+- Fixed 9-level CDF 9/7 inverse DWT with correct length tracking for non-power-of-2 sizes
+
+**Critical Implementation Note (Fixed 2025-10-30)**:
+Multi-level inverse DWT must pre-calculate the exact sequence of lengths from forward transform:
+```kotlin
+val lengths = IntArray(levels + 1)
+lengths[0] = chunk_size
+for (i in 1..levels) {
+    lengths[i] = (lengths[i - 1] + 1) / 2
+}
+// Apply inverse DWT using lengths[level] for each level
+```
+Using simple doubling (`length *= 2`) is incorrect for non-power-of-2 sizes and causes
+mirrored subband artifacts.
