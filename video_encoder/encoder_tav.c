@@ -2412,7 +2412,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->intra_only = 0;
     enc->monoblock = 1;  // Default to monoblock mode
     enc->perceptual_tuning = 1;  // Default to perceptual quantisation (versions 5/6)
-    enc->preprocess_mode = PREPROCESS_TWOBITMAP;  // default to twobit-map as EZBC+Zstd 3 = Twobitmap+Zstd 15, and Twobitmap is faster to decode
+    enc->preprocess_mode = PREPROCESS_EZBC;  //
     enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Default to Y-Co-Cg
     enc->audio_bitrate = 0;  // 0 = use quality table
     enc->encode_limit = 0;  // Default: no frame limit

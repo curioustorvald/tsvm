@@ -1411,7 +1411,7 @@ try {
                         if (interactive) {
                             if (key === "CDAT") {
                                 // Creation date - convert to human readable
-                                let seconds = Math.floor(value / 1000000000)
+                                let seconds = Math.floor(value / 1000000)
                                 let date = new Date(seconds * 1000)
                                 serial.println(`  ${key}: ${date.toISOString()}`)
                             } else {
