@@ -1629,9 +1629,7 @@ try {
 
                 // Apply bias lighting
                 let biasStart = sys.nanoTime()
-                if (currentGopFrameIndex === 0 || currentGopFrameIndex === currentGopSize - 1) {
-                    setBiasLighting()
-                }
+                setBiasLighting()
                 biasTime = (sys.nanoTime() - biasStart) / 1000000.0
 
                 // Fire audio on first frame

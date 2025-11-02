@@ -1712,10 +1712,10 @@ static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
 
 // Quality level to quantisation mapping for different channels
 // the values are indices to the QLUT
-static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2, 1}; // 96, 48, 24, 12, 6, 3, 2
-static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29, 4}; // 240, 180, 120, 90, 60, 30, 5
-static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39, 7}; // 424, 304, 200, 144, 90, 40, 8
-static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2, 1}; // 96, 48, 24, 12, 6, 3, 2
+static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2, 0}; // 96, 48, 24, 12, 6, 3, 1
+static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29, 3}; // 240, 180, 120, 90, 60, 30, 4
+static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39, 5}; // 424, 304, 200, 144, 90, 40, 6
+static const int QUALITY_ALPHA[] = {79, 47, 23, 11, 5, 2, 0}; // 96, 48, 24, 12, 6, 3, 1
 
 // Dead-zone quantisation thresholds per quality level
 // Higher values = more aggressive (more coefficients set to zero)
@@ -1814,7 +1814,6 @@ typedef struct tav_encoder_s {
     preprocess_mode_t preprocess_mode;  // Coefficient preprocessing mode (TWOBITMAP=default, EZBC, RAW)
     int channel_layout;   // Channel layout: 0=Y-Co-Cg, 1=Y-only, 2=Y-Co-Cg-A, 3=Y-A, 4=Co-Cg
     int progressive_mode;  // 0 = interlaced (default), 1 = progressive
-    int grain_synthesis;   // 1 = enable grain synthesis (default), 0 = disable
     int use_delta_encoding;
     int delta_haar_levels; // Number of Haar DWT levels to apply to delta coefficients (0 = disabled)
     int separate_audio_track; // 1 = write entire MP2 file as packet 0x40 after header, 0 = interleave audio (default)
@@ -2287,8 +2286,6 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
                           int spatial_levels, int temporal_levels, int spatial_filter);
 static void dwt_3d_forward_mc(tav_encoder_t *enc, float **gop_y, float **gop_co, float **gop_cg,
                               int num_frames, int spatial_levels, int temporal_levels, int spatial_filter);
-static void dwt_3d_inverse(float **gop_data, int width, int height, int num_frames,
-                          int spatial_levels, int temporal_levels, int spatial_filter);
 static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                        int *frame_numbers, int actual_gop_size);
 static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
@@ -2316,21 +2313,6 @@ static size_t preprocess_gop_unified(preprocess_mode_t preprocess_mode, int16_t 
                                      int num_frames, int num_pixels, int width, int height, int channel_layout,
                                      uint8_t *output_buffer);
 
-// Film grain synthesis
-static uint32_t rng_hash(uint32_t x) {
-    x ^= x >> 16;
-    x *= 0x7feb352d;
-    x ^= x >> 15;
-    x *= 0x846ca68b;
-    x ^= x >> 16;
-    return x;
-}
-
-static uint32_t grain_synthesis_rng(uint32_t frame, uint32_t band, uint32_t x, uint32_t y) {
-    uint32_t key = frame * 0x9e3779b9u ^ band * 0x7f4a7c15u ^ (y << 16) ^ x;
-    return rng_hash(key);
-}
-
 // Show usage information
 static void show_usage(const char *program_name) {
     int qtsize = sizeof(MP2_RATE_TABLE) / sizeof(int);
@@ -2350,7 +2332,7 @@ static void show_usage(const char *program_name) {
     printf("                          Valid values: 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384\n");
 //    printf("  --separate-audio-track  Write entire audio track as single packet instead of interleaved\n");
     printf("  --pcm8-audio            Use 8-bit PCM audio instead of MP2 (TSVM native audio format)\n");
-    printf("  --tad-audio             Use TAD (DWT-based perceptual) audio codec (packet 0x24, quality follows -q)\n");
+    printf("  --tad-audio             Use TAD (DWT-based perceptual) audio codec\n");
     printf("  -S, --subtitles FILE    SubRip (.srt) or SAMI (.smi) subtitle file\n");
     printf("  --fontrom-lo FILE       Low font ROM file for internationalised subtitles\n");
     printf("  --fontrom-hi FILE       High font ROM file for internationalised subtitles\n");
@@ -2360,11 +2342,11 @@ static void show_usage(const char *program_name) {
     printf("  --intra-only            Disable delta and skip encoding\n");
     printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
-    printf("  --3d-dwt                Enable temporal 3D DWT (GOP-based encoding with temporal transform)\n");
+    printf("  --3d-dwt                Enable temporal 3D DWT (GOP-based encoding with temporal transform; the default encoding mode)\n");
     printf("  --single-pass           Disable two-pass encoding with wavelet-based scene change detection (optimal GOP boundaries)\n");
-    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt, implies --ezbc)\n");
-    printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) entropy coding\n");
-    printf("  --raw-coeffs            Use raw coefficients (no significance map preprocessing, for testing)\n");
+//    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt, implies --ezbc)\n");
+    printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) entropy coding. May help reducing file size on high-quality videos\n");
+    printf("  --raw-coeffs            Use raw coefficients (no coefficient preprocessing, for testing)\n");
     printf("  --ictcp                 Use ICtCp colour space instead of YCoCg-R (use when source is in BT.2100)\n");
     printf("  --no-perceptual-tuning  Disable perceptual quantisation\n");
     printf("  --no-dead-zone          Disable dead-zone quantisation (for comparison/testing)\n");
@@ -2372,7 +2354,6 @@ static void show_usage(const char *program_name) {
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --wavelet N             Wavelet filter: 0=LGT 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
     printf("  --zstd-level N          Zstd compression level 1-22 (default: %d, higher = better compression but slower)\n", DEFAULT_ZSTD_LEVEL);
-//    printf("  --no-grain-synthesis    Disable grain synthesis (enabled by default)\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -2437,7 +2418,6 @@ static tav_encoder_t* create_encoder(void) {
     enc->encode_limit = 0;  // Default: no frame limit
     enc->zstd_level = DEFAULT_ZSTD_LEVEL;  // Default Zstd compression level
     enc->progressive_mode = 1;  // Default to progressive mode
-    enc->grain_synthesis = 0;  // Default: disable grain synthesis (only do it on the decoder)
     enc->use_delta_encoding = 0;
     enc->delta_haar_levels = TEMPORAL_DECOMP_LEVEL;
     enc->separate_audio_track = 0;  // Default: interleave audio packets
@@ -3254,70 +3234,6 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
 }
 
 // =============================================================================
-// Mesh Differential Encoding for Compression
-// =============================================================================
-
-// Encode mesh motion vectors with selective affine using temporal and spatial prediction
-// Returns the number of bytes written to output buffer
-// Format:
-//   1. Mesh dimensions (2 bytes each: width, height)
-//   2. Affine significance mask (1 bit per cell per frame, packed into bytes)
-//   3. Translation dx/dy for ALL cells (temporal + spatial differential encoding)
-//   4. Affine parameters a11, a12, a21, a22 for cells where mask=1 (temporal + spatial differential)
-// Simplified mesh encoding - translation only (no affine)
-static size_t encode_mesh_differential(
-    int16_t **mesh_dx, int16_t **mesh_dy,
-    int gop_size, int temporal_mesh_width, int temporal_mesh_height,
-    uint8_t *output_buffer, size_t buffer_capacity
-) {
-    int mesh_points = temporal_mesh_width * temporal_mesh_height;
-    size_t bytes_written = 0;
-
-    // Write mesh dimensions (2 bytes each)
-    if (bytes_written + 4 > buffer_capacity) return 0;
-    uint16_t mesh_w_16 = (uint16_t)temporal_mesh_width;
-    uint16_t mesh_h_16 = (uint16_t)temporal_mesh_height;
-    memcpy(output_buffer + bytes_written, &mesh_w_16, sizeof(uint16_t));
-    bytes_written += sizeof(uint16_t);
-    memcpy(output_buffer + bytes_written, &mesh_h_16, sizeof(uint16_t));
-    bytes_written += sizeof(uint16_t);
-
-    // Encode translation data for all cells with temporal + spatial prediction
-    for (int t = 0; t < gop_size; t++) {
-        for (int i = 0; i < mesh_points; i++) {
-            int16_t dx = mesh_dx[t][i];
-            int16_t dy = mesh_dy[t][i];
-
-            // Temporal prediction
-            if (t > 0) {
-                dx -= mesh_dx[t - 1][i];
-                dy -= mesh_dy[t - 1][i];
-            }
-
-            // Spatial prediction
-            if (i > 0 && (i % temporal_mesh_width) != 0) {
-                int16_t left_dx = mesh_dx[t][i - 1];
-                int16_t left_dy = mesh_dy[t][i - 1];
-                if (t > 0) {
-                    left_dx -= mesh_dx[t - 1][i - 1];
-                    left_dy -= mesh_dy[t - 1][i - 1];
-                }
-                dx -= left_dx;
-                dy -= left_dy;
-            }
-
-            if (bytes_written + 4 > buffer_capacity) return 0;
-            memcpy(output_buffer + bytes_written, &dx, sizeof(int16_t));
-            bytes_written += sizeof(int16_t);
-            memcpy(output_buffer + bytes_written, &dy, sizeof(int16_t));
-            bytes_written += sizeof(int16_t);
-        }
-    }
-
-    return bytes_written;
-}
-
-// =============================================================================
 // Block MV Differential Encoding for MC-EZBC
 // =============================================================================
 
@@ -3378,62 +3294,6 @@ static size_t encode_block_mvs_differential(
     return bytes_written;
 }
 
-// Decode mesh motion vectors from differential encoding
-// Returns 0 on success, -1 on error
-// This is the inverse of encode_mesh_differential()
-static int decode_mesh_differential(
-    const uint8_t *input_buffer, size_t buffer_size,
-    int16_t **mesh_dx, int16_t **mesh_dy,
-    int gop_size, int *out_temporal_mesh_width, int *out_temporal_mesh_height
-) {
-    size_t bytes_read = 0;
-
-    // Read mesh dimensions
-    if (bytes_read + 4 > buffer_size) return -1;
-    uint16_t mesh_w_16, mesh_h_16;
-    memcpy(&mesh_w_16, input_buffer + bytes_read, sizeof(uint16_t));
-    bytes_read += sizeof(uint16_t);
-    memcpy(&mesh_h_16, input_buffer + bytes_read, sizeof(uint16_t));
-    bytes_read += sizeof(uint16_t);
-
-    int temporal_mesh_width = (int)mesh_w_16;
-    int temporal_mesh_height = (int)mesh_h_16;
-    int mesh_points = temporal_mesh_width * temporal_mesh_height;
-
-    *out_temporal_mesh_width = temporal_mesh_width;
-    *out_temporal_mesh_height = temporal_mesh_height;
-
-    // Decode mesh data for all frames
-    for (int t = 0; t < gop_size; t++) {
-        for (int i = 0; i < mesh_points; i++) {
-            // Read differential values
-            if (bytes_read + 4 > buffer_size) return -1;
-            int16_t dx_delta, dy_delta;
-            memcpy(&dx_delta, input_buffer + bytes_read, sizeof(int16_t));
-            bytes_read += sizeof(int16_t);
-            memcpy(&dy_delta, input_buffer + bytes_read, sizeof(int16_t));
-            bytes_read += sizeof(int16_t);
-
-            // Reconstruct: reverse spatial prediction first
-            if (i > 0 && (i % temporal_mesh_width) != 0) {
-                dx_delta += mesh_dx[t][i - 1];
-                dy_delta += mesh_dy[t][i - 1];
-            }
-
-            // Then reverse temporal prediction
-            if (t > 0) {
-                dx_delta += mesh_dx[t - 1][i];
-                dy_delta += mesh_dy[t - 1][i];
-            }
-
-            mesh_dx[t][i] = dx_delta;
-            mesh_dy[t][i] = dy_delta;
-        }
-    }
-
-    return 0;
-}
-
 // =============================================================================
 // MPEG-Style Motion Estimation and Residual Coding
 // =============================================================================
@@ -3469,106 +3329,6 @@ static float interpolate_subpixel(const float *frame, int width, int height, flo
     float p1 = p01 * (1.0f - fx) + p11 * fx;
 
     return p0 * (1.0f - fy) + p1 * fy;
-}
-
-// Block-matching motion estimation with 1/4-pixel precision
-// Returns the Sum of Absolute Differences (SAD) for the best match
-// Search is centered around predicted MV for spatial coherence
-static float block_matching_sad(const float *current, const float *reference,
-                               int width, int height,
-                               int block_x, int block_y, int block_size,
-                               int search_range,
-                               int16_t pred_mv_x, int16_t pred_mv_y,
-                               int16_t *best_mv_x, int16_t *best_mv_y) {
-    float best_sad = 1e9f;
-    int best_dx = 0, best_dy = 0;
-
-    // Block coordinates in current frame
-    int block_start_x = block_x * block_size;
-    int block_start_y = block_y * block_size;
-
-    // Convert predicted MV from 1/4-pixel units to full pixels for search center
-    int pred_dx = pred_mv_x / 4;
-    int pred_dy = pred_mv_y / 4;
-
-    // Full-pixel search centered around prediction
-    for (int dy = pred_dy - search_range; dy <= pred_dy + search_range; dy++) {
-        for (int dx = pred_dx - search_range; dx <= pred_dx + search_range; dx++) {
-            float sad = 0.0f;
-
-            // Calculate SAD for this displacement
-            for (int by = 0; by < block_size; by++) {
-                for (int bx = 0; bx < block_size; bx++) {
-                    int curr_x = block_start_x + bx;
-                    int curr_y = block_start_y + by;
-
-                    if (curr_x >= width || curr_y >= height) continue;
-
-                    int ref_x = curr_x + dx;
-                    int ref_y = curr_y + dy;
-
-                    // Clamp reference coordinates
-                    if (ref_x < 0) ref_x = 0;
-                    if (ref_y < 0) ref_y = 0;
-                    if (ref_x >= width) ref_x = width - 1;
-                    if (ref_y >= height) ref_y = height - 1;
-
-                    float curr_val = current[curr_y * width + curr_x];
-                    float ref_val = reference[ref_y * width + ref_x];
-
-                    sad += fabsf(curr_val - ref_val);
-                }
-            }
-
-            if (sad < best_sad) {
-                best_sad = sad;
-                best_dx = dx;
-                best_dy = dy;
-            }
-        }
-    }
-
-    // Sub-pixel refinement (1/4-pixel precision)
-    // Search in a 3x3 pattern around the best full-pixel match
-    for (int qpy = -2; qpy <= 2; qpy++) {
-        for (int qpx = -2; qpx <= 2; qpx++) {
-            float dx_subpel = best_dx + qpx * 0.25f;
-            float dy_subpel = best_dy + qpy * 0.25f;
-
-            float sad = 0.0f;
-
-            for (int by = 0; by < block_size; by++) {
-                for (int bx = 0; bx < block_size; bx++) {
-                    int curr_x = block_start_x + bx;
-                    int curr_y = block_start_y + by;
-
-                    if (curr_x >= width || curr_y >= height) continue;
-
-                    float ref_x = curr_x + dx_subpel;
-                    float ref_y = curr_y + dy_subpel;
-
-                    float curr_val = current[curr_y * width + curr_x];
-                    float ref_val = interpolate_subpixel(reference, width, height, ref_x, ref_y);
-
-                    sad += fabsf(curr_val - ref_val);
-                }
-            }
-
-            if (sad < best_sad) {
-                best_sad = sad;
-                *best_mv_x = (int16_t)roundf(dx_subpel * 4.0f);  // Store in 1/4-pixel units
-                *best_mv_y = (int16_t)roundf(dy_subpel * 4.0f);
-            }
-        }
-    }
-
-    // If sub-pixel search didn't improve, use full-pixel result
-    if (best_sad == 1e9f || (*best_mv_x == 0 && *best_mv_y == 0 && (best_dx != 0 || best_dy != 0))) {
-        *best_mv_x = best_dx * 4;  // Convert to 1/4-pixel units
-        *best_mv_y = best_dy * 4;
-    }
-
-    return best_sad;
 }
 
 // Helper function: compute median of three values (for MV prediction)
@@ -4011,29 +3771,6 @@ static int allocate_lookahead_buffer(tav_encoder_t *enc) {
 
     enc->residual_coding_lookahead_buffer_count = 0;
     return 0;
-}
-
-// Free lookahead buffer
-static void free_lookahead_buffer(tav_encoder_t *enc) {
-    if (!enc->residual_coding_lookahead_buffer_y) return;
-
-    for (int i = 0; i < enc->residual_coding_lookahead_buffer_capacity; i++) {
-        free(enc->residual_coding_lookahead_buffer_y[i]);
-        free(enc->residual_coding_lookahead_buffer_co[i]);
-        free(enc->residual_coding_lookahead_buffer_cg[i]);
-    }
-
-    free(enc->residual_coding_lookahead_buffer_y);
-    free(enc->residual_coding_lookahead_buffer_co);
-    free(enc->residual_coding_lookahead_buffer_cg);
-    free(enc->residual_coding_lookahead_buffer_display_index);
-
-    enc->residual_coding_lookahead_buffer_y = NULL;
-    enc->residual_coding_lookahead_buffer_co = NULL;
-    enc->residual_coding_lookahead_buffer_cg = NULL;
-    enc->residual_coding_lookahead_buffer_display_index = NULL;
-    enc->residual_coding_lookahead_buffer_capacity = 0;
-    enc->residual_coding_lookahead_buffer_count = 0;
 }
 
 // Add current frame to lookahead buffer
@@ -5211,6 +4948,20 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     quantise_3d_dwt_coefficients(enc, gop_cg_coeffs, quant_cg, actual_gop_size,
                                  num_pixels, qCg, 1);  // Chroma Cg
 
+    // Debug: print LL coefficients for frames 0 and 1 (first 10 pixels)
+    /*if (enc->quality_level == 5 && enc->verbose) {
+        int ll_width = valid_width >> enc->decomp_levels;
+        int ll_height = valid_height >> enc->decomp_levels;
+        printf("DEBUG Q5: LL coefficients for first 10 pixels:\n");
+        for (int f = 0; f < (actual_gop_size < 2 ? actual_gop_size : 2); f++) {
+            printf("  Frame %d: ", f);
+            for (int i = 0; i < 10 && i < ll_width * ll_height; i++) {
+                printf("%d ", quant_y[f][i]);
+            }
+            printf("\n");
+        }
+    }*/
+
     // Step 4: Preprocessing and compression
     size_t total_bytes_written = 0;
 
@@ -5641,125 +5392,6 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
 // Temporal DWT Functions
 // =============================================================================
 
-// Invert mesh for backward warping (MC-lifting update step)
-// Forward mesh: warps F0 to F1
-// Backward mesh: warps F1 to F0 (negated motion vectors)
-static void invert_mesh(
-    const short *mesh_dx, const short *mesh_dy,
-    int temporal_mesh_width, int temporal_mesh_height,
-    short *inv_mesh_dx, short *inv_mesh_dy
-) {
-    int num_points = temporal_mesh_width * temporal_mesh_height;
-    for (int i = 0; i < num_points; i++) {
-        inv_mesh_dx[i] = -mesh_dx[i];
-        inv_mesh_dy[i] = -mesh_dy[i];
-    }
-}
-
-// Build block-based reliability mask for selective motion compensation
-// Process 16×16 blocks for efficiency (matches block matching resolution)
-// Returns mask where 1 = use MC, 0 = fall back to plain Haar
-/*static void build_reliability_mask(
-    const uint8_t *frame0_rgb, const uint8_t *frame1_rgb,
-    const float *flow_fwd_x, const float *flow_fwd_y,
-    const float *flow_bwd_x, const float *flow_bwd_y,
-    int width, int height,
-    uint8_t *mask
-) {
-    const int block_size = 16;  // Match block matching resolution
-    int num_pixels = width * height;
-
-    // Relaxed thresholds for better coverage
-    float motion_threshold = 1.0f;   // pixels (relaxed from 2.0)
-    float fb_threshold = 2.0f;       // pixels (relaxed from 1.0)
-    float texture_threshold = 10.0f; // gradient magnitude
-
-    int reliable_blocks = 0;
-    int total_blocks = 0;
-    int reliable_pixels = 0;
-
-    // Process in 16×16 blocks
-    for (int by = 0; by < height; by += block_size) {
-        for (int bx = 0; bx < width; bx += block_size) {
-            total_blocks++;
-
-            // Compute block statistics
-            float sum_motion = 0.0f;
-            float sum_fb_error = 0.0f;
-            float sum_texture = 0.0f;
-            int block_pixels = 0;
-
-            int bh = (by + block_size <= height) ? block_size : (height - by);
-            int bw = (bx + block_size <= width) ? block_size : (width - bx);
-
-            for (int y = by; y < by + bh; y++) {
-                for (int x = bx; x < bx + bw; x++) {
-                    int idx = y * width + x;
-
-                    // Motion magnitude
-                    float fx = flow_fwd_x[idx];
-                    float fy = flow_fwd_y[idx];
-                    sum_motion += sqrtf(fx * fx + fy * fy);
-
-                    // Forward-backward consistency
-                    int x_warped = (int)(x + fx + 0.5f);
-                    int y_warped = (int)(y + fy + 0.5f);
-                    if (x_warped >= 0 && x_warped < width && y_warped >= 0 && y_warped < height) {
-                        int idx_w = y_warped * width + x_warped;
-                        float bx_val = flow_bwd_x[idx_w];
-                        float by_val = flow_bwd_y[idx_w];
-                        float err_x = fx + bx_val;
-                        float err_y = fy + by_val;
-                        sum_fb_error += sqrtf(err_x * err_x + err_y * err_y);
-                    } else {
-                        sum_fb_error += 999.0f;
-                    }
-
-                    // Texture (simple gradient)
-                    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-                        int rgb_idx = idx * 3;
-                        int rgb_idx_r = (y * width + (x + 1)) * 3;
-                        int rgb_idx_d = ((y + 1) * width + x) * 3;
-
-                        float gx = (frame0_rgb[rgb_idx_r] - frame0_rgb[rgb_idx]);
-                        float gy = (frame0_rgb[rgb_idx_d] - frame0_rgb[rgb_idx]);
-                        sum_texture += sqrtf(gx * gx + gy * gy);
-                    }
-
-                    block_pixels++;
-                }
-            }
-
-            // Average block statistics
-            float avg_motion = sum_motion / block_pixels;
-            float avg_fb_error = sum_fb_error / block_pixels;
-            float avg_texture = sum_texture / block_pixels;
-
-            // Decide if block is reliable
-            int block_reliable = (avg_motion > motion_threshold) &&
-                                (avg_fb_error < fb_threshold) &&
-                                (avg_texture > texture_threshold);
-
-            if (block_reliable) reliable_blocks++;
-
-            // Apply decision to all pixels in block
-            for (int y = by; y < by + bh; y++) {
-                for (int x = bx; x < bx + bw; x++) {
-                    int idx = y * width + x;
-                    mask[idx] = block_reliable ? 1 : 0;
-                    if (mask[idx]) reliable_pixels++;
-                }
-            }
-        }
-    }
-
-    // Debug output
-    printf("  Reliability mask: %d/%d blocks (%d/%d pixels, %.1f%%) - motion>%.1fpx, texture>%.1f, fb_err<%.1fpx\n",
-           reliable_blocks, total_blocks, reliable_pixels, num_pixels,
-           100.0f * reliable_pixels / num_pixels,
-           motion_threshold, texture_threshold, fb_threshold);
-}*/
-
 // Simple translation-based frame alignment (legacy, non-MC-EZBC path)
 // Shifts entire frame by (dx, dy) pixels with bilinear interpolation
 static void apply_translation(
@@ -5913,20 +5545,6 @@ static void mc_lifting_forward_pair(
     free(update_cg);
 }
 
-// Apply 1D temporal DWT along time axis for a spatial location (encoder side)
-// data[i] = frame i's coefficient value at this spatial location
-// Applies LGT 5/3 wavelet for reversibility
-static void dwt_temporal_1d_forward_53(float *temporal_data, int num_frames) {
-    if (num_frames < 2) return;
-    dwt_53_forward_1d(temporal_data, num_frames);
-}
-
-// Apply inverse 1D temporal DWT (decoder side)
-static void dwt_temporal_1d_inverse_53(float *temporal_data, int num_frames) {
-    if (num_frames < 2) return;
-    dwt_53_inverse_1d(temporal_data, num_frames);
-}
-
 // Apply 3D DWT with motion-compensated lifting (MC-lifting)
 // Integrates motion compensation directly into wavelet lifting steps
 // This replaces separate warping + DWT for better invertibility and compression
@@ -6054,7 +5672,6 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
             for (int level = 0; level < temporal_levels; level++) {
                 int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
-//                    dwt_temporal_1d_forward_53(temporal_line, level_frames);  // CDF 5/3 worse for motion-compensated frames
                     dwt_haar_forward_1d(temporal_line, level_frames);  // Haar better for imperfect alignment
                 }
             }
@@ -6074,64 +5691,6 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
         // Apply spatial DWT using the appropriate flexible function
         dwt_2d_forward_flexible(gop_data[t], width, height, spatial_levels, spatial_filter);
     }
-}
-
-// Apply inverse 3D DWT: inverse spatial DWT on each temporal subband, then inverse temporal DWT
-static void dwt_3d_inverse(float **gop_data, int width, int height, int num_frames,
-                          int spatial_levels, int temporal_levels, int spatial_filter) {
-    if (num_frames < 2 || width < 2 || height < 2) return;
-
-    // Step 1: Apply inverse 2D spatial DWT to each temporal subband
-    for (int t = 0; t < num_frames; t++) {
-        // Note: Need to implement appropriate inverse function based on filter type
-        // For now, using Haar inverse as reference (will need proper inverse for 5/3, 9/7, etc.)
-        if (spatial_filter == WAVELET_HAAR) {
-            dwt_2d_haar_inverse_flexible(gop_data[t], width, height, spatial_levels);
-        } else {
-            // TODO: Implement proper inverse for other wavelets (5/3, 9/7, etc.)
-            // For now, log warning
-            fprintf(stderr, "Warning: Inverse spatial DWT not fully implemented for filter %d\n", spatial_filter);
-        }
-    }
-
-    // Step 2: Apply inverse temporal DWT to each spatial location
-    int num_pixels = width * height;
-    float *temporal_line = malloc(num_frames * sizeof(float));
-
-    // Pre-calculate all intermediate lengths for temporal DWT (same fix as TAD)
-    // This ensures correct reconstruction for non-power-of-2 GOP sizes
-    int *temporal_lengths = malloc((temporal_levels + 1) * sizeof(int));
-    temporal_lengths[0] = num_frames;
-    for (int i = 1; i <= temporal_levels; i++) {
-        temporal_lengths[i] = (temporal_lengths[i - 1] + 1) / 2;
-    }
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int pixel_idx = y * width + x;
-
-            // Extract temporal coefficients for this spatial location
-            for (int t = 0; t < num_frames; t++) {
-                temporal_line[t] = gop_data[t][pixel_idx];
-            }
-
-            // Apply inverse temporal DWT with multiple levels using pre-calculated lengths (reverse order)
-            for (int level = temporal_levels - 1; level >= 0; level--) {
-                int level_frames = temporal_lengths[level];
-                if (level_frames >= 2) {
-                    dwt_temporal_1d_inverse_53(temporal_line, level_frames);
-                }
-            }
-
-            // Write back reconstructed values
-            for (int t = 0; t < num_frames; t++) {
-                gop_data[t][pixel_idx] = temporal_line[t];
-            }
-        }
-    }
-
-    free(temporal_lengths);
-    free(temporal_line);
 }
 
 // Extract padded tile with margins for seamless DWT processing (correct implementation)
@@ -6229,61 +5788,6 @@ static void extract_padded_tile(tav_encoder_t *enc, int tile_x, int tile_y,
 
 // Forward declaration for perceptual weight function
 static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_type, int is_chroma, int max_levels);
-
-// Generate triangular noise from uint32 RNG
-// Returns value in range [-1.0, 1.0]
-static float grain_triangular_noise(uint32_t rng_val) {
-    // Get two uniform random values in [0, 1]
-    float u1 = (rng_val & 0xFFFF) / 65535.0f;
-    float u2 = ((rng_val >> 16) & 0xFFFF) / 65535.0f;
-
-    // Convert to range [-1, 1] and average for triangular distribution
-    return (u1 + u2) - 1.0f;
-}
-
-// Apply grain synthesis to DWT coefficients (encoder adds noise)
-static void apply_grain_synthesis_encoder(tav_encoder_t *enc, float *coeffs, int width, int height,
-                                         int decomp_levels, uint32_t frame_num,
-                                         int quantiser, int is_chroma) {
-    // Only apply to Y channel, excluding LL band
-    // Noise amplitude = half of quantization step (scaled by perceptual weight if enabled)
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int idx = y * width + x;
-
-            // Check if this is the LL band (level 0)
-            int level = get_subband_level_2d(x, y, width, height, decomp_levels);
-            int subband_type = get_subband_type_2d(x, y, width, height, decomp_levels);
-            if (level == 0) {
-                continue; // Skip LL band
-            }
-
-            // Get subband type for perceptual weight calculation
-            /*int subband_type = get_subband_type_2d(x, y, width, height, decomp_levels);
-
-            // Calculate noise amplitude based on perceptual tuning mode
-            float noise_amplitude;
-            if (enc->perceptual_tuning) {
-                // Perceptual mode: scale by perceptual weight
-                float perceptual_weight = get_perceptual_weight(enc, level, subband_type, is_chroma, decomp_levels);
-                noise_amplitude = (quantiser * perceptual_weight) * 0.5f;
-            } else {
-                // Uniform mode: use global quantiser
-                noise_amplitude = quantiser * 0.5f;
-            }*/
-            float noise_amplitude = FCLAMP(quantiser, 0.0f, 32.0f) * 0.5f;
-
-            // Generate deterministic noise
-            uint32_t rng_val = grain_synthesis_rng(frame_num, level + subband_type * 31 + 16777219, x, y);
-            float noise = grain_triangular_noise(rng_val);
-
-            // Add noise to coefficient
-            coeffs[idx] += noise * noise_amplitude;
-        }
-    }
-}
-
 
 // 2D DWT forward transform for rectangular padded tile (344x288)
 static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type) {
@@ -7212,13 +6716,15 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
         }
 
         // Step 3: Round to discrete quantization levels
-        quantised_val = roundf(quantised_val);
+        quantised_val = roundf(quantised_val); // file size explodes without rounding
 
         // Step 4: Denormalize - multiply back by quantizer to restore magnitude
         // This gives us quantized values at original scale (not shrunken to 0-10 range)
         float denormalized = quantised_val * effective_q;
 
-        quantised[i] = (int16_t)CLAMP((int)denormalized, -32768, 32767);
+        // CRITICAL FIX: Must round (not truncate) to match decoder behavior
+        // With odd baseQ values and fractional weights, truncation causes mismatch with Sigmap mode
+        quantised[i] = (int16_t)CLAMP((int)roundf(denormalized), -32768, 32767);
     }
 }
 
@@ -7621,21 +7127,6 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
                 }
                 printf("\n");
             }*/
-
-            // Apply grain synthesis to Y channel (after DWT, before quantization)
-            if (enc->grain_synthesis && mode != TAV_MODE_SKIP) {
-                // Get the quantiser value that will be used for this frame
-                int qY_value = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
-                int actual_qY = QLUT[qY_value];
-
-                // Determine dimensions based on mode
-                int gs_width = enc->monoblock ? enc->width : PADDED_TILE_SIZE_X;
-                int gs_height = enc->monoblock ? enc->height : PADDED_TILE_SIZE_Y;
-
-                // Apply grain synthesis to Y channel only (is_chroma = 0)
-                apply_grain_synthesis_encoder(enc, tile_y_data, gs_width, gs_height,
-                                             enc->decomp_levels, enc->frame_count, actual_qY, 0);
-            }
 
             // Serialise tile
             size_t tile_size = serialise_tile_data(enc, tile_x, tile_y,
@@ -10347,83 +9838,6 @@ static int detect_still_frame(tav_encoder_t *enc) {
     return (changed_pixels == 0);
 }
 
-// Detect still frames by comparing quantised DWT coefficients
-// Returns 1 if quantised coefficients are identical (frame is truly still), 0 otherwise
-// Benefits: quality-aware (lower quality = more SKIP frames), pure integer math
-// DISABLED - should work in theory, not actually
-static int detect_still_frame_dwt(tav_encoder_t *enc) {
-    if (!enc->previous_coeffs_allocated || enc->intra_only) {
-        return 0; // No previous coefficients to compare or intra-only mode
-    }
-
-    // Only compare against I-frames to avoid DELTA quantization drift
-    // previous_coeffs are updated by DELTA frames with reconstructed values that accumulate error
-    if (enc->last_frame_packet_type != TAV_PACKET_IFRAME) {
-        return 0; // Must compare against clean I-frame, not DELTA reconstruction
-    }
-
-    // Get current quantisers (use adjusted quantiser from bitrate control if applicable)
-    int qY = enc->bitrate_mode ? quantiser_float_to_int_dithered(enc) : enc->quantiser_y;
-    int this_frame_qY = QLUT[qY];
-    int this_frame_qCo = QLUT[enc->quantiser_co];
-    int this_frame_qCg = QLUT[enc->quantiser_cg];
-
-    // Coefficient count (monoblock mode)
-    const int coeff_count = enc->width * enc->height;
-
-    // Quantise current DWT coefficients
-    int16_t *quantised_y = enc->reusable_quantised_y;
-    int16_t *quantised_co = enc->reusable_quantised_co;
-    int16_t *quantised_cg = enc->reusable_quantised_cg;
-
-    if (enc->perceptual_tuning) {
-        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->current_dwt_y, quantised_y, coeff_count, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
-        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->current_dwt_co, quantised_co, coeff_count, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->current_dwt_cg, quantised_cg, coeff_count, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-    } else {
-        quantise_dwt_coefficients(enc->current_dwt_y, quantised_y, coeff_count, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
-        quantise_dwt_coefficients(enc->current_dwt_co, quantised_co, coeff_count, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
-        quantise_dwt_coefficients(enc->current_dwt_cg, quantised_cg, coeff_count, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
-    }
-
-    // Quantise previous DWT coefficients (stored from last I-frame)
-    int16_t *prev_quantised_y = malloc(coeff_count * sizeof(int16_t));
-    int16_t *prev_quantised_co = malloc(coeff_count * sizeof(int16_t));
-    int16_t *prev_quantised_cg = malloc(coeff_count * sizeof(int16_t));
-
-    if (enc->perceptual_tuning) {
-        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->previous_coeffs_y, prev_quantised_y, coeff_count, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
-        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->previous_coeffs_co, prev_quantised_co, coeff_count, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-        quantise_dwt_coefficients_perceptual_per_coeff(enc, enc->previous_coeffs_cg, prev_quantised_cg, coeff_count, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-    } else {
-        quantise_dwt_coefficients(enc->previous_coeffs_y, prev_quantised_y, coeff_count, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
-        quantise_dwt_coefficients(enc->previous_coeffs_co, prev_quantised_co, coeff_count, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
-        quantise_dwt_coefficients(enc->previous_coeffs_cg, prev_quantised_cg, coeff_count, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
-    }
-
-    // Compare quantised coefficients - pure integer math
-    int diff_count = 0;
-    for (int i = 0; i < coeff_count; i++) {
-        if (quantised_y[i] != prev_quantised_y[i] ||
-            quantised_co[i] != prev_quantised_co[i] ||
-            quantised_cg[i] != prev_quantised_cg[i]) {
-            diff_count++;
-        }
-    }
-
-    free(prev_quantised_y);
-    free(prev_quantised_co);
-    free(prev_quantised_cg);
-
-    if (enc->verbose) {
-        printf("Still frame detection (DWT): %d/%d coeffs differ\n", diff_count, coeff_count);
-    }
-
-    // If all quantised coefficients match, frames are identical after compression
-    return (diff_count == 0);
-}
-
-
 // Main function
 int main(int argc, char *argv[]) {
     generate_random_filename(TEMP_AUDIO_FILE);
@@ -10472,7 +9886,6 @@ int main(int argc, char *argv[]) {
         {"zstd-level", required_argument, 0, 1014},
         {"interlace", no_argument, 0, 1015},
         {"interlaced", no_argument, 0, 1015},
-//        {"no-grain-synthesis", no_argument, 0, 1016},
         {"enable-delta", no_argument, 0, 1017},
         {"delta-haar", required_argument, 0, 1018},
         {"temporal-dwt", no_argument, 0, 1019},
@@ -10642,9 +10055,6 @@ int main(int argc, char *argv[]) {
                 break;
             case 1015: // --interlaced
                 enc->progressive_mode = 0;
-                break;
-            case 1016: // --no-grain-synthesis
-                enc->grain_synthesis = 0;
                 break;
             case 1017: // --enable-delta
                 enc->use_delta_encoding = 1;

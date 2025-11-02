@@ -15,23 +15,15 @@
 #define TAD32_CHANNELS 2  // Stereo
 #define TAD32_SIGMAP_2BIT 1  // 2-bit: 00=0, 01=+1, 10=-1, 11=other
 #define TAD32_QUALITY_MIN 0
-#define TAD32_QUALITY_MAX 5
+#define TAD32_QUALITY_MAX 6
 #define TAD32_QUALITY_DEFAULT 3
 #define TAD32_ZSTD_LEVEL 15
 
-/**
- * Convert quality level (0-5) to max_index for quantization
- * Quality 0 = very low quality, small file (max_index=7, 3-bit)
- * Quality 1 = low quality (max_index=15, 4-bit)
- * Quality 2 = medium quality (max_index=31, 5-bit)
- * Quality 3 = good quality (max_index=63, 6-bit) [DEFAULT]
- * Quality 4 = high quality (max_index=127, 7-bit)
- * Quality 5 = very high quality (max_index=255, 8-bit)
- */
+
 static inline int tad32_quality_to_max_index(int quality) {
-    static const int quality_map[6] = {31, 35, 39, 47, 56, 89};
+    static const int quality_map[7] = {31, 35, 39, 47, 56, 89, 127};
     if (quality < 0) quality = 0;
-    if (quality > 5) quality = 5;
+    if (quality > 6) quality = 6;
     return quality_map[quality];
 }
 

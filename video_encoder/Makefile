@@ -28,7 +28,7 @@ tev: encoder_tev.c
 	rm -f encoder_tev
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o encoder_tev $< $(LIBS)
 
-tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp
+tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp
 	rm -f encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav.c -o encoder_tav.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad.c -o encoder_tad.o
@@ -58,9 +58,6 @@ decoder_tad: decoder_tad.c
 tad: $(TAD_TARGETS)
 
 # Build test programs
-test_mesh_warp: test_mesh_warp.cpp encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp
-	rm -f test_mesh_warp test_mesh_warp.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_mesh_warp test_mesh_warp.cpp encoder_tav_opencv.cpp estimate_affine_from_blocks.cpp $(OPENCV_LIBS)
 
 test_mesh_roundtrip: test_mesh_roundtrip.cpp encoder_tav_opencv.cpp
 	rm -f test_mesh_roundtrip test_mesh_roundtrip.o
