@@ -4842,13 +4842,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
     private fun perceptual_model3_LH(level: Float): Float {
         val H4 = 1.2f
-        val Q = 2f // using fixed value for fixed curve; quantiser will scale it up anyway
-        val Q12 = Q * 12f
+        val K = 2f // using fixed value for fixed curve; quantiser will scale it up anyway
+        val K12 = K * 12f
         val x = level
 
-        val Lx = H4 - ((Q + 1f) / 15f) * (x - 4f)
-        val C3 = -1f / 45f * (Q12 + 92)
-        val G3x = (-x / 180f) * (Q12 + 5 * x * x - 60 * x + 252) - C3 + H4
+        val Lx = H4 - ((K + 1f) / 15f) * (x - 4f)
+        val C3 = -1f / 45f * (K12 + 92)
+        val G3x = (-x / 180f) * (K12 + 5 * x * x - 60 * x + 252) - C3 + H4
 
         return if (level >= 4) Lx else G3x
     }

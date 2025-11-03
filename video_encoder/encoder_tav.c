@@ -6411,13 +6411,13 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
 // https://www.desmos.com/calculator/mjlpwqm8ge
 static float perceptual_model3_LH(int quality, float level) {
     float H4 = 1.2f;
-    float Q = 2.f; // using fixed value for fixed curve; quantiser will scale it up anyway
-    float Q12 = Q * 12.f;
+    float K = 2.f; // using fixed value for fixed curve; quantiser will scale it up anyway
+    float K12 = K * 12.f;
     float x = level;
 
-    float Lx = H4 - ((Q + 1.f) / 15.f) * (x - 4.f);
-    float C3 = -1.f / 45.f * (Q12 + 92);
-    float G3x = (-x / 180.f) * (Q12 + 5*x*x - 60*x + 252) - C3 + H4;
+    float Lx = H4 - ((K + 1.f) / 15.f) * (x - 4.f);
+    float C3 = -1.f / 45.f * (K12 + 92);
+    float G3x = (-x / 180.f) * (K12 + 5*x*x - 60*x + 252) - C3 + H4;
 
     return (level >= 4) ? Lx : G3x;
 }
