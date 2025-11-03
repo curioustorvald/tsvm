@@ -806,15 +806,19 @@ SSF is a simple subtitle that is intended to use text buffer to display texts.
 The format is designed to be compatible with SubRip and SAMI (without markups) and interoperable with
 TEV and TAV formats.
 
+SSF-TC is an SSF with extra timecode so that subtitle packets can be desynchronised with video frames
+on encoding.
+
 When SSF is interleaved with MP2 audio, the payload must be inserted in-between MP2 frames.
 
 ## Packet Structure
-    uint8  0x30 (packet type)
+    uint8  0x30/0x31 (SSF/SSF-TC)
     uint32 Packet Size
     *      SSF Payload (see below)
 
 ## SSF Packet Structure
-    uint24 index (used to specify target subtitle object)
+    uint24 Subtitle object ID (used to specify target subtitle object)
+    uint64 Timecode in nanoseconds (only present for SSF-TC format; regular SSF must not write these bytes)
     uint8 opcode
           0x00 = <argument terminator>, is NOP when used here
           0x01 = show (arguments: UTF-8 text)
@@ -836,17 +840,21 @@ KSF is a frame-synced subtitle that is intended to use Karaoke-style subtitles.
 The format is designed to be interoperable with TEV and TAV formats.
 For non-karaoke style synced lyrics, use SSF.
 
+KSF-TC is an KSF with extra timecode so that subtitle packets can be desynchronised with video frames
+on encoding.
+
 When KSF is interleaved with MP2 audio, the payload must be inserted in-between MP2 frames.
 
 ## Packet Structure
-    uint8  0x31 (packet type)
+    uint8  0x32/0x33 (KSF/KSF-TC)
     *      KSF Payload (see below)
 
 ### KSF Packet Structure
     KSF is line-based: you define an unrevealed line, then subsequent commands reveal words/syllables
     on appropriate timings.
 
-    uint24 index (used to specify target subtitle object)
+    uint24 Subtitle object ID (used to specify target subtitle object)
+    uint64 Timecode in nanoseconds (only present for KSF-TC format; regular KSF must not write these bytes)
     uint8 opcode
           <definition opcodes>
           0x00 = <argument terminator>, is NOP when used here
@@ -898,8 +906,9 @@ transmission capability, and region-of-interest coding.
     uint16 Width: video width in pixels  
     uint16 Height: video height in pixels
     uint8  FPS: frames per second. Use 0x00 for still images
-    uint32 Total Frames: number of video frames. Use 0xFFFFFFFF to denote still image (.im3 file)
-            - frame count of 0 is used to denote not-finalised video stream
+    uint32 Total Frames: number of video frames
+            - use 0 to denote not-finalised video stream
+            - use 0xFFFFFFFF to denote still image (.im3 file)
     uint8  Wavelet Filter Type:
             - 0 = 5/3 reversible (LGT 5/3, JPEG 2000 standard)
             - 1 = 9/7 irreversible (CDF 9/7, slight modification of JPEG 2000, default choice)
@@ -932,7 +941,8 @@ transmission capability, and region-of-interest coding.
             - 6-7 = Reserved/invalid (would indicate no luma and no chroma)
     uint8  Entropy Coder
             - 0 = Twobit-plane significance map
-            - 1 = Embedded Zero Block Coding (EZBC, experimental)
+            - 1 = Embedded Zero Block Coding
+            - 2 = Raw coefficients
     uint8  Reserved[2]: fill with zeros
     uint8  Device Orientation
             - 0 = No rotation
@@ -961,28 +971,24 @@ transmission capability, and region-of-interest coding.
     0x12: GOP Unified (temporal 3D DWT with unified preprocessing)
     0x1F: (prohibited)
     <audio packets>
-    0x20: MP2 audio packet
+    0x20: MP2 audio packet (32 KHz)
     0x21: Zstd-compressed 8-bit PCM (32 KHz, audio hardware's native format)
     0x22: Zstd-compressed 16-bit PCM (32 KHz, little endian)
-    0x23: Zstd-compressed ADPCM
-    0x24: Zstd-compressed TAD
+    0x23: Zstd-compressed ADPCM (32 KHz)
+    0x24: TAD (TSVM Advanced Audio)
     <subtitles>
     0x30: Subtitle in "Simple" format
-    0x31: Subtitle in "Karaoke" format
+    0x31: Subtitle in "Simple" format with timecodes
+    0x32: Subtitle in "Karaoke" format
+    0x33: Subtitle in "Karaoke" format with timecodes
     <synchronised tracks>
-    0x40: MP2 audio track
+    0x40: MP2 audio track (32 KHz)
     0x41: Zstd-compressed 8-bit PCM (32 KHz, audio hardware's native format)
     0x42: Zstd-compressed 16-bit PCM (32 KHz, little endian)
-    0x43: Zstd-compressed ADPCM
+    0x43: Zstd-compressed ADPCM (32 KHz)
+    0x44: TAD (TSVM Advanced Audio)
     <multiplexed video>
-    0x70/71: Video channel 2 I/P-frame
-    0x72/73: Video channel 3 I/P-frame
-    0x74/75: Video channel 4 I/P-frame
-    0x76/77: Video channel 5 I/P-frame
-    0x78/79: Video channel 6 I/P-frame
-    0x7A/7B: Video channel 7 I/P-frame
-    0x7C/7D: Video channel 8 I/P-frame
-    0x7E/7F: Video channel 9 I/P-frame
+    0x70..7F: Reserved for Future Version
     <Standard metadata payloads>
     (it's called "standard" because you're expected to just copy-paste the metadata bytes verbatim)
     0xE0: EXIF packet
@@ -1005,14 +1011,15 @@ transmission capability, and region-of-interest coding.
         Before the first frame group:
         1. TAV Extended header (if any)
         2. Standard metadata payloads (if any)
+        3. SSF-TC/KSF-TC packets (if any)
 
         Frame group:
         1. TC Packet (0xFD) or Next TAV File (0x1F) [mutually exclusive!]
-        2. Loop point packets
-        3. Audio packets
-        4. Subtitle packets
+        2. Loop point packet (if any)
+        3. Audio packets (if any)
+        4. Subtitle packets (if any)
         5. Main video packets (0x10-0x1E)
-        6. Multiplexed video packets (0x70-7F)
+        6. Multiplexed video packets (0x70-7F; if any)
 
         After a frame group:
         1. Sync packet
