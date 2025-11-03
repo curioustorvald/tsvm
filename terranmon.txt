@@ -677,7 +677,7 @@ TSVM Enhanced Video (TEV) Format
 Created by CuriousTorvald and Claude on 2025-08-17
 
 TEV is a modern video codec optimized for TSVM's 4096-color hardware, featuring
-DCT-based compression, motion compensation, and efficient temporal coding.
+DCT-based compression, optional motion compensation, and efficient temporal coding.
 
 ## Version History
 - Version 2.0: YCoCg-R 4:2:0 with 16x16/8x8 DCT blocks
@@ -1091,7 +1091,7 @@ This packet contains multiple frames encoded as a single spacetime block for opt
 temporal compression.
 
     uint8  Packet Type (0x12/0x13)
-    uint8  GOP Size (number of frames in this GOP, typically 16)
+    uint8  GOP Size (number of frames in this GOP)
     <if packet type is 0x13>
     uint32 Compressed Size
     *      Zstd-compressed Motion Data
@@ -1122,16 +1122,15 @@ This layout enables Zstd to find patterns across both spatial and temporal dimen
 resulting in superior compression compared to per-frame encoding.
 
 ### Motion Vectors
-- Stored in 1/16-pixel units (divide by 16.0 for pixel displacement)
-- Used for global motion compensation (camera movement, scene translation)
-- Computed using FFT-based phase correlation for accurate frame alignment
+- Stored in 1/4-pixel units (divide by 4.0 for pixel displacement)
+- Computed using dense optical flow
 - Cumulative relative to frame 0 (not frame-to-frame deltas)
 - First frame (frame 0) always has motion vector (0, 0)
 
 ### Temporal 3D DWT Process
-1. Detect inter-frame motion using phase correlation
-2. Align frames and expand canvas to preserve all original pixels
-3. Apply 1D DWT across temporal axis (GOP frames) on expanded canvas
+1. Detect where the scene change is happening on the first pass
+2. Determine GOP slicing from the scene detection
+3. Apply 1D DWT across temporal axis (GOP frames)
 4. Apply 2D DWT on each spatial slice of temporal subbands
 5. Perceptual quantization with temporal-spatial awareness
 6. Unified significance map preprocessing across all frames/channels
