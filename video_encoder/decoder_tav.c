@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <getopt.h>
+#include <signal.h>
 
 #define DECODER_VENDOR_STRING "Decoder-TAV 20251103 (ffv1+pcmu8)"
 
@@ -255,10 +256,10 @@ static void dequantize_dwt_subbands_perceptual(int q_index, int q_y_global, cons
     const int coeff_count = width * height;
     memset(dequantized, 0, coeff_count * sizeof(float));
 
-    int is_debug = (frame_num == 32);
-    if (frame_num == 32) {
-        fprintf(stderr, "DEBUG: dequantize called for frame %d, is_chroma=%d\n", frame_num, is_chroma);
-    }
+    int is_debug = 0;//(frame_num == 32);
+//    if (frame_num == 32) {
+//        fprintf(stderr, "DEBUG: dequantize called for frame %d, is_chroma=%d\n", frame_num, is_chroma);
+//    }
 
     // Apply perceptual weighting to each subband
     for (int s = 0; s < subband_count; s++) {
@@ -392,6 +393,412 @@ static void remove_grain_synthesis_decoder(float *coeffs, int width, int height,
             }
         }
     }
+}
+
+//=============================================================================
+static int calculate_dwt_levels(int chunk_size) {
+    /*if (chunk_size < TAD_MIN_CHUNK_SIZE) {
+        fprintf(stderr, "Error: Chunk size %d is below minimum %d\n", chunk_size, TAD_MIN_CHUNK_SIZE);
+        return -1;
+    }
+
+    // Calculate levels: log2(chunk_size) - 1
+    int levels = 0;
+    int size = chunk_size;
+    while (size > 1) {
+        size >>= 1;
+        levels++;
+    }
+    return levels - 2;*/
+    return 9;
+}
+
+//=============================================================================
+// Haar DWT Implementation (inverse only needed for decoder)
+//=============================================================================
+
+// Forward declaration (defined later in TAV decoder section)
+static void dwt_97_inverse_1d(float *data, int length);
+
+static void dwt_inverse_multilevel(float *data, int length, int levels) {
+    // Pre-calculate all intermediate lengths used during forward transform
+    // Forward uses: data[0..length-1], then data[0..(length+1)/2-1], etc.
+    int *lengths = malloc((levels + 1) * sizeof(int));
+    lengths[0] = length;
+    for (int i = 1; i <= levels; i++) {
+        lengths[i] = (lengths[i - 1] + 1) / 2;
+    }
+
+    // Inverse transform: apply inverse DWT using exact forward lengths in reverse order
+    // Forward applied DWT with lengths: [length, (length+1)/2, ((length+1)/2+1)/2, ...]
+    // Inverse must use same lengths in reverse: [..., ((length+1)/2+1)/2, (length+1)/2, length]
+    for (int level = levels - 1; level >= 0; level--) {
+        int current_length = lengths[level];
+//        dwt_haar_inverse_1d(data, current_length);  // THEN apply inverse
+//        dwt_dd4_inverse_1d(data, current_length);  // THEN apply inverse
+        dwt_97_inverse_1d(data, current_length);  // THEN apply inverse
+    }
+
+    free(lengths);
+}
+
+//=============================================================================
+// Helper Functions for TAD Decoder
+//=============================================================================
+
+static inline float FCLAMP(float x, float min, float max) {
+    return x < min ? min : (x > max ? max : x);
+}
+
+//=============================================================================
+// M/S Stereo Correlation (inverse of decorrelation)
+//=============================================================================
+
+// Uniform random in [0, 1)
+static inline float frand01(void) {
+    return (float)rand() / ((float)RAND_MAX + 1.0f);
+}
+
+// TPDF noise in [-1, +1)
+static inline float tpdf1(void) {
+    return (frand01() - frand01());
+}
+
+static void ms_correlate(const float *mid, const float *side, float *left, float *right, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        // Decode M/S → L/R
+        float m = mid[i];
+        float s = side[i];
+        left[i] = FCLAMP((m + s), -1.0f, 1.0f);
+        right[i] = FCLAMP((m - s), -1.0f, 1.0f);
+    }
+}
+
+static float signum(float x) {
+    if (x > 0.0f) return 1.0f;
+    if (x < 0.0f) return -1.0f;
+    return 0.0f;
+}
+
+static void expand_gamma(float *left, float *right, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
+        float x = left[i]; float a = fabsf(x);
+        left[i] = signum(x) * powf(a, 1.4142f);
+        float y = right[i]; float b = fabsf(y);
+        right[i] = signum(y) * powf(b, 1.4142f);
+    }
+}
+
+static void expand_mu_law(float *left, float *right, size_t count) {
+    static float MU = 255.0f;
+
+    for (size_t i = 0; i < count; i++) {
+        // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
+        float x = left[i];
+        left[i] = signum(x) * (powf(1.0f + MU, fabsf(x)) - 1.0f) / MU;
+        float y = right[i];
+        right[i] = signum(y) * (powf(1.0f + MU, fabsf(y)) - 1.0f) / MU;
+    }
+}
+
+static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *left, uint8_t *right, size_t count, float dither_error[2][2]) {
+    const float b1 = 1.5f;   // 1st feedback coefficient
+    const float b2 = -0.75f; // 2nd feedback coefficient
+    const float scale = 127.5f;
+    const float bias  = 128.0f;
+
+    // Reduced dither amplitude to coordinate with coefficient-domain dithering
+    // The decoder now adds TPDF dither in coefficient domain, so we reduce
+    // sample-domain dither by ~60% to avoid doubling the noise floor
+    const float dither_scale = 0.2f;  // Reduced from 0.5 (was ±0.5 LSB, now ±0.2 LSB)
+
+    for (size_t i = 0; i < count; i++) {
+        // --- LEFT channel ---
+        float feedbackL = b1 * dither_error[0][0] + b2 * dither_error[0][1];
+        float ditherL = dither_scale * tpdf1(); // Reduced TPDF dither
+        float shapedL = fleft[i] + feedbackL + ditherL / scale;
+        shapedL = FCLAMP(shapedL, -1.0f, 1.0f);
+
+        int qL = (int)lrintf(shapedL * scale);
+        if (qL < -128) qL = -128;
+        else if (qL > 127) qL = 127;
+        left[i] = (uint8_t)(qL + bias);
+
+        float qerrL = shapedL - (float)qL / scale;
+        dither_error[0][1] = dither_error[0][0]; // shift history
+        dither_error[0][0] = qerrL;
+
+        // --- RIGHT channel ---
+        float feedbackR = b1 * dither_error[1][0] + b2 * dither_error[1][1];
+        float ditherR = dither_scale * tpdf1(); // Reduced TPDF dither
+        float shapedR = fright[i] + feedbackR + ditherR / scale;
+        shapedR = FCLAMP(shapedR, -1.0f, 1.0f);
+
+        int qR = (int)lrintf(shapedR * scale);
+        if (qR < -128) qR = -128;
+        else if (qR > 127) qR = 127;
+        right[i] = (uint8_t)(qR + bias);
+
+        float qerrR = shapedR - (float)qR / scale;
+        dither_error[1][1] = dither_error[1][0];
+        dither_error[1][0] = qerrR;
+    }
+}
+
+//=============================================================================
+// TAD (Terrarum Advanced Audio) Decoder - Constants and Helpers
+//=============================================================================
+
+// Coefficient scalars for each subband (CDF 9/7 with 9 decomposition levels)
+static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f};
+
+// Base quantiser weight table (10 subbands: LL + 9 H bands)
+static const float BASE_QUANTISER_WEIGHTS[] = {
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.1f, 1.2f, 1.3f, 1.4f, 1.5f
+};
+
+//=============================================================================
+// Spectral Interpolation for Coefficient Reconstruction (TAD)
+//=============================================================================
+
+// Fast PRNG for light dithering (xorshift32)
+static inline uint32_t xorshift32(uint32_t *s) {
+    uint32_t x = *s;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return *s = x;
+}
+
+static inline float urand(uint32_t *s) {
+    return (xorshift32(s) & 0xFFFFFF) / 16777216.0f;
+}
+
+static inline float tpdf_tad(uint32_t *s) {
+    return urand(s) - urand(s);
+}
+
+// Compute RMS energy of a coefficient band
+static float compute_band_rms(const float *c, size_t len) {
+    if (len == 0) return 0.0f;
+    double sumsq = 0.0;
+    for (size_t i = 0; i < len; i++) {
+        sumsq += (double)c[i] * c[i];
+    }
+    return sqrtf((float)(sumsq / (double)len));
+}
+
+// Simplified spectral reconstruction for wavelet coefficients
+static void spectral_interpolate_band(float *c, size_t len, float Q, float lower_band_rms) {
+    if (len < 4) return;
+
+    uint32_t seed = 0x9E3779B9u ^ (uint32_t)len ^ (uint32_t)(Q * 65536.0f);
+    const float dither_amp = 0.05f * Q;
+
+    for (size_t i = 0; i < len; i++) {
+        c[i] += tpdf_tad(&seed) * dither_amp;
+    }
+
+    (void)lower_band_rms;
+}
+
+//=============================================================================
+// Dequantization (inverse of quantization)
+//=============================================================================
+
+
+#define LAMBDA_FIXED 6.0f
+
+// Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
+// Converts quantized index back to normalized float in [-1, 1]
+static float lambda_decompanding(int8_t quant_val, int max_index) {
+    // Handle zero
+    if (quant_val == 0) {
+        return 0.0f;
+    }
+
+    int sign = (quant_val < 0) ? -1 : 1;
+    int abs_index = abs(quant_val);
+
+    // Clamp to valid range
+    if (abs_index > max_index) abs_index = max_index;
+
+    // Map index back to normalized CDF [0, 1]
+    float normalized_cdf = (float)abs_index / max_index;
+
+    // Map from [0, 1] back to [0.5, 1.0] (CDF range for positive half)
+    float cdf = 0.5f + normalized_cdf * 0.5f;
+
+    // Inverse Laplacian CDF for x >= 0: x = -(1/λ) * ln(2*(1-F))
+    // For F in [0.5, 1.0]: x = -(1/λ) * ln(2*(1-F))
+    float abs_val = -(1.0f / LAMBDA_FIXED) * logf(2.0f * (1.0f - cdf));
+
+    // Clamp to [0, 1]
+    if (abs_val > 1.0f) abs_val = 1.0f;
+    if (abs_val < 0.0f) abs_val = 0.0f;
+
+    return sign * abs_val;
+}
+
+static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
+
+    // Calculate sideband boundaries dynamically
+    int first_band_size = chunk_size >> dwt_levels;
+
+    int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
+    sideband_starts[0] = 0;
+    sideband_starts[1] = first_band_size;
+    for (int i = 2; i <= dwt_levels + 1; i++) {
+        sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
+    }
+
+    // Step 1: Dequantize all coefficients (no dithering yet)
+    for (size_t i = 0; i < count; i++) {
+        int sideband = dwt_levels;
+        for (int s = 0; s <= dwt_levels; s++) {
+            if (i < sideband_starts[s + 1]) {
+                sideband = s;
+                break;
+            }
+        }
+
+        // Decode using lambda companding
+        float normalized_val = lambda_decompanding(quantized[i], max_index);
+
+        // Denormalize using the subband scalar and apply base weight + quantiser scaling
+        float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
+        coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+    }
+
+    // Step 2: Apply spectral interpolation per band
+    // Process bands from high to low frequency (dwt_levels down to 0)
+    // so we can use lower bands' RMS for higher band reconstruction
+    float prev_band_rms = 0.0f;
+
+    for (int band = dwt_levels; band >= 0; band--) {
+        size_t band_start = sideband_starts[band];
+        size_t band_end = sideband_starts[band + 1];
+        size_t band_len = band_end - band_start;
+
+        // Calculate quantization step Q for this band
+        float weight = BASE_QUANTISER_WEIGHTS[band] * quantiser_scale;
+        float scalar = TAD32_COEFF_SCALARS[band] * weight;
+        float Q = scalar / max_index;
+
+        // Apply spectral interpolation to this band
+        spectral_interpolate_band(&coeffs[band_start], band_len, Q, prev_band_rms);
+
+        // Compute RMS for this band to use as reference for next (lower frequency) band
+        prev_band_rms = compute_band_rms(&coeffs[band_start], band_len);
+    }
+
+    free(sideband_starts);
+}
+
+//=============================================================================
+// Chunk Decoding
+//=============================================================================
+
+static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_stereo,
+                        size_t *bytes_consumed, size_t *samples_decoded) {
+    const uint8_t *read_ptr = input;
+
+    // Read chunk header
+    uint16_t sample_count = *((const uint16_t*)read_ptr);
+    read_ptr += sizeof(uint16_t);
+
+    uint8_t max_index = *read_ptr;
+    read_ptr += sizeof(uint8_t);
+
+    uint32_t payload_size = *((const uint32_t*)read_ptr);
+    read_ptr += sizeof(uint32_t);
+
+    // Calculate DWT levels from sample count
+    int dwt_levels = calculate_dwt_levels(sample_count);
+    if (dwt_levels < 0) {
+        fprintf(stderr, "Error: Invalid sample count %u\n", sample_count);
+        return -1;
+    }
+
+    // Decompress if needed
+    const uint8_t *payload;
+    uint8_t *decompressed = NULL;
+
+    // Estimate decompressed size (generous upper bound)
+    size_t decompressed_size = sample_count * 4 * sizeof(int8_t);
+    decompressed = malloc(decompressed_size);
+
+    size_t actual_size = ZSTD_decompress(decompressed, decompressed_size, read_ptr, payload_size);
+
+    if (ZSTD_isError(actual_size)) {
+        fprintf(stderr, "Error: Zstd decompression failed: %s\n", ZSTD_getErrorName(actual_size));
+        free(decompressed);
+        return -1;
+    }
+
+    read_ptr += payload_size;
+    *bytes_consumed = read_ptr - input;
+    *samples_decoded = sample_count;
+
+    // Allocate working buffers
+    int8_t *quant_mid = malloc(sample_count * sizeof(int8_t));
+    int8_t *quant_side = malloc(sample_count * sizeof(int8_t));
+    float *dwt_mid = malloc(sample_count * sizeof(float));
+    float *dwt_side = malloc(sample_count * sizeof(float));
+    float *pcm32_left = malloc(sample_count * sizeof(float));
+    float *pcm32_right = malloc(sample_count * sizeof(float));
+    uint8_t *pcm8_left = malloc(sample_count * sizeof(uint8_t));
+    uint8_t *pcm8_right = malloc(sample_count * sizeof(uint8_t));
+
+    // Separate Mid/Side
+    memcpy(quant_mid, decompressed, sample_count);
+    memcpy(quant_side, decompressed + sample_count, sample_count);
+
+    // Debug: Check if we have non-zero coefficients
+//    static int debug_coeff_count = 0;
+//    if (debug_coeff_count < 3) {
+//        int nonzero_mid = 0, nonzero_side = 0;
+//        for (int i = 0; i < sample_count; i++) {
+//            if (quant_mid[i] != 0) nonzero_mid++;
+//            if (quant_side[i] != 0) nonzero_side++;
+//        }
+//        debug_coeff_count++;
+//    }
+
+    // Dequantize with quantiser scaling and spectral interpolation
+    // Use quantiser_scale = 1.0f for baseline (must match encoder)
+    float quantiser_scale = 1.0f;
+    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+
+    // Inverse DWT
+    dwt_inverse_multilevel(dwt_mid, sample_count, dwt_levels);
+    dwt_inverse_multilevel(dwt_side, sample_count, dwt_levels);
+
+    float err[2][2] = {{0,0},{0,0}};
+
+    // M/S to L/R correlation
+    ms_correlate(dwt_mid, dwt_side, pcm32_left, pcm32_right, sample_count);
+
+    // expand dynamic range
+    expand_gamma(pcm32_left, pcm32_right, sample_count);
+
+    // dither to 8-bit
+    pcm32f_to_pcm8(pcm32_left, pcm32_right, pcm8_left, pcm8_right, sample_count, err);
+
+    // Interleave stereo output (PCMu8)
+    for (size_t i = 0; i < sample_count; i++) {
+        pcmu8_stereo[i * 2] = pcm8_left[i];
+        pcmu8_stereo[i * 2 + 1] = pcm8_right[i];
+    }
+
+    // Cleanup
+    free(quant_mid); free(quant_side); free(dwt_mid); free(dwt_side);
+    free(pcm32_left); free(pcm32_right); free(pcm8_left); free(pcm8_right);
+    if (decompressed) free(decompressed);
+
+    return 0;
 }
 
 //=============================================================================
@@ -637,18 +1044,18 @@ static void decode_channel_ezbc(const uint8_t *ezbc_data, size_t offset, size_t 
     ezbc_bitreader_t reader = {ezbc_data, offset + size, offset, 0};
 
     // Debug: Print first few bytes
-    fprintf(stderr, "[EZBC] Channel decode: offset=%zu, size=%zu, first 5 bytes: %02X %02X %02X %02X %02X\n",
-           offset, size,
-           ezbc_data[offset], ezbc_data[offset+1], ezbc_data[offset+2],
-           ezbc_data[offset+3], ezbc_data[offset+4]);
+//    fprintf(stderr, "[EZBC] Channel decode: offset=%zu, size=%zu, first 5 bytes: %02X %02X %02X %02X %02X\n",
+//           offset, size,
+//           ezbc_data[offset], ezbc_data[offset+1], ezbc_data[offset+2],
+//           ezbc_data[offset+3], ezbc_data[offset+4]);
 
     // Read header: MSB bitplane (8 bits), width (16 bits), height (16 bits)
     const int msb_bitplane = ezbc_read_bits(&reader, 8);
     const int width = ezbc_read_bits(&reader, 16);
     const int height = ezbc_read_bits(&reader, 16);
 
-    fprintf(stderr, "[EZBC] Decoded header: MSB=%d, width=%d, height=%d (expected pixels=%d)\n",
-           msb_bitplane, width, height, expected_count);
+//    fprintf(stderr, "[EZBC] Decoded header: MSB=%d, width=%d, height=%d (expected pixels=%d)\n",
+//           msb_bitplane, width, height, expected_count);
 
     if (width * height != expected_count) {
         fprintf(stderr, "EZBC dimension mismatch: %dx%d != %d\n", width, height, expected_count);
@@ -742,8 +1149,8 @@ static void decode_channel_ezbc(const uint8_t *ezbc_data, size_t offset, size_t 
             if (output[i] < min_val) min_val = output[i];
         }
     }
-    fprintf(stderr, "[EZBC] Decoded %d non-zero coeffs (%.1f%%), range: [%d, %d]\n",
-           nonzero_count, 100.0 * nonzero_count / expected_count, min_val, max_val);
+//    fprintf(stderr, "[EZBC] Decoded %d non-zero coeffs (%.1f%%), range: [%d, %d]\n",
+//           nonzero_count, 100.0 * nonzero_count / expected_count, min_val, max_val);
 }
 
 // EZBC postprocessing for single frames
@@ -799,18 +1206,19 @@ static void dwt_97_inverse_1d(float *data, int length) {
     if (length < 2) return;
 
     // Debug: Check if input has non-zero values
-    static int call_count = 0;
-    if (call_count < 5) {
-        int nonzero = 0;
-        for (int i = 0; i < length; i++) {
-            if (data[i] != 0.0f) nonzero++;
-        }
-        fprintf(stderr, "    dwt_97_inverse_1d call #%d: length=%d, nonzero=%d, first 5: %.1f %.1f %.1f %.1f %.1f\n",
-               call_count, length, nonzero,
-               data[0], length > 1 ? data[1] : 0.0f, length > 2 ? data[2] : 0.0f,
-               length > 3 ? data[3] : 0.0f, length > 4 ? data[4] : 0.0f);
-        call_count++;
-    }
+//    static int call_count = 0;
+//    if (call_count < 5) {
+//         Debug: count non-zero coefficients (disabled to reduce stderr output)
+//         int nonzero = 0;
+//         for (int i = 0; i < length; i++) {
+//             if (data[i] != 0.0f) nonzero++;
+//         }
+//         fprintf(stderr, "    dwt_97_inverse_1d call #%d: length=%d, nonzero=%d, first 5: %.1f %.1f %.1f %.1f %.1f\n",
+//                call_count, length, nonzero,
+//                data[0], length > 1 ? data[1] : 0.0f, length > 2 ? data[2] : 0.0f,
+//                length > 3 ? data[3] : 0.0f, length > 4 ? data[4] : 0.0f);
+//         call_count++;
+//    }
 
     float *temp = malloc(length * sizeof(float));
     int half = (length + 1) / 2;
@@ -890,17 +1298,17 @@ static void dwt_97_inverse_1d(float *data, int length) {
         }
     }
 
-    // Debug: Check output
-    if (call_count <= 5) {
-        int nonzero_out = 0;
-        for (int i = 0; i < length; i++) {
-            if (data[i] != 0.0f) nonzero_out++;
-        }
-        fprintf(stderr, "      -> OUTPUT: nonzero=%d, first 5: %.1f %.1f %.1f %.1f %.1f\n",
-               nonzero_out,
-               data[0], length > 1 ? data[1] : 0.0f, length > 2 ? data[2] : 0.0f,
-               length > 3 ? data[3] : 0.0f, length > 4 ? data[4] : 0.0f);
-    }
+    // Debug: Check output (disabled to reduce stderr output)
+    // if (call_count <= 5) {
+    //     int nonzero_out = 0;
+    //     for (int i = 0; i < length; i++) {
+    //         if (data[i] != 0.0f) nonzero_out++;
+    //     }
+    //     fprintf(stderr, "      -> OUTPUT: nonzero=%d, first 5: %.1f %.1f %.1f %.1f %.1f\n",
+    //            nonzero_out,
+    //            data[0], length > 1 ? data[1] : 0.0f, length > 2 ? data[2] : 0.0f,
+    //            length > 3 ? data[3] : 0.0f, length > 4 ? data[4] : 0.0f);
+    // }
 
     free(temp);
 }
@@ -996,28 +1404,28 @@ static void apply_inverse_dwt_multilevel(float *data, int width, int height, int
                     }
                 }
             }
-            fprintf(stderr, "After level %d (%dx%d): nonzero=%d/%d, data[0]=%.1f, data[1]=%.1f, data[width]=%.1f\n",
-                   level, current_width, current_height, nonzero_level, current_width * current_height,
-                   data[0], data[1], data[width]);
+            // fprintf(stderr, "After level %d (%dx%d): nonzero=%d/%d, data[0]=%.1f, data[1]=%.1f, data[width]=%.1f\n",
+            //        level, current_width, current_height, nonzero_level, current_width * current_height,
+            //        data[0], data[1], data[width]);
 
             if (level == 0) first_frame_levels = 0;  // Stop after level 0 of first frame
         }
     }
 
-    // Debug: Check buffer after all levels complete
-    static int debug_output_once = 1;
-    if (debug_output_once) {
-        int nonzero_final = 0;
-        for (int i = 0; i < width * height; i++) {
-            if (data[i] != 0.0f) nonzero_final++;
-        }
-        fprintf(stderr, "After ALL IDWT levels complete: nonzero=%d/%d, first 10: ", nonzero_final, width * height);
-        for (int i = 0; i < 10 && i < width * height; i++) {
-            fprintf(stderr, "%.1f ", data[i]);
-        }
-        fprintf(stderr, "\n");
-        debug_output_once = 0;
-    }
+    // Debug: Check buffer after all levels complete (disabled to reduce stderr output)
+    // static int debug_output_once = 1;
+    // if (debug_output_once) {
+    //     int nonzero_final = 0;
+    //     for (int i = 0; i < width * height; i++) {
+    //         if (data[i] != 0.0f) nonzero_final++;
+    //     }
+    //     fprintf(stderr, "After ALL IDWT levels complete: nonzero=%d/%d, first 10: ", nonzero_final, width * height);
+    //     for (int i = 0; i < 10 && i < width * height; i++) {
+    //         fprintf(stderr, "%.1f ", data[i]);
+    //     }
+    //     fprintf(stderr, "\n");
+    //     debug_output_once = 0;
+    // }
 
     free(widths);
     free(heights);
@@ -1512,6 +1920,37 @@ static void ictcp_to_rgb(float i, float ct, float cp, uint8_t *r, uint8_t *g, ui
 }
 
 //=============================================================================
+// WAV File Writing
+//=============================================================================
+
+static void write_wav_header(FILE *fp, uint32_t sample_rate, uint16_t channels, uint32_t data_size) {
+    // RIFF header
+    fwrite("RIFF", 1, 4, fp);
+    uint32_t file_size = 36 + data_size;
+    fwrite(&file_size, 4, 1, fp);
+    fwrite("WAVE", 1, 4, fp);
+
+    // fmt chunk
+    fwrite("fmt ", 1, 4, fp);
+    uint32_t fmt_size = 16;
+    fwrite(&fmt_size, 4, 1, fp);
+    uint16_t audio_format = 1;  // PCM
+    fwrite(&audio_format, 2, 1, fp);
+    fwrite(&channels, 2, 1, fp);
+    fwrite(&sample_rate, 4, 1, fp);
+    uint32_t byte_rate = sample_rate * channels * 1;  // 1 byte per sample (u8)
+    fwrite(&byte_rate, 4, 1, fp);
+    uint16_t block_align = channels * 1;
+    fwrite(&block_align, 2, 1, fp);
+    uint16_t bits_per_sample = 8;
+    fwrite(&bits_per_sample, 2, 1, fp);
+
+    // data chunk
+    fwrite("data", 1, 4, fp);
+    fwrite(&data_size, 4, 1, fp);
+}
+
+//=============================================================================
 // Decoder State Structure
 //=============================================================================
 
@@ -1530,22 +1969,196 @@ typedef struct {
     int frame_size;
     int is_monoblock;           // True if version 3-6 (single tile mode)
 
-    // FFmpeg pipes for video and audio
+    // FFmpeg pipe for video only (audio from file)
     FILE *video_pipe;
-    FILE *audio_pipe;
     pid_t ffmpeg_pid;
 
-    // Audio buffer for TAD → PCMu8 conversion
-    uint8_t *audio_buffer;
-    size_t audio_buffer_size;
-    size_t audio_buffer_used;
+    // Temporary audio file
+    char *audio_file_path;
 } tav_decoder_t;
+
+//=============================================================================
+// Pass 1: Extract Audio to WAV File
+//=============================================================================
+
+static int extract_audio_to_wav(const char *input_file, const char *wav_file, int verbose) {
+    FILE *input_fp = fopen(input_file, "rb");
+    if (!input_fp) {
+        fprintf(stderr, "Failed to open input file for audio extraction\n");
+        return -1;
+    }
+
+    // Read header
+    tav_header_t header;
+    if (fread(&header, sizeof(tav_header_t), 1, input_fp) != 1) {
+        fclose(input_fp);
+        return -1;
+    }
+
+    // Open temporary audio file
+    FILE *wav_fp = fopen(wav_file, "wb");
+    if (!wav_fp) {
+        fprintf(stderr, "Failed to create temporary audio file\n");
+        fclose(input_fp);
+        return -1;
+    }
+
+    // Write placeholder WAV header (will be updated later)
+    write_wav_header(wav_fp, 32000, 2, 0);
+
+    uint32_t total_audio_bytes = 0;
+    int packet_count = 0;
+
+    if (verbose) {
+        fprintf(stderr, "[Pass 1] Extracting audio to %s...\n", wav_file);
+    }
+
+    // Read all packets and extract audio
+    while (1) {
+        uint8_t packet_type;
+        if (fread(&packet_type, 1, 1, input_fp) != 1) {
+            break;  // EOF
+        }
+
+        packet_count++;
+
+        // Skip non-audio packets
+        if (packet_type == TAV_PACKET_SYNC || packet_type == TAV_PACKET_SYNC_NTSC) {
+            continue;
+        }
+
+        if (packet_type == TAV_PACKET_TIMECODE) {
+            fseek(input_fp, 8, SEEK_CUR);  // Skip timecode
+            continue;
+        }
+
+        if (packet_type == TAV_PACKET_GOP_SYNC) {
+            fseek(input_fp, 1, SEEK_CUR);  // Skip frame count
+            continue;
+        }
+
+        if (packet_type == TAV_PACKET_GOP_UNIFIED) {
+            uint8_t gop_size;
+            uint32_t compressed_size;
+            fread(&gop_size, 1, 1, input_fp);
+            fread(&compressed_size, 4, 1, input_fp);
+            fseek(input_fp, compressed_size, SEEK_CUR);  // Skip GOP data
+            continue;
+        }
+
+        // Handle TAD audio
+        if (packet_type == TAV_PACKET_AUDIO_TAD) {
+            uint16_t sample_count_wrapper;
+            uint32_t payload_size_plus_7;
+            fread(&sample_count_wrapper, 2, 1, input_fp);
+            fread(&payload_size_plus_7, 4, 1, input_fp);
+
+            uint16_t sample_count_chunk;
+            uint8_t quantiser_index;
+            uint32_t compressed_size;
+            fread(&sample_count_chunk, 2, 1, input_fp);
+            fread(&quantiser_index, 1, 1, input_fp);
+            fread(&compressed_size, 4, 1, input_fp);
+
+            uint8_t *tad_compressed = malloc(compressed_size);
+            fread(tad_compressed, 1, compressed_size, input_fp);
+
+            // Build TAD chunk
+            size_t tad_chunk_size = 2 + 1 + 4 + compressed_size;
+            uint8_t *tad_chunk = malloc(tad_chunk_size);
+            memcpy(tad_chunk, &sample_count_chunk, 2);
+            memcpy(tad_chunk + 2, &quantiser_index, 1);
+            memcpy(tad_chunk + 3, &compressed_size, 4);
+            memcpy(tad_chunk + 7, tad_compressed, compressed_size);
+            free(tad_compressed);
+
+            // Decode TAD
+            uint8_t *pcmu8_output = malloc(sample_count_chunk * 2);
+            size_t bytes_consumed, samples_decoded;
+            int decode_result = decode_chunk(tad_chunk, tad_chunk_size,
+                                            pcmu8_output, &bytes_consumed, &samples_decoded);
+
+            if (decode_result >= 0) {
+                size_t pcm_bytes = samples_decoded * 2;
+                fwrite(pcmu8_output, 1, pcm_bytes, wav_fp);
+                total_audio_bytes += pcm_bytes;
+            }
+
+            free(tad_chunk);
+            free(pcmu8_output);
+            continue;
+        }
+
+        // Handle PCM8 audio
+        if (packet_type == TAV_PACKET_AUDIO_PCM8) {
+            uint32_t packet_size;
+            fread(&packet_size, 4, 1, input_fp);
+
+            uint8_t *compressed_data = malloc(packet_size);
+            fread(compressed_data, 1, packet_size, input_fp);
+
+            // Decompress
+            size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, packet_size);
+            uint8_t *pcm_data = malloc(decompressed_bound);
+            size_t decompressed_size = ZSTD_decompress(pcm_data, decompressed_bound,
+                                                       compressed_data, packet_size);
+            free(compressed_data);
+
+            if (!ZSTD_isError(decompressed_size)) {
+                fwrite(pcm_data, 1, decompressed_size, wav_fp);
+                total_audio_bytes += decompressed_size;
+            }
+
+            free(pcm_data);
+            continue;
+        }
+
+        // Handle EXTENDED_HDR packet (key-value pairs)
+        if (packet_type == TAV_PACKET_EXTENDED_HDR) {
+            uint16_t num_pairs;
+            fread(&num_pairs, 2, 1, input_fp);
+            for (int i = 0; i < num_pairs; i++) {
+                fseek(input_fp, 4, SEEK_CUR);  // Skip key (4 bytes)
+                uint8_t value_type;
+                fread(&value_type, 1, 1, input_fp);
+                if (value_type == 0x04) {
+                    fseek(input_fp, 8, SEEK_CUR);  // uint64 value
+                } else if (value_type == 0x10) {
+                    uint16_t str_len;
+                    fread(&str_len, 2, 1, input_fp);
+                    fseek(input_fp, str_len, SEEK_CUR);  // string value
+                }
+            }
+            continue;
+        }
+
+        // Read packet size for standard packets
+        uint32_t packet_size;
+        if (fread(&packet_size, 4, 1, input_fp) == 1) {
+            fseek(input_fp, packet_size, SEEK_CUR);
+        }
+    }
+
+    // Update WAV header with actual data size
+    fseek(wav_fp, 0, SEEK_SET);
+    write_wav_header(wav_fp, 32000, 2, total_audio_bytes);
+
+    fclose(wav_fp);
+    fclose(input_fp);
+
+    if (verbose) {
+        fprintf(stderr, "[Pass 1] Extracted %u bytes of audio (%d packets processed)\n",
+               total_audio_bytes, packet_count);
+    }
+
+    return 0;
+}
 
 //=============================================================================
 // Decoder Initialization and Cleanup
 //=============================================================================
 
-static tav_decoder_t* tav_decoder_init(const char *input_file, const char *output_file) {
+static tav_decoder_t* tav_decoder_init(const char *input_file, const char *output_file, const char *audio_file) {
     tav_decoder_t *decoder = calloc(1, sizeof(tav_decoder_t));
     if (!decoder) return NULL;
 
@@ -1571,6 +2184,7 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
 
     decoder->frame_size = decoder->header.width * decoder->header.height;
     decoder->is_monoblock = (decoder->header.version >= 3 && decoder->header.version <= 6);
+    decoder->audio_file_path = strdup(audio_file);
 
     // Allocate buffers
     decoder->current_frame_rgb = calloc(decoder->frame_size * 3, 1);
@@ -1582,15 +2196,10 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
     decoder->reference_ycocg_co = calloc(decoder->frame_size, sizeof(float));
     decoder->reference_ycocg_cg = calloc(decoder->frame_size, sizeof(float));
 
-    // Audio buffer (32 KB should be enough for most audio packets)
-    decoder->audio_buffer_size = 32768;
-    decoder->audio_buffer = malloc(decoder->audio_buffer_size);
-    decoder->audio_buffer_used = 0;
-
-    // Create FFmpeg process for video encoding
-    int video_pipe_fd[2], audio_pipe_fd[2];
-    if (pipe(video_pipe_fd) == -1 || pipe(audio_pipe_fd) == -1) {
-        fprintf(stderr, "Failed to create pipes\n");
+    // Create FFmpeg process for video encoding (video pipe only, audio from file)
+    int video_pipe_fd[2];
+    if (pipe(video_pipe_fd) == -1) {
+        fprintf(stderr, "Failed to create video pipe\n");
         free(decoder->current_frame_rgb);
         free(decoder->reference_frame_rgb);
         free(decoder->dwt_buffer_y);
@@ -1599,7 +2208,7 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
         free(decoder->reference_ycocg_y);
         free(decoder->reference_ycocg_co);
         free(decoder->reference_ycocg_cg);
-        free(decoder->audio_buffer);
+        free(decoder->audio_file_path);
         fclose(decoder->input_fp);
         free(decoder);
         return NULL;
@@ -1609,7 +2218,6 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
     if (decoder->ffmpeg_pid == -1) {
         fprintf(stderr, "Failed to fork FFmpeg process\n");
         close(video_pipe_fd[0]); close(video_pipe_fd[1]);
-        close(audio_pipe_fd[0]); close(audio_pipe_fd[1]);
         free(decoder->current_frame_rgb);
         free(decoder->reference_frame_rgb);
         free(decoder->dwt_buffer_y);
@@ -1618,25 +2226,22 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
         free(decoder->reference_ycocg_y);
         free(decoder->reference_ycocg_co);
         free(decoder->reference_ycocg_cg);
-        free(decoder->audio_buffer);
+        free(decoder->audio_file_path);
         fclose(decoder->input_fp);
         free(decoder);
         return NULL;
     } else if (decoder->ffmpeg_pid == 0) {
         // Child process - FFmpeg
         close(video_pipe_fd[1]);  // Close write end
-        close(audio_pipe_fd[1]);
 
         char video_size[32];
         char framerate[16];
         snprintf(video_size, sizeof(video_size), "%dx%d", decoder->header.width, decoder->header.height);
         snprintf(framerate, sizeof(framerate), "%d", decoder->header.fps);
 
-        // Redirect pipes to stdin
+        // Redirect video pipe to fd 3
         dup2(video_pipe_fd[0], 3);  // Video input on fd 3
-        dup2(audio_pipe_fd[0], 4);  // Audio input on fd 4
         close(video_pipe_fd[0]);
-        close(audio_pipe_fd[0]);
 
         execl("/usr/bin/ffmpeg", "ffmpeg",
               "-f", "rawvideo",
@@ -1644,8 +2249,8 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
               "-video_size", video_size,
               "-framerate", framerate,
               "-i", "pipe:3",              // Video from fd 3
+              "-i", audio_file,            // Audio from file
               "-color_range", "2",
-              // Note: Audio decoding not yet implemented, so we output video-only MKV
               "-c:v", "ffv1",              // FFV1 codec
               "-level", "3",               // FFV1 level 3
               "-coder", "1",               // Range coder
@@ -1653,8 +2258,9 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
               "-g", "1",                   // GOP size 1 (all I-frames)
               "-slices", "24",             // 24 slices for threading
               "-slicecrc", "1",            // CRC per slice
-              "-pixel_format", "rgb24",  // make FFmpeg encode to RGB
+              "-pixel_format", "rgb24",    // make FFmpeg encode to RGB
               "-color_range", "2",
+              "-c:a", "pcm_u8",            // Audio codec (PCM unsigned 8-bit)
               "-f", "matroska",            // MKV container
               output_file,
               "-y",                        // Overwrite output
@@ -1665,14 +2271,12 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
         exit(1);
     } else {
         // Parent process
-        close(video_pipe_fd[0]);  // Close read ends
-        close(audio_pipe_fd[0]);
+        close(video_pipe_fd[0]);  // Close read end
 
         decoder->video_pipe = fdopen(video_pipe_fd[1], "wb");
-        decoder->audio_pipe = fdopen(audio_pipe_fd[1], "wb");
 
-        if (!decoder->video_pipe || !decoder->audio_pipe) {
-            fprintf(stderr, "Failed to open pipes for writing\n");
+        if (!decoder->video_pipe) {
+            fprintf(stderr, "Failed to open video pipe for writing\n");
             kill(decoder->ffmpeg_pid, SIGTERM);
             free(decoder->current_frame_rgb);
             free(decoder->reference_frame_rgb);
@@ -1682,7 +2286,7 @@ static tav_decoder_t* tav_decoder_init(const char *input_file, const char *outpu
             free(decoder->reference_ycocg_y);
             free(decoder->reference_ycocg_co);
             free(decoder->reference_ycocg_cg);
-            free(decoder->audio_buffer);
+            free(decoder->audio_file_path);
             fclose(decoder->input_fp);
             free(decoder);
             return NULL;
@@ -1697,7 +2301,6 @@ static void tav_decoder_free(tav_decoder_t *decoder) {
 
     if (decoder->input_fp) fclose(decoder->input_fp);
     if (decoder->video_pipe) fclose(decoder->video_pipe);
-    if (decoder->audio_pipe) fclose(decoder->audio_pipe);
 
     // Wait for FFmpeg to finish
     if (decoder->ffmpeg_pid > 0) {
@@ -1713,7 +2316,7 @@ static void tav_decoder_free(tav_decoder_t *decoder) {
     free(decoder->reference_ycocg_y);
     free(decoder->reference_ycocg_co);
     free(decoder->reference_ycocg_cg);
-    free(decoder->audio_buffer);
+    free(decoder->audio_file_path);
     free(decoder);
 }
 
@@ -1758,15 +2361,15 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
     }
 
     // Debug first 3 frames compression
-    static int decomp_debug = 0;
-    if (decomp_debug < 3) {
-        fprintf(stderr, "  [ZSTD frame %d] Compressed size: %u, buffer size: %zu\n", decomp_debug, packet_size, decompressed_size);
-        fprintf(stderr, "  [ZSTD frame %d] First 16 bytes of COMPRESSED data: ", decomp_debug);
-        for (int i = 0; i < 16 && i < (int)packet_size; i++) {
-            fprintf(stderr, "%02X ", compressed_data[i]);
-        }
-        fprintf(stderr, "\n");
-    }
+//    static int decomp_debug = 0;
+//    if (decomp_debug < 3) {
+//        fprintf(stderr, "  [ZSTD frame %d] Compressed size: %u, buffer size: %zu\n", decomp_debug, packet_size, decompressed_size);
+//        fprintf(stderr, "  [ZSTD frame %d] First 16 bytes of COMPRESSED data: ", decomp_debug);
+//        for (int i = 0; i < 16 && i < (int)packet_size; i++) {
+//            fprintf(stderr, "%02X ", compressed_data[i]);
+//        }
+//        fprintf(stderr, "\n");
+//    }
 
     size_t actual_size = ZSTD_decompress(decompressed_data, decompressed_size, compressed_data, packet_size);
 
@@ -1777,15 +2380,15 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
         goto write_frame;
     }
 
-    if (decomp_debug < 3) {
-        fprintf(stderr, "  [ZSTD frame %d] Decompressed size: %zu\n", decomp_debug, actual_size);
-        fprintf(stderr, "  [ZSTD frame %d] First 16 bytes of DECOMPRESSED data: ", decomp_debug);
-        for (int i = 0; i < 16 && i < (int)actual_size; i++) {
-            fprintf(stderr, "%02X ", decompressed_data[i]);
-        }
-        fprintf(stderr, "\n");
-        decomp_debug++;
-    }
+//    if (decomp_debug < 3) {
+//        fprintf(stderr, "  [ZSTD frame %d] Decompressed size: %zu\n", decomp_debug, actual_size);
+//        fprintf(stderr, "  [ZSTD frame %d] First 16 bytes of DECOMPRESSED data: ", decomp_debug);
+//        for (int i = 0; i < 16 && i < (int)actual_size; i++) {
+//            fprintf(stderr, "%02X ", decompressed_data[i]);
+//        }
+//        fprintf(stderr, "\n");
+//        decomp_debug++;
+//    }
 
     // Parse block data
     uint8_t *ptr = decompressed_data;
@@ -1801,10 +2404,10 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
     int qcg = qcg_override ? QLUT[qcg_override] : QLUT[decoder->header.quantiser_cg];
 
     // Debug first few frames
-    if (decoder->frame_count < 2) {
-        fprintf(stderr, "Frame %d: mode=%d, Q: Y=%d, Co=%d, Cg=%d, decompressed=%zu bytes\n",
-               decoder->frame_count, mode, qy, qco, qcg, actual_size);
-    }
+//    if (decoder->frame_count < 2) {
+//        fprintf(stderr, "Frame %d: mode=%d, Q: Y=%d, Co=%d, Cg=%d, decompressed=%zu bytes\n",
+//               decoder->frame_count, mode, qy, qco, qcg, actual_size);
+//    }
 
     if (mode == TAV_MODE_SKIP) {
         // Copy from reference frame
@@ -1833,21 +2436,21 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
         }
 
         // Debug: Check first few coefficients
-        if (decoder->frame_count == 32) {
-            fprintf(stderr, "  First 10 quantized Y coeffs: ");
-            for (int i = 0; i < 10 && i < coeff_count; i++) {
-                fprintf(stderr, "%d ", quantized_y[i]);
-            }
-            fprintf(stderr, "\n");
-
-            // Check for any large quantized values that should produce bright pixels
-            int max_quant_y = 0;
-            for (int i = 0; i < coeff_count; i++) {
-                int abs_val = quantized_y[i] < 0 ? -quantized_y[i] : quantized_y[i];
-                if (abs_val > max_quant_y) max_quant_y = abs_val;
-            }
-            fprintf(stderr, "  Max quantized Y coefficient: %d\n", max_quant_y);
-        }
+//        if (decoder->frame_count == 32) {
+//            fprintf(stderr, "  First 10 quantized Y coeffs: ");
+//            for (int i = 0; i < 10 && i < coeff_count; i++) {
+//                fprintf(stderr, "%d ", quantized_y[i]);
+//            }
+//            fprintf(stderr, "\n");
+//
+             // Check for any large quantized values that should produce bright pixels
+//            int max_quant_y = 0;
+//            for (int i = 0; i < coeff_count; i++) {
+//                int abs_val = quantized_y[i] < 0 ? -quantized_y[i] : quantized_y[i];
+//                if (abs_val > max_quant_y) max_quant_y = abs_val;
+//            }
+//            fprintf(stderr, "  Max quantized Y coefficient: %d\n", max_quant_y);
+//        }
 
         // Dequantize (perceptual for versions 5-8, uniform for 1-4)
         const int is_perceptual = (decoder->header.version >= 5 && decoder->header.version <= 8);
@@ -1867,11 +2470,11 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
                                               decoder->header.decomp_levels, qy, 0, decoder->frame_count);
 
             // Debug: Check if values survived the function call
-            if (decoder->frame_count == 32) {
-                fprintf(stderr, "  RIGHT AFTER dequantize_Y returns: first 5 values: %.1f %.1f %.1f %.1f %.1f\n",
-                       decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[1], decoder->dwt_buffer_y[2],
-                       decoder->dwt_buffer_y[3], decoder->dwt_buffer_y[4]);
-            }
+//            if (decoder->frame_count == 32) {
+//                fprintf(stderr, "  RIGHT AFTER dequantize_Y returns: first 5 values: %.1f %.1f %.1f %.1f %.1f\n",
+//                       decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[1], decoder->dwt_buffer_y[2],
+//                       decoder->dwt_buffer_y[3], decoder->dwt_buffer_y[4]);
+//            }
 
             dequantize_dwt_subbands_perceptual(0, qy, quantized_co, decoder->dwt_buffer_co,
                                               decoder->header.width, decoder->header.height,
@@ -1888,50 +2491,50 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
         }
 
         // Debug: Check dequantized values using correct subband layout
-        if (decoder->frame_count == 32) {
-            dwt_subband_info_t subbands[32];
-            const int subband_count = calculate_subband_layout(decoder->header.width, decoder->header.height,
-                                                              decoder->header.decomp_levels, subbands);
-
-            // Find LL band (highest level, type 0)
-            for (int s = 0; s < subband_count; s++) {
-                if (subbands[s].level == decoder->header.decomp_levels && subbands[s].subband_type == 0) {
-                    fprintf(stderr, "  LL band: level=%d, start=%d, count=%d\n",
-                           subbands[s].level, subbands[s].coeff_start, subbands[s].coeff_count);
-                    fprintf(stderr, "    Reading LL first 5 from dwt_buffer_y[0-4]: %.1f %.1f %.1f %.1f %.1f\n",
-                           decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[1], decoder->dwt_buffer_y[2],
-                           decoder->dwt_buffer_y[3], decoder->dwt_buffer_y[4]);
-
-                    // Find max in CORRECT LL band
-                    float max_ll = -999.0f;
-                    for (int i = 0; i < subbands[s].coeff_count; i++) {
-                        int idx = subbands[s].coeff_start + i;
-                        if (decoder->dwt_buffer_y[idx] > max_ll) max_ll = decoder->dwt_buffer_y[idx];
-                    }
-                    fprintf(stderr, "  Max LL coefficient BEFORE grain removal: %.1f\n", max_ll);
-                    break;
-                }
-            }
-        }
+//        if (decoder->frame_count == 32) {
+//            dwt_subband_info_t subbands[32];
+//            const int subband_count = calculate_subband_layout(decoder->header.width, decoder->header.height,
+//                                                              decoder->header.decomp_levels, subbands);
+//
+             // Find LL band (highest level, type 0)
+//            for (int s = 0; s < subband_count; s++) {
+//                if (subbands[s].level == decoder->header.decomp_levels && subbands[s].subband_type == 0) {
+//                    fprintf(stderr, "  LL band: level=%d, start=%d, count=%d\n",
+//                           subbands[s].level, subbands[s].coeff_start, subbands[s].coeff_count);
+//                    fprintf(stderr, "    Reading LL first 5 from dwt_buffer_y[0-4]: %.1f %.1f %.1f %.1f %.1f\n",
+//                           decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[1], decoder->dwt_buffer_y[2],
+//                           decoder->dwt_buffer_y[3], decoder->dwt_buffer_y[4]);
+//
+                     // Find max in CORRECT LL band
+//                    float max_ll = -999.0f;
+//                    for (int i = 0; i < subbands[s].coeff_count; i++) {
+//                        int idx = subbands[s].coeff_start + i;
+//                        if (decoder->dwt_buffer_y[idx] > max_ll) max_ll = decoder->dwt_buffer_y[idx];
+//                    }
+//                    fprintf(stderr, "  Max LL coefficient BEFORE grain removal: %.1f\n", max_ll);
+//                    break;
+//                }
+//            }
+//        }
 
         // Remove grain synthesis from Y channel (must happen after dequantization, before inverse DWT)
         remove_grain_synthesis_decoder(decoder->dwt_buffer_y, decoder->header.width, decoder->header.height,
                                       decoder->header.decomp_levels, decoder->frame_count, decoder->header.quantiser_y);
 
         // Debug: Check LL band AFTER grain removal
-        if (decoder->frame_count == 32) {
-            int ll_width = decoder->header.width;
-            int ll_height = decoder->header.height;
-            for (int l = 0; l < decoder->header.decomp_levels; l++) {
-                ll_width = (ll_width + 1) / 2;
-                ll_height = (ll_height + 1) / 2;
-            }
-            float max_ll = -999.0f;
-            for (int i = 0; i < ll_width * ll_height; i++) {
-                if (decoder->dwt_buffer_y[i] > max_ll) max_ll = decoder->dwt_buffer_y[i];
-            }
-            fprintf(stderr, "  Max LL coefficient AFTER grain removal: %.1f\n", max_ll);
-        }
+//        if (decoder->frame_count == 32) {
+//            int ll_width = decoder->header.width;
+//            int ll_height = decoder->header.height;
+//            for (int l = 0; l < decoder->header.decomp_levels; l++) {
+//                ll_width = (ll_width + 1) / 2;
+//                ll_height = (ll_height + 1) / 2;
+//            }
+//            float max_ll = -999.0f;
+//            for (int i = 0; i < ll_width * ll_height; i++) {
+//                if (decoder->dwt_buffer_y[i] > max_ll) max_ll = decoder->dwt_buffer_y[i];
+//            }
+//            fprintf(stderr, "  Max LL coefficient AFTER grain removal: %.1f\n", max_ll);
+//        }
 
         // Apply inverse DWT with correct non-power-of-2 dimension handling
         // Note: quantized arrays freed at write_frame label
@@ -1943,24 +2546,24 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
                                    decoder->header.decomp_levels, decoder->header.wavelet_filter);
 
         // Debug: Check spatial domain values after IDWT
-        if (decoder->frame_count == 32) {
-            float max_y_spatial = -999.0f;
-            for (int i = 0; i < decoder->frame_size; i++) {
-                if (decoder->dwt_buffer_y[i] > max_y_spatial) max_y_spatial = decoder->dwt_buffer_y[i];
-            }
-            fprintf(stderr, "  Max Y in spatial domain AFTER IDWT: %.1f\n", max_y_spatial);
-        }
+//        if (decoder->frame_count == 32) {
+//            float max_y_spatial = -999.0f;
+//            for (int i = 0; i < decoder->frame_size; i++) {
+//                if (decoder->dwt_buffer_y[i] > max_y_spatial) max_y_spatial = decoder->dwt_buffer_y[i];
+//            }
+//            fprintf(stderr, "  Max Y in spatial domain AFTER IDWT: %.1f\n", max_y_spatial);
+//        }
 
         // Debug: Check spatial domain values after IDWT (original debug)
-        if (decoder->frame_count < 1) {
-            fprintf(stderr, "  After IDWT - First 10 Y values: ");
-            for (int i = 0; i < 10 && i < decoder->frame_size; i++) {
-                fprintf(stderr, "%.1f ", decoder->dwt_buffer_y[i]);
-            }
-            fprintf(stderr, "\n");
-            fprintf(stderr, "  Y range: min=%.1f, max=%.1f\n",
-                   decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[decoder->frame_size-1]);
-        }
+//        if (decoder->frame_count < 1) {
+//            fprintf(stderr, "  After IDWT - First 10 Y values: ");
+//            for (int i = 0; i < 10 && i < decoder->frame_size; i++) {
+//                fprintf(stderr, "%.1f ", decoder->dwt_buffer_y[i]);
+//            }
+//            fprintf(stderr, "\n");
+//            fprintf(stderr, "  Y range: min=%.1f, max=%.1f\n",
+//                   decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[decoder->frame_size-1]);
+//        }
 
         // Handle P-frame delta accumulation (in YCoCg float space)
         if (packet_type == TAV_PACKET_PFRAME && mode == TAV_MODE_DELTA) {
@@ -1989,14 +2592,14 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
             }
 
             // Track max values for debugging
-            if (decoder->frame_count == 1000) {
-                if (decoder->dwt_buffer_y[i] > max_y) max_y = decoder->dwt_buffer_y[i];
-                if (decoder->dwt_buffer_co[i] > max_co) max_co = decoder->dwt_buffer_co[i];
-                if (decoder->dwt_buffer_cg[i] > max_cg) max_cg = decoder->dwt_buffer_cg[i];
-                if (r > max_r) max_r = r;
-                if (g > max_g) max_g = g;
-                if (b > max_b) max_b = b;
-            }
+//            if (decoder->frame_count == 1000) {
+//                if (decoder->dwt_buffer_y[i] > max_y) max_y = decoder->dwt_buffer_y[i];
+//                if (decoder->dwt_buffer_co[i] > max_co) max_co = decoder->dwt_buffer_co[i];
+//                if (decoder->dwt_buffer_cg[i] > max_cg) max_cg = decoder->dwt_buffer_cg[i];
+//                if (r > max_r) max_r = r;
+//                if (g > max_g) max_g = g;
+//                if (b > max_b) max_b = b;
+//            }
 
             // RGB byte order for FFmpeg rgb24
             decoder->current_frame_rgb[i * 3 + 0] = r;
@@ -2004,23 +2607,23 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
             decoder->current_frame_rgb[i * 3 + 2] = b;
         }
 
-        if (decoder->frame_count == 1000) {
-            fprintf(stderr, "\n=== Frame 1000 Value Analysis ===\n");
-            fprintf(stderr, "Max YCoCg values: Y=%.1f, Co=%.1f, Cg=%.1f\n", max_y, max_co, max_cg);
-            fprintf(stderr, "Max RGB values: R=%d, G=%d, B=%d\n", max_r, max_g, max_b);
-        }
+//        if (decoder->frame_count == 1000) {
+//            fprintf(stderr, "\n=== Frame 1000 Value Analysis ===\n");
+//            fprintf(stderr, "Max YCoCg values: Y=%.1f, Co=%.1f, Cg=%.1f\n", max_y, max_co, max_cg);
+//            fprintf(stderr, "Max RGB values: R=%d, G=%d, B=%d\n", max_r, max_g, max_b);
+//        }
 
         // Debug: Check RGB output
-        if (decoder->frame_count < 1) {
-            fprintf(stderr, "  First 5 pixels RGB: ");
-            for (int i = 0; i < 5 && i < decoder->frame_size; i++) {
-                fprintf(stderr, "(%d,%d,%d) ",
-                       decoder->current_frame_rgb[i*3],
-                       decoder->current_frame_rgb[i*3+1],
-                       decoder->current_frame_rgb[i*3+2]);
-            }
-            fprintf(stderr, "\n");
-        }
+//        if (decoder->frame_count < 1) {
+//            fprintf(stderr, "  First 5 pixels RGB: ");
+//            for (int i = 0; i < 5 && i < decoder->frame_size; i++) {
+//                fprintf(stderr, "(%d,%d,%d) ",
+//                       decoder->current_frame_rgb[i*3],
+//                       decoder->current_frame_rgb[i*3+1],
+//                       decoder->current_frame_rgb[i*3+2]);
+//            }
+//            fprintf(stderr, "\n");
+//        }
 
         // Update reference YCoCg frame
         memcpy(decoder->reference_ycocg_y, decoder->dwt_buffer_y, decoder->frame_size * sizeof(float));
@@ -2110,6 +2713,9 @@ static void print_usage(const char *prog) {
 }
 
 int main(int argc, char *argv[]) {
+    // Ignore SIGPIPE to prevent process termination if FFmpeg exits early
+    signal(SIGPIPE, SIG_IGN);
+
     char *input_file = NULL;
     char *output_file = NULL;
     int verbose = 0;
@@ -2146,9 +2752,22 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    tav_decoder_t *decoder = tav_decoder_init(input_file, output_file);
+    // Create temporary audio file path
+    char temp_audio_file[256];
+    snprintf(temp_audio_file, sizeof(temp_audio_file), "/tmp/tav_audio_%d.wav", getpid());
+
+    // Pass 1: Extract audio to WAV file
+    if (extract_audio_to_wav(input_file, temp_audio_file, verbose) < 0) {
+        fprintf(stderr, "Failed to extract audio\n");
+        unlink(temp_audio_file);  // Clean up temp file if it exists
+        return 1;
+    }
+
+    // Pass 2: Decode video with audio file
+    tav_decoder_t *decoder = tav_decoder_init(input_file, output_file, temp_audio_file);
     if (!decoder) {
         fprintf(stderr, "Failed to initialize decoder\n");
+        unlink(temp_audio_file);  // Clean up temp file
         return 1;
     }
 
@@ -2420,19 +3039,27 @@ int main(int argc, char *argv[]) {
                                decoder->header.wavelet_filter);
 
             // Debug: Check spatial coefficients after inverse temporal DWT (before inverse spatial DWT)
-            if (is_ezbc) {
-                float max_y = 0.0f, min_y = 0.0f;
-                for (int i = 0; i < num_pixels; i++) {
-                    if (gop_y[0][i] > max_y) max_y = gop_y[0][i];
-                    if (gop_y[0][i] < min_y) min_y = gop_y[0][i];
-                }
-                fprintf(stderr, "[GOP-EZBC] After inverse temporal DWT, Frame 0 Y spatial coeffs range: [%.1f, %.1f], first 5: %.1f %.1f %.1f %.1f %.1f\n",
-                       min_y, max_y,
-                       gop_y[0][0], gop_y[0][1], gop_y[0][2], gop_y[0][3], gop_y[0][4]);
-            }
+//            if (is_ezbc) {
+//                float max_y = 0.0f, min_y = 0.0f;
+//                for (int i = 0; i < num_pixels; i++) {
+//                    if (gop_y[0][i] > max_y) max_y = gop_y[0][i];
+//                    if (gop_y[0][i] < min_y) min_y = gop_y[0][i];
+//                }
+//                fprintf(stderr, "[GOP-EZBC] After inverse temporal DWT, Frame 0 Y spatial coeffs range: [%.1f, %.1f], first 5: %.1f %.1f %.1f %.1f %.1f\n",
+//                       min_y, max_y,
+//                       gop_y[0][0], gop_y[0][1], gop_y[0][2], gop_y[0][3], gop_y[0][4]);
+//            }
 
             // Convert YCoCg→RGB and write all GOP frames
             const int is_ictcp = (decoder->header.version % 2 == 0);
+
+            // DEBUG: Print frame size calculation
+//            if (decoder->frame_count == 0) {
+//                fprintf(stderr, "[DEBUG] decoder->frame_size=%d, decoder->header.width=%d, decoder->header.height=%d\n",
+//                       decoder->frame_size, decoder->header.width, decoder->header.height);
+//                fprintf(stderr, "[DEBUG] bytes_to_write=%zu (should be %d)\n",
+//                       (size_t)decoder->frame_size * 3, decoder->header.width * decoder->header.height * 3);
+//            }
 
             for (int t = 0; t < gop_size; t++) {
                 // Allocate frame buffer
@@ -2458,6 +3085,16 @@ int main(int argc, char *argv[]) {
 
                 // Write frame to FFmpeg video pipe
                 const size_t bytes_to_write = decoder->frame_size * 3;
+
+                // DEBUG: Verify we're writing to correct pipe
+//                if (decoder->frame_count == 0 && t == 0) {
+//                    fprintf(stderr, "[DEBUG] Writing frame to video_pipe=%p, bytes_to_write=%zu\n",
+//                           (void*)decoder->video_pipe, bytes_to_write);
+//                    fprintf(stderr, "[DEBUG] First 10 RGB bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+//                           frame_rgb[0], frame_rgb[1], frame_rgb[2], frame_rgb[3], frame_rgb[4],
+//                           frame_rgb[5], frame_rgb[6], frame_rgb[7], frame_rgb[8], frame_rgb[9]);
+//                }
+
                 const size_t bytes_written = fwrite(frame_rgb, 1, bytes_to_write, decoder->video_pipe);
                 if (bytes_written != bytes_to_write) {
                     fprintf(stderr, "Error: Failed to write GOP frame %d to FFmpeg (wrote %zu/%zu bytes)\n",
@@ -2494,23 +3131,15 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        // Handle TAD audio packets (custom format: 2-byte sample_count + 4-byte payload_size)
+        // Handle TAD audio packets (already extracted in Pass 1, just skip)
         if (packet_type == TAV_PACKET_AUDIO_TAD) {
-            uint16_t sample_count;
-            uint32_t payload_size;
-            if (fread(&sample_count, 2, 1, decoder->input_fp) != 1 ||
-                fread(&payload_size, 4, 1, decoder->input_fp) != 1) {
-                fprintf(stderr, "\nError: Failed to read TAD packet header\n");
-                result = -1;
-                break;
-            }
-            if (verbose && total_packets < 20) {
-                fprintf(stderr, "Packet %d: TAD (0x%02X), %u samples, %u payload bytes - skipping\n",
-                       total_packets, packet_type, sample_count, payload_size);
-            }
-            // Skip TAD data for now
-            fseek(decoder->input_fp, payload_size, SEEK_CUR);
-            fprintf(stderr, "\nWarning: TAD audio decoding not yet fully implemented (skipping %u samples)\n", sample_count);
+            uint16_t sample_count_wrapper;
+            uint32_t payload_size_plus_7;
+            fread(&sample_count_wrapper, 2, 1, decoder->input_fp);
+            fread(&payload_size_plus_7, 4, 1, decoder->input_fp);
+
+            // Skip TAD chunk (payload_size_plus_7 includes header and data)
+            fseek(decoder->input_fp, payload_size_plus_7, SEEK_CUR);
             continue;
         }
 
@@ -2603,9 +3232,17 @@ int main(int argc, char *argv[]) {
                 break;
 
             case TAV_PACKET_AUDIO_MP2:
-            case TAV_PACKET_AUDIO_PCM8:
             case TAV_PACKET_AUDIO_TRACK:
-                // Skip audio for now
+                // MP2 audio - write directly to audio pipe
+                // Note: FFmpeg cannot decode MP2 from raw stream, so we skip for now
+                if (verbose && total_packets < 20) {
+                    fprintf(stderr, "Skipping MP2 audio packet (%u bytes) - not yet supported\n", packet_size);
+                }
+                fseek(decoder->input_fp, packet_size, SEEK_CUR);
+                break;
+
+            case TAV_PACKET_AUDIO_PCM8:
+                // PCM8 audio - already extracted in Pass 1, just skip
                 fseek(decoder->input_fp, packet_size, SEEK_CUR);
                 break;
 
@@ -2635,9 +3272,16 @@ int main(int argc, char *argv[]) {
 
     if (result < 0) {
         fprintf(stderr, "Decoding error occurred\n");
+        unlink(temp_audio_file);  // Clean up temp file
         return 1;
     }
 
     printf("Successfully decoded to: %s\n", output_file);
+
+    // Clean up temporary audio file
+    if (unlink(temp_audio_file) == 0 && verbose) {
+        fprintf(stderr, "Cleaned up temporary audio file: %s\n", temp_audio_file);
+    }
+
     return 0;
 }
