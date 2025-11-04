@@ -364,8 +364,8 @@ static void remove_grain_synthesis_decoder(float *coeffs, int width, int height,
     dwt_subband_info_t subbands[32];
     const int subband_count = calculate_subband_layout(width, height, decomp_levels, subbands);
 
-    // Noise amplitude (matches Kotlin: qYGlobal.coerceAtMost(32) * 0.5f)
-    const float noise_amplitude = (q_y_global < 32 ? q_y_global : 32) * 0.5f;
+    // Noise amplitude (matches Kotlin: qYGlobal.coerceAtMost(32) * 0.8f)
+    const float noise_amplitude = (q_y_global < 32 ? q_y_global : 32) * 0.25f; // somehow noise amplitude works differently than Kotlin?
 
     // Process each subband (skip LL band which is level 0)
     for (int s = 0; s < subband_count; s++) {
@@ -476,6 +476,317 @@ static void postprocess_coefficients_twobit(uint8_t *compressed_data, int coeff_
             case 2: output_cg[i] = -1; break;
             case 3: output_cg[i] = cg_values[cg_value_idx++]; break;
         }
+    }
+}
+
+//=============================================================================
+// EZBC (Embedded Zero Block Coding) Decoder
+//=============================================================================
+
+// EZBC Block structure for quadtree
+typedef struct {
+    int x, y;
+    int width, height;
+} ezbc_block_t;
+
+// EZBC bitstream reader state
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+    size_t byte_pos;
+    int bit_pos;
+} ezbc_bitreader_t;
+
+// Read N bits from EZBC bitstream (LSB-first within each byte)
+static int ezbc_read_bits(ezbc_bitreader_t *reader, int num_bits) {
+    int result = 0;
+    for (int i = 0; i < num_bits; i++) {
+        if (reader->byte_pos >= reader->size) {
+            return result;  // End of stream
+        }
+
+        const int bit = (reader->data[reader->byte_pos] >> reader->bit_pos) & 1;
+        result |= (bit << i);
+
+        reader->bit_pos++;
+        if (reader->bit_pos == 8) {
+            reader->bit_pos = 0;
+            reader->byte_pos++;
+        }
+    }
+    return result;
+}
+
+// EZBC block queues (simple dynamic arrays)
+typedef struct {
+    ezbc_block_t *blocks;
+    int count;
+    int capacity;
+} ezbc_block_queue_t;
+
+static void ezbc_queue_init(ezbc_block_queue_t *q) {
+    q->capacity = 256;
+    q->count = 0;
+    q->blocks = malloc(q->capacity * sizeof(ezbc_block_t));
+}
+
+static void ezbc_queue_free(ezbc_block_queue_t *q) {
+    free(q->blocks);
+    q->blocks = NULL;
+    q->count = 0;
+}
+
+static void ezbc_queue_add(ezbc_block_queue_t *q, ezbc_block_t block) {
+    if (q->count >= q->capacity) {
+        q->capacity *= 2;
+        q->blocks = realloc(q->blocks, q->capacity * sizeof(ezbc_block_t));
+    }
+    q->blocks[q->count++] = block;
+}
+
+// Forward declaration
+static int ezbc_process_significant_block_recursive(
+    ezbc_bitreader_t *reader, ezbc_block_t block, int bitplane, int threshold,
+    int16_t *output, int width, int8_t *significant, int *first_bitplane,
+    ezbc_block_queue_t *next_significant, ezbc_block_queue_t *next_insignificant);
+
+// EZBC recursive block decoder (matches Kotlin implementation)
+static int ezbc_process_significant_block_recursive(
+    ezbc_bitreader_t *reader, ezbc_block_t block, int bitplane, int threshold,
+    int16_t *output, int width, int8_t *significant, int *first_bitplane,
+    ezbc_block_queue_t *next_significant, ezbc_block_queue_t *next_insignificant) {
+
+    int sign_bits_read = 0;
+
+    // If 1x1 block: read sign bit and add to significant queue
+    if (block.width == 1 && block.height == 1) {
+        const int idx = block.y * width + block.x;
+        const int sign_bit = ezbc_read_bits(reader, 1);
+        sign_bits_read++;
+
+        // Set coefficient to threshold value with sign
+        output[idx] = sign_bit ? -threshold : threshold;
+        significant[idx] = 1;
+        first_bitplane[idx] = bitplane;
+        ezbc_queue_add(next_significant, block);
+        return sign_bits_read;
+    }
+
+    // Block is > 1x1: subdivide and recursively process children
+    int mid_x = block.width / 2;
+    int mid_y = block.height / 2;
+    if (mid_x == 0) mid_x = 1;
+    if (mid_y == 0) mid_y = 1;
+
+    // Top-left child
+    ezbc_block_t tl = {block.x, block.y, mid_x, mid_y};
+    const int tl_flag = ezbc_read_bits(reader, 1);
+    if (tl_flag) {
+        sign_bits_read += ezbc_process_significant_block_recursive(
+            reader, tl, bitplane, threshold, output, width, significant, first_bitplane,
+            next_significant, next_insignificant);
+    } else {
+        ezbc_queue_add(next_insignificant, tl);
+    }
+
+    // Top-right child (if exists)
+    if (block.width > mid_x) {
+        ezbc_block_t tr = {block.x + mid_x, block.y, block.width - mid_x, mid_y};
+        const int tr_flag = ezbc_read_bits(reader, 1);
+        if (tr_flag) {
+            sign_bits_read += ezbc_process_significant_block_recursive(
+                reader, tr, bitplane, threshold, output, width, significant, first_bitplane,
+                next_significant, next_insignificant);
+        } else {
+            ezbc_queue_add(next_insignificant, tr);
+        }
+    }
+
+    // Bottom-left child (if exists)
+    if (block.height > mid_y) {
+        ezbc_block_t bl = {block.x, block.y + mid_y, mid_x, block.height - mid_y};
+        const int bl_flag = ezbc_read_bits(reader, 1);
+        if (bl_flag) {
+            sign_bits_read += ezbc_process_significant_block_recursive(
+                reader, bl, bitplane, threshold, output, width, significant, first_bitplane,
+                next_significant, next_insignificant);
+        } else {
+            ezbc_queue_add(next_insignificant, bl);
+        }
+    }
+
+    // Bottom-right child (if exists)
+    if (block.width > mid_x && block.height > mid_y) {
+        ezbc_block_t br = {block.x + mid_x, block.y + mid_y, block.width - mid_x, block.height - mid_y};
+        const int br_flag = ezbc_read_bits(reader, 1);
+        if (br_flag) {
+            sign_bits_read += ezbc_process_significant_block_recursive(
+                reader, br, bitplane, threshold, output, width, significant, first_bitplane,
+                next_significant, next_insignificant);
+        } else {
+            ezbc_queue_add(next_insignificant, br);
+        }
+    }
+
+    return sign_bits_read;
+}
+
+// Decode a single channel with EZBC
+static void decode_channel_ezbc(const uint8_t *ezbc_data, size_t offset, size_t size,
+                               int16_t *output, int expected_count) {
+    ezbc_bitreader_t reader = {ezbc_data, offset + size, offset, 0};
+
+    // Debug: Print first few bytes
+    fprintf(stderr, "[EZBC] Channel decode: offset=%zu, size=%zu, first 5 bytes: %02X %02X %02X %02X %02X\n",
+           offset, size,
+           ezbc_data[offset], ezbc_data[offset+1], ezbc_data[offset+2],
+           ezbc_data[offset+3], ezbc_data[offset+4]);
+
+    // Read header: MSB bitplane (8 bits), width (16 bits), height (16 bits)
+    const int msb_bitplane = ezbc_read_bits(&reader, 8);
+    const int width = ezbc_read_bits(&reader, 16);
+    const int height = ezbc_read_bits(&reader, 16);
+
+    fprintf(stderr, "[EZBC] Decoded header: MSB=%d, width=%d, height=%d (expected pixels=%d)\n",
+           msb_bitplane, width, height, expected_count);
+
+    if (width * height != expected_count) {
+        fprintf(stderr, "EZBC dimension mismatch: %dx%d != %d\n", width, height, expected_count);
+        memset(output, 0, expected_count * sizeof(int16_t));
+        return;
+    }
+
+    // Initialize output and state tracking
+    memset(output, 0, expected_count * sizeof(int16_t));
+    int8_t *significant = calloc(expected_count, sizeof(int8_t));
+    int *first_bitplane = calloc(expected_count, sizeof(int));
+
+    // Initialize queues
+    ezbc_block_queue_t insignificant, next_insignificant, significant_queue, next_significant;
+    ezbc_queue_init(&insignificant);
+    ezbc_queue_init(&next_insignificant);
+    ezbc_queue_init(&significant_queue);
+    ezbc_queue_init(&next_significant);
+
+    // Start with root block
+    ezbc_block_t root = {0, 0, width, height};
+    ezbc_queue_add(&insignificant, root);
+
+    // Process bitplanes from MSB to LSB
+    for (int bitplane = msb_bitplane; bitplane >= 0; bitplane--) {
+        const int threshold = 1 << bitplane;
+
+        // Process insignificant blocks
+        for (int i = 0; i < insignificant.count; i++) {
+            const int flag = ezbc_read_bits(&reader, 1);
+
+            if (flag == 0) {
+                // Still insignificant
+                ezbc_queue_add(&next_insignificant, insignificant.blocks[i]);
+            } else {
+                // Became significant - use recursive processing
+                ezbc_process_significant_block_recursive(
+                    &reader, insignificant.blocks[i], bitplane, threshold,
+                    output, width, significant, first_bitplane,
+                    &next_significant, &next_insignificant);
+            }
+        }
+
+        // Process significant 1x1 blocks (refinement)
+        for (int i = 0; i < significant_queue.count; i++) {
+            ezbc_block_t block = significant_queue.blocks[i];
+            const int idx = block.y * width + block.x;
+            const int refine_bit = ezbc_read_bits(&reader, 1);
+
+            // Add refinement bit at current bitplane
+            if (refine_bit) {
+                const int bit_value = 1 << bitplane;
+                if (output[idx] < 0) {
+                    output[idx] -= bit_value;
+                } else {
+                    output[idx] += bit_value;
+                }
+            }
+
+            // Keep in significant queue
+            ezbc_queue_add(&next_significant, block);
+        }
+
+        // Swap queues
+        ezbc_block_queue_t temp_insig = insignificant;
+        insignificant = next_insignificant;
+        next_insignificant = temp_insig;
+        next_insignificant.count = 0;
+
+        ezbc_block_queue_t temp_sig = significant_queue;
+        significant_queue = next_significant;
+        next_significant = temp_sig;
+        next_significant.count = 0;
+    }
+
+    // Cleanup
+    free(significant);
+    free(first_bitplane);
+    ezbc_queue_free(&insignificant);
+    ezbc_queue_free(&next_insignificant);
+    ezbc_queue_free(&significant_queue);
+    ezbc_queue_free(&next_significant);
+
+    // Debug: Count non-zero coefficients
+    int nonzero_count = 0;
+    int16_t max_val = 0, min_val = 0;
+    for (int i = 0; i < expected_count; i++) {
+        if (output[i] != 0) {
+            nonzero_count++;
+            if (output[i] > max_val) max_val = output[i];
+            if (output[i] < min_val) min_val = output[i];
+        }
+    }
+    fprintf(stderr, "[EZBC] Decoded %d non-zero coeffs (%.1f%%), range: [%d, %d]\n",
+           nonzero_count, 100.0 * nonzero_count / expected_count, min_val, max_val);
+}
+
+// EZBC postprocessing for single frames
+static void postprocess_coefficients_ezbc(uint8_t *compressed_data, int coeff_count,
+                                          int16_t *output_y, int16_t *output_co, int16_t *output_cg,
+                                          int channel_layout) {
+    const int has_y = (channel_layout & 0x04) == 0;
+    const int has_co = (channel_layout & 0x02) == 0;
+    const int has_cg = (channel_layout & 0x02) == 0;
+
+    int offset = 0;
+
+    // Decode Y channel
+    if (has_y && output_y) {
+        const uint32_t size = ((uint32_t)compressed_data[offset + 0]) |
+                             ((uint32_t)compressed_data[offset + 1] << 8) |
+                             ((uint32_t)compressed_data[offset + 2] << 16) |
+                             ((uint32_t)compressed_data[offset + 3] << 24);
+        offset += 4;
+        decode_channel_ezbc(compressed_data, offset, size, output_y, coeff_count);
+        offset += size;
+    }
+
+    // Decode Co channel
+    if (has_co && output_co) {
+        const uint32_t size = ((uint32_t)compressed_data[offset + 0]) |
+                             ((uint32_t)compressed_data[offset + 1] << 8) |
+                             ((uint32_t)compressed_data[offset + 2] << 16) |
+                             ((uint32_t)compressed_data[offset + 3] << 24);
+        offset += 4;
+        decode_channel_ezbc(compressed_data, offset, size, output_co, coeff_count);
+        offset += size;
+    }
+
+    // Decode Cg channel
+    if (has_cg && output_cg) {
+        const uint32_t size = ((uint32_t)compressed_data[offset + 0]) |
+                             ((uint32_t)compressed_data[offset + 1] << 8) |
+                             ((uint32_t)compressed_data[offset + 2] << 16) |
+                             ((uint32_t)compressed_data[offset + 3] << 24);
+        offset += 4;
+        decode_channel_ezbc(compressed_data, offset, size, output_cg, coeff_count);
+        offset += size;
     }
 }
 
@@ -712,6 +1023,453 @@ static void apply_inverse_dwt_multilevel(float *data, int width, int height, int
     free(heights);
     free(temp_row);
     free(temp_col);
+}
+
+//=============================================================================
+// Temporal DWT and GOP Decoding (matches TSVM)
+//=============================================================================
+
+// Get temporal subband level for a given frame index in a GOP
+static int get_temporal_subband_level(int frame_idx, int num_frames, int temporal_levels) {
+    // Match encoder logic exactly (encoder_tav.c:1487-1501)
+    // After temporal DWT with 2 levels:
+    // Frames 0...num_frames/(2^2) = tLL (temporal low-low, coarsest, level 0)
+    // Frames in first half but after tLL = tLH (level 1)
+    // Remaining frames = tH from first level (level 2, finest)
+
+    const int frames_per_level0 = num_frames >> temporal_levels;  // e.g., 16 >> 2 = 4, or 8 >> 2 = 2
+
+    if (frame_idx < frames_per_level0) {
+        return 0;  // Coarsest temporal level (tLL)
+    } else if (frame_idx < (num_frames >> 1)) {
+        return 1;  // First level high-pass (tLH)
+    } else {
+        return 2;  // Finest level high-pass (tH from level 1)
+    }
+}
+
+// Calculate temporal quantizer scale for a given temporal subband level
+static float get_temporal_quantizer_scale(int temporal_level) {
+    // Uses exponential scaling: 2^(BETA × level^KAPPA)
+    // With BETA=0.6, KAPPA=1.14:
+    //   - Level 0 (tLL):  2^0.0 = 1.00
+    //   - Level 1 (tH):   2^0.68 = 1.61
+    //   - Level 2 (tHH):  2^1.29 = 2.45
+    const float BETA = 0.6f;  // Temporal scaling exponent
+    const float KAPPA = 1.14f;
+    return powf(2.0f, BETA * powf(temporal_level, KAPPA));
+}
+
+// Inverse Haar 1D DWT
+static void dwt_haar_inverse_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(length * sizeof(float));
+    const int half = (length + 1) / 2;
+
+    // Inverse Haar transform: reconstruct from averages and differences
+    // Read directly from data array (already has low-pass then high-pass layout)
+    for (int i = 0; i < half; i++) {
+        if (2 * i + 1 < length) {
+            // Reconstruct adjacent pairs from average and difference
+            temp[2 * i] = data[i] + data[half + i];      // average + difference
+            temp[2 * i + 1] = data[i] - data[half + i];  // average - difference
+        } else {
+            // Handle odd length: last sample comes from low-pass only
+            temp[2 * i] = data[i];
+        }
+    }
+
+    // Copy reconstructed data back
+    for (int i = 0; i < length; i++) {
+        data[i] = temp[i];
+    }
+
+    free(temp);
+}
+
+// Apply inverse 3D DWT to GOP data (spatial + temporal)
+// Order: SPATIAL first (each frame), then TEMPORAL (across frames)
+static void apply_inverse_3d_dwt(float **gop_y, float **gop_co, float **gop_cg,
+                                int width, int height, int gop_size,
+                                int spatial_levels, int temporal_levels, int filter_type) {
+    // Step 1: Apply inverse 2D spatial DWT to each frame
+    for (int t = 0; t < gop_size; t++) {
+        apply_inverse_dwt_multilevel(gop_y[t], width, height, spatial_levels, filter_type);
+        apply_inverse_dwt_multilevel(gop_co[t], width, height, spatial_levels, filter_type);
+        apply_inverse_dwt_multilevel(gop_cg[t], width, height, spatial_levels, filter_type);
+    }
+
+    // Step 2: Apply inverse temporal DWT to each spatial location
+    // Only needed for GOPs with multiple frames (skip for I-frames)
+    if (gop_size < 2) return;
+
+    // Pre-calculate all intermediate lengths for temporal DWT (same fix as TAD)
+    // This ensures correct reconstruction for non-power-of-2 GOP sizes
+    int *temporal_lengths = malloc((temporal_levels + 1) * sizeof(int));
+    temporal_lengths[0] = gop_size;
+    for (int i = 1; i <= temporal_levels; i++) {
+        temporal_lengths[i] = (temporal_lengths[i - 1] + 1) / 2;
+    }
+
+    float *temporal_line = malloc(gop_size * sizeof(float));
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            const int pixel_idx = y * width + x;
+
+            // Process Y channel
+            for (int t = 0; t < gop_size; t++) {
+                temporal_line[t] = gop_y[t][pixel_idx];
+            }
+            for (int level = temporal_levels - 1; level >= 0; level--) {
+                const int level_frames = temporal_lengths[level];
+                if (level_frames >= 2) {
+                    dwt_haar_inverse_1d(temporal_line, level_frames);
+                }
+            }
+            for (int t = 0; t < gop_size; t++) {
+                gop_y[t][pixel_idx] = temporal_line[t];
+            }
+
+            // Process Co channel
+            for (int t = 0; t < gop_size; t++) {
+                temporal_line[t] = gop_co[t][pixel_idx];
+            }
+            for (int level = temporal_levels - 1; level >= 0; level--) {
+                const int level_frames = temporal_lengths[level];
+                if (level_frames >= 2) {
+                    dwt_haar_inverse_1d(temporal_line, level_frames);
+                }
+            }
+            for (int t = 0; t < gop_size; t++) {
+                gop_co[t][pixel_idx] = temporal_line[t];
+            }
+
+            // Process Cg channel
+            for (int t = 0; t < gop_size; t++) {
+                temporal_line[t] = gop_cg[t][pixel_idx];
+            }
+            for (int level = temporal_levels - 1; level >= 0; level--) {
+                const int level_frames = temporal_lengths[level];
+                if (level_frames >= 2) {
+                    dwt_haar_inverse_1d(temporal_line, level_frames);
+                }
+            }
+            for (int t = 0; t < gop_size; t++) {
+                gop_cg[t][pixel_idx] = temporal_line[t];
+            }
+        }
+    }
+
+    free(temporal_line);
+    free(temporal_lengths);
+}
+
+// Postprocess GOP unified block to per-frame coefficients (2-bit map format)
+static int16_t ***postprocess_gop_unified(const uint8_t *decompressed_data, size_t data_size,
+                                         int gop_size, int num_pixels, int channel_layout) {
+    // 2 bits per coefficient
+    const int map_bytes_per_frame = (num_pixels * 2 + 7) / 8;
+
+    // Determine which channels are present
+    // Bit 0: has alpha, Bit 1: has chroma (inverted), Bit 2: has luma (inverted)
+    const int has_y = (channel_layout & 0x04) == 0;
+    const int has_co = (channel_layout & 0x02) == 0;  // Inverted: 0 = has chroma
+    const int has_cg = (channel_layout & 0x02) == 0;  // Inverted: 0 = has chroma
+
+    // Calculate buffer positions for maps
+    int read_ptr = 0;
+    const int y_maps_start = has_y ? read_ptr : -1;
+    if (has_y) read_ptr += map_bytes_per_frame * gop_size;
+
+    const int co_maps_start = has_co ? read_ptr : -1;
+    if (has_co) read_ptr += map_bytes_per_frame * gop_size;
+
+    const int cg_maps_start = has_cg ? read_ptr : -1;
+    if (has_cg) read_ptr += map_bytes_per_frame * gop_size;
+
+    // Count "other" values (code 11) across ALL frames
+    int y_other_count = 0;
+    int co_other_count = 0;
+    int cg_other_count = 0;
+
+    for (int frame = 0; frame < gop_size; frame++) {
+        const int frame_map_offset = frame * map_bytes_per_frame;
+        for (int i = 0; i < num_pixels; i++) {
+            const int bit_pos = i * 2;
+            const int byte_idx = bit_pos / 8;
+            const int bit_offset = bit_pos % 8;
+
+            if (has_y && y_maps_start + frame_map_offset + byte_idx < (int)data_size) {
+                int code = (decompressed_data[y_maps_start + frame_map_offset + byte_idx] >> bit_offset) & 0x03;
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    const int next_byte = decompressed_data[y_maps_start + frame_map_offset + byte_idx + 1] & 0xFF;
+                    code = (code & 0x01) | ((next_byte & 0x01) << 1);
+                }
+                if (code == 3) y_other_count++;
+            }
+            if (has_co && co_maps_start + frame_map_offset + byte_idx < (int)data_size) {
+                int code = (decompressed_data[co_maps_start + frame_map_offset + byte_idx] >> bit_offset) & 0x03;
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    const int next_byte = decompressed_data[co_maps_start + frame_map_offset + byte_idx + 1] & 0xFF;
+                    code = (code & 0x01) | ((next_byte & 0x01) << 1);
+                }
+                if (code == 3) co_other_count++;
+            }
+            if (has_cg && cg_maps_start + frame_map_offset + byte_idx < (int)data_size) {
+                int code = (decompressed_data[cg_maps_start + frame_map_offset + byte_idx] >> bit_offset) & 0x03;
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    const int next_byte = decompressed_data[cg_maps_start + frame_map_offset + byte_idx + 1] & 0xFF;
+                    code = (code & 0x01) | ((next_byte & 0x01) << 1);
+                }
+                if (code == 3) cg_other_count++;
+            }
+        }
+    }
+
+    // Value arrays start after all maps
+    const int y_values_start = read_ptr;
+    read_ptr += y_other_count * 2;
+
+    const int co_values_start = read_ptr;
+    read_ptr += co_other_count * 2;
+
+    const int cg_values_start = read_ptr;
+
+    // Allocate output arrays: [gop_size][3 channels][num_pixels]
+    int16_t ***output = malloc(gop_size * sizeof(int16_t **));
+    for (int t = 0; t < gop_size; t++) {
+        output[t] = malloc(3 * sizeof(int16_t *));
+        output[t][0] = calloc(num_pixels, sizeof(int16_t));  // Y
+        output[t][1] = calloc(num_pixels, sizeof(int16_t));  // Co
+        output[t][2] = calloc(num_pixels, sizeof(int16_t));  // Cg
+    }
+
+    int y_value_idx = 0;
+    int co_value_idx = 0;
+    int cg_value_idx = 0;
+
+    for (int frame = 0; frame < gop_size; frame++) {
+        const int frame_map_offset = frame * map_bytes_per_frame;
+        for (int i = 0; i < num_pixels; i++) {
+            const int bit_pos = i * 2;
+            const int byte_idx = bit_pos / 8;
+            const int bit_offset = bit_pos % 8;
+
+            // Decode Y
+            if (has_y && y_maps_start + frame_map_offset + byte_idx < (int)data_size) {
+                int code = (decompressed_data[y_maps_start + frame_map_offset + byte_idx] >> bit_offset) & 0x03;
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    const int next_byte = decompressed_data[y_maps_start + frame_map_offset + byte_idx + 1] & 0xFF;
+                    code = (code & 0x01) | ((next_byte & 0x01) << 1);
+                }
+                if (code == 0) {
+                    output[frame][0][i] = 0;
+                } else if (code == 1) {
+                    output[frame][0][i] = 1;
+                } else if (code == 2) {
+                    output[frame][0][i] = -1;
+                } else {  // code == 3
+                    const int val_offset = y_values_start + y_value_idx * 2;
+                    y_value_idx++;
+                    if (val_offset + 1 < (int)data_size) {
+                        const int lo = decompressed_data[val_offset] & 0xFF;
+                        const int hi = (int8_t)decompressed_data[val_offset + 1];
+                        output[frame][0][i] = (int16_t)((hi << 8) | lo);
+                    } else {
+                        output[frame][0][i] = 0;
+                    }
+                }
+            }
+
+            // Decode Co
+            if (has_co && co_maps_start + frame_map_offset + byte_idx < (int)data_size) {
+                int code = (decompressed_data[co_maps_start + frame_map_offset + byte_idx] >> bit_offset) & 0x03;
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    const int next_byte = decompressed_data[co_maps_start + frame_map_offset + byte_idx + 1] & 0xFF;
+                    code = (code & 0x01) | ((next_byte & 0x01) << 1);
+                }
+                if (code == 0) {
+                    output[frame][1][i] = 0;
+                } else if (code == 1) {
+                    output[frame][1][i] = 1;
+                } else if (code == 2) {
+                    output[frame][1][i] = -1;
+                } else {  // code == 3
+                    const int val_offset = co_values_start + co_value_idx * 2;
+                    co_value_idx++;
+                    if (val_offset + 1 < (int)data_size) {
+                        const int lo = decompressed_data[val_offset] & 0xFF;
+                        const int hi = (int8_t)decompressed_data[val_offset + 1];
+                        output[frame][1][i] = (int16_t)((hi << 8) | lo);
+                    } else {
+                        output[frame][1][i] = 0;
+                    }
+                }
+            }
+
+            // Decode Cg
+            if (has_cg && cg_maps_start + frame_map_offset + byte_idx < (int)data_size) {
+                int code = (decompressed_data[cg_maps_start + frame_map_offset + byte_idx] >> bit_offset) & 0x03;
+                if (bit_offset == 7 && byte_idx + 1 < map_bytes_per_frame) {
+                    const int next_byte = decompressed_data[cg_maps_start + frame_map_offset + byte_idx + 1] & 0xFF;
+                    code = (code & 0x01) | ((next_byte & 0x01) << 1);
+                }
+                if (code == 0) {
+                    output[frame][2][i] = 0;
+                } else if (code == 1) {
+                    output[frame][2][i] = 1;
+                } else if (code == 2) {
+                    output[frame][2][i] = -1;
+                } else {  // code == 3
+                    const int val_offset = cg_values_start + cg_value_idx * 2;
+                    cg_value_idx++;
+                    if (val_offset + 1 < (int)data_size) {
+                        const int lo = decompressed_data[val_offset] & 0xFF;
+                        const int hi = (int8_t)decompressed_data[val_offset + 1];
+                        output[frame][2][i] = (int16_t)((hi << 8) | lo);
+                    } else {
+                        output[frame][2][i] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    return output;
+}
+
+// Postprocess GOP RAW format to per-frame coefficients (entropyCoder=2)
+// Layout: [All_Y_coeffs][All_Co_coeffs][All_Cg_coeffs] (raw int16 arrays)
+static int16_t ***postprocess_gop_raw(const uint8_t *decompressed_data, size_t data_size,
+                                     int gop_size, int num_pixels, int channel_layout) {
+    // Determine which channels are present
+    const int has_y = (channel_layout & 0x04) == 0;
+    const int has_co = (channel_layout & 0x02) == 0;
+    const int has_cg = (channel_layout & 0x02) == 0;
+
+    // Allocate output arrays: [gop_size][3 channels][num_pixels]
+    int16_t ***output = malloc(gop_size * sizeof(int16_t **));
+    for (int t = 0; t < gop_size; t++) {
+        output[t] = malloc(3 * sizeof(int16_t *));
+        output[t][0] = calloc(num_pixels, sizeof(int16_t));  // Y
+        output[t][1] = calloc(num_pixels, sizeof(int16_t));  // Co
+        output[t][2] = calloc(num_pixels, sizeof(int16_t));  // Cg
+    }
+
+    int offset = 0;
+
+    // Read Y channel (all frames concatenated)
+    if (has_y) {
+        const int channel_size = gop_size * num_pixels * sizeof(int16_t);
+        if (offset + channel_size > (int)data_size) {
+            fprintf(stderr, "Error: Not enough data for Y channel in RAW GOP\n");
+            goto error_cleanup;
+        }
+        const int16_t *y_data = (const int16_t *)(decompressed_data + offset);
+        for (int t = 0; t < gop_size; t++) {
+            memcpy(output[t][0], y_data + t * num_pixels, num_pixels * sizeof(int16_t));
+        }
+        offset += channel_size;
+    }
+
+    // Read Co channel (all frames concatenated)
+    if (has_co) {
+        const int channel_size = gop_size * num_pixels * sizeof(int16_t);
+        if (offset + channel_size > (int)data_size) {
+            fprintf(stderr, "Error: Not enough data for Co channel in RAW GOP\n");
+            goto error_cleanup;
+        }
+        const int16_t *co_data = (const int16_t *)(decompressed_data + offset);
+        for (int t = 0; t < gop_size; t++) {
+            memcpy(output[t][1], co_data + t * num_pixels, num_pixels * sizeof(int16_t));
+        }
+        offset += channel_size;
+    }
+
+    // Read Cg channel (all frames concatenated)
+    if (has_cg) {
+        const int channel_size = gop_size * num_pixels * sizeof(int16_t);
+        if (offset + channel_size > (int)data_size) {
+            fprintf(stderr, "Error: Not enough data for Cg channel in RAW GOP\n");
+            goto error_cleanup;
+        }
+        const int16_t *cg_data = (const int16_t *)(decompressed_data + offset);
+        for (int t = 0; t < gop_size; t++) {
+            memcpy(output[t][2], cg_data + t * num_pixels, num_pixels * sizeof(int16_t));
+        }
+        offset += channel_size;
+    }
+
+    return output;
+
+error_cleanup:
+    for (int t = 0; t < gop_size; t++) {
+        free(output[t][0]);
+        free(output[t][1]);
+        free(output[t][2]);
+        free(output[t]);
+    }
+    free(output);
+    return NULL;
+}
+
+// Postprocess GOP EZBC format to per-frame coefficients (entropyCoder=1)
+// Layout: [frame0_size(4)][frame0_ezbc_data][frame1_size(4)][frame1_ezbc_data]...
+// Note: EZBC is a complex embedded bitplane codec - this is a simplified placeholder
+static int16_t ***postprocess_gop_ezbc(const uint8_t *decompressed_data, size_t data_size,
+                                      int gop_size, int num_pixels, int channel_layout) {
+    // Allocate output arrays: [gop_size][3 channels][num_pixels]
+    int16_t ***output = malloc(gop_size * sizeof(int16_t **));
+    for (int t = 0; t < gop_size; t++) {
+        output[t] = malloc(3 * sizeof(int16_t *));
+        output[t][0] = calloc(num_pixels, sizeof(int16_t));  // Y
+        output[t][1] = calloc(num_pixels, sizeof(int16_t));  // Co
+        output[t][2] = calloc(num_pixels, sizeof(int16_t));  // Cg
+    }
+
+    int offset = 0;
+
+    // Read each frame
+    for (int t = 0; t < gop_size; t++) {
+        if (offset + 4 > (int)data_size) {
+            fprintf(stderr, "Error: Not enough data for frame %d size in EZBC GOP\n", t);
+            goto error_cleanup;
+        }
+
+        // Read frame size (4 bytes, little-endian)
+        const uint32_t frame_size = ((uint32_t)decompressed_data[offset + 0]) |
+                                   ((uint32_t)decompressed_data[offset + 1] << 8) |
+                                   ((uint32_t)decompressed_data[offset + 2] << 16) |
+                                   ((uint32_t)decompressed_data[offset + 3] << 24);
+        offset += 4;
+
+        if (offset + frame_size > data_size) {
+            fprintf(stderr, "Error: Frame %d EZBC data exceeds buffer (size=%u, available=%zu)\n",
+                   t, frame_size, data_size - offset);
+            goto error_cleanup;
+        }
+
+        // Decode EZBC frame using the single-frame EZBC decoder
+        postprocess_coefficients_ezbc(
+            (uint8_t *)(decompressed_data + offset), num_pixels,
+            output[t][0], output[t][1], output[t][2],
+            channel_layout);
+
+        offset += frame_size;
+    }
+
+    return output;
+
+error_cleanup:
+    for (int t = 0; t < gop_size; t++) {
+        free(output[t][0]);
+        free(output[t][1]);
+        free(output[t][2]);
+        free(output[t]);
+    }
+    free(output);
+    return NULL;
 }
 
 //=============================================================================
@@ -1064,8 +1822,15 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
             goto write_frame;
         }
 
-        // Use 2-bit map format (entropyCoder=0 / Twobit-map)
-        postprocess_coefficients_twobit(ptr, coeff_count, quantized_y, quantized_co, quantized_cg);
+        // Postprocess coefficients based on entropy_coder value
+        if (decoder->header.entropy_coder == 1) {
+            // EZBC format (stub implementation)
+            postprocess_coefficients_ezbc(ptr, coeff_count, quantized_y, quantized_co, quantized_cg,
+                                         decoder->header.channel_layout);
+        } else {
+            // Default: Twobitmap format (entropy_coder=0)
+            postprocess_coefficients_twobit(ptr, coeff_count, quantized_y, quantized_co, quantized_cg);
+        }
 
         // Debug: Check first few coefficients
         if (decoder->frame_count == 32) {
@@ -1086,7 +1851,17 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
 
         // Dequantize (perceptual for versions 5-8, uniform for 1-4)
         const int is_perceptual = (decoder->header.version >= 5 && decoder->header.version <= 8);
-        if (is_perceptual) {
+        const int is_ezbc = (decoder->header.entropy_coder == 1);
+
+        if (is_ezbc) {
+            // EZBC mode: coefficients are already denormalized by encoder
+            // Just convert int16 to float without multiplying by quantizer
+            for (int i = 0; i < coeff_count; i++) {
+                decoder->dwt_buffer_y[i] = (float)quantized_y[i];
+                decoder->dwt_buffer_co[i] = (float)quantized_co[i];
+                decoder->dwt_buffer_cg[i] = (float)quantized_cg[i];
+            }
+        } else if (is_perceptual) {
             dequantize_dwt_subbands_perceptual(0, qy, quantized_y, decoder->dwt_buffer_y,
                                               decoder->header.width, decoder->header.height,
                                               decoder->header.decomp_levels, qy, 0, decoder->frame_count);
@@ -1397,13 +2172,23 @@ int main(int argc, char *argv[]) {
     int total_packets = 0;
     int iframe_count = 0;
     while (result > 0) {
+        // Check file position before reading packet
+        long file_pos = ftell(decoder->input_fp);
+
         uint8_t packet_type;
         if (fread(&packet_type, 1, 1, decoder->input_fp) != 1) {
+            if (verbose) {
+                fprintf(stderr, "Reached EOF at file position %ld after %d packets\n", file_pos, total_packets);
+            }
             result = 0; // EOF
             break;
         }
 
         total_packets++;
+
+        if (verbose && total_packets <= 30) {
+            fprintf(stderr, "Packet %d at file pos %ld: Type 0x%02X\n", total_packets, file_pos, packet_type);
+        }
 
         // Handle sync packets (no size field)
         if (packet_type == TAV_PACKET_SYNC || packet_type == TAV_PACKET_SYNC_NTSC) {
@@ -1431,17 +2216,18 @@ int main(int argc, char *argv[]) {
 
         // Handle GOP sync packets (no size field, just 1 byte frame count)
         if (packet_type == TAV_PACKET_GOP_SYNC) {
-            uint8_t frame_count;
-            if (fread(&frame_count, 1, 1, decoder->input_fp) != 1) {
+            uint8_t gop_frame_count;
+            if (fread(&gop_frame_count, 1, 1, decoder->input_fp) != 1) {
                 fprintf(stderr, "Error: Failed to read GOP sync frame count\n");
                 result = -1;
                 break;
             }
             if (verbose) {
                 fprintf(stderr, "Packet %d: GOP_SYNC (0x%02X) - %u frames from GOP\n",
-                       total_packets, packet_type, frame_count);
+                       total_packets, packet_type, gop_frame_count);
             }
-            // Frame count is informational only for now
+            // Update decoder frame count (GOP already wrote frames)
+            decoder->frame_count += gop_frame_count;
             continue;
         }
 
@@ -1455,13 +2241,256 @@ int main(int argc, char *argv[]) {
                 result = -1;
                 break;
             }
-            if (verbose && total_packets < 20) {
-                fprintf(stderr, "Packet %d: GOP_UNIFIED (0x%02X), %u frames, %u bytes - skipping\n",
+
+            if (verbose) {
+                fprintf(stderr, "Packet %d: GOP_UNIFIED (0x%02X), %u frames, %u bytes\n",
                        total_packets, packet_type, gop_size, compressed_size);
             }
-            // Skip GOP data for now
-            fseek(decoder->input_fp, compressed_size, SEEK_CUR);
-            fprintf(stderr, "\nWarning: GOP unified packets not yet implemented (skipping %u frames)\n", gop_size);
+
+            // Read compressed GOP data
+            uint8_t *compressed_data = malloc(compressed_size);
+            if (!compressed_data) {
+                fprintf(stderr, "Error: Failed to allocate GOP compressed buffer (%u bytes)\n", compressed_size);
+                result = -1;
+                break;
+            }
+
+            if (fread(compressed_data, 1, compressed_size, decoder->input_fp) != compressed_size) {
+                fprintf(stderr, "Error: Failed to read GOP compressed data\n");
+                free(compressed_data);
+                result = -1;
+                break;
+            }
+
+            // Decompress with Zstd
+            const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, compressed_size);
+            if (decompressed_bound == ZSTD_CONTENTSIZE_ERROR || decompressed_bound == ZSTD_CONTENTSIZE_UNKNOWN) {
+                fprintf(stderr, "Error: Invalid Zstd frame in GOP data\n");
+                free(compressed_data);
+                result = -1;
+                break;
+            }
+
+            uint8_t *decompressed_data = malloc(decompressed_bound);
+            if (!decompressed_data) {
+                fprintf(stderr, "Error: Failed to allocate GOP decompressed buffer (%zu bytes)\n", decompressed_bound);
+                free(compressed_data);
+                result = -1;
+                break;
+            }
+
+            const size_t decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
+                                                            compressed_data, compressed_size);
+            free(compressed_data);
+
+            if (ZSTD_isError(decompressed_size)) {
+                fprintf(stderr, "Error: Zstd decompression failed: %s\n", ZSTD_getErrorName(decompressed_size));
+                free(decompressed_data);
+                result = -1;
+                break;
+            }
+
+            // Postprocess coefficients based on entropy_coder value
+            const int num_pixels = decoder->header.width * decoder->header.height;
+            int16_t ***quantized_gop;
+
+            if (decoder->header.entropy_coder == 2) {
+                // RAW format: simple concatenated int16 arrays
+                if (verbose) {
+                    fprintf(stderr, "  Using RAW postprocessing (entropy_coder=2)\n");
+                }
+                quantized_gop = postprocess_gop_raw(decompressed_data, decompressed_size,
+                                                   gop_size, num_pixels, decoder->header.channel_layout);
+            } else if (decoder->header.entropy_coder == 1) {
+                // EZBC format: embedded zero-block coding
+                if (verbose) {
+                    fprintf(stderr, "  Using EZBC postprocessing (entropy_coder=1)\n");
+                }
+                quantized_gop = postprocess_gop_ezbc(decompressed_data, decompressed_size,
+                                                    gop_size, num_pixels, decoder->header.channel_layout);
+            } else {
+                // Default: Twobitmap format (entropy_coder=0)
+                if (verbose) {
+                    fprintf(stderr, "  Using Twobitmap postprocessing (entropy_coder=0)\n");
+                }
+                quantized_gop = postprocess_gop_unified(decompressed_data, decompressed_size,
+                                                       gop_size, num_pixels, decoder->header.channel_layout);
+            }
+
+            free(decompressed_data);
+
+            if (!quantized_gop) {
+                fprintf(stderr, "Error: Failed to postprocess GOP data\n");
+                result = -1;
+                break;
+            }
+
+            // Allocate GOP float buffers
+            float **gop_y = malloc(gop_size * sizeof(float *));
+            float **gop_co = malloc(gop_size * sizeof(float *));
+            float **gop_cg = malloc(gop_size * sizeof(float *));
+
+            for (int t = 0; t < gop_size; t++) {
+                gop_y[t] = calloc(num_pixels, sizeof(float));
+                gop_co[t] = calloc(num_pixels, sizeof(float));
+                gop_cg[t] = calloc(num_pixels, sizeof(float));
+            }
+
+            // Dequantize with temporal scaling (perceptual quantization for versions 5-8)
+            const int is_perceptual = (decoder->header.version >= 5 && decoder->header.version <= 8);
+            const int is_ezbc = (decoder->header.entropy_coder == 1);
+            const int temporal_levels = 2;  // Fixed for TAV GOP encoding
+
+            for (int t = 0; t < gop_size; t++) {
+                if (is_ezbc) {
+                    // EZBC mode: coefficients are already denormalized by encoder
+                    // Just convert int16 to float without multiplying by quantizer
+                    for (int i = 0; i < num_pixels; i++) {
+                        gop_y[t][i] = (float)quantized_gop[t][0][i];
+                        gop_co[t][i] = (float)quantized_gop[t][1][i];
+                        gop_cg[t][i] = (float)quantized_gop[t][2][i];
+                    }
+
+                    if (t == 0) {
+                        // Debug first frame
+                        int16_t max_y = 0, min_y = 0;
+                        for (int i = 0; i < num_pixels; i++) {
+                            if (quantized_gop[t][0][i] > max_y) max_y = quantized_gop[t][0][i];
+                            if (quantized_gop[t][0][i] < min_y) min_y = quantized_gop[t][0][i];
+                        }
+                        fprintf(stderr, "[GOP-EZBC] Frame 0 Y coeffs range: [%d, %d], first 5: %d %d %d %d %d\n",
+                               min_y, max_y,
+                               quantized_gop[t][0][0], quantized_gop[t][0][1], quantized_gop[t][0][2],
+                               quantized_gop[t][0][3], quantized_gop[t][0][4]);
+                    }
+                } else {
+                    // Normal mode: multiply by quantizer
+                    const int temporal_level = get_temporal_subband_level(t, gop_size, temporal_levels);
+                    const float temporal_scale = get_temporal_quantizer_scale(temporal_level);
+
+                    // CRITICAL: Must ROUND temporal quantizer to match encoder's roundf() behavior
+                    const float base_q_y = roundf(decoder->header.quantiser_y * temporal_scale);
+                    const float base_q_co = roundf(decoder->header.quantiser_co * temporal_scale);
+                    const float base_q_cg = roundf(decoder->header.quantiser_cg * temporal_scale);
+
+                    if (is_perceptual) {
+                        dequantize_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                          quantized_gop[t][0], gop_y[t],
+                                                          decoder->header.width, decoder->header.height,
+                                                          decoder->header.decomp_levels, base_q_y, 0, decoder->frame_count + t);
+                        dequantize_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                          quantized_gop[t][1], gop_co[t],
+                                                          decoder->header.width, decoder->header.height,
+                                                          decoder->header.decomp_levels, base_q_co, 1, decoder->frame_count + t);
+                        dequantize_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                          quantized_gop[t][2], gop_cg[t],
+                                                          decoder->header.width, decoder->header.height,
+                                                          decoder->header.decomp_levels, base_q_cg, 1, decoder->frame_count + t);
+                    } else {
+                        // Uniform quantization for older versions
+                        for (int i = 0; i < num_pixels; i++) {
+                            gop_y[t][i] = quantized_gop[t][0][i] * base_q_y;
+                            gop_co[t][i] = quantized_gop[t][1][i] * base_q_co;
+                            gop_cg[t][i] = quantized_gop[t][2][i] * base_q_cg;
+                        }
+                    }
+                }
+            }
+
+            // Free quantized coefficients
+            for (int t = 0; t < gop_size; t++) {
+                free(quantized_gop[t][0]);
+                free(quantized_gop[t][1]);
+                free(quantized_gop[t][2]);
+                free(quantized_gop[t]);
+            }
+            free(quantized_gop);
+
+            // Remove grain synthesis from Y channel for each GOP frame
+            // This must happen after dequantization but before inverse DWT
+            for (int t = 0; t < gop_size; t++) {
+                remove_grain_synthesis_decoder(gop_y[t], decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, decoder->frame_count + t,
+                                              decoder->header.quantiser_y);
+            }
+
+            // Apply inverse 3D DWT (spatial + temporal)
+            apply_inverse_3d_dwt(gop_y, gop_co, gop_cg, decoder->header.width, decoder->header.height,
+                               gop_size, decoder->header.decomp_levels, temporal_levels,
+                               decoder->header.wavelet_filter);
+
+            // Debug: Check spatial coefficients after inverse temporal DWT (before inverse spatial DWT)
+            if (is_ezbc) {
+                float max_y = 0.0f, min_y = 0.0f;
+                for (int i = 0; i < num_pixels; i++) {
+                    if (gop_y[0][i] > max_y) max_y = gop_y[0][i];
+                    if (gop_y[0][i] < min_y) min_y = gop_y[0][i];
+                }
+                fprintf(stderr, "[GOP-EZBC] After inverse temporal DWT, Frame 0 Y spatial coeffs range: [%.1f, %.1f], first 5: %.1f %.1f %.1f %.1f %.1f\n",
+                       min_y, max_y,
+                       gop_y[0][0], gop_y[0][1], gop_y[0][2], gop_y[0][3], gop_y[0][4]);
+            }
+
+            // Convert YCoCg→RGB and write all GOP frames
+            const int is_ictcp = (decoder->header.version % 2 == 0);
+
+            for (int t = 0; t < gop_size; t++) {
+                // Allocate frame buffer
+                uint8_t *frame_rgb = malloc(decoder->frame_size * 3);
+                if (!frame_rgb) {
+                    fprintf(stderr, "Error: Failed to allocate GOP frame buffer\n");
+                    result = -1;
+                    break;
+                }
+
+                // Convert to RGB
+                for (int i = 0; i < decoder->frame_size; i++) {
+                    uint8_t r, g, b;
+                    if (is_ictcp) {
+                        ictcp_to_rgb(gop_y[t][i], gop_co[t][i], gop_cg[t][i], &r, &g, &b);
+                    } else {
+                        ycocg_r_to_rgb(gop_y[t][i], gop_co[t][i], gop_cg[t][i], &r, &g, &b);
+                    }
+                    frame_rgb[i * 3 + 0] = r;
+                    frame_rgb[i * 3 + 1] = g;
+                    frame_rgb[i * 3 + 2] = b;
+                }
+
+                // Write frame to FFmpeg video pipe
+                const size_t bytes_to_write = decoder->frame_size * 3;
+                const size_t bytes_written = fwrite(frame_rgb, 1, bytes_to_write, decoder->video_pipe);
+                if (bytes_written != bytes_to_write) {
+                    fprintf(stderr, "Error: Failed to write GOP frame %d to FFmpeg (wrote %zu/%zu bytes)\n",
+                           t, bytes_written, bytes_to_write);
+                    free(frame_rgb);
+                    result = -1;
+                    break;
+                }
+                fflush(decoder->video_pipe);
+
+                free(frame_rgb);
+            }
+
+            // Free GOP buffers
+            for (int t = 0; t < gop_size; t++) {
+                free(gop_y[t]);
+                free(gop_co[t]);
+                free(gop_cg[t]);
+            }
+            free(gop_y);
+            free(gop_co);
+            free(gop_cg);
+
+            // BUGFIX: Only break on error (result < 0), not on success (result = 1)
+            if (result < 0) break;
+
+            // GOP decoding doesn't update frame_count here - GOP_SYNC packet will do it
+            if (verbose) {
+                long pos_after_gop = ftell(decoder->input_fp);
+                fprintf(stderr, "[DEBUG] After GOP: file pos = %ld, %d frames written (waiting for GOP_SYNC)\n",
+                       pos_after_gop, gop_size);
+            }
+
             continue;
         }
 

@@ -14,6 +14,7 @@ import net.torvald.tsvm.peripheral.PeriBase
 import net.torvald.tsvm.peripheral.fmod
 import java.io.ByteArrayInputStream
 import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.Any
 import kotlin.Array
 import kotlin.Boolean
@@ -5078,9 +5079,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     // Remove grain synthesis from DWT coefficients (decoder subtracts noise)
     // This must be called AFTER dequantization but BEFORE inverse DWT
     private fun removeGrainSynthesisDecoder(coeffs: FloatArray, width: Int, height: Int,
-                                           decompLevels: Int, frameNum: Int, quantiser: Float,
-                                           subbands: List<DWTSubbandInfo>, qIndex: Int = 3, qYGlobal: Int = 0,
-                                           usePerceptualWeights: Boolean = false) {
+                                           frameNum: Int, subbands: List<DWTSubbandInfo>, qYGlobal: Int) {
         // Only apply to Y channel, excluding LL band
         // Noise amplitude = half of quantization step (scaled by perceptual weight if enabled)
 
@@ -5096,8 +5095,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             }*/
 
             // Noise amplitude for this subband
-//            val noiseAmplitude = quantiser.coerceAtMost(32f) * 0.5f
-            val noiseAmplitude = qYGlobal.coerceAtMost(32) * 0.5f // using qYGlobal because quantiser is variable on bitrate-control mode and varying grain amp annoys viewer
+            val noiseAmplitude = qYGlobal.coerceAtMost(32) * 0.8f // using qYGlobal because quantiser is variable on bitrate-control mode and varying grain amp annoys viewer
 
             // Remove noise from each coefficient in this subband
             for (i in 0 until subband.coeffCount) {
@@ -5354,7 +5352,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
             // Remove grain synthesis from Y channel (must happen after dequantization, before inverse DWT)
             // Use perceptual weights since this is the perceptual quantization path
-            removeGrainSynthesisDecoder(yTile, tileWidth, tileHeight, decompLevels, frameCount, qY.toFloat(), subbands, qIndex, qYGlobal, true)
+            removeGrainSynthesisDecoder(yTile, tileWidth, tileHeight, frameCount, subbands, qYGlobal)
 
             // Apply film grain filter if enabled
             // commented; grain synthesis is now a part of the spec
@@ -5379,7 +5377,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val tileWidth = if (isMonoblock) width else TAV_PADDED_TILE_SIZE_X
             val tileHeight = if (isMonoblock) height else TAV_PADDED_TILE_SIZE_Y
             val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
-            removeGrainSynthesisDecoder(yTile, tileWidth, tileHeight, decompLevels, frameCount, qY.toFloat(), subbands)
+            removeGrainSynthesisDecoder(yTile, tileWidth, tileHeight, frameCount, subbands, qYGlobal)
 
             // Apply film grain filter if enabled
             // commented; grain synthesis is now a part of the spec
@@ -5830,18 +5828,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Remove grain synthesis from Y channel (must happen after dequantization, before inverse DWT)
         val subbands = calculateSubbandLayout(tileWidth, tileHeight, decompLevels)
         // Delta frames use uniform quantization for the deltas themselves, so no perceptual weights
-        removeGrainSynthesisDecoder(currentY, tileWidth, tileHeight, decompLevels, frameCount, qY.toFloat(), subbands)
-
-        // Apply film grain filter if enabled
-        // commented; grain synthesis is now a part of the spec
-        /*if (filmGrainLevel > 0) {
-            val random = java.util.Random()
-            for (i in 0 until coeffCount) {
-                currentY[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-//                currentCo[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-//                currentCg[i] += (random.nextInt(filmGrainLevel * 2 + 1) - filmGrainLevel).toFloat()
-            }
-        }*/
+        removeGrainSynthesisDecoder(currentY, tileWidth, tileHeight, frameCount, subbands, qY)
 
         // Store current coefficients as previous for next frame
         tavPreviousCoeffsY!![tileIdx] = currentY.clone()
@@ -6401,6 +6388,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         System.arraycopy(output, 0, frameData, 0, frameData.size)
     }
 
+    private val rngFrameTick = AtomicInteger(0)
+
     /**
      * Decode GOP frames directly into GraphicsAdapter.videoBuffer (Java heap).
      * This avoids allocating GOP frames in VM user memory, saving ~6 MB for 8-frame GOPs.
@@ -6521,6 +6510,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             )
         }
 
+
+        // Step 5.5: Remove grain synthesis from Y channel for each GOP frame
+        // This must happen after dequantization but before inverse DWT
+        for (t in 0 until gopSize) {
+            removeGrainSynthesisDecoder(
+                gopY[t], width, height,
+                rngFrameTick.getAndAdd(1) + t,
+                subbands, qIndex
+            )
+        }
 
         // Step 6: Apply inverse 3D DWT
         tavApplyInverse3DDWT(gopY, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
