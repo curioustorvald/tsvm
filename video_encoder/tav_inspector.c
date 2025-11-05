@@ -26,8 +26,8 @@
 #define TAV_PACKET_AUDIO_MP2      0x20
 #define TAV_PACKET_AUDIO_PCM8     0x21
 #define TAV_PACKET_AUDIO_TAD      0x24
-#define TAV_PACKET_SUBTITLE       0x30
-#define TAV_PACKET_SUBTITLE_KAR   0x31
+#define TAV_PACKET_SUBTITLE       0x30  // Legacy SSF (frame-locked)
+#define TAV_PACKET_SUBTITLE_TC    0x31  // SSF-TC (timecode-based)
 #define TAV_PACKET_AUDIO_TRACK    0x40
 #define TAV_PACKET_VIDEO_CH2_I    0x70
 #define TAV_PACKET_VIDEO_CH2_P    0x71
@@ -119,8 +119,8 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_AUDIO_MP2: return "AUDIO MP2";
         case TAV_PACKET_AUDIO_PCM8: return "AUDIO PCM8 (zstd)";
         case TAV_PACKET_AUDIO_TAD: return "AUDIO TAD (zstd)";
-        case TAV_PACKET_SUBTITLE: return "SUBTITLE (Simple)";
-        case TAV_PACKET_SUBTITLE_KAR: return "SUBTITLE (Karaoke)";
+        case TAV_PACKET_SUBTITLE: return "SUBTITLE (SSF frame-locked)";
+        case TAV_PACKET_SUBTITLE_TC: return "SUBTITLE (SSF-TC timecoded)";
         case TAV_PACKET_AUDIO_TRACK: return "AUDIO TRACK (Separate MP2)";
         case TAV_PACKET_EXIF: return "METADATA (EXIF)";
         case TAV_PACKET_ID3V1: return "METADATA (ID3v1)";
@@ -151,7 +151,7 @@ int should_display_packet(uint8_t type, display_options_t *opts) {
         (type >= 0x70 && type <= 0x7F))) return 1;
     if (opts->show_audio && (type == TAV_PACKET_AUDIO_MP2 || type == TAV_PACKET_AUDIO_PCM8 ||
         type == TAV_PACKET_AUDIO_TAD || type == TAV_PACKET_AUDIO_TRACK)) return 1;
-    if (opts->show_subtitles && (type == TAV_PACKET_SUBTITLE || type == TAV_PACKET_SUBTITLE_KAR)) return 1;
+    if (opts->show_subtitles && (type == TAV_PACKET_SUBTITLE || type == TAV_PACKET_SUBTITLE_TC)) return 1;
     if (opts->show_timecode && type == TAV_PACKET_TIMECODE) return 1;
     if (opts->show_metadata && (type >= 0xE0 && type <= 0xE4)) return 1;
     if (opts->show_sync && (type == TAV_PACKET_SYNC || type == TAV_PACKET_SYNC_NTSC)) return 1;
@@ -160,7 +160,7 @@ int should_display_packet(uint8_t type, display_options_t *opts) {
     return 0;
 }
 
-void print_subtitle_packet(FILE *fp, uint32_t size, int is_karaoke, int verbose) {
+void print_subtitle_packet(FILE *fp, uint32_t size, int is_timecoded, int verbose) {
     if (!verbose) {
         fseek(fp, size, SEEK_CUR);
         return;
@@ -174,10 +174,26 @@ void print_subtitle_packet(FILE *fp, uint32_t size, int is_karaoke, int verbose)
         index |= (byte << (i * 8));
     }
 
+    // Read timecode if SSF-TC (0x31)
+    uint64_t timecode_ns = 0;
+    int header_size = 4;  // 3 bytes index + 1 byte opcode
+    if (is_timecoded) {
+        uint8_t timecode_bytes[8];
+        if (fread(timecode_bytes, 1, 8, fp) != 8) return;
+        for (int i = 0; i < 8; i++) {
+            timecode_ns |= ((uint64_t)timecode_bytes[i]) << (i * 8);
+        }
+        header_size += 8;  // Add 8 bytes for timecode
+    }
+
     uint8_t opcode;
     if (fread(&opcode, 1, 1, fp) != 1) return;
 
-    printf(" [Index=%u, Opcode=0x%02X", index, opcode);
+    printf(" [Index=%u", index);
+    if (is_timecoded) {
+        printf(", Time=%.3fs", timecode_ns / 1000000000.0);
+    }
+    printf(", Opcode=0x%02X", opcode);
 
     switch (opcode) {
         case 0x01: printf(" (SHOW)"); break;
@@ -193,7 +209,7 @@ void print_subtitle_packet(FILE *fp, uint32_t size, int is_karaoke, int verbose)
     printf("]");
 
     // Read and display text content for SHOW commands
-    int remaining = size - 4;  // Already read 3 (index) + 1 (opcode)
+    int remaining = size - header_size;  // Already read index + timecode (if any) + opcode
     if ((opcode == 0x01 || (opcode >= 0x10 && opcode <= 0x2F) || (opcode >= 0x30 && opcode <= 0x41)) && remaining > 0) {
         char *text = malloc(remaining + 1);
         if (text && fread(text, 1, remaining, fp) == remaining) {
@@ -788,14 +804,14 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
             }
 
             case TAV_PACKET_SUBTITLE:
-            case TAV_PACKET_SUBTITLE_KAR: {
+            case TAV_PACKET_SUBTITLE_TC: {
                 stats.subtitle_count++;
                 uint32_t size;
                 if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
 
                 if (!opts.summary_only && display) {
                     printf(" - size=%u bytes", size);
-                    print_subtitle_packet(fp, size, packet_type == TAV_PACKET_SUBTITLE_KAR, opts.verbose);
+                    print_subtitle_packet(fp, size, packet_type == TAV_PACKET_SUBTITLE_TC, opts.verbose);
                 } else {
                     fseek(fp, size, SEEK_CUR);
                 }

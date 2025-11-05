@@ -33,7 +33,7 @@
 #define TEV_PACKET_IFRAME      0x10  // Intra frame (keyframe)
 #define TEV_PACKET_PFRAME      0x11  // Predicted frame  
 #define TEV_PACKET_AUDIO_MP2   0x20  // MP2 audio
-#define TEV_PACKET_SUBTITLE    0x30  // Subtitle packet
+#define TEV_PACKET_SUBTITLE_TC 0x31  // Subtitle packet with timecode (SSF-TC format)
 #define TEV_PACKET_SYNC        0xFF  // Sync packet
 
 // Utility macros
@@ -1834,71 +1834,86 @@ static void free_subtitle_list(subtitle_entry_t *list) {
     }
 }
 
-// Write subtitle packet to output
-static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text) {
-    // Calculate packet size
+// Write SSF-TC subtitle packet to output
+static int write_subtitle_packet_tc(FILE *output, uint32_t index, uint8_t opcode, const char *text, uint64_t timecode_ns) {
+    // Calculate packet size: index (3 bytes) + timecode (8 bytes) + opcode (1 byte) + text + null terminator
     size_t text_len = text ? strlen(text) : 0;
-    size_t packet_size = 3 + 1 + text_len + 1;  // index (3 bytes) + opcode + text + null terminator
-    
+    size_t packet_size = 3 + 8 + 1 + text_len + 1;
+
     // Write packet type and size
-    uint8_t packet_type = TEV_PACKET_SUBTITLE;
+    uint8_t packet_type = TEV_PACKET_SUBTITLE_TC;
     fwrite(&packet_type, 1, 1, output);
     fwrite(&packet_size, 4, 1, output);
-    
-    // Write subtitle packet data
+
+    // Write subtitle index (24-bit, little-endian)
     uint8_t index_bytes[3];
     index_bytes[0] = index & 0xFF;
     index_bytes[1] = (index >> 8) & 0xFF;
     index_bytes[2] = (index >> 16) & 0xFF;
     fwrite(index_bytes, 1, 3, output);
-    
+
+    // Write timecode (64-bit, little-endian)
+    uint8_t timecode_bytes[8];
+    for (int i = 0; i < 8; i++) {
+        timecode_bytes[i] = (timecode_ns >> (i * 8)) & 0xFF;
+    }
+    fwrite(timecode_bytes, 1, 8, output);
+
+    // Write opcode
     fwrite(&opcode, 1, 1, output);
-    
+
+    // Write text if present
     if (text && text_len > 0) {
         fwrite(text, 1, text_len, output);
     }
-    
+
     // Write null terminator
     uint8_t null_term = 0x00;
     fwrite(&null_term, 1, 1, output);
-    
+
     return packet_size + 5;  // packet_size + packet_type + size field
 }
 
-// Process subtitles for the current frame
-static int process_subtitles(tev_encoder_t *enc, int frame_num, FILE *output) {
+// Write all subtitles upfront in SSF-TC format (called before first frame)
+static int write_all_subtitles_tc(tev_encoder_t *enc, FILE *output) {
     if (!enc->has_subtitles) return 0;
 
     int bytes_written = 0;
-    
-    // Check if any subtitles need to be shown at this frame
-    subtitle_entry_t *sub = enc->current_subtitle;
-    while (sub && sub->start_frame <= frame_num) {
-        if (sub->start_frame == frame_num) {
-            // Show subtitle
-            bytes_written += write_subtitle_packet(output, 0, 0x01, sub->text);
-            if (enc->verbose) {
-                printf("Frame %d: Showing subtitle: %.50s%s\n", 
-                       frame_num, sub->text, strlen(sub->text) > 50 ? "..." : "");
-            }
+    int subtitle_count = 0;
+
+    // Convert frame timing to nanoseconds
+    // Frame time = 1e9 / fps nanoseconds
+    uint64_t frame_time_ns = (uint64_t)(1000000000.0 / enc->output_fps);
+
+    // Iterate through all subtitles and write them with timecodes
+    subtitle_entry_t *sub = enc->subtitle_list;
+    while (sub) {
+        // Calculate timecodes for show and hide events
+        uint64_t show_timecode = (uint64_t)sub->start_frame * frame_time_ns;
+        uint64_t hide_timecode = (uint64_t)sub->end_frame * frame_time_ns;
+
+        // Write show subtitle event
+        bytes_written += write_subtitle_packet_tc(output, 0, 0x01, sub->text, show_timecode);
+
+        // Write hide subtitle event
+        bytes_written += write_subtitle_packet_tc(output, 0, 0x02, NULL, hide_timecode);
+
+        subtitle_count++;
+        if (enc->verbose) {
+            printf("SSF-TC: Subtitle %d: show at %.3fs, hide at %.3fs: %.50s%s\n",
+                   subtitle_count,
+                   show_timecode / 1000000000.0,
+                   hide_timecode / 1000000000.0,
+                   sub->text, strlen(sub->text) > 50 ? "..." : "");
         }
-        
-        if (sub->end_frame == frame_num) {
-            // Hide subtitle
-            bytes_written += write_subtitle_packet(output, 0, 0x02, NULL);
-            if (enc->verbose) {
-                printf("Frame %d: Hiding subtitle\n", frame_num);
-            }
-        }
-        
-        // Move to next subtitle if we're past the end of current one
-        if (sub->end_frame <= frame_num) {
-            enc->current_subtitle = sub->next;
-        }
-        
+
         sub = sub->next;
     }
-    
+
+    if (enc->verbose && subtitle_count > 0) {
+        printf("Wrote %d SSF-TC subtitle events (%d bytes)\n", subtitle_count * 2, bytes_written);
+    }
+
     return bytes_written;
 }
 
@@ -2868,6 +2883,12 @@ int main(int argc, char *argv[]) {
 
     // Write TEV header
     write_tev_header(output, enc);
+
+    // Write all subtitles upfront in SSF-TC format (before first frame)
+    if (enc->has_subtitles) {
+        write_all_subtitles_tc(enc, output);
+    }
+
     gettimeofday(&enc->start_time, NULL);
 
     printf("Encoding video with %s 4:2:0 format...\n", enc->ictcp_mode ? "ICtCp" : "YCoCg-R");
@@ -2962,8 +2983,8 @@ int main(int argc, char *argv[]) {
         // Process audio for this frame
         process_audio(enc, frame_count, output);
 
-        // Process subtitles for this frame
-        process_subtitles(enc, frame_count, output);
+        // Note: Subtitles are now written upfront in SSF-TC format (see write_all_subtitles_tc)
+        // process_subtitles() is no longer called here
 
         // Encode frame
         // Pass field parity for interlaced mode, -1 for progressive mode

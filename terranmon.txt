@@ -818,7 +818,7 @@ When SSF is interleaved with MP2 audio, the payload must be inserted in-between 
 
 ## SSF Packet Structure
     uint24 Subtitle object ID (used to specify target subtitle object)
-    uint64 Timecode in nanoseconds (only present for SSF-TC format; regular SSF must not write these bytes)
+    uint64 Timecode in nanoseconds (only present on SSF-TC format; regular SSF must not write these bytes)
     uint8 opcode
           0x00 = <argument terminator>, is NOP when used here
           0x01 = show (arguments: UTF-8 text)
@@ -854,7 +854,7 @@ When KSF is interleaved with MP2 audio, the payload must be inserted in-between 
     on appropriate timings.
 
     uint24 Subtitle object ID (used to specify target subtitle object)
-    uint64 Timecode in nanoseconds (only present for KSF-TC format; regular KSF must not write these bytes)
+    uint64 Timecode in nanoseconds (only present on KSF-TC format; regular KSF must not write these bytes)
     uint8 opcode
           <definition opcodes>
           0x00 = <argument terminator>, is NOP when used here
@@ -1012,12 +1012,14 @@ transmission capability, and region-of-interest coding.
         1. TAV Extended header (if any)
         2. Standard metadata payloads (if any)
         3. SSF-TC/KSF-TC packets (if any)
+            When time-coded subtitles are used, the entire subtitle bytes must precede the first video frame.
+            Think of it as tacking the whole subtitle file before the actual video.
 
         Frame group:
         1. TC Packet (0xFD) or Next TAV File (0x1F) [mutually exclusive!]
         2. Loop point packet (if any)
         3. Audio packets (if any)
-        4. Subtitle packets (if any)
+        4. Subtitle packets (if any) [mutually exclusive with SSF-TC/KSF-TC packets]
         5. Main video packets (0x10-0x1E)
         6. Multiplexed video packets (0x70-7F; if any)
 

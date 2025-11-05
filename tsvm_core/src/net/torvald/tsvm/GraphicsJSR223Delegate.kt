@@ -536,7 +536,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         3f/16f,5f/16f,1f/16f,
     )
 
-    private val bayerKernels = arrayOf(
+    private val bayerKernelsInt = arrayOf(
         intArrayOf(
             0,8,2,10,
             12,4,14,6,
@@ -561,7 +561,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             12,4,14,6,
             3,11,1,9,
         )
-    ).map{ it.map { (it.toFloat() + 0.5f) / 16f }.toFloatArray() }
+    )
+
+    private val bayerKernels = bayerKernelsInt.map{ it.map { (it.toFloat() + 0.5f) / 16f }.toFloatArray() }
 
     /**
      * This method always assume that you're using the default palette
@@ -6583,13 +6585,6 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val offsetY = (nativeHeight - height) / 2
 
         // Dithering pattern for 8bpp → 4bpp conversion
-        val bayerMatrix = arrayOf(
-            intArrayOf(0, 8, 2, 10),
-            intArrayOf(12, 4, 14, 6),
-            intArrayOf(3, 11, 1, 9),
-            intArrayOf(15, 7, 13, 5)
-        )
-
         // Process row by row
         for (y in 0 until height) {
             val screenY = y + offsetY
@@ -6611,13 +6606,13 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 if (graphicsMode == 4) {
                     // 4bpp mode: dithered RGB (RG in fb1, B_ in fb2)
-                    val threshold = bayerMatrix[y % 4][x % 4]
+                    val threshold = bayerKernelsInt[frameCount % 4][4 * (y % 4) + (x % 4)]
                     val rDithered = ((r + (threshold - 8)) shr 4).coerceIn(0, 15)
                     val gDithered = ((g + (threshold - 8)) shr 4).coerceIn(0, 15)
                     val bDithered = ((b + (threshold - 8)) shr 4).coerceIn(0, 15)
 
                     gpu.framebuffer[screenPixelIdx] = ((rDithered shl 4) or gDithered).toByte()
-                    gpu.framebuffer2?.set(screenPixelIdx, (bDithered shl 4).toByte())
+                    gpu.framebuffer2?.set(screenPixelIdx, ((bDithered shl 4) or 15).toByte())
                 } else if (graphicsMode == 5) {
                     // 8bpp mode: full RGB (R in fb1, G in fb2, B in fb3)
                     gpu.framebuffer[screenPixelIdx] = r.toByte()

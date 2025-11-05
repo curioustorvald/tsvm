@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251031 (3d-dwt,tad)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251106 (3d-dwt,tad,ssf-tc)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -56,7 +56,7 @@
 #define TAV_PACKET_AUDIO_MP2       0x20  // MP2 audio
 #define TAV_PACKET_AUDIO_PCM8      0x21  // 8-bit PCM audio (zstd compressed)
 #define TAV_PACKET_AUDIO_TAD       0x24  // TAD audio (DWT-based perceptual codec)
-#define TAV_PACKET_SUBTITLE        0x30  // Subtitle packet
+#define TAV_PACKET_SUBTITLE_TC     0x31  // Subtitle packet with timecode (SSF-TC format)
 #define TAV_PACKET_AUDIO_TRACK     0x40  // Separate audio track (full MP2 file)
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
 #define TAV_PACKET_GOP_SYNC        0xFC  // GOP sync packet (N frames decoded)
@@ -8349,30 +8349,42 @@ static void free_subtitle_list(subtitle_entry_t *list) {
 }
 
 // Write subtitle packet (copied from TEV)
-static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, const char *text) {
-    // Calculate packet size
+// Write SSF-TC subtitle packet to output
+static int write_subtitle_packet_tc(FILE *output, uint32_t index, uint8_t opcode, const char *text, uint64_t timecode_ns) {
+    // Calculate packet size: index (3 bytes) + timecode (8 bytes) + opcode (1 byte) + text + null terminator
     size_t text_len = text ? strlen(text) : 0;
-    size_t packet_size = 3 + 1 + text_len + 1;  // index (3 bytes) + opcode + text + null terminator
+    size_t packet_size = 3 + 8 + 1 + text_len + 1;
 
     // Write packet type and size
-    uint8_t packet_type = TAV_PACKET_SUBTITLE;
+    uint8_t packet_type = TAV_PACKET_SUBTITLE_TC;
     fwrite(&packet_type, 1, 1, output);
     uint32_t size32 = (uint32_t)packet_size;
     fwrite(&size32, 4, 1, output);
 
-    // Write subtitle data
+    // Write subtitle index (24-bit, little-endian)
     uint8_t index_bytes[3] = {
         (uint8_t)(index & 0xFF),
         (uint8_t)((index >> 8) & 0xFF),
         (uint8_t)((index >> 16) & 0xFF)
     };
     fwrite(index_bytes, 3, 1, output);
+
+    // Write timecode (64-bit, little-endian)
+    uint8_t timecode_bytes[8];
+    for (int i = 0; i < 8; i++) {
+        timecode_bytes[i] = (timecode_ns >> (i * 8)) & 0xFF;
+    }
+    fwrite(timecode_bytes, 8, 1, output);
+
+    // Write opcode
     fwrite(&opcode, 1, 1, output);
 
+    // Write text if present
     if (text && text_len > 0) {
         fwrite(text, 1, text_len, output);
     }
 
+    // Write null terminator
     uint8_t null_terminator = 0;
     fwrite(&null_terminator, 1, 1, output);
 
@@ -9034,47 +9046,59 @@ static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num
     return 1;
 }
 
-// Process subtitles for current frame (copied and adapted from TEV)
-static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output) {
-    if (!enc->subtitles) {
-        return 1;  // No subtitles to process
-    }
+// Write all subtitles upfront in SSF-TC format (called before first frame)
+static int write_all_subtitles_tc(tav_encoder_t *enc, FILE *output) {
+    if (!enc->subtitles) return 0;
 
     int bytes_written = 0;
+    int subtitle_count = 0;
 
-    // Check if we need to show a new subtitle
-    if (!enc->subtitle_visible) {
-        subtitle_entry_t *sub = enc->current_subtitle;
-        if (!sub) sub = enc->subtitles;  // Start from beginning if not set
-
-        // Find next subtitle to show
-        while (sub && sub->start_frame <= frame_num) {
-            if (sub->end_frame > frame_num) {
-                // This subtitle should be shown
-                if (sub != enc->current_subtitle) {
-                    enc->current_subtitle = sub;
-                    enc->subtitle_visible = 1;
-                    bytes_written += write_subtitle_packet(output, 0, 0x01, sub->text);
-                    if (enc->verbose) {
-                        printf("Frame %d: Showing subtitle: %.50s%s\n",
-                               frame_num, sub->text, strlen(sub->text) > 50 ? "..." : "");
-                    }
-                }
-                break;
-            }
-            sub = sub->next;
-        }
+    // Convert frame timing to nanoseconds
+    // For NTSC: frame_time = 1001000000 / 30000 nanoseconds
+    // For others: frame_time = 1e9 / fps nanoseconds
+    uint64_t frame_time_ns;
+    if (enc->is_ntsc_framerate) {
+        frame_time_ns = 1001000000ULL / 30000ULL;  // NTSC: 30000/1001 fps
+    } else {
+        frame_time_ns = (uint64_t)(1000000000.0 / enc->fps);
     }
 
-    // Check if we need to hide current subtitle
-    if (enc->subtitle_visible && enc->current_subtitle) {
-        if (frame_num >= enc->current_subtitle->end_frame) {
-            enc->subtitle_visible = 0;
-            bytes_written += write_subtitle_packet(output, 0, 0x02, NULL);
-            if (enc->verbose) {
-                printf("Frame %d: Hiding subtitle\n", frame_num);
-            }
+    // Iterate through all subtitles and write them with timecodes
+    subtitle_entry_t *sub = enc->subtitles;
+    while (sub) {
+        // Calculate timecodes for show and hide events
+        uint64_t show_timecode;
+        uint64_t hide_timecode;
+
+        if (enc->is_ntsc_framerate) {
+            // NTSC: time = frame * 1001000000 / 30000
+            show_timecode = ((uint64_t)sub->start_frame * 1001000000ULL) / 30000ULL;
+            hide_timecode = ((uint64_t)sub->end_frame * 1001000000ULL) / 30000ULL;
+        } else {
+            show_timecode = (uint64_t)sub->start_frame * frame_time_ns;
+            hide_timecode = (uint64_t)sub->end_frame * frame_time_ns;
         }
+
+        // Write show subtitle event
+        bytes_written += write_subtitle_packet_tc(output, 0, 0x01, sub->text, show_timecode);
+
+        // Write hide subtitle event
+        bytes_written += write_subtitle_packet_tc(output, 0, 0x02, NULL, hide_timecode);
+
+        subtitle_count++;
+        if (enc->verbose) {
+            printf("SSF-TC: Subtitle %d: show at %.3fs, hide at %.3fs: %.50s%s\n",
+                   subtitle_count,
+                   show_timecode / 1000000000.0,
+                   hide_timecode / 1000000000.0,
+                   sub->text, strlen(sub->text) > 50 ? "..." : "");
+        }
+
+        sub = sub->next;
+    }
+
+    if (enc->verbose && subtitle_count > 0) {
+        printf("Wrote %d SSF-TC subtitle events (%d bytes)\n", subtitle_count * 2, bytes_written);
     }
 
     return bytes_written;
@@ -10330,6 +10354,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Write all subtitles upfront in SSF-TC format (before first frame)
+    if (enc->subtitles) {
+        write_all_subtitles_tc(enc, enc->output_fp);
+    }
+
     if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
@@ -10544,8 +10573,8 @@ int main(int argc, char *argv[]) {
             // Process audio for this frame
             process_audio(enc, true_frame_count, enc->output_fp);
 
-            // Process subtitles for this frame
-            process_subtitles(enc, true_frame_count, enc->output_fp);
+            // Note: Subtitles are now written upfront in SSF-TC format (see write_all_subtitles_tc)
+            // process_subtitles() is no longer called here
         }
 
         if (enc->enable_temporal_dwt) {
@@ -10965,9 +10994,9 @@ int main(int argc, char *argv[]) {
             // Skip when temporal DWT is enabled (audio handled in GOP flush)
             if (!enc->enable_temporal_dwt && enc->is_ntsc_framerate && (frame_count % 1000 == 500)) {
                 true_frame_count++;
-                // Process audio and subtitles for the duplicated frame to maintain sync
+                // Process audio for the duplicated frame to maintain sync
                 process_audio(enc, true_frame_count, enc->output_fp);
-                process_subtitles(enc, true_frame_count, enc->output_fp);
+                // Note: Subtitles are now written upfront in SSF-TC format (see write_all_subtitles_tc)
 
                 uint8_t sync_packet_ntsc = TAV_PACKET_SYNC_NTSC;
                 fwrite(&sync_packet_ntsc, 1, 1, enc->output_fp);

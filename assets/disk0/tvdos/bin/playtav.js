@@ -35,7 +35,8 @@ const TAV_PACKET_AUDIO_NATIVE = 0x21
 const TAV_PACKET_AUDIO_PCM_16LE = 0x22
 const TAV_PACKET_AUDIO_ADPCM = 0x23
 const TAV_PACKET_AUDIO_TAD = 0x24
-const TAV_PACKET_SUBTITLE = 0x30
+const TAV_PACKET_SUBTITLE = 0x30       // Legacy SSF (frame-locked)
+const TAV_PACKET_SUBTITLE_TC = 0x31    // SSF-TC (timecode-based)
 const TAV_PACKET_AUDIO_BUNDLED = 0x40  // Entire MP2 audio file in single packet
 const TAV_PACKET_EXTENDED_HDR = 0xEF
 const TAV_PACKET_GOP_SYNC = 0xFC  // GOP sync (N frames decoded from GOP block)
@@ -63,6 +64,11 @@ const SSF_OP_UPLOAD_HIGH_FONT = 0x81
 let subtitleVisible = false
 let subtitleText = ""
 let subtitlePosition = 0  // 0=bottom center (default)
+
+// SSF-TC subtitle event buffer
+let subtitleEvents = []  // Array of {timecode_ns, index, opcode, text}
+let nextSubtitleEventIndex = 0  // Next event to check
+let currentTimecodeNs = 0  // Current playback timecode
 
 // Parse command line options
 let interactive = false
@@ -123,7 +129,7 @@ if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAP
 con.clear()
 con.curs_set(0)
 graphics.setGraphicsMode(4) // initially set to 4bpp mode
-graphics.setGraphicsMode(5) // set to 8bpp mode. If GPU don't support it, mode will remain to 4
+//graphics.setGraphicsMode(5) // set to 8bpp mode. If GPU don't support it, mode will remain to 4
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
 graphics.clearPixels3(0)
@@ -140,6 +146,99 @@ audio.setMasterVolume(0, 255)
 // set colour zero as half-opaque black
 graphics.setPalette(0, 0, 0, 0, 7)
 
+// Parse SSF-TC subtitle packet and add to event buffer (0x31)
+function parseSubtitlePacketTC(packetSize) {
+    // Read subtitle index (24-bit, little-endian)
+    let indexByte0 = seqread.readOneByte()
+    let indexByte1 = seqread.readOneByte()
+    let indexByte2 = seqread.readOneByte()
+    let index = indexByte0 | (indexByte1 << 8) | (indexByte2 << 16)
+
+    // Read timecode (64-bit, little-endian)
+    let timecode_ns = 0
+    for (let i = 0; i < 8; i++) {
+        let byte = seqread.readOneByte()
+        timecode_ns += byte * Math.pow(2, i * 8)
+    }
+
+    // Read opcode
+    let opcode = seqread.readOneByte()
+    let remainingBytes = packetSize - 12  // Subtract 3 (index) + 8 (timecode) + 1 (opcode)
+
+    // Read text if present
+    let text = null
+    if (remainingBytes > 1 && (opcode === SSF_OP_SHOW || (opcode >= 0x10 && opcode <= 0x2F))) {
+        let textBytes = seqread.readBytes(remainingBytes)
+        text = ""
+        for (let i = 0; i < remainingBytes - 1; i++) {  // -1 for null terminator
+            let byte = sys.peek(textBytes + i)
+            if (byte === 0) break
+            text += String.fromCharCode(byte)
+        }
+        sys.free(textBytes)
+    } else if (remainingBytes > 0) {
+        // Skip remaining bytes
+        let skipBytes = seqread.readBytes(remainingBytes)
+        sys.free(skipBytes)
+    }
+
+    // Add event to buffer
+    subtitleEvents.push({
+        timecode_ns: timecode_ns,
+        index: index,
+        opcode: opcode,
+        text: text
+    })
+}
+
+// Process subtitle events based on current playback time
+function processSubtitleEvents(currentTimeNs) {
+    // Process all events whose timecode has been reached
+    while (nextSubtitleEventIndex < subtitleEvents.length) {
+        let event = subtitleEvents[nextSubtitleEventIndex]
+
+        if (event.timecode_ns > currentTimeNs) {
+            break  // Haven't reached this event yet
+        }
+
+        // Execute the subtitle event
+        switch (event.opcode) {
+            case SSF_OP_SHOW:
+                subtitleText = event.text || ""
+                subtitleVisible = true
+                gui.displaySubtitle(subtitleText, fontUploaded, subtitlePosition)
+                break
+
+            case SSF_OP_HIDE:
+                subtitleVisible = false
+                subtitleText = ""
+                gui.clearSubtitleArea()
+                break
+
+            case SSF_OP_MOVE:
+                if (event.text && event.text.length > 0) {
+                    let newPosition = event.text.charCodeAt(0)
+                    if (newPosition >= 0 && newPosition <= 8) {
+                        subtitlePosition = newPosition
+                        if (subtitleVisible && subtitleText.length > 0) {
+                            gui.clearSubtitleArea()
+                            gui.displaySubtitle(subtitleText, fontUploaded, subtitlePosition)
+                        }
+                    }
+                }
+                break
+
+            case SSF_OP_UPLOAD_LOW_FONT:
+            case SSF_OP_UPLOAD_HIGH_FONT:
+                // Font upload handled during packet parsing
+                break
+        }
+
+        nextSubtitleEventIndex++
+    }
+}
+
+// Process legacy frame-locked subtitle packet (0x30)
 function processSubtitlePacket(packetSize) {
 
     // Read subtitle packet data according to SSF format
@@ -1378,9 +1477,14 @@ try {
                 sys.free(pcmPtr)
             }
             else if (packetType === TAV_PACKET_SUBTITLE) {
-                // Subtitle packet - same format as TEV
+                // Legacy frame-locked subtitle packet (0x30)
                 let packetSize = seqread.readInt()
                 processSubtitlePacket(packetSize)
+            }
+            else if (packetType === TAV_PACKET_SUBTITLE_TC) {
+                // SSF-TC subtitle packet (0x31) - parse and buffer for later playback
+                let packetSize = seqread.readInt()
+                parseSubtitlePacketTC(packetSize)
             }
             else if (packetType === TAV_PACKET_EXTENDED_HDR) {
                 // Extended header packet - metadata key-value pairs
@@ -1443,6 +1547,14 @@ try {
                 let timecodeLow = seqread.readInt()
                 let timecodeHigh = seqread.readInt()
                 let timecodeNs = timecodeHigh * 0x100000000 + (timecodeLow >>> 0)
+
+                // Update current timecode and process subtitle events
+                currentTimecodeNs = timecodeNs
+
+                // Process SSF-TC subtitle events based on current playback time
+                if (subtitleEvents.length > 0) {
+                    processSubtitleEvents(currentTimecodeNs)
+                }
 
                 // Optionally display timecode in interactive mode (can be verbose)
                 // Uncomment for debugging:

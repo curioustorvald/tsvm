@@ -26,7 +26,8 @@ const TEV_MODE_MOTION = 0x03
 const TEV_PACKET_IFRAME = 0x10
 const TEV_PACKET_PFRAME = 0x11
 const TEV_PACKET_AUDIO_MP2 = 0x20
-const TEV_PACKET_SUBTITLE = 0x30
+const TEV_PACKET_SUBTITLE = 0x30       // Legacy SSF (frame-locked)
+const TEV_PACKET_SUBTITLE_TC = 0x31    // SSF-TC (timecode-based)
 const TEV_PACKET_SYNC = 0xFF
 
 // Subtitle opcodes (SSF format)
@@ -41,6 +42,10 @@ const SSF_OP_UPLOAD_HIGH_FONT = 0x81
 let subtitleVisible = false
 let subtitleText = ""
 let subtitlePosition = 0  // 0=bottom center (default)
+
+// SSF-TC subtitle event buffer
+let subtitleEvents = []  // Array of {timecode_ns, index, opcode, text}
+let nextSubtitleEventIndex = 0  // Next event to check
 
 // Parse command line options
 let interactive = false
@@ -274,6 +279,99 @@ function displaySubtitle(text, position = 0) {
     con.color_pair(oldFgColor, oldBgColor)
 }
 
+// Parse SSF-TC subtitle packet and add to event buffer (0x31)
+function parseSubtitlePacketTC(packetSize) {
+    // Read subtitle index (24-bit, little-endian)
+    let indexByte0 = seqread.readOneByte()
+    let indexByte1 = seqread.readOneByte()
+    let indexByte2 = seqread.readOneByte()
+    let index = indexByte0 | (indexByte1 << 8) | (indexByte2 << 16)
+
+    // Read timecode (64-bit, little-endian)
+    let timecode_ns = 0
+    for (let i = 0; i < 8; i++) {
+        let byte = seqread.readOneByte()
+        timecode_ns += byte * Math.pow(2, i * 8)
+    }
+
+    // Read opcode
+    let opcode = seqread.readOneByte()
+    let remainingBytes = packetSize - 12  // Subtract 3 (index) + 8 (timecode) + 1 (opcode)
+
+    // Read text if present
+    let text = null
+    if (remainingBytes > 1 && (opcode === SSF_OP_SHOW || (opcode >= 0x10 && opcode <= 0x2F))) {
+        let textBytes = seqread.readBytes(remainingBytes)
+        text = ""
+        for (let i = 0; i < remainingBytes - 1; i++) {  // -1 for null terminator
+            let byte = sys.peek(textBytes + i)
+            if (byte === 0) break
+            text += String.fromCharCode(byte)
+        }
+        sys.free(textBytes)
+    } else if (remainingBytes > 0) {
+        // Skip remaining bytes
+        let skipBytes = seqread.readBytes(remainingBytes)
+        sys.free(skipBytes)
+    }
+
+    // Add event to buffer
+    subtitleEvents.push({
+        timecode_ns: timecode_ns,
+        index: index,
+        opcode: opcode,
+        text: text
+    })
+}
+
+// Process subtitle events based on current playback time
+function processSubtitleEvents(currentTimeNs) {
+    // Process all events whose timecode has been reached
+    while (nextSubtitleEventIndex < subtitleEvents.length) {
+        let event = subtitleEvents[nextSubtitleEventIndex]
+
+        if (event.timecode_ns > currentTimeNs) {
+            break  // Haven't reached this event yet
+        }
+
+        // Execute the subtitle event
+        switch (event.opcode) {
+            case SSF_OP_SHOW:
+                subtitleText = event.text || ""
+                subtitleVisible = true
+                displaySubtitle(subtitleText, subtitlePosition)
+                break
+
+            case SSF_OP_HIDE:
+                subtitleVisible = false
+                subtitleText = ""
+                clearSubtitleArea()
+                break
+
+            case SSF_OP_MOVE:
+                if (event.text && event.text.length > 0) {
+                    let newPosition = event.text.charCodeAt(0)
+                    if (newPosition >= 0 && newPosition <= 8) {
+                        subtitlePosition = newPosition
+                        if (subtitleVisible && subtitleText.length > 0) {
+                            clearSubtitleArea()
+                            displaySubtitle(subtitleText, subtitlePosition)
+                        }
+                    }
+                }
+                break
+
+            case SSF_OP_UPLOAD_LOW_FONT:
+            case SSF_OP_UPLOAD_HIGH_FONT:
+                // Font upload handled during packet parsing
+                break
+        }
+
+        nextSubtitleEventIndex++
+    }
+}
+
+// Process legacy frame-locked subtitle packet (0x30)
 function processSubtitlePacket(packetSize) {
     // Read subtitle packet data according to SSF format
     // uint24 index + uint8 opcode + variable arguments
@@ -450,6 +548,7 @@ function getVideoRate() {
 }
 
 let FRAME_TIME = 1.0 / fps
+let FRAME_TIME_NS = (1000000000.0 / fps)  // Frame time in nanoseconds for subtitle timing
 // Ultra-fast approach: always render to display, use dedicated previous frame buffer
 const FRAME_PIXELS = width * height
 
@@ -682,6 +781,12 @@ try {
                         serial.println(`Frame ${frameCount}: Duplicating previous frame`)
                     }
 
+                    // Process SSF-TC subtitle events based on current playback time
+                    if (subtitleEvents.length > 0) {
+                        let currentTimeNs = frameCount * FRAME_TIME_NS
+                        processSubtitleEvents(currentTimeNs)
+                    }
+
                     // Defer audio playback until a first frame is sent
                     if (isInterlaced) {
                         // fire audio after frame 1
@@ -729,9 +834,14 @@ try {
                 audio.mp2UploadDecoded(0)
 
             } else if (packetType == TEV_PACKET_SUBTITLE) {
-                // Subtitle packet
+                // Legacy frame-locked subtitle packet (0x30)
                 let packetSize = seqread.readInt()
                 processSubtitlePacket(packetSize)
+
+            } else if (packetType == TEV_PACKET_SUBTITLE_TC) {
+                // SSF-TC subtitle packet (0x31) - parse and buffer for later playback
+                let packetSize = seqread.readInt()
+                parseSubtitlePacketTC(packetSize)
             } else if (packetType == 0x00) {
                 // Silently discard, faulty subtitle creation can cause this as 0x00 is used as an argument terminator
             } else {
