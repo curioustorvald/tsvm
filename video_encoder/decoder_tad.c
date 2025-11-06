@@ -19,20 +19,32 @@
 static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f};
 
 // Base quantiser weight table (10 subbands: LL + 9 H bands)
-// Linearly spaced from 1.0 (LL) to 2.0 (H9)
-// These weights are multiplied by quantiser_scale during dequantization
-static const float BASE_QUANTISER_WEIGHTS[] = {
-    1.0f,    // LL (L9) - finest preservation
-    1.0f,    // H (L9)
-    1.0f,    // H (L8)
-    1.0f,    // H (L7)
-    1.0f,    // H (L6)
-    1.1f,    // H (L5)
-    1.2f,    // H (L4)
-    1.3f,    // H (L3)
-    1.4f,    // H (L2)
-    1.5f     // H (L1) - coarsest quantization
-};
+// These weights are multiplied by quantiser_scale during quantization
+static const float BASE_QUANTISER_WEIGHTS[2][10] = {
+{ // mid channel
+    4.0f,    // LL (L9) DC
+    2.0f,    // H (L9) 31.25 hz
+    1.8f,    // H (L8) 62.5 hz
+    1.6f,    // H (L7) 125 hz
+    1.4f,    // H (L6) 250 hz
+    1.2f,    // H (L5) 500 hz
+    1.0f,    // H (L4) 1 khz
+    1.0f,    // H (L3) 2 khz
+    1.3f,    // H (L2) 4 khz
+    1.8f     // H (L1) 8 khz
+},
+{ // side channel
+    6.0f,    // LL (L9) DC
+    5.0f,    // H (L9) 31.25 hz
+    2.6f,    // H (L8) 62.5 hz
+    2.4f,    // H (L7) 125 hz
+    1.8f,    // H (L6) 250 hz
+    1.3f,    // H (L5) 500 hz
+    1.0f,    // H (L4) 1 khz
+    1.0f,    // H (L3) 2 khz
+    1.6f,    // H (L2) 4 khz
+    3.2f     // H (L1) 8 khz
+}};
 
 #define TAD_DEFAULT_CHUNK_SIZE 32768
 #define TAD_MIN_CHUNK_SIZE 1024
@@ -90,7 +102,7 @@ static void spectral_interpolate_band(float *c, size_t len, float Q, float lower
     if (len < 4) return;
 
     uint32_t seed = 0x9E3779B9u ^ (uint32_t)len ^ (uint32_t)(Q * 65536.0f);
-    const float dither_amp = 0.05f * Q;  // Very light dither (~-60 dBFS)
+    const float dither_amp = 0.02f * Q;  // Very light dither
 
     // Just add ultra-light TPDF dither to reduce quantization grain
     // No aggressive hole filling or AR prediction that might create artifacts
@@ -468,7 +480,7 @@ static float lambda_decompanding(int8_t quant_val, int max_index) {
     return sign * abs_val;
 }
 
-static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
+static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
 
     // Calculate sideband boundaries dynamically
     int first_band_size = chunk_size >> dwt_levels;
@@ -494,7 +506,7 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
         float normalized_val = lambda_decompanding(quantized[i], max_index);
 
         // Denormalize using the subband scalar and apply base weight + quantiser scaling
-        float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
+        float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
         coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
     }
 
@@ -509,7 +521,7 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
         size_t band_len = band_end - band_start;
 
         // Calculate quantization step Q for this band
-        float weight = BASE_QUANTISER_WEIGHTS[band] * quantiser_scale;
+        float weight = BASE_QUANTISER_WEIGHTS[channel][band] * quantiser_scale;
         float scalar = TAD32_COEFF_SCALARS[band] * weight;
         float Q = scalar / max_index;
 
@@ -585,8 +597,8 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     // Dequantize with quantiser scaling and spectral interpolation
     // Use quantiser_scale = 1.0f for baseline (must match encoder)
     float quantiser_scale = 1.0f;
-    dequantize_dwt_coefficients(quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
-    dequantize_dwt_coefficients(quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+    dequantize_dwt_coefficients(0, quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+    dequantize_dwt_coefficients(1, quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
 
     // Inverse DWT
     dwt_inverse_multilevel(dwt_mid, sample_count, dwt_levels);

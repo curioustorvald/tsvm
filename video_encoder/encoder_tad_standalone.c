@@ -12,7 +12,7 @@
 #include <time.h>
 #include "encoder_tad.h"
 
-#define ENCODER_VENDOR_STRING "Encoder-TAD32 (PCM32f version) 20251026"
+#define ENCODER_VENDOR_STRING "Encoder-TAD32 (PCM32f version) 20251107"
 
 // TAD32 format constants
 #define TAD32_DEFAULT_CHUNK_SIZE 32768  // Default: power of 2 for optimal performance (2^15)
@@ -55,9 +55,6 @@ static void print_usage(const char *prog_name) {
     printf("                  3 = good quality (max_index=47) [DEFAULT]\n");
     printf("                  4 = high quality (max_index=56)\n");
     printf("                  5 = very high quality/largest (max_index=89)\n");
-    printf("  -s <scale>      Quantiser scaling factor (default: 1.0, range: 0.5-4.0)\n");
-    printf("                  Higher = more aggressive quantization, smaller files\n");
-    printf("                  2.0 = quantize 2x coarser than baseline\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
     printf("\nVersion: %s\n", ENCODER_VENDOR_STRING);

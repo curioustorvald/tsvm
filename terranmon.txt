@@ -955,7 +955,7 @@ transmission capability, and region-of-interest coding.
             - 7 = Mirrored, Clockwise 270 deg
     uint8  File Role
             - 0 = generic
-            - 1 = this file is header-only, and UCF payload will be followed (used by seekable movie file)
+            - 1 = this file is header-only, and UCF payload will be followed (used by movie file with chapters)
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
 
@@ -1256,7 +1256,7 @@ TAV decoder requires new GraphicsJSR223Delegate functions:
 - tavQuantise(): Multi-band quantisation
 
 ## Audio Support
-Reuses existing MP2 audio infrastructure from TEV/MOV formats for compatibility.
+MP2 frames, raw PCMu8, and TAD formats are supported.
 
 ## Subtitle Support  
 Uses same Simple Subtitle Format (SSF) as TEV for text overlay functionality.
