@@ -206,6 +206,53 @@ static void dwt_forward_multilevel(float *data, int length, int levels) {
 }
 
 //=============================================================================
+// Pre-emphasis Filter
+//=============================================================================
+
+static void calculate_preemphasis_coeffs(float *b0, float *b1, float *a1) {
+    // Simple first-order digital pre-emphasis
+    // Corner frequency ≈ 1200 Hz (chosen for 32 kHz codec)
+    // Provides ~6 dB/octave boost above corner
+
+    // Pre-emphasis factor (0.95 = gentle, 0.90 = moderate, 0.85 = aggressive)
+    const float alpha = 0.5f;  // Gentle boost suitable for music
+
+    *b0 = 1.0f;
+    *b1 = -alpha;
+    *a1 = 0.0f;  // No feedback (FIR filter)
+}
+
+// emphasis at alpha=0.5 shifts quantisation crackles to lower frequency which MIGHT be more preferable
+static void apply_preemphasis(float *left, float *right, size_t count) {
+    // Static state variables - persistent across chunks to prevent discontinuities
+    static float prev_x_l = 0.0f;
+    static float prev_y_l = 0.0f;
+    static float prev_x_r = 0.0f;
+    static float prev_y_r = 0.0f;
+
+    float b0, b1, a1;
+    calculate_preemphasis_coeffs(&b0, &b1, &a1);
+
+    // Left channel - use persistent state
+    for (size_t i = 0; i < count; i++) {
+        float x = left[i];
+        float y = b0 * x + b1 * prev_x_l - a1 * prev_y_l;
+        left[i] = y;
+        prev_x_l = x;
+        prev_y_l = y;
+    }
+
+    // Right channel - use persistent state
+    for (size_t i = 0; i < count; i++) {
+        float x = right[i];
+        float y = b0 * x + b1 * prev_x_r - a1 * prev_y_r;
+        right[i] = y;
+        prev_x_r = x;
+        prev_y_r = y;
+    }
+}
+
+//=============================================================================
 // M/S Stereo Decorrelation (PCM32f version)
 //=============================================================================
 
@@ -757,7 +804,10 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         pcm32_right[i] = pcm32_stereo[i * 2 + 1];
     }
 
-    // Step 1.1: Compress dynamic range
+    // Step 1.1: Apply pre-emphasis filter (BEFORE gamma compression)
+    apply_preemphasis(pcm32_left, pcm32_right, num_samples);
+
+    // Step 1.2: Compress dynamic range
     compress_gamma(pcm32_left, pcm32_right, num_samples);
 
     // Step 2: M/S decorrelation

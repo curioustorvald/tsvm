@@ -160,6 +160,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // Dither state for noise shaping (2 channels, 2 history samples each)
     private val ditherError = Array(2) { FloatArray(2) }
 
+    // De-emphasis filter state (persistent across chunks to prevent discontinuities)
+    private var deemphPrevXL = 0.0f
+    private var deemphPrevYL = 0.0f
+    private var deemphPrevXR = 0.0f
+    private var deemphPrevYR = 0.0f
+
     private val renderRunnables: Array<RenderRunnable>
     private val renderThreads: Array<Thread>
     private val writeQueueingRunnables: Array<WriteQueueingRunnable>
@@ -422,6 +428,43 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    //=============================================================================
+    // De-emphasis Filter
+    //=============================================================================
+
+    private fun calculateDeemphasisCoeffs(): Triple<Float, Float, Float> {
+        // De-emphasis factor
+        val alpha = 0.5f
+
+        val b0 = 1.0f
+        val b1 = 0.0f  // No feedforward delay
+        val a1 = -alpha  // NEGATIVE because equation has minus sign: y = x - a1*prev_y
+
+        return Triple(b0, b1, a1)
+    }
+
+    private fun applyDeemphasis(left: FloatArray, right: FloatArray, count: Int) {
+        val (b0, b1, a1) = calculateDeemphasisCoeffs()
+
+        // Left channel - use instance state variables (persistent across chunks)
+        for (i in 0 until count) {
+            val x = left[i]
+            val y = b0 * x + b1 * deemphPrevXL - a1 * deemphPrevYL
+            left[i] = y
+            deemphPrevXL = x
+            deemphPrevYL = y
+        }
+
+        // Right channel - use instance state variables (persistent across chunks)
+        for (i in 0 until count) {
+            val x = right[i]
+            val y = b0 * x + b1 * deemphPrevXR - a1 * deemphPrevYR
+            right[i] = y
+            deemphPrevXR = x
+            deemphPrevYR = y
+        }
+    }
+
     // M/S stereo correlation (no dithering - that's now in spectral interpolation)
     private fun msCorrelate(mid: FloatArray, side: FloatArray, left: FloatArray, right: FloatArray, sampleCount: Int) {
         for (i in 0 until sampleCount) {
@@ -525,6 +568,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // Expand dynamic range (gamma expansion)
             expandGamma(pcm32Left, pcm32Right, sampleCount)
+
+            // Apply de-emphasis filter (AFTER gamma expansion, BEFORE PCM32f to PCM8)
+            applyDeemphasis(pcm32Left, pcm32Right, sampleCount)
 
             // Dither to 8-bit PCMu8
             pcm32fToPcm8(pcm32Left, pcm32Right, sampleCount)

@@ -398,6 +398,48 @@ static void expand_mu_law(float *left, float *right, size_t count) {
     }
 }
 
+//=============================================================================
+// De-emphasis Filter
+//=============================================================================
+
+static void calculate_deemphasis_coeffs(float *b0, float *b1, float *a1) {
+    // De-emphasis factor
+    const float alpha = 0.5f;
+
+    *b0 = 1.0f;
+    *b1 = 0.0f;  // No feedforward delay
+    *a1 = -alpha;  // NEGATIVE because equation has minus sign: y = x - a1*prev_y
+}
+
+static void apply_deemphasis(float *left, float *right, size_t count) {
+    // Static state variables - persistent across chunks to prevent discontinuities
+    static float prev_x_l = 0.0f;
+    static float prev_y_l = 0.0f;
+    static float prev_x_r = 0.0f;
+    static float prev_y_r = 0.0f;
+
+    float b0, b1, a1;
+    calculate_deemphasis_coeffs(&b0, &b1, &a1);
+
+    // Left channel - use persistent state
+    for (size_t i = 0; i < count; i++) {
+        float x = left[i];
+        float y = b0 * x + b1 * prev_x_l - a1 * prev_y_l;
+        left[i] = y;
+        prev_x_l = x;
+        prev_y_l = y;
+    }
+
+    // Right channel - use persistent state
+    for (size_t i = 0; i < count; i++) {
+        float x = right[i];
+        float y = b0 * x + b1 * prev_x_r - a1 * prev_y_r;
+        right[i] = y;
+        prev_x_r = x;
+        prev_y_r = y;
+    }
+}
+
 static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *left, uint8_t *right, size_t count, float dither_error[2][2]) {
     const float b1 = 1.5f;   // 1st feedback coefficient
     const float b2 = -0.75f; // 2nd feedback coefficient
@@ -611,6 +653,9 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
 
     // expand dynamic range
     expand_gamma(pcm32_left, pcm32_right, sample_count);
+
+    // Apply de-emphasis filter (AFTER gamma expansion, BEFORE PCM32f to PCM8)
+    apply_deemphasis(pcm32_left, pcm32_right, sample_count);
 
     // dither to 8-bit
     pcm32f_to_pcm8(pcm32_left, pcm32_right, pcm8_left, pcm8_right, sample_count, err);
