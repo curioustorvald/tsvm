@@ -31,7 +31,7 @@ static const float BASE_QUANTISER_WEIGHTS[2][10] = {
     1.0f,    // H (L4) 1 khz
     1.0f,    // H (L3) 2 khz
     1.3f,    // H (L2) 4 khz
-    1.8f     // H (L1) 8 khz
+    2.0f     // H (L1) 8 khz
 },
 { // side channel
     6.0f,    // LL (L9) DC
@@ -229,9 +229,9 @@ static void compress_gamma(float *left, float *right, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // encode(x) = sign(x) * |x|^γ where γ=0.5
         float x = left[i];
-        left[i] = signum(x) * powf(fabsf(x), 1.0f / 1.4142f);
+        left[i] = signum(x) * powf(fabsf(x), 0.625f);
         float y = right[i];
-        right[i] = signum(y) * powf(fabsf(y), 1.0f / 1.4142f);
+        right[i] = signum(y) * powf(fabsf(y), 0.625f);
     }
 }
 

@@ -31,7 +31,7 @@ static const float BASE_QUANTISER_WEIGHTS[2][10] = {
     1.0f,    // H (L4) 1 khz
     1.0f,    // H (L3) 2 khz
     1.3f,    // H (L2) 4 khz
-    1.8f     // H (L1) 8 khz
+    2.0f     // H (L1) 8 khz
 },
 { // side channel
     6.0f,    // LL (L9) DC
@@ -380,9 +380,9 @@ static void expand_gamma(float *left, float *right, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
         float x = left[i]; float a = fabsf(x);
-        left[i] = signum(x) * powf(a, 1.4142f);
+        left[i] = signum(x) * powf(a, 1.6f);
         float y = right[i]; float b = fabsf(y);
-        right[i] = signum(y) * powf(b, 1.4142f);
+        right[i] = signum(y) * powf(b, 1.6f);
     }
 }
 
