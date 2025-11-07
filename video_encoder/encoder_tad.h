@@ -21,9 +21,9 @@
 
 
 static inline int tad32_quality_to_max_index(int quality) {
-    static const int quality_map[7] = {31, 35, 39, 47, 56, 89, 127};
+    static const int quality_map[6] = {21, 31, 44, 63, 89, 127};
     if (quality < 0) quality = 0;
-    if (quality > 6) quality = 6;
+    if (quality > 5) quality = 5;
     return quality_map[quality];
 }
 

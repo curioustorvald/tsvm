@@ -49,28 +49,28 @@ static const float BASE_QUANTISER_WEIGHTS[2][10] = {
 // target: before quantisation
 static const float DEADBANDS[2][10] = {
 { // mid channel
-    0.10f,    // LL (L9) DC
-    0.03f,    // H (L9) 31.25 hz
-    0.03f,    // H (L8) 62.5 hz
-    0.03f,    // H (L7) 125 hz
-    0.03f,    // H (L6) 250 hz
-    0.02f,    // H (L5) 500 hz
-    0.02f,    // H (L4) 1 khz
-    0.005f,    // H (L3) 2 khz
-    0.005f,    // H (L2) 4 khz
-    0.005f     // H (L1) 8 khz
+    0.20f,    // LL (L9) DC
+    0.06f,    // H (L9) 31.25 hz
+    0.06f,    // H (L8) 62.5 hz
+    0.06f,    // H (L7) 125 hz
+    0.06f,    // H (L6) 250 hz
+    0.04f,    // H (L5) 500 hz
+    0.04f,    // H (L4) 1 khz
+    0.01f,    // H (L3) 2 khz
+    0.01f,    // H (L2) 4 khz
+    0.01f     // H (L1) 8 khz
 },
 { // side channel
-    0.10f,    // LL (L9) DC
-    0.03f,    // H (L9) 31.25 hz
-    0.03f,    // H (L8) 62.5 hz
-    0.03f,    // H (L7) 125 hz
-    0.03f,    // H (L6) 250 hz
-    0.02f,    // H (L5) 500 hz
-    0.02f,    // H (L4) 1 khz
-    0.005f,    // H (L3) 2 khz
-    0.005f,    // H (L2) 4 khz
-    0.005f     // H (L1) 8 khz
+    0.20f,    // LL (L9) DC
+    0.06f,    // H (L9) 31.25 hz
+    0.06f,    // H (L8) 62.5 hz
+    0.06f,    // H (L7) 125 hz
+    0.06f,    // H (L6) 250 hz
+    0.04f,    // H (L5) 500 hz
+    0.04f,    // H (L4) 1 khz
+    0.01f,    // H (L3) 2 khz
+    0.01f,    // H (L2) 4 khz
+    0.01f     // H (L1) 8 khz
 }};
 
 static inline float FCLAMP(float x, float min, float max) {

@@ -172,28 +172,28 @@ static int calculate_dwt_levels(int chunk_size) {
 // Deadband thresholds (must match encoder)
 static const float DEADBANDS[2][10] = {
 { // mid channel
-    0.10f,    // LL (L9) DC
-    0.03f,    // H (L9) 31.25 hz
-    0.03f,    // H (L8) 62.5 hz
-    0.03f,    // H (L7) 125 hz
-    0.03f,    // H (L6) 250 hz
-    0.02f,    // H (L5) 500 hz
-    0.02f,    // H (L4) 1 khz
-    0.005f,    // H (L3) 2 khz
-    0.005f,    // H (L2) 4 khz
-    0.005f     // H (L1) 8 khz
+    0.20f,    // LL (L9) DC
+    0.06f,    // H (L9) 31.25 hz
+    0.06f,    // H (L8) 62.5 hz
+    0.06f,    // H (L7) 125 hz
+    0.06f,    // H (L6) 250 hz
+    0.04f,    // H (L5) 500 hz
+    0.04f,    // H (L4) 1 khz
+    0.01f,    // H (L3) 2 khz
+    0.01f,    // H (L2) 4 khz
+    0.01f     // H (L1) 8 khz
 },
 { // side channel
-    0.10f,    // LL (L9) DC
-    0.03f,    // H (L9) 31.25 hz
-    0.03f,    // H (L8) 62.5 hz
-    0.03f,    // H (L7) 125 hz
-    0.03f,    // H (L6) 250 hz
-    0.02f,    // H (L5) 500 hz
-    0.02f,    // H (L4) 1 khz
-    0.005f,    // H (L3) 2 khz
-    0.005f,    // H (L2) 4 khz
-    0.005f     // H (L1) 8 khz
+    0.20f,    // LL (L9) DC
+    0.06f,    // H (L9) 31.25 hz
+    0.06f,    // H (L8) 62.5 hz
+    0.06f,    // H (L7) 125 hz
+    0.06f,    // H (L6) 250 hz
+    0.04f,    // H (L5) 500 hz
+    0.04f,    // H (L4) 1 khz
+    0.01f,    // H (L3) 2 khz
+    0.01f,    // H (L2) 4 khz
+    0.01f     // H (L1) 8 khz
 }};
 
 // Fast PRNG state (xorshift32) for stochastic reconstruction
@@ -604,7 +604,7 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
 
             // Generate Laplacian-distributed noise scaled to deadband width
             // Use scale = threshold/3 to keep ~99% of samples within [-threshold, +threshold]
-            float noise = laplacian_noise(deadband_threshold / 3.0f);
+            float noise = tpdf1() * deadband_threshold / 10.0f;
 
             // Clamp to deadband range
             if (noise > deadband_threshold) noise = deadband_threshold;
