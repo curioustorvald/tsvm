@@ -163,6 +163,59 @@ static int calculate_dwt_levels(int chunk_size) {
 }
 
 //=============================================================================
+// Stochastic Reconstruction for Deadzoned Coefficients
+//=============================================================================
+
+// Special marker for deadzoned coefficients (must match encoder)
+#define DEADZONE_MARKER_QUANT (-128)
+
+// Deadband thresholds (must match encoder)
+static const float DEADBANDS[2][10] = {
+{ // mid channel
+    0.10f,    // LL (L9) DC
+    0.03f,    // H (L9) 31.25 hz
+    0.03f,    // H (L8) 62.5 hz
+    0.03f,    // H (L7) 125 hz
+    0.03f,    // H (L6) 250 hz
+    0.02f,    // H (L5) 500 hz
+    0.02f,    // H (L4) 1 khz
+    0.005f,    // H (L3) 2 khz
+    0.005f,    // H (L2) 4 khz
+    0.005f     // H (L1) 8 khz
+},
+{ // side channel
+    0.10f,    // LL (L9) DC
+    0.03f,    // H (L9) 31.25 hz
+    0.03f,    // H (L8) 62.5 hz
+    0.03f,    // H (L7) 125 hz
+    0.03f,    // H (L6) 250 hz
+    0.02f,    // H (L5) 500 hz
+    0.02f,    // H (L4) 1 khz
+    0.005f,    // H (L3) 2 khz
+    0.005f,    // H (L2) 4 khz
+    0.005f     // H (L1) 8 khz
+}};
+
+// Fast PRNG state (xorshift32) for stochastic reconstruction
+static uint32_t deadzone_rng_state = 0x12345678u;
+
+// Laplacian-distributed noise (better approximation than TPDF)
+// Uses inverse CDF method: X = -sign(U) * ln(1 - 2*|U|) / λ
+static float laplacian_noise(float scale) {
+    float u = urand(&deadzone_rng_state) - 0.5f;  // [-0.5, 0.5)
+    float sign = (u >= 0.0f) ? 1.0f : -1.0f;
+    float abs_u = fabsf(u);
+
+    // Avoid log(0) by clamping
+    if (abs_u >= 0.49999f) abs_u = 0.49999f;
+
+    // Inverse Laplacian CDF with λ = 1/scale
+    float x = -sign * logf(1.0f - 2.0f * abs_u) * scale;
+
+    return x;
+}
+
+//=============================================================================
 // Haar DWT Implementation (inverse only needed for decoder)
 //=============================================================================
 
@@ -380,9 +433,9 @@ static void expand_gamma(float *left, float *right, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
         float x = left[i]; float a = fabsf(x);
-        left[i] = signum(x) * powf(a, 1.6f);
+        left[i] = signum(x) * a * a;
         float y = right[i]; float b = fabsf(y);
-        right[i] = signum(y) * powf(b, 1.6f);
+        right[i] = signum(y) * b * b;
     }
 }
 
@@ -534,7 +587,7 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
         sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
     }
 
-    // Step 1: Dequantize all coefficients (no dithering yet)
+    // Dequantize all coefficients with stochastic reconstruction for deadzoned values
     for (size_t i = 0; i < count; i++) {
         int sideband = dwt_levels;
         for (int s = 0; s <= dwt_levels; s++) {
@@ -544,35 +597,33 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
             }
         }
 
-        // Decode using lambda companding
-        float normalized_val = lambda_decompanding(quantized[i], max_index);
+        // Check for deadzone marker
+        /*if (quantized[i] == (int8_t)0) {//DEADZONE_MARKER_QUANT) {
+            // Stochastic reconstruction: generate Laplacian noise in deadband range
+            float deadband_threshold = DEADBANDS[channel][sideband];
 
-        // Denormalize using the subband scalar and apply base weight + quantiser scaling
-        float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
-        coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+            // Generate Laplacian-distributed noise scaled to deadband width
+            // Use scale = threshold/3 to keep ~99% of samples within [-threshold, +threshold]
+            float noise = laplacian_noise(deadband_threshold / 3.0f);
+
+            // Clamp to deadband range
+            if (noise > deadband_threshold) noise = deadband_threshold;
+            if (noise < -deadband_threshold) noise = -deadband_threshold;
+
+            // Apply scalar (but not quantiser weight - noise is already in correct range)
+            coeffs[i] = noise * TAD32_COEFF_SCALARS[sideband];
+        } else {*/
+            // Normal dequantization using lambda decompanding
+            float normalized_val = lambda_decompanding(quantized[i], max_index);
+
+            // Denormalize using the subband scalar and apply base weight + quantiser scaling
+            float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
+            coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+//        }
     }
 
-    // Step 2: Apply spectral interpolation per band
-    // Process bands from high to low frequency (dwt_levels down to 0)
-    // so we can use lower bands' RMS for higher band reconstruction
-    float prev_band_rms = 0.0f;
-
-    for (int band = dwt_levels; band >= 0; band--) {
-        size_t band_start = sideband_starts[band];
-        size_t band_end = sideband_starts[band + 1];
-        size_t band_len = band_end - band_start;
-
-        // Calculate quantization step Q for this band
-        float weight = BASE_QUANTISER_WEIGHTS[channel][band] * quantiser_scale;
-        float scalar = TAD32_COEFF_SCALARS[band] * weight;
-        float Q = scalar / max_index;
-
-        // Apply spectral interpolation to this band
-        spectral_interpolate_band(&coeffs[band_start], band_len, Q, prev_band_rms);
-
-        // Compute RMS for this band to use as reference for next (lower frequency) band
-        prev_band_rms = compute_band_rms(&coeffs[band_start], band_len);
-    }
+    // Note: Stochastic reconstruction replaces the old spectral interpolation step
+    // No need for additional processing - deadzoned coefficients already have appropriate noise
 
     free(sideband_starts);
 }
@@ -653,6 +704,7 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
 
     // expand dynamic range
     expand_gamma(pcm32_left, pcm32_right, sample_count);
+//    expand_mu_law(pcm32_left, pcm32_right, sample_count);
 
     // Apply de-emphasis filter (AFTER gamma expansion, BEFORE PCM32f to PCM8)
     apply_deemphasis(pcm32_left, pcm32_right, sample_count);

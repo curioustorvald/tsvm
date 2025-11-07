@@ -46,6 +46,33 @@ static const float BASE_QUANTISER_WEIGHTS[2][10] = {
     3.2f     // H (L1) 8 khz
 }};
 
+// target: before quantisation
+static const float DEADBANDS[2][10] = {
+{ // mid channel
+    0.10f,    // LL (L9) DC
+    0.03f,    // H (L9) 31.25 hz
+    0.03f,    // H (L8) 62.5 hz
+    0.03f,    // H (L7) 125 hz
+    0.03f,    // H (L6) 250 hz
+    0.02f,    // H (L5) 500 hz
+    0.02f,    // H (L4) 1 khz
+    0.005f,    // H (L3) 2 khz
+    0.005f,    // H (L2) 4 khz
+    0.005f     // H (L1) 8 khz
+},
+{ // side channel
+    0.10f,    // LL (L9) DC
+    0.03f,    // H (L9) 31.25 hz
+    0.03f,    // H (L8) 62.5 hz
+    0.03f,    // H (L7) 125 hz
+    0.03f,    // H (L6) 250 hz
+    0.02f,    // H (L5) 500 hz
+    0.02f,    // H (L4) 1 khz
+    0.005f,    // H (L3) 2 khz
+    0.005f,    // H (L2) 4 khz
+    0.005f     // H (L1) 8 khz
+}};
+
 static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
 }
@@ -73,6 +100,56 @@ static int calculate_dwt_levels(int chunk_size) {
     return levels - 2;*/  // Maximum decomposition
 
     return 9;
+}
+
+// Special marker for deadzoned coefficients (will be reconstructed with noise on decode)
+#define DEADZONE_MARKER_FLOAT (-999.0f)  // Unmistakable marker in float domain
+#define DEADZONE_MARKER_QUANT (-128)     // Maps to this in quantized domain (int8 minimum)
+
+// Perceptual epsilon - coefficients below this are truly zero (inaudible)
+#define EPSILON_PERCEPTUAL 0.001f
+
+static void apply_coeff_deadzone(int channel, float *coeffs, size_t num_samples) {
+    // Apply deadzonning to each DWT subband using frequency-dependent thresholds
+    // Instead of zeroing, mark small coefficients for stochastic reconstruction
+
+    const int dwt_levels = 9;  // Fixed to match encoder
+
+    // Calculate subband boundaries (same logic as decoder)
+    const int first_band_size = num_samples >> dwt_levels;
+    int sideband_starts[11];  // dwt_levels + 2
+    sideband_starts[0] = 0;
+    sideband_starts[1] = first_band_size;
+    for (int i = 2; i <= dwt_levels + 1; i++) {
+        sideband_starts[i] = sideband_starts[i - 1] + (first_band_size << (i - 2));
+    }
+
+    // Apply deadzone threshold to each coefficient
+    for (size_t i = 0; i < num_samples; i++) {
+        // Determine which subband this coefficient belongs to
+        int sideband = dwt_levels;  // Default to highest frequency
+        for (int s = 0; s <= dwt_levels; s++) {
+            if (i < (size_t)sideband_starts[s + 1]) {
+                sideband = s;
+                break;
+            }
+        }
+
+        // Get threshold for this subband and channel
+        float threshold = DEADBANDS[channel][sideband];
+        float abs_coeff = fabsf(coeffs[i]);
+
+        // If coefficient is within deadband AND perceptually non-zero, mark it
+        if (abs_coeff > EPSILON_PERCEPTUAL && abs_coeff < threshold) {
+            // Mark for stochastic reconstruction (decoder will add noise)
+            coeffs[i] = 0.0f;//DEADZONE_MARKER_FLOAT;
+        }
+        // If below perceptual epsilon, truly zero it
+        else if (abs_coeff <= EPSILON_PERCEPTUAL) {
+            coeffs[i] = 0.0f;
+        }
+        // Otherwise keep coefficient unchanged
+    }
 }
 
 //=============================================================================
@@ -276,9 +353,9 @@ static void compress_gamma(float *left, float *right, size_t count) {
     for (size_t i = 0; i < count; i++) {
         // encode(x) = sign(x) * |x|^γ where γ=0.5
         float x = left[i];
-        left[i] = signum(x) * powf(fabsf(x), 0.625f);
+        left[i] = signum(x) * powf(fabsf(x), 0.5f);
         float y = right[i];
-        right[i] = signum(y) * powf(fabsf(y), 0.625f);
+        right[i] = signum(y) * powf(fabsf(y), 0.5f);
     }
 }
 
@@ -357,12 +434,17 @@ static void quantize_dwt_coefficients(int channel, const float *coeffs, int8_t *
             current_subband_index[i] = sideband;
         }
 
-        // Apply base weight and quantiser scaling
-        float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
-        float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband] * weight)); // val is normalised to [-1,1]
-        int8_t quant_val = lambda_companding(val, max_index);
-
-        quantized[i] = quant_val;
+        // Check for deadzone marker (special handling)
+        if (coeffs[i] == DEADZONE_MARKER_FLOAT) {
+            // Map to special quantized marker for stochastic reconstruction
+            quantized[i] = (int8_t)DEADZONE_MARKER_QUANT;
+        } else {
+            // Normal quantization
+            float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
+            float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband] * weight)); // val is normalised to [-1,1]
+            int8_t quant_val = lambda_companding(val, max_index);
+            quantized[i] = quant_val;
+        }
     }
 
     free(sideband_starts);
@@ -809,6 +891,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
 
     // Step 1.2: Compress dynamic range
     compress_gamma(pcm32_left, pcm32_right, num_samples);
+//    compress_mu_law(pcm32_left, pcm32_right, num_samples);
 
     // Step 2: M/S decorrelation
     ms_decorrelate(pcm32_left, pcm32_right, pcm32_mid, pcm32_side, num_samples);
@@ -834,6 +917,9 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         accumulate_coefficients(dwt_mid, dwt_levels, num_samples, mid_accumulators);
         accumulate_coefficients(dwt_side, dwt_levels, num_samples, side_accumulators);
     }
+
+//    apply_coeff_deadzone(0, dwt_mid, num_samples);
+//    apply_coeff_deadzone(1, dwt_side, num_samples);
 
     // Step 4: Quantize with frequency-dependent weights and quantiser scaling
     quantize_dwt_coefficients(0, dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);

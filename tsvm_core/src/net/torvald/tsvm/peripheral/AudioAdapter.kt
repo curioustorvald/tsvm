@@ -157,6 +157,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private val LAMBDA_FIXED = 6.0f
 
+    // Deadzone marker for stochastic reconstruction (must match encoder)
+    private val DEADZONE_MARKER_QUANT = (-128).toByte()
+
+    // Deadband thresholds (must match encoder)
+    private val DEADBANDS = arrayOf(
+        floatArrayOf(  // Mid channel
+            1.0f, 0.3f, 0.3f, 0.3f, 0.3f, 0.2f, 0.2f, 0.05f, 0.05f, 0.05f
+        ),
+        floatArrayOf(  // Side channel
+            1.0f, 0.3f, 0.3f, 0.3f, 0.3f, 0.2f, 0.2f, 0.05f, 0.05f, 0.05f
+        )
+    )
+
     // Dither state for noise shaping (2 channels, 2 history samples each)
     private val ditherError = Array(2) { FloatArray(2) }
 
@@ -366,9 +379,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // TAD (Terrarum Advanced Audio) Decoder
     //=============================================================================
 
-    // Uniform random in [0, 1)
+    // Laplacian-distributed noise (for stochastic reconstruction)
+    private fun laplacianNoise(scale: Float): Float {
+        val u = urand() - 0.5f  // [-0.5, 0.5)
+        val sign = if (u >= 0.0f) 1.0f else -1.0f
+        var absU = kotlin.math.abs(u)
+
+        // Avoid log(0)
+        if (absU >= 0.49999f) absU = 0.49999f
+
+        // Inverse Laplacian CDF with λ = 1/scale
+        val x = -sign * kotlin.math.ln(1.0f - 2.0f * absU) * scale
+        return x
+    }
+
+    // Uniform random in [0, 1) - kept for compatibility
     private fun frand01(): Float {
-        return Math.random().toFloat()
+        return urand()
     }
 
     // TPDF (Triangular Probability Density Function) noise in [-1, +1)
@@ -554,8 +581,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Dequantize to Float32
             val dwtMid = FloatArray(sampleCount)
             val dwtSide = FloatArray(sampleCount)
-            dequantizeDwtCoefficients(quantMid, dwtMid, sampleCount, maxIndex, dwtLevels)
-            dequantizeDwtCoefficients(quantSide, dwtSide, sampleCount, maxIndex, dwtLevels)
+            dequantizeDwtCoefficients(0, quantMid, dwtMid, sampleCount, maxIndex, dwtLevels)
+            dequantizeDwtCoefficients(1, quantSide, dwtSide, sampleCount, maxIndex, dwtLevels)
 
             // Inverse DWT using CDF 9/7 wavelet (produces Float32 samples in range [-1.0, 1.0])
             dwt97InverseMultilevel(dwtMid, sampleCount, dwtLevels)
@@ -568,6 +595,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // Expand dynamic range (gamma expansion)
             expandGamma(pcm32Left, pcm32Right, sampleCount)
+//            expandMuLaw(pcm32Left, pcm32Right, sampleCount)
 
             // Apply de-emphasis filter (AFTER gamma expansion, BEFORE PCM32f to PCM8)
             applyDeemphasis(pcm32Left, pcm32Right, sampleCount)
@@ -632,7 +660,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
-    private fun dequantizeDwtCoefficients(quantized: ByteArray, coeffs: FloatArray, count: Int,
+    private fun dequantizeDwtCoefficients(channel: Int, quantized: ByteArray, coeffs: FloatArray, count: Int,
                                          maxIndex: Int, dwtLevels: Int) {
         // Calculate sideband boundaries dynamically
         val firstBandSize = count shr dwtLevels
@@ -643,7 +671,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             sidebandStarts[i] = sidebandStarts[i - 1] + (firstBandSize shl (i - 2))
         }
 
-        // Step 1: Dequantize all coefficients using lambda decompanding
+        // Dequantize all coefficients with stochastic reconstruction for deadzoned values
         val quantiserScale = 1.0f
         for (i in 0 until count) {
             var sideband = dwtLevels
@@ -654,34 +682,33 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 }
             }
 
-            // Decode using lambda companding
-            val normalizedVal = lambdaDecompanding(quantized[i], maxIndex)
+            // Check for deadzone marker
+            /*if (quantized[i] == DEADZONE_MARKER_QUANT) {
+                // Stochastic reconstruction: generate Laplacian noise in deadband range
+                val deadbandThreshold = DEADBANDS[channel][sideband]
 
-            // Denormalize using the subband scalar and apply base weight + quantiser scaling
-            val weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiserScale
-            coeffs[i] = normalizedVal * TAD32_COEFF_SCALARS[sideband] * weight
+                // Generate Laplacian-distributed noise scaled to deadband width
+                // Use scale = threshold/3 to keep ~99% of samples within [-threshold, +threshold]
+                var noise = laplacianNoise(deadbandThreshold / 3.0f)
+
+                // Clamp to deadband range
+                if (noise > deadbandThreshold) noise = deadbandThreshold
+                if (noise < -deadbandThreshold) noise = -deadbandThreshold
+
+                // Apply scalar (but not quantiser weight - noise is already in correct range)
+                coeffs[i] = noise * TAD32_COEFF_SCALARS[sideband]
+            } else {*/
+                // Normal dequantization using lambda decompanding
+                val normalizedVal = lambdaDecompanding(quantized[i], maxIndex)
+
+                // Denormalize using the subband scalar and apply base weight + quantiser scaling
+                val weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiserScale
+                coeffs[i] = normalizedVal * TAD32_COEFF_SCALARS[sideband] * weight
+//            }
         }
 
-        // Step 2: Apply spectral interpolation per band
-        // Process bands from high to low frequency (dwtLevels down to 0)
-        var prevBandRms = 0.0f
-
-        for (band in dwtLevels downTo 0) {
-            val bandStart = sidebandStarts[band]
-            val bandEnd = sidebandStarts[band + 1]
-            val bandLen = bandEnd - bandStart
-
-            // Calculate quantization step Q for this band
-            val weight = BASE_QUANTISER_WEIGHTS[band] * quantiserScale
-            val scalar = TAD32_COEFF_SCALARS[band] * weight
-            val Q = scalar / maxIndex
-
-            // Apply spectral interpolation to this band
-            spectralInterpolateBand(coeffs, bandStart, bandLen, Q, prevBandRms)
-
-            // Compute RMS for this band to use as reference for next (lower frequency) band
-            prevBandRms = computeBandRms(coeffs, bandStart, bandLen)
-        }
+        // Note: Stochastic reconstruction replaces the old spectral interpolation step
+        // No need for additional processing - deadzoned coefficients already have appropriate noise
     }
 
     // 9/7 inverse DWT (CDF 9/7 wavelet - matches C implementation)
