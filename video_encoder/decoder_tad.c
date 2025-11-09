@@ -834,6 +834,9 @@ static int tad_decode_channel_ezbc(const uint8_t *input, size_t input_size, int8
                 abs_val |= (1 << bitplane);
                 coeffs[idx] = sign * abs_val;
             }
+
+            // Add to next_significant so it continues being refined
+            tad_decode_queue_push(&next_significant, block);
         }
 
         // Swap queues for next bitplane
@@ -916,7 +919,7 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     uint8_t *pcm8_left = malloc(sample_count * sizeof(uint8_t));
     uint8_t *pcm8_right = malloc(sample_count * sizeof(uint8_t));
 
-    // Decode Mid/Side using binary tree EZBC
+    // Decode Mid/Side using binary tree EZBC - FIXED!
     size_t mid_bytes_consumed = 0;
     size_t side_bytes_consumed = 0;
 

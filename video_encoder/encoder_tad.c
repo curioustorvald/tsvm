@@ -435,16 +435,16 @@ static void quantize_dwt_coefficients(int channel, const float *coeffs, int8_t *
         }
 
         // Check for deadzone marker (special handling)
-        if (coeffs[i] == DEADZONE_MARKER_FLOAT) {
+        /*if (coeffs[i] == DEADZONE_MARKER_FLOAT) {
             // Map to special quantized marker for stochastic reconstruction
             quantized[i] = (int8_t)DEADZONE_MARKER_QUANT;
-        } else {
+        } else {*/
             // Normal quantization
             float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
             float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband] * weight)); // val is normalised to [-1,1]
             int8_t quant_val = lambda_companding(val, max_index);
             quantized[i] = quant_val;
-        }
+//        }
     }
 
     free(sideband_starts);
@@ -1035,7 +1035,8 @@ static void tad_process_significant_block_recursive(tad_ezbc_context_t *ctx, tad
 }
 
 // Binary tree EZBC encoding for a single channel (1D variant)
-static size_t tad_encode_channel_ezbc(int8_t *coeffs, size_t count, uint8_t **output) {
+// Made non-static for testing
+size_t tad_encode_channel_ezbc(int8_t *coeffs, size_t count, uint8_t **output) {
     tad_bitstream_t bs;
     tad_bitstream_init(&bs, count / 4);  // Initial guess
 
@@ -1105,6 +1106,9 @@ static size_t tad_encode_channel_ezbc(int8_t *coeffs, size_t count, uint8_t **ou
             // Emit refinement bit (bit at position 'bitplane')
             int bit = (abs(coeffs[idx]) >> bitplane) & 1;
             tad_bitstream_write_bit(&bs, bit);
+
+            // Add to next_significant so it continues being refined
+            tad_queue_push(&next_significant, block);
         }
 
         // Swap queues for next bitplane
@@ -1212,7 +1216,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
         accumulate_quantized(quant_side, dwt_levels, num_samples, side_quant_accumulators);
     }
 
-    // Step 5: Encode with binary tree EZBC (1D variant)
+    // Step 5: Encode with binary tree EZBC (1D variant) - FIXED!
     uint8_t *mid_ezbc = NULL;
     uint8_t *side_ezbc = NULL;
 

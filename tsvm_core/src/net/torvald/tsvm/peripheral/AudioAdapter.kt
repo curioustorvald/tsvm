@@ -733,6 +733,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     val absVal = kotlin.math.abs(coeffs[idx].toInt())
                     coeffs[idx] = (sign * (absVal or (1 shl bitplane))).toByte()
                 }
+
+                // Add to nextSignificant so it continues being refined
+                nextSignificant.push(block)
             }
 
             // Swap queues for next bitplane
@@ -783,7 +786,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 return
             }
 
-            // Decode using binary tree EZBC
+            // Decode using binary tree EZBC - FIXED!
             val quantMid = ByteArray(sampleCount)
             val quantSide = ByteArray(sampleCount)
 
