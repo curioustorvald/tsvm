@@ -15,7 +15,7 @@
 #define ENCODER_VENDOR_STRING "Encoder-TAD32 (PCM32f version) 20251107"
 
 // TAD32 format constants
-#define TAD32_DEFAULT_CHUNK_SIZE 32768  // Default: power of 2 for optimal performance (2^15)
+#define TAD32_DEFAULT_CHUNK_SIZE 31991  // Using a prime number to force the worst condition
 
 // Temporary file for FFmpeg PCM extraction
 char TEMP_PCM_FILE[42];

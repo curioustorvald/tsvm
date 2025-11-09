@@ -8,6 +8,7 @@
 #include <math.h>
 #include <zstd.h>
 #include <getopt.h>
+#include "encoder_tad.h"
 
 #define DECODER_VENDOR_STRING "Decoder-TAD 20251026"
 
@@ -46,7 +47,7 @@ static const float BASE_QUANTISER_WEIGHTS[2][10] = {
     3.2f     // H (L1) 8 khz
 }};
 
-#define TAD_DEFAULT_CHUNK_SIZE 32768
+#define TAD_DEFAULT_CHUNK_SIZE 31991
 #define TAD_MIN_CHUNK_SIZE 1024
 #define TAD_SAMPLE_RATE 32000
 #define TAD_CHANNELS 2
@@ -629,6 +630,238 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
 }
 
 //=============================================================================
+// Binary Tree EZBC Decoder (1D Variant for TAD)
+//=============================================================================
+
+#include <stdbool.h>
+
+// Bitstream reader for EZBC
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+    size_t byte_pos;
+    uint8_t bit_pos;  // 0-7, current bit position in current byte
+} tad_bitstream_reader_t;
+
+// Block structure for 1D binary tree (same as encoder)
+typedef struct {
+    int start;
+    int length;
+} tad_decode_block_t;
+
+// Queue for block processing (same as encoder)
+typedef struct {
+    tad_decode_block_t *blocks;
+    size_t count;
+    size_t capacity;
+} tad_decode_queue_t;
+
+// Track coefficient state for refinement
+typedef struct {
+    bool significant;
+    int first_bitplane;
+} tad_decode_state_t;
+
+// Bitstream read operations
+static void tad_bitstream_reader_init(tad_bitstream_reader_t *bs, const uint8_t *data, size_t size) {
+    bs->data = data;
+    bs->size = size;
+    bs->byte_pos = 0;
+    bs->bit_pos = 0;
+}
+
+static int tad_bitstream_read_bit(tad_bitstream_reader_t *bs) {
+    if (bs->byte_pos >= bs->size) {
+        fprintf(stderr, "Error: Bitstream underflow\n");
+        return 0;
+    }
+
+    int bit = (bs->data[bs->byte_pos] >> bs->bit_pos) & 1;
+
+    bs->bit_pos++;
+    if (bs->bit_pos == 8) {
+        bs->bit_pos = 0;
+        bs->byte_pos++;
+    }
+
+    return bit;
+}
+
+static uint32_t tad_bitstream_read_bits(tad_bitstream_reader_t *bs, int num_bits) {
+    uint32_t value = 0;
+    for (int i = 0; i < num_bits; i++) {
+        value |= (tad_bitstream_read_bit(bs) << i);
+    }
+    return value;
+}
+
+// Queue operations
+static void tad_decode_queue_init(tad_decode_queue_t *q) {
+    q->capacity = 1024;
+    q->blocks = malloc(q->capacity * sizeof(tad_decode_block_t));
+    q->count = 0;
+}
+
+static void tad_decode_queue_push(tad_decode_queue_t *q, tad_decode_block_t block) {
+    if (q->count >= q->capacity) {
+        q->capacity *= 2;
+        q->blocks = realloc(q->blocks, q->capacity * sizeof(tad_decode_block_t));
+    }
+    q->blocks[q->count++] = block;
+}
+
+static void tad_decode_queue_free(tad_decode_queue_t *q) {
+    free(q->blocks);
+}
+
+// Context for recursive EZBC decoding
+typedef struct {
+    tad_bitstream_reader_t *bs;
+    int8_t *coeffs;
+    tad_decode_state_t *states;
+    int bitplane;
+    tad_decode_queue_t *next_insignificant;
+    tad_decode_queue_t *next_significant;
+} tad_decode_context_t;
+
+// Recursively decode a significant block - subdivide until size 1
+static void tad_decode_significant_block_recursive(tad_decode_context_t *ctx, tad_decode_block_t block) {
+    // If size 1: read sign bit and reconstruct value
+    if (block.length == 1) {
+        int idx = block.start;
+        int sign_bit = tad_bitstream_read_bit(ctx->bs);
+
+        // Reconstruct absolute value from bitplane
+        int abs_val = 1 << ctx->bitplane;
+
+        // Apply sign
+        ctx->coeffs[idx] = sign_bit ? -abs_val : abs_val;
+
+        ctx->states[idx].significant = true;
+        ctx->states[idx].first_bitplane = ctx->bitplane;
+        tad_decode_queue_push(ctx->next_significant, block);
+        return;
+    }
+
+    // Block is > 1: subdivide into left and right halves
+    int mid = block.length / 2;
+    if (mid == 0) mid = 1;
+
+    // Process left child
+    tad_decode_block_t left = {block.start, mid};
+    int left_sig = tad_bitstream_read_bit(ctx->bs);
+    if (left_sig) {
+        tad_decode_significant_block_recursive(ctx, left);
+    } else {
+        tad_decode_queue_push(ctx->next_insignificant, left);
+    }
+
+    // Process right child (if exists)
+    if (block.length > mid) {
+        tad_decode_block_t right = {block.start + mid, block.length - mid};
+        int right_sig = tad_bitstream_read_bit(ctx->bs);
+        if (right_sig) {
+            tad_decode_significant_block_recursive(ctx, right);
+        } else {
+            tad_decode_queue_push(ctx->next_insignificant, right);
+        }
+    }
+}
+
+// Binary tree EZBC decoding for a single channel (1D variant)
+static int tad_decode_channel_ezbc(const uint8_t *input, size_t input_size, int8_t *coeffs, size_t *bytes_consumed) {
+    tad_bitstream_reader_t bs;
+    tad_bitstream_reader_init(&bs, input, input_size);
+
+    // Read header: MSB bitplane and length
+    int msb_bitplane = tad_bitstream_read_bits(&bs, 8);
+    uint32_t count = tad_bitstream_read_bits(&bs, 16);
+
+    // Initialize coefficient array to zero
+    memset(coeffs, 0, count * sizeof(int8_t));
+
+    // Track coefficient significance
+    tad_decode_state_t *states = calloc(count, sizeof(tad_decode_state_t));
+
+    // Initialize queues
+    tad_decode_queue_t insignificant_queue, next_insignificant;
+    tad_decode_queue_t significant_queue, next_significant;
+
+    tad_decode_queue_init(&insignificant_queue);
+    tad_decode_queue_init(&next_insignificant);
+    tad_decode_queue_init(&significant_queue);
+    tad_decode_queue_init(&next_significant);
+
+    // Start with root block as insignificant
+    tad_decode_block_t root = {0, (int)count};
+    tad_decode_queue_push(&insignificant_queue, root);
+
+    // Process bitplanes from MSB to LSB
+    for (int bitplane = msb_bitplane; bitplane >= 0; bitplane--) {
+        // Process insignificant blocks
+        for (size_t i = 0; i < insignificant_queue.count; i++) {
+            tad_decode_block_t block = insignificant_queue.blocks[i];
+
+            int sig = tad_bitstream_read_bit(&bs);
+            if (sig == 0) {
+                // Still insignificant
+                tad_decode_queue_push(&next_insignificant, block);
+            } else {
+                // Became significant: recursively decode
+                tad_decode_context_t ctx = {
+                    .bs = &bs,
+                    .coeffs = coeffs,
+                    .states = states,
+                    .bitplane = bitplane,
+                    .next_insignificant = &next_insignificant,
+                    .next_significant = &next_significant
+                };
+                tad_decode_significant_block_recursive(&ctx, block);
+            }
+        }
+
+        // Refinement pass: read next bit for already-significant coefficients
+        for (size_t i = 0; i < significant_queue.count; i++) {
+            tad_decode_block_t block = significant_queue.blocks[i];
+            int idx = block.start;
+
+            int bit = tad_bitstream_read_bit(&bs);
+
+            // Add this bit to the coefficient's magnitude
+            if (bit) {
+                int sign = (coeffs[idx] < 0) ? -1 : 1;
+                int abs_val = abs(coeffs[idx]);
+                abs_val |= (1 << bitplane);
+                coeffs[idx] = sign * abs_val;
+            }
+        }
+
+        // Swap queues for next bitplane
+        tad_decode_queue_t temp_insig = insignificant_queue;
+        insignificant_queue = next_insignificant;
+        next_insignificant = temp_insig;
+        next_insignificant.count = 0;
+
+        tad_decode_queue_t temp_sig = significant_queue;
+        significant_queue = next_significant;
+        next_significant = temp_sig;
+        next_significant.count = 0;
+    }
+
+    // Cleanup
+    tad_decode_queue_free(&insignificant_queue);
+    tad_decode_queue_free(&next_insignificant);
+    tad_decode_queue_free(&significant_queue);
+    tad_decode_queue_free(&next_significant);
+    free(states);
+
+    // Calculate bytes consumed
+    *bytes_consumed = bs.byte_pos + (bs.bit_pos > 0 ? 1 : 0);
+
+    return 0;  // Success
+}
+
+//=============================================================================
 // Chunk Decoding
 //=============================================================================
 
@@ -683,9 +916,31 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
     uint8_t *pcm8_left = malloc(sample_count * sizeof(uint8_t));
     uint8_t *pcm8_right = malloc(sample_count * sizeof(uint8_t));
 
-    // Separate Mid/Side
-    memcpy(quant_mid, decompressed, sample_count);
-    memcpy(quant_side, decompressed + sample_count, sample_count);
+    // Decode Mid/Side using binary tree EZBC
+    size_t mid_bytes_consumed = 0;
+    size_t side_bytes_consumed = 0;
+
+    // Decode Mid channel
+    int result = tad_decode_channel_ezbc(decompressed, actual_size, quant_mid, &mid_bytes_consumed);
+    if (result != 0) {
+        fprintf(stderr, "Error: EZBC decoding failed for Mid channel\n");
+        free(decompressed);
+        free(quant_mid); free(quant_side); free(dwt_mid); free(dwt_side);
+        free(pcm32_left); free(pcm32_right); free(pcm8_left); free(pcm8_right);
+        return -1;
+    }
+
+    // Decode Side channel (starts after Mid channel data)
+    result = tad_decode_channel_ezbc(decompressed + mid_bytes_consumed,
+                                      actual_size - mid_bytes_consumed,
+                                      quant_side, &side_bytes_consumed);
+    if (result != 0) {
+        fprintf(stderr, "Error: EZBC decoding failed for Side channel\n");
+        free(decompressed);
+        free(quant_mid); free(quant_side); free(dwt_mid); free(dwt_side);
+        free(pcm32_left); free(pcm32_right); free(pcm8_left); free(pcm8_right);
+        return -1;
+    }
 
     // Dequantize with quantiser scaling and spectral interpolation
     // Use quantiser_scale = 1.0f for baseline (must match encoder)
