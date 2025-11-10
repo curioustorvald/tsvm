@@ -458,11 +458,11 @@ static void colour_space_to_rgb(tev_encoder_t *enc, double c1, double c2, double
 // Pre-calculated cosine tables
 static float dct_table_16[16][16]; // For 16x16 DCT
 static float dct_table_8[8][8];    // For 8x8 DCT
-static int tables_initialized = 0;
+static int tables_initialised = 0;
 
-// Initialize the pre-calculated tables
+// Initialise the pre-calculated tables
 static void init_dct_tables(void) {
-    if (tables_initialized) return;
+    if (tables_initialised) return;
 
     // Pre-calculate cosine values for 16x16 DCT
     for (int u = 0; u < 16; u++) {
@@ -478,7 +478,7 @@ static void init_dct_tables(void) {
         }
     }
 
-    tables_initialized = 1;
+    tables_initialised = 1;
 }
 
 // 16x16 2D DCT
@@ -486,7 +486,7 @@ static void init_dct_tables(void) {
 static float temp_dct_16[BLOCK_SIZE_SQR]; // Reusable temporary buffer
 
 static void dct_16x16_fast(float *input, float *output) {
-    init_dct_tables(); // Ensure tables are initialized
+    init_dct_tables(); // Ensure tables are initialised
 
     // First pass: Process rows (16 1D DCTs)
     for (int row = 0; row < 16; row++) {
@@ -521,7 +521,7 @@ static void dct_16x16_fast(float *input, float *output) {
 static float temp_dct_8[HALF_BLOCK_SIZE_SQR]; // Reusable temporary buffer
 
 static void dct_8x8_fast(float *input, float *output) {
-    init_dct_tables(); // Ensure tables are initialized
+    init_dct_tables(); // Ensure tables are initialised
 
     // First pass: Process rows (8 1D DCTs)
     for (int row = 0; row < 8; row++) {
@@ -770,11 +770,11 @@ static float complexity_to_rate_factor(float complexity) {
     float log_median = logf(median_complexity + 1.0f);
     float log_high = logf(high_complexity + 1.0f);
     
-    // Normalize: 0 = median complexity, 1 = high complexity threshold
-    float normalized = (log_complexity - log_median) / (log_high - log_median);
+    // Normalise: 0 = median complexity, 1 = high complexity threshold
+    float normalised = (log_complexity - log_median) / (log_high - log_median);
     
     // Sigmoid centered at median: f(0) ≈ 1.0, f(1) ≈ 1.6, f(-∞) ≈ 0.7
-    float sigmoid = 1.0f / (1.0f + expf(-4.0f * normalized));
+    float sigmoid = 1.0f / (1.0f + expf(-4.0f * normalised));
     float rate_factor = 0.7f + 0.9f * sigmoid; // Range: 0.7 to 1.6
     
     // Clamp to prevent extreme coefficient amplification/reduction
@@ -787,7 +787,7 @@ static float complexity_to_rate_factor(float complexity) {
 static void add_complexity_value(tev_encoder_t *enc, float complexity) {
     if (!enc->stats_mode) return;
     
-    // Initialize array if needed
+    // Initialise array if needed
     if (!enc->complexity_values) {
         enc->complexity_capacity = 10000; // Initial capacity
         enc->complexity_values = malloc(enc->complexity_capacity * sizeof(float));
@@ -1416,7 +1416,7 @@ static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
                     continue;
                 }
                 
-                // Initialize text buffer
+                // Initialise text buffer
                 text_buffer_size = 256;
                 text_buffer = malloc(text_buffer_size);
                 if (!text_buffer) {
@@ -1917,7 +1917,7 @@ static int write_all_subtitles_tc(tev_encoder_t *enc, FILE *output) {
     return bytes_written;
 }
 
-// Initialize encoder
+// Initialise encoder
 static tev_encoder_t* init_encoder(void) {
     tev_encoder_t *enc = calloc(1, sizeof(tev_encoder_t));
     if (!enc) return NULL;
@@ -1997,10 +1997,10 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
         return -1;
     }
 
-    // Initialize Zstd compression context
+    // Initialise Zstd compression context
     enc->zstd_context = ZSTD_createCCtx();
     if (!enc->zstd_context) {
-        fprintf(stderr, "Failed to initialize Zstd compression\n");
+        fprintf(stderr, "Failed to initialise Zstd compression\n");
         return 0;
     }
     
@@ -2009,7 +2009,7 @@ static int alloc_encoder_buffers(tev_encoder_t *enc) {
     ZSTD_CCtx_setParameter(enc->zstd_context, ZSTD_c_windowLog, 24); // 16MB window (should be plenty to hold an entire frame; interframe compression is unavailable)
     ZSTD_CCtx_setParameter(enc->zstd_context, ZSTD_c_hashLog, 16);
 
-    // Initialize previous frame to black
+    // Initialise previous frame to black
     memset(enc->previous_rgb, 0, encoding_pixels * 3);
     memset(enc->previous_even_field, 0, encoding_pixels * 3);
 
@@ -2467,7 +2467,7 @@ static int process_audio(tev_encoder_t *enc, int frame_num, FILE *output) {
         return 1;
     }
 
-    // Initialize packet size on first frame
+    // Initialise packet size on first frame
     if (enc->mp2_packet_size == 0) {
         uint8_t header[4];
         if (fread(header, 1, 4, enc->mp2_file) != 4) return 1;
@@ -2665,7 +2665,7 @@ int main(int argc, char *argv[]) {
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
         {"quantiser", required_argument, 0, 'Q'},
-        {"quantizer", required_argument, 0, 'Q'},
+        {"quantiser", required_argument, 0, 'Q'},
         {"bitrate", required_argument, 0, 'b'},
         {"arate", required_argument, 0, 1400},
         {"progressive", no_argument, 0, 'p'},
@@ -2793,7 +2793,7 @@ int main(int argc, char *argv[]) {
 
     if (enc->ictcp_mode) {
         // ICtCp: Ct and Cp have different characteristics than YCoCg Co/Cg
-        // Cp channel now uses specialized quantisation table, so moderate quality is fine
+        // Cp channel now uses specialised quantisation table, so moderate quality is fine
         int base_chroma_quality = enc->qualityCo;
         enc->qualityCo = base_chroma_quality;           // Ct channel: keep original Co quantisation
         enc->qualityCg = base_chroma_quality;           // Cp channel: same quality since Q_Cp_8 handles detail preservation

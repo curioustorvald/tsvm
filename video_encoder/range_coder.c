@@ -21,7 +21,7 @@ static inline uint8_t range_decoder_get_byte(RangeDecoder *dec) {
     return 0;
 }
 
-static void range_encoder_renormalize(RangeEncoder *enc) {
+static void range_encoder_renormalise(RangeEncoder *enc) {
     while (enc->range <= BOTTOM_VALUE) {
         range_encoder_put_byte(enc, (enc->low >> 24) & 0xFF);
         enc->low <<= 8;
@@ -29,7 +29,7 @@ static void range_encoder_renormalize(RangeEncoder *enc) {
     }
 }
 
-static void range_decoder_renormalize(RangeDecoder *dec) {
+static void range_decoder_renormalise(RangeDecoder *dec) {
     while (dec->range <= BOTTOM_VALUE) {
         dec->code = (dec->code << 8) | range_decoder_get_byte(dec);
         dec->low <<= 8;
@@ -66,7 +66,7 @@ void range_encode_int16_laplacian(RangeEncoder *enc, int16_t value, int16_t max_
     double cdf_low = (value == -max_abs_value) ? 0.0 : laplacian_cdf(value - 1, lambda);
     double cdf_high = laplacian_cdf(value, lambda);
 
-    // Normalize to get cumulative counts in range [0, SCALE]
+    // Normalise to get cumulative counts in range [0, SCALE]
     const uint32_t SCALE = 0x10000;  // 65536 for precision
     uint32_t cum_low = (uint32_t)(cdf_low * SCALE);
     uint32_t cum_high = (uint32_t)(cdf_high * SCALE);
@@ -80,7 +80,7 @@ void range_encode_int16_laplacian(RangeEncoder *enc, int16_t value, int16_t max_
     enc->low += (uint32_t)((range_64 * cum_low) / SCALE);
     enc->range = (uint32_t)((range_64 * (cum_high - cum_low)) / SCALE);
 
-    range_encoder_renormalize(enc);
+    range_encoder_renormalise(enc);
 }
 
 size_t range_encoder_finish(RangeEncoder *enc) {
@@ -137,7 +137,7 @@ int16_t range_decode_int16_laplacian(RangeDecoder *dec, int16_t max_abs_value, f
             dec->low += (uint32_t)((range_64 * cum_low) / SCALE);
             dec->range = (uint32_t)((range_64 * (cum_high - cum_low)) / SCALE);
 
-            range_decoder_renormalize(dec);
+            range_decoder_renormalise(dec);
             return value;
         } else if (cum_freq < cum_low) {
             high = mid - 1;
@@ -147,6 +147,6 @@ int16_t range_decode_int16_laplacian(RangeDecoder *dec, int16_t max_abs_value, f
     }
 
     // Fallback: shouldn't happen with correct encoding
-    range_decoder_renormalize(dec);
+    range_decoder_renormalise(dec);
     return value;
 }

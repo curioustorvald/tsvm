@@ -20,7 +20,7 @@
 static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f};
 
 // Base quantiser weight table (10 subbands: LL + 9 H bands)
-// These weights are multiplied by quantiser_scale during quantization
+// These weights are multiplied by quantiser_scale during quantisation
 static const float BASE_QUANTISER_WEIGHTS[2][10] = {
 { // mid channel
     4.0f,    // LL (L9) DC
@@ -47,7 +47,7 @@ static const float BASE_QUANTISER_WEIGHTS[2][10] = {
     3.2f     // H (L1) 8 khz
 }};
 
-#define TAD_DEFAULT_CHUNK_SIZE 31991
+#define TAD_DEFAULT_CHUNK_SIZE 32768
 #define TAD_MIN_CHUNK_SIZE 1024
 #define TAD_SAMPLE_RATE 32000
 #define TAD_CHANNELS 2
@@ -105,7 +105,7 @@ static void spectral_interpolate_band(float *c, size_t len, float Q, float lower
     uint32_t seed = 0x9E3779B9u ^ (uint32_t)len ^ (uint32_t)(Q * 65536.0f);
     const float dither_amp = 0.02f * Q;  // Very light dither
 
-    // Just add ultra-light TPDF dither to reduce quantization grain
+    // Just add ultra-light TPDF dither to reduce quantisation grain
     // No aggressive hole filling or AR prediction that might create artifacts
     for (size_t i = 0; i < len; i++) {
         c[i] += tpdf(&seed) * dither_amp;
@@ -539,14 +539,14 @@ static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *lef
 }
 
 //=============================================================================
-// Dequantization (inverse of quantization)
+// Dequantisation (inverse of quantisation)
 //=============================================================================
 
 
 #define LAMBDA_FIXED 6.0f
 
 // Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
-// Converts quantized index back to normalized float in [-1, 1]
+// Converts quantised index back to normalised float in [-1, 1]
 static float lambda_decompanding(int8_t quant_val, int max_index) {
     // Handle zero
     if (quant_val == 0) {
@@ -559,11 +559,11 @@ static float lambda_decompanding(int8_t quant_val, int max_index) {
     // Clamp to valid range
     if (abs_index > max_index) abs_index = max_index;
 
-    // Map index back to normalized CDF [0, 1]
-    float normalized_cdf = (float)abs_index / max_index;
+    // Map index back to normalised CDF [0, 1]
+    float normalised_cdf = (float)abs_index / max_index;
 
     // Map from [0, 1] back to [0.5, 1.0] (CDF range for positive half)
-    float cdf = 0.5f + normalized_cdf * 0.5f;
+    float cdf = 0.5f + normalised_cdf * 0.5f;
 
     // Inverse Laplacian CDF for x >= 0: x = -(1/λ) * ln(2*(1-F))
     // For F in [0.5, 1.0]: x = -(1/λ) * ln(2*(1-F))
@@ -576,7 +576,7 @@ static float lambda_decompanding(int8_t quant_val, int max_index) {
     return sign * abs_val;
 }
 
-static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
+static void dequantise_dwt_coefficients(int channel, const int8_t *quantised, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
 
     // Calculate sideband boundaries dynamically
     int first_band_size = chunk_size >> dwt_levels;
@@ -588,7 +588,7 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
         sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
     }
 
-    // Dequantize all coefficients with stochastic reconstruction for deadzoned values
+    // Dequantise all coefficients with stochastic reconstruction for deadzoned values
     for (size_t i = 0; i < count; i++) {
         int sideband = dwt_levels;
         for (int s = 0; s <= dwt_levels; s++) {
@@ -599,7 +599,7 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
         }
 
         // Check for deadzone marker
-        /*if (quantized[i] == (int8_t)0) {//DEADZONE_MARKER_QUANT) {
+        /*if (quantised[i] == (int8_t)0) {//DEADZONE_MARKER_QUANT) {
             // Stochastic reconstruction: generate Laplacian noise in deadband range
             float deadband_threshold = DEADBANDS[channel][sideband];
 
@@ -614,12 +614,12 @@ static void dequantize_dwt_coefficients(int channel, const int8_t *quantized, fl
             // Apply scalar (but not quantiser weight - noise is already in correct range)
             coeffs[i] = noise * TAD32_COEFF_SCALARS[sideband];
         } else {*/
-            // Normal dequantization using lambda decompanding
-            float normalized_val = lambda_decompanding(quantized[i], max_index);
+            // Normal dequantisation using lambda decompanding
+            float normalised_val = lambda_decompanding(quantised[i], max_index);
 
-            // Denormalize using the subband scalar and apply base weight + quantiser scaling
+            // Denormalise using the subband scalar and apply base weight + quantiser scaling
             float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
-            coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+            coeffs[i] = normalised_val * TAD32_COEFF_SCALARS[sideband] * weight;
 //        }
     }
 
@@ -777,13 +777,13 @@ static int tad_decode_channel_ezbc(const uint8_t *input, size_t input_size, int8
     int msb_bitplane = tad_bitstream_read_bits(&bs, 8);
     uint32_t count = tad_bitstream_read_bits(&bs, 16);
 
-    // Initialize coefficient array to zero
+    // Initialise coefficient array to zero
     memset(coeffs, 0, count * sizeof(int8_t));
 
     // Track coefficient significance
     tad_decode_state_t *states = calloc(count, sizeof(tad_decode_state_t));
 
-    // Initialize queues
+    // Initialise queues
     tad_decode_queue_t insignificant_queue, next_insignificant;
     tad_decode_queue_t significant_queue, next_significant;
 
@@ -890,7 +890,7 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
         return -1;
     }
 
-    // Decompress if needed
+    // Decompress Zstd
     const uint8_t *payload;
     uint8_t *decompressed = NULL;
 
@@ -946,11 +946,11 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
         return -1;
     }
 
-    // Dequantize with quantiser scaling and spectral interpolation
+    // Dequantise with quantiser scaling and spectral interpolation
     // Use quantiser_scale = 1.0f for baseline (must match encoder)
     float quantiser_scale = 1.0f;
-    dequantize_dwt_coefficients(0, quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
-    dequantize_dwt_coefficients(1, quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+    dequantise_dwt_coefficients(0, quant_mid, dwt_mid, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
+    dequantise_dwt_coefficients(1, quant_side, dwt_side, sample_count, sample_count, dwt_levels, max_index, quantiser_scale);
 
     // Inverse DWT
     dwt_inverse_multilevel(dwt_mid, sample_count, dwt_levels);

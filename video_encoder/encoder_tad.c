@@ -19,7 +19,7 @@
 static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f};
 
 // Base quantiser weight table (10 subbands: LL + 9 H bands)
-// These weights are multiplied by quantiser_scale during quantization
+// These weights are multiplied by quantiser_scale during quantisation
 static const float BASE_QUANTISER_WEIGHTS[2][10] = {
 { // mid channel
     4.0f,    // LL (L9) DC
@@ -104,7 +104,7 @@ static int calculate_dwt_levels(int chunk_size) {
 
 // Special marker for deadzoned coefficients (will be reconstructed with noise on decode)
 #define DEADZONE_MARKER_FLOAT (-999.0f)  // Unmistakable marker in float domain
-#define DEADZONE_MARKER_QUANT (-128)     // Maps to this in quantized domain (int8 minimum)
+#define DEADZONE_MARKER_QUANT (-128)     // Maps to this in quantised domain (int8 minimum)
 
 // Perceptual epsilon - coefficients below this are truly zero (inaudible)
 #define EPSILON_PERCEPTUAL 0.001f
@@ -296,7 +296,7 @@ static void calculate_preemphasis_coeffs(float *b0, float *b1, float *a1) {
 
     *b0 = 1.0f;
     *b1 = -alpha;
-    *a1 = 0.0f;  // No feedback (FIR filter)
+    *a1 = 0.0f;  // No feedback
 }
 
 // emphasis at alpha=0.5 shifts quantisation crackles to lower frequency which MIGHT be more preferable
@@ -372,14 +372,14 @@ static void compress_mu_law(float *left, float *right, size_t count) {
 }
 
 //=============================================================================
-// Quantization with Frequency-Dependent Weighting
+// Quantisation with Frequency-Dependent Weighting
 //=============================================================================
 
 #define LAMBDA_FIXED 6.0f
 
 // Lambda-based companding encoder (based on Laplacian distribution CDF)
 // val must be normalised to [-1,1]
-// Returns quantized index in range [-127, +127]
+// Returns quantised index in range [-127, +127]
 static int8_t lambda_companding(float val, int max_index) {
     // Handle zero
     if (fabsf(val) < 1e-9f) {
@@ -398,10 +398,10 @@ static int8_t lambda_companding(float val, int max_index) {
     float cdf = 1.0f - 0.5f * expf(-LAMBDA_FIXED * abs_val);
 
     // Map CDF from [0.5, 1.0] to [0, 1] for positive half
-    float normalized_cdf = (cdf - 0.5f) * 2.0f;
+    float normalised_cdf = (cdf - 0.5f) * 2.0f;
 
-    // Quantize to index
-    int index = (int)roundf(normalized_cdf * max_index);
+    // Quantise to index
+    int index = (int)roundf(normalised_cdf * max_index);
 
     // Clamp index to valid range [0, max_index]
     if (index < 0) index = 0;
@@ -410,7 +410,7 @@ static int8_t lambda_companding(float val, int max_index) {
     return (int8_t)(sign * index);
 }
 
-static void quantize_dwt_coefficients(int channel, const float *coeffs, int8_t *quantized, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index, float quantiser_scale) {
+static void quantise_dwt_coefficients(int channel, const float *coeffs, int8_t *quantised, size_t count, int apply_deadzone, int chunk_size, int dwt_levels, int max_index, int *current_subband_index, float quantiser_scale) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -436,14 +436,14 @@ static void quantize_dwt_coefficients(int channel, const float *coeffs, int8_t *
 
         // Check for deadzone marker (special handling)
         /*if (coeffs[i] == DEADZONE_MARKER_FLOAT) {
-            // Map to special quantized marker for stochastic reconstruction
-            quantized[i] = (int8_t)DEADZONE_MARKER_QUANT;
+            // Map to special quantised marker for stochastic reconstruction
+            quantised[i] = (int8_t)DEADZONE_MARKER_QUANT;
         } else {*/
-            // Normal quantization
+            // Normal quantisation
             float weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiser_scale;
             float val = (coeffs[i] / (TAD32_COEFF_SCALARS[sideband] * weight)); // val is normalised to [-1,1]
             int8_t quant_val = lambda_companding(val, max_index);
-            quantized[i] = quant_val;
+            quantised[i] = quant_val;
 //        }
     }
 
@@ -489,11 +489,11 @@ static CoeffAccumulator *side_accumulators = NULL;
 static QuantAccumulator *mid_quant_accumulators = NULL;
 static QuantAccumulator *side_quant_accumulators = NULL;
 static int num_subbands = 0;
-static int stats_initialized = 0;
+static int stats_initialised = 0;
 static int stats_dwt_levels = 0;
 
 static void init_statistics(int dwt_levels) {
-    if (stats_initialized) return;
+    if (stats_initialised) return;
 
     num_subbands = dwt_levels + 1;
     stats_dwt_levels = dwt_levels;
@@ -521,7 +521,7 @@ static void init_statistics(int dwt_levels) {
         side_quant_accumulators[i].count = 0;
     }
 
-    stats_initialized = 1;
+    stats_initialised = 1;
 }
 
 static void accumulate_coefficients(const float *coeffs, int dwt_levels, int chunk_size, CoeffAccumulator *accumulators) {
@@ -555,7 +555,7 @@ static void accumulate_coefficients(const float *coeffs, int dwt_levels, int chu
     free(sideband_starts);
 }
 
-static void accumulate_quantized(const int8_t *quant, int dwt_levels, int chunk_size, QuantAccumulator *accumulators) {
+static void accumulate_quantised(const int8_t *quant, int dwt_levels, int chunk_size, QuantAccumulator *accumulators) {
     int first_band_size = chunk_size >> dwt_levels;
 
     int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
@@ -690,7 +690,7 @@ static int compare_value_frequency(const void *a, const void *b) {
     return 0;
 }
 
-static void print_top5_quantized_values(const int8_t *quant, size_t count, const char *title) {
+static void print_top5_quantised_values(const int8_t *quant, size_t count, const char *title) {
     if (count == 0) {
         fprintf(stderr, "  %s: No data\n", title);
         return;
@@ -731,9 +731,9 @@ static void print_top5_quantized_values(const int8_t *quant, size_t count, const
 }
 
 void tad32_print_statistics(void) {
-    if (!stats_initialized) return;
+    if (!stats_initialised) return;
 
-    fprintf(stderr, "\n=== TAD Coefficient Statistics (before quantization) ===\n");
+    fprintf(stderr, "\n=== TAD Coefficient Statistics (before quantisation) ===\n");
 
     // Print Mid channel statistics
     fprintf(stderr, "\nMid Channel:\n");
@@ -803,11 +803,11 @@ void tad32_print_statistics(void) {
         print_histogram(side_accumulators[s].data, side_accumulators[s].count, band_name);
     }
 
-    // Print quantized values statistics
-    fprintf(stderr, "\n=== TAD Quantized Values Statistics (after quantization) ===\n");
+    // Print quantised values statistics
+    fprintf(stderr, "\n=== TAD Quantised Values Statistics (after quantisation) ===\n");
 
-    // Print Mid channel quantized values
-    fprintf(stderr, "\nMid Channel Quantized Values:\n");
+    // Print Mid channel quantised values
+    fprintf(stderr, "\nMid Channel Quantised Values:\n");
     for (int s = 0; s < num_subbands; s++) {
         char band_name[32];
         if (s == 0) {
@@ -815,11 +815,11 @@ void tad32_print_statistics(void) {
         } else {
             snprintf(band_name, sizeof(band_name), "H (L%d)", stats_dwt_levels - s + 1);
         }
-        print_top5_quantized_values(mid_quant_accumulators[s].data, mid_quant_accumulators[s].count, band_name);
+        print_top5_quantised_values(mid_quant_accumulators[s].data, mid_quant_accumulators[s].count, band_name);
     }
 
-    // Print Side channel quantized values
-    fprintf(stderr, "\nSide Channel Quantized Values:\n");
+    // Print Side channel quantised values
+    fprintf(stderr, "\nSide Channel Quantised Values:\n");
     for (int s = 0; s < num_subbands; s++) {
         char band_name[32];
         if (s == 0) {
@@ -827,14 +827,14 @@ void tad32_print_statistics(void) {
         } else {
             snprintf(band_name, sizeof(band_name), "H (L%d)", stats_dwt_levels - s + 1);
         }
-        print_top5_quantized_values(side_quant_accumulators[s].data, side_quant_accumulators[s].count, band_name);
+        print_top5_quantised_values(side_quant_accumulators[s].data, side_quant_accumulators[s].count, band_name);
     }
 
     fprintf(stderr, "\n");
 }
 
 void tad32_free_statistics(void) {
-    if (!stats_initialized) return;
+    if (!stats_initialised) return;
 
     for (int i = 0; i < num_subbands; i++) {
         free(mid_accumulators[i].data);
@@ -851,7 +851,7 @@ void tad32_free_statistics(void) {
     side_accumulators = NULL;
     mid_quant_accumulators = NULL;
     side_quant_accumulators = NULL;
-    stats_initialized = 0;
+    stats_initialised = 0;
 }
 
 //=============================================================================
@@ -1051,7 +1051,7 @@ size_t tad_encode_channel_ezbc(int8_t *coeffs, size_t count, uint8_t **output) {
     tad_bitstream_write_bits(&bs, msb_bitplane, 8);
     tad_bitstream_write_bits(&bs, (uint32_t)count, 16);
 
-    // Initialize queues
+    // Initialise queues
     tad_block_queue_t insignificant_queue, next_insignificant;
     tad_block_queue_t significant_queue, next_significant;
 
@@ -1206,14 +1206,14 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
 //    apply_coeff_deadzone(0, dwt_mid, num_samples);
 //    apply_coeff_deadzone(1, dwt_side, num_samples);
 
-    // Step 4: Quantize with frequency-dependent weights and quantiser scaling
-    quantize_dwt_coefficients(0, dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
-    quantize_dwt_coefficients(1, dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
+    // Step 4: Quantise with frequency-dependent weights and quantiser scaling
+    quantise_dwt_coefficients(0, dwt_mid, quant_mid, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
+    quantise_dwt_coefficients(1, dwt_side, quant_side, num_samples, 1, num_samples, dwt_levels, max_index, NULL, quantiser_scale);
 
-    // Step 4.5: Accumulate quantized coefficient statistics if enabled
+    // Step 4.5: Accumulate quantised coefficient statistics if enabled
     if (stats_enabled) {
-        accumulate_quantized(quant_mid, dwt_levels, num_samples, mid_quant_accumulators);
-        accumulate_quantized(quant_side, dwt_levels, num_samples, side_quant_accumulators);
+        accumulate_quantised(quant_mid, dwt_levels, num_samples, mid_quant_accumulators);
+        accumulate_quantised(quant_side, dwt_levels, num_samples, side_quant_accumulators);
     }
 
     // Step 5: Encode with binary tree EZBC (1D variant) - FIXED!
@@ -1232,7 +1232,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     free(mid_ezbc);
     free(side_ezbc);
 
-    // Step 6: Optional Zstd compression
+    // Step 6: Zstd compression
     uint8_t *write_ptr = output;
 
     // Write chunk header

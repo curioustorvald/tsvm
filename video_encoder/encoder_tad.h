@@ -30,15 +30,15 @@ static inline int tad32_quality_to_max_index(int quality) {
  *
  * @param pcm32_stereo    Input PCM32fLE stereo samples (interleaved L,R)
  * @param num_samples     Number of samples per channel (min 1024)
- * @param max_index       Maximum quantization index (7=3bit, 15=4bit, 31=5bit, 63=6bit, 127=7bit)
- * @param quantiser_scale Quantiser scaling factor (1.0=baseline, 2.0=2x coarser quantization)
- *                        Higher values = more aggressive quantization = smaller files
+ * @param max_index       Maximum quantisation index (7=3bit, 15=4bit, 31=5bit, 63=6bit, 127=7bit)
+ * @param quantiser_scale Quantiser scaling factor (1.0=baseline, 2.0=2x coarser quantisation)
+ *                        Higher values = more aggressive quantisation = smaller files
  * @param output          Output buffer (must be large enough)
  * @return                Number of bytes written to output, or 0 on error
  *
  * Output format:
  *   uint16 sample_count (samples per channel)
- *   uint8  max_index (maximum quantization index)
+ *   uint8  max_index (maximum quantisation index)
  *   uint32 payload_size (bytes in payload)
  *   *      payload (encoded M/S data, Zstd-compressed with 2-bit twobitmap)
  */

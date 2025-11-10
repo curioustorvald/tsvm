@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
         avg_motion /= (mesh_w * mesh_h);
         printf("  Motion: avg=%.2f px, max=%.2f px\n\n", avg_motion, max_motion);
 
-        // Save visualization for worst case
+        // Save visualisation for worst case
         if (test == 0 || roundtrip_psnr < 30.0) {
             char filename[256];
             sprintf(filename, "roundtrip_%04d_original.png", frame_num);
@@ -293,7 +293,7 @@ int main(int argc, char** argv) {
             }
             sprintf(filename, "roundtrip_%04d_diff.png", frame_num);
             cv::imwrite(filename, diff_roundtrip);
-            printf("  Saved visualization: roundtrip_%04d_*.png\n\n", frame_num);
+            printf("  Saved visualisation: roundtrip_%04d_*.png\n\n", frame_num);
         }
 
         free(flow_x);

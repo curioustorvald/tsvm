@@ -158,7 +158,7 @@ static void apply_mesh_warp_rgb(
     }
 }
 
-// Create visualization overlay showing affine cells
+// Create visualisation overlay showing affine cells
 static void create_affine_overlay(
     cv::Mat &img,
     const uint8_t *affine_mask,
@@ -334,7 +334,7 @@ int main(int argc, char** argv) {
                            affine_mask, affine_a11, affine_a12, affine_a21, affine_a22,
                            mesh_w, mesh_h);
 
-        // Create visualization with affine overlay
+        // Create visualisation with affine overlay
         cv::Mat warped_viz = warped.clone();
         create_affine_overlay(warped_viz, affine_mask, mesh_w, mesh_h);
 

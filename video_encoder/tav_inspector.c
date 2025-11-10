@@ -531,7 +531,7 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
         if (wavelet == 255) printf(" (Haar)");
         printf("\n");
         printf("  Decomp levels:    %d\n", decomp_levels);
-        printf("  Quantizers:       Y=%d, Co=%d, Cg=%d (Index=%d,%d,%d)\n", QLUT[quant_y], QLUT[quant_co], QLUT[quant_cg], quant_y, quant_co, quant_cg);
+        printf("  Quantisers:       Y=%d, Co=%d, Cg=%d (Index=%d,%d,%d)\n", QLUT[quant_y], QLUT[quant_co], QLUT[quant_cg], quant_y, quant_co, quant_cg);
         if (quality > 0)
             printf("  Quality:          %d\n", quality - 1);
         else

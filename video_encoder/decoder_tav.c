@@ -97,12 +97,12 @@ typedef struct {
 } __attribute__((packed)) tav_header_t;
 
 //=============================================================================
-// Quantization Lookup Table (matches TSVM exactly)
+// Quantisation Lookup Table (matches TSVM exactly)
 //=============================================================================
 
 static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,66,68,70,72,74,76,78,80,82,84,86,88,90,92,94,96,98,100,102,104,106,108,110,112,114,116,118,120,122,124,126,128,132,136,140,144,148,152,156,160,164,168,172,176,180,184,188,192,196,200,204,208,212,216,220,224,228,232,236,240,244,248,252,256,264,272,280,288,296,304,312,320,328,336,344,352,360,368,376,384,392,400,408,416,424,432,440,448,456,464,472,480,488,496,504,512,528,544,560,576,592,608,624,640,656,672,688,704,720,736,752,768,784,800,816,832,848,864,880,896,912,928,944,960,976,992,1008,1024,1056,1088,1120,1152,1184,1216,1248,1280,1312,1344,1376,1408,1440,1472,1504,1536,1568,1600,1632,1664,1696,1728,1760,1792,1824,1856,1888,1920,1952,1984,2016,2048,2112,2176,2240,2304,2368,2432,2496,2560,2624,2688,2752,2816,2880,2944,3008,3072,3136,3200,3264,3328,3392,3456,3520,3584,3648,3712,3776,3840,3904,3968,4032,4096};
 
-// Perceptual quantization constants (match TSVM)
+// Perceptual quantisation constants (match TSVM)
 static const float ANISOTROPY_MULT[] = {2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f};
 static const float ANISOTROPY_BIAS[] = {0.4f, 0.2f, 0.1f, 0.0f, 0.0f, 0.0f};
 static const float ANISOTROPY_MULT_CHROMA[] = {6.6f, 5.5f, 4.4f, 3.3f, 2.2f, 1.1f};
@@ -153,7 +153,7 @@ static int calculate_subband_layout(int width, int height, int decomp_levels, dw
 }
 
 //=============================================================================
-// Perceptual Quantization Model (matches TSVM exactly)
+// Perceptual Quantisation Model (matches TSVM exactly)
 //=============================================================================
 
 static int tav_derive_encoder_qindex(int q_index, int q_y_global) {
@@ -248,18 +248,18 @@ static float get_perceptual_weight(int q_index, int q_y_global, int level0, int 
     }
 }
 
-static void dequantize_dwt_subbands_perceptual(int q_index, int q_y_global, const int16_t *quantized,
-                                              float *dequantized, int width, int height, int decomp_levels,
-                                              float base_quantizer, int is_chroma, int frame_num) {
+static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, const int16_t *quantised,
+                                              float *dequantised, int width, int height, int decomp_levels,
+                                              float base_quantiser, int is_chroma, int frame_num) {
     dwt_subband_info_t subbands[32]; // Max possible subbands
     const int subband_count = calculate_subband_layout(width, height, decomp_levels, subbands);
 
     const int coeff_count = width * height;
-    memset(dequantized, 0, coeff_count * sizeof(float));
+    memset(dequantised, 0, coeff_count * sizeof(float));
 
     int is_debug = 0;//(frame_num == 32);
 //    if (frame_num == 32) {
-//        fprintf(stderr, "DEBUG: dequantize called for frame %d, is_chroma=%d\n", frame_num, is_chroma);
+//        fprintf(stderr, "DEBUG: dequantise called for frame %d, is_chroma=%d\n", frame_num, is_chroma);
 //    }
 
     // Apply perceptual weighting to each subband
@@ -267,30 +267,30 @@ static void dequantize_dwt_subbands_perceptual(int q_index, int q_y_global, cons
         const dwt_subband_info_t *subband = &subbands[s];
         const float weight = get_perceptual_weight(q_index, q_y_global, subband->level,
                                                   subband->subband_type, is_chroma, decomp_levels);
-        const float effective_quantizer = base_quantizer * weight;
+        const float effective_quantiser = base_quantiser * weight;
 
         if (is_debug && !is_chroma) {
             if (subband->subband_type == 0) { // LL band
                 fprintf(stderr, "  Subband level %d (LL): weight=%.6f, base_q=%.1f, effective_q=%.1f, count=%d\n",
-                       subband->level, weight, base_quantizer, effective_quantizer, subband->coeff_count);
+                       subband->level, weight, base_quantiser, effective_quantiser, subband->coeff_count);
 
-                // Print first 5 quantized LL coefficients
-                fprintf(stderr, "    First 5 quantized LL: ");
+                // Print first 5 quantised LL coefficients
+                fprintf(stderr, "    First 5 quantised LL: ");
                 for (int k = 0; k < 5 && k < subband->coeff_count; k++) {
                     int idx = subband->coeff_start + k;
-                    fprintf(stderr, "%d ", quantized[idx]);
+                    fprintf(stderr, "%d ", quantised[idx]);
                 }
                 fprintf(stderr, "\n");
 
-                // Find max quantized LL coefficient
+                // Find max quantised LL coefficient
                 int max_quant_ll = 0;
                 for (int k = 0; k < subband->coeff_count; k++) {
                     int idx = subband->coeff_start + k;
-                    int abs_val = quantized[idx] < 0 ? -quantized[idx] : quantized[idx];
+                    int abs_val = quantised[idx] < 0 ? -quantised[idx] : quantised[idx];
                     if (abs_val > max_quant_ll) max_quant_ll = abs_val;
                 }
-                fprintf(stderr, "    Max quantized LL coefficient: %d (dequantizes to %.1f)\n",
-                       max_quant_ll, max_quant_ll * effective_quantizer);
+                fprintf(stderr, "    Max quantised LL coefficient: %d (dequantises to %.1f)\n",
+                       max_quant_ll, max_quant_ll * effective_quantiser);
             }
         }
 
@@ -299,33 +299,33 @@ static void dequantize_dwt_subbands_perceptual(int q_index, int q_y_global, cons
             if (idx < coeff_count) {
                 // CRITICAL: Must ROUND to match EZBC encoder's roundf() behavior
                 // Without rounding, truncation limits brightness range (e.g., Y maxes at 227 instead of 255)
-                const float untruncated = quantized[idx] * effective_quantizer;
-                dequantized[idx] = roundf(untruncated);
+                const float untruncated = quantised[idx] * effective_quantiser;
+                dequantised[idx] = roundf(untruncated);
             }
         }
     }
 
-    // Debug: Verify LL band was dequantized correctly
+    // Debug: Verify LL band was dequantised correctly
     if (is_debug && !is_chroma) {
         // Find LL band again to verify
         for (int s = 0; s < subband_count; s++) {
             const dwt_subband_info_t *subband = &subbands[s];
             if (subband->level == decomp_levels && subband->subband_type == 0) {
-                fprintf(stderr, "  AFTER all subbands processed - First 5 dequantized LL: ");
+                fprintf(stderr, "  AFTER all subbands processed - First 5 dequantised LL: ");
                 for (int k = 0; k < 5 && k < subband->coeff_count; k++) {
                     int idx = subband->coeff_start + k;
-                    fprintf(stderr, "%.1f ", dequantized[idx]);
+                    fprintf(stderr, "%.1f ", dequantised[idx]);
                 }
                 fprintf(stderr, "\n");
 
-                // Find max dequantized LL
+                // Find max dequantised LL
                 float max_dequant_ll = -999.0f;
                 for (int k = 0; k < subband->coeff_count; k++) {
                     int idx = subband->coeff_start + k;
-                    float abs_val = dequantized[idx] < 0 ? -dequantized[idx] : dequantized[idx];
+                    float abs_val = dequantised[idx] < 0 ? -dequantised[idx] : dequantised[idx];
                     if (abs_val > max_dequant_ll) max_dequant_ll = abs_val;
                 }
-                fprintf(stderr, "  AFTER all subbands - Max dequantized LL: %.1f\n", max_dequant_ll);
+                fprintf(stderr, "  AFTER all subbands - Max dequantised LL: %.1f\n", max_dequant_ll);
                 break;
             }
         }
@@ -360,7 +360,7 @@ static inline float tav_grain_triangular_noise(uint32_t rng_val) {
 }
 
 // Remove grain synthesis from DWT coefficients (decoder subtracts noise)
-// This must be called AFTER dequantization but BEFORE inverse DWT
+// This must be called AFTER dequantisation but BEFORE inverse DWT
 static void remove_grain_synthesis_decoder(float *coeffs, int width, int height,
                                           int decomp_levels, int frame_num, int q_y_global) {
     dwt_subband_info_t subbands[32];
@@ -647,14 +647,14 @@ static void spectral_interpolate_band(float *c, size_t len, float Q, float lower
 }
 
 //=============================================================================
-// Dequantization (inverse of quantization)
+// Dequantisation (inverse of quantisation)
 //=============================================================================
 
 
 #define LAMBDA_FIXED 6.0f
 
 // Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
-// Converts quantized index back to normalized float in [-1, 1]
+// Converts quantised index back to normalised float in [-1, 1]
 static float lambda_decompanding(int8_t quant_val, int max_index) {
     // Handle zero
     if (quant_val == 0) {
@@ -667,11 +667,11 @@ static float lambda_decompanding(int8_t quant_val, int max_index) {
     // Clamp to valid range
     if (abs_index > max_index) abs_index = max_index;
 
-    // Map index back to normalized CDF [0, 1]
-    float normalized_cdf = (float)abs_index / max_index;
+    // Map index back to normalised CDF [0, 1]
+    float normalised_cdf = (float)abs_index / max_index;
 
     // Map from [0, 1] back to [0.5, 1.0] (CDF range for positive half)
-    float cdf = 0.5f + normalized_cdf * 0.5f;
+    float cdf = 0.5f + normalised_cdf * 0.5f;
 
     // Inverse Laplacian CDF for x >= 0: x = -(1/λ) * ln(2*(1-F))
     // For F in [0.5, 1.0]: x = -(1/λ) * ln(2*(1-F))
@@ -684,7 +684,7 @@ static float lambda_decompanding(int8_t quant_val, int max_index) {
     return sign * abs_val;
 }
 
-static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
+static void dequantise_dwt_coefficients(const int8_t *quantised, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
 
     // Calculate sideband boundaries dynamically
     int first_band_size = chunk_size >> dwt_levels;
@@ -696,7 +696,7 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
         sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
     }
 
-    // Step 1: Dequantize all coefficients (no dithering yet)
+    // Step 1: Dequantise all coefficients (no dithering yet)
     for (size_t i = 0; i < count; i++) {
         int sideband = dwt_levels;
         for (int s = 0; s <= dwt_levels; s++) {
@@ -707,11 +707,11 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
         }
 
         // Decode using lambda companding
-        float normalized_val = lambda_decompanding(quantized[i], max_index);
+        float normalised_val = lambda_decompanding(quantised[i], max_index);
 
-        // Denormalize using the subband scalar and apply base weight + quantiser scaling
+        // Denormalise using the subband scalar and apply base weight + quantiser scaling
         float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
-        coeffs[i] = normalized_val * TAD32_COEFF_SCALARS[sideband] * weight;
+        coeffs[i] = normalised_val * TAD32_COEFF_SCALARS[sideband] * weight;
     }
 
     // Step 2: Apply spectral interpolation per band
@@ -724,7 +724,7 @@ static void dequantize_dwt_coefficients(const int8_t *quantized, float *coeffs, 
         size_t band_end = sideband_starts[band + 1];
         size_t band_len = band_end - band_start;
 
-        // Calculate quantization step Q for this band
+        // Calculate quantisation step Q for this band
         float weight = BASE_QUANTISER_WEIGHTS[band] * quantiser_scale;
         float scalar = TAD32_COEFF_SCALARS[band] * weight;
         float Q = scalar / max_index;
@@ -1005,12 +1005,12 @@ static void decode_channel_ezbc(const uint8_t *ezbc_data, size_t offset, size_t 
         return;
     }
 
-    // Initialize output and state tracking
+    // Initialise output and state tracking
     memset(output, 0, expected_count * sizeof(int16_t));
     int8_t *significant = calloc(expected_count, sizeof(int8_t));
     int *first_bitplane = calloc(expected_count, sizeof(int));
 
-    // Initialize queues
+    // Initialise queues
     ezbc_block_queue_t insignificant, next_insignificant, significant_queue, next_significant;
     ezbc_queue_init(&insignificant);
     ezbc_queue_init(&next_insignificant);
@@ -1398,8 +1398,8 @@ static int get_temporal_subband_level(int frame_idx, int num_frames, int tempora
     }
 }
 
-// Calculate temporal quantizer scale for a given temporal subband level
-static float get_temporal_quantizer_scale(int temporal_level) {
+// Calculate temporal quantiser scale for a given temporal subband level
+static float get_temporal_quantiser_scale(int temporal_level) {
     // Uses exponential scaling: 2^(BETA × level^KAPPA)
     // With BETA=0.6, KAPPA=1.14:
     //   - Level 0 (tLL):  2^0.0 = 1.00
@@ -2097,7 +2097,7 @@ static int extract_audio_to_wav(const char *input_file, const char *wav_file, in
 }
 
 //=============================================================================
-// Decoder Initialization and Cleanup
+// Decoder Initialisation and Cleanup
 //=============================================================================
 
 static tav_decoder_t* tav_decoder_init(const char *input_file, const char *output_file, const char *audio_file) {
@@ -2270,9 +2270,9 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
     // Variable declarations for cleanup
     uint8_t *compressed_data = NULL;
     uint8_t *decompressed_data = NULL;
-    int16_t *quantized_y = NULL;
-    int16_t *quantized_co = NULL;
-    int16_t *quantized_cg = NULL;
+    int16_t *quantised_y = NULL;
+    int16_t *quantised_co = NULL;
+    int16_t *quantised_cg = NULL;
     int decode_success = 1;  // Assume success, set to 0 on error
 
     // Read and decompress frame data
@@ -2357,11 +2357,11 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
     } else {
         // Decode coefficients (use function-level variables for proper cleanup)
         int coeff_count = decoder->frame_size;
-        quantized_y = calloc(coeff_count, sizeof(int16_t));
-        quantized_co = calloc(coeff_count, sizeof(int16_t));
-        quantized_cg = calloc(coeff_count, sizeof(int16_t));
+        quantised_y = calloc(coeff_count, sizeof(int16_t));
+        quantised_co = calloc(coeff_count, sizeof(int16_t));
+        quantised_cg = calloc(coeff_count, sizeof(int16_t));
 
-        if (!quantized_y || !quantized_co || !quantized_cg) {
+        if (!quantised_y || !quantised_co || !quantised_cg) {
             fprintf(stderr, "Error: Failed to allocate coefficient buffers\n");
             decode_success = 0;
             goto write_frame;
@@ -2370,69 +2370,69 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
         // Postprocess coefficients based on entropy_coder value
         if (decoder->header.entropy_coder == 1) {
             // EZBC format (stub implementation)
-            postprocess_coefficients_ezbc(ptr, coeff_count, quantized_y, quantized_co, quantized_cg,
+            postprocess_coefficients_ezbc(ptr, coeff_count, quantised_y, quantised_co, quantised_cg,
                                          decoder->header.channel_layout);
         } else {
             // Default: Twobitmap format (entropy_coder=0)
-            postprocess_coefficients_twobit(ptr, coeff_count, quantized_y, quantized_co, quantized_cg);
+            postprocess_coefficients_twobit(ptr, coeff_count, quantised_y, quantised_co, quantised_cg);
         }
 
         // Debug: Check first few coefficients
 //        if (decoder->frame_count == 32) {
-//            fprintf(stderr, "  First 10 quantized Y coeffs: ");
+//            fprintf(stderr, "  First 10 quantised Y coeffs: ");
 //            for (int i = 0; i < 10 && i < coeff_count; i++) {
-//                fprintf(stderr, "%d ", quantized_y[i]);
+//                fprintf(stderr, "%d ", quantised_y[i]);
 //            }
 //            fprintf(stderr, "\n");
 //
-             // Check for any large quantized values that should produce bright pixels
+             // Check for any large quantised values that should produce bright pixels
 //            int max_quant_y = 0;
 //            for (int i = 0; i < coeff_count; i++) {
-//                int abs_val = quantized_y[i] < 0 ? -quantized_y[i] : quantized_y[i];
+//                int abs_val = quantised_y[i] < 0 ? -quantised_y[i] : quantised_y[i];
 //                if (abs_val > max_quant_y) max_quant_y = abs_val;
 //            }
-//            fprintf(stderr, "  Max quantized Y coefficient: %d\n", max_quant_y);
+//            fprintf(stderr, "  Max quantised Y coefficient: %d\n", max_quant_y);
 //        }
 
-        // Dequantize (perceptual for versions 5-8, uniform for 1-4)
+        // Dequantise (perceptual for versions 5-8, uniform for 1-4)
         const int is_perceptual = (decoder->header.version >= 5 && decoder->header.version <= 8);
         const int is_ezbc = (decoder->header.entropy_coder == 1);
 
         if (is_ezbc) {
-            // EZBC mode: coefficients are already denormalized by encoder
-            // Just convert int16 to float without multiplying by quantizer
+            // EZBC mode: coefficients are already denormalised by encoder
+            // Just convert int16 to float without multiplying by quantiser
             for (int i = 0; i < coeff_count; i++) {
-                decoder->dwt_buffer_y[i] = (float)quantized_y[i];
-                decoder->dwt_buffer_co[i] = (float)quantized_co[i];
-                decoder->dwt_buffer_cg[i] = (float)quantized_cg[i];
+                decoder->dwt_buffer_y[i] = (float)quantised_y[i];
+                decoder->dwt_buffer_co[i] = (float)quantised_co[i];
+                decoder->dwt_buffer_cg[i] = (float)quantised_cg[i];
             }
         } else if (is_perceptual) {
-            dequantize_dwt_subbands_perceptual(0, qy, quantized_y, decoder->dwt_buffer_y,
+            dequantise_dwt_subbands_perceptual(0, qy, quantised_y, decoder->dwt_buffer_y,
                                               decoder->header.width, decoder->header.height,
                                               decoder->header.decomp_levels, qy, 0, decoder->frame_count);
 
             // Debug: Check if values survived the function call
 //            if (decoder->frame_count == 32) {
-//                fprintf(stderr, "  RIGHT AFTER dequantize_Y returns: first 5 values: %.1f %.1f %.1f %.1f %.1f\n",
+//                fprintf(stderr, "  RIGHT AFTER dequantise_Y returns: first 5 values: %.1f %.1f %.1f %.1f %.1f\n",
 //                       decoder->dwt_buffer_y[0], decoder->dwt_buffer_y[1], decoder->dwt_buffer_y[2],
 //                       decoder->dwt_buffer_y[3], decoder->dwt_buffer_y[4]);
 //            }
 
-            dequantize_dwt_subbands_perceptual(0, qy, quantized_co, decoder->dwt_buffer_co,
+            dequantise_dwt_subbands_perceptual(0, qy, quantised_co, decoder->dwt_buffer_co,
                                               decoder->header.width, decoder->header.height,
                                               decoder->header.decomp_levels, qco, 1, decoder->frame_count);
-            dequantize_dwt_subbands_perceptual(0, qy, quantized_cg, decoder->dwt_buffer_cg,
+            dequantise_dwt_subbands_perceptual(0, qy, quantised_cg, decoder->dwt_buffer_cg,
                                               decoder->header.width, decoder->header.height,
                                               decoder->header.decomp_levels, qcg, 1, decoder->frame_count);
         } else {
             for (int i = 0; i < coeff_count; i++) {
-                decoder->dwt_buffer_y[i] = quantized_y[i] * qy;
-                decoder->dwt_buffer_co[i] = quantized_co[i] * qco;
-                decoder->dwt_buffer_cg[i] = quantized_cg[i] * qcg;
+                decoder->dwt_buffer_y[i] = quantised_y[i] * qy;
+                decoder->dwt_buffer_co[i] = quantised_co[i] * qco;
+                decoder->dwt_buffer_cg[i] = quantised_cg[i] * qcg;
             }
         }
 
-        // Debug: Check dequantized values using correct subband layout
+        // Debug: Check dequantised values using correct subband layout
 //        if (decoder->frame_count == 32) {
 //            dwt_subband_info_t subbands[32];
 //            const int subband_count = calculate_subband_layout(decoder->header.width, decoder->header.height,
@@ -2459,7 +2459,7 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
 //            }
 //        }
 
-        // Remove grain synthesis from Y channel (must happen after dequantization, before inverse DWT)
+        // Remove grain synthesis from Y channel (must happen after dequantisation, before inverse DWT)
         remove_grain_synthesis_decoder(decoder->dwt_buffer_y, decoder->header.width, decoder->header.height,
                                       decoder->header.decomp_levels, decoder->frame_count, decoder->header.quantiser_y);
 
@@ -2479,7 +2479,7 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
 //        }
 
         // Apply inverse DWT with correct non-power-of-2 dimension handling
-        // Note: quantized arrays freed at write_frame label
+        // Note: quantised arrays freed at write_frame label
         apply_inverse_dwt_multilevel(decoder->dwt_buffer_y, decoder->header.width, decoder->header.height,
                                    decoder->header.decomp_levels, decoder->header.wavelet_filter);
         apply_inverse_dwt_multilevel(decoder->dwt_buffer_co, decoder->header.width, decoder->header.height,
@@ -2580,9 +2580,9 @@ write_frame:
     // Clean up temporary allocations
     if (compressed_data) free(compressed_data);
     if (decompressed_data) free(decompressed_data);
-    if (quantized_y) free(quantized_y);
-    if (quantized_co) free(quantized_co);
-    if (quantized_cg) free(quantized_cg);
+    if (quantised_y) free(quantised_y);
+    if (quantised_co) free(quantised_co);
+    if (quantised_cg) free(quantised_cg);
 
     // If decoding failed, fill frame with black to maintain stream alignment
     if (!decode_success) {
@@ -2646,7 +2646,7 @@ static void print_usage(const char *prog) {
     printf("  - TAD audio (decoded to PCMu8)\n");
     printf("  - MP2 audio (passed through)\n");
     printf("  - All wavelet types (5/3, 9/7, CDF 13/7, DD-4, Haar)\n");
-    printf("  - Perceptual quantization (versions 5-8)\n");
+    printf("  - Perceptual quantisation (versions 5-8)\n");
     printf("  - YCoCg-R and ICtCp color spaces\n\n");
     printf("Unsupported features (not in TSVM decoder):\n");
     printf("  - MC-EZBC motion compensation\n");
@@ -2708,7 +2708,7 @@ int main(int argc, char *argv[]) {
     // Pass 2: Decode video with audio file
     tav_decoder_t *decoder = tav_decoder_init(input_file, output_file, temp_audio_file);
     if (!decoder) {
-        fprintf(stderr, "Failed to initialize decoder\n");
+        fprintf(stderr, "Failed to initialise decoder\n");
         unlink(temp_audio_file);  // Clean up temp file
         return 1;
     }
@@ -2853,34 +2853,34 @@ int main(int argc, char *argv[]) {
 
             // Postprocess coefficients based on entropy_coder value
             const int num_pixels = decoder->header.width * decoder->header.height;
-            int16_t ***quantized_gop;
+            int16_t ***quantised_gop;
 
             if (decoder->header.entropy_coder == 2) {
                 // RAW format: simple concatenated int16 arrays
                 if (verbose) {
                     fprintf(stderr, "  Using RAW postprocessing (entropy_coder=2)\n");
                 }
-                quantized_gop = postprocess_gop_raw(decompressed_data, decompressed_size,
+                quantised_gop = postprocess_gop_raw(decompressed_data, decompressed_size,
                                                    gop_size, num_pixels, decoder->header.channel_layout);
             } else if (decoder->header.entropy_coder == 1) {
                 // EZBC format: embedded zero-block coding
                 if (verbose) {
                     fprintf(stderr, "  Using EZBC postprocessing (entropy_coder=1)\n");
                 }
-                quantized_gop = postprocess_gop_ezbc(decompressed_data, decompressed_size,
+                quantised_gop = postprocess_gop_ezbc(decompressed_data, decompressed_size,
                                                     gop_size, num_pixels, decoder->header.channel_layout);
             } else {
                 // Default: Twobitmap format (entropy_coder=0)
                 if (verbose) {
                     fprintf(stderr, "  Using Twobitmap postprocessing (entropy_coder=0)\n");
                 }
-                quantized_gop = postprocess_gop_unified(decompressed_data, decompressed_size,
+                quantised_gop = postprocess_gop_unified(decompressed_data, decompressed_size,
                                                        gop_size, num_pixels, decoder->header.channel_layout);
             }
 
             free(decompressed_data);
 
-            if (!quantized_gop) {
+            if (!quantised_gop) {
                 fprintf(stderr, "Error: Failed to postprocess GOP data\n");
                 result = -1;
                 break;
@@ -2897,78 +2897,78 @@ int main(int argc, char *argv[]) {
                 gop_cg[t] = calloc(num_pixels, sizeof(float));
             }
 
-            // Dequantize with temporal scaling (perceptual quantization for versions 5-8)
+            // Dequantise with temporal scaling (perceptual quantisation for versions 5-8)
             const int is_perceptual = (decoder->header.version >= 5 && decoder->header.version <= 8);
             const int is_ezbc = (decoder->header.entropy_coder == 1);
             const int temporal_levels = 2;  // Fixed for TAV GOP encoding
 
             for (int t = 0; t < gop_size; t++) {
                 if (is_ezbc) {
-                    // EZBC mode: coefficients are already denormalized by encoder
-                    // Just convert int16 to float without multiplying by quantizer
+                    // EZBC mode: coefficients are already denormalised by encoder
+                    // Just convert int16 to float without multiplying by quantiser
                     for (int i = 0; i < num_pixels; i++) {
-                        gop_y[t][i] = (float)quantized_gop[t][0][i];
-                        gop_co[t][i] = (float)quantized_gop[t][1][i];
-                        gop_cg[t][i] = (float)quantized_gop[t][2][i];
+                        gop_y[t][i] = (float)quantised_gop[t][0][i];
+                        gop_co[t][i] = (float)quantised_gop[t][1][i];
+                        gop_cg[t][i] = (float)quantised_gop[t][2][i];
                     }
 
                     if (t == 0) {
                         // Debug first frame
                         int16_t max_y = 0, min_y = 0;
                         for (int i = 0; i < num_pixels; i++) {
-                            if (quantized_gop[t][0][i] > max_y) max_y = quantized_gop[t][0][i];
-                            if (quantized_gop[t][0][i] < min_y) min_y = quantized_gop[t][0][i];
+                            if (quantised_gop[t][0][i] > max_y) max_y = quantised_gop[t][0][i];
+                            if (quantised_gop[t][0][i] < min_y) min_y = quantised_gop[t][0][i];
                         }
                         fprintf(stderr, "[GOP-EZBC] Frame 0 Y coeffs range: [%d, %d], first 5: %d %d %d %d %d\n",
                                min_y, max_y,
-                               quantized_gop[t][0][0], quantized_gop[t][0][1], quantized_gop[t][0][2],
-                               quantized_gop[t][0][3], quantized_gop[t][0][4]);
+                               quantised_gop[t][0][0], quantised_gop[t][0][1], quantised_gop[t][0][2],
+                               quantised_gop[t][0][3], quantised_gop[t][0][4]);
                     }
                 } else {
-                    // Normal mode: multiply by quantizer
+                    // Normal mode: multiply by quantiser
                     const int temporal_level = get_temporal_subband_level(t, gop_size, temporal_levels);
-                    const float temporal_scale = get_temporal_quantizer_scale(temporal_level);
+                    const float temporal_scale = get_temporal_quantiser_scale(temporal_level);
 
-                    // CRITICAL: Must ROUND temporal quantizer to match encoder's roundf() behavior
+                    // CRITICAL: Must ROUND temporal quantiser to match encoder's roundf() behavior
                     const float base_q_y = roundf(decoder->header.quantiser_y * temporal_scale);
                     const float base_q_co = roundf(decoder->header.quantiser_co * temporal_scale);
                     const float base_q_cg = roundf(decoder->header.quantiser_cg * temporal_scale);
 
                     if (is_perceptual) {
-                        dequantize_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
-                                                          quantized_gop[t][0], gop_y[t],
+                        dequantise_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                          quantised_gop[t][0], gop_y[t],
                                                           decoder->header.width, decoder->header.height,
                                                           decoder->header.decomp_levels, base_q_y, 0, decoder->frame_count + t);
-                        dequantize_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
-                                                          quantized_gop[t][1], gop_co[t],
+                        dequantise_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                          quantised_gop[t][1], gop_co[t],
                                                           decoder->header.width, decoder->header.height,
                                                           decoder->header.decomp_levels, base_q_co, 1, decoder->frame_count + t);
-                        dequantize_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
-                                                          quantized_gop[t][2], gop_cg[t],
+                        dequantise_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                          quantised_gop[t][2], gop_cg[t],
                                                           decoder->header.width, decoder->header.height,
                                                           decoder->header.decomp_levels, base_q_cg, 1, decoder->frame_count + t);
                     } else {
-                        // Uniform quantization for older versions
+                        // Uniform quantisation for older versions
                         for (int i = 0; i < num_pixels; i++) {
-                            gop_y[t][i] = quantized_gop[t][0][i] * base_q_y;
-                            gop_co[t][i] = quantized_gop[t][1][i] * base_q_co;
-                            gop_cg[t][i] = quantized_gop[t][2][i] * base_q_cg;
+                            gop_y[t][i] = quantised_gop[t][0][i] * base_q_y;
+                            gop_co[t][i] = quantised_gop[t][1][i] * base_q_co;
+                            gop_cg[t][i] = quantised_gop[t][2][i] * base_q_cg;
                         }
                     }
                 }
             }
 
-            // Free quantized coefficients
+            // Free quantised coefficients
             for (int t = 0; t < gop_size; t++) {
-                free(quantized_gop[t][0]);
-                free(quantized_gop[t][1]);
-                free(quantized_gop[t][2]);
-                free(quantized_gop[t]);
+                free(quantised_gop[t][0]);
+                free(quantised_gop[t][1]);
+                free(quantised_gop[t][2]);
+                free(quantised_gop[t]);
             }
-            free(quantized_gop);
+            free(quantised_gop);
 
             // Remove grain synthesis from Y channel for each GOP frame
-            // This must happen after dequantization but before inverse DWT
+            // This must happen after dequantisation but before inverse DWT
             for (int t = 0; t < gop_size; t++) {
                 remove_grain_synthesis_decoder(gop_y[t], decoder->header.width, decoder->header.height,
                                               decoder->header.decomp_levels, decoder->frame_count + t,

@@ -866,8 +866,8 @@ When KSF is interleaved with MP2 audio, the payload must be inserted in-between 
           0x30 = reveal text normally (arguments: UTF-8 text. The reveal text must contain spaces when required)
           0x31 = reveal text slowly (arguments: UTF-8 text. The effect is implementation-dependent)
 
-          0x40 = reveal text normally with emphasize (arguments: UTF-8 text. On TEV/TAV player, the text will be white; otherwise, implementation-dependent)
-          0x41 = reveal text slowly with emphasize (arguments: UTF-8 text)
+          0x40 = reveal text normally with emphasise (arguments: UTF-8 text. On TEV/TAV player, the text will be white; otherwise, implementation-dependent)
+          0x41 = reveal text slowly with emphasise (arguments: UTF-8 text)
 
           0x50 = reveal text normally with target colour (arguments: uint8 target colour; UTF-8 text)
           0x51 = reveal text slowly with target colour (arguments: uint8 target colour; UTF-8 text)
@@ -887,7 +887,7 @@ When KSF is interleaved with MP2 audio, the payload must be inserted in-between 
 TSVM Advanced Video (TAV) Format
 Created by CuriousTorvald and Claude on 2025-09-13
 
-TAV is a next-generation video codec for TSVM utilizing Discrete Wavelet Transform (DWT)
+TAV is a next-generation video codec for TSVM utilising Discrete Wavelet Transform (DWT)
 similar to JPEG2000, providing superior compression efficiency and scalability compared
 to DCT-based codecs like TEV. Features include multi-resolution encoding, progressive
 transmission capability, and region-of-interest coding.
@@ -1134,7 +1134,7 @@ resulting in superior compression compared to per-frame encoding.
 2. Determine GOP slicing from the scene detection
 3. Apply 1D DWT across temporal axis (GOP frames)
 4. Apply 2D DWT on each spatial slice of temporal subbands
-5. Perceptual quantization with temporal-spatial awareness
+5. Perceptual quantisation with temporal-spatial awareness
 6. Unified significance map preprocessing across all frames/channels
 7. Single Zstd compression of entire GOP block
 
@@ -1246,7 +1246,7 @@ The encoder expects linear alpha.
 ## Compression Features
 - Single DWT tiles vs 16x16 DCT blocks in TEV
 - Multi-resolution representation enables scalable decoding
-- Better frequency localization than DCT
+- Better frequency localisation than DCT
 - Reduced blocking artifacts due to overlapping basis functions
 
 ## Hardware Acceleration Functions
@@ -1533,9 +1533,9 @@ TSVM Advanced Audio (TAD) Format
 Created by CuriousTorvald and Claude on 2025-10-23
 Updated: 2025-10-30 (fixed non-power-of-2 sample count support)
 
-TAD is a perceptual audio codec for TSVM utilizing Discrete Wavelet Transform (DWT)
+TAD is a perceptual audio codec for TSVM utilising Discrete Wavelet Transform (DWT)
 with CDF 9/7 biorthogonal wavelets, providing efficient compression through M/S stereo
-decorrelation, frequency-dependent quantization, and raw int8 coefficient storage.
+decorrelation, frequency-dependent quantisation, and raw int8 coefficient storage.
 Designed as an includable API for integration with TAV video encoder.
 
 When used inside of a video codec, only zstd-compressed payload is stored, chunk length
@@ -1584,20 +1584,34 @@ TAV integration uses exact GOP sample counts (e.g., 32016 samples for 1 second a
     uint32 Chunk Payload Size: size of following payload in bytes
     *      Chunk Payload: encoded M/S stereo data (Zstd compressed if flag set)
 
-### Chunk Payload Structure (before optional Zstd compression)
-    *      Mid Channel Encoded Data (raw int8 values)
-    *      Side Channel Encoded Data (raw int8 values)
+### Chunk Payload Structure (before Zstd compression)
+    *      Mid Channel EZBC Data (embedded zero block coded bitstream)
+    *      Side Channel EZBC Data (embedded zero block coded bitstream)
+
+Each EZBC channel structure:
+    uint8  MSB Bitplane: highest bitplane with significant coefficient
+    uint16 Coefficient Count: number of coefficients in this channel
+    *      Binary Tree EZBC Bitstream: significance map + refinement bits
 
 ## Encoding Pipeline
 
-### Step 1: Dynamic Range Compression (Gamma Compression)
-Input stereo PCM32fLE undergoes gamma compression for perceptual uniformity:
+### Step 1: Pre-emphasis Filter
+Input stereo PCM32fLE undergoes first-order IIR pre-emphasis filtering (α=0.5):
 
-    encode(x) = sign(x) * |x|^γ  where γ=0.707 (1/√2)
+    H(z) = 1 - α·z⁻¹
 
-This compresses dynamic range before quantization, improving perceptual quality.
+This shifts quantisation noise toward lower frequencies where it's more maskable by
+the psychoacoustic model. The filter has persistent state across chunks to prevent
+discontinuities at chunk boundaries.
 
-### Step 2: M/S Stereo Decorrelation
+### Step 2: Dynamic Range Compression (Gamma Compression)
+Pre-emphasised audio undergoes gamma compression for perceptual uniformity:
+
+    encode(x) = sign(x) * |x|^γ  where γ=0.5
+
+This compresses dynamic range before quantisation, improving perceptual quality.
+
+### Step 3: M/S Stereo Decorrelation
 Mid-Side transformation exploits stereo correlation:
 
     Mid = (Left + Right) / 2
@@ -1606,7 +1620,7 @@ Mid-Side transformation exploits stereo correlation:
 This typically concentrates energy in the Mid channel while the Side channel
 contains mostly small values, improving compression efficiency.
 
-### Step 3: 9-Level CDF 9/7 DWT
+### Step 4: 9-Level CDF 9/7 DWT
 Each channel (Mid and Side) undergoes CDF 9/7 biorthogonal wavelet decomposition. The codec uses a fixed 9 decomposition levels for all chunk sizes:
 
     DWT Levels = 9 (fixed)
@@ -1632,32 +1646,53 @@ CDF 9/7 lifting coefficients:
     δ = 0.443506852
     K = 1.230174105
 
-### Step 4: Frequency-Dependent Quantization
-DWT coefficients are quantized using perceptually-tuned frequency-dependent weights.
+### Step 5: Frequency-Dependent Quantisation with Lambda Companding
+DWT coefficients are quantized using:
+1. **Lambda companding**: Maps normalised coefficients through Laplacian CDF with λ=6.0
+2. **Perceptually-tuned weights**: Channel-specific (Mid/Side) frequency-dependent scaling
+3. **Final quantisation**: base_weight[channel][subband] * quality_scale
 
-Final quantization step: base_weight * quality_scale
+The lambda companding provides perceptually uniform quantisation, allocating more bits
+to perceptually important coefficient magnitudes.
 
-#### Dead Zone Quantization
-High-frequency coefficients (Level 0: 8-16 KHz) use dead zone quantization
-where coefficients smaller than half the quantization step are zeroed:
+Channel-specific base quantisation weights:
+    Mid (0):  [4.0, 2.0, 1.8, 1.6, 1.4, 1.2, 1.0, 1.0, 1.3, 2.0]
+    Side (1): [6.0, 5.0, 2.6, 2.4, 1.8, 1.3, 1.0, 1.0, 1.6, 3.2]
 
-    if (abs(coefficient) < quantization_step / 2)
-        coefficient = 0
+Output: Quantized int8 coefficients in range [-max_index, +max_index]
 
-This aggressively removes high-frequency noise while preserving important
-mid-frequency content (2-4 KHz critical for speech intelligibility).
+### Step 6: EZBC Encoding (Embedded Zero Block Coding)
+Quantized int8 coefficients are compressed using binary tree EZBC, a 1D variant of
+the embedded zero-block coding.
 
-### Step 5: Raw Int8 Coefficient Storage
-Quantized coefficients are stored directly as signed int8 values (no significance map, better Zstd compression).
-Concatenated format: [Mid_channel_data][Side_channel_data]
+**EZBC Algorithm**:
+1. Find MSB bitplane (highest bit position with significant coefficient)
+2. Initialise root block covering all coefficients as insignificant
+3. For each bitplane from MSB to LSB:
+   - **Insignificant Pass**: Test each insignificant block for significance
+     - If still zero at this bitplane: emit 0 bit, keep in insignificant queue
+     - If becomes significant: emit 1 bit, recursively subdivide using binary tree
+   - **Refinement Pass**: For already-significant coefficients, emit next bit
+4. Binary tree subdivision continues until blocks of size 1 (single coefficients)
+5. When coefficient becomes significant: emit sign bit and reconstruct value
 
-### Step 6: Coefficient-Domain Dithering (Encoder)
-Light triangular dithering (±0.5 quantization steps) added to coefficients before
-quantization to reduce banding artifacts.
+**EZBC Output Structure** (per channel):
+    uint8  MSB Bitplane (8 bits)
+    uint16 Coefficient Count (16 bits)
+    *      Bitstream: [significance_bits][sign_bits][refinement_bits]
 
-### Step 7: Zstd Compression
-The concatenated Mid+Side encoded data is compressed
-using Zstd level 7 for additional compression without significant CPU overhead.
+**Compression Benefits**:
+- Exploits coefficient sparsity through significance testing
+- Progressive refinement enables quality scalability
+- Binary tree exploits spatial clustering of significant coefficients
+- Typical sparsity: 86.9% zeros (Mid), 97.8% zeros (Side)
+
+### Step 7: Concatenation and Zstd Compression
+The Mid and Side EZBC bitstreams are concatenated:
+    Payload = [Mid_EZBC_data][Side_EZBC_data]
+
+Then compressed using Zstd level 7 for additional compression without significant
+CPU overhead. Zstd exploits redundancy in the concatenated bitstreams.
 
 ## Decoding Pipeline
 
@@ -1665,16 +1700,25 @@ using Zstd level 7 for additional compression without significant CPU overhead.
 Read chunk header (sample_count, max_index, payload_size).
 If compressed (default), decompress payload using Zstd.
 
-### Step 2: Coefficient Extraction
-Extract Mid and Side channel int8 data from concatenated payload:
-    - Mid channel: bytes [0..sample_count-1]
-    - Side channel: bytes [sample_count..2*sample_count-1]
+### Step 2: EZBC Decoding
+Decode Mid and Side channels from concatenated EZBC bitstreams using binary tree
+embedded zero block decoder:
 
-### Step 3: Dequantization with Lambda Decompanding
+For each channel:
+1. Read EZBC header: MSB bitplane (8 bits), coefficient count (16 bits)
+2. Initialise root block as insignificant, track coefficient states
+3. Process bitplanes from MSB to LSB:
+   - **Insignificant Pass**: Read significance bits, recursively decode significant blocks
+   - **Refinement Pass**: Read refinement bits for already-significant coefficients
+4. Reconstruct quantized int8 coefficients from bitplane representation
+
+Output: Quantized int8 coefficients for Mid and Side channels
+
+### Step 3: Dequantisation with Lambda Decompanding
 Convert quantized int8 values back to float coefficients using:
     1. Lambda decompanding (inverse of Laplacian CDF compression)
-    2. Multiply by frequency-dependent quantization steps
-    3. Apply coefficient-domain dithering (TPDF, ~-60 dBFS)
+    2. Multiply by frequency-dependent quantisation steps
+    3. [Optional] Apply coefficient-domain dithering (TPDF, ~-60 dBFS)
 
 ### Step 4: 9-Level Inverse CDF 9/7 DWT
 Reconstruct Float32 audio from DWT coefficients using inverse CDF 9/7 transform.
@@ -1704,9 +1748,18 @@ Convert Mid/Side back to Left/Right stereo:
 ### Step 6: Gamma Expansion
 Expand dynamic range (inverse of encoder's gamma compression):
 
-    decode(y) = sign(y) * |y|^(1/γ)  where γ=0.707, so 1/γ=√2≈1.414
+    decode(y) = sign(y) * |y|^(1/γ)  where γ=0.5, so 1/γ=2.0
 
-### Step 7: PCM32f to PCM8 Conversion with Noise-Shaped Dithering
+### Step 7: De-emphasis Filter
+Apply de-emphasis filter to reverse the pre-emphasis (α=0.5):
+
+    H(z) = 1 / (1 - α·z⁻¹)
+
+This is a first-order IIR filter with persistent state across chunks to prevent
+discontinuities at chunk boundaries. The de-emphasis must be applied AFTER gamma
+expansion but BEFORE PCM8 conversion to correctly reconstruct the original audio.
+
+### Step 8: PCM32f to PCM8 Conversion with Noise-Shaped Dithering
 Convert Float32 samples to unsigned PCM8 (PCMu8) using second-order error-diffusion
 dithering with reduced amplitude (0.2× TPDF) to coordinate with coefficient-domain
 dithering.

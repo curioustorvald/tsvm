@@ -24,16 +24,16 @@ typedef struct {
     size_t buffer_size;
 } RangeDecoder;
 
-// Initialize encoder
+// Initialise encoder
 void range_encoder_init(RangeEncoder *enc, uint8_t *buffer, size_t capacity);
 
 // Encode a signed 16-bit value with Laplacian distribution (λ=5.0, μ=0)
 void range_encode_int16_laplacian(RangeEncoder *enc, int16_t value, int16_t max_abs_value, float lambda);
 
-// Finalize encoding and return bytes written
+// Finalise encoding and return bytes written
 size_t range_encoder_finish(RangeEncoder *enc);
 
-// Initialize decoder
+// Initialise decoder
 void range_decoder_init(RangeDecoder *dec, const uint8_t *buffer, size_t size);
 
 // Decode a signed 16-bit value with Laplacian distribution (λ=5.0, μ=0)

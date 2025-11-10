@@ -516,7 +516,7 @@ static size_t encode_channel_ezbc(int16_t *coeffs, size_t count, int width, int 
                 bs.data[5], bs.data[6], bs.data[7], bs.data[8]);
     }
 
-    // Initialize two queues: insignificant blocks and significant 1x1 blocks
+    // Initialise two queues: insignificant blocks and significant 1x1 blocks
     block_queue_t insignificant_queue, next_insignificant;
     block_queue_t significant_queue, next_significant;
 
@@ -718,7 +718,7 @@ static void refine_motion_vector(
             }
 
             if (valid_pixels > 0) {
-                sad /= valid_pixels;  // Normalize by valid pixels
+                sad /= valid_pixels;  // Normalise by valid pixels
             }
 
             if (sad < best_sad) {
@@ -1272,7 +1272,7 @@ static void free_quad_tree(quad_tree_node_t *node) {
     free(node);
 }
 
-// Count total nodes in quad-tree (for serialization buffer sizing)
+// Count total nodes in quad-tree (for serialisation buffer sizing)
 static int count_quad_tree_nodes(quad_tree_node_t *node) {
     if (!node) return 0;
 
@@ -1389,7 +1389,7 @@ static void build_mv_map_from_forest(
 ) {
     int blocks_x = (width + residual_coding_min_block_size - 1) / residual_coding_min_block_size;
 
-    // Initialize map with zeros
+    // Initialise map with zeros
     int total_blocks = blocks_x * ((height + residual_coding_min_block_size - 1) / residual_coding_min_block_size);
     memset(mv_map_x, 0, total_blocks * sizeof(int16_t));
     memset(mv_map_y, 0, total_blocks * sizeof(int16_t));
@@ -1496,12 +1496,12 @@ static void apply_spatial_mv_prediction_to_tree(
     }
 }
 
-// Serialize quad-tree to compact binary format
+// Serialise quad-tree to compact binary format
 // Format: [split_flags_bitstream][leaf_mv_data]
 //   - split_flags: 1 bit per node (breadth-first), 1=split, 0=leaf
 //   - leaf_mv_data: For each leaf in order: [skip_flag:1bit][mvd_x:15bits][mvd_y:16bits]
 //   Note: MVs are now DIFFERENTIAL (predicted from spatial neighbors)
-static size_t serialize_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
+static size_t serialise_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
     if (!root) return 0;
 
     // First pass: Count nodes and leaves
@@ -1512,11 +1512,11 @@ static size_t serialize_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_
     quad_tree_node_t **queue = (quad_tree_node_t**)malloc(total_nodes * sizeof(quad_tree_node_t*));
     int queue_start = 0, queue_end = 0;
 
-    // Initialize split flags buffer
+    // Initialise split flags buffer
     uint8_t *split_flags = (uint8_t*)calloc(split_bytes, 1);
     int split_bit_pos = 0;
 
-    // Start serialization
+    // Start serialisation
     queue[queue_end++] = root;
     size_t write_pos = split_bytes;  // Leave space for split flags
 
@@ -1551,7 +1551,7 @@ static size_t serialize_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_
         if (!node->is_split) {
             // Leaf node - write skip flag + motion vectors
             if (write_pos + 5 > buffer_size) {
-                fprintf(stderr, "ERROR: Quad-tree serialization buffer overflow\n");
+                fprintf(stderr, "ERROR: Quad-tree serialisation buffer overflow\n");
                 free(queue);
                 free(split_flags);
                 return 0;
@@ -1588,9 +1588,9 @@ static size_t serialize_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_
     return write_pos;
 }
 
-// Serialize quad-tree with bidirectional motion vectors for B-frames (64-bit leaf nodes)
+// Serialise quad-tree with bidirectional motion vectors for B-frames (64-bit leaf nodes)
 // Format: [split_flags] [leaf_data: skip(1) + fwd_mv_x(15) + fwd_mv_y(16) + bwd_mv_x(16) + bwd_mv_y(16) = 64 bits]
-static size_t serialize_quad_tree_bidirectional(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
+static size_t serialise_quad_tree_bidirectional(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
     if (!root) return 0;
 
     // First pass: Count nodes and leaves
@@ -1601,11 +1601,11 @@ static size_t serialize_quad_tree_bidirectional(quad_tree_node_t *root, uint8_t 
     quad_tree_node_t **queue = (quad_tree_node_t**)malloc(total_nodes * sizeof(quad_tree_node_t*));
     int queue_start = 0, queue_end = 0;
 
-    // Initialize split flags buffer
+    // Initialise split flags buffer
     uint8_t *split_flags = (uint8_t*)calloc(split_bytes, 1);
     int split_bit_pos = 0;
 
-    // Start serialization
+    // Start serialisation
     queue[queue_end++] = root;
     size_t write_pos = split_bytes;  // Leave space for split flags
 
@@ -1640,7 +1640,7 @@ static size_t serialize_quad_tree_bidirectional(quad_tree_node_t *root, uint8_t 
         if (!node->is_split) {
             // Leaf node - write skip flag + dual motion vectors
             if (write_pos + 8 > buffer_size) {
-                fprintf(stderr, "ERROR: Bidirectional quad-tree serialization buffer overflow\n");
+                fprintf(stderr, "ERROR: Bidirectional quad-tree serialisation buffer overflow\n");
                 free(queue);
                 free(split_flags);
                 return 0;
@@ -2457,7 +2457,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->residual_coding_min_block_size = 4;   // Minimum block size
     enc->residual_coding_block_tree_root = NULL;
 
-    // Initialize residual coding buffers (allocated in initialise_encoder)
+    // Initialise residual coding buffers (allocated in initialise_encoder)
     enc->residual_coding_reference_frame_y = NULL;
     enc->residual_coding_reference_frame_co = NULL;
     enc->residual_coding_reference_frame_cg = NULL;
@@ -2493,7 +2493,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->residual_coding_lookahead_buffer_cg = NULL;
     enc->residual_coding_lookahead_buffer_display_index = NULL;
 
-    // Two-pass mode initialization
+    // Two-pass mode initialisation
     enc->two_pass_mode = 1; // enable by default
     enc->frame_analyses = NULL;
     enc->frame_analyses_capacity = 0;
@@ -2687,7 +2687,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
             return -1;
         }
 
-        // Initialize translation vectors to zero
+        // Initialise translation vectors to zero
         memset(enc->temporal_gop_translation_x, 0, enc->temporal_gop_capacity * sizeof(int16_t));
         memset(enc->temporal_gop_translation_y, 0, enc->temporal_gop_capacity * sizeof(int16_t));
 
@@ -2726,7 +2726,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
                     return -1;
                 }
 
-                // Initialize to zero
+                // Initialise to zero
                 memset(enc->temporal_gop_mvs_fwd_x[i], 0, num_blocks * sizeof(int16_t));
                 memset(enc->temporal_gop_mvs_fwd_y[i], 0, num_blocks * sizeof(int16_t));
                 memset(enc->temporal_gop_mvs_bwd_x[i], 0, num_blocks * sizeof(int16_t));
@@ -3115,7 +3115,7 @@ static void dwt_53_inverse_1d(float *data, int length) {
 // and estimate_motion_optical_flow are implemented in encoder_tav_opencv.cpp
 
 // =============================================================================
-// Temporal Subband Quantization
+// Temporal Subband Quantisation
 // =============================================================================
 
 // Determine which temporal decomposition level a frame belongs to after 3D DWT
@@ -3125,7 +3125,7 @@ static void dwt_53_inverse_1d(float *data, int length) {
 // - Level 2 (tLH): frames 6-11 (6 frames, high-pass from 2nd decomposition)
 // - Level 3 (tH): frames 12-23 (12 frames, high-pass from 1st decomposition)
 static int get_temporal_subband_level(int frame_idx, int num_frames, int temporal_levels) {
-    // After temporal DWT with N levels, frames are organized as:
+    // After temporal DWT with N levels, frames are organised as:
     // Frames 0...num_frames/(2^N) = tL...L (N low-passes, coarsest)
     // Remaining frames are temporal high-pass subbands at various levels
 
@@ -3141,21 +3141,21 @@ static int get_temporal_subband_level(int frame_idx, int num_frames, int tempora
     return temporal_levels;
 }
 
-// Quantize 3D DWT coefficients with SEPARABLE temporal-spatial quantization
+// Quantise 3D DWT coefficients with SEPARABLE temporal-spatial quantisation
 //
-// IMPORTANT: This implements a separable quantization approach (temporal × spatial)
+// IMPORTANT: This implements a separable quantisation approach (temporal × spatial)
 // After dwt_3d_forward(), the GOP coefficients have this structure:
 //   - Temporal DWT applied first (24 frames → 3 levels)
 //     → Results in temporal subbands: tLLL (frames 0-2), tLLH (3-5), tLH (6-11), tH (12-23)
 //   - Then spatial DWT applied to each temporal subband
 //     → Each frame now contains 2D spatial coefficients (LL, LH, HL, HH subbands)
 //
-// Quantization strategy:
-//   1. Compute temporal base quantizer: tH_base(level) = Qbase_t * 2^(beta*level)
-//      - tLL (level 0): coarsest temporal, most important → smallest quantizer
-//      - tHH (level 2): finest temporal, less important → largest quantizer
+// Quantisation strategy:
+//   1. Compute temporal base quantiser: tH_base(level) = Qbase_t * 2^(beta*level)
+//      - tLL (level 0): coarsest temporal, most important → smallest quantiser
+//      - tHH (level 2): finest temporal, less important → largest quantiser
 //   2. Apply spatial perceptual weighting to tH_base (LL: 1.0x, LH/HL: 1.5-2.0x, HH: 2.0-3.0x)
-//   3. Final quantizer: Q_effective = tH_base × spatial_weight
+//   3. Final quantiser: Q_effective = tH_base × spatial_weight
 //
 // This separable approach is efficient and what most 3D wavelet codecs use.
 static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
@@ -3176,7 +3176,7 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         //   - Frames 4-7, 8-11, 12-15: tLH, tHL, tHH (levels 1-2) - temporal high-pass
         int temporal_level = get_temporal_subband_level(t, num_frames, enc->temporal_decomp_levels);
 
-        // Step 2: Compute temporal base quantizer using exponential scaling
+        // Step 2: Compute temporal base quantiser using exponential scaling
         // Formula: tH_base = Qbase_t * 1.0 * 2^(2.0 * level)
         // Example with Qbase_t=16:
         //   - Level 0 (tLL): 16 * 1.0 * 2^0 = 16 (same as intra-only)
@@ -3185,43 +3185,43 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         float temporal_scale = powf(2.0f, BETA * powf(temporal_level, KAPPA));
         float temporal_quantiser = base_quantiser * temporal_scale;
 
-        // Convert to integer for quantization
+        // Convert to integer for quantisation
         int temporal_base_quantiser = (int)roundf(temporal_quantiser);
         temporal_base_quantiser = CLAMP(temporal_base_quantiser, 1, 255);
 
-        // Step 3: Apply spatial quantization within this temporal subband
+        // Step 3: Apply spatial quantisation within this temporal subband
         // The existing function applies spatial perceptual weighting:
         //   Q_effective = tH_base × spatial_weight
         // Where spatial_weight depends on spatial frequency (LL, LH, HL, HH subbands)
         // This reuses all existing perceptual weighting and dead-zone logic
         //
         // CRITICAL: Use no_normalisation variant when EZBC is enabled
-        // - EZBC mode: coefficients must be denormalized (quantize + multiply back)
-        // - Twobit-map/raw mode: coefficients stay normalized (quantize only)
+        // - EZBC mode: coefficients must be denormalised (quantise + multiply back)
+        // - Twobit-map/raw mode: coefficients stay normalised (quantise only)
         if (enc->preprocess_mode == PREPROCESS_EZBC) {
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(
                 enc,
                 gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
-                quantised[t],            // Output: quantised spatial coefficients (denormalized for EZBC)
+                quantised[t],            // Output: quantised spatial coefficients (denormalised for EZBC)
                 spatial_size,            // Number of spatial coefficients
                 temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
                 enc->width,              // Frame width
                 enc->height,             // Frame height
                 enc->decomp_levels,      // Spatial decomposition levels (typically 6)
-                is_chroma,               // Is chroma channel (gets additional quantization)
+                is_chroma,               // Is chroma channel (gets additional quantisation)
                 enc->frame_count + t     // Frame number (for any frame-dependent logic)
             );
         } else {
             quantise_dwt_coefficients_perceptual_per_coeff(
                 enc,
                 gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
-                quantised[t],            // Output: quantised spatial coefficients (normalized for twobit-map)
+                quantised[t],            // Output: quantised spatial coefficients (normalised for twobit-map)
                 spatial_size,            // Number of spatial coefficients
                 temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
                 enc->width,              // Frame width
                 enc->height,             // Frame height
                 enc->decomp_levels,      // Spatial decomposition levels (typically 6)
-                is_chroma,               // Is chroma channel (gets additional quantization)
+                is_chroma,               // Is chroma channel (gets additional quantisation)
                 enc->frame_count + t     // Frame number (for any frame-dependent logic)
             );
         }
@@ -3889,15 +3889,15 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
     dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
-    // Step 5: Quantize residual coefficients (skip for EZBC - it handles quantization implicitly)
+    // Step 5: Quantise residual coefficients (skip for EZBC - it handles quantisation implicitly)
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
 
     if (enc->preprocess_mode == PREPROCESS_EZBC) {
-        // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
+        // EZBC mode: Quantise with perceptual weighting but no normalisation (division by quantiser)
         // EZBC will compress by encoding only significant bitplanes
-//        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantization without normalization\n");
+//        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantisation without normalisation\n");
         quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_y_dwt, quantised_y, frame_size,
                                                       qY, enc->width, enc->height,
                                                       enc->decomp_levels, 0, 0);
@@ -3915,9 +3915,9 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
             if (abs(quantised_co[i]) > max_co) max_co = abs(quantised_co[i]);
             if (abs(quantised_cg[i]) > max_cg) max_cg = abs(quantised_cg[i]);
         }
-//        fprintf(stderr, "[EZBC-QUANT-PFRAME] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
+//        fprintf(stderr, "[EZBC-QUANT-PFRAME] Quantised coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
     } else {
-        // Twobit-map mode: Use traditional quantization
+        // Twobit-map mode: Use traditional quantisation
         quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
                                                       qY, enc->width, enc->height,
                                                       enc->decomp_levels, 0, 0);
@@ -4159,17 +4159,17 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     free(mv_map_y);
     #endif
 
-    // Step 5: Serialize all quad-trees (now with differential MVs)
+    // Step 5: Serialise all quad-trees (now with differential MVs)
     // Estimate buffer size: worst case is all leaf nodes at min size
-    size_t max_serialized_size = total_trees * 10000;  // Conservative estimate
-    uint8_t *serialized_trees = malloc(max_serialized_size);
-    size_t total_serialized = 0;
+    size_t max_serialised_size = total_trees * 10000;  // Conservative estimate
+    uint8_t *serialised_trees = malloc(max_serialised_size);
+    size_t total_serialised = 0;
 
     for (int i = 0; i < total_trees; i++) {
-        size_t tree_size = serialize_quad_tree(tree_forest[i], serialized_trees + total_serialized,
-                                               max_serialized_size - total_serialized);
+        size_t tree_size = serialise_quad_tree(tree_forest[i], serialised_trees + total_serialised,
+                                               max_serialised_size - total_serialised);
         if (tree_size == 0) {
-            fprintf(stderr, "Error: Failed to serialize quad-tree %d\n", i);
+            fprintf(stderr, "Error: Failed to serialise quad-tree %d\n", i);
             // Cleanup and return error
             for (int j = 0; j < total_trees; j++) {
                 free_quad_tree(tree_forest[j]);
@@ -4182,7 +4182,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
             free(temp_mv_x);
             free(temp_mv_y);
 #endif
-            free(serialized_trees);
+            free(serialised_trees);
             enc->residual_coding_block_size = saved_block_size;
             enc->residual_coding_motion_vectors_x = orig_mv_x;
             enc->residual_coding_motion_vectors_y = orig_mv_y;
@@ -4190,7 +4190,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
             enc->residual_coding_num_blocks_y = orig_blocks_y;
             return 0;
         }
-        total_serialized += tree_size;
+        total_serialised += tree_size;
     }
 
     // Step 6: Apply DWT to residual (same as fixed blocks)
@@ -4208,7 +4208,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
     dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
-    // Step 7: Quantize residual coefficients
+    // Step 7: Quantise residual coefficients
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
@@ -4251,7 +4251,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
         free(temp_mv_x);
         free(temp_mv_y);
 #endif
-        free(serialized_trees);
+        free(serialised_trees);
         free(residual_y_dwt);
         free(residual_co_dwt);
         free(residual_cg_dwt);
@@ -4270,17 +4270,17 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
 
     uint8_t packet_type = TAV_PACKET_PFRAME_ADAPTIVE;
     uint16_t num_trees_u16 = (uint16_t)total_trees;
-    uint32_t tree_data_size = (uint32_t)total_serialized;
+    uint32_t tree_data_size = (uint32_t)total_serialised;
     uint32_t compressed_size_u32 = (uint32_t)compressed_size;
 
     fwrite(&packet_type, 1, 1, enc->output_fp);
     fwrite(&num_trees_u16, sizeof(uint16_t), 1, enc->output_fp);
     fwrite(&tree_data_size, sizeof(uint32_t), 1, enc->output_fp);
-    fwrite(serialized_trees, 1, total_serialized, enc->output_fp);
+    fwrite(serialised_trees, 1, total_serialised, enc->output_fp);
     fwrite(&compressed_size_u32, sizeof(uint32_t), 1, enc->output_fp);
     fwrite(compressed_coeffs, 1, compressed_size, enc->output_fp);
 
-    size_t packet_size = 1 + sizeof(uint16_t) + sizeof(uint32_t) + total_serialized +
+    size_t packet_size = 1 + sizeof(uint16_t) + sizeof(uint32_t) + total_serialised +
                         sizeof(uint32_t) + compressed_size;
 
     // Cleanup
@@ -4295,7 +4295,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     free(temp_mv_x);
     free(temp_mv_y);
 #endif
-    free(serialized_trees);
+    free(serialised_trees);
     free(residual_y_dwt);
     free(residual_co_dwt);
     free(residual_cg_dwt);
@@ -4311,7 +4311,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
 
     if (enc->verbose) {
         printf("  P-frame (adaptive): %d trees, tree_data: %zu bytes, residual: %zu → %zu bytes (%.1f%%)\n",
-               total_trees, total_serialized, preprocessed_size, compressed_size,
+               total_trees, total_serialised, preprocessed_size, compressed_size,
                (compressed_size * 100.0f) / preprocessed_size);
     }
 
@@ -4404,16 +4404,16 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
 
     // Note: For B-frames, we don't recompute residuals because dual predictions are already optimal
 
-    // Step 5: Serialize all quad-trees with 64-bit leaf nodes
-    size_t max_serialized_size = total_trees * 20000;  // Conservative (2× P-frame size due to dual MVs)
-    uint8_t *serialized_trees = malloc(max_serialized_size);
-    size_t total_serialized = 0;
+    // Step 5: Serialise all quad-trees with 64-bit leaf nodes
+    size_t max_serialised_size = total_trees * 20000;  // Conservative (2× P-frame size due to dual MVs)
+    uint8_t *serialised_trees = malloc(max_serialised_size);
+    size_t total_serialised = 0;
 
     for (int i = 0; i < total_trees; i++) {
-        size_t tree_size = serialize_quad_tree_bidirectional(tree_forest[i], serialized_trees + total_serialized,
-                                                             max_serialized_size - total_serialized);
+        size_t tree_size = serialise_quad_tree_bidirectional(tree_forest[i], serialised_trees + total_serialised,
+                                                             max_serialised_size - total_serialised);
         if (tree_size == 0) {
-            fprintf(stderr, "Error: Failed to serialize bidirectional quad-tree %d\n", i);
+            fprintf(stderr, "Error: Failed to serialise bidirectional quad-tree %d\n", i);
             // Cleanup and return error
             for (int j = 0; j < total_trees; j++) {
                 free_quad_tree(tree_forest[j]);
@@ -4421,11 +4421,11 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
             free(tree_forest);
             free(fine_fwd_mv_x); free(fine_fwd_mv_y);
             free(fine_bwd_mv_x); free(fine_bwd_mv_y);
-            free(serialized_trees);
+            free(serialised_trees);
             enc->residual_coding_block_size = saved_block_size;
             return 0;
         }
-        total_serialized += tree_size;
+        total_serialised += tree_size;
     }
 
     // Step 6: Apply DWT to residual
@@ -4441,7 +4441,7 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
     dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
     dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
-    // Step 7: Quantize residual coefficients
+    // Step 7: Quantise residual coefficients
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
     int16_t *quantised_cg = enc->reusable_quantised_cg;
@@ -4479,7 +4479,7 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
         free(tree_forest);
         free(fine_fwd_mv_x); free(fine_fwd_mv_y);
         free(fine_bwd_mv_x); free(fine_bwd_mv_y);
-        free(serialized_trees);
+        free(serialised_trees);
         free(residual_y_dwt);
         free(residual_co_dwt);
         free(residual_cg_dwt);
@@ -4494,17 +4494,17 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
 
     uint8_t packet_type = TAV_PACKET_BFRAME_ADAPTIVE;
     uint16_t num_trees_u16 = (uint16_t)total_trees;
-    uint32_t tree_data_size = (uint32_t)total_serialized;
+    uint32_t tree_data_size = (uint32_t)total_serialised;
     uint32_t compressed_size_u32 = (uint32_t)compressed_size;
 
     fwrite(&packet_type, 1, 1, enc->output_fp);
     fwrite(&num_trees_u16, sizeof(uint16_t), 1, enc->output_fp);
     fwrite(&tree_data_size, sizeof(uint32_t), 1, enc->output_fp);
-    fwrite(serialized_trees, 1, total_serialized, enc->output_fp);
+    fwrite(serialised_trees, 1, total_serialised, enc->output_fp);
     fwrite(&compressed_size_u32, sizeof(uint32_t), 1, enc->output_fp);
     fwrite(compressed_coeffs, 1, compressed_size, enc->output_fp);
 
-    size_t packet_size = 1 + sizeof(uint16_t) + sizeof(uint32_t) + total_serialized +
+    size_t packet_size = 1 + sizeof(uint16_t) + sizeof(uint32_t) + total_serialised +
                         sizeof(uint32_t) + compressed_size;
 
     // Cleanup
@@ -4514,7 +4514,7 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
     free(tree_forest);
     free(fine_fwd_mv_x); free(fine_fwd_mv_y);
     free(fine_bwd_mv_x); free(fine_bwd_mv_y);
-    free(serialized_trees);
+    free(serialised_trees);
     free(residual_y_dwt);
     free(residual_co_dwt);
     free(residual_cg_dwt);
@@ -4526,7 +4526,7 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
 
     if (enc->verbose) {
         printf("  B-frame (adaptive): %d trees, tree_data: %zu bytes, residual: %zu → %zu bytes (%.1f%%)\n",
-               total_trees, total_serialized, preprocessed_size, compressed_size,
+               total_trees, total_serialised, preprocessed_size, compressed_size,
                (compressed_size * 100.0f) / preprocessed_size);
     }
 
@@ -4671,7 +4671,7 @@ static int gop_should_flush_twopass(tav_encoder_t *enc, int current_frame_number
     return 0;
 }
 
-// Flush GOP: apply 3D DWT, quantize, serialise, and write to output
+// Flush GOP: apply 3D DWT, quantise, serialise, and write to output
 // Returns number of bytes written, or 0 on error
 // This function processes the entire GOP and writes all frames with temporal 3D DWT
 static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
@@ -4808,7 +4808,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     float **canvas_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
 
     for (int i = 0; i < actual_gop_size; i++) {
-        canvas_y_coeffs[i] = calloc(canvas_pixels, sizeof(float));  // Zero-initialized
+        canvas_y_coeffs[i] = calloc(canvas_pixels, sizeof(float));  // Zero-initialised
         canvas_co_coeffs[i] = calloc(canvas_pixels, sizeof(float));
         canvas_cg_coeffs[i] = calloc(canvas_pixels, sizeof(float));
 
@@ -4924,7 +4924,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         }
     }
 
-    // Step 2: Allocate quantized coefficient buffers
+    // Step 2: Allocate quantised coefficient buffers
     int16_t **quant_y = malloc(actual_gop_size * sizeof(int16_t*));
     int16_t **quant_co = malloc(actual_gop_size * sizeof(int16_t*));
     int16_t **quant_cg = malloc(actual_gop_size * sizeof(int16_t*));
@@ -4935,11 +4935,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         quant_cg[i] = malloc(num_pixels * sizeof(int16_t));
     }
 
-    // Step 3: Quantize 3D DWT coefficients with temporal-spatial quantization
-    // Use channel-specific quantizers from encoder settings
-    int qY = base_quantiser;  // Y quantizer passed as parameter
-    int qCo = QLUT[enc->quantiser_co];  // Co quantizer from encoder
-    int qCg = QLUT[enc->quantiser_cg];  // Cg quantizer from encoder
+    // Step 3: Quantise 3D DWT coefficients with temporal-spatial quantisation
+    // Use channel-specific quantisers from encoder settings
+    int qY = base_quantiser;  // Y quantiser passed as parameter
+    int qCo = QLUT[enc->quantiser_co];  // Co quantiser from encoder
+    int qCg = QLUT[enc->quantiser_cg];  // Cg quantiser from encoder
 
     quantise_3d_dwt_coefficients(enc, gop_y_coeffs, quant_y, actual_gop_size,
                                  num_pixels, qY, 0);  // Luma
@@ -4983,7 +4983,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         const size_t max_tile_size = 4 + (num_pixels * 3 * sizeof(int16_t));
         uint8_t *uncompressed_buffer = malloc(max_tile_size);
 
-        // Use serialise_tile_data with DWT-transformed float coefficients (before quantization)
+        // Use serialise_tile_data with DWT-transformed float coefficients (before quantisation)
         // This matches the traditional I-frame path in compress_and_write_frame
         size_t tile_size = serialise_tile_data(enc, 0, 0,
                                                gop_y_coeffs[0], gop_co_coeffs[0], gop_cg_coeffs[0],
@@ -5640,7 +5640,7 @@ static void dwt_3d_forward_mc(
 }
 
 // Apply 3D DWT: temporal DWT across frames, then spatial DWT on each temporal subband
-// gop_data[frame][y * width + x] - GOP buffer organized as frame-major
+// gop_data[frame][y * width + x] - GOP buffer organised as frame-major
 // Modifies gop_data in-place
 // NOTE: This is the OLD version without MC-lifting (kept for non-mesh mode)
 static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
@@ -6666,7 +6666,7 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
     }
 }
 
-// Quantization for EZBC mode: quantizes to discrete levels but doesn't normalize (shrink) values
+// Quantisation for EZBC mode: quantises to discrete levels but doesn't normalise (shrink) values
 // This reduces coefficient precision while preserving magnitude for EZBC's bitplane encoding
 static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_encoder_t *enc,
                                                           float *coeffs, int16_t *quantised, int size,
@@ -6682,10 +6682,10 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
         float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
         float effective_q = effective_base_q * weight;
 
-        // Step 1: Quantize - divide by quantizer to get normalized value
+        // Step 1: Quantise - divide by quantiser to get normalised value
         float quantised_val = coeffs[i] / effective_q;
 
-        // Step 2: Apply dead-zone quantization to normalized value
+        // Step 2: Apply dead-zone quantisation to normalised value
         if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
             int level = get_subband_level(i, width, height, decomp_levels);
             int subband_type = get_subband_type(i, width, height, decomp_levels);
@@ -6715,16 +6715,16 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
             }
         }
 
-        // Step 3: Round to discrete quantization levels
+        // Step 3: Round to discrete quantisation levels
         quantised_val = roundf(quantised_val); // file size explodes without rounding
 
-        // Step 4: Denormalize - multiply back by quantizer to restore magnitude
-        // This gives us quantized values at original scale (not shrunken to 0-10 range)
-        float denormalized = quantised_val * effective_q;
+        // Step 4: Denormalise - multiply back by quantiser to restore magnitude
+        // This gives us quantised values at original scale (not shrunken to 0-10 range)
+        float denormalised = quantised_val * effective_q;
 
         // CRITICAL FIX: Must round (not truncate) to match decoder behavior
         // With odd baseQ values and fractional weights, truncation causes mismatch with Sigmap mode
-        quantised[i] = (int16_t)CLAMP((int)roundf(denormalized), -32768, 32767);
+        quantised[i] = (int16_t)CLAMP((int)roundf(denormalised), -32768, 32767);
     }
 }
 
@@ -6836,8 +6836,8 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     if (mode == TAV_MODE_INTRA) {
         // INTRA mode: quantise coefficients directly and store for future reference
         if (enc->preprocess_mode == PREPROCESS_EZBC) {
-            // EZBC mode: Quantize with perceptual weighting but no normalization (division by quantizer)
-//            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantization without normalization\n");
+            // EZBC mode: Quantise with perceptual weighting but no normalisation (division by quantiser)
+//            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantisation without normalisation\n");
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
             quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
@@ -6849,7 +6849,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                 if (abs(quantised_co[i]) > max_co) max_co = abs(quantised_co[i]);
                 if (abs(quantised_cg[i]) > max_cg) max_cg = abs(quantised_cg[i]);
             }
-//            fprintf(stderr, "[EZBC-QUANT-INTRA] Quantized coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
+//            fprintf(stderr, "[EZBC-QUANT-INTRA] Quantised coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
         } else if (enc->perceptual_tuning) {
             // Perceptual quantisation: EXACTLY like uniform but with per-coefficient weights
             quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
@@ -7798,7 +7798,7 @@ static int start_audio_conversion(tav_encoder_t *enc) {
                 // Calculate samples per frame: ceil(sample_rate / fps)
                 enc->samples_per_frame = (TSVM_AUDIO_SAMPLE_RATE + enc->output_fps - 1) / enc->output_fps;
 
-                // Initialize 2nd-order noise shaping error history
+                // Initialise 2nd-order noise shaping error history
                 enc->dither_error[0][0] = 0.0f;
                 enc->dither_error[0][1] = 0.0f;
                 enc->dither_error[1][0] = 0.0f;
@@ -8510,7 +8510,7 @@ static void convert_pcm32_to_pcm8_dithered(tav_encoder_t *enc, const float *pcm3
             if (shaped < -1.0f) shaped = -1.0f;
             if (shaped > 1.0f) shaped = 1.0f;
 
-            // Quantize to signed 8-bit range [-128, 127]
+            // Quantise to signed 8-bit range [-128, 127]
             int q = (int)lrintf(shaped * scale);
             if (q < -128) q = -128;
             else if (q > 127) q = 127;
@@ -8518,7 +8518,7 @@ static void convert_pcm32_to_pcm8_dithered(tav_encoder_t *enc, const float *pcm3
             // Convert to unsigned 8-bit [0, 255]
             pcm8[idx] = (uint8_t)(q + (int)bias);
 
-            // Calculate quantization error for feedback
+            // Calculate quantisation error for feedback
             float qerr = shaped - (float)q / scale;
 
             // Update error history (shift and store)
@@ -8623,9 +8623,9 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
     if (tad_quality > TAD32_QUALITY_MAX) tad_quality = TAD32_QUALITY_MAX;
     if (tad_quality < TAD32_QUALITY_MIN) tad_quality = TAD32_QUALITY_MIN;
 
-    // Convert quality (0-5) to max_index for quantization
+    // Convert quality (0-5) to max_index for quantisation
     int max_index = tad32_quality_to_max_index(tad_quality);
-    float quantiser_scale = 1.0f;  // Baseline quantizer scaling
+    float quantiser_scale = 1.0f;  // Baseline quantiser scaling
 
     // Allocate output buffer (generous size for TAD chunk)
     size_t max_output_size = samples_to_read * 4 * sizeof(int16_t) + 1024;
@@ -8963,7 +8963,7 @@ static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num
         return 1;
     }
 
-    // Handle first frame initialization (same as process_audio)
+    // Handle first frame initialisation (same as process_audio)
     int first_frame_in_gop = frame_numbers[0];
     if (first_frame_in_gop == 0) {
         uint8_t header[4];
@@ -9255,7 +9255,7 @@ static double calculate_shannon_entropy(const float *coeffs, int count) {
     #define HIST_BINS 256
     int histogram[HIST_BINS] = {0};
 
-    // Find min/max for normalization
+    // Find min/max for normalisation
     float min_val = FLT_MAX, max_val = -FLT_MAX;
     for (int i = 0; i < count; i++) {
         float abs_val = fabsf(coeffs[i]);
@@ -9325,7 +9325,7 @@ static void compute_frame_metrics(const float *dwt_current, const float *dwt_pre
                                   frame_analysis_t *metrics) {
     int num_pixels = width * height;
 
-    // Initialize metrics
+    // Initialise metrics
     memset(metrics, 0, sizeof(frame_analysis_t));
 
     // Extract LL band (approximation coefficients)
@@ -9438,16 +9438,16 @@ static int detect_scene_change_wavelet(int frame_number,
     }
 
     // Detection rule 1: Hard cut or fast fade (LL_diff spike)
-    // Improvement: Normalize LL_diff by LL_mean to handle exposure/lighting changes
-    double normalized_ll_diff = current_metrics->ll_mean > 1.0 ?
+    // Improvement: Normalise LL_diff by LL_mean to handle exposure/lighting changes
+    double normalised_ll_diff = current_metrics->ll_mean > 1.0 ?
         current_metrics->ll_diff / current_metrics->ll_mean : current_metrics->ll_diff;
-    double normalized_threshold = current_metrics->ll_mean > 1.0 ?
+    double normalised_threshold = current_metrics->ll_mean > 1.0 ?
         ll_diff_threshold / current_metrics->ll_mean : ll_diff_threshold;
 
-    if (normalized_ll_diff > normalized_threshold) {
+    if (normalised_ll_diff > normalised_threshold) {
         if (verbose) {
-            printf("  Scene change detected frame %d: Normalized LL_diff=%.4f > threshold=%.4f (raw: %.2f > %.2f)\n",
-                   frame_number + 1, normalized_ll_diff, normalized_threshold,
+            printf("  Scene change detected frame %d: Normalised LL_diff=%.4f > threshold=%.4f (raw: %.2f > %.2f)\n",
+                   frame_number + 1, normalised_ll_diff, normalised_threshold,
                    current_metrics->ll_diff, ll_diff_threshold);
         }
         return 1;
@@ -9457,7 +9457,7 @@ static int detect_scene_change_wavelet(int frame_number,
     // Improvement: Require temporal persistence only for borderline detections
     double hb_ratio_threshold = ANALYSIS_HB_RATIO_THRESHOLD;
 
-    // Calculate average highband energy from history (normalized by total energy for RMS-like measure)
+    // Calculate average highband energy from history (normalised by total energy for RMS-like measure)
     double hb_energy_sum = 0.0;
     for (int i = start_idx; i < history_count; i++) {
         hb_energy_sum += metrics_history[i].highband_energy;
@@ -9884,7 +9884,7 @@ int main(int argc, char *argv[]) {
         {"dimension", required_argument, 0, 's'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
-        {"quantizer", required_argument, 0, 'Q'},
+        {"quantiser", required_argument, 0, 'Q'},
         {"quantiser", required_argument, 0, 'Q'},
         {"wavelet", required_argument, 0, 1010},
         {"channel-layout", required_argument, 0, 'c'},
@@ -10371,7 +10371,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        // Initialize GOP boundary iterator for second pass
+        // Initialise GOP boundary iterator for second pass
         enc->current_gop_boundary = enc->gop_boundaries;
         enc->two_pass_current_frame = 0;
 

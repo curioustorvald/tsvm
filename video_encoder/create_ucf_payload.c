@@ -82,7 +82,7 @@ static void write_tav_header_only(FILE *out) {
     // Channel layout: 0 (Y-Co-Cg)
     header[26] = 0;
 
-    // Reserved[4]: zeros (27-30 already initialized to 0)
+    // Reserved[4]: zeros (27-30 already initialised to 0)
 
     // File Role: 1 (header-only, UCF payload follows)
     header[31] = 1;

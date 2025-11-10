@@ -83,11 +83,11 @@ Use the build scripts in `buildapp/`:
 - `assets/disk0/`: Virtual disk content including TVDOS system files
 - `assets/bios/`: BIOS ROM files and implementations
 - `My_BASIC_Programs/`: Example BASIC programs for testing
-- TVDOS filesystem uses custom format with specialized drivers
+- TVDOS filesystem uses custom format with specialised drivers
 
 ## Videotron2K
 
-The Videotron2K is a specialized video display controller with:
+The Videotron2K is a specialised video display controller with:
 - Assembly-like programming language
 - 6 general registers (r1-r6) and special registers (tmr, frm, px, py, c1-c6)
 - Scene-based programming model
@@ -148,7 +148,7 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - **Features**:
   - 16×16 DCT blocks (vs 4×4 in iPF) for better compression
   - Motion compensation with ±8 pixel search range
-  - YCoCg-R 4:2:0 Chroma subsampling (more aggressive quantization on Cg channel)
+  - YCoCg-R 4:2:0 Chroma subsampling (more aggressive quantisation on Cg channel)
   - Full 8-Bit RGB colour for increased visual fidelity, rendered down to TSVM-compliant 4-Bit RGB with dithering upon playback
 - **Usage Examples**:
   ```bash
@@ -163,7 +163,7 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 
 #### TAV Format (TSVM Advanced Video)
 - **Successor to TEV**: DWT-based video codec using wavelet transforms instead of DCT
-- **C Encoder**: `video_encoder/encoder_tav.c` - Multi-wavelet encoder with perceptual quantization
+- **C Encoder**: `video_encoder/encoder_tav.c` - Multi-wavelet encoder with perceptual quantisation
   - How to build: `make tav`
   - **Wavelet Support**: Multiple wavelet types for different compression characteristics
 - **JS Decoder**: `assets/disk0/tvdos/bin/playtav.js` - Native decoder for TAV format playback
@@ -172,8 +172,8 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - **Features**:
   - **Multiple Wavelet Types**: 5/3 reversible, 9/7 irreversible, CDF 13/7, DD-4, Haar
   - **Single-tile encoding**: One large DWT tile for optimal quality (no blocking artifacts)
-  - **Perceptual quantization**: HVS-optimized coefficient scaling
-  - **YCoCg-R color space**: Efficient chroma representation with "simulated" subsampling using anisotropic quantization (search for "ANISOTROPY_MULT_CHROMA" on the encoder)
+  - **Perceptual quantisation**: HVS-optimized coefficient scaling
+  - **YCoCg-R color space**: Efficient chroma representation with "simulated" subsampling using anisotropic quantisation (search for "ANISOTROPY_MULT_CHROMA" on the encoder)
   - **6-level DWT decomposition**: Deep frequency analysis for better compression (deeper levels possible but 6 is the maximum for the default TSVM size)
   - **Significance Map Compression**: Improved coefficient storage format exploiting sparsity for 16-18% additional compression (2025-09-29 update)
   - **Concatenated Maps Layout**: Cross-channel compression optimization for additional 1.6% improvement (2025-09-29 enhanced)
@@ -225,18 +225,18 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - **Solution**: Ensure forward and inverse transforms use identical coefficient indexing and reverse operations exactly
 
 **Supported Wavelets**:
-- **0**: 5/3 reversible (lossless when unquantized, JPEG 2000 standard)
+- **0**: 5/3 reversible (lossless when unquantised, JPEG 2000 standard)
 - **1**: 9/7 irreversible (best compression, CDF 9/7 variant, default choice)
 - **2**: CDF 13/7 (experimental, simplified implementation)
 - **16**: DD-4 (four-point interpolating Deslauriers-Dubuc, for still images)
 - **255**: Haar (demonstration only, simplest possible wavelet)
 
 - **Format documentation**: `terranmon.txt` (search for "TSVM Advanced Video (TAV) Format")
-- **Version**: Current (perceptual quantization, multi-wavelet support, significance map compression)
+- **Version**: Current (perceptual quantisation, multi-wavelet support, significance map compression)
 
 #### TAV Significance Map Compression (Technical Details)
 
-The significance map compression technique implemented on 2025-09-29 provides substantial compression improvements by exploiting the sparsity of quantized DWT coefficients:
+The significance map compression technique implemented on 2025-09-29 provides substantial compression improvements by exploiting the sparsity of quantised DWT coefficients:
 
 **Implementation Files**:
 - **C Encoder**: `video_encoder/encoder_tav.c` - `preprocess_coefficients()` function (lines 960-991)
@@ -264,7 +264,7 @@ Concatenated Maps Layout:
 ```
 
 **Performance**:
-- **Sparsity exploitation**: Tested on quantized DWT coefficients with 86.9% sparsity (Y), 97.8% (Co), 99.5% (Cg)
+- **Sparsity exploitation**: Tested on quantised DWT coefficients with 86.9% sparsity (Y), 97.8% (Co), 99.5% (Cg)
 - **Compression improvement**: 16.4% from significance maps + 1.6% from concatenated layout
 - **Real-world impact**: 559 bytes saved per frame (5.59 MB per 10k frames)
 - **Cross-channel benefit**: Concatenated maps allow Zstd to exploit similarity between significance patterns
@@ -320,18 +320,23 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 - **C Encoder**: `video_encoder/encoder_tad.c` - Core Encoder library; `video_encoder/encoder_tad_standalone.c` - Standalone encoder with FFmpeg integration
   - How to build: `make tad`
   - **Quality Levels**: 0-5 (0=lowest quality/smallest, 5=highest quality/largest; designed to be in sync with TAV encoder)
-- **C Decoder**: `video_encoder/decoder_tad.c` - Standalone decoder for TAD format
+- **C Decoders**:
+  - `video_encoder/decoder_tad.c` - Shared decoder library with `tad32_decode_chunk()` function
+  - `video_encoder/decoder_tad.h` - Exports shared decoder API
+  - `video_encoder/decoder_tav.c` - TAV decoder that uses shared TAD decoder for audio packets
+  - **Shared Architecture** (Fixed 2025-11-10): Both standalone TAD and TAV decoders now use the same `tad32_decode_chunk()` implementation, eliminating code duplication and ensuring identical output
 - **Kotlin Decoder**: `AudioAdapter.kt` - Hardware-accelerated TAD decoder for TSVM runtime
+  - **Quantisation Fix** (2025-11-10): Fixed BASE_QUANTISER_WEIGHTS to use channel-specific 2D array (Mid/Side) instead of single 1D array, resolving severe audio distortion
 - **Features**:
   - **32 KHz stereo**: TSVM audio hardware native format
   - **Variable chunk sizes**: Any size ≥1024 samples, including non-power-of-2 (e.g., 32016 for TAV 1-second GOPs)
+  - **Pre-emphasis filter**: First-order IIR filter (α=0.5) shifts quantisation noise to lower frequencies
+  - **Gamma compression**: Dynamic range compression (γ=0.5) before quantisation
   - **M/S stereo decorrelation**: Exploits stereo correlation for better compression
-  - **Gamma compression**: Dynamic range compression (γ=0.707) before quantization
   - **9-level CDF 9/7 DWT**: Fixed 9 decomposition levels for all chunk sizes
-  - **Perceptual quantization**: Frequency-dependent weights with lambda companding
-  - **Raw int8 storage**: Direct coefficient storage (no significance map, better Zstd compression)
-  - **Coefficient-domain dithering**: Light TPDF dithering to reduce banding
-  - **Zstd compression**: Level 7 for additional compression
+  - **Perceptual quantisation**: Channel-specific (Mid/Side) frequency-dependent weights with lambda companding (λ=6.0)
+  - **EZBC encoding**: Binary tree embedded zero block coding exploits coefficient sparsity (86.9% Mid, 97.8% Side)
+  - **Zstd compression**: Level 7 on concatenated EZBC bitstreams for additional compression
   - **Non-power-of-2 support**: Fixed 2025-10-30 to handle arbitrary chunk sizes correctly
 - **Usage Examples**:
   ```bash
@@ -351,26 +356,23 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
   decoder_tad -i input.tad -o output.pcm
   ```
 - **Format documentation**: `terranmon.txt` (search for "TSVM Advanced Audio (TAD) Format")
-- **Version**: 1.1 (raw int8 storage with non-power-of-2 support, updated 2025-10-30)
+- **Version**: 1.1 (EZBC encoding with non-power-of-2 support, updated 2025-10-30; decoder architecture and Kotlin quantisation weights fixed 2025-11-10; documentation updated 2025-11-10 to reflect pre-emphasis and EZBC)
+
+**TAD Encoding Pipeline**:
+1. **Pre-emphasis filter** (α=0.5) - Shifts quantisation noise toward lower frequencies
+2. **Gamma compression** (γ=0.5) - Dynamic range compression
+3. **M/S decorrelation** - Transforms L/R to Mid/Side
+4. **9-level CDF 9/7 DWT** - Wavelet decomposition (fixed 9 levels)
+5. **Perceptual quantisation** - Lambda companding (λ=6.0) with channel-specific weights
+6. **EZBC encoding** - Binary tree embedded zero block coding per channel
+7. **Zstd compression** (level 7) - Additional compression on concatenated EZBC bitstreams
 
 **TAD Compression Performance**:
 - **Target Compression**: 2:1 against PCMu8 baseline (4:1 against PCM16LE input)
 - **Achieved Compression**: 2.51:1 against PCMu8 at quality level 3
 - **Audio Quality**: Preserves full 0-16 KHz bandwidth
 - **Coefficient Sparsity**: 86.9% zeros in Mid channel, 97.8% in Side channel (typical)
-
-**TAD Encoding Pipeline**:
-1. **FFmpeg Two-Pass Extraction**: High-quality SoXR resampling to 32 KHz with 16 Hz highpass filter
-2. **Gamma Compression**: Dynamic range compression (γ=0.707) for perceptual uniformity
-3. **M/S Stereo Decorrelation**: Transforms Left/Right to Mid/Side for better compression
-4. **9-Level CDF 9/7 DWT**: biorthogonal wavelets with fixed 9 levels
-   - All chunk sizes use 9 levels (sufficient for ≥512 samples after 9 halvings)
-   - Supports non-power-of-2 sizes through proper length tracking
-5. **Frequency-Dependent Quantization**: Perceptual weights with lambda companding
-6. **Dead Zone Quantization**: Zeros high-frequency noise (highest band)
-7. **Coefficient-Domain Dithering**: Light TPDF dithering (±0.5 quantization steps)
-8. **Raw Int8 Storage**: Direct coefficient storage as signed int8 values
-9. **Optional Zstd Compression**: Level 7 compression on concatenated Mid+Side data
+- **EZBC Benefits**: Exploits sparsity, progressive refinement, spatial clustering
 
 **TAD Integration with TAV**:
 TAD is designed as an includable API for TAV video encoder integration. The variable chunk size
@@ -396,3 +398,37 @@ for (i in 1..levels) {
 ```
 Using simple doubling (`length *= 2`) is incorrect for non-power-of-2 sizes and causes
 mirrored subband artifacts.
+
+**TAD Decoding Pipeline**:
+1. **Zstd decompression** - Decompress concatenated EZBC bitstreams
+2. **EZBC decoding** - Binary tree decoder reconstructs quantised int8 coefficients per channel
+3. **Lambda decompanding** - Inverse Laplacian CDF mapping with channel-specific weights
+4. **9-level inverse CDF 9/7 DWT** - Wavelet reconstruction with proper non-power-of-2 length tracking
+5. **M/S to L/R conversion** - Transform Mid/Side back to Left/Right
+6. **Gamma expansion** (γ⁻¹=2.0) - Restore dynamic range
+7. **De-emphasis filter** (α=0.5) - Reverse pre-emphasis, remove frequency shaping
+8. **PCM32f to PCM8** - Noise-shaped dithering for final 8-bit output
+
+**Critical Quantisation Weights Note (Fixed 2025-11-10)**:
+The TAD decoder MUST use channel-specific quantisation weights for Mid (channel 0) and Side (channel 1) channels. The Kotlin decoder (AudioAdapter.kt) originally used a single 1D weight array, which caused severe audio distortion. The correct implementation uses a 2D array:
+
+```kotlin
+// CORRECT (Fixed 2025-11-10)
+private val BASE_QUANTISER_WEIGHTS = arrayOf(
+    floatArrayOf( // Mid channel (0)
+        4.0f, 2.0f, 1.8f, 1.6f, 1.4f, 1.2f, 1.0f, 1.0f, 1.3f, 2.0f
+    ),
+    floatArrayOf( // Side channel (1)
+        6.0f, 5.0f, 2.6f, 2.4f, 1.8f, 1.3f, 1.0f, 1.0f, 1.6f, 3.2f
+    )
+)
+
+// During dequantisation:
+val weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiserScale
+coeffs[i] = normalisedVal * TAD32_COEFF_SCALARS[sideband] * weight
+```
+
+The different weights for Mid and Side channels reflect the perceptual importance of different frequency bands in each channel. Using incorrect weights causes:
+- DC frequency underamplification (using 1.0 instead of 4.0/6.0)
+- Incorrect stereo imaging and extreme side channel distortion
+- Severe frequency response errors that manifest as "clipping-like" distortion

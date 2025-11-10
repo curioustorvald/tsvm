@@ -15,7 +15,7 @@
 #define ENCODER_VENDOR_STRING "Encoder-TAD32 (PCM32f version) 20251107"
 
 // TAD32 format constants
-#define TAD32_DEFAULT_CHUNK_SIZE 31991  // Using a prime number to force the worst condition
+#define TAD32_DEFAULT_CHUNK_SIZE 32768  // Using a prime number to force the worst condition
 
 // Temporary file for FFmpeg PCM extraction
 char TEMP_PCM_FILE[42];
@@ -119,7 +119,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Convert quality (0-5) to max_index for quantization
+    // Convert quality (0-5) to max_index for quantisation
     int max_index = tad32_quality_to_max_index(quality);
 
     // Generate output filename if not provided

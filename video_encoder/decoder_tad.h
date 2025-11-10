@@ -11,7 +11,7 @@
 // Constants (must match encoder)
 #define TAD32_SAMPLE_RATE 32000
 #define TAD32_CHANNELS 2  // Stereo
-#define TAD_DEFAULT_CHUNK_SIZE 31991  // Default chunk size for standalone TAD files
+#define TAD_DEFAULT_CHUNK_SIZE 32768  // Default chunk size for standalone TAD files
 
 /**
  * Decode audio chunk with TAD32 codec
@@ -25,7 +25,7 @@
  *
  * Input format:
  *   uint16 sample_count (samples per channel)
- *   uint8  max_index (maximum quantization index)
+ *   uint8  max_index (maximum quantisation index)
  *   uint32 payload_size (bytes in payload)
  *   *      payload (encoded M/S data, Zstd-compressed with EZBC)
  *

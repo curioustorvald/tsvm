@@ -100,8 +100,8 @@ static ycocg_t rgb_to_ycocg_correct(uint8_t r, uint8_t g, uint8_t b, float dithe
     return result;
 }
 
-static int quantize_4bit_y(float value) {
-    // Y quantization: round(y * 15)
+static int quantise_4bit_y(float value) {
+    // Y quantisation: round(y * 15)
     return (int)round(fmaxf(0.0f, fminf(15.0f, value * 15.0f)));
 }
 
@@ -360,7 +360,7 @@ static void encode_ipf1_block_correct(uint8_t *rgb_data, int width, int height, 
                 pixels[idx] = (ycocg_t){0.0f, 0.0f, 0.0f};
             }
             
-            y_values[idx] = quantize_4bit_y(pixels[idx].y);
+            y_values[idx] = quantise_4bit_y(pixels[idx].y);
             co_values[idx] = pixels[idx].co;
             cg_values[idx] = pixels[idx].cg;
         }
@@ -567,7 +567,7 @@ static int process_audio(encoder_config_t *config, int frame_num, FILE *output) 
         return 1;
     }
     
-    // Initialize packet size on first frame
+    // Initialise packet size on first frame
     if (config->mp2_packet_size == 0) {
         uint8_t header[4];
         if (fread(header, 1, 4, config->mp2_file) != 4) return 1;
@@ -589,7 +589,7 @@ static int process_audio(encoder_config_t *config, int frame_num, FILE *output) 
     double packets_per_frame = frame_audio_time / packet_audio_time;
     
     // Only insert audio when buffer would go below 2 frames
-    // Initialize with 2 packets on first frame to prime the buffer
+    // Initialise with 2 packets on first frame to prime the buffer
     int packets_to_insert = 0;
     if (frame_num == 1) {
         packets_to_insert = 2;
@@ -654,7 +654,7 @@ static void write_tvdos_header(encoder_config_t *config, FILE *output) {
     fwrite(reserved, 1, 10, output);
 }
 
-// Initialize encoder configuration
+// Initialise encoder configuration
 static encoder_config_t *init_encoder_config() {
     encoder_config_t *config = calloc(1, sizeof(encoder_config_t));
     if (!config) return NULL;
@@ -807,7 +807,7 @@ static void print_usage(const char *program_name) {
 int main(int argc, char *argv[]) {
     encoder_config_t *config = init_encoder_config();
     if (!config) {
-        fprintf(stderr, "Failed to initialize encoder\n");
+        fprintf(stderr, "Failed to initialise encoder\n");
         return 1;
     }
     
@@ -904,7 +904,7 @@ int main(int argc, char *argv[]) {
     // Write TVDOS header
     write_tvdos_header(config, output);
     
-    // Initialize progress tracking
+    // Initialise progress tracking
     gettimeofday(&config->start_time, NULL);
     config->last_progress_time = config->start_time;
     config->total_output_bytes = 8 + 2 + 2 + 2 + 4 + 2 + 2 + 10; // TVDOS header size
