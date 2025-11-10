@@ -35,9 +35,11 @@ tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp
 	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav_opencv.cpp -o encoder_tav_opencv.o
 	$(CXX) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
 
-tav_decoder: decoder_tav.c
-	rm -f decoder_tav
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o decoder_tav $< $(LIBS)
+tav_decoder: decoder_tav.c decoder_tad.c decoder_tad.h
+	rm -f decoder_tav decoder_tav.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -DTAD_DECODER_LIB -c decoder_tad.c -o decoder_tad.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c decoder_tav.c -o decoder_tav.o
+	$(CC) -o decoder_tav decoder_tav.o decoder_tad.o $(LIBS)
 
 tav_inspector: tav_inspector.c
 	rm -f tav_inspector

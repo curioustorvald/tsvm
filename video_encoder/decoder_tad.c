@@ -868,8 +868,9 @@ static int tad_decode_channel_ezbc(const uint8_t *input, size_t input_size, int8
 // Chunk Decoding
 //=============================================================================
 
-static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_stereo,
-                        size_t *bytes_consumed, size_t *samples_decoded) {
+// Public API: TAD32 chunk decoder (can be used by both standalone decoder and TAV decoder)
+int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_stereo,
+                       size_t *bytes_consumed, size_t *samples_decoded) {
     const uint8_t *read_ptr = input;
 
     // Read chunk header
@@ -988,6 +989,7 @@ static int decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_
 // Main Decoder
 //=============================================================================
 
+#ifndef TAD_DECODER_LIB  // Only compile main() when building standalone decoder
 static void print_usage(const char *prog_name) {
     printf("Usage: %s -i <input> [options]\n", prog_name);
     printf("Options:\n");
@@ -1130,8 +1132,8 @@ int main(int argc, char *argv[]) {
 
     while (offset < input_size) {
         size_t bytes_consumed, samples_decoded;
-        int result = decode_chunk(input_data + offset, input_size - offset,
-                                  chunk_output, &bytes_consumed, &samples_decoded);
+        int result = tad32_decode_chunk(input_data + offset, input_size - offset,
+                                        chunk_output, &bytes_consumed, &samples_decoded);
 
         if (result != 0) {
             fprintf(stderr, "Error: Chunk decoding failed at offset %zu\n", offset);
@@ -1183,3 +1185,4 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+#endif  // TAD_DECODER_LIB

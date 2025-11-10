@@ -9935,7 +9935,7 @@ int main(int argc, char *argv[]) {
     };
 
     int c, option_index = 0;
-    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:a:w:c:d:b:S:vt?", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:a:c:d:b:S:vt?", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 enc->input_file = strdup(optarg);
