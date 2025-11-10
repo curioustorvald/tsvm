@@ -1976,7 +1976,7 @@ typedef struct tav_encoder_s {
     int two_pass_mode;                    // Enable two-pass encoding (0=disabled, 1=enabled)
     frame_analysis_t *frame_analyses;     // Array of frame analysis metrics (first pass)
     int frame_analyses_capacity;          // Allocated capacity
-    int frame_analyses_count;             // Current number of analyzed frames
+    int frame_analyses_count;             // Current number of analysed frames
     gop_boundary_t *gop_boundaries;       // Linked list of GOP boundaries (computed in first pass)
     gop_boundary_t *current_gop_boundary; // Current GOP being encoded (second pass)
     int two_pass_current_frame;           // Current frame number in second pass
@@ -6702,13 +6702,22 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
         // Step 3: Round to discrete quantisation levels
         quantised_val = roundf(quantised_val); // file size explodes without rounding
 
-        // Step 4: Denormalise - multiply back by quantiser to restore magnitude
-        // This gives us quantised values at original scale (not shrunken to 0-10 range)
-        float denormalised = quantised_val * effective_q;
+        // FIX: Store normalised values (not denormalised) to avoid int16_t overflow
+        // EZBC bitplane encoding works fine with normalised coefficients
+        // Denormalisation was causing bright pixels to clip at 32767
+        quantised[i] = (int16_t)CLAMP((int)quantised_val, -32768, 32767);
 
-        // CRITICAL FIX: Must round (not truncate) to match decoder behavior
-        // With odd baseQ values and fractional weights, truncation causes mismatch with Sigmap mode
-        quantised[i] = (int16_t)CLAMP((int)roundf(denormalised), -32768, 32767);
+        // Debug: Print LL subband coefficients (9×7 at top-left for 560×448)
+        static int debug_once = 1;
+        if (debug_once && i < 63 && width == 560 && !is_chroma) {
+            int x = i % width;
+            int y = i / width;
+            if (x < 9 && y < 7) {
+                fprintf(stderr, "[EZBC-QUANT-DEBUG] LL coeff[%d,%d] (idx=%d): coeff=%.1f, weight=%.3f, effective_q=%.1f, quantised_val=%.1f, stored=%d\n",
+                        x, y, i, coeffs[i], weight, effective_q, quantised_val, quantised[i]);
+                if (i == 62) debug_once = 0;
+            }
+        }
     }
 }
 
@@ -9631,7 +9640,7 @@ static void free_gop_boundaries(gop_boundary_t *head) {
     }
 }
 
-// First pass: Analyze all frames and build GOP boundaries
+// First pass: Analyse all frames and build GOP boundaries
 // Returns 0 on success, -1 on error
 static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
     printf("=== Two-Pass Encoding: First Pass (Scene Analysis) ===\n");
@@ -9737,12 +9746,12 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
         frame_num++;
 
         if (frame_num % 100 == 0) {
-            printf("  Analyzed %d frames...\r", frame_num);
+            printf("  Analysed %d frames...\r", frame_num);
             fflush(stdout);
         }
     }
 
-    printf("\n  Analyzed %d frames total\n", frame_num);
+    printf("\n  Analysed %d frames total\n", frame_num);
 
     free(frame_rgb);
     if (prev_dwt) free(prev_dwt);
@@ -9881,7 +9890,7 @@ int main(int argc, char *argv[]) {
         {"adaptive-blocks", no_argument, 0, 1022},
         {"bframes", required_argument, 0, 1023},
         {"gop-size", required_argument, 0, 1024},
-        {"ezbc", no_argument, 0, 1025},
+        {"sigmap", no_argument, 0, 1025},
         {"separate-audio-track", no_argument, 0, 1026},
         {"pcm8-audio", no_argument, 0, 1027},
         {"pcm-audio", no_argument, 0, 1027},
@@ -10095,9 +10104,8 @@ int main(int argc, char *argv[]) {
                 }
                 printf("GOP size set to %d frames\n", enc->residual_coding_gop_size);
                 break;
-            case 1025: // --ezbc
-                enc->preprocess_mode = PREPROCESS_EZBC;
-                printf("EZBC (Embedded Zero Block Coding) enabled for significance maps\n");
+            case 1025: // --sigmap
+                enc->preprocess_mode = PREPROCESS_TWOBITMAP;
                 break;
             case 1026: // --separate-audio-track
                 enc->separate_audio_track = 1;

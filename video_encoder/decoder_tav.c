@@ -2407,13 +2407,52 @@ static int decode_i_or_p_frame(tav_decoder_t *decoder, uint8_t packet_type, uint
         const int is_perceptual = (decoder->header.version >= 5 && decoder->header.version <= 8);
         const int is_ezbc = (decoder->header.entropy_coder == 1);
 
-        if (is_ezbc) {
-            // EZBC mode: coefficients are already denormalised by encoder
-            // Just convert int16 to float without multiplying by quantiser
-            for (int i = 0; i < coeff_count; i++) {
-                decoder->dwt_buffer_y[i] = (float)quantised_y[i];
-                decoder->dwt_buffer_co[i] = (float)quantised_co[i];
-                decoder->dwt_buffer_cg[i] = (float)quantised_cg[i];
+        // Debug: Print decoder state
+        static int state_debug_once = 1;
+        if (state_debug_once) {
+            fprintf(stderr, "[DECODER-STATE] version=%d, entropy_coder=%d, is_perceptual=%d, is_ezbc=%d\n",
+                    decoder->header.version, decoder->header.entropy_coder, is_perceptual, is_ezbc);
+            state_debug_once = 0;
+        }
+
+        if (is_ezbc && is_perceptual) {
+            // EZBC mode with perceptual quantisation: coefficients are normalised
+            // Need to dequantise using perceptual weights (same as twobit-map mode)
+
+            // Debug: Print quantised LL values before dequantisation
+            static int debug_count = 0;
+            if (debug_count < 1) {
+                fprintf(stderr, "[EZBC-DECODER-DEBUG] Quantised LL coefficients (9x7):\n");
+                for (int y = 0; y < 7 && y < decoder->header.height; y++) {
+                    for (int x = 0; x < 9 && x < decoder->header.width; x++) {
+                        int idx = y * decoder->header.width + x;
+                        fprintf(stderr, "%6d ", quantised_y[idx]);
+                    }
+                    fprintf(stderr, "\n");
+                }
+                debug_count++;
+            }
+
+            dequantise_dwt_subbands_perceptual(0, qy, quantised_y, decoder->dwt_buffer_y,
+                                              decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, qy, 0, decoder->frame_count);
+            dequantise_dwt_subbands_perceptual(0, qy, quantised_co, decoder->dwt_buffer_co,
+                                              decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, qco, 1, decoder->frame_count);
+            dequantise_dwt_subbands_perceptual(0, qy, quantised_cg, decoder->dwt_buffer_cg,
+                                              decoder->header.width, decoder->header.height,
+                                              decoder->header.decomp_levels, qcg, 1, decoder->frame_count);
+
+            // Debug: Print dequantised LL values
+            if (debug_count <= 1) {
+                fprintf(stderr, "[EZBC-DECODER-DEBUG] Dequantised LL coefficients (9x7):\n");
+                for (int y = 0; y < 7 && y < decoder->header.height; y++) {
+                    for (int x = 0; x < 9 && x < decoder->header.width; x++) {
+                        int idx = y * decoder->header.width + x;
+                        fprintf(stderr, "%7.0f ", decoder->dwt_buffer_y[idx]);
+                    }
+                    fprintf(stderr, "\n");
+                }
             }
         } else if (is_perceptual) {
             dequantise_dwt_subbands_perceptual(0, qy, quantised_y, decoder->dwt_buffer_y,
@@ -2912,28 +2951,34 @@ int main(int argc, char *argv[]) {
             const int temporal_levels = 2;  // Fixed for TAV GOP encoding
 
             for (int t = 0; t < gop_size; t++) {
-                if (is_ezbc) {
-                    // EZBC mode: coefficients are already denormalised by encoder
-                    // Just convert int16 to float without multiplying by quantiser
-                    for (int i = 0; i < num_pixels; i++) {
-                        gop_y[t][i] = (float)quantised_gop[t][0][i];
-                        gop_co[t][i] = (float)quantised_gop[t][1][i];
-                        gop_cg[t][i] = (float)quantised_gop[t][2][i];
-                    }
+                if (is_ezbc && is_perceptual) {
+                    // EZBC mode with perceptual quantisation: coefficients are normalised
+                    // Need to dequantise using perceptual weights (same as twobit-map mode)
+                    const int temporal_level = get_temporal_subband_level(t, gop_size, temporal_levels);
+                    const float temporal_scale = get_temporal_quantiser_scale(temporal_level);
 
-                    if (t == 0) {
-                        // Debug first frame
-                        int16_t max_y = 0, min_y = 0;
-                        for (int i = 0; i < num_pixels; i++) {
-                            if (quantised_gop[t][0][i] > max_y) max_y = quantised_gop[t][0][i];
-                            if (quantised_gop[t][0][i] < min_y) min_y = quantised_gop[t][0][i];
-                        }
-                        fprintf(stderr, "[GOP-EZBC] Frame 0 Y coeffs range: [%d, %d], first 5: %d %d %d %d %d\n",
-                               min_y, max_y,
-                               quantised_gop[t][0][0], quantised_gop[t][0][1], quantised_gop[t][0][2],
-                               quantised_gop[t][0][3], quantised_gop[t][0][4]);
+                    const float base_q_y = roundf(decoder->header.quantiser_y * temporal_scale);
+                    const float base_q_co = roundf(decoder->header.quantiser_co * temporal_scale);
+                    const float base_q_cg = roundf(decoder->header.quantiser_cg * temporal_scale);
+
+                    dequantise_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                      quantised_gop[t][0], gop_y[t],
+                                                      decoder->header.width, decoder->header.height,
+                                                      decoder->header.decomp_levels, base_q_y, 0, decoder->frame_count + t);
+                    dequantise_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                      quantised_gop[t][1], gop_co[t],
+                                                      decoder->header.width, decoder->header.height,
+                                                      decoder->header.decomp_levels, base_q_co, 1, decoder->frame_count + t);
+                    dequantise_dwt_subbands_perceptual(0, decoder->header.quantiser_y,
+                                                      quantised_gop[t][2], gop_cg[t],
+                                                      decoder->header.width, decoder->header.height,
+                                                      decoder->header.decomp_levels, base_q_cg, 1, decoder->frame_count + t);
+
+                    if (t == 0 && verbose) {
+                        fprintf(stderr, "[GOP-EZBC] Frame 0: Quantised LL[0]=%d, Dequantised LL[0]=%.1f, base_q_y=%.1f\n",
+                               quantised_gop[t][0][0], gop_y[t][0], base_q_y);
                     }
-                } else {
+                } else if (!is_ezbc) {
                     // Normal mode: multiply by quantiser
                     const int temporal_level = get_temporal_subband_level(t, gop_size, temporal_levels);
                     const float temporal_scale = get_temporal_quantiser_scale(temporal_level);

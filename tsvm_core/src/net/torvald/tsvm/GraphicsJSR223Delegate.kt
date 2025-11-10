@@ -5022,28 +5022,21 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Apply linear dequantisation with perceptual weights (matching encoder's linear storage)
-        // EZBC mode: coefficients are ALREADY DENORMALIZED by encoder
-        //            e.g., encoder: coeff=377 → quantize: 377/48=7.85→8 → denormalize: 8*48=384 → store 384
-        //            decoder: read 384 → pass through as-is (already in correct range for IDWT)
-        // Significance-map mode: coefficients are normalized (quantized only)
-        //                       e.g., encoder stores 8 = round(377/48)
-        //                       decoder must multiply: 8 * 48 = 384 (denormalize for IDWT)
+        // FIX (2025-11-11): Both EZBC and Significance-map modes now store NORMALIZED coefficients
+        //                   Encoder stores quantised values (e.g., round(377/48) = 8)
+        //                   Decoder must multiply by effective quantiser to denormalize
+        //                   Previous denormalization in EZBC caused int16_t overflow (clipping at 32767)
+        //                   for bright pixels, creating dark DWT-pattern blemishes
         for (i in quantised.indices) {
             if (i < dequantised.size) {
                 val effectiveQuantiser = baseQuantiser * weights[i]
 
-                dequantised[i] = if (isEZBC) {
-                    // EZBC mode: pass through as-is (coefficients already denormalized and rounded by encoder)
-                    quantised[i].toFloat()
-                } else {
-                    // Significance-map mode: multiply to denormalize, then round
-                    // CRITICAL: Must ROUND (not truncate) to match EZBC encoder's roundf() behavior
-                    // Truncation toward zero was wrong - it created mismatch with EZBC for odd baseQ values
-                    val untruncated = quantised[i] * effectiveQuantiser
-                    val rounded = kotlin.math.round(untruncated)
+                // Both modes now use the same dequantisation: multiply to denormalize, then round
+                // CRITICAL: Must ROUND (not truncate) to match encoder's roundf() behavior
+                val untruncated = quantised[i] * effectiveQuantiser
+                val rounded = kotlin.math.round(untruncated)
 
-                    rounded
-                }
+                dequantised[i] = rounded
             }
         }
 
