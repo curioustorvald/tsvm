@@ -142,17 +142,32 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     )
 
     // Base quantiser weight table (10 subbands: LL + 9 H bands)
-    private val BASE_QUANTISER_WEIGHTS = floatArrayOf(
-        1.0f,    // LL (L9) - finest preservation
-        1.0f,    // H (L9)
-        1.0f,    // H (L8)
-        1.0f,    // H (L7)
-        1.0f,    // H (L6)
-        1.1f,    // H (L5)
-        1.2f,    // H (L4)
-        1.3f,    // H (L3)
-        1.4f,    // H (L2)
-        1.5f     // H (L1) - coarsest quantization
+    // CRITICAL: Different weights for Mid (channel 0) and Side (channel 1) channels!
+    private val BASE_QUANTISER_WEIGHTS = arrayOf(
+        floatArrayOf( // Mid channel (channel 0)
+            4.0f,    // LL (L9) DC
+            2.0f,    // H (L9) 31.25 hz
+            1.8f,    // H (L8) 62.5 hz
+            1.6f,    // H (L7) 125 hz
+            1.4f,    // H (L6) 250 hz
+            1.2f,    // H (L5) 500 hz
+            1.0f,    // H (L4) 1 khz
+            1.0f,    // H (L3) 2 khz
+            1.3f,    // H (L2) 4 khz
+            2.0f     // H (L1) 8 khz
+        ),
+        floatArrayOf( // Side channel (channel 1)
+            6.0f,    // LL (L9) DC
+            5.0f,    // H (L9) 31.25 hz
+            2.6f,    // H (L8) 62.5 hz
+            2.4f,    // H (L7) 125 hz
+            1.8f,    // H (L6) 250 hz
+            1.3f,    // H (L5) 500 hz
+            1.0f,    // H (L4) 1 khz
+            1.0f,    // H (L3) 2 khz
+            1.6f,    // H (L2) 4 khz
+            3.2f     // H (L1) 8 khz
+        )
     )
 
     private val LAMBDA_FIXED = 6.0f
@@ -931,7 +946,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val normalizedVal = lambdaDecompanding(quantized[i], maxIndex)
 
                 // Denormalize using the subband scalar and apply base weight + quantiser scaling
-                val weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiserScale
+                // CRITICAL: Use channel-specific weights (Mid=0, Side=1)
+                val weight = BASE_QUANTISER_WEIGHTS[channel][sideband] * quantiserScale
                 coeffs[i] = normalizedVal * TAD32_COEFF_SCALARS[sideband] * weight
 //            }
         }
