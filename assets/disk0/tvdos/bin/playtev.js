@@ -758,7 +758,7 @@ try {
                             // For interlaced: decode current frame into currentFieldAddr
                             // For display: use prevFieldAddr as current, currentFieldAddr as next
                             graphics.tevDecode(blockDataPtr, nextFieldAddr, currentFieldAddr, width, decodingHeight, qualityY, qualityCo, qualityCg, trueFrameCount, debugMotionVectors, version, enableDeblocking, enableBoundaryAwareDecoding)
-                            graphics.tevDeinterlace(trueFrameCount + 1, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
+                            graphics.tevDeinterlace(trueFrameCount, width, decodingHeight, prevFieldAddr, currentFieldAddr, nextFieldAddr, CURRENT_RGB_ADDR, deinterlaceAlgorithm)
 
                             // Rotate field buffers for next frame: NEXT -> CURRENT -> PREV
                             rotateFieldBuffers()

@@ -124,16 +124,25 @@ typedef struct {
 static int calculate_subband_layout(int width, int height, int decomp_levels, dwt_subband_info_t *subbands) {
     int subband_count = 0;
 
+    // generate division series
+    int widths[decomp_levels + 1]; widths[0] = width;
+    int heights[decomp_levels + 1]; heights[0] = height;
+
+    for (int i = 1; i < decomp_levels + 1; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
+
     // LL subband at maximum decomposition level
-    const int ll_width = width >> decomp_levels;
-    const int ll_height = height >> decomp_levels;
+    int ll_width = widths[decomp_levels];
+    int ll_height = heights[decomp_levels];
     subbands[subband_count++] = (dwt_subband_info_t){decomp_levels, 0, 0, ll_width * ll_height};
     int coeff_offset = ll_width * ll_height;
 
     // LH, HL, HH subbands for each level from max down to 1
     for (int level = decomp_levels; level >= 1; level--) {
-        const int level_width = width >> (decomp_levels - level + 1);
-        const int level_height = height >> (decomp_levels - level + 1);
+        int level_width = widths[decomp_levels - level + 1];
+        int level_height = heights[decomp_levels - level + 1];
         const int subband_size = level_width * level_height;
 
         // LH subband
@@ -422,7 +431,7 @@ static int calculate_dwt_levels(int chunk_size) {
 static void dwt_97_inverse_1d(float *data, int length);
 
 static void dwt_inverse_multilevel(float *data, int length, int levels) {
-    // Pre-calculate all intermediate lengths used during forward transform
+    // generate division series
     // Forward uses: data[0..length-1], then data[0..(length+1)/2-1], etc.
     int *lengths = malloc((levels + 1) * sizeof(int));
     lengths[0] = length;

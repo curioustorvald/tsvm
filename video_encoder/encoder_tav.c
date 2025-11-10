@@ -1771,6 +1771,8 @@ typedef struct tav_encoder_s {
 
     // Video parameters
     int width, height;
+    int *widths;
+    int *heights;
     int fps;
     int output_fps;  // For frame rate conversion
     int total_frames;
@@ -2282,7 +2284,7 @@ static int write_subtitle_packet(FILE *output, uint32_t index, uint8_t opcode, c
 static int process_subtitles(tav_encoder_t *enc, int frame_num, FILE *output);
 
 // Temporal 3D DWT prototypes
-static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
+static void dwt_3d_forward(tav_encoder_t *enc, float **gop_data, int width, int height, int num_frames,
                           int spatial_levels, int temporal_levels, int spatial_filter);
 static void dwt_3d_forward_mc(tav_encoder_t *enc, float **gop_y, float **gop_co, float **gop_cg,
                               int num_frames, int spatial_levels, int temporal_levels, int spatial_filter);
@@ -2296,8 +2298,8 @@ static int detect_scene_change_between_frames(const uint8_t *frame1_rgb, const u
 static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                                   const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
                                   uint8_t mode, uint8_t *buffer);
-static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int levels, int filter_type);
-static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height, int levels);
+static void dwt_2d_forward_flexible(tav_encoder_t *enc, float *tile_data, int width, int height, int levels, int filter_type);
+static void dwt_2d_haar_inverse_flexible(tav_encoder_t *enc, float *tile_data, int width, int height, int levels);
 static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                            float *coeffs, int16_t *quantised, int size,
                                                            int base_quantiser, int width, int height,
@@ -3885,9 +3887,9 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     memcpy(residual_cg_dwt, enc->residual_coding_residual_frame_cg, frame_size * sizeof(float));
 
     // Apply 2D DWT to residuals
-    dwt_2d_forward_flexible(residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-    dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-    dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
     // Step 5: Quantise residual coefficients (skip for EZBC - it handles quantisation implicitly)
     int16_t *quantised_y = enc->reusable_quantised_y;
@@ -4204,9 +4206,9 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     memcpy(residual_co_dwt, enc->residual_coding_residual_frame_co, frame_size * sizeof(float));
     memcpy(residual_cg_dwt, enc->residual_coding_residual_frame_cg, frame_size * sizeof(float));
 
-    dwt_2d_forward_flexible(residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-    dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-    dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
     // Step 7: Quantise residual coefficients
     int16_t *quantised_y = enc->reusable_quantised_y;
@@ -4437,9 +4439,9 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
     memcpy(residual_co_dwt, enc->residual_coding_residual_frame_co, frame_size * sizeof(float));
     memcpy(residual_cg_dwt, enc->residual_coding_residual_frame_cg, frame_size * sizeof(float));
 
-    dwt_2d_forward_flexible(residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-    dwt_2d_forward_flexible(residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-    dwt_2d_forward_flexible(residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_y_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_co_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+    dwt_2d_forward_flexible(enc, residual_cg_dwt, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
 
     // Step 7: Quantise residual coefficients
     int16_t *quantised_y = enc->reusable_quantised_y;
@@ -4897,12 +4899,9 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
     if (actual_gop_size == 1) {
         // Apply only 2D spatial DWT (no temporal transform for single frame)
         // Use cropped dimensions (will be full size if no motion)
-        dwt_2d_forward_flexible(gop_y_coeffs[0], valid_width, valid_height,
-                              enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(gop_co_coeffs[0], valid_width, valid_height,
-                              enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(gop_cg_coeffs[0], valid_width, valid_height,
-                              enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_y_coeffs[0], valid_width, valid_height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_co_coeffs[0], valid_width, valid_height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_cg_coeffs[0], valid_width, valid_height, enc->decomp_levels, enc->wavelet_filter);
     } else {
         // Multi-frame GOP: Apply 3D DWT (temporal + spatial) to each channel
         // Note: This modifies gop_*_coeffs in-place
@@ -4915,11 +4914,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                              enc->temporal_decomp_levels, enc->wavelet_filter);
         } else {
             // Use traditional 3D DWT with pre-aligned frames (translation-only)
-            dwt_3d_forward(gop_y_coeffs, valid_width, valid_height, actual_gop_size,
+            dwt_3d_forward(enc, gop_y_coeffs, valid_width, valid_height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-            dwt_3d_forward(gop_co_coeffs, valid_width, valid_height, actual_gop_size,
+            dwt_3d_forward(enc, gop_co_coeffs, valid_width, valid_height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-            dwt_3d_forward(gop_cg_coeffs, valid_width, valid_height, actual_gop_size,
+            dwt_3d_forward(enc, gop_cg_coeffs, valid_width, valid_height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
         }
     }
@@ -5617,9 +5616,9 @@ static void dwt_3d_forward_mc(
 
     // Step 2: Apply 2D spatial DWT to each temporal subband
     for (int t = 0; t < num_frames; t++) {
-        dwt_2d_forward_flexible(gop_y[t], width, height, spatial_levels, spatial_filter);
-        dwt_2d_forward_flexible(gop_co[t], width, height, spatial_levels, spatial_filter);
-        dwt_2d_forward_flexible(gop_cg[t], width, height, spatial_levels, spatial_filter);
+        dwt_2d_forward_flexible(enc, gop_y[t], width, height, spatial_levels, spatial_filter);
+        dwt_2d_forward_flexible(enc, gop_co[t], width, height, spatial_levels, spatial_filter);
+        dwt_2d_forward_flexible(enc, gop_cg[t], width, height, spatial_levels, spatial_filter);
     }
 
     // Cleanup
@@ -5643,7 +5642,7 @@ static void dwt_3d_forward_mc(
 // gop_data[frame][y * width + x] - GOP buffer organised as frame-major
 // Modifies gop_data in-place
 // NOTE: This is the OLD version without MC-lifting (kept for non-mesh mode)
-static void dwt_3d_forward(float **gop_data, int width, int height, int num_frames,
+static void dwt_3d_forward(tav_encoder_t *enc, float **gop_data, int width, int height, int num_frames,
                           int spatial_levels, int temporal_levels, int spatial_filter) {
     if (num_frames < 2 || width < 2 || height < 2) return;
 
@@ -5689,7 +5688,7 @@ static void dwt_3d_forward(float **gop_data, int width, int height, int num_fram
     // Step 2: Apply 2D spatial DWT to each temporal subband (each frame after temporal DWT)
     for (int t = 0; t < num_frames; t++) {
         // Apply spatial DWT using the appropriate flexible function
-        dwt_2d_forward_flexible(gop_data[t], width, height, spatial_levels, spatial_filter);
+        dwt_2d_forward_flexible(enc, gop_data[t], width, height, spatial_levels, spatial_filter);
     }
 }
 
@@ -5797,70 +5796,6 @@ static void dwt_2d_forward_padded(float *tile_data, int levels, int filter_type)
     float *temp_row = malloc(max_size * sizeof(float));
     float *temp_col = malloc(max_size * sizeof(float));
 
-    for (int level = 0; level < levels; level++) {
-        int current_width = width >> level;
-        int current_height = height >> level;
-        if (current_width < 1 || current_height < 1) break;
-
-        // Row transform (horizontal)
-        for (int y = 0; y < current_height; y++) {
-            for (int x = 0; x < current_width; x++) {
-                temp_row[x] = tile_data[y * width + x];
-            }
-
-            if (filter_type == WAVELET_5_3_REVERSIBLE) {
-                dwt_53_forward_1d(temp_row, current_width);
-            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
-                dwt_97_forward_1d(temp_row, current_width);
-            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
-                dwt_bior137_forward_1d(temp_row, current_width);
-            } else if (filter_type == WAVELET_DD4) {
-                dwt_dd4_forward_1d(temp_row, current_width);
-            } else if (filter_type == WAVELET_HAAR) {
-                dwt_haar_forward_1d(temp_row, current_width);
-            }
-
-            for (int x = 0; x < current_width; x++) {
-                tile_data[y * width + x] = temp_row[x];
-            }
-        }
-
-        // Column transform (vertical)
-        for (int x = 0; x < current_width; x++) {
-            for (int y = 0; y < current_height; y++) {
-                temp_col[y] = tile_data[y * width + x];
-            }
-
-            if (filter_type == WAVELET_5_3_REVERSIBLE) {
-                dwt_53_forward_1d(temp_col, current_height);
-            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
-                dwt_97_forward_1d(temp_col, current_height);
-            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
-                dwt_bior137_forward_1d(temp_col, current_height);
-            } else if (filter_type == WAVELET_DD4) {
-                dwt_dd4_forward_1d(temp_col, current_height);
-            } else if (filter_type == WAVELET_HAAR) {
-                dwt_haar_forward_1d(temp_col, current_height);
-            }
-
-            for (int y = 0; y < current_height; y++) {
-                tile_data[y * width + x] = temp_col[y];
-            }
-        }
-    }
-
-    free(temp_row);
-    free(temp_col);
-}
-
-// 2D DWT forward transform for arbitrary dimensions
-static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int levels, int filter_type) {
-    const int max_size = (width > height) ? width : height;
-    float *temp_row = malloc(max_size * sizeof(float));
-    float *temp_col = malloc(max_size * sizeof(float));
-
-    // Pre-calculate all intermediate widths and heights (same fix as TAD/temporal)
-    // This ensures correct reconstruction for non-power-of-2 dimensions
     int *widths = malloc((levels + 1) * sizeof(int));
     int *heights = malloc((levels + 1) * sizeof(int));
     widths[0] = width;
@@ -5928,28 +5863,79 @@ static void dwt_2d_forward_flexible(float *tile_data, int width, int height, int
     free(temp_col);
 }
 
-// 2D Haar wavelet inverse transform for arbitrary dimensions
-// Used for delta coefficient reconstruction (inverse must be done in reverse order of levels)
-static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height, int levels) {
+// 2D DWT forward transform for arbitrary dimensions
+static void dwt_2d_forward_flexible(tav_encoder_t *enc, float *tile_data, int width, int height, int levels, int filter_type) {
     const int max_size = (width > height) ? width : height;
     float *temp_row = malloc(max_size * sizeof(float));
     float *temp_col = malloc(max_size * sizeof(float));
 
-    // Pre-calculate all intermediate widths and heights (same fix as TAD/temporal/forward)
-    // This ensures correct reconstruction for non-power-of-2 dimensions
-    int *widths = malloc((levels + 1) * sizeof(int));
-    int *heights = malloc((levels + 1) * sizeof(int));
-    widths[0] = width;
-    heights[0] = height;
-    for (int i = 1; i <= levels; i++) {
-        widths[i] = (widths[i - 1] + 1) / 2;
-        heights[i] = (heights[i - 1] + 1) / 2;
+    for (int level = 0; level < levels; level++) {
+        int current_width = enc->widths[level];
+        int current_height = enc->heights[level];
+        if (current_width < 1 || current_height < 1) break;
+
+        // Row transform (horizontal)
+        for (int y = 0; y < current_height; y++) {
+            for (int x = 0; x < current_width; x++) {
+                temp_row[x] = tile_data[y * width + x];
+            }
+
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
+                dwt_97_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
+                dwt_bior137_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_DD4) {
+                dwt_dd4_forward_1d(temp_row, current_width);
+            } else if (filter_type == WAVELET_HAAR) {
+                dwt_haar_forward_1d(temp_row, current_width);
+            }
+
+            for (int x = 0; x < current_width; x++) {
+                tile_data[y * width + x] = temp_row[x];
+            }
+        }
+
+        // Column transform (vertical)
+        for (int x = 0; x < current_width; x++) {
+            for (int y = 0; y < current_height; y++) {
+                temp_col[y] = tile_data[y * width + x];
+            }
+
+            if (filter_type == WAVELET_5_3_REVERSIBLE) {
+                dwt_53_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_9_7_IRREVERSIBLE) {
+                dwt_97_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_BIORTHOGONAL_13_7) {
+                dwt_bior137_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_DD4) {
+                dwt_dd4_forward_1d(temp_col, current_height);
+            } else if (filter_type == WAVELET_HAAR) {
+                dwt_haar_forward_1d(temp_col, current_height);
+            }
+
+            for (int y = 0; y < current_height; y++) {
+                tile_data[y * width + x] = temp_col[y];
+            }
+        }
     }
+
+    free(temp_row);
+    free(temp_col);
+}
+
+// 2D Haar wavelet inverse transform for arbitrary dimensions
+// Used for delta coefficient reconstruction (inverse must be done in reverse order of levels)
+static void dwt_2d_haar_inverse_flexible(tav_encoder_t *enc, float *tile_data, int width, int height, int levels) {
+    const int max_size = (width > height) ? width : height;
+    float *temp_row = malloc(max_size * sizeof(float));
+    float *temp_col = malloc(max_size * sizeof(float));
 
     // Apply inverse transform in reverse order of levels
     for (int level = levels - 1; level >= 0; level--) {
-        int current_width = widths[level];
-        int current_height = heights[level];
+        int current_width = enc->widths[level];
+        int current_height = enc->heights[level];
         if (current_width < 1 || current_height < 1) continue;
 
         // Column inverse transform (vertical) - done first to reverse forward order
@@ -5979,8 +5965,6 @@ static void dwt_2d_haar_inverse_flexible(float *tile_data, int width, int height
         }
     }
 
-    free(widths);
-    free(heights);
     free(temp_row);
     free(temp_col);
 }
@@ -6575,8 +6559,8 @@ static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_i
     int offset = 0;
 
     // First: LL subband at maximum decomposition level
-    int ll_width = width >> decomp_levels;
-    int ll_height = height >> decomp_levels;
+    int ll_width = enc->widths[decomp_levels];
+    int ll_height = enc->heights[decomp_levels];
     int ll_size = ll_width * ll_height;
 
     if (linear_idx < offset + ll_size) {
@@ -6587,9 +6571,9 @@ static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_i
 
     // Then: LH, HL, HH subbands for each level from max down to 1
     for (int level = decomp_levels; level >= 1; level--) {
-        int level_width = width >> (decomp_levels - level + 1);
-        int level_height = height >> (decomp_levels - level + 1);
-        int subband_size = level_width * level_height;
+        int level_width = enc->widths[decomp_levels - level + 1];
+        int level_height = enc->heights[decomp_levels - level + 1];
+        const int subband_size = level_width * level_height;
 
         // LH subband (horizontal details)
         if (linear_idx < offset + subband_size) {
@@ -6728,59 +6712,6 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
     }
 }
 
-
-// Convert 2D spatial DWT layout to linear subband layout (for decoder compatibility)
-static void convert_2d_to_linear_layout(const int16_t *spatial_2d, int16_t *linear_subbands,
-                                       int width, int height, int decomp_levels) {
-    int linear_offset = 0;
-
-    // First: LL subband (top-left corner at finest decomposition level)
-    int ll_width = width >> decomp_levels;
-    int ll_height = height >> decomp_levels;
-    for (int y = 0; y < ll_height; y++) {
-        for (int x = 0; x < ll_width; x++) {
-            int spatial_idx = y * width + x;
-            linear_subbands[linear_offset++] = spatial_2d[spatial_idx];
-        }
-    }
-
-    // Then: LH, HL, HH subbands for each level from max down to 1
-    for (int level = decomp_levels; level >= 1; level--) {
-        int level_width = width >> (decomp_levels - level + 1);
-        int level_height = height >> (decomp_levels - level + 1);
-
-        // LH subband (top-right quadrant)
-        for (int y = 0; y < level_height; y++) {
-            for (int x = level_width; x < level_width * 2; x++) {
-                if (y < height && x < width) {
-                    int spatial_idx = y * width + x;
-                    linear_subbands[linear_offset++] = spatial_2d[spatial_idx];
-                }
-            }
-        }
-
-        // HL subband (bottom-left quadrant)
-        for (int y = level_height; y < level_height * 2; y++) {
-            for (int x = 0; x < level_width; x++) {
-                if (y < height && x < width) {
-                    int spatial_idx = y * width + x;
-                    linear_subbands[linear_offset++] = spatial_2d[spatial_idx];
-                }
-            }
-        }
-
-        // HH subband (bottom-right quadrant)
-        for (int y = level_height; y < level_height * 2; y++) {
-            for (int x = level_width; x < level_width * 2; x++) {
-                if (y < height && x < width) {
-                    int spatial_idx = y * width + x;
-                    linear_subbands[linear_offset++] = spatial_2d[spatial_idx];
-                }
-            }
-        }
-    }
-}
-
 // Serialise tile data for compression
 static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                                   const float *tile_y_data, const float *tile_co_data, const float *tile_cg_data,
@@ -6899,9 +6830,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                 tile_width = PADDED_TILE_SIZE_X;
                 tile_height = PADDED_TILE_SIZE_Y;
             }
-            dwt_2d_forward_flexible(delta_y, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
-            dwt_2d_forward_flexible(delta_co, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
-            dwt_2d_forward_flexible(delta_cg, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
+            dwt_2d_forward_flexible(enc, delta_y, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
+            dwt_2d_forward_flexible(enc, delta_co, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
+            dwt_2d_forward_flexible(enc, delta_cg, tile_width, tile_height, enc->delta_haar_levels, WAVELET_HAAR);
         }
 
         // Quantise the deltas with uniform quantisation (perceptual tuning is for original coefficients, not deltas)
@@ -6930,9 +6861,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
                 tile_width = PADDED_TILE_SIZE_X;
                 tile_height = PADDED_TILE_SIZE_Y;
             }
-            dwt_2d_haar_inverse_flexible(delta_y, tile_width, tile_height, enc->delta_haar_levels);
-            dwt_2d_haar_inverse_flexible(delta_co, tile_width, tile_height, enc->delta_haar_levels);
-            dwt_2d_haar_inverse_flexible(delta_cg, tile_width, tile_height, enc->delta_haar_levels);
+            dwt_2d_haar_inverse_flexible(enc, delta_y, tile_width, tile_height, enc->delta_haar_levels);
+            dwt_2d_haar_inverse_flexible(enc, delta_co, tile_width, tile_height, enc->delta_haar_levels);
+            dwt_2d_haar_inverse_flexible(enc, delta_cg, tile_width, tile_height, enc->delta_haar_levels);
         }
 
         // Add reconstructed deltas to previous coefficients
@@ -7107,9 +7038,9 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             if (mode != TAV_MODE_SKIP) {
                 if (enc->monoblock) {
                     // Monoblock mode: transform entire frame
-                    dwt_2d_forward_flexible(tile_y_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-                    dwt_2d_forward_flexible(tile_co_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-                    dwt_2d_forward_flexible(tile_cg_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(enc, tile_y_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(enc, tile_co_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(enc, tile_cg_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
                 } else {
                     // Standard mode: transform padded tiles (344x288)
                     dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
@@ -9190,9 +9121,18 @@ static int detect_scene_change(tav_encoder_t *enc, double *out_changed_ratio) {
 static void analysis_haar_2d_forward(float *data, int width, int height, int levels) {
     float *temp = malloc((width > height ? width : height) * sizeof(float));
 
+    // generate division series
+    int widths[levels + 1]; widths[0] = width;
+    int heights[levels + 1]; heights[0] = height;
+
+    for (int i = 1; i < levels + 1; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
+
     for (int level = 0; level < levels; level++) {
-        int current_width = width >> level;
-        int current_height = height >> level;
+        int current_width = widths[level];
+        int current_height = heights[level];
 
         if (current_width < 2 || current_height < 2) break;
 
@@ -9294,8 +9234,17 @@ static void extract_subband(const float *dwt_data, int width, int height, int le
     // band: 0=LL, 1=LH, 2=HL, 3=HH
     // For level L, subbands are in top-left quadrant of size (width>>L, height>>L)
 
-    int level_width = width >> level;
-    int level_height = height >> level;
+    // generate division series
+    int widths[10]; widths[0] = width;
+    int heights[10]; heights[0] = height;
+
+    for (int i = 1; i < 10; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
+
+    int level_width = widths[level];
+    int level_height = heights[level];
     int half_width = level_width / 2;
     int half_height = level_height / 2;
 
@@ -9320,17 +9269,26 @@ static void extract_subband(const float *dwt_data, int width, int height, int le
 }
 
 // Compute comprehensive frame analysis metrics
-static void compute_frame_metrics(const float *dwt_current, const float *dwt_previous,
+static void compute_frame_metrics(tav_encoder_t *enc, const float *dwt_current, const float *dwt_previous,
                                   int width, int height, int levels,
                                   frame_analysis_t *metrics) {
     int num_pixels = width * height;
+
+    // generate division series
+    int widths[levels + 1]; widths[0] = width;
+    int heights[levels + 1]; heights[0] = height;
+
+    for (int i = 1; i < levels + 1; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
 
     // Initialise metrics
     memset(metrics, 0, sizeof(frame_analysis_t));
 
     // Extract LL band (approximation coefficients)
-    int ll_width = width >> levels;
-    int ll_height = height >> levels;
+    int ll_width = widths[levels];
+    int ll_height = heights[levels];
     int ll_count = ll_width * ll_height;
 
     if (ll_count <= 0) return;
@@ -9732,12 +9690,14 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
         float *gray = subsample_frame_to_gray(frame_rgb, enc->width, enc->height, ANALYSIS_SUBSAMPLE_FACTOR);
 
         // Apply 3-level Haar DWT
+
         analysis_haar_2d_forward(gray, sub_width, sub_height, ANALYSIS_DWT_LEVELS);
 
         // Compute metrics
+
         frame_analysis_t metrics;
         metrics.frame_number = frame_num;
-        compute_frame_metrics(gray, prev_dwt, sub_width, sub_height, ANALYSIS_DWT_LEVELS, &metrics);
+        compute_frame_metrics(enc, gray, prev_dwt, sub_width, sub_height, ANALYSIS_DWT_LEVELS, &metrics);
 
         // Detect scene change using hybrid detector
         if (frame_num > 0) {
@@ -10184,6 +10144,16 @@ int main(int argc, char *argv[]) {
                 cleanup_encoder(enc);
                 return 1;
         }
+    }
+
+    // generate division series
+    enc->widths = malloc((enc->decomp_levels + 2) * sizeof(int));
+    enc->heights = malloc((enc->decomp_levels + 2) * sizeof(int));
+    enc->widths[0] = enc->width;
+    enc->heights[0] = enc->height;
+    for (int i = 1; i <= enc->decomp_levels; i++) {
+        enc->widths[i] = (enc->widths[i - 1] + 1) / 2;
+        enc->heights[i] = (enc->heights[i - 1] + 1) / 2;
     }
 
     // adjust encoding parameters for ICtCp
@@ -11147,6 +11117,8 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->tiles);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
+    free(enc->widths);
+    free(enc->heights);
 
     // OPTIMISATION: Free reusable quantisation buffers
     free(enc->reusable_quantised_y);
