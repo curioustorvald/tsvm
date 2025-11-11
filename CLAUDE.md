@@ -173,10 +173,10 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
   - **Multiple Wavelet Types**: 5/3 reversible, 9/7 irreversible, CDF 13/7, DD-4, Haar
   - **Single-tile encoding**: One large DWT tile for optimal quality (no blocking artifacts)
   - **Perceptual quantisation**: HVS-optimized coefficient scaling
-  - **YCoCg-R color space**: Efficient chroma representation with "simulated" subsampling using anisotropic quantisation (search for "ANISOTROPY_MULT_CHROMA" on the encoder)
+  - **YCoCg-R colour space**: Efficient chroma representation with "simulated" subsampling using anisotropic quantisation (search for "ANISOTROPY_MULT_CHROMA" on the encoder)
   - **6-level DWT decomposition**: Deep frequency analysis for better compression (deeper levels possible but 6 is the maximum for the default TSVM size)
   - **Significance Map Compression**: Improved coefficient storage format exploiting sparsity for 16-18% additional compression (2025-09-29 update)
-  - **Concatenated Maps Layout**: Cross-channel compression optimization for additional 1.6% improvement (2025-09-29 enhanced)
+  - **Concatenated Maps Layout**: Cross-channel compression optimisation for additional 1.6% improvement (2025-09-29 enhanced)
 - **Usage Examples**:
   ```bash
   # Different wavelets
@@ -259,7 +259,7 @@ Concatenated Maps Layout:
 
 - Significance map: 1 bit per coefficient (0=zero, 1=non-zero)
 - Value arrays: Only non-zero coefficients in sequence per channel
-- Cross-channel optimization: Zstd finds patterns across similar significance maps
+- Cross-channel optimisation: Zstd finds patterns across similar significance maps
 - Result: 16-18% compression improvement + 1.6% additional from concatenation
 ```
 
