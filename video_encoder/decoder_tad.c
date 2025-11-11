@@ -10,8 +10,6 @@
 #include <getopt.h>
 #include "encoder_tad.h"
 
-#define DECODER_VENDOR_STRING "Decoder-TAD 20251026"
-
 // TAD format constants (must match encoder)
 #undef TAD32_COEFF_SCALARS
 
@@ -999,7 +997,6 @@ static void print_usage(const char *prog_name) {
     printf("  --raw-pcm       Output raw PCMu8 instead of WAV file\n");
     printf("  -v              Verbose output\n");
     printf("  -h, --help      Show this help\n");
-    printf("\nVersion: %s\n", DECODER_VENDOR_STRING);
     printf("Default output: WAV file (8-bit unsigned PCM, stereo @ 32000 Hz)\n");
     printf("With --raw-pcm: PCMu8 raw file (8-bit unsigned stereo @ 32000 Hz)\n");
 }
@@ -1088,7 +1085,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (verbose) {
-        printf("%s\n", DECODER_VENDOR_STRING);
         printf("Input: %s\n", input_file);
         printf("Output: %s\n", output_file);
     }
