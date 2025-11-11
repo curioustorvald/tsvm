@@ -241,21 +241,6 @@ static inline float FCLAMP(float x, float min, float max) {
     return x < min ? min : (x > max ? max : x);
 }
 
-// Calculate maximum decomposition levels for a given frame size
-static int calculate_max_decomp_levels(int width, int height) {
-    int levels = 0;
-    int min_size = width < height ? width : height;
-
-    // Keep halving until we reach a minimum size (at least 4 pixels)
-    while (min_size >= 8) {  // Need at least 8 pixels to safely halve to 4
-        min_size /= 2;
-        levels++;
-    }
-
-    // Cap at a reasonable maximum to avoid going too deep
-    return levels > 10 ? 10 : levels;
-}
-
 // ===========================
 // Adaptive Block Partitioning
 // ===========================
@@ -1984,7 +1969,20 @@ typedef struct tav_encoder_s {
 
 } tav_encoder_t;
 
-// Wavelet filter constants removed - using lifting scheme implementation instead
+// Calculate maximum decomposition levels for a given frame size
+static int calculate_max_decomp_levels(tav_encoder_t *enc, int width, int height) {
+    int levels = 0;
+    int min_size = (!enc->monoblock) ? TILE_SIZE_Y : (width < height ? width : height);
+
+    // Keep halving until we reach a minimum size (at least 4 pixels)
+    while (min_size >= 8) {  // Need at least 8 pixels to safely halve to 4
+        min_size /= 2;
+        levels++;
+    }
+
+    // Cap at a reasonable maximum to avoid going too deep
+    return levels > 10 ? 10 : levels;
+}
 
 // Bitrate control functions
 static void update_video_rate_bin(tav_encoder_t *enc, size_t compressed_size) {
@@ -2264,7 +2262,7 @@ static int get_subband_type_2d(int x, int y, int width, int height, int decomp_l
 static int get_subband_level(int linear_idx, int width, int height, int decomp_levels);
 static int get_subband_type(int linear_idx, int width, int height, int decomp_levels);
 static void rgb_to_ycocg(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height);
-static int calculate_max_decomp_levels(int width, int height);
+static int calculate_max_decomp_levels(tav_encoder_t *enc, int width, int height);
 
 // Audio and subtitle processing prototypes (from TEV)
 static int start_audio_conversion(tav_encoder_t *enc);
@@ -2513,7 +2511,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
     if (!enc) return -1;
 
     // Automatic decomposition levels for monoblock mode
-    enc->decomp_levels = calculate_max_decomp_levels(enc->width, enc->height);
+    enc->decomp_levels = calculate_max_decomp_levels(enc, enc->width, enc->height);
 
     // Calculate tile dimensions
     if (enc->monoblock) {
