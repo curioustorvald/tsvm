@@ -5030,13 +5030,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         for (i in quantised.indices) {
             if (i < dequantised.size) {
                 val effectiveQuantiser = baseQuantiser * weights[i]
-
-                // Both modes now use the same dequantisation: multiply to denormalize, then round
-                // CRITICAL: Must ROUND (not truncate) to match encoder's roundf() behavior
                 val untruncated = quantised[i] * effectiveQuantiser
-                val rounded = kotlin.math.round(untruncated)
-
-                dequantised[i] = rounded
+                dequantised[i] = untruncated
             }
         }
 
@@ -5506,9 +5501,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val b = tmp - Co / 2.0f
                     val r = Co + b
                     
-                    rowRgbBuffer[bufferIdx++] = r.toInt().coerceIn(0, 255).toByte()
-                    rowRgbBuffer[bufferIdx++] = g.toInt().coerceIn(0, 255).toByte()
-                    rowRgbBuffer[bufferIdx++] = b.toInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = r.roundToInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = g.roundToInt().coerceIn(0, 255).toByte()
+                    rowRgbBuffer[bufferIdx++] = b.roundToInt().coerceIn(0, 255).toByte()
                 }
                 
                 // OPTIMISATION: Bulk copy entire row at once
@@ -5587,9 +5582,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 val b = tmp - Co / 2.0f
                 val r = Co + b
 
-                val rInt = r.toInt().coerceIn(0, 255)
-                val gInt = g.toInt().coerceIn(0, 255)
-                val bInt = b.toInt().coerceIn(0, 255)
+                val rInt = r.roundToInt().coerceIn(0, 255)
+                val gInt = g.roundToInt().coerceIn(0, 255)
+                val bInt = b.roundToInt().coerceIn(0, 255)
 
                 rowRgbBuffer[bufferIdx++] = rInt.toByte()
                 rowRgbBuffer[bufferIdx++] = gInt.toByte()
@@ -6542,9 +6537,9 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     val r = b + co
 
                     // Clamp and write to videoBuffer
-                    gpu.videoBuffer[offset + 0] = r.toInt().coerceIn(0, 255).toByte()
-                    gpu.videoBuffer[offset + 1] = g.toInt().coerceIn(0, 255).toByte()
-                    gpu.videoBuffer[offset + 2] = b.toInt().coerceIn(0, 255).toByte()
+                    gpu.videoBuffer[offset + 0] = r.roundToInt().coerceIn(0, 255).toByte()
+                    gpu.videoBuffer[offset + 1] = g.roundToInt().coerceIn(0, 255).toByte()
+                    gpu.videoBuffer[offset + 2] = b.roundToInt().coerceIn(0, 255).toByte()
                 }
             }
         }

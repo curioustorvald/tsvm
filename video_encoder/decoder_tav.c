@@ -303,13 +303,17 @@ static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, cons
             }
         }
 
+        // Apply linear dequantisation with perceptual weights (matching encoder's linear storage)
+        // FIX (2025-11-11): Both EZBC and Significance-map modes now store NORMALIZED coefficients
+        //                   Encoder stores quantised values (e.g., round(377/48) = 8)
+        //                   Decoder must multiply by effective quantiser to denormalize
+        //                   Previous denormalization in EZBC caused int16_t overflow (clipping at 32767)
+        //                   for bright pixels, creating dark DWT-pattern blemishes
         for (int i = 0; i < subband->coeff_count; i++) {
             const int idx = subband->coeff_start + i;
             if (idx < coeff_count) {
-                // CRITICAL: Must ROUND to match EZBC encoder's roundf() behavior
-                // Without rounding, truncation limits brightness range (e.g., Y maxes at 227 instead of 255)
                 const float untruncated = quantised[idx] * effective_quantiser;
-                dequantised[idx] = roundf(untruncated);
+                dequantised[idx] = untruncated;
             }
         }
     }
@@ -376,8 +380,7 @@ static void remove_grain_synthesis_decoder(float *coeffs, int width, int height,
     const int subband_count = calculate_subband_layout(width, height, decomp_levels, subbands);
 
     // Noise amplitude (matches Kotlin: qYGlobal.coerceAtMost(32) * 0.8f)
-    // FIX: Was 0.25f, should be 0.8f to match Kotlin decoder
-    const float noise_amplitude = (q_y_global < 32 ? q_y_global : 32) * 0.8f;
+    const float noise_amplitude = (q_y_global < 32 ? q_y_global : 32) * 0.4f; // somehow this term behaves differently from the Kotlin decoder
 
     // Process each subband (skip LL band which is level 0)
     for (int s = 0; s < subband_count; s++) {
@@ -422,331 +425,6 @@ static int calculate_dwt_levels(int chunk_size) {
     }
     return levels - 2;*/
     return 9;
-}
-
-//=============================================================================
-// Haar DWT Implementation (inverse only needed for decoder)
-//=============================================================================
-
-// Forward declaration (defined later in TAV decoder section)
-static void dwt_97_inverse_1d(float *data, int length);
-
-static void dwt_inverse_multilevel(float *data, int length, int levels) {
-    // generate division series
-    // Forward uses: data[0..length-1], then data[0..(length+1)/2-1], etc.
-    int *lengths = malloc((levels + 1) * sizeof(int));
-    lengths[0] = length;
-    for (int i = 1; i <= levels; i++) {
-        lengths[i] = (lengths[i - 1] + 1) / 2;
-    }
-
-    // Inverse transform: apply inverse DWT using exact forward lengths in reverse order
-    // Forward applied DWT with lengths: [length, (length+1)/2, ((length+1)/2+1)/2, ...]
-    // Inverse must use same lengths in reverse: [..., ((length+1)/2+1)/2, (length+1)/2, length]
-    for (int level = levels - 1; level >= 0; level--) {
-        int current_length = lengths[level];
-//        dwt_haar_inverse_1d(data, current_length);  // THEN apply inverse
-//        dwt_dd4_inverse_1d(data, current_length);  // THEN apply inverse
-        dwt_97_inverse_1d(data, current_length);  // THEN apply inverse
-    }
-
-    free(lengths);
-}
-
-//=============================================================================
-// Helper Functions for TAD Decoder
-//=============================================================================
-
-static inline float FCLAMP(float x, float min, float max) {
-    return x < min ? min : (x > max ? max : x);
-}
-
-//=============================================================================
-// M/S Stereo Correlation (inverse of decorrelation)
-//=============================================================================
-
-// Uniform random in [0, 1)
-static inline float frand01(void) {
-    return (float)rand() / ((float)RAND_MAX + 1.0f);
-}
-
-// TPDF noise in [-1, +1)
-static inline float tpdf1(void) {
-    return (frand01() - frand01());
-}
-
-static void ms_correlate(const float *mid, const float *side, float *left, float *right, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        // Decode M/S → L/R
-        float m = mid[i];
-        float s = side[i];
-        left[i] = FCLAMP((m + s), -1.0f, 1.0f);
-        right[i] = FCLAMP((m - s), -1.0f, 1.0f);
-    }
-}
-
-static float signum(float x) {
-    if (x > 0.0f) return 1.0f;
-    if (x < 0.0f) return -1.0f;
-    return 0.0f;
-}
-
-static void expand_gamma(float *left, float *right, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
-        float x = left[i]; float a = fabsf(x);
-        left[i] = signum(x) * powf(a, 1.4142f);
-        float y = right[i]; float b = fabsf(y);
-        right[i] = signum(y) * powf(b, 1.4142f);
-    }
-}
-
-static void expand_mu_law(float *left, float *right, size_t count) {
-    static float MU = 255.0f;
-
-    for (size_t i = 0; i < count; i++) {
-        // decode(y) = sign(y) * |y|^(1/γ) where γ=0.5
-        float x = left[i];
-        left[i] = signum(x) * (powf(1.0f + MU, fabsf(x)) - 1.0f) / MU;
-        float y = right[i];
-        right[i] = signum(y) * (powf(1.0f + MU, fabsf(y)) - 1.0f) / MU;
-    }
-}
-
-//=============================================================================
-// De-emphasis Filter (TAD)
-//=============================================================================
-
-static void calculate_deemphasis_coeffs(float *b0, float *b1, float *a1) {
-    // De-emphasis factor (must match encoder pre-emphasis alpha=0.5)
-    const float alpha = 0.5f;
-
-    *b0 = 1.0f;
-    *b1 = 0.0f;  // No feedforward delay
-    *a1 = -alpha;  // NEGATIVE because equation has minus sign: y = x - a1*prev_y
-}
-
-static void apply_deemphasis(float *left, float *right, size_t count) {
-    // Static state variables - persistent across chunks to prevent discontinuities
-    static float prev_x_l = 0.0f;
-    static float prev_y_l = 0.0f;
-    static float prev_x_r = 0.0f;
-    static float prev_y_r = 0.0f;
-
-    float b0, b1, a1;
-    calculate_deemphasis_coeffs(&b0, &b1, &a1);
-
-    // Left channel - use persistent state
-    for (size_t i = 0; i < count; i++) {
-        float x = left[i];
-        float y = b0 * x + b1 * prev_x_l - a1 * prev_y_l;
-        left[i] = y;
-        prev_x_l = x;
-        prev_y_l = y;
-    }
-
-    // Right channel - use persistent state
-    for (size_t i = 0; i < count; i++) {
-        float x = right[i];
-        float y = b0 * x + b1 * prev_x_r - a1 * prev_y_r;
-        right[i] = y;
-        prev_x_r = x;
-        prev_y_r = y;
-    }
-}
-
-static void pcm32f_to_pcm8(const float *fleft, const float *fright, uint8_t *left, uint8_t *right, size_t count, float dither_error[2][2]) {
-    const float b1 = 1.5f;   // 1st feedback coefficient
-    const float b2 = -0.75f; // 2nd feedback coefficient
-    const float scale = 127.5f;
-    const float bias  = 128.0f;
-
-    // Reduced dither amplitude to coordinate with coefficient-domain dithering
-    // The decoder now adds TPDF dither in coefficient domain, so we reduce
-    // sample-domain dither by ~60% to avoid doubling the noise floor
-    const float dither_scale = 0.2f;  // Reduced from 0.5 (was ±0.5 LSB, now ±0.2 LSB)
-
-    for (size_t i = 0; i < count; i++) {
-        // --- LEFT channel ---
-        float feedbackL = b1 * dither_error[0][0] + b2 * dither_error[0][1];
-        float ditherL = dither_scale * tpdf1(); // Reduced TPDF dither
-        float shapedL = fleft[i] + feedbackL + ditherL / scale;
-        shapedL = FCLAMP(shapedL, -1.0f, 1.0f);
-
-        int qL = (int)lrintf(shapedL * scale);
-        if (qL < -128) qL = -128;
-        else if (qL > 127) qL = 127;
-        left[i] = (uint8_t)(qL + bias);
-
-        float qerrL = shapedL - (float)qL / scale;
-        dither_error[0][1] = dither_error[0][0]; // shift history
-        dither_error[0][0] = qerrL;
-
-        // --- RIGHT channel ---
-        float feedbackR = b1 * dither_error[1][0] + b2 * dither_error[1][1];
-        float ditherR = dither_scale * tpdf1(); // Reduced TPDF dither
-        float shapedR = fright[i] + feedbackR + ditherR / scale;
-        shapedR = FCLAMP(shapedR, -1.0f, 1.0f);
-
-        int qR = (int)lrintf(shapedR * scale);
-        if (qR < -128) qR = -128;
-        else if (qR > 127) qR = 127;
-        right[i] = (uint8_t)(qR + bias);
-
-        float qerrR = shapedR - (float)qR / scale;
-        dither_error[1][1] = dither_error[1][0];
-        dither_error[1][0] = qerrR;
-    }
-}
-
-//=============================================================================
-// TAD (Terrarum Advanced Audio) Decoder - Constants and Helpers
-//=============================================================================
-
-// Coefficient scalars for each subband (CDF 9/7 with 9 decomposition levels)
-static const float TAD32_COEFF_SCALARS[] = {64.0f, 45.255f, 32.0f, 22.627f, 16.0f, 11.314f, 8.0f, 5.657f, 4.0f, 2.828f};
-
-// Base quantiser weight table (10 subbands: LL + 9 H bands)
-static const float BASE_QUANTISER_WEIGHTS[] = {
-    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.1f, 1.2f, 1.3f, 1.4f, 1.5f
-};
-
-//=============================================================================
-// Spectral Interpolation for Coefficient Reconstruction (TAD)
-//=============================================================================
-
-// Fast PRNG for light dithering (xorshift32)
-static inline uint32_t xorshift32(uint32_t *s) {
-    uint32_t x = *s;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    return *s = x;
-}
-
-static inline float urand(uint32_t *s) {
-    return (xorshift32(s) & 0xFFFFFF) / 16777216.0f;
-}
-
-static inline float tpdf_tad(uint32_t *s) {
-    return urand(s) - urand(s);
-}
-
-// Compute RMS energy of a coefficient band
-static float compute_band_rms(const float *c, size_t len) {
-    if (len == 0) return 0.0f;
-    double sumsq = 0.0;
-    for (size_t i = 0; i < len; i++) {
-        sumsq += (double)c[i] * c[i];
-    }
-    return sqrtf((float)(sumsq / (double)len));
-}
-
-// Simplified spectral reconstruction for wavelet coefficients
-static void spectral_interpolate_band(float *c, size_t len, float Q, float lower_band_rms) {
-    if (len < 4) return;
-
-    uint32_t seed = 0x9E3779B9u ^ (uint32_t)len ^ (uint32_t)(Q * 65536.0f);
-    const float dither_amp = 0.05f * Q;
-
-    for (size_t i = 0; i < len; i++) {
-        c[i] += tpdf_tad(&seed) * dither_amp;
-    }
-
-    (void)lower_band_rms;
-}
-
-//=============================================================================
-// Dequantisation (inverse of quantisation)
-//=============================================================================
-
-
-#define LAMBDA_FIXED 6.0f
-
-// Lambda-based decompanding decoder (inverse of Laplacian CDF-based encoder)
-// Converts quantised index back to normalised float in [-1, 1]
-static float lambda_decompanding(int8_t quant_val, int max_index) {
-    // Handle zero
-    if (quant_val == 0) {
-        return 0.0f;
-    }
-
-    int sign = (quant_val < 0) ? -1 : 1;
-    int abs_index = abs(quant_val);
-
-    // Clamp to valid range
-    if (abs_index > max_index) abs_index = max_index;
-
-    // Map index back to normalised CDF [0, 1]
-    float normalised_cdf = (float)abs_index / max_index;
-
-    // Map from [0, 1] back to [0.5, 1.0] (CDF range for positive half)
-    float cdf = 0.5f + normalised_cdf * 0.5f;
-
-    // Inverse Laplacian CDF for x >= 0: x = -(1/λ) * ln(2*(1-F))
-    // For F in [0.5, 1.0]: x = -(1/λ) * ln(2*(1-F))
-    float abs_val = -(1.0f / LAMBDA_FIXED) * logf(2.0f * (1.0f - cdf));
-
-    // Clamp to [0, 1]
-    if (abs_val > 1.0f) abs_val = 1.0f;
-    if (abs_val < 0.0f) abs_val = 0.0f;
-
-    return sign * abs_val;
-}
-
-static void dequantise_dwt_coefficients(const int8_t *quantised, float *coeffs, size_t count, int chunk_size, int dwt_levels, int max_index, float quantiser_scale) {
-
-    // Calculate sideband boundaries dynamically
-    int first_band_size = chunk_size >> dwt_levels;
-
-    int *sideband_starts = malloc((dwt_levels + 2) * sizeof(int));
-    sideband_starts[0] = 0;
-    sideband_starts[1] = first_band_size;
-    for (int i = 2; i <= dwt_levels + 1; i++) {
-        sideband_starts[i] = sideband_starts[i-1] + (first_band_size << (i-2));
-    }
-
-    // Step 1: Dequantise all coefficients (no dithering yet)
-    for (size_t i = 0; i < count; i++) {
-        int sideband = dwt_levels;
-        for (int s = 0; s <= dwt_levels; s++) {
-            if (i < sideband_starts[s + 1]) {
-                sideband = s;
-                break;
-            }
-        }
-
-        // Decode using lambda companding
-        float normalised_val = lambda_decompanding(quantised[i], max_index);
-
-        // Denormalise using the subband scalar and apply base weight + quantiser scaling
-        float weight = BASE_QUANTISER_WEIGHTS[sideband] * quantiser_scale;
-        coeffs[i] = normalised_val * TAD32_COEFF_SCALARS[sideband] * weight;
-    }
-
-    // Step 2: Apply spectral interpolation per band
-    // Process bands from high to low frequency (dwt_levels down to 0)
-    // so we can use lower bands' RMS for higher band reconstruction
-    float prev_band_rms = 0.0f;
-
-    for (int band = dwt_levels; band >= 0; band--) {
-        size_t band_start = sideband_starts[band];
-        size_t band_end = sideband_starts[band + 1];
-        size_t band_len = band_end - band_start;
-
-        // Calculate quantisation step Q for this band
-        float weight = BASE_QUANTISER_WEIGHTS[band] * quantiser_scale;
-        float scalar = TAD32_COEFF_SCALARS[band] * weight;
-        float Q = scalar / max_index;
-
-        // Apply spectral interpolation to this band
-        spectral_interpolate_band(&coeffs[band_start], band_len, Q, prev_band_rms);
-
-        // Compute RMS for this band to use as reference for next (lower frequency) band
-        prev_band_rms = compute_band_rms(&coeffs[band_start], band_len);
-    }
-
-    free(sideband_starts);
 }
 
 //=============================================================================
@@ -1844,9 +1522,9 @@ static void ycocg_r_to_rgb(float y, float co, float cg, uint8_t *r, uint8_t *g, 
 
     // FIX: Use truncation (not rounding) to match Kotlin decoder behavior
     // Kotlin uses .toInt() which truncates toward zero (floor for positive values)
-    *r = CLAMP((int)(r_val), 0, 255);
-    *g = CLAMP((int)(g_val), 0, 255);
-    *b = CLAMP((int)(b_val), 0, 255);
+    *r = CLAMP(roundf(r_val), 0, 255);
+    *g = CLAMP(roundf(g_val), 0, 255);
+    *b = CLAMP(roundf(b_val), 0, 255);
 }
 
 // ICtCp to RGB conversion (for even TAV versions)
@@ -2997,17 +2675,12 @@ int main(int argc, char *argv[]) {
             }
             free(quantised_gop);
 
-            // FIX: Disable grain removal for GOP frames to prevent frame-varying artifacts (blips)
-            // Grain removal in DWT coefficient space causes inconsistent results across GOP frames
-            // The Kotlin decoder may have a different implementation that avoids this issue
-            // TODO: Investigate correct grain removal for temporal DWT GOP frames
-            /*
+
             for (int t = 0; t < gop_size; t++) {
                 remove_grain_synthesis_decoder(gop_y[t], decoder->header.width, decoder->header.height,
                                               decoder->header.decomp_levels, decoder->frame_count + t,
                                               decoder->header.quantiser_y);
             }
-            */
 
             // Apply inverse 3D DWT (spatial + temporal)
             apply_inverse_3d_dwt(gop_y, gop_co, gop_cg, decoder->header.width, decoder->header.height,
