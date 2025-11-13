@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251111 (3d-dwt,tad,ssf-tc)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251113 (3d-dwt,tad,ssf-tc)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -67,12 +67,8 @@
 // TAD (Terrarum Advanced Audio) settings
 // TAD32 constants (updated to match Float32 version)
 #define TAD32_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples
-#define TAD32_SAMPLE_RATE 32000
-#define TAD32_CHANNELS 2  // Stereo
-#define TAD32_SIGMAP_2BIT 1  // 2-bit: 00=0, 01=+1, 10=-1, 11=other
 #define TAD32_QUALITY_MIN 0
 #define TAD32_QUALITY_MAX 5
-#define TAD32_ZSTD_LEVEL 15
 
 // DWT settings
 #define TILE_SIZE_X 640
@@ -1827,8 +1823,6 @@ typedef struct tav_encoder_s {
     float **temporal_gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
     float **temporal_gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
     float **temporal_gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
-    int16_t *temporal_gop_translation_x;  // [frame] - Translation X in 1/16-pixel units (for 0x12 packets)
-    int16_t *temporal_gop_translation_y;  // [frame] - Translation Y in 1/16-pixel units (for 0x12 packets)
     int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
 
     // MC-EZBC block-based motion compensation for temporal 3D DWT (0x13 packets)
@@ -2433,8 +2427,6 @@ static tav_encoder_t* create_encoder(void) {
     enc->temporal_gop_y_frames = NULL;
     enc->temporal_gop_co_frames = NULL;
     enc->temporal_gop_cg_frames = NULL;
-    enc->temporal_gop_translation_x = NULL;
-    enc->temporal_gop_translation_y = NULL;
 
     // MC-EZBC block-based motion compensation settings (for 0x13 packets)
     enc->temporal_enable_mcezbc = 0;  // Default: disabled (use translation-based 0x12)
@@ -2678,18 +2670,6 @@ static int initialise_encoder(tav_encoder_t *enc) {
                 return -1;
             }
         }
-
-        // Allocate translation vector storage
-        enc->temporal_gop_translation_x = malloc(enc->temporal_gop_capacity * sizeof(int16_t));
-        enc->temporal_gop_translation_y = malloc(enc->temporal_gop_capacity * sizeof(int16_t));
-
-        if (!enc->temporal_gop_translation_x || !enc->temporal_gop_translation_y) {
-            return -1;
-        }
-
-        // Initialise translation vectors to zero
-        memset(enc->temporal_gop_translation_x, 0, enc->temporal_gop_capacity * sizeof(int16_t));
-        memset(enc->temporal_gop_translation_y, 0, enc->temporal_gop_capacity * sizeof(int16_t));
 
         // Calculate block dimensions if MC-EZBC is enabled
         if (enc->temporal_enable_mcezbc) {
@@ -4600,12 +4580,6 @@ static int temporal_gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
         }
     }
 
-    // Legacy translation vectors (used when MC-EZBC is disabled)
-    if (!enc->temporal_enable_mcezbc) {
-        enc->temporal_gop_translation_x[frame_idx] = 0.0f;
-        enc->temporal_gop_translation_y[frame_idx] = 0.0f;
-    }
-
     enc->temporal_gop_frame_count++;
     return 0;
 }
@@ -4618,39 +4592,6 @@ static int gop_is_full(const tav_encoder_t *enc) {
 // Reset GOP buffer
 static void gop_reset(tav_encoder_t *enc) {
     enc->temporal_gop_frame_count = 0;
-    if (enc->temporal_gop_translation_x && enc->temporal_gop_translation_y) {
-        memset(enc->temporal_gop_translation_x, 0, enc->temporal_gop_capacity * sizeof(int16_t));
-        memset(enc->temporal_gop_translation_y, 0, enc->temporal_gop_capacity * sizeof(int16_t));
-    }
-}
-
-// Check if GOP should be flushed due to large motion (potential scene change)
-static int gop_should_flush_motion(tav_encoder_t *enc) {
-    if (!enc->enable_temporal_dwt || enc->temporal_gop_frame_count < 2) {
-        return 0;
-    }
-
-    // Check last added frame's motion
-    int last_idx = enc->temporal_gop_frame_count - 1;
-    int16_t dx = enc->temporal_gop_translation_x[last_idx];
-    int16_t dy = enc->temporal_gop_translation_y[last_idx];
-
-    // Convert 1/16-pixel to pixels
-    float dx_pixels = fabsf(dx / 16.0f);
-    float dy_pixels = fabsf(dy / 16.0f);
-
-    // Flush if motion exceeds threshold (24 pixels in any direction)
-    // This indicates likely scene change or very fast motion
-
-    if (dx_pixels > MOTION_THRESHOLD || dy_pixels > MOTION_THRESHOLD) {
-        if (enc->verbose) {
-            printf("  Large motion detected (%.1f, %.1f pixels) - flushing GOP\n",
-                   dx_pixels, dy_pixels);
-        }
-        return 1;
-    }
-
-    return 0;
 }
 
 // Check if GOP should be flushed based on pre-computed boundaries (two-pass mode)
@@ -4698,79 +4639,10 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         memcpy(gop_cg_coeffs[i], enc->temporal_gop_cg_frames[i], num_pixels * sizeof(float));
     }
 
-    // Step 0.5: Convert frame-to-frame motion vectors to cumulative (relative to frame 0)
-    // Phase correlation computes motion of frame[i] relative to frame[i-1]
-    // We need cumulative motion relative to frame 0 for proper alignment
-    for (int i = 2; i < actual_gop_size; i++) {
-        enc->temporal_gop_translation_x[i] += enc->temporal_gop_translation_x[i-1];
-        enc->temporal_gop_translation_y[i] += enc->temporal_gop_translation_y[i-1];
-    }
-
-    // Step 0.5b: Calculate the valid region after alignment (crop bounds)
-    // Find the bounding box that's valid across all aligned frames
-    int min_dx = 0, max_dx = 0, min_dy = 0, max_dy = 0;
-    for (int i = 0; i < actual_gop_size; i++) {
-        int dx = enc->temporal_gop_translation_x[i] / 16;
-        int dy = enc->temporal_gop_translation_y[i] / 16;
-        if (dx < min_dx) min_dx = dx;
-        if (dx > max_dx) max_dx = dx;
-        if (dy < min_dy) min_dy = dy;
-        if (dy > max_dy) max_dy = dy;
-    }
-
-    // Crop region: the area valid in all frames
-    // When we shift right by +N, we lose N pixels on the left, so crop left edge by abs(min_dx)
-    // When we shift left by -N, we lose N pixels on the right, so crop right edge by max_dx
-    int crop_left = (min_dx < 0) ? -min_dx : 0;
-    int crop_right = (max_dx > 0) ? max_dx : 0;
-    int crop_top = (min_dy < 0) ? -min_dy : 0;
-    int crop_bottom = (max_dy > 0) ? max_dy : 0;
-
-    int valid_width = enc->width - crop_left - crop_right;
-    int valid_height = enc->height - crop_top - crop_bottom;
-
-    if (enc->verbose && (crop_left || crop_right || crop_top || crop_bottom)) {
-        printf("Valid region after alignment: %dx%d (cropped: L=%d R=%d T=%d B=%d)\n",
-               valid_width, valid_height, crop_left, crop_right, crop_top, crop_bottom);
-    }
-
     // Step 0.6: Motion compensation note
     // For MC-EZBC: MC-lifting integrates motion compensation directly into the lifting steps
     // For translation: still use pre-alignment (old method for backwards compatibility)
-    if (!enc->temporal_enable_mcezbc) {
-        // Translation-based motion compensation: align using global translation vectors
-        for (int i = 1; i < actual_gop_size; i++) {  // Skip frame 0 (reference frame)
-            float *aligned_y = malloc(num_pixels * sizeof(float));
-            float *aligned_co = malloc(num_pixels * sizeof(float));
-            float *aligned_cg = malloc(num_pixels * sizeof(float));
-
-            if (!aligned_y || !aligned_co || !aligned_cg) {
-                fprintf(stderr, "Error: Failed to allocate motion compensation buffers\n");
-                // Cleanup and skip motion compensation for this GOP
-                free(aligned_y);
-                free(aligned_co);
-                free(aligned_cg);
-                break;
-            }
-
-            // Apply translation to align this frame
-            apply_translation(gop_y_coeffs[i], enc->width, enc->height,
-                             enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i], aligned_y);
-            apply_translation(gop_co_coeffs[i], enc->width, enc->height,
-                             enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i], aligned_co);
-            apply_translation(gop_cg_coeffs[i], enc->width, enc->height,
-                             enc->temporal_gop_translation_x[i], enc->temporal_gop_translation_y[i], aligned_cg);
-
-            // Copy aligned frames back
-            memcpy(gop_y_coeffs[i], aligned_y, num_pixels * sizeof(float));
-            memcpy(gop_co_coeffs[i], aligned_co, num_pixels * sizeof(float));
-            memcpy(gop_cg_coeffs[i], aligned_cg, num_pixels * sizeof(float));
-
-            free(aligned_y);
-            free(aligned_co);
-            free(aligned_cg);
-        }
-    } else {
+    if (enc->temporal_enable_mcezbc)  {
         // MC-EZBC block-based motion compensation uses MC-lifting (integrated into temporal DWT)
         if (enc->verbose) {
             printf("Using motion-compensated lifting (MC-EZBC) (%dx%d blocks)\n",
@@ -4778,128 +4650,13 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         }
     }
 
-    // Step 0.7: Expand frames to larger canvas (only for translation-based alignment)
-    // MC-EZBC doesn't need canvas expansion since motion compensation is integrated into lifting
-    int canvas_width = enc->width;
-    int canvas_height = enc->height;
-    int canvas_pixels = num_pixels;
-
-    if (!enc->temporal_enable_mcezbc) {
-        // Calculate expanded canvas size (UNION of all aligned frames)
-        canvas_width = enc->width + crop_left + crop_right;   // Original width + total shift range
-        canvas_height = enc->height + crop_top + crop_bottom; // Original height + total shift range
-        canvas_pixels = canvas_width * canvas_height;
-
-        if (enc->verbose && (crop_left || crop_right || crop_top || crop_bottom)) {
-            printf("Expanded canvas: %dx%d (original %dx%d + margins L=%d R=%d T=%d B=%d)\n",
-                   canvas_width, canvas_height, enc->width, enc->height,
-                   crop_left, crop_right, crop_top, crop_bottom);
-            printf("This preserves all original pixels from all frames after alignment\n");
-        }
-    } else {
-        if (enc->verbose) {
-            printf("Using original frame dimensions (MC-EZBC handles motion compensation)\n");
-        }
-    }
-
-    // Allocate canvas buffers (expanded for translation, original size for MC-EZBC)
-    float **canvas_y_coeffs = malloc(actual_gop_size * sizeof(float*));
-    float **canvas_co_coeffs = malloc(actual_gop_size * sizeof(float*));
-    float **canvas_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
-
-    for (int i = 0; i < actual_gop_size; i++) {
-        canvas_y_coeffs[i] = calloc(canvas_pixels, sizeof(float));  // Zero-initialised
-        canvas_co_coeffs[i] = calloc(canvas_pixels, sizeof(float));
-        canvas_cg_coeffs[i] = calloc(canvas_pixels, sizeof(float));
-
-        if (enc->temporal_enable_mcezbc) {
-            // MC-EZBC: simply copy frames (no expansion needed)
-            memcpy(canvas_y_coeffs[i], gop_y_coeffs[i], canvas_pixels * sizeof(float));
-            memcpy(canvas_co_coeffs[i], gop_co_coeffs[i], canvas_pixels * sizeof(float));
-            memcpy(canvas_cg_coeffs[i], gop_cg_coeffs[i], canvas_pixels * sizeof(float));
-        } else {
-            // Translation-based: expand canvas and add symmetric padding
-            // Place the aligned frame onto the canvas at the appropriate offset
-            int offset_x = crop_left;  // Frames are offset by the left margin
-            int offset_y = crop_top;   // Frames are offset by the top margin
-
-            // Copy the full aligned frame onto the canvas (preserves all original content)
-            for (int y = 0; y < enc->height; y++) {
-                for (int x = 0; x < enc->width; x++) {
-                    int src_idx = y * enc->width + x;
-                    int dst_idx = (y + offset_y) * canvas_width + (x + offset_x);
-                    canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
-                    canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
-                    canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
-                }
-            }
-
-            // Fill margin areas with symmetric padding from frame edges
-            for (int y = 0; y < canvas_height; y++) {
-                for (int x = 0; x < canvas_width; x++) {
-                    // Skip pixels in the original frame region (already copied)
-                    if (y >= offset_y && y < offset_y + enc->height &&
-                        x >= offset_x && x < offset_x + enc->width) {
-                        continue;
-                    }
-
-                    // Calculate position relative to original frame
-                    int src_x = x - offset_x;
-                    int src_y = y - offset_y;
-
-                    // Apply symmetric padding (mirroring)
-                    if (src_x < 0) {
-                        src_x = -src_x - 1;  // Mirror left edge: -1→0, -2→1, -3→2
-                    } else if (src_x >= enc->width) {
-                        src_x = 2 * enc->width - src_x - 1;  // Mirror right edge
-                    }
-
-                    if (src_y < 0) {
-                        src_y = -src_y - 1;  // Mirror top edge
-                    } else if (src_y >= enc->height) {
-                        src_y = 2 * enc->height - src_y - 1;  // Mirror bottom edge
-                    }
-
-                    // Clamp to valid range (safety for extreme cases)
-                    src_x = CLAMP(src_x, 0, enc->width - 1);
-                    src_y = CLAMP(src_y, 0, enc->height - 1);
-
-                    // Copy mirrored pixel from original frame to canvas margin
-                    int src_idx = src_y * enc->width + src_x;
-                    int dst_idx = y * canvas_width + x;
-                    canvas_y_coeffs[i][dst_idx] = gop_y_coeffs[i][src_idx];
-                    canvas_co_coeffs[i][dst_idx] = gop_co_coeffs[i][src_idx];
-                    canvas_cg_coeffs[i][dst_idx] = gop_cg_coeffs[i][src_idx];
-                }
-            }
-        }
-
-        // Free the original frame (no longer needed)
-        free(gop_y_coeffs[i]);
-        free(gop_co_coeffs[i]);
-        free(gop_cg_coeffs[i]);
-    }
-
-    // Replace pointers with canvas
-    free(gop_y_coeffs);
-    free(gop_co_coeffs);
-    free(gop_cg_coeffs);
-    gop_y_coeffs = canvas_y_coeffs;
-    gop_co_coeffs = canvas_co_coeffs;
-    gop_cg_coeffs = canvas_cg_coeffs;
-
-    // Update dimensions to canvas size
-    valid_width = canvas_width;
-    valid_height = canvas_height;
-    num_pixels = canvas_pixels;
-
     // Step 1: For single-frame GOP, skip temporal DWT and use traditional I-frame path
     if (actual_gop_size == 1) {
         // Apply only 2D spatial DWT (no temporal transform for single frame)
         // Use cropped dimensions (will be full size if no motion)
-        dwt_2d_forward_flexible(enc, gop_y_coeffs[0], valid_width, valid_height, enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(enc, gop_co_coeffs[0], valid_width, valid_height, enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(enc, gop_cg_coeffs[0], valid_width, valid_height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_y_coeffs[0], enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_co_coeffs[0], enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_cg_coeffs[0], enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
     } else {
         // Multi-frame GOP: Apply 3D DWT (temporal + spatial) to each channel
         // Note: This modifies gop_*_coeffs in-place
@@ -4912,11 +4669,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                              enc->temporal_decomp_levels, enc->wavelet_filter);
         } else {
             // Use traditional 3D DWT with pre-aligned frames (translation-only)
-            dwt_3d_forward(enc, gop_y_coeffs, valid_width, valid_height, actual_gop_size,
+            dwt_3d_forward(enc, gop_y_coeffs, enc->width, enc->height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-            dwt_3d_forward(enc, gop_co_coeffs, valid_width, valid_height, actual_gop_size,
+            dwt_3d_forward(enc, gop_co_coeffs, enc->width, enc->height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-            dwt_3d_forward(enc, gop_cg_coeffs, valid_width, valid_height, actual_gop_size,
+            dwt_3d_forward(enc, gop_cg_coeffs, enc->width, enc->height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
         }
     }
@@ -4947,8 +4704,8 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
 
     // Debug: print LL coefficients for frames 0 and 1 (first 10 pixels)
     /*if (enc->quality_level == 5 && enc->verbose) {
-        int ll_width = valid_width >> enc->decomp_levels;
-        int ll_height = valid_height >> enc->decomp_levels;
+        int ll_width = enc->width >> enc->decomp_levels;
+        int ll_height = enc->height >> enc->decomp_levels;
         printf("DEBUG Q5: LL coefficients for first 10 pixels:\n");
         for (int f = 0; f < (actual_gop_size < 2 ? actual_gop_size : 2); f++) {
             printf("  Frame %d: ", f);
@@ -5189,15 +4946,6 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         fwrite(&sync_frame_count, 1, 1, output);
         total_bytes_written += 2;
 
-        // Verbose output
-        if (enc->verbose) {
-            printf("GOP (%d frames): %zu bytes (3D DWT unified, %.2f bytes/frame)\n",
-                   actual_gop_size, compressed_size, (double)compressed_size / actual_gop_size);
-            for (int t = 0; t < actual_gop_size; t++) {
-                printf("  Frame %d: dx=%d/4, dy=%d/4\n",
-                       frame_numbers[t], enc->temporal_gop_translation_x[t], enc->temporal_gop_translation_y[t]);
-            }
-        }
     }  // End of if/else for single-frame vs multi-frame GOP
 
     // Tally frame statistics
@@ -5332,9 +5080,6 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
                 enc->temporal_gop_y_frames[src] = temp_y;
                 enc->temporal_gop_co_frames[src] = temp_co;
                 enc->temporal_gop_cg_frames[src] = temp_cg;
-
-                enc->temporal_gop_translation_x[i] = enc->temporal_gop_translation_x[src];
-                enc->temporal_gop_translation_y[i] = enc->temporal_gop_translation_y[src];
             }
             enc->temporal_gop_frame_count = remaining_frames;
 
@@ -5372,9 +5117,6 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
             enc->temporal_gop_y_frames[src] = temp_y;
             enc->temporal_gop_co_frames[src] = temp_co;
             enc->temporal_gop_cg_frames[src] = temp_cg;
-
-            enc->temporal_gop_translation_x[i] = enc->temporal_gop_translation_x[src];
-            enc->temporal_gop_translation_y[i] = enc->temporal_gop_translation_y[src];
         }
         enc->temporal_gop_frame_count = remaining_frames;
     } else {
@@ -10362,10 +10104,6 @@ int main(int argc, char *argv[]) {
                                              enc->temporal_gop_capacity * sizeof(float*));
         enc->temporal_gop_cg_frames = realloc(enc->temporal_gop_cg_frames,
                                              enc->temporal_gop_capacity * sizeof(float*));
-        enc->temporal_gop_translation_x = realloc(enc->temporal_gop_translation_x,
-                                                 enc->temporal_gop_capacity * sizeof(int16_t));
-        enc->temporal_gop_translation_y = realloc(enc->temporal_gop_translation_y,
-                                                 enc->temporal_gop_capacity * sizeof(int16_t));
 
         // Allocate new frame buffers for expanded capacity
         int frame_size = enc->width * enc->height;
@@ -10701,21 +10439,6 @@ int main(int argc, char *argv[]) {
                     should_flush = 1;
                     if (enc->verbose) {
                         printf("GOP buffer full (%d frames), flushing...\n", enc->temporal_gop_frame_count);
-                    }
-                }
-                // Flush if large motion detected (breaks temporal coherence) AND GOP is large enough
-                else if (gop_should_flush_motion(enc) && enc->temporal_gop_frame_count >= TEMPORAL_GOP_SIZE_MIN) {
-                    should_flush = 1;
-                    if (enc->verbose) {
-                        printf("Large motion detected (>24 pixels) with GOP size %d >= %d, flushing GOP early...\n",
-                               enc->temporal_gop_frame_count, TEMPORAL_GOP_SIZE_MIN);
-                    }
-                }
-                else if (gop_should_flush_motion(enc) && enc->temporal_gop_frame_count < TEMPORAL_GOP_SIZE_MIN) {
-                    // Large motion but GOP too small - keep accumulating
-                    if (enc->verbose) {
-                        printf("Large motion detected but GOP size %d < %d, continuing to accumulate...\n",
-                               enc->temporal_gop_frame_count, TEMPORAL_GOP_SIZE_MIN);
                     }
                 }
             }
@@ -11165,8 +10888,6 @@ static void cleanup_encoder(tav_encoder_t *enc) {
         }
         free(enc->temporal_gop_cg_frames);
     }
-    free(enc->temporal_gop_translation_x);
-    free(enc->temporal_gop_translation_y);
 
     // Free MPEG-style residual coding buffers
     free(enc->residual_coding_reference_frame_y);
