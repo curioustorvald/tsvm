@@ -72,6 +72,7 @@ let cursor = [0, 0] // absolute position!
 
 function bytesToReadable(i) {
     return ''+ (
+       (i > 999999999) ? (((i / 10000000)|0)/100 + "G") :
        (i > 999999) ? (((i / 10000)|0)/100 + "M") :
        (i > 9999) ? (((i / 100)|0)/10 + "K") :
        i

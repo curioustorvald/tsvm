@@ -25,7 +25,7 @@ TAD (TSVM Advanced Audio) is a modern audio codec built on discrete wavelet tran
 
 - **Pre-processing**
   - First-order IIR pre-emphasis filter (α=0.5) shifts quantisation noise to lower frequencies, where they are less objectionable to listeners
-  - Gamma compression (γ=0.5) for dynamic range compression before quantisation
+  - Gamma companding (γ=0.5) for dynamic range compression before quantisation
   - Mid/Side stereo transformation exploits stereo correlation
   - Lambda companding (λ=6.0) with Laplacian CDF mapping for full bit utilisation
 
@@ -141,7 +141,7 @@ Audio is automatically resampled to 32 KHz stereo if necessary.
    - Shifts quantisation noise toward lower frequencies
    - Improves perceptual quality
 
-3. **Gamma Compression**
+3. **Gamma Companding**
    - Dynamic range compression with γ=0.5
    - Applied independently to each sample
    - Reduces quantisation error for low-amplitude signals
@@ -205,7 +205,7 @@ Audio is automatically resampled to 32 KHz stereo if necessary.
    - R = Mid - Side
    - Reconstruct stereo channels
 
-7. **Gamma Expansion**
+7. **Gamma Decompanding**
    - Inverse gamma with γ⁻¹=2.0
    - Restore original dynamic range
 
@@ -309,7 +309,7 @@ Different weights for Mid and Side channels reflect perceptual importance of fre
 ### Quality Characteristics
 
 - **Frequency Response**: Flat 0-16 KHz within perceptual limits
-- **Dynamic Range**: Preserved through gamma compression/expansion
+- **Dynamic Range**: Preserved through gamma companding
 - **Stereo Imaging**: Maintained through Mid/Side decorrelation
 - **Perceptual Quality**: Optimised for human auditory system characteristics
 

@@ -6706,7 +6706,7 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
         quantised[i] = (int16_t)CLAMP((int)quantised_val, -32768, 32767);
 
         // Debug: Print LL subband coefficients (9×7 at top-left for 560×448)
-        static int debug_once = 1;
+        /*static int debug_once = 1;
         if (debug_once && i < 63 && width == 560 && !is_chroma) {
             int x = i % width;
             int y = i / width;
@@ -6715,7 +6715,7 @@ static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_
                         x, y, i, coeffs[i], weight, effective_q, quantised_val, quantised[i]);
                 if (i == 62) debug_once = 0;
             }
-        }
+        }*/
     }
 }
 
@@ -9851,7 +9851,6 @@ int main(int argc, char *argv[]) {
         {"dimension", required_argument, 0, 's'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
-        {"quantiser", required_argument, 0, 'Q'},
         {"quantiser", required_argument, 0, 'Q'},
         {"wavelet", required_argument, 0, 1010},
         {"channel-layout", required_argument, 0, 'c'},
