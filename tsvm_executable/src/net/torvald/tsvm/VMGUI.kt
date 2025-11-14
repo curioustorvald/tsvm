@@ -97,7 +97,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         camera.update()
         batch.projectionMatrix = camera.combined
 
-        crtShader = loadShaderInline(CRT_POST_SHADER)
+        crtShader = loadShaderInline(CRT_POST_SHADER2)
 
         gpuFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
         winFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
@@ -291,6 +291,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             batch.shader = crtShader
             batch.shader.setUniformf("resolution", viewportWidth.toFloat(), viewportHeight.toFloat())
             batch.shader.setUniformf("interlacer", (framecount % 2).toFloat())
+            batch.shader.setUniformf("time", (framecount % 640).toFloat())
             batch.setBlendFunctionSeparate(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, GL20.GL_SRC_ALPHA, GL20.GL_ONE)
             batch.draw(gpuFBO.colorBufferTexture, 0f, 0f)
         }
@@ -554,4 +555,201 @@ void main() {
     fragColor = nearestColour(inColor + spread * (bayer[int(entry.y) * int(bayerSize) + int(entry.x)] / bayerDivider - 0.5));
 }
 
+"""
+
+const val CRT_POST_SHADER2 = """
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+in vec4 v_color;
+in vec4 v_generic;
+in vec2 v_texCoords;
+uniform sampler2D u_texture;
+uniform vec2 resolution = vec2(640.0, 480.0);
+out vec4 fragColor;
+
+uniform float time = 0.0;
+
+const int SUBS = 6;          // horizontal subsamples per pixel (oversampling)
+const float PI = 3.14159265359;
+
+// --- RGB <-> YIQ (NTSC-ish) ---
+vec3 rgb2yiq(vec3 rgb) {
+    float y = dot(rgb, vec3(0.299, 0.587, 0.114));
+    float i = dot(rgb, vec3(0.596, -0.274, -0.322));
+    float q = dot(rgb, vec3(0.211, -0.523, 0.312));
+    return vec3(y, i, q);
+}
+
+vec3 yiq2rgb(vec3 yiq) {
+    float y = yiq.x, i = yiq.y, q = yiq.z;
+    vec3 r = vec3(
+        y + 0.956*i + 0.621*q,
+        y - 0.272*i - 0.647*q,
+        y - 1.106*i + 1.703*q
+    );
+    return clamp(r, 0.0, 1.0);
+}
+
+// --- Parameters you can tweak ---
+float subcarrierCyclesPerScanline = 227.5; // NTSC approx cycles per scanline (spatial)
+float chromaGain = 2.2;        // strength of chroma modulation in encode
+float chromaLPF_radius = 3.6;  // lowpass radius in pixels for chroma (larger = more bleed)
+float lumaLPF_radius  = 0.7;  // lowpass for luma (small = sharp)
+float chromaPhaseDrift = 1.1;  // extra phase offset (use time to animate dot crawl)
+float subsampleSpanPixels = 2.0 / 3.0; // how wide the subsample footprint is (in pixels)
+
+// Simple 1D gaussian weight (not normalized here)
+float gaussWeight(float x, float r) {
+    return exp(- (x*x) / (2.0 * r * r));
+}
+
+// Sample a tiny neighborhood and get averaged Y/I/Q and also do composite modulation
+// We oversample horizontally to simulate the analog sampling along the scanline.
+void compositeAtUV(in vec2 uv, out float avgComposite, out float avgY, out float avgDemodI, out float avgDemodQ) {
+    avgComposite = 0.0;
+    avgY = 0.0;
+    avgDemodI = 0.0;
+    avgDemodQ = 0.0;
+
+    // pixel coordinates
+    float px = uv.x * resolution.x;
+    float py = uv.y * resolution.y;
+    // subcarrier spatial frequency (cycles per pixel horizontally)
+    // cycles per scanline / pixels per scanline = cycles per pixel (approx)
+    float cycles_per_pixel = subcarrierCyclesPerScanline / resolution.x;
+    // time-varying phase for dot-crawl
+    float linePhase = (py * subcarrierCyclesPerScanline) * 2.0 * PI + chromaPhaseDrift * time;
+
+    // do SUBS evenly-spaced subsamples across this pixel horizontally
+    float totalWeight = 0.0;
+    for (int s = 0; s < SUBS; ++s) {
+        float t = (float(s) + 0.5) / float(SUBS) - 0.5; // -0.5 .. +0.5
+        float sx = px + t * subsampleSpanPixels;       // sample x in pixel space
+        vec2 sUV = vec2(sx / resolution.x, uv.y);
+
+        vec3 col = texture2D(u_texture, sUV).rgb;
+        vec3 yiq = rgb2yiq(col);
+        float Y = yiq.x;
+        float I = yiq.y;
+        float Q = yiq.z;
+
+        // subcarrier phase at this horizontal sample
+        float phi = linePhase + sx * cycles_per_pixel * 2.0 * PI;
+
+        // composite waveform value (analog mix)
+        float carrierCos = cos(phi);
+        float carrierSin = sin(phi);
+        float composite = Y + chromaGain * (I * carrierCos + Q * carrierSin);
+
+        // demodulation multipliers (we will low-pass by averaging)
+        float demodI = composite * carrierCos;
+        float demodQ = composite * carrierSin;
+
+        // weight: use gaussian centered on pixel center
+        float w = gaussWeight(t * subsampleSpanPixels, 0.6); // narrower weighting
+        totalWeight += w;
+
+        avgComposite += composite * w;
+        avgY += Y * w;
+        avgDemodI += demodI * w;
+        avgDemodQ += demodQ * w;
+    }
+
+    // normalize the local averages (this approximates a basic low-pass)
+    avgComposite /= totalWeight;
+    avgY /= totalWeight;
+    avgDemodI /= totalWeight;
+    avgDemodQ /= totalWeight;
+
+    // --- additional spatial low-pass filtering to mimic channel bandwidth ---
+    // We'll sample neighbours on x and average with Gaussian weights to emulate chroma/luma LPF
+    // Note: we do a tiny neighborhood (±2 pixels) to save performance.
+    float wsumC = 1.0;
+    float wsumY = 1.0;
+    float csum = avgComposite;
+    float idsum = avgDemodI;
+    float qdsum = avgDemodQ;
+    float ysum = avgY;
+
+    // radius in pixels for chroma or luma affects weights below; we'll use same kernel but scale contributions
+    int taps = 2;
+    for (int i = -taps; i <= taps; ++i) {
+        if (i == 0) continue;
+        float off = float(i);
+        // use chroma radius for chroma-related weights, luma radius for luma
+        float weightC = gaussWeight(off, chromaLPF_radius);
+        float weightY = gaussWeight(off, lumaLPF_radius);
+
+        vec2 sampleUV = vec2((px + off) / resolution.x, uv.y);
+        vec3 ncol = texture2D(u_texture, sampleUV).rgb;
+        vec3 nyiq = rgb2yiq(ncol);
+        float nY = nyiq.x;
+        float nI = nyiq.y;
+        float nQ = nyiq.z;
+
+        float nPhi = linePhase + (px + off) * cycles_per_pixel * 2.0 * PI;
+        float nComposite = nY + chromaGain * (nI * cos(nPhi) + nQ * sin(nPhi));
+        float ndemodI = nComposite * cos(nPhi);
+        float ndemodQ = nComposite * sin(nPhi);
+
+        csum += nComposite * weightC;
+        idsum += ndemodI * weightC;
+        qdsum += ndemodQ * weightC;
+        wsumC += weightC;
+
+        ysum += nY * weightY;
+        wsumY += weightY;
+    }
+
+    avgComposite = csum / wsumC;
+    avgY = ysum / wsumY;
+    avgDemodI = idsum / wsumC;
+    avgDemodQ = qdsum / wsumC;
+}
+
+// main
+void mainImage(out vec4 frag_Color, in vec2 frag_Coord) {
+    vec2 uv = frag_Coord.xy / resolution.xy;
+    uv.y = 1.0 - uv.y;
+
+    // Get composite and demod values centered at uv
+    float compositeVal, Yval, demodI, demodQ;
+    compositeAtUV(uv, compositeVal, Yval, demodI, demodQ);
+
+    // Low-pass the demodulators to extract I & Q (simple normalization)
+    // In a real demodulator you'd low-pass filter demod*carrier; here we've already averaged spatially,
+    // so just apply a gain normalization and small smoothing.
+    // Normalize I/Q by average carrier power (~0.5)
+    float carrierPower = 0.5;
+    float I_rec = demodI / max(carrierPower, 1e-5);
+    float Q_rec = demodQ / max(carrierPower, 1e-5);
+
+    // Optionally reduce chroma bandwidth / smear by blurring (simulate narrow chroma filter)
+    // We'll lerp the recovered chroma towards zero based on chromaLPF_radius
+    float chromaBlurFactor = smoothstep(0.0, 5.0, chromaLPF_radius); // 0..1
+    I_rec *= 1.0 - 0.65 * chromaBlurFactor;
+    Q_rec *= 1.0 - 0.65 * chromaBlurFactor;
+
+    // For luma, we can optionally low-pass Yval slightly to simulate limited luma bandwidth
+    // but keep it mostly sharp
+    float Y_lp = Yval; // already lightly filtered above
+    // final reconstructed yiq
+    vec3 yiqRec = vec3(Y_lp, I_rec, Q_rec);
+    vec3 rgbRec = yiq2rgb(yiqRec);
+
+    // Optional: blend with original luminance to keep text legible (tweakable)
+    // vec3 orig = texture2D(u_texture, uv).rgb;
+    // rgbRec = mix(rgbRec, orig, 0.25);
+
+    frag_Color = vec4(rgbRec, 1.0);
+}
+
+void main() {
+    vec2 fragCoord = gl_FragCoord.xy;
+    vec4 outcol;
+    mainImage(outcol, fragCoord);
+    fragColor = outcol;
+}
 """
