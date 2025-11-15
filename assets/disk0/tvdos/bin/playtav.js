@@ -68,7 +68,9 @@ let subtitlePosition = 0  // 0=bottom center (default)
 // SSF-TC subtitle event buffer
 let subtitleEvents = []  // Array of {timecode_ns, index, opcode, text}
 let nextSubtitleEventIndex = 0  // Next event to check
-let currentTimecodeNs = 0  // Current playback timecode
+let currentTimecodeNs = 0  // Current playback timecode (updated every frame)
+let baseTimecodeNs = 0  // Base timecode from most recent TIMECODE packet
+let baseTimecodeFrameCount = 0  // Frame count when base timecode was set
 
 // Parse command line options
 let interactive = false
@@ -103,6 +105,8 @@ if (exec_args.length > 2) {
 
 const fullFilePath = _G.shell.resolvePathInput(exec_args[1])
 const FILE_LENGTH = files.open(fullFilePath.full).size
+
+const BLIP = '\x847u'
 
 let videoRateBin = []
 let errorlevel = 0
@@ -199,6 +203,11 @@ function processSubtitleEvents(currentTimeNs) {
 
         if (event.timecode_ns > currentTimeNs) {
             break  // Haven't reached this event yet
+        }
+
+        // DEBUG: Log subtitle event processing
+        if (interactive && frameCount < 10) {
+            serial.println(`[SUBTITLE] Frame ${frameCount}: Processing event ${nextSubtitleEventIndex} (timecode ${(event.timecode_ns / 1000000000).toFixed(3)}s, current ${(currentTimeNs / 1000000000).toFixed(3)}s)`)
         }
 
         // Execute the subtitle event
@@ -927,6 +936,11 @@ try {
                         akku = FRAME_TIME
                         akku2 = 0.0
                         firstFrameIssued = false
+                        // Reset timecode base for subtitle synchronization
+                        baseTimecodeNs = 0
+                        baseTimecodeFrameCount = 0
+                        currentTimecodeNs = 0
+                        nextSubtitleEventIndex = 0  // Reset subtitle event processing
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -947,6 +961,11 @@ try {
                         akku = FRAME_TIME
                         akku2 = 0.0
                         firstFrameIssued = false
+                        // Reset timecode base for subtitle synchronization
+                        baseTimecodeNs = 0
+                        baseTimecodeFrameCount = 0
+                        currentTimecodeNs = 0
+                        nextSubtitleEventIndex = 0  // Reset subtitle event processing
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -967,6 +986,17 @@ try {
                         akku = FRAME_TIME
                         akku2 -= 5.5
                         firstFrameIssued = false
+                        // Calculate expected timecode for seek target
+                        baseTimecodeNs = Math.floor(seekTarget.frameNum * frametime)
+                        baseTimecodeFrameCount = seekTarget.frameNum
+                        currentTimecodeNs = baseTimecodeNs
+                        // Find first subtitle event at or after this timecode
+                        for (let i = 0; i < subtitleEvents.length; i++) {
+                            if (subtitleEvents[i].timecode_ns >= baseTimecodeNs) {
+                                nextSubtitleEventIndex = i
+                                break
+                            }
+                        }
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -995,6 +1025,17 @@ try {
                         akku = FRAME_TIME
                         akku2 += 5.0
                         firstFrameIssued = false
+                        // Calculate expected timecode for seek target
+                        baseTimecodeNs = Math.floor(seekTarget.frameNum * frametime)
+                        baseTimecodeFrameCount = seekTarget.frameNum
+                        currentTimecodeNs = baseTimecodeNs
+                        // Find first subtitle event at or after this timecode
+                        for (let i = 0; i < subtitleEvents.length; i++) {
+                            if (subtitleEvents[i].timecode_ns >= baseTimecodeNs) {
+                                nextSubtitleEventIndex = i
+                                break
+                            }
+                        }
                         audio.purgeQueue(0)
                         if (paused) {
                             audio.play(0)
@@ -1032,6 +1073,11 @@ try {
                     akku2 = 0.0
                     firstFrameIssued = false
                     FRAME_TIME = 1.0 / header.fps
+                    // Reset timecode base for subtitle synchronization
+                    baseTimecodeNs = 0
+                    baseTimecodeFrameCount = 0
+                    currentTimecodeNs = 0
+                    nextSubtitleEventIndex = 0  // Reset subtitle event processing
                     audio.purgeQueue(0)
                     currentFileIndex++
                     if (skipped) {
@@ -1548,19 +1594,16 @@ try {
                 let timecodeHigh = seqread.readInt()
                 let timecodeNs = timecodeHigh * 0x100000000 + (timecodeLow >>> 0)
 
-                // Update current timecode and process subtitle events
+                // Update base timecode for per-frame advancement
+                baseTimecodeNs = timecodeNs
+                baseTimecodeFrameCount = frameCount
                 currentTimecodeNs = timecodeNs
 
-                // Process SSF-TC subtitle events based on current playback time
-                if (subtitleEvents.length > 0) {
-                    processSubtitleEvents(currentTimecodeNs)
+                // DEBUG: Log timecode packet reception
+                if (interactive) {
+                    decoderDbgInfo.frameMode = BLIP
+//                    serial.println(`[TIMECODE PACKET] Received at frame ${frameCount}: ${(timecodeNs / 1000000000).toFixed(6)}s`)
                 }
-
-                // Optionally display timecode in interactive mode (can be verbose)
-                // Uncomment for debugging:
-//                if (interactive && frameCount % 60 === 0) {
-//                    serial.println(`[TIMECODE] Frame ${frameCount}: ${(timecodeNs / 1000000000).toFixed(6)}s`)
-//                }
             }
             else if (packetType == 0x00) {
                 // Silently discard, faulty subtitle creation can cause this as 0x00 is used as an argument terminator
@@ -1662,11 +1705,8 @@ try {
             }
         }
 
-        // Fire audio on first frame
-        if (!audioFired) {
-            audio.play(0)
-            audioFired = true
-        }
+        // Audio is fired when first frame is displayed (see I-frame and GOP display sections)
+        // This ensures audio/video synchronization
 
         // Step 2a: Display I-frame/P-frame with proper frame timing
         if (!paused && iframeReady && currentGopSize === 0) {
@@ -1704,6 +1744,20 @@ try {
                 frameCount++
                 trueFrameCount++
                 iframeReady = false
+
+                // Advance timecode per-frame for subtitle synchronization
+                // Use actual playback time (akku2) instead of theoretical frame time
+                // This ensures subtitles sync with actual playback, not ideal frame timing
+                currentTimecodeNs = Math.floor(akku2 * 1000000000)
+
+                // DEBUG: Log timecode calculation for first few frames
+                if (interactive && frameCount <= 10) {
+                    serial.println(`[TIMECODE] Frame ${frameCount-1}: akku2=${akku2.toFixed(3)}s, current=${(currentTimecodeNs/1000000000).toFixed(3)}s`)
+                }
+
+                if (subtitleEvents.length > 0) {
+                    processSubtitleEvents(currentTimecodeNs)
+                }
 
                 // Swap ping-pong buffers for next frame
                 let temp = CURRENT_RGB_ADDR
@@ -1758,6 +1812,20 @@ try {
                 currentGopFrameIndex++
                 frameCount++
                 trueFrameCount++
+
+                // Advance timecode per-frame for subtitle synchronization
+                // Use actual playback time (akku2) instead of theoretical frame time
+                // This ensures subtitles sync with actual playback, not ideal frame timing
+                currentTimecodeNs = Math.floor(akku2 * 1000000000)
+
+                // DEBUG: Log timecode calculation for first few frames
+                if (interactive && frameCount <= 10) {
+                    serial.println(`[TIMECODE] Frame ${frameCount-1}: akku2=${akku2.toFixed(3)}s, current=${(currentTimecodeNs/1000000000).toFixed(3)}s`)
+                }
+
+                if (subtitleEvents.length > 0) {
+                    processSubtitleEvents(currentTimecodeNs)
+                }
 
                 // Upload pre-decoded PCM audio if available (keeps audio queue fed)
                 if (predecodedPcmBuffer !== null && predecodedPcmOffset < predecodedPcmSize) {
@@ -1981,6 +2049,9 @@ try {
             gui.printTopBar(guiStatus, 1)
         }
 
+        if (decoderDbgInfo.frameMode == BLIP) {
+            decoderDbgInfo.frameMode = ' '
+        }
 
         debugPrintAkku += (t2 - t1)
         if (debugPrintAkku > 5000000000) {
