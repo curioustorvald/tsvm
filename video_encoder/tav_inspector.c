@@ -53,6 +53,7 @@
 #define TAV_PACKET_EXTENDED_HDR   0xEF
 #define TAV_PACKET_LOOP_START     0xF0
 #define TAV_PACKET_LOOP_END       0xF1
+#define TAV_PACKET_SCREEN_MASK    0xF2
 #define TAV_PACKET_GOP_SYNC       0xFC  // GOP sync packet (N frames decoded)
 #define TAV_PACKET_TIMECODE       0xFD
 #define TAV_PACKET_SYNC_NTSC      0xFE
@@ -130,6 +131,7 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_EXTENDED_HDR: return "EXTENDED HEADER";
         case TAV_PACKET_LOOP_START: return "LOOP START";
         case TAV_PACKET_LOOP_END: return "LOOP END";
+        case TAV_PACKET_SCREEN_MASK: return "SCREEN MASK";
         case TAV_PACKET_GOP_SYNC: return "GOP SYNC";
         case TAV_PACKET_TIMECODE: return "TIMECODE";
         case TAV_PACKET_SYNC_NTSC: return "SYNC (NTSC)";
@@ -839,6 +841,23 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
                 stats.loop_point_count++;
                 if (!opts.summary_only && display) {
                     printf(" (no payload)");
+                }
+                break;
+
+            case TAV_PACKET_SCREEN_MASK:
+                uint32_t frame_number;
+                if (fread(&frame_number, sizeof(uint32_t), 1, fp) != 1) break;
+                uint16_t top;
+                if (fread(&top, sizeof(uint16_t), 1, fp) != 1) break;
+                uint16_t right;
+                if (fread(&right, sizeof(uint16_t), 1, fp) != 1) break;
+                uint16_t bottom;
+                if (fread(&bottom, sizeof(uint16_t), 1, fp) != 1) break;
+                uint16_t left;
+                if (fread(&left, sizeof(uint16_t), 1, fp) != 1) break;
+
+                if (!opts.summary_only && display) {
+                    printf(" - Frame=%u [top=%u, right=%u, bottom=%u, left=%u]", frame_number, top, right, bottom, left);
                 }
                 break;
 

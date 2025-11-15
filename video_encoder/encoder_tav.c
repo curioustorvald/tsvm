@@ -8108,13 +8108,14 @@ static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_n
     fwrite(&packet_type, 1, 1, output);
 
     // Calculate timecode in nanoseconds
-    // For NTSC (29.97 fps): time = frame_num * 1001000000 / 30000
+    // For NTSC framerates (X000/1001): time = frame_num * 1001 * 1000000000 / (fps * 1000)
     // For other framerates: time = frame_num * 1000000000 / fps
     uint64_t timecode_ns;
     if (is_ntsc_framerate) {
-        // NTSC uses 30000/1001 fps (29.97...)
-        // To avoid floating point: time_ns = frame_num * 1001000000 / 30000
-        timecode_ns = ((uint64_t)frame_num * 1001000000ULL) / 30000ULL;
+        // NTSC framerates use denominator 1001 (e.g., 24000/1001, 30000/1001, 60000/1001)
+        // To avoid floating point: time_ns = frame_num * 1001 * 1e9 / (fps * 1000)
+        // This works for 24fps NTSC (23.976), 30fps NTSC (29.97), 60fps NTSC (59.94), etc.
+        timecode_ns = ((uint64_t)frame_num * 1001ULL * 1000000000ULL) / ((uint64_t)fps * 1000ULL);
     } else {
         // Standard framerate
         timecode_ns = ((uint64_t)frame_num * 1000000000ULL) / (uint64_t)fps;
@@ -10779,7 +10780,8 @@ int main(int argc, char *argv[]) {
         // Update ENDT in extended header (calculate end time for last frame)
         uint64_t endt_ns;
         if (enc->is_ntsc_framerate) {
-            endt_ns = ((uint64_t)(frame_count - 1) * 1001000000ULL) / 30000ULL;
+            // NTSC framerates use denominator 1001 (e.g., 24000/1001, 30000/1001, 60000/1001)
+            endt_ns = ((uint64_t)(frame_count - 1) * 1001ULL * 1000000000ULL) / ((uint64_t)enc->output_fps * 1000ULL);
         } else {
             endt_ns = ((uint64_t)(frame_count - 1) * 1000000000ULL) / (uint64_t)enc->output_fps;
         }

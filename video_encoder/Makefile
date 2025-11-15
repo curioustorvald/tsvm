@@ -3,8 +3,8 @@
 
 CC = gcc
 CXX = g++
-CFLAGS = -std=c99 -Wall -Wextra -O2 -D_GNU_SOURCE
-CXXFLAGS = -std=c++11 -Wall -Wextra -O2 -D_GNU_SOURCE
+CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE
+CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE
 
 # Zstd flags (use pkg-config if available, fallback for cross-platform compatibility)
 ZSTD_CFLAGS = $(shell pkg-config --cflags libzstd 2>/dev/null || echo "")

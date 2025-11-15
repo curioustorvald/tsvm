@@ -902,13 +902,21 @@ transmission capability, and region-of-interest coding.
 
 ## Header (32 bytes)
     uint8  Magic[8]: "\x1F TSVM TAV" or "\x1F TSVM TAP"
-    uint8  Version: 3 (YCoCg-R uniform), 4 (ICtCp uniform), 5 (YCoCg-R perceptual), 6 (ICtCp perceptual)
-    uint16 Width: video width in pixels  
-    uint16 Height: video height in pixels
-    uint8  FPS: frames per second. Use 0x00 for still images
+    uint8  Version:
+            - 1 = YCoCg-R multi-tile uniform
+            - 2 = ICtCp multi-tile uniform
+            - 3 = YCoCg-R monoblock uniform
+            - 4 = ICtCp monoblock uniform
+            - 5 = YCoCg-R monoblock perceptual
+            - 6 = ICtCp monoblock perceptual
+            - 7 = YCoCg-R multi-tile perceptual
+            - 8 = ICtCp multi-tile perceptual
+    uint16 Width: picture width in pixels
+    uint16 Height: picture height in pixels
+    uint8  FPS: frames per second. Use 0x00 for still pictures
     uint32 Total Frames: number of video frames
             - use 0 to denote not-finalised video stream
-            - use 0xFFFFFFFF to denote still image (.im3 file)
+            - use 0xFFFFFFFF to denote still picture (.im3 file)
     uint8  Wavelet Filter Type:
             - 0 = 5/3 reversible (LGT 5/3, JPEG 2000 standard)
             - 1 = 9/7 irreversible (CDF 9/7, slight modification of JPEG 2000, default choice)
@@ -919,19 +927,22 @@ transmission capability, and region-of-interest coding.
     uint8  Quantiser Index for Y channel (uses exponential numeric system; 0: lossless, 255: potato)
     uint8  Quantiser Index for Co channel (uses exponential numeric system; 0: lossless, 255: potato)
     uint8  Quantiser Index for Cg channel (uses exponential numeric system; 0: lossless, 255: potato)
-    uint8  Extra Feature Flags (must be ignored for still images)
-            - bit 0 = has audio
-            - bit 1 = has subtitle
-            - bit 2 = infinite loop (must be ignored when File Role is 1)
+    uint8  Extra Feature Flags
+            - bit 0 = has audio (for still pictures: has background music)
+            - bit 1 = has subtitle (for still pictures: has timed captions)
+            - bit 2 = infinite loop (has no effect for still pictures)
             - bit 7 = has no actual packets, this file is header-only without an Intro Movie
     uint8  Video Flags
             - bit 0 = interlaced
             - bit 1 = is NTSC framerate
             - bit 2 = is lossless mode
                 (shorthand for `-q 6 -Q0,0,0 -w 0 --intra-only --no-perceptual-tuning --arate 384`)
-            - bit 3 = has region-of-interest coding (for still images only)
+            - bit 3 = has region-of-interest coding (for still pictures only)
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
     uint8  Channel layout (bit-field: bit 0=has alpha, bit 1=has chroma inverted, bit 2=has luma inverted)
+            * Luma-only videos must be decoded with fixed Chroma=0
+            * Chroma-only videos must be decoded with fixed Luma=127
+            * No-alpha videos must be decoded with fixed Alpha=255
             - 0 = Y-Co-Cg/I-Ct-Cp (000: no alpha, has chroma, has luma)
             - 1 = Y-Co-Cg-A/I-Ct-Cp-A (001: has alpha, has chroma, has luma)
             - 2 = Y/I only (010: no alpha, no chroma, has luma)
@@ -940,9 +951,9 @@ transmission capability, and region-of-interest coding.
             - 5 = Co-Cg-A/Ct-Cp-A (101: has alpha, has chroma, no luma)
             - 6-7 = Reserved/invalid (would indicate no luma and no chroma)
     uint8  Entropy Coder
-            - 0 = Twobit-plane significance map
+            - 0 = Twobit-plane significance map (deprecated)
             - 1 = Embedded Zero Block Coding
-            - 2 = Raw coefficients
+            - 2 = Raw coefficients (debugging purpose only)
     uint8  Reserved[2]: fill with zeros
     uint8  Device Orientation
             - 0 = No rotation
@@ -1001,6 +1012,7 @@ transmission capability, and region-of-interest coding.
     0xEF: TAV Extended Header
     0xF0: Loop point start (insert right AFTER the TC packet; no payload)
     0xF1: Loop point end (insert right AFTER the TC packet; no payload)
+    0xF2: Screen masking info
     0xFC: GOP Sync packet (indicates N frames decoded from GOP block)
     0xFD: Timecode (TC) Packet [for frame 0, insert at the beginning; otherwise, insert right AFTER the sync]
     0xFE: NTSC sync packet (used by player to calculate exact framerate-wise performance; no payload)
@@ -1012,11 +1024,12 @@ transmission capability, and region-of-interest coding.
         1. TAV Extended header (if any)
         2. Standard metadata payloads (if any)
         3. SSF-TC/KSF-TC packets (if any)
-            When time-coded subtitles are used, the entire subtitle bytes must precede the first video frame.
+            When time-coded subtitles are used, the entire subtitles must precede the first video frame.
             Think of it as tacking the whole subtitle file before the actual video.
+        4. Screen Masking packets (if any)
 
         Frame group:
-        1. TC Packet (0xFD) or Next TAV File (0x1F) [mutually exclusive!]
+        1. Timecode Packet (0xFD) or Next TAV File (0x1F) [mutually exclusive!]
         2. Loop point packet (if any)
         3. Audio packets (if any)
         4. Subtitle packets (if any) [mutually exclusive with SSF-TC/KSF-TC packets]
@@ -1024,11 +1037,12 @@ transmission capability, and region-of-interest coding.
         6. Multiplexed video packets (0x70-7F; if any)
 
         After a frame group:
-        1. Sync packet
+        1. Sync packet (0xFC or 0xFF)
+        2. NTSC Sync packet (if required; it will instruct players to duplicate the current frame)
 
 
 ## TAV Extended Header Specification and Structure
-    uint8  0xEF
+    uint8  Packet Type (0xEF)
     uint16 Number of Key-Value pairs
     *      Key-Value pairs
 
@@ -1056,7 +1070,7 @@ transmission capability, and region-of-interest coding.
 
 
 ## Standard Metadata Payload Packet Structure
-    uint8  0xE0/0xE1/0xE2/.../0xEE (see Packet Types section)
+    uint8  Packet Type (0xE0/0xE1/0xE2/.../0xEE; see Packet Types section)
     uint32 Length of the payload
     *      Standard payload
 
@@ -1070,13 +1084,25 @@ transmission capability, and region-of-interest coding.
     uint8  Packet Type (0xFE)
     uint64 Time since stream start in nanoseconds (this may NOT start from zero if the video is coming from a livestream)
 
-## Video Packet Structure (0x10, 0x11)
-    uint8  Packet Type
+## Screen Masking Packet Structure
+    When letterbox/pillarbox detection is active, the encoder will only encode pictures in the active area.
+    Decoders must use this value to derive the size of the active area for decoding, and fill the blank on playback.
+    Encoders only need to insert this packets at the start of the video (if necessary) and whenever geometry change occurs.
+
+    uint8  Packet Type (0xF2)
+    uint32 Starting frame number
+    uint16 Mask size top in pixels
+    uint16 Mask size right in pixels
+    uint16 Mask size bottom in pixels
+    uint16 Mask size left in pixels
+
+## Video Packet Structure
+    uint8  Packet Type (0x10/0x11)
     uint32 Compressed Size
     *      Zstd-compressed Block Data
 
 ## TAD Packet Structure
-    uint8  Packet type (0x24)
+    uint8  Packet Type (0x24)
     <header for decoding packet>
     uint16 Sample Count
     uint32 Compressed Size + 7
