@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251113 (3d-dwt,tad,ssf-tc)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251115 (3d-dwt,tad,ssf-tc)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -168,6 +168,8 @@ int debugDumpFrameTarget = -1;  // -1 means disabled
 typedef struct subtitle_entry {
     int start_frame;
     int end_frame;
+    uint64_t start_time_ns;  // Direct timestamp in nanoseconds (for SSF-TC)
+    uint64_t end_time_ns;    // Direct timestamp in nanoseconds (for SSF-TC)
     char *text;
     struct subtitle_entry *next;
 } subtitle_entry_t;
@@ -7557,10 +7559,32 @@ static int srt_time_to_frame(const char *time_str, int fps) {
     return (int)(total_seconds * fps + 0.5);  // Round to nearest frame
 }
 
+// Convert SRT time format directly to nanoseconds (for SSF-TC timecode)
+static uint64_t srt_time_to_ns(const char *time_str) {
+    int hours, minutes, seconds, milliseconds;
+    if (sscanf(time_str, "%d:%d:%d,%d", &hours, &minutes, &seconds, &milliseconds) != 4) {
+        return 0;
+    }
+
+    // Calculate total time in nanoseconds
+    uint64_t total_ns = 0;
+    total_ns += (uint64_t)hours * 3600ULL * 1000000000ULL;      // hours to nanoseconds
+    total_ns += (uint64_t)minutes * 60ULL * 1000000000ULL;      // minutes to nanoseconds
+    total_ns += (uint64_t)seconds * 1000000000ULL;              // seconds to nanoseconds
+    total_ns += (uint64_t)milliseconds * 1000000ULL;            // milliseconds to nanoseconds
+
+    return total_ns;
+}
+
 // Convert SAMI milliseconds to frame number
 static int sami_ms_to_frame(int milliseconds, int fps) {
     double seconds = milliseconds / 1000.0;
     return (int)(seconds * fps + 0.5);  // Round to nearest frame
+}
+
+// Convert SAMI milliseconds to nanoseconds (for SSF-TC timecode)
+static uint64_t sami_ms_to_ns(int milliseconds) {
+    return (uint64_t)milliseconds * 1000000ULL;
 }
 
 // Parse SubRip subtitle file
@@ -7603,6 +7627,8 @@ static subtitle_entry_t* parse_srt_file(const char *filename, int fps) {
             if (sscanf(line, "%31s --> %31s", start_time, end_time) == 2) {
                 current_entry->start_frame = srt_time_to_frame(start_time, fps);
                 current_entry->end_frame = srt_time_to_frame(end_time, fps);
+                current_entry->start_time_ns = srt_time_to_ns(start_time);
+                current_entry->end_time_ns = srt_time_to_ns(end_time);
 
                 if (current_entry->start_frame < 0 || current_entry->end_frame < 0) {
                     free(current_entry);
@@ -7903,6 +7929,7 @@ static subtitle_entry_t* parse_smi_file(const char *filename, int fps) {
                     subtitle_entry_t *entry = calloc(1, sizeof(subtitle_entry_t));
                     if (entry) {
                         entry->start_frame = sami_ms_to_frame(start_ms, fps);
+                        entry->start_time_ns = sami_ms_to_ns(start_ms);
                         entry->text = strdup(start);
 
                         // Set end frame to next subtitle start or a default duration
@@ -7919,13 +7946,16 @@ static subtitle_entry_t* parse_smi_file(const char *filename, int fps) {
                                     int next_ms = atoi(next_start);
                                     if (next_ms > start_ms) {
                                         entry->end_frame = sami_ms_to_frame(next_ms, fps);
+                                        entry->end_time_ns = sami_ms_to_ns(next_ms);
                                     } else {
                                         entry->end_frame = entry->start_frame + fps * 3;  // 3 second default
+                                        entry->end_time_ns = entry->start_time_ns + 3000000000ULL;  // 3 seconds in ns
                                     }
                                 }
                             }
                         } else {
                             entry->end_frame = entry->start_frame + fps * 3;  // 3 second default
+                            entry->end_time_ns = entry->start_time_ns + 3000000000ULL;  // 3 seconds in ns
                         }
 
                         // Add to list
@@ -8733,31 +8763,12 @@ static int write_all_subtitles_tc(tav_encoder_t *enc, FILE *output) {
     int bytes_written = 0;
     int subtitle_count = 0;
 
-    // Convert frame timing to nanoseconds
-    // For NTSC: frame_time = 1001000000 / 30000 nanoseconds
-    // For others: frame_time = 1e9 / fps nanoseconds
-    uint64_t frame_time_ns;
-    if (enc->is_ntsc_framerate) {
-        frame_time_ns = 1001000000ULL / 30000ULL;  // NTSC: 30000/1001 fps
-    } else {
-        frame_time_ns = (uint64_t)(1000000000.0 / enc->fps);
-    }
-
     // Iterate through all subtitles and write them with timecodes
     subtitle_entry_t *sub = enc->subtitles;
     while (sub) {
-        // Calculate timecodes for show and hide events
-        uint64_t show_timecode;
-        uint64_t hide_timecode;
-
-        if (enc->is_ntsc_framerate) {
-            // NTSC: time = frame * 1001000000 / 30000
-            show_timecode = ((uint64_t)sub->start_frame * 1001000000ULL) / 30000ULL;
-            hide_timecode = ((uint64_t)sub->end_frame * 1001000000ULL) / 30000ULL;
-        } else {
-            show_timecode = (uint64_t)sub->start_frame * frame_time_ns;
-            hide_timecode = (uint64_t)sub->end_frame * frame_time_ns;
-        }
+        // Use direct nanosecond timestamps from SRT file (no frame conversion needed)
+        uint64_t show_timecode = sub->start_time_ns;
+        uint64_t hide_timecode = sub->end_time_ns;
 
         // Write show subtitle event
         bytes_written += write_subtitle_packet_tc(output, 0, 0x01, sub->text, show_timecode);

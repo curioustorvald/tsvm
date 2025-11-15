@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include <sys/time.h>
 #include <time.h>
+#include <limits.h>
 
 // TSVM Enhanced Video (TEV) format constants
 #define TEV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x45\x56"  // "\x1FTSVM TEV"

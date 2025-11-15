@@ -9,6 +9,7 @@ TAV (TSVM Advanced Video) is a modern video codec built on discrete wavelet tran
 ### Key Advantages
 
 - **No blocking artefacts**: Large-tile DWT encoding with padding eliminates DCT block boundaries
+- **No colour banding**: Wavelets spreads gradients across scales, preventing banding in the first place
 - **Perceptual optimisation**: HVS-aware quantisation preserves visual quality where it matters
 - **Temporal coherence**: 3D DWT with GOP encoding exploits inter-frame similarity
 - **Efficient sparse coding**: EZBC encoding exploits coefficient sparsity for 16-18% additional compression
