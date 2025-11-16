@@ -59,6 +59,7 @@
 #define TAV_PACKET_SUBTITLE_TC     0x31  // Subtitle packet with timecode (SSF-TC format)
 #define TAV_PACKET_AUDIO_TRACK     0x40  // Separate audio track (full MP2 file)
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header packet
+#define TAV_PACKET_SCREEN_MASK     0xF2  // Screen masking packet (letterbox/pillarbox)
 #define TAV_PACKET_GOP_SYNC        0xFC  // GOP sync packet (N frames decoded)
 #define TAV_PACKET_TIMECODE        0xFD  // Timecode packet
 #define TAV_PACKET_SYNC_NTSC       0xFE  // NTSC Sync packet
@@ -199,6 +200,13 @@ typedef struct frame_analysis {
     // Detection results
     int is_scene_change;         // Final scene change flag
     double scene_change_score;   // Composite score for debugging
+
+    // Letterbox/pillarbox detection
+    uint16_t letterbox_top;
+    uint16_t letterbox_right;
+    uint16_t letterbox_bottom;
+    uint16_t letterbox_left;
+    int has_letterbox;           // 1 if any masking detected
 } frame_analysis_t;
 
 // GOP boundary list for two-pass encoding
@@ -1804,6 +1812,7 @@ typedef struct tav_encoder_s {
     int separate_audio_track; // 1 = write entire MP2 file as packet 0x40 after header, 0 = interleave audio (default)
     int pcm8_audio; // 1 = use 8-bit PCM audio (packet 0x21), 0 = use MP2 (default)
     int tad_audio; // 1 = use TAD audio (packet 0x24), 0 = use MP2/PCM8 (default, quality follows quality_level)
+    int enable_letterbox_detect; // 1 = detect and emit letterbox/pillarbox packets (default), 0 = disable
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -2419,6 +2428,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->separate_audio_track = 0;  // Default: interleave audio packets
     enc->pcm8_audio = 0;  // Default: use MP2 audio
     enc->tad_audio = 0;  // Default: use MP2 audio (TAD quality follows quality_level)
+    enc->enable_letterbox_detect = 1;  // Default: enable letterbox/pillarbox detection
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
@@ -8125,6 +8135,415 @@ static void write_timecode_packet(FILE *output, int frame_num, int fps, int is_n
     fwrite(&timecode_ns, sizeof(uint64_t), 1, output);
 }
 
+// Write screen masking packet (letterbox/pillarbox detection)
+// Packet structure: type(1) + frame_num(4) + top(2) + right(2) + bottom(2) + left(2) = 13 bytes
+static void write_screen_mask_packet(FILE *output, uint32_t frame_num,
+                                      uint16_t top, uint16_t right,
+                                      uint16_t bottom, uint16_t left) {
+    uint8_t packet_type = TAV_PACKET_SCREEN_MASK;
+    fwrite(&packet_type, 1, 1, output);
+    fwrite(&frame_num, sizeof(uint32_t), 1, output);
+    fwrite(&top, sizeof(uint16_t), 1, output);
+    fwrite(&right, sizeof(uint16_t), 1, output);
+    fwrite(&bottom, sizeof(uint16_t), 1, output);
+    fwrite(&left, sizeof(uint16_t), 1, output);
+}
+
+// Calculate Sobel gradient magnitude for a pixel (edge detection)
+static float calculate_sobel_magnitude(const uint8_t *frame_rgb, int width, int height,
+                                         int x, int y) {
+    // Sobel kernels for X and Y gradients
+    // Gx = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+    // Gy = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]]
+
+    // Handle boundary conditions with symmetric extension
+    int x_prev = (x > 0) ? (x - 1) : 0;
+    int x_next = (x < width - 1) ? (x + 1) : (width - 1);
+    int y_prev = (y > 0) ? (y - 1) : 0;
+    int y_next = (y < height - 1) ? (y + 1) : (height - 1);
+
+    // Sample 3x3 neighborhood (using luma only for efficiency)
+    float pixels[3][3];
+    for (int dy = 0; dy < 3; dy++) {
+        for (int dx = 0; dx < 3; dx++) {
+            int sample_y = (dy == 0) ? y_prev : ((dy == 1) ? y : y_next);
+            int sample_x = (dx == 0) ? x_prev : ((dx == 1) ? x : x_next);
+            int offset = (sample_y * width + sample_x) * 3;
+
+            // Convert to luma (simple approximation: Y = 0.299R + 0.587G + 0.114B)
+            pixels[dy][dx] = (0.299f * frame_rgb[offset] +
+                              0.587f * frame_rgb[offset + 1] +
+                              0.114f * frame_rgb[offset + 2]);
+        }
+    }
+
+    // Apply Sobel operators
+    float gx = -pixels[0][0] + pixels[0][2] +
+               -2*pixels[1][0] + 2*pixels[1][2] +
+               -pixels[2][0] + pixels[2][2];
+
+    float gy = -pixels[0][0] - 2*pixels[0][1] - pixels[0][2] +
+                pixels[2][0] + 2*pixels[2][1] + pixels[2][2];
+
+    // Calculate magnitude: sqrt(gx^2 + gy^2)
+    return sqrtf(gx * gx + gy * gy);
+}
+
+// Apply symmetric cropping and suppress simultaneous letterbox+pillarbox
+// ALWAYS makes left=right and top=bottom (perfect symmetry)
+// When BOTH letterbox and pillarbox are detected simultaneously, suppress one based on current state
+// Allows letterbox→pillarbox or pillarbox→letterbox transitions
+static void apply_symmetric_cropping(uint16_t *top, uint16_t *right,
+                                       uint16_t *bottom, uint16_t *left,
+                                       int width, int height,
+                                       uint16_t current_top, uint16_t current_bottom,
+                                       uint16_t current_left, uint16_t current_right) {
+    const int MIN_BAR_SIZE_LETTER = (int)(0.04f * height);  // Minimum bar size to consider (ignore <16 pixel bars)
+    const int MIN_BAR_SIZE_PILLAR = (int)(0.04f * width);  // Minimum bar size to consider (ignore <16 pixel bars)
+    const int SIGNIFICANT_THRESHOLD_LETTER = (int)(0.08f * height);  // Bar must be 32+ pixels to be considered significant
+    const int SIGNIFICANT_THRESHOLD_PILLAR = (int)(0.08f * width);  // Bar must be 32+ pixels to be considered significant
+
+    // Filter out small bars (noise/detection errors)
+    if (*top < MIN_BAR_SIZE_LETTER) *top = 0;
+    if (*bottom < MIN_BAR_SIZE_LETTER) *bottom = 0;
+    if (*left < MIN_BAR_SIZE_PILLAR) *left = 0;
+    if (*right < MIN_BAR_SIZE_PILLAR) *right = 0;
+
+    // ALWAYS make letterbox (top/bottom) perfectly symmetric
+    if (*top > 0 || *bottom > 0) {
+        // Use minimum value to avoid over-cropping
+        uint16_t symmetric_value = (*top < *bottom) ? *top : *bottom;
+        *top = symmetric_value+1;
+        *bottom = symmetric_value+1;
+    }
+
+    // ALWAYS make pillarbox (left/right) perfectly symmetric
+    if (*left > 0 || *right > 0) {
+        // Use minimum value to avoid over-cropping
+        uint16_t symmetric_value = (*left < *right) ? *left : *right;
+        *left = symmetric_value+1;
+        *right = symmetric_value+1;
+    }
+
+    // Check if BOTH letterbox and pillarbox are detected simultaneously
+    int new_has_letterbox = (*top >= SIGNIFICANT_THRESHOLD_LETTER || *bottom >= SIGNIFICANT_THRESHOLD_LETTER);
+    int new_has_pillarbox = (*left >= SIGNIFICANT_THRESHOLD_PILLAR || *right >= SIGNIFICANT_THRESHOLD_PILLAR);
+    int current_has_letterbox = (current_top >= SIGNIFICANT_THRESHOLD_LETTER || current_bottom >= SIGNIFICANT_THRESHOLD_LETTER);
+    int current_has_pillarbox = (current_left >= SIGNIFICANT_THRESHOLD_PILLAR || current_right >= SIGNIFICANT_THRESHOLD_PILLAR);
+
+    // Only suppress when BOTH are detected AND one is much smaller (likely false positive)
+    // Completely suppress windowboxing
+    if (new_has_letterbox && new_has_pillarbox) {
+        int letterbox_size = *top + *bottom;
+        int pillarbox_size = *left + *right;
+
+        // to allow windowboxing:
+        // Only suppress if one is less than 25% of total masking
+        // This allows legitimate windowboxing while filtering false positives
+        float letterbox_ratio_geom = (float)letterbox_size / height;
+        float pillarbox_ratio_geom = (float)pillarbox_size / width;
+        float ratio_sum = letterbox_ratio_geom + pillarbox_ratio_geom;
+        float letterbox_ratio = letterbox_ratio_geom / ratio_sum;
+        float pillarbox_ratio = pillarbox_ratio_geom / ratio_sum;
+
+        if (letterbox_ratio < 0.25f) {
+            *top = 0;
+            *bottom = 0;
+        } else if (pillarbox_ratio < 0.25f)
+            *left = 0;
+            *right = 0;
+        }
+        // Otherwise keep both (legitimate windowboxing)
+    }
+}
+
+// Detect letterbox/pillarbox bars in the current frame
+// Returns 1 if masking detected, 0 otherwise
+// Sets top, right, bottom, left to the size of detected bars in pixels
+static int detect_letterbox_pillarbox(tav_encoder_t *enc,
+                                       uint16_t *top, uint16_t *right,
+                                       uint16_t *bottom, uint16_t *left) {
+    if (!enc->current_frame_rgb) return 0;
+
+    const int width = enc->width;
+    const int height = enc->height;
+    const int SAMPLE_RATE_HORZ = 4;  // Sample every 4th pixel for performance
+    const int SAMPLE_RATE_VERT = 4;  // Sample every 4th pixel for performance
+    const float Y_THRESHOLD = 2.0f;  // Y < 2 for dark pixels
+    const float CHROMA_THRESHOLD = 1.0f;  // Co/Cg close to 0 (in ±255 scale)
+    const float EDGE_ACTIVITY_THRESHOLD = 1.0f;  // Mean Sobel magnitude < 1.0
+    const float ROW_COL_BLACK_RATIO = 0.999f;  // 99.9% of sampled pixels must be black
+
+    *top = 0;
+    *bottom = 0;
+    *left = 0;
+    *right = 0;
+
+    // Detect top letterbox
+    for (int y = 0; y < height / 4; y++) {
+        int black_pixel_count = 0;
+        float total_edge_activity = 0.0f;
+        int sampled_pixels = 0;
+
+        for (int x = 0; x < width; x += SAMPLE_RATE_HORZ) {
+            int idx = y * width + x;
+
+            // Use pre-converted YCoCg values (optimization: avoid RGB→YCoCg conversion in loop)
+            float yval = enc->current_frame_y[idx];
+             float co = enc->current_frame_co[idx];
+             float cg = enc->current_frame_cg[idx];
+
+            // Check if pixel is dark and neutral (letterbox bar)
+            if (yval < Y_THRESHOLD &&
+                fabs(co) < CHROMA_THRESHOLD &&
+                fabs(cg) < CHROMA_THRESHOLD) {
+                black_pixel_count++;
+            }
+
+            // Calculate edge activity
+            total_edge_activity += calculate_sobel_magnitude(enc->current_frame_rgb,
+                                                             width, height, x, y);
+            sampled_pixels++;
+        }
+
+        float black_ratio = (float)black_pixel_count / sampled_pixels;
+        float mean_edge_activity = total_edge_activity / sampled_pixels;
+
+        // Row is part of letterbox if mostly black AND low edge activity
+        if (black_ratio > ROW_COL_BLACK_RATIO &&
+            mean_edge_activity < EDGE_ACTIVITY_THRESHOLD) {
+            *top = y + 1;
+        } else {
+            break;  // Found content
+        }
+    }
+
+    // Detect bottom letterbox
+    for (int y = height - 1; y >= height * 3 / 4; y--) {
+        int black_pixel_count = 0;
+        float total_edge_activity = 0.0f;
+        int sampled_pixels = 0;
+
+        for (int x = 0; x < width; x += SAMPLE_RATE_HORZ) {
+            int idx = y * width + x;
+
+            // Use pre-converted YCoCg values (optimization)
+            float yval = enc->current_frame_y[idx];
+             float co = enc->current_frame_co[idx];
+             float cg = enc->current_frame_cg[idx];
+
+            if (yval < Y_THRESHOLD &&
+                fabs(co) < CHROMA_THRESHOLD &&
+                fabs(cg) < CHROMA_THRESHOLD) {
+                black_pixel_count++;
+            }
+
+            total_edge_activity += calculate_sobel_magnitude(enc->current_frame_rgb,
+                                                             width, height, x, y);
+            sampled_pixels++;
+        }
+
+        float black_ratio = (float)black_pixel_count / sampled_pixels;
+        float mean_edge_activity = total_edge_activity / sampled_pixels;
+
+        if (black_ratio > ROW_COL_BLACK_RATIO &&
+            mean_edge_activity < EDGE_ACTIVITY_THRESHOLD) {
+            *bottom = height - y;
+        } else {
+            break;
+        }
+    }
+
+    // Detect left pillarbox
+    for (int x = 0; x < width / 4; x++) {
+        int black_pixel_count = 0;
+        float total_edge_activity = 0.0f;
+        int sampled_pixels = 0;
+
+        for (int y = 0; y < height; y += SAMPLE_RATE_VERT) {
+            int idx = y * width + x;
+
+            // Use pre-converted YCoCg values (optimization)
+            float yval = enc->current_frame_y[idx];
+             float co = enc->current_frame_co[idx];
+             float cg = enc->current_frame_cg[idx];
+
+            if (yval < Y_THRESHOLD &&
+                fabs(co) < CHROMA_THRESHOLD &&
+                fabs(cg) < CHROMA_THRESHOLD) {
+                black_pixel_count++;
+            }
+
+            total_edge_activity += calculate_sobel_magnitude(enc->current_frame_rgb,
+                                                             width, height, x, y);
+            sampled_pixels++;
+        }
+
+        float black_ratio = (float)black_pixel_count / sampled_pixels;
+        float mean_edge_activity = total_edge_activity / sampled_pixels;
+
+        if (black_ratio > ROW_COL_BLACK_RATIO &&
+            mean_edge_activity < EDGE_ACTIVITY_THRESHOLD) {
+            *left = x + 1;
+        } else {
+            break;
+        }
+    }
+
+    // Detect right pillarbox
+    for (int x = width - 1; x >= width * 3 / 4; x--) {
+        int black_pixel_count = 0;
+        float total_edge_activity = 0.0f;
+        int sampled_pixels = 0;
+
+        for (int y = 0; y < height; y += SAMPLE_RATE_VERT) {
+            int idx = y * width + x;
+
+            // Use pre-converted YCoCg values (optimization)
+            float yval = enc->current_frame_y[idx];
+             float co = enc->current_frame_co[idx];
+             float cg = enc->current_frame_cg[idx];
+
+            if (yval < Y_THRESHOLD &&
+                fabs(co) < CHROMA_THRESHOLD &&
+                fabs(cg) < CHROMA_THRESHOLD) {
+                black_pixel_count++;
+            }
+
+            total_edge_activity += calculate_sobel_magnitude(enc->current_frame_rgb,
+                                                             width, height, x, y);
+            sampled_pixels++;
+        }
+
+        float black_ratio = (float)black_pixel_count / sampled_pixels;
+        float mean_edge_activity = total_edge_activity / sampled_pixels;
+
+        if (black_ratio > ROW_COL_BLACK_RATIO &&
+            mean_edge_activity < EDGE_ACTIVITY_THRESHOLD) {
+            *right = width - x;
+        } else {
+            break;
+        }
+    }
+
+    // Apply symmetric cropping preference and minimum bar size filtering
+    // Note: During detection phase, no current state available (use 0,0,0,0)
+    apply_symmetric_cropping(top, right, bottom, left, width, height, 0, 0, 0, 0);
+
+    // Return 1 if any masking was detected
+    return (*top > 0 || *bottom > 0 || *left > 0 || *right > 0);
+}
+
+// Refine geometry change detection - find exact frame where change occurred
+// Uses linear scan to find first frame with new geometry
+static int refine_geometry_change(tav_encoder_t *enc, int start_frame, int end_frame,
+                                 uint16_t old_top, uint16_t old_right,
+                                 uint16_t old_bottom, uint16_t old_left) {
+    #define GEOMETRY_TOLERANCE 4  // ±4 pixels tolerance
+
+    // Linear scan from start to find first frame with new geometry
+    for (int i = start_frame; i <= end_frame && i < enc->frame_analyses_count; i++) {
+        frame_analysis_t *m = &enc->frame_analyses[i];
+
+        // Check if this frame has different geometry (beyond tolerance)
+        if (abs((int)m->letterbox_top - (int)old_top) > GEOMETRY_TOLERANCE ||
+            abs((int)m->letterbox_right - (int)old_right) > GEOMETRY_TOLERANCE ||
+            abs((int)m->letterbox_bottom - (int)old_bottom) > GEOMETRY_TOLERANCE ||
+            abs((int)m->letterbox_left - (int)old_left) > GEOMETRY_TOLERANCE) {
+            return i;  // Found the change point
+        }
+    }
+
+    return end_frame;  // No change found, use end frame
+
+    #undef GEOMETRY_TOLERANCE
+}
+
+// Write all screen masking packets before first frame (similar to SSF-TC subtitles)
+// Uses two-stage approach: coarse detection (8-frame stride) + frame-exact refinement
+static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
+    if (!enc->enable_letterbox_detect || !enc->two_pass_mode) {
+        return;  // Letterbox detection requires two-pass mode
+    }
+
+    if (!enc->frame_analyses || enc->frame_analyses_count == 0) {
+        return;  // No analysis data
+    }
+
+#define COARSE_STRIDE 16      // Sample every 8 frames for coarse detection
+#define CHANGE_THRESHOLD 16  // Require 16+ pixel change to consider geometry change
+#define SKIP_INITIAL_FRAMES 60  // Skip first N frames (often black/fade-in)
+
+    // Track current geometry
+    uint16_t current_top = 0, current_right = 0, current_bottom = 0, current_left = 0;
+    int packets_written = 0;
+    int last_checked_frame = SKIP_INITIAL_FRAMES;
+
+    // Stage 1: Coarse scan every COARSE_STRIDE frames to detect geometry changes
+    for (int i = SKIP_INITIAL_FRAMES; i < enc->frame_analyses_count; i += COARSE_STRIDE) {
+        frame_analysis_t *metrics = &enc->frame_analyses[i];
+
+        // Check if geometry changed significantly
+        int is_first = (packets_written == 0);
+        int is_significant_change =
+            abs((int)metrics->letterbox_top - (int)current_top) >= CHANGE_THRESHOLD ||
+            abs((int)metrics->letterbox_right - (int)current_right) >= CHANGE_THRESHOLD ||
+            abs((int)metrics->letterbox_bottom - (int)current_bottom) >= CHANGE_THRESHOLD ||
+            abs((int)metrics->letterbox_left - (int)current_left) >= CHANGE_THRESHOLD;
+
+        if (is_first || is_significant_change) {
+            // Stage 2: Refine - find exact frame where change occurred
+            int change_frame;
+            if (is_first) {
+                change_frame = 0;  // First packet always at frame 0
+            } else {
+                // Search backwards from i to last_checked_frame to find exact change point
+                change_frame = refine_geometry_change(enc, last_checked_frame, i,
+                                                     current_top, current_right,
+                                                     current_bottom, current_left);
+            }
+
+            // Get geometry from the change frame
+            frame_analysis_t *change_metrics = &enc->frame_analyses[change_frame];
+
+            // Apply symmetric cropping to final geometry (with current state for context)
+            uint16_t final_top = change_metrics->letterbox_top;
+            uint16_t final_right = change_metrics->letterbox_right;
+            uint16_t final_bottom = change_metrics->letterbox_bottom;
+            uint16_t final_left = change_metrics->letterbox_left;
+            apply_symmetric_cropping(&final_top, &final_right, &final_bottom, &final_left,
+                                    enc->width, enc->height,
+                                    current_top, current_bottom, current_left, current_right);
+
+            // Emit packet
+            write_screen_mask_packet(output, change_frame,
+                                    final_top, final_right, final_bottom, final_left);
+
+            // Update current geometry
+            current_top = final_top;
+            current_right = final_right;
+            current_bottom = final_bottom;
+            current_left = final_left;
+            packets_written++;
+
+            if (enc->verbose) {
+                printf("  Frame %d: Screen mask t=%u r=%u b=%u l=%u (frame-exact detection)\n",
+                       change_frame, final_top, final_right, final_bottom, final_left);
+            }
+        }
+
+        last_checked_frame = i;
+    }
+
+    if (packets_written > 0) {
+        printf("Wrote %d screen masking packet(s) (frame-exact detection)\n", packets_written);
+    }
+
+#undef COARSE_STRIDE
+#undef CHANGE_THRESHOLD
+#undef SKIP_INITIAL_FRAMES
+}
+
 // Write extended header packet with metadata
 // Returns the file offset where ENDT value is written (for later update)
 static long write_extended_header(tav_encoder_t *enc) {
@@ -8297,6 +8716,15 @@ static int write_tad_packet_samples(tav_encoder_t *enc, FILE *output, int sample
     if (!enc->pcm_file || enc->audio_remaining <= 0 || samples_to_read <= 0) {
         return 0;
     }
+
+    // Check if we have enough audio for a minimum chunk
+    // Don't encode if less than minimum - avoids encoding mostly padding/zeros
+    size_t min_bytes_needed = TAD32_MIN_CHUNK_SIZE * 2 * sizeof(float);
+    if (enc->audio_remaining < min_bytes_needed) {
+        enc->audio_remaining = 0;  // Mark audio as exhausted
+        return 0;
+    }
+
     size_t bytes_to_read = samples_to_read * 2 * sizeof(float);  // Stereo Float32LE
 
     // Don't read more than what's available
@@ -9457,8 +9885,10 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
         // Compute metrics
 
         frame_analysis_t metrics;
-        metrics.frame_number = frame_num;
         compute_frame_metrics(enc, gray, prev_dwt, sub_width, sub_height, ANALYSIS_DWT_LEVELS, &metrics);
+
+        // Set frame number AFTER compute_frame_metrics (which does memset)
+        metrics.frame_number = frame_num;
 
         // Detect scene change using hybrid detector
         if (frame_num > 0) {
@@ -9471,6 +9901,29 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
             );
         } else {
             metrics.is_scene_change = 0;  // First frame is always start of first GOP
+        }
+
+        // Detect letterbox/pillarbox if enabled
+        if (enc->enable_letterbox_detect) {
+            // Set current_frame_rgb temporarily for detection
+            uint8_t *saved_current = enc->current_frame_rgb;
+            enc->current_frame_rgb = frame_rgb;
+
+            metrics.has_letterbox = detect_letterbox_pillarbox(
+                enc,
+                &metrics.letterbox_top,
+                &metrics.letterbox_right,
+                &metrics.letterbox_bottom,
+                &metrics.letterbox_left
+            );
+
+            enc->current_frame_rgb = saved_current;
+        } else {
+            metrics.has_letterbox = 0;
+            metrics.letterbox_top = 0;
+            metrics.letterbox_right = 0;
+            metrics.letterbox_bottom = 0;
+            metrics.letterbox_left = 0;
         }
 
         // Store analysis
@@ -9650,6 +10103,7 @@ int main(int argc, char *argv[]) {
         {"tad-audio", no_argument, 0, 1028},
         {"raw-coeffs", no_argument, 0, 1029},
         {"single-pass", no_argument, 0, 1050},  // disable two-pass encoding with wavelet-based scene detection
+        {"no-letterbox-detect", no_argument, 0, 1051},  // disable letterbox/pillarbox detection
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -9880,6 +10334,10 @@ int main(int argc, char *argv[]) {
                 enc->two_pass_mode = 0;
                 printf("Two-pass wavelet-based scene change detection disabled\n");
                 break;
+            case 1051: // --no-letterbox-detect
+                enc->enable_letterbox_detect = 0;
+                printf("Letterbox/pillarbox detection disabled\n");
+                break;
             case 'a':
                 int bitrate = atoi(optarg);
                 int valid_bitrate = validate_mp2_bitrate(bitrate);
@@ -10088,6 +10546,10 @@ int main(int argc, char *argv[]) {
         write_all_subtitles_tc(enc, enc->output_fp);
     }
 
+    // Write all screen masking packets upfront (before first frame)
+    // This must be done AFTER first pass analysis completes, so we'll defer it
+    // to after the two-pass analysis block below
+
     if (enc->output_fps != enc->fps) {
         printf("Frame rate conversion enabled: %d fps output\n", enc->output_fps);
     }
@@ -10130,6 +10592,9 @@ int main(int argc, char *argv[]) {
             printf("  Adjusted GOP capacity from %d to %d frames\n",
                    TEMPORAL_GOP_SIZE, ANALYSIS_GOP_MAX_SIZE);
         }
+
+        // Write all screen masking packets NOW (after first pass analysis)
+        write_all_screen_mask_packets(enc, enc->output_fp);
 
         printf("\n=== Two-Pass Encoding: Second Pass (Encoding) ===\n");
     }

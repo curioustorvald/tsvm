@@ -39,6 +39,7 @@ const TAV_PACKET_SUBTITLE = 0x30       // Legacy SSF (frame-locked)
 const TAV_PACKET_SUBTITLE_TC = 0x31    // SSF-TC (timecode-based)
 const TAV_PACKET_AUDIO_BUNDLED = 0x40  // Entire MP2 audio file in single packet
 const TAV_PACKET_EXTENDED_HDR = 0xEF
+const TAV_PACKET_SCREEN_MASK = 0xF2  // Screen masking (letterbox/pillarbox)
 const TAV_PACKET_GOP_SYNC = 0xFC  // GOP sync (N frames decoded from GOP block)
 const TAV_PACKET_TIMECODE = 0xFD
 const TAV_PACKET_SYNC_NTSC = 0xFE
@@ -71,6 +72,13 @@ let nextSubtitleEventIndex = 0  // Next event to check
 let currentTimecodeNs = 0  // Current playback timecode (updated every frame)
 let baseTimecodeNs = 0  // Base timecode from most recent TIMECODE packet
 let baseTimecodeFrameCount = 0  // Frame count when base timecode was set
+
+// Screen masking (letterbox/pillarbox) state
+let screenMaskEntries = []  // Array of {frameNum, top, right, bottom, left}
+let screenMaskTop = 0
+let screenMaskRight = 0
+let screenMaskBottom = 0
+let screenMaskLeft = 0
 
 // Parse command line options
 let interactive = false
@@ -739,6 +747,77 @@ function scanForwardToIframe(targetFrame, currentPos) {
 }
 
 // Function to try reading next TAV file header at current position
+// Update active screen mask for the given frame number
+// Screen mask packets are sorted by frameNum, so find the last entry with frameNum <= currentFrameNum
+function updateScreenMask(currentFrameNum) {
+    if (screenMaskEntries.length === 0) {
+        return  // No screen mask entries
+    }
+
+    // Find the most recent screen mask entry for this frame
+    // Entries are in order, so scan backwards for efficiency
+    for (let i = screenMaskEntries.length - 1; i >= 0; i--) {
+        if (screenMaskEntries[i].frameNum <= currentFrameNum) {
+            // Apply this mask
+            screenMaskTop = screenMaskEntries[i].top
+            screenMaskRight = screenMaskEntries[i].right
+            screenMaskBottom = screenMaskEntries[i].bottom
+            screenMaskLeft = screenMaskEntries[i].left
+            return
+        }
+    }
+}
+
+// Fill masked regions (letterbox/pillarbox bars) with black
+function fillMaskedRegions() {
+    return
+//    console.log(`ScrMask: ${screenMaskTop}, ${screenMaskRight}, ${screenMaskBottom}, ${screenMaskLeft}`)
+
+    if (screenMaskTop === 0 && screenMaskRight === 0 &&
+        screenMaskBottom === 0 && screenMaskLeft === 0) {
+        return  // No masking
+    }
+
+    const width = header.width
+    const height = header.height
+    const blackRG = 0xF0
+    const blackBA = 0xFF // 0xF0FF (magenta) for test
+
+    // Fill top letterbox bar
+    for (let y = 0; y < screenMaskTop && y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            graphics.plotPixel(x, y, blackRG)
+            graphics.plotPixel2(x, y, blackBA)
+        }
+    }
+
+    // Fill bottom letterbox bar
+    for (let y = height - screenMaskBottom; y < height; y++) {
+        if (y < 0) continue
+        for (let x = 0; x < width; x++) {
+            graphics.plotPixel(x, y, blackRG)
+            graphics.plotPixel2(x, y, blackBA)
+        }
+    }
+
+    // Fill left pillarbox bar
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < screenMaskLeft && x < width; x++) {
+            graphics.plotPixel(x, y, blackRG)
+            graphics.plotPixel2(x, y, blackBA)
+        }
+    }
+
+    // Fill right pillarbox bar
+    for (let y = 0; y < height; y++) {
+        for (let x = width - screenMaskRight; x < width; x++) {
+            if (x < 0) continue
+            graphics.plotPixel(x, y, blackRG)
+            graphics.plotPixel2(x, y, blackBA)
+        }
+    }
+}
+
 function tryReadNextTAVHeader() {
     // Save current position
     let currentPos = seqread.getReadCount()
@@ -1116,6 +1195,9 @@ try {
                 // Do nothing - skip to next packet
             }
             else if (packetType === TAV_PACKET_IFRAME || packetType === TAV_PACKET_PFRAME) {
+                // Update active screen mask for this frame (Phase 1: just tracking, not applying)
+                updateScreenMask(frameCount)
+
                 // Record I-frame position for seeking
                 if (packetType === TAV_PACKET_IFRAME) {
                     iframePositions.push({offset: packetOffset, frameNum: frameCount})
@@ -1588,6 +1670,28 @@ try {
                     }
                 }
             }
+            else if (packetType === TAV_PACKET_SCREEN_MASK) {
+                // Screen masking packet (letterbox/pillarbox detection)
+                // Format: frame_num(4) + top(2) + right(2) + bottom(2) + left(2) = 12 bytes
+                let frameNum = seqread.readInt()  // uint32 frame number
+                let top = seqread.readOneByte() | (seqread.readOneByte() << 8)
+                let right = seqread.readOneByte() | (seqread.readOneByte() << 8)
+                let bottom = seqread.readOneByte() | (seqread.readOneByte() << 8)
+                let left = seqread.readOneByte() | (seqread.readOneByte() << 8)
+
+                // Store in entries array
+                screenMaskEntries.push({
+                    frameNum: frameNum,
+                    top: top,
+                    right: right,
+                    bottom: bottom,
+                    left: left
+                })
+
+                if (interactive) {
+                    serial.println(`[SCREEN_MASK] frame=${frameNum} top=${top} right=${right} bottom=${bottom} left=${left}`)
+                }
+            }
             else if (packetType === TAV_PACKET_TIMECODE) {
                 // Timecode packet - time since stream start in nanoseconds
                 let timecodeLow = seqread.readInt()
@@ -1788,6 +1892,12 @@ try {
                 let uploadStart = sys.nanoTime()
                 graphics.uploadVideoBufferFrameToFramebuffer(currentGopFrameIndex, header.width, header.height, trueFrameCount, bufferOffset)
                 uploadTime = (sys.nanoTime() - uploadStart) / 1000000.0
+
+                // Update active screen mask for this GOP frame
+                updateScreenMask(frameCount)
+
+                // Fill masked regions with black (letterbox/pillarbox bars)
+                fillMaskedRegions()
 
                 if (interactive && currentGopFrameIndex === 0) {
 //                    console.log(`[GOP] Playing GOP: ${currentGopSize} frames from slot ${currentGopBufferSlot}`)

@@ -32,7 +32,9 @@
 #define TAV_PACKET_AUDIO_TAD       0x24  // TAD audio - SUPPORTED (decode to PCMu8)
 #define TAV_PACKET_AUDIO_TRACK     0x40  // Bundled audio track - SUPPORTED (passthrough)
 #define TAV_PACKET_SUBTITLE        0x30  // Subtitle - SKIPPED
+#define TAV_PACKET_SUBTITLE_TC     0x31  // Subtitle - SKIPPED
 #define TAV_PACKET_EXTENDED_HDR    0xEF  // Extended header - SKIPPED
+#define TAV_PACKET_SCREEN_MASK     0xF2  // Screen masking (letterbox/pillarbox) - PARSED
 #define TAV_PACKET_GOP_SYNC        0xFC  // GOP sync packet - SKIPPED
 #define TAV_PACKET_TIMECODE        0xFD  // Timecode - SKIPPED
 #define TAV_PACKET_SYNC_NTSC       0xFE  // NTSC sync - SKIPPED
@@ -1586,6 +1588,15 @@ static void write_wav_header(FILE *fp, uint32_t sample_rate, uint16_t channels, 
 // Decoder State Structure
 //=============================================================================
 
+// Screen masking entry (letterbox/pillarbox geometry change)
+typedef struct {
+    uint32_t frame_num;
+    uint16_t top;
+    uint16_t right;
+    uint16_t bottom;
+    uint16_t left;
+} screen_mask_entry_t;
+
 typedef struct {
     FILE *input_fp;
     tav_header_t header;
@@ -1600,6 +1611,16 @@ typedef struct {
     int frame_count;
     int frame_size;
     int is_monoblock;           // True if version 3-6 (single tile mode)
+
+    // Screen masking (letterbox/pillarbox) - array of geometry changes
+    screen_mask_entry_t *screen_masks;
+    int screen_mask_count;
+    int screen_mask_capacity;
+    // Current active mask
+    uint16_t screen_mask_top;
+    uint16_t screen_mask_right;
+    uint16_t screen_mask_bottom;
+    uint16_t screen_mask_left;
 
     // FFmpeg pipe for video only (audio from file)
     FILE *video_pipe;
@@ -1666,6 +1687,11 @@ static int extract_audio_to_wav(const char *input_file, const char *wav_file, in
 
         if (packet_type == TAV_PACKET_GOP_SYNC) {
             fseek(input_fp, 1, SEEK_CUR);  // Skip frame count
+            continue;
+        }
+
+        if (packet_type == TAV_PACKET_SCREEN_MASK) {
+            fseek(input_fp, 12, SEEK_CUR);  // Skip frame_num(4) + top(2) + right(2) + bottom(2) + left(2)
             continue;
         }
 
@@ -1948,8 +1974,81 @@ static void tav_decoder_free(tav_decoder_t *decoder) {
     free(decoder->reference_ycocg_y);
     free(decoder->reference_ycocg_co);
     free(decoder->reference_ycocg_cg);
+    free(decoder->screen_masks);
     free(decoder->audio_file_path);
     free(decoder);
+}
+
+//=============================================================================
+// Screen Mask Management
+//=============================================================================
+
+// Fill masked regions (letterbox/pillarbox bars) with black
+static void fill_masked_regions(uint8_t *frame_rgb, int width, int height,
+                                uint16_t top, uint16_t right, uint16_t bottom, uint16_t left) {
+    // Fill top letterbox bar
+    for (int y = 0; y < top && y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int offset = (y * width + x) * 3;
+            frame_rgb[offset] = 255;     // R
+            frame_rgb[offset + 1] = 0; // G
+            frame_rgb[offset + 2] = 0; // B
+        }
+    }
+
+    // Fill bottom letterbox bar
+    for (int y = height - bottom; y < height; y++) {
+        if (y < 0) continue;
+        for (int x = 0; x < width; x++) {
+            int offset = (y * width + x) * 3;
+            frame_rgb[offset] = 255;     // R
+            frame_rgb[offset + 1] = 0; // G
+            frame_rgb[offset + 2] = 0; // B
+        }
+    }
+
+    // Fill left pillarbox bar
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < left && x < width; x++) {
+            int offset = (y * width + x) * 3;
+            frame_rgb[offset] = 0;     // R
+            frame_rgb[offset + 1] = 0; // G
+            frame_rgb[offset + 2] = 255; // B
+        }
+    }
+
+    // Fill right pillarbox bar
+    for (int y = 0; y < height; y++) {
+        for (int x = width - right; x < width; x++) {
+            if (x < 0) continue;
+            int offset = (y * width + x) * 3;
+            frame_rgb[offset] = 0;     // R
+            frame_rgb[offset + 1] = 0; // G
+            frame_rgb[offset + 2] = 255; // B
+        }
+    }
+}
+
+// Update active screen mask for the given frame number
+// Screen mask packets are sorted by frame_num, so we find the last entry
+// with frame_num <= current_frame_num
+static void update_screen_mask(tav_decoder_t *decoder, uint32_t current_frame_num) {
+    if (!decoder->screen_masks || decoder->screen_mask_count == 0) {
+        return;  // No screen mask entries
+    }
+
+    // Find the most recent screen mask entry for this frame
+    // Entries are in order, so scan backwards for efficiency
+    for (int i = decoder->screen_mask_count - 1; i >= 0; i--) {
+        if (decoder->screen_masks[i].frame_num <= current_frame_num) {
+            // Apply this mask
+            decoder->screen_mask_top = decoder->screen_masks[i].top;
+            decoder->screen_mask_right = decoder->screen_masks[i].right;
+            decoder->screen_mask_bottom = decoder->screen_masks[i].bottom;
+            decoder->screen_mask_left = decoder->screen_masks[i].left;
+            return;
+        }
+    }
 }
 
 //=============================================================================
@@ -2486,6 +2585,50 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        // Handle screen masking packets (letterbox/pillarbox detection)
+        // Format: frame_num(4) + top(2) + right(2) + bottom(2) + left(2) = 12 bytes
+        if (packet_type == TAV_PACKET_SCREEN_MASK) {
+            uint32_t frame_num;
+            uint16_t top, right, bottom, left;
+            if (fread(&frame_num, 4, 1, decoder->input_fp) != 1 ||
+                fread(&top, 2, 1, decoder->input_fp) != 1 ||
+                fread(&right, 2, 1, decoder->input_fp) != 1 ||
+                fread(&bottom, 2, 1, decoder->input_fp) != 1 ||
+                fread(&left, 2, 1, decoder->input_fp) != 1) {
+                fprintf(stderr, "Error: Failed to read screen mask packet\n");
+                result = -1;
+                break;
+            }
+
+            // Allocate array if needed
+            if (decoder->screen_masks == NULL) {
+                decoder->screen_mask_capacity = 16;
+                decoder->screen_masks = malloc(decoder->screen_mask_capacity * sizeof(screen_mask_entry_t));
+                decoder->screen_mask_count = 0;
+            }
+
+            // Expand array if needed
+            if (decoder->screen_mask_count >= decoder->screen_mask_capacity) {
+                decoder->screen_mask_capacity *= 2;
+                decoder->screen_masks = realloc(decoder->screen_masks,
+                                               decoder->screen_mask_capacity * sizeof(screen_mask_entry_t));
+            }
+
+            // Store entry
+            screen_mask_entry_t *entry = &decoder->screen_masks[decoder->screen_mask_count++];
+            entry->frame_num = frame_num;
+            entry->top = top;
+            entry->right = right;
+            entry->bottom = bottom;
+            entry->left = left;
+
+            if (verbose) {
+                fprintf(stderr, "Packet %d: SCREEN_MASK (0x%02X) - frame=%u top=%u right=%u bottom=%u left=%u\n",
+                       total_packets, packet_type, frame_num, top, right, bottom, left);
+            }
+            continue;
+        }
+
         // Handle GOP unified packets (custom format: 1-byte gop_size + 4-byte compressed_size)
         if (packet_type == TAV_PACKET_GOP_UNIFIED) {
             uint8_t gop_size;
@@ -2738,6 +2881,14 @@ int main(int argc, char *argv[]) {
                     frame_rgb[i * 3 + 2] = b;
                 }
 
+                // Update active screen mask for this GOP frame
+                update_screen_mask(decoder, decoder->frame_count + t);
+
+                // Fill masked regions with black (letterbox/pillarbox bars)
+                fill_masked_regions(frame_rgb, decoder->header.width, decoder->header.height,
+                                   decoder->screen_mask_top, decoder->screen_mask_right,
+                                   decoder->screen_mask_bottom, decoder->screen_mask_left);
+
                 // Write frame to FFmpeg video pipe
                 const size_t bytes_to_write = decoder->frame_size * 3;
 
@@ -2869,6 +3020,9 @@ int main(int argc, char *argv[]) {
         switch (packet_type) {
             case TAV_PACKET_IFRAME:
             case TAV_PACKET_PFRAME:
+                // Update active screen mask for this frame (Phase 1: just tracking, not applying)
+                update_screen_mask(decoder, decoder->frame_count);
+
                 iframe_count++;
                 if (verbose && iframe_count <= 5) {
                     fprintf(stderr, "Processing %s (packet %d, size %u bytes)...\n",
@@ -2902,6 +3056,7 @@ int main(int argc, char *argv[]) {
                 break;
 
             case TAV_PACKET_SUBTITLE:
+            case TAV_PACKET_SUBTITLE_TC:
                 // Skip subtitle packets
                 fseek(decoder->input_fp, packet_size, SEEK_CUR);
                 break;
