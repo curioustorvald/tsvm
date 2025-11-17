@@ -8221,8 +8221,8 @@ static void apply_symmetric_cropping(uint16_t *top, uint16_t *right,
     if (*left > 0 || *right > 0) {
         // Use minimum value to avoid over-cropping
         uint16_t symmetric_value = (*left < *right) ? *left : *right;
-        *left = symmetric_value+1;
-        *right = symmetric_value+1;
+        *left = symmetric_value;
+        *right = symmetric_value;
     }
 
     // Check if BOTH letterbox and pillarbox are detected simultaneously
@@ -8249,7 +8249,7 @@ static void apply_symmetric_cropping(uint16_t *top, uint16_t *right,
         if (letterbox_ratio < 0.25f) {
             *top = 0;
             *bottom = 0;
-        } else if (pillarbox_ratio < 0.25f)
+        } else if (pillarbox_ratio < 0.25f) {
             *left = 0;
             *right = 0;
         }
@@ -8271,7 +8271,7 @@ static int detect_letterbox_pillarbox(tav_encoder_t *enc,
     const int SAMPLE_RATE_VERT = 4;  // Sample every 4th pixel for performance
     const float Y_THRESHOLD = 2.0f;  // Y < 2 for dark pixels
     const float CHROMA_THRESHOLD = 1.0f;  // Co/Cg close to 0 (in ±255 scale)
-    const float EDGE_ACTIVITY_THRESHOLD = 1.0f;  // Mean Sobel magnitude < 1.0
+    const float EDGE_ACTIVITY_THRESHOLD = 0.7f;  // Mean Sobel magnitude
     const float ROW_COL_BLACK_RATIO = 0.999f;  // 99.9% of sampled pixels must be black
 
     *top = 0;
@@ -8434,33 +8434,67 @@ static int detect_letterbox_pillarbox(tav_encoder_t *enc,
     return (*top > 0 || *bottom > 0 || *left > 0 || *right > 0);
 }
 
-// Refine geometry change detection - find exact frame where change occurred
-// Uses linear scan to find first frame with new geometry
-static int refine_geometry_change(tav_encoder_t *enc, int start_frame, int end_frame,
-                                 uint16_t old_top, uint16_t old_right,
-                                 uint16_t old_bottom, uint16_t old_left) {
-    #define GEOMETRY_TOLERANCE 4  // ±4 pixels tolerance
+// Median filter helper - finds median of array (destructive sort)
+static uint16_t median_uint16(uint16_t *values, int count) {
+    // Simple bubble sort for small arrays
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = 0; j < count - i - 1; j++) {
+            if (values[j] > values[j + 1]) {
+                uint16_t tmp = values[j];
+                values[j] = values[j + 1];
+                values[j + 1] = tmp;
+            }
+        }
+    }
+    return values[count / 2];
+}
 
-    // Linear scan from start to find first frame with new geometry
-    for (int i = start_frame; i <= end_frame && i < enc->frame_analyses_count; i++) {
-        frame_analysis_t *m = &enc->frame_analyses[i];
+// Cluster and normalize a single dimension (top, right, bottom, or left)
+// Groups values within ±1 and normalizes each to the most frequent value in its cluster
+// E.g., [55, 56, 55, 57, 55, 200, 201, 200] -> [55, 55, 55, 55, 55, 200, 200, 200]
+static void normalize_dimension_clusters(uint16_t *values, int count) {
+    if (count == 0) return;
 
-        // Check if this frame has different geometry (beyond tolerance)
-        if (abs((int)m->letterbox_top - (int)old_top) > GEOMETRY_TOLERANCE ||
-            abs((int)m->letterbox_right - (int)old_right) > GEOMETRY_TOLERANCE ||
-            abs((int)m->letterbox_bottom - (int)old_bottom) > GEOMETRY_TOLERANCE ||
-            abs((int)m->letterbox_left - (int)old_left) > GEOMETRY_TOLERANCE) {
-            return i;  // Found the change point
+#define MAX_GEOMETRY 2048  // Maximum dimension size (width or height)
+
+    // Build histogram of all values
+    int histogram[MAX_GEOMETRY];
+    memset(histogram, 0, sizeof(histogram));
+
+    for (int i = 0; i < count; i++) {
+        if (values[i] < MAX_GEOMETRY) {
+            histogram[values[i]]++;
         }
     }
 
-    return end_frame;  // No change found, use end frame
+    // For each value, find the most frequent value within ±1 range and normalize to it
+    for (int i = 0; i < count; i++) {
+        uint16_t val = values[i];
+        if (val >= MAX_GEOMETRY) continue;
 
-    #undef GEOMETRY_TOLERANCE
+        uint16_t best_val = val;
+        int best_count = histogram[val];
+
+        // Check val-1
+        if (val > 0 && histogram[val - 1] > best_count) {
+            best_val = val - 1;
+            best_count = histogram[val - 1];
+        }
+
+        // Check val+1
+        if (val + 1 < MAX_GEOMETRY && histogram[val + 1] > best_count) {
+            best_val = val + 1;
+            best_count = histogram[val + 1];
+        }
+
+        values[i] = best_val;
+    }
+
+#undef MAX_GEOMETRY
 }
 
 // Write all screen masking packets before first frame (similar to SSF-TC subtitles)
-// Uses two-stage approach: coarse detection (8-frame stride) + frame-exact refinement
+// Uses median filtering + clustering to normalize geometry to predominant aspect ratios
 static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
     if (!enc->enable_letterbox_detect || !enc->two_pass_mode) {
         return;  // Letterbox detection requires two-pass mode
@@ -8470,76 +8504,170 @@ static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
         return;  // No analysis data
     }
 
-#define COARSE_STRIDE 16      // Sample every 8 frames for coarse detection
-#define CHANGE_THRESHOLD 16  // Require 16+ pixel change to consider geometry change
+#define MEDIAN_WINDOW_SIZE 5  // 5-frame window for median filter (smooths jitter, reacts quickly)
+#define CHANGE_THRESHOLD 16   // Require 16+ pixel change to emit packet
 #define SKIP_INITIAL_FRAMES 60  // Skip first N frames (often black/fade-in)
 
-    // Track current geometry
-    uint16_t current_top = 0, current_right = 0, current_bottom = 0, current_left = 0;
-    int packets_written = 0;
-    int last_checked_frame = SKIP_INITIAL_FRAMES;
+    // Geometry storage for each frame
+    typedef struct {
+        uint16_t top, right, bottom, left;
+    } frame_geometry_t;
 
-    // Stage 1: Coarse scan every COARSE_STRIDE frames to detect geometry changes
-    for (int i = SKIP_INITIAL_FRAMES; i < enc->frame_analyses_count; i += COARSE_STRIDE) {
-        frame_analysis_t *metrics = &enc->frame_analyses[i];
+    frame_geometry_t *geometries = calloc(enc->frame_analyses_count, sizeof(frame_geometry_t));
+    if (!geometries) {
+        fprintf(stderr, "Failed to allocate geometry storage\n");
+        return;
+    }
 
-        // Check if geometry changed significantly
-        int is_first = (packets_written == 0);
-        int is_significant_change =
-            abs((int)metrics->letterbox_top - (int)current_top) >= CHANGE_THRESHOLD ||
-            abs((int)metrics->letterbox_right - (int)current_right) >= CHANGE_THRESHOLD ||
-            abs((int)metrics->letterbox_bottom - (int)current_bottom) >= CHANGE_THRESHOLD ||
-            abs((int)metrics->letterbox_left - (int)current_left) >= CHANGE_THRESHOLD;
+    // Step 1: Calculate median-filtered geometry for all frames
+    // Use centered median window to avoid early detection
+    uint16_t top_window[MEDIAN_WINDOW_SIZE];
+    uint16_t right_window[MEDIAN_WINDOW_SIZE];
+    uint16_t bottom_window[MEDIAN_WINDOW_SIZE];
+    uint16_t left_window[MEDIAN_WINDOW_SIZE];
 
-        if (is_first || is_significant_change) {
-            // Stage 2: Refine - find exact frame where change occurred
-            int change_frame;
-            if (is_first) {
-                change_frame = 0;  // First packet always at frame 0
-            } else {
-                // Search backwards from i to last_checked_frame to find exact change point
-                change_frame = refine_geometry_change(enc, last_checked_frame, i,
-                                                     current_top, current_right,
-                                                     current_bottom, current_left);
+    const int window_offset = MEDIAN_WINDOW_SIZE / 2;  // Center offset (2 for size 5)
+
+    for (int i = SKIP_INITIAL_FRAMES; i < enc->frame_analyses_count; i++) {
+        // Fill centered median window with values from [i-offset, i, i+offset]
+        // E.g., for window size 5: [i-2, i-1, i, i+1, i+2]
+        int window_count = 0;
+        for (int w = 0; w < MEDIAN_WINDOW_SIZE; w++) {
+            int frame_idx = i - window_offset + w;
+
+            // Clamp to valid frame range
+            if (frame_idx < SKIP_INITIAL_FRAMES) {
+                frame_idx = SKIP_INITIAL_FRAMES;
+            } else if (frame_idx >= enc->frame_analyses_count) {
+                frame_idx = enc->frame_analyses_count - 1;
             }
 
-            // Get geometry from the change frame
-            frame_analysis_t *change_metrics = &enc->frame_analyses[change_frame];
-
-            // Apply symmetric cropping to final geometry (with current state for context)
-            uint16_t final_top = change_metrics->letterbox_top;
-            uint16_t final_right = change_metrics->letterbox_right;
-            uint16_t final_bottom = change_metrics->letterbox_bottom;
-            uint16_t final_left = change_metrics->letterbox_left;
-            apply_symmetric_cropping(&final_top, &final_right, &final_bottom, &final_left,
-                                    enc->width, enc->height,
-                                    current_top, current_bottom, current_left, current_right);
-
-            // Emit packet
-            write_screen_mask_packet(output, change_frame,
-                                    final_top, final_right, final_bottom, final_left);
-
-            // Update current geometry
-            current_top = final_top;
-            current_right = final_right;
-            current_bottom = final_bottom;
-            current_left = final_left;
-            packets_written++;
-
-            if (enc->verbose) {
-                printf("  Frame %d: Screen mask t=%u r=%u b=%u l=%u (frame-exact detection)\n",
-                       change_frame, final_top, final_right, final_bottom, final_left);
-            }
+            frame_analysis_t *metrics = &enc->frame_analyses[frame_idx];
+            top_window[window_count] = metrics->letterbox_top;
+            right_window[window_count] = metrics->letterbox_right;
+            bottom_window[window_count] = metrics->letterbox_bottom;
+            left_window[window_count] = metrics->letterbox_left;
+            window_count++;
         }
 
-        last_checked_frame = i;
+        // Calculate median values (filters jitter like 52,53,53,52,53,52 -> 52)
+        geometries[i].top = median_uint16(top_window, window_count);
+        geometries[i].right = median_uint16(right_window, window_count);
+        geometries[i].bottom = median_uint16(bottom_window, window_count);
+        geometries[i].left = median_uint16(left_window, window_count);
     }
 
-    if (packets_written > 0) {
-        printf("Wrote %d screen masking packet(s) (frame-exact detection)\n", packets_written);
+    // Step 2: Identify change points and collect packet geometries (first pass)
+    typedef struct {
+        int frame_num;
+        uint16_t top, right, bottom, left;
+    } screen_mask_packet_t;
+
+    // Allocate worst-case packet storage (one per frame)
+    screen_mask_packet_t *packets = malloc(enc->frame_analyses_count * sizeof(screen_mask_packet_t));
+    if (!packets) {
+        fprintf(stderr, "Failed to allocate packet storage\n");
+        free(geometries);
+        return;
     }
 
-#undef COARSE_STRIDE
+    int packet_count = 0;
+    uint16_t current_top = 0, current_right = 0, current_bottom = 0, current_left = 0;
+
+    for (int i = SKIP_INITIAL_FRAMES; i < enc->frame_analyses_count; i++) {
+        uint16_t top = geometries[i].top;
+        uint16_t right = geometries[i].right;
+        uint16_t bottom = geometries[i].bottom;
+        uint16_t left = geometries[i].left;
+
+        // Apply symmetric cropping
+        apply_symmetric_cropping(&top, &right, &bottom, &left,
+                                enc->width, enc->height,
+                                current_top, current_bottom, current_left, current_right);
+
+        // Check if geometry changed significantly
+        int is_first = (packet_count == 0);
+        int is_significant_change =
+            abs((int)top - (int)current_top) >= CHANGE_THRESHOLD ||
+            abs((int)right - (int)current_right) >= CHANGE_THRESHOLD ||
+            abs((int)bottom - (int)current_bottom) >= CHANGE_THRESHOLD ||
+            abs((int)left - (int)current_left) >= CHANGE_THRESHOLD;
+
+        if (is_first || is_significant_change) {
+            // Store packet (first packet points to frame 0)
+            packets[packet_count].frame_num = is_first ? 0 : i;
+            packets[packet_count].top = top;
+            packets[packet_count].right = right;
+            packets[packet_count].bottom = bottom;
+            packets[packet_count].left = left;
+            packet_count++;
+
+            // Update current geometry
+            current_top = top;
+            current_right = right;
+            current_bottom = bottom;
+            current_left = left;
+        }
+    }
+
+    // Step 3: Survey packet values and normalize clusters (second pass)
+    // Cluster values within ±1 across all packets and normalize to most frequent
+    if (packet_count > 0) {
+        // Extract dimension values from packets
+        uint16_t *tops = malloc(packet_count * sizeof(uint16_t));
+        uint16_t *rights = malloc(packet_count * sizeof(uint16_t));
+        uint16_t *bottoms = malloc(packet_count * sizeof(uint16_t));
+        uint16_t *lefts = malloc(packet_count * sizeof(uint16_t));
+
+        for (int i = 0; i < packet_count; i++) {
+            tops[i] = packets[i].top;
+            rights[i] = packets[i].right;
+            bottoms[i] = packets[i].bottom;
+            lefts[i] = packets[i].left;
+        }
+
+        // Normalize each dimension independently (54,55,56 -> 55)
+        normalize_dimension_clusters(tops, packet_count);
+        normalize_dimension_clusters(rights, packet_count);
+        normalize_dimension_clusters(bottoms, packet_count);
+        normalize_dimension_clusters(lefts, packet_count);
+
+        // Write normalized values back to packets
+        for (int i = 0; i < packet_count; i++) {
+            packets[i].top = tops[i];
+            packets[i].right = rights[i];
+            packets[i].bottom = bottoms[i];
+            packets[i].left = lefts[i];
+        }
+
+        free(tops);
+        free(rights);
+        free(bottoms);
+        free(lefts);
+    }
+
+    // Step 4: Emit normalized packets to file
+    for (int i = 0; i < packet_count; i++) {
+        write_screen_mask_packet(output, packets[i].frame_num,
+                                packets[i].top, packets[i].right,
+                                packets[i].bottom, packets[i].left);
+
+        if (enc->verbose) {
+            printf("  Frame %d: Screen mask t=%u r=%u b=%u l=%u (normalized%s)\n",
+                   packets[i].frame_num, packets[i].top, packets[i].right,
+                   packets[i].bottom, packets[i].left,
+                   i == 0 ? ", initial geometry" : "");
+        }
+    }
+
+    if (packet_count > 0) {
+        printf("Wrote %d screen masking packet(s) (median + clustering)\n", packet_count);
+    }
+
+    free(packets);
+    free(geometries);
+
+#undef MEDIAN_WINDOW_SIZE
 #undef CHANGE_THRESHOLD
 #undef SKIP_INITIAL_FRAMES
 }
