@@ -3,8 +3,9 @@
 
 CC = gcc
 CXX = g++
-CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE
-CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE
+CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE #-fsanitize=address
+CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE #-fsanitize=address
+DBGFLAGS = #-fsanitize=address
 
 # Zstd flags (use pkg-config if available, fallback for cross-platform compatibility)
 ZSTD_CFLAGS = $(shell pkg-config --cflags libzstd 2>/dev/null || echo "")
@@ -33,13 +34,13 @@ tav: encoder_tav.c encoder_tad.c encoder_tav_opencv.cpp
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav.c -o encoder_tav.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad.c -o encoder_tad.o
 	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav_opencv.cpp -o encoder_tav_opencv.o
-	$(CXX) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
+	$(CXX) $(DBGFLAGS) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
 
 tav_decoder: decoder_tav.c decoder_tad.c decoder_tad.h
 	rm -f decoder_tav decoder_tav.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -DTAD_DECODER_LIB -c decoder_tad.c -o decoder_tad.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c decoder_tav.c -o decoder_tav.o
-	$(CC) -o decoder_tav decoder_tav.o decoder_tad.o $(LIBS)
+	$(CC) $(DBGFLAGS) -o decoder_tav decoder_tav.o decoder_tad.o $(LIBS)
 
 tav_inspector: tav_inspector.c
 	rm -f tav_inspector
@@ -50,7 +51,7 @@ encoder_tad: encoder_tad_standalone.c encoder_tad.c encoder_tad.h
 	rm -f encoder_tad encoder_tad_standalone.o encoder_tad.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad.c -o encoder_tad.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c encoder_tad_standalone.c -o encoder_tad_standalone.o
-	$(CC) -o encoder_tad encoder_tad_standalone.o encoder_tad.o $(LIBS)
+	$(CC) $(DBGFLAGS) -o encoder_tad encoder_tad_standalone.o encoder_tad.o $(LIBS)
 
 decoder_tad: decoder_tad.c
 	rm -f decoder_tad

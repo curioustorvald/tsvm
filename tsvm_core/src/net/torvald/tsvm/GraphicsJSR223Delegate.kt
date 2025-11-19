@@ -4714,23 +4714,119 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
+     * Peek at EZBC dimensions without decoding
+     * Reads width and height from the EZBC bitstream header
+     *
+     * @param compressedData EZBC frame data
+     * @param compressedOffset Offset to EZBC channel data
+     * @param channelLayout Channel layout to find Y channel
+     * @return Pair of (width, height) or null if unable to read
+     */
+    private fun ezbc_peek_dimensions(compressedData: ByteArray, compressedOffset: Int, channelLayout: Int): Pair<Int, Int>? {
+        val hasY = (channelLayout and 4) == 0
+        if (!hasY) return null  // Need Y channel to get dimensions
+
+        try {
+            // Read Y channel size header (4 bytes)
+            val size = ((compressedData[compressedOffset].toInt() and 0xFF) or
+                       ((compressedData[compressedOffset + 1].toInt() and 0xFF) shl 8) or
+                       ((compressedData[compressedOffset + 2].toInt() and 0xFF) shl 16) or
+                       ((compressedData[compressedOffset + 3].toInt() and 0xFF) shl 24))
+
+            if (size < 6) return null  // Too small for EZBC header
+
+            // Parse EZBC bitstream header (skip MSB bitplane, read width/height)
+            val ezbc_offset = compressedOffset + 4
+            var bytePos = ezbc_offset
+            var bitPos = 0
+
+            fun readBits(numBits: Int): Int {
+                var result = 0
+                for (i in 0 until numBits) {
+                    if (bytePos >= ezbc_offset + size) return 0
+                    val bit = (compressedData[bytePos].toInt() shr bitPos) and 1
+                    result = result or (bit shl i)
+                    bitPos++
+                    if (bitPos == 8) {
+                        bitPos = 0
+                        bytePos++
+                    }
+                }
+                return result
+            }
+
+            // Read header: MSB bitplane (8 bits), width (16 bits), height (16 bits)
+            readBits(8)  // Skip MSB bitplane
+            val width = readBits(16)
+            val height = readBits(16)
+
+            return if (width > 0 && height > 0) Pair(width, height) else null
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    /**
+     * Result of EZBC GOP decoding with actual dimensions (for crop encoding support)
+     */
+    data class EZBCGopResult(
+        val coeffs: Array<Array<ShortArray>>,
+        val width: Int,
+        val height: Int
+    )
+
+    /**
      * Reconstruct per-frame coefficients from unified GOP block (EZBC format)
      * Format: [frame0_size(4)][frame0_ezbc][frame1_size(4)][frame1_ezbc]...
      *
+     * With crop encoding, GOP dimensions may differ from full frame size.
+     * This function detects the actual dimensions from EZBC headers.
+     *
      * @param decompressedData Unified EZBC block data (after Zstd decompression)
      * @param numFrames Number of frames in GOP
-     * @param numPixels Pixels per frame (width × height)
+     * @param numPixels Pixels per frame for full frame (width × height)
      * @param channelLayout Channel layout (0=YCoCg, 2=Y-only, etc)
-     * @return Array of [frame][channel] where channel: 0=Y, 1=Co, 2=Cg
+     * @param fullWidth Full frame width (for crop detection)
+     * @param fullHeight Full frame height (for crop detection)
+     * @return EZBCGopResult with coeffs array and actual GOP dimensions
      */
     private fun tavPostprocessGopEZBC(
         decompressedData: ByteArray,
         numFrames: Int,
         numPixels: Int,
-        channelLayout: Int
-    ): Array<Array<ShortArray>> {
-        // Allocate output arrays
-        val output = Array(numFrames) { Array(3) { ShortArray(numPixels) } }
+        channelLayout: Int,
+        fullWidth: Int,
+        fullHeight: Int
+    ): EZBCGopResult {
+        // Peek at first frame's EZBC dimensions to detect crop encoding
+        var actualWidth = fullWidth
+        var actualHeight = fullHeight
+        var actualPixels = numPixels
+
+        if (decompressedData.size >= 8) {
+            // Read first frame size
+            val firstFrameSize = ((decompressedData[0].toInt() and 0xFF) or
+                                 ((decompressedData[1].toInt() and 0xFF) shl 8) or
+                                 ((decompressedData[2].toInt() and 0xFF) shl 16) or
+                                 ((decompressedData[3].toInt() and 0xFF) shl 24))
+
+            if (4 + firstFrameSize <= decompressedData.size) {
+                // Peek at EZBC dimensions from first frame's Y channel
+                val dims = ezbc_peek_dimensions(decompressedData, 4, channelLayout)
+                if (dims != null) {
+                    actualWidth = dims.first
+                    actualHeight = dims.second
+                    actualPixels = actualWidth * actualHeight
+
+                    if (actualPixels != numPixels) {
+                        println("[TAV-GOP-EZBC] Detected crop encoding: GOP ${actualWidth}x${actualHeight} (${actualPixels} px) vs full frame ${fullWidth}x${fullHeight} (${numPixels} px)")
+                    }
+                }
+            }
+        }
+
+        // Allocate output arrays with actual GOP dimensions
+        val output = Array(numFrames) { Array(3) { ShortArray(actualPixels) } }
 
         var offset = 0
         for (frame in 0 until numFrames) {
@@ -4745,39 +4841,52 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
             if (offset + frameSize > decompressedData.size) break
 
-            // Decode this frame with EZBC
+            // Decode this frame with EZBC using actual GOP dimensions
             postprocessCoefficientsEZBC(
-                decompressedData, offset, numPixels, channelLayout,
+                decompressedData, offset, actualPixels, channelLayout,
                 output[frame][0], output[frame][1], output[frame][2], null
             )
 
             offset += frameSize
         }
 
-        return output
+        return EZBCGopResult(output, actualWidth, actualHeight)
     }
+
+    /**
+     * Result of GOP decoding with actual dimensions (for crop encoding support)
+     */
+    data class GopDecodeResult(
+        val isEZBC: Boolean,
+        val coeffs: Array<Array<ShortArray>>,
+        val width: Int,
+        val height: Int
+    )
 
     /**
      * Auto-detecting GOP postprocessor
      * Detects EZBC vs twobit-map format and calls appropriate decoder
+     * Returns actual GOP dimensions (may differ from full frame with crop encoding)
      */
     private fun tavPostprocessGopAuto(
         decompressedData: ByteArray,
         numFrames: Int,
         numPixels: Int,
         channelLayout: Int,
-        entropyCoder: Int
-    ): Pair<Boolean, Array<Array<ShortArray>>> {
+        entropyCoder: Int,
+        fullWidth: Int,
+        fullHeight: Int
+    ): GopDecodeResult {
         // Read entropy coder from header: 0 = Twobit-map, 1 = EZBC
         val isEZBC = (entropyCoder == 1)
 
-        val data = if (isEZBC) {
-            tavPostprocessGopEZBC(decompressedData, numFrames, numPixels, channelLayout)
+        return if (isEZBC) {
+            val result = tavPostprocessGopEZBC(decompressedData, numFrames, numPixels, channelLayout, fullWidth, fullHeight)
+            GopDecodeResult(true, result.coeffs, result.width, result.height)
         } else {
-            tavPostprocessGopUnified(decompressedData, numFrames, numPixels, channelLayout)
+            val coeffs = tavPostprocessGopUnified(decompressedData, numFrames, numPixels, channelLayout)
+            GopDecodeResult(false, coeffs, fullWidth, fullHeight)
         }
-
-        return Pair(isEZBC, data)
     }
 
     // TAV Simulated overlapping tiles constants (must match encoder)
@@ -6446,21 +6555,33 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
 
         // Step 2: Postprocess unified block to per-frame coefficients
-        val (isEZBCMode, quantizedCoeffs) = tavPostprocessGopAuto(
+        // With crop encoding, GOP dimensions may differ from full frame
+        val gopResult = tavPostprocessGopAuto(
             decompressedData,
             gopSize,
             outputPixels,
             channelLayout,
-            entropyCoder
+            entropyCoder,
+            width,
+            height
         )
 
-        // Step 3: Allocate GOP buffers for float coefficients (expanded canvas size)
-        val gopY = Array(gopSize) { FloatArray(outputPixels) }
-        val gopCo = Array(gopSize) { FloatArray(outputPixels) }
-        val gopCg = Array(gopSize) { FloatArray(outputPixels) }
+        val isEZBCMode = gopResult.isEZBC
+        val quantizedCoeffs = gopResult.coeffs
+        val gopWidth = gopResult.width
+        val gopHeight = gopResult.height
+        val gopPixels = gopWidth * gopHeight
 
-        // Step 4: Calculate subband layout for expanded canvas
-        val subbands = calculateSubbandLayout(width, height, spatialLevels)
+        // Detect crop encoding
+        val isCropEncoded = (gopWidth != width || gopHeight != height)
+
+        // Step 3: Allocate GOP buffers for float coefficients (GOP dimensions)
+        val gopY = Array(gopSize) { FloatArray(gopPixels) }
+        val gopCo = Array(gopSize) { FloatArray(gopPixels) }
+        val gopCg = Array(gopSize) { FloatArray(gopPixels) }
+
+        // Step 4: Calculate subband layout for GOP dimensions (may be cropped)
+        val subbands = calculateSubbandLayout(gopWidth, gopHeight, spatialLevels)
 
         // Step 5: Dequantize with temporal-spatial scaling
         for (t in 0 until gopSize) {
@@ -6503,38 +6624,56 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
         // Step 5.5: Remove grain synthesis from Y channel for each GOP frame
         // This must happen after dequantization but before inverse DWT
+        // Use GOP dimensions (may be cropped)
         for (t in 0 until gopSize) {
             removeGrainSynthesisDecoder(
-                gopY[t], width, height,
+                gopY[t], gopWidth, gopHeight,
                 rngFrameTick.getAndAdd(1) + t,
                 subbands, qIndex
             )
         }
 
-        // Step 6: Apply inverse 3D DWT
-        tavApplyInverse3DDWT(gopY, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCo, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
-        tavApplyInverse3DDWT(gopCg, width, height, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        // Step 6: Apply inverse 3D DWT using GOP dimensions (may be cropped)
+        tavApplyInverse3DDWT(gopY, gopWidth, gopHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCo, gopWidth, gopHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
+        tavApplyInverse3DDWT(gopCg, gopWidth, gopHeight, gopSize, spatialLevels, temporalLevels, spatialFilter)
 
-        // Step 8: Crop and convert to RGB, write directly to videoBuffer
+        // Step 8: Convert to RGB and composite to full frame
+        // With crop encoding, center the cropped frame and fill letterbox areas with black
+        val maskTop = if (isCropEncoded && gopHeight < height) (height - gopHeight) / 2 else 0
+        val maskLeft = if (isCropEncoded && gopWidth < width) (width - gopWidth) / 2 else 0
+
         for (t in 0 until gopSize) {
             val videoBufferOffset = bufferOffset + (t * frameSize)  // Each frame sequentially, starting at bufferOffset
 
-            for (py in 0 until height) {
-                for (px in 0 until width) {
-                    // Destination pixel in videoBuffer
-                    val outIdx = py * width + px
-                    val offset = videoBufferOffset + outIdx * 3L
+            // Fill entire frame with black (for letterbox/pillarbox areas)
+            if (isCropEncoded) {
+                for (i in 0 until (width * height * 3L)) {
+                    gpu.videoBuffer[videoBufferOffset + i] = 0
+                }
+            }
 
-                    val yVal = gopY[t][outIdx]
-                    val co = gopCo[t][outIdx]
-                    val cg = gopCg[t][outIdx]
+            // Write cropped content to centered position
+            for (py in 0 until gopHeight) {
+                for (px in 0 until gopWidth) {
+                    // Source pixel from GOP
+                    val srcIdx = py * gopWidth + px
+
+                    val yVal = gopY[t][srcIdx]
+                    val co = gopCo[t][srcIdx]
+                    val cg = gopCg[t][srcIdx]
 
                     // YCoCg-R to RGB conversion
                     val tmp = yVal - (cg / 2.0f)
                     val g = cg + tmp
                     val b = tmp - (co / 2.0f)
                     val r = b + co
+
+                    // Destination pixel in full frame (with centering offset)
+                    val dstY = py + maskTop
+                    val dstX = px + maskLeft
+                    val dstIdx = dstY * width + dstX
+                    val offset = videoBufferOffset + dstIdx * 3L
 
                     // Clamp and write to videoBuffer
                     gpu.videoBuffer[offset + 0] = r.roundToInt().coerceIn(0, 255).toByte()

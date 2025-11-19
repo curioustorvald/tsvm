@@ -214,6 +214,17 @@ typedef struct gop_boundary {
     int start_frame;
     int end_frame;
     int num_frames;
+
+    // Phase 2: GOP-level geometry tracking for crop encoding
+    int max_active_width;      // Maximum active width across all frames in this GOP
+    int max_active_height;     // Maximum active height across all frames in this GOP
+    uint16_t mask_top;         // Representative mask geometry for this GOP
+    uint16_t mask_right;       // (uses geometry from first frame, or common geometry)
+    uint16_t mask_bottom;
+    uint16_t mask_left;
+    int geometry_changes;      // Count of geometry changes within this GOP
+    int enable_crop_encoding;  // 1 if crop encoding active for this GOP
+
     struct gop_boundary *next;
 } gop_boundary_t;
 
@@ -616,8 +627,11 @@ static size_t encode_channel_ezbc(int16_t *coeffs, size_t count, int width, int 
                 total_sign_bits_written, total_refinement_bits_written);
     }
 
+    // Free all queues (including the last next_* queues created in final iteration)
     queue_free(&insignificant_queue);
     queue_free(&significant_queue);
+    queue_free(&next_insignificant);
+    queue_free(&next_significant);
     free(states);
 
     size_t final_size = bitstream_size(&bs);
@@ -1813,6 +1827,16 @@ typedef struct tav_encoder_s {
     int pcm8_audio; // 1 = use 8-bit PCM audio (packet 0x21), 0 = use MP2 (default)
     int tad_audio; // 1 = use TAD audio (packet 0x24), 0 = use MP2/PCM8 (default, quality follows quality_level)
     int enable_letterbox_detect; // 1 = detect and emit letterbox/pillarbox packets (default), 0 = disable
+    int enable_crop_encoding;    // 1 = encode cropped active region only (Phase 2), 0 = encode full frame (default)
+
+    // Active region tracking (for Phase 2 crop encoding)
+    uint16_t active_mask_top, active_mask_right, active_mask_bottom, active_mask_left;
+    int active_width, active_height;  // Dimensions of active region (width - left - right, height - top - bottom)
+
+    // Encoding dimensions (active region when crop encoding, full frame otherwise)
+    // IMPORTANT: width and height are ALWAYS full frame dimensions (never change them!)
+    //            encoding_width and encoding_height are the dimensions actually encoded
+    int encoding_width, encoding_height;
 
     // Frame buffers - ping-pong implementation
     uint8_t *frame_rgb[2];      // [0] and [1] alternate between current and previous
@@ -1830,6 +1854,8 @@ typedef struct tav_encoder_s {
     int enable_temporal_dwt;    // Flag to enable temporal DWT (default: 0 for backward compatibility)
     int temporal_gop_capacity;            // Maximum GOP size (typically 16)
     int temporal_gop_frame_count;         // Current number of frames accumulated in GOP
+    int temporal_gop_width;               // Width of frames in current GOP (for crop encoding)
+    int temporal_gop_height;              // Height of frames in current GOP (for crop encoding)
     uint8_t **temporal_gop_rgb_frames;    // [frame][pixel*3] - RGB data for each GOP frame
     float **temporal_gop_y_frames;        // [frame][pixel] - Y channel for each GOP frame
     float **temporal_gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
@@ -2429,11 +2455,26 @@ static tav_encoder_t* create_encoder(void) {
     enc->pcm8_audio = 0;  // Default: use MP2 audio
     enc->tad_audio = 0;  // Default: use MP2 audio (TAD quality follows quality_level)
     enc->enable_letterbox_detect = 1;  // Default: enable letterbox/pillarbox detection
+    enc->enable_crop_encoding = 0;  // Default: disabled (Phase 2 experimental)
+
+    // Active region tracking (initialized to full frame, updated when crop encoding enabled)
+    enc->active_mask_top = 0;
+    enc->active_mask_right = 0;
+    enc->active_mask_bottom = 0;
+    enc->active_mask_left = 0;
+    enc->active_width = 0;   // Will be set when first frame is processed
+    enc->active_height = 0;  // Will be set when first frame is processed
+
+    // Encoding dimensions (default to full frame, updated per-frame when crop encoding enabled)
+    enc->encoding_width = enc->width;
+    enc->encoding_height = enc->height;
 
     // GOP / temporal DWT settings
     enc->enable_temporal_dwt = 1;  // Mutually exclusive with use_delta_encoding
     enc->temporal_gop_capacity = TEMPORAL_GOP_SIZE;  // 24 frames
     enc->temporal_gop_frame_count = 0;
+    enc->temporal_gop_width = 0;   // Will be set when first frame is added to GOP
+    enc->temporal_gop_height = 0;  // Will be set when first frame is added to GOP
     enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 3 levels of temporal DWT (24 -> 12 -> 6 -> 3 temporal subbands)
     enc->temporal_gop_rgb_frames = NULL;
     enc->temporal_gop_y_frames = NULL;
@@ -3922,9 +3963,10 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
     }
 
     // Step 6: Preprocess coefficients (significance map compression)
+    // Phase 2: Use encoding dimensions (actual encoded size)
     int total_coeffs = frame_size * 3;  // Y + Co + Cg
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);  // Extra space for map
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->encoding_width, enc->encoding_height,
                                                                        quantised_y, quantised_co, quantised_cg,
                                                                        NULL, frame_size, enc->channel_layout,
                                                                        preprocessed);
@@ -4216,9 +4258,10 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
                                                   enc->decomp_levels, 1, 0);
 
     // Step 8: Preprocess coefficients
+    // Phase 2: Use encoding dimensions (actual encoded size)
     int total_coeffs = frame_size * 3;
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->encoding_width, enc->encoding_height,
                                                                        quantised_y, quantised_co, quantised_cg,
                                                                        NULL, frame_size, enc->channel_layout,
                                                                        preprocessed);
@@ -4449,9 +4492,10 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
                                                   enc->decomp_levels, 1, 0);
 
     // Step 8: Preprocess coefficients
+    // Phase 2: Use encoding dimensions (actual encoded size)
     int total_coeffs = frame_size * 3;
     uint8_t *preprocessed = malloc(total_coeffs * sizeof(int16_t) + 1024);
-    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
+    size_t preprocessed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->encoding_width, enc->encoding_height,
                                                                        quantised_y, quantised_co, quantised_cg,
                                                                        NULL, frame_size, enc->channel_layout,
                                                                        preprocessed);
@@ -4532,20 +4576,47 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
 // Add frame to GOP buffer
 // Returns 0 on success, -1 on error
 static int temporal_gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
-                         const float *frame_y, const float *frame_co, const float *frame_cg) {
+                         const float *frame_y, const float *frame_co, const float *frame_cg,
+                         int width, int height) {
     if (!enc->enable_temporal_dwt || enc->temporal_gop_frame_count >= enc->temporal_gop_capacity) {
         return -1;
     }
 
     int frame_idx = enc->temporal_gop_frame_count;
-    size_t frame_rgb_size = enc->width * enc->height * 3;
-    size_t frame_channel_size = enc->width * enc->height * sizeof(float);
 
-    // Copy frame data to GOP buffers
+    // On first frame, store GOP dimensions (all frames in GOP must have same dimensions)
+    if (frame_idx == 0) {
+        enc->temporal_gop_width = width;
+        enc->temporal_gop_height = height;
+    }
+
+    // Verify all frames in GOP have consistent dimensions
+    if (width != enc->temporal_gop_width || height != enc->temporal_gop_height) {
+        fprintf(stderr, "Error: GOP dimension mismatch - frame %d is %dx%d but GOP is %dx%d\n",
+                frame_idx, width, height, enc->temporal_gop_width, enc->temporal_gop_height);
+        return -1;
+    }
+
+    size_t frame_rgb_size = width * height * 3;
+    size_t frame_channel_size = width * height * sizeof(float);
+
+    // Debug logging to catch buffer overflows
+    if (enc->verbose) {
+        fprintf(stderr, "[temporal_gop_add_frame] Frame %d: copying %dx%d (%zu bytes RGB, %zu bytes per channel)\n",
+                frame_idx, width, height, frame_rgb_size, frame_channel_size);
+        fprintf(stderr, "  GOP dimensions: %dx%d, buffer was allocated for full frame: %dx%d\n",
+                enc->temporal_gop_width, enc->temporal_gop_height, enc->width, enc->height);
+    }
+
+    // Copy frame data to GOP buffers (only actual data, not full frame if cropped)
     memcpy(enc->temporal_gop_rgb_frames[frame_idx], frame_rgb, frame_rgb_size);
     memcpy(enc->temporal_gop_y_frames[frame_idx], frame_y, frame_channel_size);
     memcpy(enc->temporal_gop_co_frames[frame_idx], frame_co, frame_channel_size);
     memcpy(enc->temporal_gop_cg_frames[frame_idx], frame_cg, frame_channel_size);
+
+    if (enc->verbose) {
+        fprintf(stderr, "[temporal_gop_add_frame] Frame %d: memcpy completed successfully\n", frame_idx);
+    }
 
     // Compute block-based motion estimation if MC-EZBC is enabled
     if (enc->temporal_enable_mcezbc && frame_idx > 0) {
@@ -4554,7 +4625,7 @@ static int temporal_gop_add_frame(tav_encoder_t *enc, const uint8_t *frame_rgb,
         estimate_optical_flow_motion(
             enc->temporal_gop_y_frames[frame_idx],       // Current frame Y channel
             enc->temporal_gop_y_frames[frame_idx - 1],   // Reference frame Y channel
-            enc->width, enc->height,
+            width, height,  // Use actual GOP dimensions (may be cropped)
             enc->temporal_block_size,
             enc->temporal_gop_mvs_fwd_x[frame_idx],      // Output: forward MVs X (1/4-pixel units)
             enc->temporal_gop_mvs_fwd_y[frame_idx]       // Output: forward MVs Y (1/4-pixel units)
@@ -4604,6 +4675,8 @@ static int gop_is_full(const tav_encoder_t *enc) {
 // Reset GOP buffer
 static void gop_reset(tav_encoder_t *enc) {
     enc->temporal_gop_frame_count = 0;
+    enc->temporal_gop_width = 0;
+    enc->temporal_gop_height = 0;
 }
 
 // Check if GOP should be flushed based on pre-computed boundaries (two-pass mode)
@@ -4634,8 +4707,30 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         return 0;
     }
 
+    // Validate and debug GOP dimensions
+    if (enc->verbose) {
+        fprintf(stderr, "[gop_flush] DEBUG: GOP dimensions %dx%d, actual_gop_size=%d, capacity=%d\n",
+                enc->temporal_gop_width, enc->temporal_gop_height, actual_gop_size, enc->temporal_gop_capacity);
+    }
+
+    if (enc->temporal_gop_width <= 0 || enc->temporal_gop_height <= 0) {
+        fprintf(stderr, "Error: Invalid GOP dimensions: %dx%d (GOP has %d frames)\n",
+                enc->temporal_gop_width, enc->temporal_gop_height, actual_gop_size);
+        fprintf(stderr, "This suggests frames were not added to GOP properly. Falling back to frame dimensions.\n");
+        enc->temporal_gop_width = enc->width;
+        enc->temporal_gop_height = enc->height;
+    }
+
     // Allocate working buffers for each channel
-    int num_pixels = enc->width * enc->height;  // Will be updated if frames are cropped
+    // Phase 2: Use stored GOP dimensions (set when first frame was added to GOP)
+    // These are the actual dimensions of data in GOP buffers (cropped if crop encoding was active)
+    int num_pixels = enc->temporal_gop_width * enc->temporal_gop_height;
+
+    if (enc->verbose) {
+        fprintf(stderr, "[gop_flush] Allocating %d frames × %d pixels = %zu total floats per channel\n",
+                actual_gop_size, num_pixels, (size_t)actual_gop_size * num_pixels);
+    }
+
     float **gop_y_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **gop_co_coeffs = malloc(actual_gop_size * sizeof(float*));
     float **gop_cg_coeffs = malloc(actual_gop_size * sizeof(float*));
@@ -4645,10 +4740,18 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         gop_co_coeffs[i] = malloc(num_pixels * sizeof(float));
         gop_cg_coeffs[i] = malloc(num_pixels * sizeof(float));
 
+        if (enc->verbose && i == 0) {
+            fprintf(stderr, "[gop_flush] Allocated coefficient buffers, now copying frame data...\n");
+        }
+
         // Copy GOP frame data to working buffers
         memcpy(gop_y_coeffs[i], enc->temporal_gop_y_frames[i], num_pixels * sizeof(float));
         memcpy(gop_co_coeffs[i], enc->temporal_gop_co_frames[i], num_pixels * sizeof(float));
         memcpy(gop_cg_coeffs[i], enc->temporal_gop_cg_frames[i], num_pixels * sizeof(float));
+    }
+
+    if (enc->verbose) {
+        fprintf(stderr, "[gop_flush] Frame data copied successfully, proceeding to DWT...\n");
     }
 
     // Step 0.6: Motion compensation note
@@ -4664,29 +4767,72 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
 
     // Step 1: For single-frame GOP, skip temporal DWT and use traditional I-frame path
     if (actual_gop_size == 1) {
+        if (enc->verbose) {
+            fprintf(stderr, "[gop_flush] Single-frame GOP, applying 2D spatial DWT only\n");
+        }
         // Apply only 2D spatial DWT (no temporal transform for single frame)
-        // Use cropped dimensions (will be full size if no motion)
-        dwt_2d_forward_flexible(enc, gop_y_coeffs[0], enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(enc, gop_co_coeffs[0], enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-        dwt_2d_forward_flexible(enc, gop_cg_coeffs[0], enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+        // Phase 2: Use stored GOP dimensions (actual data size in buffers)
+        dwt_2d_forward_flexible(enc, gop_y_coeffs[0], enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_co_coeffs[0], enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, enc->wavelet_filter);
+        dwt_2d_forward_flexible(enc, gop_cg_coeffs[0], enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, enc->wavelet_filter);
     } else {
         // Multi-frame GOP: Apply 3D DWT (temporal + spatial) to each channel
         // Note: This modifies gop_*_coeffs in-place
         // Use cropped dimensions to encode only the valid region
 
         if (enc->temporal_enable_mcezbc) {
+            if (enc->verbose) {
+                fprintf(stderr, "[gop_flush] Multi-frame GOP (size=%d), applying 3D DWT with MC-EZBC\n", actual_gop_size);
+            }
             // Use MC-EZBC lifting: motion compensation integrated into lifting steps
             dwt_3d_forward_mc(enc, gop_y_coeffs, gop_co_coeffs, gop_cg_coeffs,
                              actual_gop_size, enc->decomp_levels,
                              enc->temporal_decomp_levels, enc->wavelet_filter);
         } else {
+            if (enc->verbose) {
+                fprintf(stderr, "[gop_flush] Multi-frame GOP (size=%d), applying traditional 3D DWT\n", actual_gop_size);
+            }
             // Use traditional 3D DWT with pre-aligned frames (translation-only)
-            dwt_3d_forward(enc, gop_y_coeffs, enc->width, enc->height, actual_gop_size,
+            // Phase 2: Use stored GOP dimensions (actual data size in buffers)
+
+            // CRITICAL FIX: Temporarily override enc->widths/heights arrays for cropped dimensions
+            // dwt_2d_forward_flexible() uses these arrays, which were initialized with full frame dimensions
+            // Save original arrays
+            int array_size = enc->decomp_levels + 2;
+            int *saved_widths = malloc(array_size * sizeof(int));
+            int *saved_heights = malloc(array_size * sizeof(int));
+            memcpy(saved_widths, enc->widths, array_size * sizeof(int));
+            memcpy(saved_heights, enc->heights, array_size * sizeof(int));
+
+            // Recalculate for cropped dimensions
+            enc->widths[0] = enc->temporal_gop_width;
+            enc->heights[0] = enc->temporal_gop_height;
+            for (int i = 1; i < array_size; i++) {
+                enc->widths[i] = (enc->widths[i - 1] + 1) / 2;
+                enc->heights[i] = (enc->heights[i - 1] + 1) / 2;
+            }
+
+            if (enc->verbose) {
+                fprintf(stderr, "[gop_flush] Recalculated dimension arrays for cropped size: level 0 = %dx%d\n",
+                        enc->widths[0], enc->heights[0]);
+            }
+
+            dwt_3d_forward(enc, gop_y_coeffs, enc->temporal_gop_width, enc->temporal_gop_height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-            dwt_3d_forward(enc, gop_co_coeffs, enc->width, enc->height, actual_gop_size,
+            dwt_3d_forward(enc, gop_co_coeffs, enc->temporal_gop_width, enc->temporal_gop_height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
-            dwt_3d_forward(enc, gop_cg_coeffs, enc->width, enc->height, actual_gop_size,
+            dwt_3d_forward(enc, gop_cg_coeffs, enc->temporal_gop_width, enc->temporal_gop_height, actual_gop_size,
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
+
+            // Restore original arrays
+            memcpy(enc->widths, saved_widths, array_size * sizeof(int));
+            memcpy(enc->heights, saved_heights, array_size * sizeof(int));
+            free(saved_widths);
+            free(saved_heights);
+
+            if (enc->verbose) {
+                fprintf(stderr, "[gop_flush] 3D DWT completed, restored original dimension arrays\n");
+            }
         }
     }
 
@@ -4744,9 +4890,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
         fwrite(&packet_type, 1, 1, output);
         total_bytes_written += 1;
 
-        // Allocate buffer for uncompressed tile data
-        // Use same format as compress_and_write_frame: serialise_tile_data
-        const size_t max_tile_size = 4 + (num_pixels * 3 * sizeof(int16_t));
+        // Allocate buffer for tile data (with EZBC worst-case overhead)
+        // EZBC can produce more output than raw data due to headers and encoding metadata
+        // Worst case: raw data + headers (5 bytes/channel) + significance flags (1 bit/coeff)
+        // Use 3x raw size as safe upper bound to account for all EZBC overhead
+        const size_t max_tile_size = 4 + (num_pixels * 3 * sizeof(int16_t) * 3);
         uint8_t *uncompressed_buffer = malloc(max_tile_size);
 
         // Use serialise_tile_data with DWT-transformed float coefficients (before quantisation)
@@ -4907,9 +5055,11 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
                                         (num_pixels * actual_gop_size * 3 * sizeof(int16_t));
         uint8_t *preprocessed_buffer = malloc(max_preprocessed_size);
 
+        // CRITICAL: Use GOP dimensions (cropped if crop encoding active), not full frame dimensions
+        // The coefficient buffers (quant_y/co/cg) are sized for temporal_gop_width×height
         size_t preprocessed_size = preprocess_gop_unified(
             enc->preprocess_mode, quant_y, quant_co, quant_cg,
-            actual_gop_size, num_pixels, enc->width, enc->height, enc->channel_layout,
+            actual_gop_size, num_pixels, enc->temporal_gop_width, enc->temporal_gop_height, enc->channel_layout,
             preprocessed_buffer);
 
         // Compress entire GOP with Zstd (single compression for all frames)
@@ -5004,12 +5154,13 @@ static size_t gop_process_and_flush(tav_encoder_t *enc, FILE *output, int base_q
     if (!force_flush && !enc->two_pass_mode) {
         for (int i = 1; i < enc->temporal_gop_frame_count; i++) {
             // Compare consecutive frames using unified scene change detection
+            // Phase 2: Use stored GOP dimensions (actual data size in buffers)
             double avg_diff, changed_ratio;
             int is_scene_change = detect_scene_change_between_frames(
                 enc->temporal_gop_rgb_frames[i - 1],
                 enc->temporal_gop_rgb_frames[i],
-                enc->width,
-                enc->height,
+                enc->temporal_gop_width,
+                enc->temporal_gop_height,
                 &avg_diff,
                 &changed_ratio
             );
@@ -6505,9 +6656,16 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     }
 
     // Quantise and serialise DWT coefficients
+    // tile_size: actual number of coefficients to process (varies with crop encoding)
     const int tile_size = enc->monoblock ?
-        (enc->width * enc->height) :  // Monoblock mode: full frame
+        (enc->temporal_gop_width * enc->temporal_gop_height) :  // Monoblock mode: use stored GOP dimensions
         (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);  // Standard mode: padded tiles
+
+    // tile_stride: buffer stride for previous_coeffs indexing (constant, matches allocation)
+    const int tile_stride = enc->monoblock ?
+        (enc->width * enc->height) :  // Monoblock mode: always use full frame dimensions for stride
+        (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);  // Standard mode: padded tiles
+
     // OPTIMISATION: Use pre-allocated buffers instead of malloc/free per tile
     int16_t *quantised_y = enc->reusable_quantised_y;
     int16_t *quantised_co = enc->reusable_quantised_co;
@@ -6530,9 +6688,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         if (enc->preprocess_mode == PREPROCESS_EZBC) {
             // EZBC mode: Quantise with perceptual weighting but no normalisation (division by quantiser)
 //            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantisation without normalisation\n");
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 0, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
 
             // Print max abs for debug
             int max_y = 0, max_co = 0, max_cg = 0;
@@ -6544,21 +6702,21 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 //            fprintf(stderr, "[EZBC-QUANT-INTRA] Quantised coeff max: Y=%d, Co=%d, Cg=%d\n", max_y, max_co, max_cg);
         } else if (enc->perceptual_tuning) {
             // Perceptual quantisation: EXACTLY like uniform but with per-coefficient weights
-            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->width, enc->height, enc->decomp_levels, 0, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->width, enc->height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 0, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
         } else {
             // Legacy uniform quantisation
-            quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 0);
-            quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
-            quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->dead_zone_threshold, enc->width, enc->height, enc->decomp_levels, 1);
+            quantise_dwt_coefficients((float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->dead_zone_threshold, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 0);
+            quantise_dwt_coefficients((float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->dead_zone_threshold, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1);
+            quantise_dwt_coefficients((float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->dead_zone_threshold, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1);
         }
 
         // Store current coefficients for future delta reference
         int tile_idx = tile_y * enc->tiles_x + tile_x;
-        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
-        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
-        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
+        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_stride);
+        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_stride);
+        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_stride);
         memcpy(prev_y, tile_y_data, tile_size * sizeof(float));
         memcpy(prev_co, tile_co_data, tile_size * sizeof(float));
         memcpy(prev_cg, tile_cg_data, tile_size * sizeof(float));
@@ -6566,9 +6724,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     } else if (mode == TAV_MODE_DELTA) {
         // DELTA mode: compute coefficient deltas and quantise them
         int tile_idx = tile_y * enc->tiles_x + tile_x;
-        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_size);
-        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_size);
-        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_size);
+        float *prev_y = enc->previous_coeffs_y + (tile_idx * tile_stride);
+        float *prev_co = enc->previous_coeffs_co + (tile_idx * tile_stride);
+        float *prev_cg = enc->previous_coeffs_cg + (tile_idx * tile_stride);
 
         // Compute deltas: delta = current - previous
         float *delta_y = malloc(tile_size * sizeof(float));
@@ -6616,8 +6774,8 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         if (enc->delta_haar_levels > 0) {
             int tile_width, tile_height;
             if (enc->monoblock) {
-                tile_width = enc->width;
-                tile_height = enc->height;
+                tile_width = enc->temporal_gop_width;
+                tile_height = enc->temporal_gop_height;
             } else {
                 tile_width = PADDED_TILE_SIZE_X;
                 tile_height = PADDED_TILE_SIZE_Y;
@@ -6649,7 +6807,8 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
     }*/
 
     // Preprocess and write quantised coefficients using variable channel layout concatenated significance maps
-    size_t total_compressed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->width, enc->height,
+    // Phase 2: Use stored GOP dimensions (actual data size in buffers)
+    size_t total_compressed_size = preprocess_coefficients_variable_layout(enc->preprocess_mode, enc->temporal_gop_width, enc->temporal_gop_height,
                                                                            quantised_y, quantised_co, quantised_cg, NULL,
                                                                            tile_size, enc->channel_layout, buffer + offset);
     offset += total_compressed_size;
@@ -6704,10 +6863,12 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
     // Calculate total uncompressed size
+    // Use encoding dimensions (cropped when crop encoding is enabled, full frame otherwise)
     const size_t coeff_count = enc->monoblock ?
-        (enc->width * enc->height) :
+        (enc->encoding_width * enc->encoding_height) :
         (PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y);
-    const size_t max_tile_size = 4 + (coeff_count * 3 * sizeof(int16_t));  // header + 3 channels of coefficients
+    // Account for EZBC worst-case overhead (use 3x raw size)
+    const size_t max_tile_size = 4 + (coeff_count * 3 * sizeof(int16_t) * 3);
     const size_t total_uncompressed_size = enc->tiles_x * enc->tiles_y * max_tile_size;
 
     // Allocate buffer for uncompressed tile data
@@ -6749,8 +6910,8 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             // Determine tile data size and allocate buffers
             int tile_data_size;
             if (enc->monoblock) {
-                // Monoblock mode: entire frame
-                tile_data_size = enc->width * enc->height;
+                // Monoblock mode: entire frame (use encoding dimensions)
+                tile_data_size = enc->encoding_width * enc->encoding_height;
             } else {
                 // Standard mode: padded tiles (344x288)
                 tile_data_size = PADDED_TILE_SIZE_X * PADDED_TILE_SIZE_Y;
@@ -6798,10 +6959,10 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             // Apply DWT transform to each channel (skip for SKIP mode)
             if (mode != TAV_MODE_SKIP) {
                 if (enc->monoblock) {
-                    // Monoblock mode: transform entire frame
-                    dwt_2d_forward_flexible(enc, tile_y_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-                    dwt_2d_forward_flexible(enc, tile_co_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
-                    dwt_2d_forward_flexible(enc, tile_cg_data, enc->width, enc->height, enc->decomp_levels, enc->wavelet_filter);
+                    // Monoblock mode: transform entire frame (use encoding dimensions)
+                    dwt_2d_forward_flexible(enc, tile_y_data, enc->encoding_width, enc->encoding_height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(enc, tile_co_data, enc->encoding_width, enc->encoding_height, enc->decomp_levels, enc->wavelet_filter);
+                    dwt_2d_forward_flexible(enc, tile_cg_data, enc->encoding_width, enc->encoding_height, enc->decomp_levels, enc->wavelet_filter);
                 } else {
                     // Standard mode: transform padded tiles (344x288)
                     dwt_2d_forward_padded(tile_y_data, enc->decomp_levels, enc->wavelet_filter);
@@ -8189,6 +8350,85 @@ static float calculate_sobel_magnitude(const uint8_t *frame_rgb, int width, int 
     return sqrtf(gx * gx + gy * gy);
 }
 
+// Extract active picture region from full frame based on screen mask geometry
+// Returns newly allocated buffer containing only the active region (caller must free)
+// Active dimensions: active_width = width - left - right, active_height = height - top - bottom
+static uint8_t* extract_active_region(const uint8_t *full_rgb, int width, int height,
+                                      uint16_t top, uint16_t right, uint16_t bottom, uint16_t left,
+                                      int *out_active_width, int *out_active_height) {
+    // Calculate active region dimensions
+    int active_width = width - left - right;
+    int active_height = height - top - bottom;
+
+    // Validate dimensions
+    if (active_width <= 0 || active_height <= 0) {
+        fprintf(stderr, "Error: Invalid active region dimensions (%dx%d)\n",
+                active_width, active_height);
+        return NULL;
+    }
+
+    // Allocate buffer for active region (RGB, 3 bytes per pixel)
+    size_t active_size = active_width * active_height * 3;
+    uint8_t *active_rgb = malloc(active_size);
+    if (!active_rgb) {
+        fprintf(stderr, "Error: Failed to allocate active region buffer (%zu bytes)\n", active_size);
+        return NULL;
+    }
+
+    // Extract active region pixels
+    // Source region: [left, width-right) x [top, height-bottom)
+    for (int y = 0; y < active_height; y++) {
+        int src_y = top + y;
+        for (int x = 0; x < active_width; x++) {
+            int src_x = left + x;
+
+            // Copy RGB pixel from full frame to active region
+            int src_idx = (src_y * width + src_x) * 3;
+            int dst_idx = (y * active_width + x) * 3;
+
+            active_rgb[dst_idx + 0] = full_rgb[src_idx + 0];  // R
+            active_rgb[dst_idx + 1] = full_rgb[src_idx + 1];  // G
+            active_rgb[dst_idx + 2] = full_rgb[src_idx + 2];  // B
+        }
+    }
+
+    // Output active dimensions
+    if (out_active_width) *out_active_width = active_width;
+    if (out_active_height) *out_active_height = active_height;
+
+    return active_rgb;
+}
+
+// Composite active region back to full frame (inverse of extract_active_region)
+// Fills masked regions with black (0,0,0) and copies active region to correct position
+// Used for testing roundtrip and decoder reconstruction
+static void composite_to_full_frame(const uint8_t *active_rgb, int active_width, int active_height,
+                                   uint8_t *full_rgb, int width, int height,
+                                   uint16_t top, uint16_t right, uint16_t bottom, uint16_t left) {
+    // Fill entire frame with black first
+    memset(full_rgb, 0, width * height * 3);
+
+    // Copy active region to correct position
+    // Destination region: [left, width-right) x [top, height-bottom)
+    for (int y = 0; y < active_height; y++) {
+        int dst_y = top + y;
+        if (dst_y >= height) break;  // Safety check
+
+        for (int x = 0; x < active_width; x++) {
+            int dst_x = left + x;
+            if (dst_x >= width) break;  // Safety check
+
+            // Copy RGB pixel from active region to full frame
+            int src_idx = (y * active_width + x) * 3;
+            int dst_idx = (dst_y * width + dst_x) * 3;
+
+            full_rgb[dst_idx + 0] = active_rgb[src_idx + 0];  // R
+            full_rgb[dst_idx + 1] = active_rgb[src_idx + 1];  // G
+            full_rgb[dst_idx + 2] = active_rgb[src_idx + 2];  // B
+        }
+    }
+}
+
 // Apply symmetric cropping and suppress simultaneous letterbox+pillarbox
 // ALWAYS makes left=right and top=bottom (perfect symmetry)
 // When BOTH letterbox and pillarbox are detected simultaneously, suppress one based on current state
@@ -9085,8 +9325,9 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
     double packets_per_frame = frame_audio_time / PACKET_AUDIO_TIME;
 
     // Allocate MP2 buffer if needed
+    // Note: MP2 packets can vary by ±1 byte due to padding, so allocate extra space
     if (!enc->mp2_buffer) {
-        enc->mp2_buffer_size = enc->mp2_packet_size * 2;  // Space for multiple packets
+        enc->mp2_buffer_size = (enc->mp2_packet_size + 1) * 2;  // Extra space for padding variations
         enc->mp2_buffer = malloc(enc->mp2_buffer_size);
         if (!enc->mp2_buffer) {
             fprintf(stderr, "Failed to allocate audio buffer\n");
@@ -9128,11 +9369,27 @@ static int process_audio(tav_encoder_t *enc, int frame_num, FILE *output) {
 
     // Insert the calculated number of audio packets
     for (int q = 0; q < packets_to_insert; q++) {
-        size_t bytes_to_read = enc->mp2_packet_size;
+        // Peek at header to get actual packet size (MP2 packets can vary by ±1 byte)
+        long pos = ftell(enc->mp2_file);
+        uint8_t header[4];
+        if (fread(header, 1, 4, enc->mp2_file) != 4) break;
+        fseek(enc->mp2_file, pos, SEEK_SET);  // Rewind to re-read with full packet
+
+        int actual_packet_size = get_mp2_packet_size(header);
+        size_t bytes_to_read = actual_packet_size;
+
+        // Clamp to remaining audio
         if (bytes_to_read > enc->audio_remaining) {
             bytes_to_read = enc->audio_remaining;
         }
 
+        // Sanity check buffer size
+        if (bytes_to_read > enc->mp2_buffer_size) {
+            fprintf(stderr, "ERROR: Packet size %zu exceeds buffer size %zu\n", bytes_to_read, enc->mp2_buffer_size);
+            break;
+        }
+
+        // Read full packet including header
         size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
         if (bytes_read == 0) break;
 
@@ -9248,8 +9505,9 @@ static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num
     double packets_per_frame = frame_audio_time / PACKET_AUDIO_TIME;
 
     // Allocate MP2 buffer if needed
+    // Note: MP2 packets can vary by ±1 byte due to padding, so allocate extra space
     if (!enc->mp2_buffer) {
-        enc->mp2_buffer_size = enc->mp2_packet_size * 2;
+        enc->mp2_buffer_size = (enc->mp2_packet_size + 1) * 2;  // Extra space for padding variations
         enc->mp2_buffer = malloc(enc->mp2_buffer_size);
         if (!enc->mp2_buffer) {
             fprintf(stderr, "Failed to allocate audio buffer\n");
@@ -9281,11 +9539,27 @@ static int process_audio_for_gop(tav_encoder_t *enc, int *frame_numbers, int num
 
     // Emit all audio packets for this GOP
     for (int q = 0; q < total_packets_to_insert; q++) {
-        size_t bytes_to_read = enc->mp2_packet_size;
+        // Peek at header to get actual packet size (MP2 packets can vary by ±1 byte)
+        long pos = ftell(enc->mp2_file);
+        uint8_t header[4];
+        if (fread(header, 1, 4, enc->mp2_file) != 4) break;
+        fseek(enc->mp2_file, pos, SEEK_SET);  // Rewind to re-read with full packet
+
+        int actual_packet_size = get_mp2_packet_size(header);
+        size_t bytes_to_read = actual_packet_size;
+
+        // Clamp to remaining audio
         if (bytes_to_read > enc->audio_remaining) {
             bytes_to_read = enc->audio_remaining;
         }
 
+        // Sanity check buffer size
+        if (bytes_to_read > enc->mp2_buffer_size) {
+            fprintf(stderr, "ERROR: GOP packet size %zu exceeds buffer size %zu\n", bytes_to_read, enc->mp2_buffer_size);
+            break;
+        }
+
+        // Read full packet including header
         size_t bytes_read = fread(enc->mp2_buffer, 1, bytes_to_read, enc->mp2_file);
         if (bytes_read == 0) break;
 
@@ -9939,6 +10213,112 @@ static gop_boundary_t* build_gop_boundaries(const frame_analysis_t *analyses, in
     return head;
 }
 
+// Calculate GOP-level geometry from frame analyses (Phase 2)
+// For each GOP, finds the maximum active dimensions and tracks geometry changes
+static void calculate_gop_geometry(tav_encoder_t *enc, gop_boundary_t *gop_list,
+                                   const frame_analysis_t *analyses) {
+    if (!enc->enable_crop_encoding || !gop_list || !analyses) {
+        return;
+    }
+
+    gop_boundary_t *gop = gop_list;
+    while (gop) {
+        // Initialize with full frame dimensions
+        gop->max_active_width = 0;
+        gop->max_active_height = 0;
+        gop->geometry_changes = 0;
+        gop->enable_crop_encoding = 0;
+
+        // Track minimum letterbox values to calculate unified mask
+        // (Minimum letterbox = maximum active region)
+        uint16_t min_top = UINT16_MAX, min_right = UINT16_MAX;
+        uint16_t min_bottom = UINT16_MAX, min_left = UINT16_MAX;
+
+        // Track previous geometry for change detection
+        uint16_t prev_top = 0, prev_right = 0, prev_bottom = 0, prev_left = 0;
+        int prev_initialized = 0;
+
+        // Scan all frames in this GOP
+        for (int f = gop->start_frame; f <= gop->end_frame; f++) {
+            const frame_analysis_t *frame = &analyses[f];
+
+            // Calculate active region dimensions for this frame
+            int active_width = enc->width - frame->letterbox_left - frame->letterbox_right;
+            int active_height = enc->height - frame->letterbox_top - frame->letterbox_bottom;
+
+            // Update maximum dimensions
+            if (active_width > gop->max_active_width) {
+                gop->max_active_width = active_width;
+            }
+            if (active_height > gop->max_active_height) {
+                gop->max_active_height = active_height;
+            }
+
+            // Track minimum letterbox values (for unified mask calculation)
+            if (frame->letterbox_top < min_top) min_top = frame->letterbox_top;
+            if (frame->letterbox_right < min_right) min_right = frame->letterbox_right;
+            if (frame->letterbox_bottom < min_bottom) min_bottom = frame->letterbox_bottom;
+            if (frame->letterbox_left < min_left) min_left = frame->letterbox_left;
+
+            // Detect geometry changes
+            if (prev_initialized) {
+                if (frame->letterbox_top != prev_top ||
+                    frame->letterbox_right != prev_right ||
+                    frame->letterbox_bottom != prev_bottom ||
+                    frame->letterbox_left != prev_left) {
+                    gop->geometry_changes++;
+                }
+            }
+
+            // Update previous geometry
+            prev_top = frame->letterbox_top;
+            prev_right = frame->letterbox_right;
+            prev_bottom = frame->letterbox_bottom;
+            prev_left = frame->letterbox_left;
+            prev_initialized = 1;
+        }
+
+        // Calculate unified mask from minimum letterbox values
+        // This mask, when used with extract_active_region(), will give exactly max_active_width × max_active_height
+        gop->mask_top = (min_top == UINT16_MAX) ? 0 : min_top;
+        gop->mask_right = (min_right == UINT16_MAX) ? 0 : min_right;
+        gop->mask_bottom = (min_bottom == UINT16_MAX) ? 0 : min_bottom;
+        gop->mask_left = (min_left == UINT16_MAX) ? 0 : min_left;
+
+        // Verify that mask gives correct dimensions
+        int calculated_width = enc->width - gop->mask_left - gop->mask_right;
+        int calculated_height = enc->height - gop->mask_top - gop->mask_bottom;
+        if (calculated_width != gop->max_active_width || calculated_height != gop->max_active_height) {
+            fprintf(stderr, "WARNING: GOP %d-%d: Mask mismatch! Calculated %dx%d but max is %dx%d\n",
+                    gop->start_frame, gop->end_frame,
+                    calculated_width, calculated_height,
+                    gop->max_active_width, gop->max_active_height);
+            fprintf(stderr, "  Mask: top=%d right=%d bottom=%d left=%d\n",
+                    gop->mask_top, gop->mask_right, gop->mask_bottom, gop->mask_left);
+        }
+
+        // Decide if crop encoding should be enabled for this GOP
+        if (gop->max_active_width > 0 && gop->max_active_height > 0 &&
+            (gop->max_active_width < enc->width || gop->max_active_height < enc->height)) {
+            // There is actual cropping benefit
+            gop->enable_crop_encoding = 1;
+
+            if (enc->verbose && gop->geometry_changes > 0) {
+                printf("  GOP %d-%d: geometry changes detected (%d), using max dimensions %dx%d\n",
+                       gop->start_frame, gop->end_frame, gop->geometry_changes,
+                       gop->max_active_width, gop->max_active_height);
+            }
+        } else {
+            // No cropping benefit, use full frame dimensions
+            gop->max_active_width = enc->width;
+            gop->max_active_height = enc->height;
+            gop->enable_crop_encoding = 0;
+        }
+
+        gop = gop->next;
+    }
+}
+
 // Free GOP boundary list
 static void free_gop_boundaries(gop_boundary_t *head) {
     while (head) {
@@ -10046,6 +10426,56 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
             );
 
             enc->current_frame_rgb = saved_current;
+
+            // Phase 2 Step 1: Test crop extraction roundtrip
+            if (metrics.has_letterbox && (metrics.letterbox_top > 0 || metrics.letterbox_left > 0) && frame_num < 5) {
+                int active_width, active_height;
+
+                // Extract active region
+                uint8_t *active_rgb = extract_active_region(frame_rgb, enc->width, enc->height,
+                                                           metrics.letterbox_top,
+                                                           metrics.letterbox_right,
+                                                           metrics.letterbox_bottom,
+                                                           metrics.letterbox_left,
+                                                           &active_width, &active_height);
+
+                if (active_rgb) {
+                    // Composite back to full frame
+                    uint8_t *reconstructed = malloc(frame_rgb_size);
+                    composite_to_full_frame(active_rgb, active_width, active_height,
+                                          reconstructed, enc->width, enc->height,
+                                          metrics.letterbox_top,
+                                          metrics.letterbox_right,
+                                          metrics.letterbox_bottom,
+                                          metrics.letterbox_left);
+
+                    // Verify roundtrip (check a few pixels in active region match)
+                    int errors = 0;
+                    for (int test_y = metrics.letterbox_top; test_y < enc->height - metrics.letterbox_bottom && errors < 10; test_y += 50) {
+                        for (int test_x = metrics.letterbox_left; test_x < enc->width - metrics.letterbox_right && errors < 10; test_x += 50) {
+                            int idx = (test_y * enc->width + test_x) * 3;
+                            if (frame_rgb[idx] != reconstructed[idx] ||
+                                frame_rgb[idx+1] != reconstructed[idx+1] ||
+                                frame_rgb[idx+2] != reconstructed[idx+2]) {
+                                errors++;
+                            }
+                        }
+                    }
+
+                    if (errors == 0 && enc->verbose) {
+                        printf("Frame %d: Crop roundtrip test PASSED (active: %dx%d, mask: t=%d r=%d b=%d l=%d)\n",
+                               frame_num, active_width, active_height,
+                               metrics.letterbox_top, metrics.letterbox_right,
+                               metrics.letterbox_bottom, metrics.letterbox_left);
+                    } else if (errors > 0) {
+                        fprintf(stderr, "Frame %d: Crop roundtrip test FAILED (%d pixel errors)\n",
+                                frame_num, errors);
+                    }
+
+                    free(active_rgb);
+                    free(reconstructed);
+                }
+            }
         } else {
             metrics.has_letterbox = 0;
             metrics.letterbox_top = 0;
@@ -10099,6 +10529,11 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
         ANALYSIS_GOP_MAX_SIZE,
         enc->verbose
     );
+
+    // Calculate GOP-level geometry for crop encoding (Phase 2)
+    if (enc->enable_crop_encoding && enc->gop_boundaries) {
+        calculate_gop_geometry(enc, enc->gop_boundaries, enc->frame_analyses);
+    }
 
     // Count and print GOP statistics
     int num_gops = 0;
@@ -10232,6 +10667,7 @@ int main(int argc, char *argv[]) {
         {"raw-coeffs", no_argument, 0, 1029},
         {"single-pass", no_argument, 0, 1050},  // disable two-pass encoding with wavelet-based scene detection
         {"no-letterbox-detect", no_argument, 0, 1051},  // disable letterbox/pillarbox detection
+        {"enable-crop-encoding", no_argument, 0, 1052},  // Phase 2: encode cropped active region only (experimental)
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -10466,6 +10902,10 @@ int main(int argc, char *argv[]) {
                 enc->enable_letterbox_detect = 0;
                 printf("Letterbox/pillarbox detection disabled\n");
                 break;
+            case 1052: // --enable-crop-encoding
+                enc->enable_crop_encoding = 1;
+                printf("Phase 2 crop encoding enabled (experimental)\n");
+                break;
             case 'a':
                 int bitrate = atoi(optarg);
                 int valid_bitrate = validate_mp2_bitrate(bitrate);
@@ -10613,6 +11053,10 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        // Update encoding dimensions to match actual video dimensions (unless crop encoding changes them later)
+        enc->encoding_width = enc->width;
+        enc->encoding_height = enc->height;
+
         // Start video preprocessing pipeline
         if (start_video_conversion(enc) != 1) {
             fprintf(stderr, "Error: Failed to start video conversion\n");
@@ -10695,30 +11139,90 @@ int main(int argc, char *argv[]) {
         enc->two_pass_current_frame = 0;
 
         // Adjust GOP capacity to match maximum computed GOP size
+        int old_capacity = enc->temporal_gop_capacity;
         enc->temporal_gop_capacity = ANALYSIS_GOP_MAX_SIZE;
 
-        // Re-allocate GOP buffers with new capacity
-        enc->temporal_gop_rgb_frames = realloc(enc->temporal_gop_rgb_frames,
-                                              enc->temporal_gop_capacity * sizeof(uint8_t*));
-        enc->temporal_gop_y_frames = realloc(enc->temporal_gop_y_frames,
-                                            enc->temporal_gop_capacity * sizeof(float*));
-        enc->temporal_gop_co_frames = realloc(enc->temporal_gop_co_frames,
-                                             enc->temporal_gop_capacity * sizeof(float*));
-        enc->temporal_gop_cg_frames = realloc(enc->temporal_gop_cg_frames,
-                                             enc->temporal_gop_capacity * sizeof(float*));
-
-        // Allocate new frame buffers for expanded capacity
-        int frame_size = enc->width * enc->height;
-        for (int i = TEMPORAL_GOP_SIZE; i < ANALYSIS_GOP_MAX_SIZE; i++) {
-            enc->temporal_gop_rgb_frames[i] = malloc(frame_size * 3);
-            enc->temporal_gop_y_frames[i] = malloc(frame_size * sizeof(float));
-            enc->temporal_gop_co_frames[i] = malloc(frame_size * sizeof(float));
-            enc->temporal_gop_cg_frames[i] = malloc(frame_size * sizeof(float));
+        // Find maximum active region dimensions across all GOPs (for crop encoding)
+        int max_gop_width = enc->width;
+        int max_gop_height = enc->height;
+        if (enc->enable_crop_encoding && enc->gop_boundaries) {
+            // Traverse linked list of GOP boundaries
+            gop_boundary_t *gop = enc->gop_boundaries;
+            while (gop != NULL) {
+                if (gop->max_active_width > max_gop_width) {
+                    max_gop_width = gop->max_active_width;
+                }
+                if (gop->max_active_height > max_gop_height) {
+                    max_gop_height = gop->max_active_height;
+                }
+                gop = gop->next;
+            }
+            if (enc->verbose) {
+                printf("  Maximum GOP dimensions across all GOPs: %dx%d\n",
+                       max_gop_width, max_gop_height);
+            }
         }
 
-        if (enc->verbose) {
-            printf("  Adjusted GOP capacity from %d to %d frames\n",
-                   TEMPORAL_GOP_SIZE, ANALYSIS_GOP_MAX_SIZE);
+        // Calculate required frame buffer size
+        int frame_size = max_gop_width * max_gop_height;
+        int old_frame_size = enc->width * enc->height;
+
+        // Check if we need to reallocate (capacity changed OR frame size changed)
+        int need_realloc = (old_capacity != ANALYSIS_GOP_MAX_SIZE) || (frame_size != old_frame_size);
+
+        if (need_realloc) {
+            // Re-allocate GOP buffers with new capacity
+            uint8_t **new_rgb = realloc(enc->temporal_gop_rgb_frames,
+                                        enc->temporal_gop_capacity * sizeof(uint8_t*));
+            float **new_y = realloc(enc->temporal_gop_y_frames,
+                                   enc->temporal_gop_capacity * sizeof(float*));
+            float **new_co = realloc(enc->temporal_gop_co_frames,
+                                    enc->temporal_gop_capacity * sizeof(float*));
+            float **new_cg = realloc(enc->temporal_gop_cg_frames,
+                                    enc->temporal_gop_capacity * sizeof(float*));
+
+            if (!new_rgb || !new_y || !new_co || !new_cg) {
+                fprintf(stderr, "Error: Failed to reallocate GOP buffers\n");
+                return 1;
+            }
+
+            enc->temporal_gop_rgb_frames = new_rgb;
+            enc->temporal_gop_y_frames = new_y;
+            enc->temporal_gop_co_frames = new_co;
+            enc->temporal_gop_cg_frames = new_cg;
+
+            // Free and reallocate ALL frame buffers with correct size
+            // (not just new ones, since frame size might have changed)
+            for (int i = 0; i < old_capacity; i++) {
+                free(enc->temporal_gop_rgb_frames[i]);
+                free(enc->temporal_gop_y_frames[i]);
+                free(enc->temporal_gop_co_frames[i]);
+                free(enc->temporal_gop_cg_frames[i]);
+            }
+
+            // Allocate all frame buffers with new size
+            for (int i = 0; i < ANALYSIS_GOP_MAX_SIZE; i++) {
+                enc->temporal_gop_rgb_frames[i] = malloc(frame_size * 3);
+                enc->temporal_gop_y_frames[i] = malloc(frame_size * sizeof(float));
+                enc->temporal_gop_co_frames[i] = malloc(frame_size * sizeof(float));
+                enc->temporal_gop_cg_frames[i] = malloc(frame_size * sizeof(float));
+
+                if (!enc->temporal_gop_rgb_frames[i] || !enc->temporal_gop_y_frames[i] ||
+                    !enc->temporal_gop_co_frames[i] || !enc->temporal_gop_cg_frames[i]) {
+                    fprintf(stderr, "Error: Failed to allocate GOP frame buffer %d\n", i);
+                    return 1;
+                }
+            }
+
+            if (enc->verbose) {
+                printf("  Reallocated GOP buffers: capacity %d->%d, frame size %dx%d\n",
+                       old_capacity, ANALYSIS_GOP_MAX_SIZE, max_gop_width, max_gop_height);
+            }
+        } else {
+            if (enc->verbose) {
+                printf("  GOP buffers unchanged: capacity=%d, frame size=%dx%d\n",
+                       ANALYSIS_GOP_MAX_SIZE, max_gop_width, max_gop_height);
+            }
         }
 
         // Write all screen masking packets NOW (after first pass analysis)
@@ -10867,10 +11371,121 @@ int main(int argc, char *argv[]) {
             printf("\n");
         }*/
 
+        // Phase 2: Extract active region if crop encoding is enabled
+        uint8_t *rgb_for_encoding = enc->current_frame_rgb;
+        uint8_t *cropped_rgb = NULL;
+        int using_crop_encoding = 0;
+
+        // Reset encoding dimensions to full frame by default
+        enc->encoding_width = enc->width;
+        enc->encoding_height = enc->height;
+
+        if (enc->enable_crop_encoding && enc->enable_letterbox_detect && enc->two_pass_mode) {
+            // Phase 2: Use GOP-level dimensions for temporal DWT (3D-DWT mode)
+            // This ensures all frames in a GOP have the same encoding dimensions
+            // IMPORTANT: Always use GOP-level dimensions in temporal DWT mode, even if there's no cropping benefit,
+            // to ensure all frames in the GOP have consistent dimensions (critical for 3D DWT)
+            if (enc->enable_temporal_dwt && enc->current_gop_boundary) {
+                // GOP mode: Use maximum dimensions across entire GOP
+                // Store GOP's max dimensions (DO NOT pass by reference to extract_active_region)
+                int gop_max_w = enc->current_gop_boundary->max_active_width;
+                int gop_max_h = enc->current_gop_boundary->max_active_height;
+
+                // Calculate mask geometry to extract GOP's maximum active region
+                uint16_t mask_top = enc->current_gop_boundary->mask_top;
+                uint16_t mask_right = enc->current_gop_boundary->mask_right;
+                uint16_t mask_bottom = enc->current_gop_boundary->mask_bottom;
+                uint16_t mask_left = enc->current_gop_boundary->mask_left;
+
+                // For frames with smaller active regions, we'll extract the GOP's max region
+                // (which may include some black bars, but ensures consistent dimensions)
+                // Use temporary variables - extract_active_region will recalculate dimensions
+                int extracted_w, extracted_h;
+                cropped_rgb = extract_active_region(enc->current_frame_rgb,
+                                                    enc->width, enc->height,
+                                                    mask_top, mask_right,
+                                                    mask_bottom, mask_left,
+                                                    &extracted_w, &extracted_h);
+
+                if (cropped_rgb) {
+                    rgb_for_encoding = cropped_rgb;
+                    // Use GOP's max dimensions, not the recalculated ones
+                    enc->encoding_width = gop_max_w;
+                    enc->encoding_height = gop_max_h;
+                    using_crop_encoding = 1;
+
+                    // Store GOP-level mask geometry
+                    enc->active_mask_top = mask_top;
+                    enc->active_mask_right = mask_right;
+                    enc->active_mask_bottom = mask_bottom;
+                    enc->active_mask_left = mask_left;
+                    enc->active_width = gop_max_w;
+                    enc->active_height = gop_max_h;
+
+                    if (enc->verbose && frame_count == enc->current_gop_boundary->start_frame) {
+                        printf("GOP %d-%d: Encoding with max dimensions %dx%d (geometry changes: %d)\n",
+                               enc->current_gop_boundary->start_frame,
+                               enc->current_gop_boundary->end_frame,
+                               gop_max_w, gop_max_h,
+                               enc->current_gop_boundary->geometry_changes);
+                    }
+                }
+            }
+            // Intra-only mode or single-pass: Use per-frame dimensions
+            else if (frame_count < enc->frame_analyses_count) {
+                frame_analysis_t *analysis = &enc->frame_analyses[frame_count];
+
+                // Only crop if letterbox/pillarbox was detected
+                if (analysis->has_letterbox &&
+                    (analysis->letterbox_top > 0 || analysis->letterbox_left > 0)) {
+
+                    // Extract active region for this specific frame
+                    int active_w, active_h;
+                    cropped_rgb = extract_active_region(enc->current_frame_rgb,
+                                                        enc->width, enc->height,
+                                                        analysis->letterbox_top,
+                                                        analysis->letterbox_right,
+                                                        analysis->letterbox_bottom,
+                                                        analysis->letterbox_left,
+                                                        &active_w, &active_h);
+
+                    if (cropped_rgb) {
+                        rgb_for_encoding = cropped_rgb;
+
+                        // Set encoding dimensions to cropped size (NOT modifying enc->width/height!)
+                        enc->encoding_width = active_w;
+                        enc->encoding_height = active_h;
+                        using_crop_encoding = 1;
+
+                        // Store mask geometry for later use
+                        enc->active_mask_top = analysis->letterbox_top;
+                        enc->active_mask_right = analysis->letterbox_right;
+                        enc->active_mask_bottom = analysis->letterbox_bottom;
+                        enc->active_mask_left = analysis->letterbox_left;
+                        enc->active_width = active_w;
+                        enc->active_height = active_h;
+
+                        if (enc->verbose && frame_count < 5) {
+                            printf("Frame %d: Encoding cropped region %dx%d (mask: t=%d r=%d b=%d l=%d)\n",
+                                   frame_count, active_w, active_h,
+                                   analysis->letterbox_top, analysis->letterbox_right,
+                                   analysis->letterbox_bottom, analysis->letterbox_left);
+                        }
+                    }
+                }
+            }
+        }
+
         // Convert RGB to colour space (YCoCg-R or ICtCp)
-        rgb_to_colour_space_frame(enc, enc->current_frame_rgb,
+        // Uses either full frame or cropped region depending on crop encoding
+        rgb_to_colour_space_frame(enc, rgb_for_encoding,
                                 enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
-                                enc->width, enc->height);
+                                enc->encoding_width, enc->encoding_height);
+
+        // Clean up cropped buffer if allocated
+        if (cropped_rgb) {
+            free(cropped_rgb);
+        }
 
         // Debug: check YCoCg conversion result
         /*if (frame_count < 3) {
@@ -11018,8 +11633,10 @@ int main(int argc, char *argv[]) {
             }
 
             // Now add current frame to GOP (will be first frame of new GOP if scene change)
+            // Pass actual encoding dimensions (cropped if crop encoding is active)
             int add_result = temporal_gop_add_frame(enc, enc->current_frame_rgb,
-                                          enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg);
+                                          enc->current_frame_y, enc->current_frame_co, enc->current_frame_cg,
+                                          enc->encoding_width, enc->encoding_height);
 
             if (add_result != 0) {
                 fprintf(stderr, "Error: Failed to add frame %d to GOP buffer\n", frame_count);
