@@ -148,10 +148,10 @@ typedef enum {
 #define ANALYSIS_SUBSAMPLE_FACTOR 4  // Subsample to 1/4 resolution for speed
 #define ANALYSIS_DWT_LEVELS 3        // 3-level Haar DWT for analysis
 #define ANALYSIS_MOVING_WINDOW 30    // Moving average window (30 frames = ~1 second)
-#define ANALYSIS_STDDEV_MULTIPLIER 2.0  // Standard deviation multiplier for adaptive threshold (balanced sensitivity)
-#define ANALYSIS_LL_DIFF_MIN_THRESHOLD 2.0  // Minimum absolute threshold for LL_diff (avoid false positives)
-#define ANALYSIS_HB_RATIO_THRESHOLD 0.70  // Highband energy ratio threshold (balanced for scene cuts)
-#define ANALYSIS_HB_ENERGY_MULTIPLIER 2.5  // Energy spike multiplier (2.5× mean to trigger)
+#define ANALYSIS_STDDEV_MULTIPLIER 1.4  // Standard deviation multiplier for adaptive threshold (balanced sensitivity)
+#define ANALYSIS_LL_DIFF_MIN_THRESHOLD 1.5  // Minimum absolute threshold for LL_diff (avoid false positives)
+#define ANALYSIS_HB_RATIO_THRESHOLD 0.4  // Highband energy ratio threshold (balanced for scene cuts)
+#define ANALYSIS_HB_ENERGY_MULTIPLIER 1.4  // Energy spike multiplier (2.5× mean to trigger)
 #define ANALYSIS_FADE_THRESHOLD 50.0  // Brightness change threshold over 5 frames
 #define ANALYSIS_GOP_MIN_SIZE 10      // Minimum GOP size for two-pass mode. Keep it same as default settings.
 #define ANALYSIS_GOP_MAX_SIZE 24     // Maximum GOP size for two-pass mode. Keep it same as default settings.
