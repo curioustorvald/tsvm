@@ -37,6 +37,7 @@ const TAV_PACKET_AUDIO_ADPCM = 0x23
 const TAV_PACKET_AUDIO_TAD = 0x24
 const TAV_PACKET_SUBTITLE = 0x30       // Legacy SSF (frame-locked)
 const TAV_PACKET_SUBTITLE_TC = 0x31    // SSF-TC (timecode-based)
+const TAV_PACKET_VIDEOTEX = 0x3F       // Videotex (text-mode video)
 const TAV_PACKET_AUDIO_BUNDLED = 0x40  // Entire MP2 audio file in single packet
 const TAV_PACKET_EXTENDED_HDR = 0xEF
 const TAV_PACKET_SCREEN_MASK = 0xF2  // Screen masking (letterbox/pillarbox)
@@ -1614,6 +1615,38 @@ try {
                 let packetSize = seqread.readInt()
                 parseSubtitlePacketTC(packetSize)
             }
+            else if (packetType === TAV_PACKET_VIDEOTEX) {
+                // Videotex packet (0x3F) - text-mode video
+                let compressedSize = seqread.readInt()
+
+                // Read compressed data
+                let compressedPtr = seqread.readBytes(compressedSize)
+
+                // Decompress with Zstd
+                // Allocate buffer for decompressed data (max: 2 + 80*32*3 = 7682 bytes)
+                let decompressedPtr = sys.malloc(8192)
+                let decompressedSize = gzip.decompFromTo(compressedPtr, compressedSize, decompressedPtr)
+
+                // Read grid dimensions from first 2 bytes
+                let rows = sys.peek(decompressedPtr)
+                let cols = sys.peek(decompressedPtr + 1)
+                let gridSize = rows * cols
+
+                // Calculate array offsets within decompressed data
+                let dataOffset = decompressedPtr + 2
+
+                // Copy arrays directly to graphics adapter memory
+                // Format: [fg-array][bg-array][char-array]
+                // Each array is gridSize bytes (typically 2560 for 80×32)
+                sys.memcpy(dataOffset, -1302529, gridSize * 3)
+
+                // Free buffers
+                sys.free(compressedPtr)
+                sys.free(decompressedPtr)
+
+                // Mark frame as ready
+                iframeReady = true
+            }
             else if (packetType === TAV_PACKET_EXTENDED_HDR) {
                 // Extended header packet - metadata key-value pairs
                 let numPairs = seqread.readShort()
@@ -2178,6 +2211,7 @@ try {
 }
 catch (e) {
     serial.printerr(`TAV decode error: ${e}`)
+    e.printStackTrace()
     errorlevel = 1
 }
 finally {

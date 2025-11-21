@@ -1826,7 +1826,6 @@ typedef struct tav_encoder_s {
     int separate_audio_track; // 1 = write entire MP2 file as packet 0x40 after header, 0 = interleave audio (default)
     int pcm8_audio; // 1 = use 8-bit PCM audio (packet 0x21), 0 = use MP2 (default)
     int tad_audio; // 1 = use TAD audio (packet 0x24), 0 = use MP2/PCM8 (default, quality follows quality_level)
-    int enable_letterbox_detect; // 1 = detect and emit letterbox/pillarbox packets (default), 0 = disable
     int enable_crop_encoding;    // 1 = encode cropped active region only (Phase 2), 0 = encode full frame (default)
 
     // Active region tracking (for Phase 2 crop encoding)
@@ -2454,7 +2453,6 @@ static tav_encoder_t* create_encoder(void) {
     enc->separate_audio_track = 0;  // Default: interleave audio packets
     enc->pcm8_audio = 0;  // Default: use MP2 audio
     enc->tad_audio = 0;  // Default: use MP2 audio (TAD quality follows quality_level)
-    enc->enable_letterbox_detect = 1;  // Default: enable letterbox/pillarbox detection
     enc->enable_crop_encoding = 0;  // Default: disabled (Phase 2 experimental)
 
     // Active region tracking (initialized to full frame, updated when crop encoding enabled)
@@ -8736,7 +8734,7 @@ static void normalize_dimension_clusters(uint16_t *values, int count) {
 // Write all screen masking packets before first frame (similar to SSF-TC subtitles)
 // Uses median filtering + clustering to normalize geometry to predominant aspect ratios
 static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
-    if (!enc->enable_letterbox_detect || !enc->two_pass_mode) {
+    if (!enc->enable_crop_encoding || !enc->two_pass_mode) {
         return;  // Letterbox detection requires two-pass mode
     }
 
@@ -10412,7 +10410,7 @@ static int two_pass_first_pass(tav_encoder_t *enc, const char *input_file) {
         }
 
         // Detect letterbox/pillarbox if enabled
-        if (enc->enable_letterbox_detect) {
+        if (enc->enable_crop_encoding) {
             // Set current_frame_rgb temporarily for detection
             uint8_t *saved_current = enc->current_frame_rgb;
             enc->current_frame_rgb = frame_rgb;
@@ -10666,7 +10664,6 @@ int main(int argc, char *argv[]) {
         {"tad-audio", no_argument, 0, 1028},
         {"raw-coeffs", no_argument, 0, 1029},
         {"single-pass", no_argument, 0, 1050},  // disable two-pass encoding with wavelet-based scene detection
-        {"no-letterbox-detect", no_argument, 0, 1051},  // disable letterbox/pillarbox detection
         {"enable-crop-encoding", no_argument, 0, 1052},  // Phase 2: encode cropped active region only (experimental)
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
@@ -10897,10 +10894,6 @@ int main(int argc, char *argv[]) {
             case 1050: // --single-pass
                 enc->two_pass_mode = 0;
                 printf("Two-pass wavelet-based scene change detection disabled\n");
-                break;
-            case 1051: // --no-letterbox-detect
-                enc->enable_letterbox_detect = 0;
-                printf("Letterbox/pillarbox detection disabled\n");
                 break;
             case 1052: // --enable-crop-encoding
                 enc->enable_crop_encoding = 1;
@@ -11380,7 +11373,7 @@ int main(int argc, char *argv[]) {
         enc->encoding_width = enc->width;
         enc->encoding_height = enc->height;
 
-        if (enc->enable_crop_encoding && enc->enable_letterbox_detect && enc->two_pass_mode) {
+        if (enc->enable_crop_encoding && enc->two_pass_mode) {
             // Phase 2: Use GOP-level dimensions for temporal DWT (3D-DWT mode)
             // This ensures all frames in a GOP have the same encoding dimensions
             // IMPORTANT: Always use GOP-level dimensions in temporal DWT mode, even if there's no cropping benefit,

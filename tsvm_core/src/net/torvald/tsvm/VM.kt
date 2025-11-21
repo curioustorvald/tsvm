@@ -667,8 +667,8 @@ class VM(
         val fromDev = getDev(from, len, false)
         val toDev = getDev(to, len, true)
 
-//        println("from = $from, to = $to")
-//        println("fromDev = $fromDev, toDev = $toDev")
+//        System.err.println("[VM.memcpy] from = $from, to = $to")
+//        System.err.println("[VM.memcpy] fromDev = $fromDev, toDev = $toDev")
 
         if (fromDev != null && toDev != null)
             UnsafeHelper.memcpy(fromDev, toDev, len)

@@ -26,8 +26,9 @@
 #define TAV_PACKET_AUDIO_MP2      0x20
 #define TAV_PACKET_AUDIO_PCM8     0x21
 #define TAV_PACKET_AUDIO_TAD      0x24
-#define TAV_PACKET_SUBTITLE       0x30  // Legacy SSF (frame-locked)
+#define TAV_PACKET_SUBTITLE       0x30  // Legacy SSF (frame-locked), also used for Font ROM upload
 #define TAV_PACKET_SUBTITLE_TC    0x31  // SSF-TC (timecode-based)
+#define TAV_PACKET_VIDEOTEX       0x3F  // Videotex (text-mode video)
 #define TAV_PACKET_AUDIO_TRACK    0x40
 #define TAV_PACKET_VIDEO_CH2_I    0x70
 #define TAV_PACKET_VIDEO_CH2_P    0x71
@@ -77,6 +78,7 @@ typedef struct {
     int audio_tad_count;
     int audio_track_count;
     int subtitle_count;
+    int videotex_count;
     int timecode_count;
     int sync_count;
     int sync_ntsc_count;
@@ -91,6 +93,7 @@ typedef struct {
     uint64_t audio_pcm8_bytes;
     uint64_t audio_tad_bytes;
     uint64_t audio_track_bytes;
+    uint64_t videotex_bytes;
 } packet_stats_t;
 
 // Display options
@@ -122,6 +125,7 @@ const char* get_packet_type_name(uint8_t type) {
         case TAV_PACKET_AUDIO_TAD: return "AUDIO TAD (zstd)";
         case TAV_PACKET_SUBTITLE: return "SUBTITLE (SSF frame-locked)";
         case TAV_PACKET_SUBTITLE_TC: return "SUBTITLE (SSF-TC timecoded)";
+        case TAV_PACKET_VIDEOTEX: return "VIDEOTEX (text-mode video)";
         case TAV_PACKET_AUDIO_TRACK: return "AUDIO TRACK (Separate MP2)";
         case TAV_PACKET_EXIF: return "METADATA (EXIF)";
         case TAV_PACKET_ID3V1: return "METADATA (ID3v1)";
@@ -820,6 +824,45 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
                 break;
             }
 
+            case TAV_PACKET_VIDEOTEX: {
+                stats.videotex_count++;
+                uint32_t size;
+                if (fread(&size, sizeof(uint32_t), 1, fp) != 1) break;
+                stats.videotex_bytes += size;
+
+                if (!opts.summary_only && display) {
+                    // Read compressed data
+                    uint8_t *compressed_data = malloc(size);
+                    if (compressed_data && fread(compressed_data, 1, size, fp) == size) {
+                        // Allocate decompression buffer (max 2 + 80*32*3 = 7682 bytes)
+                        size_t const decompress_size = 8192;
+                        uint8_t *decompressed_data = malloc(decompress_size);
+                        if (decompressed_data) {
+                            size_t actual_size = ZSTD_decompress(decompressed_data, decompress_size,
+                                                                compressed_data, size);
+                            if (!ZSTD_isError(actual_size) && actual_size >= 2) {
+                                uint8_t rows = decompressed_data[0];
+                                uint8_t cols = decompressed_data[1];
+                                printf(" - size=%u bytes (decompressed: %zu bytes, grid: %ux%u, ratio: %.2f:1)",
+                                       size, actual_size, cols, rows, (double)actual_size / size);
+                            } else {
+                                printf(" - size=%u bytes (decompression failed)", size);
+                            }
+                            free(decompressed_data);
+                        } else {
+                            printf(" - size=%u bytes", size);
+                        }
+                        free(compressed_data);
+                    } else {
+                        printf(" - size=%u bytes", size);
+                        fseek(fp, size, SEEK_CUR);
+                    }
+                } else {
+                    fseek(fp, size, SEEK_CUR);
+                }
+                break;
+            }
+
             case TAV_PACKET_EXIF:
             case TAV_PACKET_ID3V1:
             case TAV_PACKET_ID3V2:
@@ -950,6 +993,12 @@ static const char* VERDESC[] = {"null", "YCoCg tiled, uniform", "ICtCp tiled, un
     printf("\nOther:\n");
     printf("  Timecodes:          %d\n", stats.timecode_count);
     printf("  Subtitles:          %d\n", stats.subtitle_count);
+    if (stats.videotex_count > 0) {
+        printf("  Videotex frames:    %d (%llu bytes, %.2f MB)\n",
+               stats.videotex_count,
+               (unsigned long long)stats.videotex_bytes,
+               stats.videotex_bytes / 1024.0 / 1024.0);
+    }
     printf("  Extended headers:   %d\n", stats.extended_header_count);
     printf("  Metadata packets:   %d\n", stats.metadata_count);
     printf("  Loop points:        %d\n", stats.loop_point_count);

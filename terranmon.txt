@@ -219,7 +219,9 @@ Memory Space
 12 bytes
     argument for "command" (arg1: Byte, arg2: Byte)
     write to this address FIRST and then write to "command" to execute the command
-1134 bytes
+1008 bytes
+    reserved
+2046 bytes
     unused
 2 bytes
     Cursor position in: (y*80 + x)
@@ -911,8 +913,8 @@ transmission capability, and region-of-interest coding.
             - 6 = ICtCp monoblock perceptual
             - 7 = YCoCg-R multi-tile perceptual
             - 8 = ICtCp multi-tile perceptual
-    uint16 Width: picture width in pixels
-    uint16 Height: picture height in pixels
+    uint16 Width: picture width in pixels. Columns count for Videotex-only file.
+    uint16 Height: picture height in pixels. Rows count for Videotex-only file.
     uint8  FPS: frames per second. Use 0x00 for still pictures
     uint32 Total Frames: number of video frames
             - use 0 to denote not-finalised video stream
@@ -923,7 +925,7 @@ transmission capability, and region-of-interest coding.
             - 2 = CDF 13/7 (experimental)
             - 16 = DD-4 (Four-point interpolating Deslauriers-Dubuc; experimental)
             - 255 = Haar (demonstration purpose only)
-    uint8  Decomposition Levels: number of DWT levels (1-6+)
+    uint8  Decomposition Levels: number of DWT levels (1-6+; use 0 if it has no video or Videotex only)
     uint8  Quantiser Index for Y channel (uses exponential numeric system; 0: lossless, 255: potato)
     uint8  Quantiser Index for Co channel (uses exponential numeric system; 0: lossless, 255: potato)
     uint8  Quantiser Index for Cg channel (uses exponential numeric system; 0: lossless, 255: potato)
@@ -938,6 +940,8 @@ transmission capability, and region-of-interest coding.
             - bit 2 = is lossless mode
                 (shorthand for `-q 6 -Q0,0,0 -w 0 --intra-only --no-perceptual-tuning --arate 384`)
             - bit 3 = has region-of-interest coding (for still pictures only)
+            - bit 4 = reserved (crop encoding?)
+            - bit 7 = has no video
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
     uint8  Channel layout (bit-field: bit 0=has alpha, bit 1=has chroma inverted, bit 2=has luma inverted)
             * Luma-only videos must be decoded with fixed Chroma=0
@@ -954,7 +958,13 @@ transmission capability, and region-of-interest coding.
             - 0 = Twobit-plane significance map (deprecated)
             - 1 = Embedded Zero Block Coding
             - 2 = Raw coefficients (debugging purpose only)
-    uint8  Reserved[2]: fill with zeros
+    uint8  Encoder Preset
+            - Bit 0 = use finer motion (finer temporal quantisation)
+            - Bit 1 = reduce grain synthesis
+            Preset "Default" -> 0x00
+            Preset "Sports" -> 0x01
+            Preset "Anime" -> 0x02
+    uint8  Reserved[1]: fill with zeros
     uint8  Device Orientation
             - 0 = No rotation
             - 1 = Clockwise 90 deg
@@ -992,6 +1002,7 @@ transmission capability, and region-of-interest coding.
     0x31: Subtitle in "Simple" format with timecodes
     0x32: Subtitle in "Karaoke" format
     0x33: Subtitle in "Karaoke" format with timecodes
+    0x3F: Videotex (full-frame text buffer image)
     <synchronised tracks>
     0x40: MP2 audio track (32 KHz)
     0x41: Zstd-compressed 8-bit PCM (32 KHz, audio hardware's native format)
@@ -1127,6 +1138,18 @@ transmission capability, and region-of-interest coding.
     uint8  Quantiser Bits
     uint32 Compressed Size
     *      Zstd-compressed TAD
+
+## Videotex Packet Structure
+    uint8  Packet Type (0x3F)
+    uint32 Compressed Size
+    *      Zstd-compressed payload, where:
+        uint8  Rows
+        uint8  Columns
+        *      Foreground colours
+        *      Background colours
+        *      Characters
+
+
 
 ## GOP Unified Packet Structure (0x12)
 Implemented on 2025-10-15 for temporal 3D DWT with unified preprocessing.

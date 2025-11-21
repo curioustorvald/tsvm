@@ -4,6 +4,7 @@ import net.torvald.UnsafeHelper
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUlong
 import net.torvald.tsvm.peripheral.*
+import kotlin.math.absoluteValue
 
 /**
  * Pass the instance of the class to the ScriptEngine's binding, preferably under the namespace of "vm"
@@ -14,13 +15,21 @@ class VMJSR223Delegate(private val vm: VM) {
         (from in start..end && (from + len) in start..end)
 
     private fun getDev(from: Long, len: Long, isDest: Boolean): Long? {
-        return if (from >= 0) vm.usermem.ptr + from
+//        System.err.print("getDev(from=$from, len=$len, isDest=$isDest) -> ")
+
+        return if (from >= 0) {
+//            System.err.println("USERMEM offset=$from")
+
+            vm.usermem.ptr + from
+        }
         // MMIO area
         else if (from in -1048576..-1 && (from - len) in -1048577..-1) {
-            val fromIndex = (-from-1) / 131072
+            val fromIndex = ((-from-1) / 131072).absoluteValue
             val dev = vm.peripheralTable[fromIndex.toInt()].peripheral ?: return null
             val fromRel = (-from-1) % 131072
             if (fromRel + len > 131072) return null
+
+//            System.err.println("MMIO dev=${dev.typestring}, fromIndex=$fromIndex, fromRel=$fromRel")
 
             return if (dev is IOSpace) {
                 if (relPtrInDev(fromRel, len, 1024, 2047)) dev.peripheralFast.ptr + fromRel - 1024
@@ -49,6 +58,8 @@ class VMJSR223Delegate(private val vm: VM) {
             val dev = vm.peripheralTable[fromIndex.toInt()].peripheral ?: return null
             val fromRel = (-from-1) % 1048576
             if (fromRel + len > 1048576) return null
+
+//            System.err.println("MEMORY dev=${dev.typestring}, fromIndex=$fromIndex, fromRel=$fromRel")
 
             return if (dev is AudioAdapter) {
                 if (relPtrInDev(fromRel, len, 0, 114687)) dev.sampleBin.ptr + fromRel - 0
@@ -111,8 +122,8 @@ class VMJSR223Delegate(private val vm: VM) {
         val fromDev = getDev(from, len, false)
         val toDev = getDev(to, len, true)
 
-//        println("from = $from, to = $to")
-//        println("fromDev = $fromDev, toDev = $toDev")
+//        System.err.println("[sys.memcpy] from = $from, to = $to")
+//        System.err.println("[sys.memcpy] fromDev = $fromDev, toDev = $toDev")
 
         if (fromDev != null && toDev != null)
             UnsafeHelper.memcpy(fromDev, toDev, len)
