@@ -3,9 +3,9 @@
 
 CC = gcc
 CXX = g++
-CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE #-fsanitize=address
-CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE #-fsanitize=address
-DBGFLAGS = #-fsanitize=address
+CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE
+CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE
+DBGFLAGS =
 
 # Zstd flags (use pkg-config if available, fallback for cross-platform compatibility)
 ZSTD_CFLAGS = $(shell pkg-config --cflags libzstd 2>/dev/null || echo "")
@@ -81,7 +81,8 @@ test_mpeg_motion: test_mpeg_motion.cpp
 tests: $(TEST_TARGETS)
 
 # Build with debug symbols
-debug: CFLAGS += -g -DDEBUG
+debug: CFLAGS += -g -DDEBUG -fsanitize=address
+debug: DBGFLAGS += -fsanitize=address
 debug: $(TARGETS)
 
 # Clean build artifacts

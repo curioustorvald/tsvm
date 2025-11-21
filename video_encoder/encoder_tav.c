@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251115 (3d-dwt,tad,ssf-tc)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251121 (3d-dwt,tad,ssf-tc)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -311,8 +311,14 @@ typedef struct {
 
 // Bitstream operations
 static void bitstream_init(bitstream_t *bs, size_t initial_capacity) {
+    // Ensure minimum capacity to avoid issues with zero-size allocations
+    if (initial_capacity < 64) initial_capacity = 64;
     bs->capacity = initial_capacity;
     bs->data = calloc(1, initial_capacity);
+    if (!bs->data) {
+        fprintf(stderr, "ERROR: Failed to allocate bitstream buffer of size %zu\n", initial_capacity);
+        exit(1);
+    }
     bs->byte_pos = 0;
     bs->bit_pos = 0;
 }
@@ -320,10 +326,11 @@ static void bitstream_init(bitstream_t *bs, size_t initial_capacity) {
 static void bitstream_write_bit(bitstream_t *bs, int bit) {
     // Grow if needed
     if (bs->byte_pos >= bs->capacity) {
+        size_t old_capacity = bs->capacity;
         bs->capacity *= 2;
         bs->data = realloc(bs->data, bs->capacity);
-        // Clear new memory
-        memset(bs->data + bs->byte_pos, 0, bs->capacity - bs->byte_pos);
+        // Clear only the newly allocated memory region
+        memset(bs->data + old_capacity, 0, bs->capacity - old_capacity);
     }
 
     if (bit) {
@@ -6007,15 +6014,24 @@ static size_t preprocess_coefficients_ezbc(int16_t *coeffs_y, int16_t *coeffs_co
         uint8_t *ezbc_data = NULL;
         size_t ezbc_size = encode_channel_ezbc(channel_coeffs[ch], coeff_count, width, height, &ezbc_data);
 
+        // Validate encoding result
+        if (!ezbc_data && ezbc_size > 0) {
+            fprintf(stderr, "ERROR: EZBC encoding returned NULL data with non-zero size %zu for channel %d\n",
+                    ezbc_size, ch);
+            exit(1);
+        }
+
         // Write size header (uint32_t) for this channel
         *((uint32_t*)write_ptr) = (uint32_t)ezbc_size;
         write_ptr += sizeof(uint32_t);
         total_size += sizeof(uint32_t);
 
-        // Copy EZBC-encoded data
-        memcpy(write_ptr, ezbc_data, ezbc_size);
-        write_ptr += ezbc_size;
-        total_size += ezbc_size;
+        // Copy EZBC-encoded data (skip if size is 0)
+        if (ezbc_size > 0 && ezbc_data) {
+            memcpy(write_ptr, ezbc_data, ezbc_size);
+            write_ptr += ezbc_size;
+            total_size += ezbc_size;
+        }
 
         // Free EZBC buffer
         free(ezbc_data);
@@ -6860,6 +6876,12 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
+    // Initialize GOP dimensions if not set (e.g., when not using temporal DWT)
+    if (enc->temporal_gop_width <= 0 || enc->temporal_gop_height <= 0) {
+        enc->temporal_gop_width = enc->encoding_width;
+        enc->temporal_gop_height = enc->encoding_height;
+    }
+
     // Calculate total uncompressed size
     // Use encoding dimensions (cropped when crop encoding is enabled, full frame otherwise)
     const size_t coeff_count = enc->monoblock ?
@@ -6885,9 +6907,9 @@ static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) 
             int is_keyframe = (packet_type == TAV_PACKET_IFRAME);
 
             // SKIP mode condition matches main loop logic: still frame during SKIP run
-            int can_use_skip = is_still_frame && enc->previous_coeffs_allocated;
+            int can_use_skip = is_still_frame && enc->previous_coeffs_allocated && !enc->intra_only;
 
-            if (is_keyframe || !enc->previous_coeffs_allocated) {
+            if (is_keyframe || !enc->previous_coeffs_allocated || enc->intra_only) {
                 mode = TAV_MODE_INTRA;  // I-frames, first frames, or intra-only mode always use INTRA
                 count_intra++;
             } else if (can_use_skip) {
@@ -12058,6 +12080,9 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     free(enc->current_frame_co);
     free(enc->current_frame_cg);
     free(enc->current_frame_alpha);
+    free(enc->current_dwt_y);
+    free(enc->current_dwt_co);
+    free(enc->current_dwt_cg);
     free(enc->tiles);
     free(enc->compressed_buffer);
     free(enc->mp2_buffer);
