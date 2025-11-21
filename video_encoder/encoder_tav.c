@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251121 (3d-dwt,tad,ssf-tc)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251122 (3d-dwt,tad,ssf-tc)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -136,7 +136,7 @@ typedef enum {
 #define DEFAULT_ZSTD_LEVEL 15
 #define DEFAULT_PCM_ZSTD_LEVEL 3
 #define TEMPORAL_GOP_SIZE 24
-#define TEMPORAL_GOP_SIZE_MIN 10 // Minimum GOP size to avoid decoder hiccups
+#define TEMPORAL_GOP_SIZE_MIN 8 // Minimum GOP size to avoid decoder hiccups
 #define TEMPORAL_DECOMP_LEVEL 2  // 3 levels make too much afterimages and nonmoving pixels
 
 // Single-pass scene change detection constants
@@ -2231,8 +2231,37 @@ static void swap_frame_buffers(tav_encoder_t *enc) {
     enc->previous_frame_rgb = enc->frame_rgb[1 - enc->frame_buffer_index];
 }
 
+// Get video dimensions from input file using ffprobe
+static int get_original_resolution(const char *input_file, int *width, int *height) {
+    if (!input_file) {
+        fprintf(stderr, "Error: -s original requires -i input_file to be specified first\n");
+        return 0;
+    }
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"%s\"",
+        input_file);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        fprintf(stderr, "Failed to run ffprobe\n");
+        return 0;
+    }
+
+    int result = fscanf(fp, "%d,%d", width, height);
+    pclose(fp);
+
+    if (result != 2) {
+        fprintf(stderr, "Failed to parse video dimensions from ffprobe\n");
+        return 0;
+    }
+
+    return 1;
+}
+
 // Parse resolution string like "1024x768" with keyword recognition
-static int parse_resolution(const char *res_str, int *width, int *height) {
+static int parse_resolution(const char *res_str, int *width, int *height, const char *input_file) {
     if (!res_str) return 0;
     if (strcmp(res_str, "cif") == 0 || strcmp(res_str, "CIF") == 0) {
         *width = 352;
@@ -2253,6 +2282,9 @@ static int parse_resolution(const char *res_str, int *width, int *height) {
         *width = DEFAULT_WIDTH;
         *height = DEFAULT_HEIGHT;
         return 1;
+    }
+    if (strcmp(res_str, "original") == 0 || strcmp(res_str, "ORIGINAL") == 0) {
+        return get_original_resolution(input_file, width, height);
     }
     return sscanf(res_str, "%dx%d", width, height) == 2;
 }
@@ -2415,6 +2447,7 @@ static void show_usage(const char *program_name) {
     printf("\n  -s qcif: equal to 176x144");
     printf("\n  -s half: equal to %dx%d", DEFAULT_WIDTH >> 1, DEFAULT_HEIGHT >> 1);
     printf("\n  -s default: equal to %dx%d", DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    printf("\n  -s original: use input video's original resolution");
     printf("\n\n");
     printf("Features:\n");
     printf("  - Single DWT tile (monoblock) encoding for optimal quality\n");
@@ -10701,7 +10734,7 @@ int main(int argc, char *argv[]) {
                 enc->output_file = strdup(optarg);
                 break;
             case 's':
-                if (!parse_resolution(optarg, &enc->width, &enc->height)) {
+                if (!parse_resolution(optarg, &enc->width, &enc->height, enc->input_file)) {
                     fprintf(stderr, "Invalid resolution format: %s\n", optarg);
                     cleanup_encoder(enc);
                     return 1;
