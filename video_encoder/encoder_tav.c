@@ -10979,6 +10979,14 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Halve internal height for interlaced mode (FFmpeg will output half-height fields)
+    if (!enc->progressive_mode) {
+        enc->height = enc->height / 2;
+        if (enc->verbose) {
+            printf("Interlaced mode: internal height adjusted to %d\n", enc->height);
+        }
+    }
+
     // generate division series
     enc->widths = malloc((enc->decomp_levels + 2) * sizeof(int));
     enc->heights = malloc((enc->decomp_levels + 2) * sizeof(int));
@@ -10992,15 +11000,6 @@ int main(int argc, char *argv[]) {
     // adjust encoding parameters for ICtCp
     if (enc->ictcp_mode) {
         enc->quantiser_cg = enc->quantiser_co;
-    }
-
-    // Halve internal height for interlaced mode (FFmpeg will output half-height fields)
-    if (!enc->progressive_mode) {
-        enc->height = enc->height / 2;
-        if (enc->verbose) {
-            printf("Interlaced mode: internal height adjusted to %d\n", enc->height);
-        }
-        enc->intra_only = 1;
     }
 
     // disable perceptual tuning if wavelet filter is not CDF 9/7

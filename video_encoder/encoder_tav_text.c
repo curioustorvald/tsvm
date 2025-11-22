@@ -49,6 +49,7 @@ Usage:
 #define PIXEL_H (GRID_H * CHAR_H)  // 448
 #define PATCH_SZ (CHAR_W * CHAR_H)
 #define SAMPLE_RATE 32000
+#define MP2_DEFAULT_PACKET_SIZE 1152
 
 // TAV packet types
 #define PACKET_TIMECODE 0xFD
@@ -69,6 +70,28 @@ Usage:
 // Color mapping (4-bit RGB to TSVM palette)
 #define COLOR_BLACK 0xF0
 #define COLOR_WHITE 0xFE
+
+// Generate random filename for temporary audio file
+static void generate_random_filename(char *filename) {
+    srand(time(NULL));
+
+    const char charset[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const int charset_size = sizeof(charset) - 1;
+
+    // Start with the prefix
+    strcpy(filename, "/tmp/");
+
+    // Generate 32 random characters
+    for (int i = 0; i < 32; i++) {
+        filename[5 + i] = charset[rand() % charset_size];
+    }
+
+    // Add the .mp2 extension
+    strcpy(filename + 37, ".mp2");
+    filename[41] = '\0';  // Null terminate
+}
+
+char TEMP_AUDIO_FILE[42];
 
 typedef struct {
     uint8_t *data;     // Binary glyph data (PATCH_SZ bytes per glyph)
@@ -244,6 +267,24 @@ uint64_t get_current_time_ns(void) {
     return (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
 }
 
+// Parse MP2 packet header to get accurate packet size
+int get_mp2_packet_size(uint8_t *header) {
+    int bitrate_index = (header[2] >> 4) & 0x0F;
+    int bitrates[] = {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384};
+    if (bitrate_index >= 15) return MP2_DEFAULT_PACKET_SIZE;
+
+    int bitrate = bitrates[bitrate_index];
+    if (bitrate == 0) return MP2_DEFAULT_PACKET_SIZE;
+
+    int sampling_freq_index = (header[2] >> 2) & 0x03;
+    int sampling_freqs[] = {44100, 48000, 32000, 0};
+    int sampling_freq = sampling_freqs[sampling_freq_index];
+    if (sampling_freq == 0) return MP2_DEFAULT_PACKET_SIZE;
+
+    int padding = (header[2] >> 1) & 0x01;
+    return (144 * bitrate * 1000) / sampling_freq + padding;
+}
+
 // Write Videotex header (32 bytes, similar to TAV but simpler)
 void write_videotex_header(FILE *f, uint8_t fps, uint32_t total_frames) {
     fwrite("\x1FTSVMTAV", 8, 1, f);
@@ -252,10 +293,10 @@ void write_videotex_header(FILE *f, uint8_t fps, uint32_t total_frames) {
     fputc(1, f);
 
     // Grid dimensions (uint8 each)
-    fputc(GRID_W, f);  // cols = 80
-    fputc(0, f);
-    fputc(GRID_H, f);  // rows = 32
-    fputc(0, f);
+    uint16_t width = GRID_W;
+    uint16_t height = GRID_H;
+    fwrite(&width, sizeof(uint16_t), 1, f);  // cols = 80
+    fwrite(&height, sizeof(uint16_t), 1, f);  // rows = 32
 
     // FPS (uint8)
     fputc(fps, f);
@@ -457,6 +498,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // Generate random temp filename for audio
+    generate_random_filename(TEMP_AUDIO_FILE);
+
     // Capture creation time and FFmpeg version for extended header
     uint64_t creation_time_ns = get_current_time_ns();
     char *ffmpeg_version = get_ffmpeg_version();
@@ -487,18 +531,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Open FFmpeg pipe for MP2 audio (32 KHz stereo)
+    // Extract MP2 audio to temporary file using libtwolame
+    fprintf(stderr, "Extracting MP2 audio...\n");
     char audio_cmd[1024];
     snprintf(audio_cmd, sizeof(audio_cmd),
-             "ffmpeg -i \"%s\" -vn -ar %d -ac 2 -f mp2 -b:a 96k - 2>/dev/null",
-             input_video, SAMPLE_RATE);
+             "ffmpeg -v quiet -i \"%s\" -acodec libtwolame -psymodel 4 -b:a 224k -ar %d -ac 2 -y \"%s\" 2>/dev/null",
+             input_video, SAMPLE_RATE, TEMP_AUDIO_FILE);
 
-    fprintf(stderr, "Opening audio stream...\n");
-    FILE *audio_pipe = popen(audio_cmd, "r");
-    if (!audio_pipe) {
-        fprintf(stderr, "Failed to open audio FFmpeg pipe\n");
-        pclose(video_pipe);
-        return 1;
+    int audio_result = system(audio_cmd);
+    if (audio_result != 0) {
+        fprintf(stderr, "Warning: Audio extraction failed, continuing without audio\n");
+    }
+
+    // Open MP2 file for reading
+    FILE *mp2_file = NULL;
+    long audio_remaining = 0;
+    if (audio_result == 0) {
+        mp2_file = fopen(TEMP_AUDIO_FILE, "rb");
+        if (mp2_file) {
+            fseek(mp2_file, 0, SEEK_END);
+            audio_remaining = ftell(mp2_file);
+            fseek(mp2_file, 0, SEEK_SET);
+            fprintf(stderr, "Audio ready: %ld bytes\n", audio_remaining);
+        }
     }
 
     // Open output file
@@ -506,7 +561,7 @@ int main(int argc, char **argv) {
     if (!out) {
         fprintf(stderr, "Failed to open output file\n");
         pclose(video_pipe);
-        pclose(audio_pipe);
+        if (mp2_file) fclose(mp2_file);
         return 1;
     }
 
@@ -555,13 +610,18 @@ int main(int argc, char **argv) {
     uint8_t *fg_col = malloc(GRID_W * GRID_H);
     uint8_t *chars = malloc(GRID_W * GRID_H);
 
-    // Audio buffer (read MP2 frames in 1152-sample chunks, ~36ms at 32 KHz)
-    #define AUDIO_CHUNK_SIZE 8192  // Arbitrary MP2 frame buffer size
-    uint8_t *audio_buffer = malloc(AUDIO_CHUNK_SIZE);
-    size_t audio_available = 0;
+    // Audio buffer for MP2 packets
+    #define MP2_BUFFER_SIZE 2048
+    uint8_t *audio_buffer = malloc(MP2_BUFFER_SIZE);
 
     uint32_t frame_num = 0;
     uint64_t total_audio_bytes = 0;
+
+    // Audio timing calculation
+    double frame_audio_time = 1.0 / fps_float;  // Time per video frame
+    double packet_audio_time = (double)MP2_DEFAULT_PACKET_SIZE / SAMPLE_RATE;  // Time per audio packet
+    double packets_per_frame = frame_audio_time / packet_audio_time;
+    double audio_frames_in_buffer = 0.0;  // Simulated audio buffer level
 
     fprintf(stderr, "Encoding text-mode video (%dx%d chars, %dx%d pixels)...\n",
             GRID_W, GRID_H, PIXEL_W, PIXEL_H);
@@ -575,12 +635,54 @@ int main(int argc, char **argv) {
         // Calculate timecode in nanoseconds
         uint64_t timecode_ns = (uint64_t)(frame_num * 1000000000.0 / fps_float);
 
-        // Write audio packet first (if available)
-        // Try to read ~1 frame worth of audio
-        audio_available = fread(audio_buffer, 1, AUDIO_CHUNK_SIZE, audio_pipe);
-        if (audio_available > 0) {
-            write_audio_mp2(out, audio_buffer, audio_available);
-            total_audio_bytes += audio_available;
+        // Write audio packets for this frame (based on timing)
+        if (mp2_file && audio_remaining > 0) {
+            // Simulate buffer consumption
+            audio_frames_in_buffer -= packets_per_frame;
+
+            // Calculate how many packets we need to maintain buffer
+            double target_level = fmax(packets_per_frame, 2.0);
+            int packets_to_insert = 0;
+
+            if (audio_frames_in_buffer < target_level) {
+                double deficit = target_level - audio_frames_in_buffer;
+                packets_to_insert = (int)ceil(deficit);
+            }
+
+            // Insert the calculated number of audio packets
+            for (int q = 0; q < packets_to_insert; q++) {
+                // Peek at header to get actual packet size
+                long pos = ftell(mp2_file);
+                uint8_t header[4];
+                if (fread(header, 1, 4, mp2_file) != 4) break;
+                fseek(mp2_file, pos, SEEK_SET);  // Rewind to re-read with full packet
+
+                int actual_packet_size = get_mp2_packet_size(header);
+                size_t bytes_to_read = actual_packet_size;
+
+                // Clamp to remaining audio
+                if (bytes_to_read > audio_remaining) {
+                    bytes_to_read = audio_remaining;
+                }
+
+                // Sanity check
+                if (bytes_to_read > MP2_BUFFER_SIZE) {
+                    fprintf(stderr, "ERROR: MP2 packet size %zu exceeds buffer\n", bytes_to_read);
+                    break;
+                }
+
+                // Read full packet
+                size_t bytes_read = fread(audio_buffer, 1, bytes_to_read, mp2_file);
+                if (bytes_read == 0) break;
+
+                // Write MP2 audio packet
+                write_audio_mp2(out, audio_buffer, bytes_read);
+
+                // Track audio
+                audio_remaining -= bytes_read;
+                audio_frames_in_buffer++;
+                total_audio_bytes += bytes_read;
+            }
         }
 
         // Write timecode
@@ -608,10 +710,27 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Read any remaining audio
-    while ((audio_available = fread(audio_buffer, 1, AUDIO_CHUNK_SIZE, audio_pipe)) > 0) {
-        write_audio_mp2(out, audio_buffer, audio_available);
-        total_audio_bytes += audio_available;
+    // Write any remaining audio
+    if (mp2_file && audio_remaining > 0) {
+        while (audio_remaining > 0) {
+            // Peek at header to get actual packet size
+            long pos = ftell(mp2_file);
+            uint8_t header[4];
+            if (fread(header, 1, 4, mp2_file) != 4) break;
+            fseek(mp2_file, pos, SEEK_SET);
+
+            int actual_packet_size = get_mp2_packet_size(header);
+            size_t bytes_to_read = (actual_packet_size < audio_remaining) ? actual_packet_size : audio_remaining;
+
+            if (bytes_to_read > MP2_BUFFER_SIZE) break;
+
+            size_t bytes_read = fread(audio_buffer, 1, bytes_to_read, mp2_file);
+            if (bytes_read == 0) break;
+
+            write_audio_mp2(out, audio_buffer, bytes_read);
+            audio_remaining -= bytes_read;
+            total_audio_bytes += bytes_read;
+        }
     }
 
     // Final timing
@@ -628,7 +747,7 @@ int main(int argc, char **argv) {
 
     // Update total_frames in header
     if (frame_num > 0) {
-        fseek(out, header_offset + 12, SEEK_SET);  // Offset to total_frames field
+        fseek(out, header_offset + 14, SEEK_SET);  // Offset to total_frames field
         fwrite(&frame_num, sizeof(uint32_t), 1, out);
         fprintf(stderr, "Updated total_frames in header: %u\n", frame_num);
     }
@@ -647,7 +766,10 @@ int main(int argc, char **argv) {
 
     // Cleanup
     pclose(video_pipe);
-    pclose(audio_pipe);
+    if (mp2_file) {
+        fclose(mp2_file);
+        unlink(TEMP_AUDIO_FILE);  // Remove temporary audio file
+    }
     fclose(out);
     free(gray_pixels);
     free(bg_col);
