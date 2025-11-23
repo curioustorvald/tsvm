@@ -422,8 +422,12 @@ seqread.skip(3)
 
 header.fileRole = seqread.readOneByte()
 
-if (header.version < 1 || header.version > 8) {
-    printerrln(`Error: Unsupported TAV version ${header.version}`)
+// Extract temporal motion coder from version (versions 9-16 use CDF 5/3, 1-8 use Haar)
+const baseVersion = (header.version > 8) ? (header.version - 8) : header.version
+header.temporalMotionCoder = (header.version > 8) ? 1 : 0
+
+if (baseVersion < 1 || baseVersion > 8) {
+    printerrln(`Error: Unsupported TAV base version ${baseVersion}`)
     errorlevel = 1
     return
 }
@@ -1339,7 +1343,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
-                        bufferOffset
+                        bufferOffset,
+                        header.temporalMotionCoder
                     )
 
                     asyncDecodeInProgress = true
@@ -1412,7 +1417,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
-                        nextOffset
+                        nextOffset,
+                        header.temporalMotionCoder
                     )
 
                     // Set async decode tracking variables
@@ -1454,7 +1460,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
-                        decodingOffset
+                        decodingOffset,
+                        header.temporalMotionCoder
                     )
 
                     // Set async decode tracking variables
@@ -1821,7 +1828,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
-                        readyGopData.slot * SLOT_SIZE
+                        readyGopData.slot * SLOT_SIZE,
+                        header.temporalMotionCoder
                     )
 
                     // CRITICAL FIX: Set async decode tracking variables so decode is properly tracked
@@ -1998,7 +2006,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
-                        decodingGopData.slot * SLOT_SIZE
+                        decodingGopData.slot * SLOT_SIZE,
+                        header.temporalMotionCoder
                     )
 
                     // CRITICAL FIX: Set async decode tracking variables so decode is properly tracked
@@ -2038,7 +2047,8 @@ try {
                         header.channelLayout,
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
-                        readyGopData.slot * SLOT_SIZE
+                        readyGopData.slot * SLOT_SIZE,
+                        header.temporalMotionCoder
                     )
                     readyGopData.needsDecode = false
                     readyGopData.startTime = sys.nanoTime()
@@ -2115,7 +2125,8 @@ try {
                             header.channelLayout,
                             header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                             header.entropyCoder,
-                            targetOffset
+                            targetOffset,
+                            header.temporalMotionCoder
                         )
 
                         asyncDecodeInProgress = true
@@ -2211,7 +2222,8 @@ try {
 }
 catch (e) {
     serial.printerr(`TAV decode error: ${e}`)
-    e.printStackTrace()
+    if (e.printStackTrace)
+        e.printStackTrace()
     errorlevel = 1
 }
 finally {

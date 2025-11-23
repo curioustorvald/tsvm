@@ -18,7 +18,7 @@
 #include <limits.h>
 #include <float.h>
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251122 (3d-dwt,tad,ssf-tc)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251123 (3d-dwt,tad,ssf-tc,cdf53-motion)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -1867,6 +1867,7 @@ typedef struct tav_encoder_s {
     float **temporal_gop_co_frames;       // [frame][pixel] - Co channel for each GOP frame
     float **temporal_gop_cg_frames;       // [frame][pixel] - Cg channel for each GOP frame
     int temporal_decomp_levels;  // Number of temporal DWT levels (default: 2)
+    int temporal_motion_coder;   // Temporal wavelet type: 0=Haar, 1=CDF 5/3 (default: 1)
 
     // MC-EZBC block-based motion compensation for temporal 3D DWT (0x13 packets)
     int temporal_enable_mcezbc;           // Flag to enable MC-EZBC block compensation (default: 0, uses translation if temporal_dwt enabled)
@@ -2412,6 +2413,7 @@ static void show_usage(const char *program_name) {
     printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
     printf("  --3d-dwt                Enable temporal 3D DWT (GOP-based encoding with temporal transform; the default encoding mode)\n");
+    printf("  --motion-coder N        Temporal wavelet: 0=Haar, 1=CDF 5/3 (default: auto-select based on resolution; use 0 for older version compatibility)\n");
     printf("  --single-pass           Disable two-pass encoding with wavelet-based scene change detection (optimal GOP boundaries)\n");
 //    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt, implies --ezbc)\n");
     printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) entropy coding. May help reducing file size on high-quality videos\n");
@@ -2514,6 +2516,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->temporal_gop_width = 0;   // Will be set when first frame is added to GOP
     enc->temporal_gop_height = 0;  // Will be set when first frame is added to GOP
     enc->temporal_decomp_levels = TEMPORAL_DECOMP_LEVEL;  // 3 levels of temporal DWT (24 -> 12 -> 6 -> 3 temporal subbands)
+    enc->temporal_motion_coder = -1;  // Will be set automatically based on resolution (unless overridden)
     enc->temporal_gop_rgb_frames = NULL;
     enc->temporal_gop_y_frames = NULL;
     enc->temporal_gop_co_frames = NULL;
@@ -2836,7 +2839,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
 static void dwt_53_forward_1d(float *data, int length) {
     if (length < 2) return;
 
-    float *temp = malloc(length * sizeof(float));
+    float *temp = calloc(length, sizeof(float));  // Use calloc to zero-initialize for odd-length arrays
     int half = (length + 1) / 2;  // Handle odd lengths properly
 
     // Predict step (high-pass)
@@ -2846,6 +2849,7 @@ static void dwt_53_forward_1d(float *data, int length) {
             float pred = 0.5f * (data[2 * i] + (2 * i + 2 < length ? data[2 * i + 2] : data[2 * i]));
             temp[half + i] = data[idx] - pred;
         }
+        // Note: For odd lengths, last high-pass position remains zero (from calloc)
     }
 
     // Update step (low-pass)
@@ -5612,7 +5616,12 @@ static void dwt_3d_forward(tav_encoder_t *enc, float **gop_data, int width, int 
             for (int level = 0; level < temporal_levels; level++) {
                 int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
-                    dwt_haar_forward_1d(temporal_line, level_frames);  // Haar better for imperfect alignment
+                    // Use selected temporal wavelet (0=Haar, 1=CDF 5/3)
+                    if (enc->temporal_motion_coder == 0) {
+                        dwt_haar_forward_1d(temporal_line, level_frames);
+                    } else {
+                        dwt_53_forward_1d(temporal_line, level_frames);
+                    }
                 }
             }
 
@@ -7425,7 +7434,8 @@ static int write_tav_header(tav_encoder_t *enc) {
     // Magic number
     fwrite(TAV_MAGIC, 1, 8, enc->output_fp);
 
-    // Version (dynamic based on colour space, monoblock mode, and perceptual tuning)
+    // Version (dynamic based on colour space, monoblock mode, perceptual tuning, and motion coder)
+    // Base versions 1-8, add 8 if temporal_motion_coder == 1 (CDF 5/3)
     uint8_t version;
     if (enc->monoblock) {
         if (enc->perceptual_tuning) {
@@ -7439,6 +7449,10 @@ static int write_tav_header(tav_encoder_t *enc) {
         } else {
             version = enc->ictcp_mode ? 2 : 1;
         }
+    }
+    // Add 8 if using CDF 5/3 temporal wavelet (motion_coder == 1)
+    if (enc->temporal_motion_coder == 1) {
+        version += 8;
     }
     fputc(version, enc->output_fp);
 
@@ -10705,6 +10719,7 @@ int main(int argc, char *argv[]) {
         {"temporal-3d", no_argument, 0, 1019},
         {"dwt-3d", no_argument, 0, 1019},
         {"3d-dwt", no_argument, 0, 1019},
+        {"motion-coder", required_argument, 0, 1030},
         {"mc-ezbc", no_argument, 0, 1020},
         {"residual-coding", no_argument, 0, 1021},
         {"adaptive-blocks", no_argument, 0, 1022},
@@ -10946,6 +10961,12 @@ int main(int argc, char *argv[]) {
                 enc->preprocess_mode = PREPROCESS_RAW;
                 printf("Raw coefficient mode enabled (no significance map preprocessing)\n");
                 break;
+            case 1030: // --motion-coder
+                enc->temporal_motion_coder = CLAMP(atoi(optarg), 0, 1);
+                printf("Temporal motion coder set to: %d (%s)\n",
+                       enc->temporal_motion_coder,
+                       enc->temporal_motion_coder == 0 ? "Haar" : "CDF 5/3");
+                break;
             case 1050: // --single-pass
                 enc->two_pass_mode = 0;
                 printf("Two-pass wavelet-based scene change detection disabled\n");
@@ -10984,6 +11005,26 @@ int main(int argc, char *argv[]) {
         enc->height = enc->height / 2;
         if (enc->verbose) {
             printf("Interlaced mode: internal height adjusted to %d\n", enc->height);
+        }
+    }
+
+    // Smart preset for temporal motion coder based on resolution
+    // For small videos (<500k pixels), use CDF 5/3 (better for fine details)
+    // For larger videos, use Haar (better compression, smoother motion matters less)
+    if (enc->temporal_motion_coder == -1) {
+        int num_pixels = enc->width * enc->height;
+        if (num_pixels >= 500000) {
+            enc->temporal_motion_coder = 0;  // Haar
+            if (enc->verbose) {
+                printf("Auto-selected Haar temporal wavelet (resolution: %dx%d = %d pixels)\n",
+                       enc->width, enc->height, num_pixels);
+            }
+        } else {
+            enc->temporal_motion_coder = 1;  // CDF 5/3
+            if (enc->verbose) {
+                printf("Auto-selected CDF 5/3 temporal wavelet (resolution: %dx%d = %d pixels)\n",
+                       enc->width, enc->height, num_pixels);
+            }
         }
     }
 

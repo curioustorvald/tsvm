@@ -905,6 +905,7 @@ transmission capability, and region-of-interest coding.
 ## Header (32 bytes)
     uint8  Magic[8]: "\x1F TSVM TAV" or "\x1F TSVM TAP"
     uint8  Version:
+            Base version number:
             - 1 = YCoCg-R multi-tile uniform
             - 2 = ICtCp multi-tile uniform
             - 3 = YCoCg-R monoblock uniform
@@ -913,6 +914,8 @@ transmission capability, and region-of-interest coding.
             - 6 = ICtCp monoblock perceptual
             - 7 = YCoCg-R multi-tile perceptual
             - 8 = ICtCp multi-tile perceptual
+            When motion coder is Haar, take base version number.
+            When motion coder is CDF 5/3, add 8 to the base version number.
     uint16 Width: picture width in pixels. Columns count for Videotex-only file.
     uint16 Height: picture height in pixels. Rows count for Videotex-only file.
     uint8  FPS: frames per second. Use 0x00 for still pictures
