@@ -2013,8 +2013,8 @@ static int calculate_max_decomp_levels(tav_encoder_t *enc, int width, int height
     int levels = 0;
     int min_size = (!enc->monoblock) ? TILE_SIZE_Y : (width < height ? width : height);
 
-    // Keep halving until we reach a minimum size (at least 4 pixels)
-    while (min_size >= 16) { // apparently you don't want it to be deep
+    // Keep halving until we reach a minimum size
+    while (min_size >= 32) { // apparently you don't want it to be deep
         min_size /= 2;
         levels++;
     }
