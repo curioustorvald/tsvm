@@ -6749,8 +6749,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val prevFrameIdx = if (frameIndex > 0) frameIndex - 1 else 0
         val prevFieldOffset = bufferOffset + (prevFrameIdx * fieldSize)
         UnsafeHelper.memcpyRaw(
-            gpu.videoBuffer,
-            UnsafeHelper.getArrayOffset(gpu.videoBuffer) + prevFieldOffset,
+            null,
+            gpu.videoBuffer.ptr + prevFieldOffset,
             null,
             vm.usermem.ptr + prevFieldAddr,
             fieldSize
@@ -6759,8 +6759,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         // Current field (frame N)
         val currFieldOffset = bufferOffset + (frameIndex * fieldSize)
         UnsafeHelper.memcpyRaw(
-            gpu.videoBuffer,
-            UnsafeHelper.getArrayOffset(gpu.videoBuffer) + currFieldOffset,
+            null,
+            gpu.videoBuffer.ptr + currFieldOffset,
             null,
             vm.usermem.ptr + currentFieldAddr,
             fieldSize
@@ -6770,8 +6770,8 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val nextFrameIdx = if (frameIndex < gopSize - 1) frameIndex + 1 else frameIndex
         val nextFieldOffset = bufferOffset + (nextFrameIdx * fieldSize)
         UnsafeHelper.memcpyRaw(
-            gpu.videoBuffer,
-            UnsafeHelper.getArrayOffset(gpu.videoBuffer) + nextFieldOffset,
+            null,
+            gpu.videoBuffer.ptr + nextFieldOffset,
             null,
             vm.usermem.ptr + nextFieldAddr,
             fieldSize
