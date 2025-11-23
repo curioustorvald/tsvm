@@ -11,11 +11,13 @@
 #include <zstd.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/time.h>
 #include <getopt.h>
 #include <signal.h>
 #include "decoder_tad.h"  // Shared TAD decoder library
+#include "tav_avx512.h"  // AVX-512 SIMD optimizations
 
-#define DECODER_VENDOR_STRING "Decoder-TAV 20251103 (ffv1+pcmu8)"
+#define DECODER_VENDOR_STRING "Decoder-TAV 20251124 (avx512)"
 
 // TAV format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"
@@ -311,13 +313,31 @@ static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, cons
         //                   Decoder must multiply by effective quantiser to denormalize
         //                   Previous denormalization in EZBC caused int16_t overflow (clipping at 32767)
         //                   for bright pixels, creating dark DWT-pattern blemishes
-        for (int i = 0; i < subband->coeff_count; i++) {
-            const int idx = subband->coeff_start + i;
-            if (idx < coeff_count) {
-                const float untruncated = quantised[idx] * effective_quantiser;
-                dequantised[idx] = untruncated;
+
+#ifdef __AVX512F__
+        // Use AVX-512 optimized dequantization if available (1.1x speedup against -Ofast)
+        // Check: subband has >=16 elements AND won't exceed buffer bounds
+        const int subband_end = subband->coeff_start + subband->coeff_count;
+        if (g_simd_level >= SIMD_AVX512F && subband->coeff_count >= 16 && subband_end <= coeff_count) {
+            dequantise_dwt_coefficients_avx512(
+                quantised + subband->coeff_start,
+                dequantised + subband->coeff_start,
+                subband->coeff_count,
+                effective_quantiser
+            );
+        } else {
+#endif
+            // Scalar fallback or small subbands
+            for (int i = 0; i < subband->coeff_count; i++) {
+                const int idx = subband->coeff_start + i;
+                if (idx < coeff_count) {
+                    const float untruncated = quantised[idx] * effective_quantiser;
+                    dequantised[idx] = untruncated;
+                }
             }
+#ifdef __AVX512F__
         }
+#endif
     }
 
     // Debug: Verify LL band was dequantised correctly
@@ -2714,6 +2734,9 @@ int main(int argc, char *argv[]) {
     // Ignore SIGPIPE to prevent process termination if FFmpeg exits early
     signal(SIGPIPE, SIG_IGN);
 
+    // Initialize AVX-512 runtime detection
+    tav_simd_init();
+
     char *input_file = NULL;
     char *output_file = NULL;
     int verbose = 0;
@@ -2784,6 +2807,12 @@ int main(int argc, char *argv[]) {
         printf("Output: %s (FFV1 level 3 + PCMu8 @ 32 KHz)\n", output_file);
     }
 
+    // Start timing for FPS calculation
+    struct timeval start_time, last_update_time;
+    gettimeofday(&start_time, NULL);
+    last_update_time = start_time;
+    int frames_since_last_update = 0;
+
     // Main decoding loop
     int result = 1;
     int total_packets = 0;
@@ -2845,6 +2874,28 @@ int main(int argc, char *argv[]) {
             }
             // Update decoder frame count (GOP already wrote frames)
             decoder->frame_count += gop_frame_count;
+            frames_since_last_update += gop_frame_count;
+
+            // Print progress every second or so
+            struct timeval current_time;
+            gettimeofday(&current_time, NULL);
+            double time_since_update = (current_time.tv_sec - last_update_time.tv_sec) +
+                                     (current_time.tv_usec - last_update_time.tv_usec) / 1000000.0;
+
+            if (time_since_update >= 1.0 || decoder->frame_count == gop_frame_count) {  // Update every second
+                double total_time = (current_time.tv_sec - start_time.tv_sec) +
+                                  (current_time.tv_usec - start_time.tv_usec) / 1000000.0;
+                double current_fps = frames_since_last_update / time_since_update;
+                double avg_fps = decoder->frame_count / total_time;
+
+                fprintf(stderr, "\rDecoding: Frame %d (%.1f fps, avg %.1f fps)    ",
+                       decoder->frame_count, current_fps, avg_fps);
+                fflush(stderr);
+
+                last_update_time = current_time;
+                frames_since_last_update = 0;
+            }
+
             continue;
         }
 
@@ -3379,10 +3430,28 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Frame decoding failed at frame %d\n", decoder->frame_count);
                     break;
                 }
-                if (verbose && decoder->frame_count % 100 == 0) {
-                    printf("Decoded frame %d\r", decoder->frame_count);
-                    fflush(stdout);
+
+                // Update progress indicator
+                frames_since_last_update++;
+                struct timeval current_time;
+                gettimeofday(&current_time, NULL);
+                double time_since_update = (current_time.tv_sec - last_update_time.tv_sec) +
+                                         (current_time.tv_usec - last_update_time.tv_usec) / 1000000.0;
+
+                if (time_since_update >= 1.0 || decoder->frame_count == 1) {  // Update every second
+                    double total_time = (current_time.tv_sec - start_time.tv_sec) +
+                                      (current_time.tv_usec - start_time.tv_usec) / 1000000.0;
+                    double current_fps = frames_since_last_update / time_since_update;
+                    double avg_fps = decoder->frame_count / total_time;
+
+                    fprintf(stderr, "\rDecoding: Frame %d (%.1f fps, avg %.1f fps)    ",
+                           decoder->frame_count, current_fps, avg_fps);
+                    fflush(stderr);
+
+                    last_update_time = current_time;
+                    frames_since_last_update = 0;
                 }
+
                 break;
 
             case TAV_PACKET_AUDIO_MP2:
@@ -3419,6 +3488,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Calculate final statistics
+    struct timeval end_time;
+    gettimeofday(&end_time, NULL);
+    double total_time = (end_time.tv_sec - start_time.tv_sec) +
+                       (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+
     if (verbose) {
         printf("\nDecoded %d frames\n", decoder->frame_count);
     }
@@ -3431,7 +3506,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("Successfully decoded to: %s\n", output_file);
+    // Print final statistics (similar to encoder)
+    fprintf(stderr, "\n");  // Clear progress line
+    printf("\nDecoding complete!\n");
+    printf("  Frames decoded: %d\n", decoder->frame_count);
+    printf("  Decoding time: %.2fs (%.1f fps)\n", total_time, decoder->frame_count / total_time);
+    printf("  Output: %s\n", output_file);
 
     // Clean up temporary audio file
     if (unlink(temp_audio_file) == 0 && verbose) {

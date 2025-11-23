@@ -17,8 +17,9 @@
 #include <time.h>
 #include <limits.h>
 #include <float.h>
+#include "tav_avx512.h"  // AVX-512 SIMD optimizations
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251123 (3d-dwt,tad,ssf-tc,cdf53-motion)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251124 (3d-dwt,tad,ssf-tc,cdf53-motion,avx512)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -6429,6 +6430,17 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
     float effective_q = quantiser;
     effective_q = FCLAMP(effective_q, 1.0f, 4096.0f);
 
+#ifdef __AVX512F__
+    // Use AVX-512 optimized version if available (2x speedup against -Ofast)
+    if (g_simd_level >= SIMD_AVX512F) {
+        quantise_dwt_coefficients_avx512(coeffs, quantised, size, effective_q, dead_zone_threshold,
+                                         width, height, decomp_levels, is_chroma,
+                                         get_subband_level, get_subband_type);
+        return;
+    }
+#endif
+
+    // Scalar fallback
     for (int i = 0; i < size; i++) {
         float quantised_val = coeffs[i] / effective_q;
 
@@ -10792,6 +10804,10 @@ int main(int argc, char *argv[]) {
     strcpy(TEMP_PCM_FILE + 37, ".pcm");
 
     printf("Initialising encoder...\n");
+
+    // Initialize AVX-512 runtime detection
+    tav_simd_init();
+
     tav_encoder_t *enc = create_encoder();
     if (!enc) {
         fprintf(stderr, "Error: Failed to create encoder\n");

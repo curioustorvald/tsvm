@@ -3,8 +3,8 @@
 
 CC = gcc
 CXX = g++
-CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE -march=native
-CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE -march=native
+CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE -march=native -mavx512f -mavx512dq -mavx512bw -mavx512vl
+CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE -march=native -mavx512f -mavx512dq -mavx512bw -mavx512vl
 DBGFLAGS =
 
 # Zstd flags (use pkg-config if available, fallback for cross-platform compatibility)

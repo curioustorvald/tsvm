@@ -232,42 +232,7 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - **255**: Haar (demonstration only, simplest possible wavelet)
 
 - **Format documentation**: `terranmon.txt` (search for "TSVM Advanced Video (TAV) Format")
-- **Version**: Current (perceptual quantisation, multi-wavelet support, significance map compression)
-
-#### TAV Significance Map Compression (Technical Details)
-
-The significance map compression technique implemented on 2025-09-29 provides substantial compression improvements by exploiting the sparsity of quantised DWT coefficients:
-
-**Implementation Files**:
-- **C Encoder**: `video_encoder/encoder_tav.c` - `preprocess_coefficients()` function (lines 960-991)
-- **C Decoder**: `video_encoder/decoder_tav.c` - `postprocess_coefficients()` function (lines 29-48)
-- **Kotlin Decoder**: `GraphicsJSR223Delegate.kt` - `postprocessCoefficients()` function for TSVM runtime
-
-**Technical Approach**:
-```
-Original: [coeff_array] → [concatenated_significance_maps + nonzero_values]
-
-Concatenated Maps Layout:
-[Y_map][Co_map][Cg_map][Y_vals][Co_vals][Cg_vals] (channel layout 0)
-[Y_map][Co_map][Cg_map][A_map][Y_vals][Co_vals][Cg_vals][A_vals] (channel layout 1)
-[Y_map][Y_vals] (channel layout 2)
-[Y_map][A_map][Y_vals][A_vals] (channel layout 3)
-[Co_map][Cg_map][Co_vals][Cg_vals] (channel layout 4)
-[Co_map][Cg_map][A_map][Co_vals][Cg_vals][A_vals] (channel layout 5)
-
-(replace Y->I, Co->Ct, Cg->Cp for ICtCp colour space)
-
-- Significance map: 1 bit per coefficient (0=zero, 1=non-zero)
-- Value arrays: Only non-zero coefficients in sequence per channel
-- Cross-channel optimisation: Zstd finds patterns across similar significance maps
-- Result: 16-18% compression improvement + 1.6% additional from concatenation
-```
-
-**Performance**:
-- **Sparsity exploitation**: Tested on quantised DWT coefficients with 86.9% sparsity (Y), 97.8% (Co), 99.5% (Cg)
-- **Compression improvement**: 16.4% from significance maps + 1.6% from concatenated layout
-- **Real-world impact**: 559 bytes saved per frame (5.59 MB per 10k frames)
-- **Cross-channel benefit**: Concatenated maps allow Zstd to exploit similarity between significance patterns
+- **Version**: Current (perceptual quantisation, multi-wavelet support, EZBC compression)
 
 #### TAV Temporal 3D DWT (GOP Unified Encoding)
 
@@ -275,15 +240,12 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 
 **Key Features**:
 - **3D DWT**: Applies DWT in both spatial (2D) and temporal (1D) dimensions for optimal spacetime compression
-- **Unified GOP Preprocessing**: Single significance map for all frames and channels in a GOP (width×height×N_frames×3_channels)
-- **FFT-based Phase Correlation**: Uses FFTW3 library for accurate global motion estimation with quarter-pixel precision
+- **Unified GOP Preprocessing**: Single EZBC tree for all frames and channels in a GOP (width×height×N_frames×3_channels)
 - **GOP Size**: Typically 8 frames (configurable), with scene change detection for adaptive GOPs
 - **Single-frame Fallback**: GOP size of 1 automatically uses traditional I-frame encoding
 
 **Packet Format**:
-- **0x12 (GOP_UNIFIED)**: `[gop_size][motion_vectors...][compressed_size][compressed_data]`
-  - Motion vectors stored as int16_t in quarter-pixel units for all frames in GOP
-  - Unified significance map for entire GOP block enables cross-frame compression
+- **0x12 (GOP_UNIFIED)**: `[gop_size][compressed_size][compressed_data]`
 - **0xFC (GOP_SYNC)**: `[frame_count]` - Indicates N frames were decoded from GOP block
 - **Timecode Emission**: One timecode packet per GOP (not per frame)
 
@@ -292,12 +254,6 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 // Unified preprocessing structure (encoder_tav.c:2371-2509)
 [All_Y_maps][All_Co_maps][All_Cg_maps][All_Y_values][All_Co_values][All_Cg_values]
 // Where maps are grouped by channel across all GOP frames for optimal Zstd compression
-
-// Phase correlation using FFT (encoder_tav.c:1246-1383)
-// - FFTW3 forward FFT on grayscale frames
-// - Cross-power spectrum computation
-// - Inverse FFT gives correlation peak at (dx, dy)
-// - Parabolic interpolation for quarter-pixel refinement
 ```
 
 **Usage**:
@@ -312,7 +268,6 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 **Compression Benefits**:
 - **Temporal Coherence**: Exploits similarity across consecutive frames
 - **Unified Compression**: Zstd compresses entire GOP as single block, finding patterns across time
-- **Motion Compensation**: FFT-based phase correlation provides accurate global motion estimation
 - **Adaptive GOPs**: Scene change detection ensures optimal GOP boundaries
 
 #### TAD Format (TSVM Advanced Audio)
