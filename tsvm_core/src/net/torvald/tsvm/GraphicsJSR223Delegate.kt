@@ -6712,6 +6712,82 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    /**
+     * Upload interlaced GOP frame from videoBuffer with deinterlacing.
+     * Handles field extraction and temporal deinterlacing for GOP frames.
+     *
+     * @param frameIndex Current frame index in GOP (0-based)
+     * @param gopSize Total number of frames in GOP
+     * @param width Frame width
+     * @param fieldHeight Height of each field (half of display height)
+     * @param fullHeight Full display height (2 * fieldHeight)
+     * @param frameCount Global frame counter for dithering
+     * @param bufferOffset Start offset of GOP in videoBuffer
+     * @param prevFieldAddr Memory address for previous field buffer
+     * @param currentFieldAddr Memory address for current field buffer
+     * @param nextFieldAddr Memory address for next field buffer
+     * @param deinterlaceOutputAddr Memory address for deinterlaced output
+     */
+    fun uploadInterlacedGopFrameToFramebuffer(
+        frameIndex: Int,
+        gopSize: Int,
+        width: Int,
+        fieldHeight: Int,
+        fullHeight: Int,
+        frameCount: Int,
+        bufferOffset: Long,
+        prevFieldAddr: Long,
+        currentFieldAddr: Long,
+        nextFieldAddr: Long,
+        deinterlaceOutputAddr: Long
+    ) {
+        val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
+        val fieldSize = width * fieldHeight * 3L
+
+        // Copy 3 consecutive fields from videoBuffer to field buffers
+        // Previous field (frame N-1, or N if first frame)
+        val prevFrameIdx = if (frameIndex > 0) frameIndex - 1 else 0
+        val prevFieldOffset = bufferOffset + (prevFrameIdx * fieldSize)
+        UnsafeHelper.memcpyRaw(
+            gpu.videoBuffer,
+            UnsafeHelper.getArrayOffset(gpu.videoBuffer) + prevFieldOffset,
+            null,
+            vm.usermem.ptr + prevFieldAddr,
+            fieldSize
+        )
+
+        // Current field (frame N)
+        val currFieldOffset = bufferOffset + (frameIndex * fieldSize)
+        UnsafeHelper.memcpyRaw(
+            gpu.videoBuffer,
+            UnsafeHelper.getArrayOffset(gpu.videoBuffer) + currFieldOffset,
+            null,
+            vm.usermem.ptr + currentFieldAddr,
+            fieldSize
+        )
+
+        // Next field (frame N+1, or N if last frame)
+        val nextFrameIdx = if (frameIndex < gopSize - 1) frameIndex + 1 else frameIndex
+        val nextFieldOffset = bufferOffset + (nextFrameIdx * fieldSize)
+        UnsafeHelper.memcpyRaw(
+            gpu.videoBuffer,
+            UnsafeHelper.getArrayOffset(gpu.videoBuffer) + nextFieldOffset,
+            null,
+            vm.usermem.ptr + nextFieldAddr,
+            fieldSize
+        )
+
+        // Deinterlace fields into full frame
+        tavDeinterlace(
+            frameCount, width, fieldHeight,
+            prevFieldAddr, currentFieldAddr, nextFieldAddr,
+            deinterlaceOutputAddr, "yadif"
+        )
+
+        // Upload deinterlaced full-height frame
+        uploadRGBToFramebuffer(deinterlaceOutputAddr, width, fullHeight, frameCount, false)
+    }
+
     // Async GOP decode state
     private val asyncDecodeComplete = java.util.concurrent.atomic.AtomicBoolean(false)
     private var asyncDecodeResult: Array<Any>? = null

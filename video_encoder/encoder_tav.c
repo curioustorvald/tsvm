@@ -2013,13 +2013,13 @@ static int calculate_max_decomp_levels(tav_encoder_t *enc, int width, int height
     int min_size = (!enc->monoblock) ? TILE_SIZE_Y : (width < height ? width : height);
 
     // Keep halving until we reach a minimum size (at least 4 pixels)
-    while (min_size >= 8) {  // Need at least 8 pixels to safely halve to 4
+    while (min_size >= 16) { // apparently you don't want it to be deep
         min_size /= 2;
         levels++;
     }
 
-    // Cap at a reasonable maximum to avoid going too deep
-    return levels > 10 ? 10 : levels;
+    // Cap at a reasonable maximum to avoid going deep
+    return levels > 6 ? 6 : levels;
 }
 
 // Bitrate control functions
@@ -2274,6 +2274,16 @@ static int parse_resolution(const char *res_str, int *width, int *height, const 
         *height = 144;
         return 1;
     }
+    if (strcmp(res_str, "d1") == 0 || strcmp(res_str, "D1") == 0) {
+        *width = 720;
+        *height = 486;
+        return 1;
+    }
+    if (strcmp(res_str, "d1pal") == 0 || strcmp(res_str, "D1PAL") == 0) {
+        *width = 720;
+        *height = 576;
+        return 1;
+    }
     if (strcmp(res_str, "half") == 0 || strcmp(res_str, "HALF") == 0) {
         *width = DEFAULT_WIDTH >> 1;
         *height = DEFAULT_HEIGHT >> 1;
@@ -2447,6 +2457,8 @@ static void show_usage(const char *program_name) {
     printf("\n\nVideo Size Keywords:");
     printf("\n  -s cif: equal to 352x288");
     printf("\n  -s qcif: equal to 176x144");
+    printf("\n  -s d1: equal to 720x486");
+    printf("\n  -s d1pal: equal to 720x576");
     printf("\n  -s half: equal to %dx%d", DEFAULT_WIDTH >> 1, DEFAULT_HEIGHT >> 1);
     printf("\n  -s default: equal to %dx%d", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("\n  -s original: use input video's original resolution");
@@ -3130,6 +3142,112 @@ static void dwt_haar_forward_1d(float *data, int length) {
     memcpy(data, temp, length * sizeof(float));
     free(temp);
 }
+
+// Biorthogonal 2,4 (LeGall 2/4) FORWARD 1D transform
+static void dwt_bior24_forward_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(sizeof(float) * length);
+    int half = (length + 1) / 2;
+    int i;
+
+    // Even = low-pass input samples
+    // Odd  = high-pass input samples
+    // Use lifting: predict (P) then update (U)
+
+    // Temporary arrays for even and odd parts
+    // even[k] = data[2k]
+    // odd[k]  = data[2k+1]
+    int nE = half;
+    int nO = length / 2;
+
+    float *even = temp;            // reuse temp for even
+    float *odd  = temp + nE;       // reuse temp for odd
+
+    // Split into even and odd samples
+    for (i = 0; i < nE; i++) {
+        even[i] = data[2 * i];
+    }
+    for (i = 0; i < nO; i++) {
+        odd[i] = data[2 * i + 1];
+    }
+
+    // ---- Predict step: d[i] = odd[i] - 0.5 * even[i] ----
+    for (i = 0; i < nO; i++) {
+        odd[i] = odd[i] - 0.5f * even[i];
+    }
+
+    // ---- Update step: s[i] = even[i] + 0.25 * d[i] ----
+    for (i = 0; i < nE; i++) {
+        // When odd array has fewer samples (odd length case),
+        // treat missing d value as 0.
+        float d = (i < nO) ? odd[i] : 0.0f;
+        even[i] = even[i] + 0.25f * d;
+    }
+
+    // Now write back in your Haar layout:
+    // [LLLL | HHHH]
+    for (i = 0; i < nE; i++) {
+        data[i] = even[i];
+    }
+    for (i = 0; i < nO; i++) {
+        data[half + i] = odd[i];
+    }
+    // Any leftover slot for odd-length = zero (like Haar)
+    for (i = nO; i < (length - half); i++) {
+        data[half + i] = 0.0f;
+    }
+
+    free(temp);
+}
+
+
+// Biorthogonal 2,4 (LeGall 2/4) INVERSE 1D transform
+static void dwt_bior24_inverse_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(sizeof(float) * length);
+    int half = (length + 1) / 2;
+    int i;
+
+    int nE = half;
+    int nO = length / 2;
+
+    float *even = temp;
+    float *odd  = temp + nE;
+
+    // Load L and H
+    for (i = 0; i < nE; i++) {
+        even[i] = data[i];
+    }
+    for (i = 0; i < nO; i++) {
+        odd[i] = data[half + i];
+    }
+
+    // ---- Inverse update: s[i] = s[i] - 0.25*d[i] ----
+    for (i = 0; i < nE; i++) {
+        float d = (i < nO) ? odd[i] : 0.0f;
+        even[i] = even[i] - 0.25f * d;
+    }
+
+    // ---- Inverse predict: o[i] = d[i] + 0.5*s[i] ----
+    for (i = 0; i < nO; i++) {
+        odd[i] = odd[i] + 0.5f * even[i];
+    }
+
+    // Interleave back into output
+    for (i = 0; i < nO; i++) {
+        data[2 * i]     = even[i];
+        data[2 * i + 1] = odd[i];
+    }
+    if (nE > nO) {
+        // Trailing even sample for odd length
+        data[2 * nO] = even[nO];
+    }
+
+    free(temp);
+}
+
 
 // Haar wavelet inverse 1D transform
 // Reconstructs from averages (low-pass) and differences (high-pass)
@@ -11048,8 +11166,8 @@ int main(int argc, char *argv[]) {
         enc->perceptual_tuning = 0;
     }
 
-    // disable monoblock mode if either width or height exceeds tie size
-    if (enc->width > TILE_SIZE_X || enc->height > TILE_SIZE_Y) {
+    // disable monoblock mode if either width or height exceeds D1 PAL size
+    if (enc->width > 720 || enc->height > 576) {
         enc->monoblock = 0;
     }
 

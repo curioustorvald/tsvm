@@ -1023,6 +1023,52 @@ static void dwt_53_inverse_1d(float *data, int length) {
     free(temp);
 }
 
+// Biorthogonal 2,4 (LeGall 2/4) INVERSE 1D transform
+static void dwt_bior24_inverse_1d(float *data, int length) {
+    if (length < 2) return;
+
+    float *temp = malloc(sizeof(float) * length);
+    int half = (length + 1) / 2;
+    int i;
+
+    int nE = half;
+    int nO = length / 2;
+
+    float *even = temp;
+    float *odd  = temp + nE;
+
+    // Load L and H
+    for (i = 0; i < nE; i++) {
+        even[i] = data[i];
+    }
+    for (i = 0; i < nO; i++) {
+        odd[i] = data[half + i];
+    }
+
+    // ---- Inverse update: s[i] = s[i] - 0.25*d[i] ----
+    for (i = 0; i < nE; i++) {
+        float d = (i < nO) ? odd[i] : 0.0f;
+        even[i] = even[i] - 0.25f * d;
+    }
+
+    // ---- Inverse predict: o[i] = d[i] + 0.5*s[i] ----
+    for (i = 0; i < nO; i++) {
+        odd[i] = odd[i] + 0.5f * even[i];
+    }
+
+    // Interleave back into output
+    for (i = 0; i < nO; i++) {
+        data[2 * i]     = even[i];
+        data[2 * i + 1] = odd[i];
+    }
+    if (nE > nO) {
+        // Trailing even sample for odd length
+        data[2 * nO] = even[nO];
+    }
+
+    free(temp);
+}
+
 // Multi-level inverse DWT (matches TSVM exactly with correct non-power-of-2 handling)
 static void apply_inverse_dwt_multilevel(float *data, int width, int height, int levels, int filter_type) {
     int max_size = (width > height) ? width : height;
@@ -1044,14 +1090,14 @@ static void apply_inverse_dwt_multilevel(float *data, int width, int height, int
     }
 
     // Debug: Print dimension sequence
-    static int debug_once = 1;
+    /*static int debug_once = 1;
     if (debug_once) {
         fprintf(stderr, "DWT dimension sequence for %dx%d with %d levels:\n", width, height, levels);
         for (int i = 0; i <= levels; i++) {
             fprintf(stderr, "  Level %d: %dx%d\n", i, widths[i], heights[i]);
         }
         debug_once = 0;
-    }
+    }*/
 
     // TSVM: for (level in levels - 1 downTo 0)
     // Apply inverse transforms using pre-calculated dimensions
