@@ -19,7 +19,7 @@
 #include <float.h>
 #include "tav_avx512.h"  // AVX-512 SIMD optimisations
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251124 (3d-dwt,tad,ssf-tc,cdf53-motion,avx512)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251124 (3d-dwt,tad,ssf-tc,cdf53-motion,avx512,presets)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -1835,6 +1835,7 @@ typedef struct tav_encoder_s {
     int pcm8_audio; // 1 = use 8-bit PCM audio (packet 0x21), 0 = use MP2 (default)
     int tad_audio; // 1 = use TAD audio (packet 0x24), 0 = use MP2/PCM8 (default, quality follows quality_level)
     int enable_crop_encoding;    // 1 = encode cropped active region only (Phase 2), 0 = encode full frame (default)
+    uint8_t encoder_preset;      // Encoder preset flags: bit 0 = sports (finer temporal quantisation), bit 1 = anime (no grain)
 
     // Active region tracking (for Phase 2 crop encoding)
     uint16_t active_mask_top, active_mask_right, active_mask_bottom, active_mask_left;
@@ -2432,6 +2433,9 @@ static void show_usage(const char *program_name) {
     printf("  --dump-frame N          Dump quantised coefficients for frame N (creates .bin files)\n");
     printf("  --wavelet N             Wavelet filter: 0=LGT 5/3, 1=CDF 9/7, 2=CDF 13/7, 16=DD-4, 255=Haar (default: 1)\n");
     printf("  --zstd-level N          Zstd compression level 1-22 (default: %d, higher = better compression but slower)\n", DEFAULT_ZSTD_LEVEL);
+    printf("  --preset PRESET         Encoder presets (comma-separated, e.g., 'sports,anime'):\n");
+    printf("                            sports (or sport): Finer temporal quantisation for better motion detail\n");
+    printf("                            anime (or animation): Disable grain synthesis for cleaner animated content\n");
     printf("  --help                  Show this help\n\n");
 
     printf("Audio Rate by Quality:\n  ");
@@ -3355,8 +3359,9 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
                                         int spatial_size,
                                         int base_quantiser,
                                         int is_chroma) {
-    const float BETA = 0.6f;  // Temporal scaling exponent (aggressive for temporal high-pass)
-    const float KAPPA = 1.14f;
+    // Sports preset: use finer temporal quantisation (less aggressive)
+    const float BETA = (enc->encoder_preset & 0x01) ? 0.0f : 0.6f;
+    const float KAPPA = (enc->encoder_preset & 0x01) ? 1.0f : 1.14f;
 
     // Process each temporal subband independently (separable approach)
     for (int t = 0; t < num_frames; t++) {
@@ -7528,8 +7533,10 @@ static int write_tav_header(tav_encoder_t *enc) {
     // Entropy Coder (0 = Twobit-map, 1 = EZBC, 2 = Raw)
     fputc(enc->preprocess_mode, enc->output_fp);
 
-    // Reserved bytes (2 bytes)
-    fputc(0, enc->output_fp);
+    // Encoder Preset (byte 28): bit 0 = sports, bit 1 = anime
+    fputc(enc->encoder_preset, enc->output_fp);
+
+    // Reserved byte (1 byte)
     fputc(0, enc->output_fp);
 
     // Device Orientation (default: 0 = no rotation)
@@ -10775,6 +10782,7 @@ int main(int argc, char *argv[]) {
         {"tad-audio", no_argument, 0, 1028},
         {"raw-coeffs", no_argument, 0, 1029},
         {"single-pass", no_argument, 0, 1050},  // disable two-pass encoding with wavelet-based scene detection
+        {"preset", required_argument, 0, 1051},  // Encoder presets: sports, anime (comma-separated)
         {"enable-crop-encoding", no_argument, 0, 1052},  // Phase 2: encode cropped active region only (experimental)
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
@@ -11012,6 +11020,34 @@ int main(int argc, char *argv[]) {
                 enc->two_pass_mode = 0;
                 printf("Two-pass wavelet-based scene change detection disabled\n");
                 break;
+            case 1051: { // --preset
+                char *preset_str = strdup(optarg);
+                char *token = strtok(preset_str, ",");
+                while (token != NULL) {
+                    // Trim leading/trailing whitespace
+                    while (*token == ' ' || *token == '\t') token++;
+                    char *end = token + strlen(token) - 1;
+                    while (end > token && (*end == ' ' || *end == '\t')) {
+                        *end = '\0';
+                        end--;
+                    }
+
+                    // Check for presets and aliases
+                    if (strcmp(token, "sports") == 0 || strcmp(token, "sport") == 0) {
+                        enc->encoder_preset |= 0x01;
+                        printf("Preset 'sports' enabled: finer temporal quantisation (BETA=0.25, KAPPA=1.0)\n");
+                    } else if (strcmp(token, "anime") == 0 || strcmp(token, "animation") == 0) {
+                        enc->encoder_preset |= 0x02;
+                        printf("Preset 'anime' enabled: grain synthesis disabled\n");
+                    } else {
+                        fprintf(stderr, "Warning: Unknown preset '%s' (valid: sports, anime)\n", token);
+                    }
+
+                    token = strtok(NULL, ",");
+                }
+                free(preset_str);
+                break;
+            }
             case 1052: // --enable-crop-encoding
                 enc->enable_crop_encoding = 1;
                 printf("Phase 2 crop encoding enabled (experimental)\n");

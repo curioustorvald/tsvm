@@ -416,9 +416,10 @@ header.videoFlags = seqread.readOneByte()
 header.qualityLevel = seqread.readOneByte() // the decoder expects biased value
 header.channelLayout = seqread.readOneByte()
 header.entropyCoder = seqread.readOneByte()
+header.encoderPreset = seqread.readOneByte()  // Byte 28: bit 0 = sports, bit 1 = anime
 
-// Skip reserved bytes (2) and device orientation (1)
-seqread.skip(3)
+// Skip reserved byte (1) and device orientation (1)
+seqread.skip(2)
 
 header.fileRole = seqread.readOneByte()
 
@@ -1248,7 +1249,8 @@ try {
                         header.decompLevels,       // TAV-specific parameter
                         isLossless,
                         header.version,            // TAV version for colour space detection
-                        header.entropyCoder        // Entropy coder: 0 = Twobit-map, 1 = EZBC
+                        header.entropyCoder,       // Entropy coder: 0 = Twobit-map, 1 = EZBC
+                        header.encoderPreset       // Encoder preset: bit 0 = sports, bit 1 = anime
                     )
 
                     decodeTime = (sys.nanoTime() - decodeStart) / 1000000.0
@@ -1344,7 +1346,8 @@ try {
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         bufferOffset,
-                        header.temporalMotionCoder
+                        header.temporalMotionCoder,
+                        header.encoderPreset       // Encoder preset: bit 0 = sports, bit 1 = anime
                     )
 
                     asyncDecodeInProgress = true
@@ -1418,7 +1421,8 @@ try {
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         nextOffset,
-                        header.temporalMotionCoder
+                        header.temporalMotionCoder,
+                        header.encoderPreset
                     )
 
                     // Set async decode tracking variables
@@ -1461,7 +1465,8 @@ try {
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         decodingOffset,
-                        header.temporalMotionCoder
+                        header.temporalMotionCoder,
+                        header.encoderPreset
                     )
 
                     // Set async decode tracking variables
@@ -1829,7 +1834,8 @@ try {
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         readyGopData.slot * SLOT_SIZE,
-                        header.temporalMotionCoder
+                        header.temporalMotionCoder,
+                        header.encoderPreset
                     )
 
                     // CRITICAL FIX: Set async decode tracking variables so decode is properly tracked
@@ -2021,7 +2027,8 @@ try {
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         decodingGopData.slot * SLOT_SIZE,
-                        header.temporalMotionCoder
+                        header.temporalMotionCoder,
+                        header.encoderPreset
                     )
 
                     // CRITICAL FIX: Set async decode tracking variables so decode is properly tracked
@@ -2062,7 +2069,8 @@ try {
                         header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                         header.entropyCoder,
                         readyGopData.slot * SLOT_SIZE,
-                        header.temporalMotionCoder
+                        header.temporalMotionCoder,
+                        header.encoderPreset
                     )
                     readyGopData.needsDecode = false
                     readyGopData.startTime = sys.nanoTime()
@@ -2140,7 +2148,8 @@ try {
                             header.waveletFilter, header.decompLevels, TAV_TEMPORAL_LEVELS,
                             header.entropyCoder,
                             targetOffset,
-                            header.temporalMotionCoder
+                            header.temporalMotionCoder,
+                            header.encoderPreset
                         )
 
                         asyncDecodeInProgress = true

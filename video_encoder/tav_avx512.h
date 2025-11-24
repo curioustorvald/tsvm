@@ -456,7 +456,7 @@ static inline void quantise_dwt_coefficients_avx512(
             quant = _mm512_mask_blend_ps(dead_mask, quant, zero_vec);
         }
 
-        // Manual rounding to match scalar behavior (round away from zero)
+        // Manual rounding to match scalar behaviour (round away from zero)
         // First add 0.5 or -0.5 based on sign
         __mmask16 pos_mask = _mm512_cmp_ps_mask(quant, zero_vec, _CMP_GE_OQ);
         __m512 round_val = _mm512_mask_blend_ps(pos_mask, nhalf_vec, half_vec);
@@ -510,7 +510,7 @@ static inline void quantise_dwt_coefficients_perceptual_avx512(
         __m512 effective_q = _mm512_mul_ps(base_q_vec, weight);
         __m512 quant = _mm512_div_ps(coeff, effective_q);
 
-        // Manual rounding to match scalar behavior
+        // Manual rounding to match scalar behaviour
         __mmask16 pos_mask = _mm512_cmp_ps_mask(quant, zero_vec, _CMP_GE_OQ);
         __m512 round_val = _mm512_mask_blend_ps(pos_mask, nhalf_vec, half_vec);
         quant = _mm512_add_ps(quant, round_val);
