@@ -5874,7 +5874,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val currentCo = FloatArray(coeffCount)
         val currentCg = FloatArray(coeffCount)
 
-        // Delta-specific perceptual reconstruction using motion-optimized coefficients
+        // Delta-specific perceptual reconstruction using motion-optimised coefficients
         // Estimate quality level from quantisation parameters for perceptual weighting
         val estimatedQualityY = when {
             qY <= 6 -> 4    // High quality

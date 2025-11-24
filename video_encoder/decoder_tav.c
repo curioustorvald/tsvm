@@ -15,7 +15,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include "decoder_tad.h"  // Shared TAD decoder library
-#include "tav_avx512.h"  // AVX-512 SIMD optimizations
+#include "tav_avx512.h"  // AVX-512 SIMD optimisations
 
 #define DECODER_VENDOR_STRING "Decoder-TAV 20251124 (avx512)"
 
@@ -315,7 +315,7 @@ static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, cons
         //                   for bright pixels, creating dark DWT-pattern blemishes
 
 #ifdef __AVX512F__
-        // Use AVX-512 optimized dequantization if available (1.1x speedup against -Ofast)
+        // Use AVX-512 optimised dequantization if available (1.1x speedup against -Ofast)
         // Check: subband has >=16 elements AND won't exceed buffer bounds
         const int subband_end = subband->coeff_start + subband->coeff_count;
         if (g_simd_level >= SIMD_AVX512F && subband->coeff_count >= 16 && subband_end <= coeff_count) {
@@ -2713,7 +2713,7 @@ static void print_usage(const char *prog) {
     printf("Usage: %s -i input.tav -o output.mkv\n\n", prog);
     printf("Options:\n");
     printf("  -i <file>    Input TAV file\n");
-    printf("  -o <file>    Output MKV file (FFV1 video + PCMu8 audio)\n");
+    printf("  -o <file>    Output MKV file (optional, auto-generated from input)\n");
     printf("  -v           Verbose output\n");
     printf("  -h, --help   Show this help\n\n");
     printf("Supported features (matches TSVM decoder):\n");
@@ -2767,10 +2767,44 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!input_file || !output_file) {
-        fprintf(stderr, "Error: Both input and output files are required\n\n");
+    if (!input_file) {
+        fprintf(stderr, "Error: Input file is required\n\n");
         print_usage(argv[0]);
         return 1;
+    }
+
+    // Generate output filename if not provided
+    if (!output_file) {
+        size_t input_len = strlen(input_file);
+        output_file = malloc(input_len + 32);  // Extra space for extension
+
+        // Find the last directory separator
+        const char *basename_start = strrchr(input_file, '/');
+        if (!basename_start) basename_start = strrchr(input_file, '\\');
+        basename_start = basename_start ? basename_start + 1 : input_file;
+
+        // Copy directory part
+        size_t dir_len = basename_start - input_file;
+        strncpy(output_file, input_file, dir_len);
+
+        // Find the .tad extension
+        const char *ext = strrchr(basename_start, '.');
+        if (ext && (strcmp(ext, ".tav") == 0 || strcmp(ext, ".mv3") == 0)) {
+            // Copy basename without .tav or .mv3
+            size_t name_len = ext - basename_start;
+            strncpy(output_file + dir_len, basename_start, name_len);
+            output_file[dir_len + name_len] = '\0';
+        } else {
+            // No .tad extension, copy entire basename
+            strcpy(output_file + dir_len, basename_start);
+        }
+
+        // Append appropriate extension
+        strcat(output_file, ".mkv");
+
+        if (verbose) {
+            printf("Auto-generated output path: %s\n", output_file);
+        }
     }
 
     // Create temporary audio file path

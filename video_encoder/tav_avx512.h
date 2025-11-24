@@ -1,13 +1,13 @@
 /*
- * TAV AVX-512 Optimizations
+ * TAV AVX-512 Optimisations
  *
- * This file contains AVX-512 optimized versions of performance-critical functions
+ * This file contains AVX-512 optimised versions of performance-critical functions
  * in the TAV encoder. Runtime CPU detection ensures fallback to scalar versions
  * on non-AVX-512 systems.
  *
- * Optimized functions:
+ * Optimised functions:
  * - 1D DWT transforms (5/3, 9/7, Haar, Bior13/7, DD4)
- * - Quantization functions
+ * - Quantisation functions
  * - RGB to YCoCg color conversion
  * - 2D DWT gather/scatter operations
  *
@@ -51,7 +51,7 @@ static inline void tav_simd_init(void) {
 #ifdef __AVX512F__
     if (cpu_has_avx512f()) {
         g_simd_level = SIMD_AVX512F;
-        fprintf(stderr, "[TAV] AVX-512 optimizations enabled\n");
+        fprintf(stderr, "[TAV] AVX-512 optimisations enabled\n");
     } else {
         g_simd_level = SIMD_NONE;
         fprintf(stderr, "[TAV] AVX-512 not available, using scalar fallback\n");
@@ -85,7 +85,7 @@ static inline __m512 _mm512_clamp_ps(__m512 v, __m512 min_val, __m512 max_val) {
 }
 
 // =============================================================================
-// AVX-512 Optimized 1D DWT Forward Transforms
+// AVX-512 Optimised 1D DWT Forward Transforms
 // =============================================================================
 
 // 5/3 Reversible Forward DWT with AVX-512
@@ -425,7 +425,7 @@ static inline void dwt_haar_forward_1d_avx512(float *data, int length) {
 }
 
 // =============================================================================
-// AVX-512 Optimized Quantization Functions
+// AVX-512 Optimised Quantisation Functions
 // =============================================================================
 
 static inline void quantise_dwt_coefficients_avx512(
@@ -488,7 +488,7 @@ static inline void quantise_dwt_coefficients_avx512(
     }
 }
 
-// Perceptual quantization with per-coefficient weighting
+// Perceptual quantisation with per-coefficient weighting
 static inline void quantise_dwt_coefficients_perceptual_avx512(
     float *coeffs, int16_t *quantised, int size,
     float *weights,  // Pre-computed per-coefficient weights
@@ -534,10 +534,10 @@ static inline void quantise_dwt_coefficients_perceptual_avx512(
 }
 
 // =============================================================================
-// AVX-512 Optimized Dequantization Functions
+// AVX-512 Optimised Dequantisation Functions
 // =============================================================================
 
-// Basic dequantization: quantised[i] * effective_q
+// Basic dequantisation: quantised[i] * effective_q
 static inline void dequantise_dwt_coefficients_avx512(
     const int16_t *quantised, float *coeffs, int size,
     float effective_q
@@ -555,7 +555,7 @@ static inline void dequantise_dwt_coefficients_avx512(
         // Convert int32 to float
         __m512 quant_f32 = _mm512_cvtepi32_ps(quant_i32);
 
-        // Multiply by quantizer
+        // Multiply by quantiser
         __m512 dequant = _mm512_mul_ps(quant_f32, q_vec);
 
         _mm512_storeu_ps(&coeffs[i], dequant);
@@ -567,7 +567,7 @@ static inline void dequantise_dwt_coefficients_avx512(
     }
 }
 
-// Perceptual dequantization with per-coefficient weights
+// Perceptual dequantisation with per-coefficient weights
 static inline void dequantise_dwt_coefficients_perceptual_avx512(
     const int16_t *quantised, float *coeffs, int size,
     const float *weights, float base_quantiser
@@ -603,7 +603,7 @@ static inline void dequantise_dwt_coefficients_perceptual_avx512(
 }
 
 // =============================================================================
-// AVX-512 Optimized RGB to YCoCg Conversion
+// AVX-512 Optimised RGB to YCoCg Conversion
 // =============================================================================
 
 static inline void rgb_to_ycocg_avx512(const uint8_t *rgb, float *y, float *co, float *cg, int width, int height) {
@@ -658,10 +658,10 @@ static inline void rgb_to_ycocg_avx512(const uint8_t *rgb, float *y, float *co, 
 }
 
 // =============================================================================
-// AVX-512 Optimized 2D DWT with Gather/Scatter
+// AVX-512 Optimised 2D DWT with Gather/Scatter
 // =============================================================================
 
-// Optimized column extraction using gather
+// Optimised column extraction using gather
 static inline void dwt_2d_extract_column_avx512(
     const float *tile_data, float *column,
     int x, int width, int height
@@ -688,7 +688,7 @@ static inline void dwt_2d_extract_column_avx512(
     }
 }
 
-// Optimized column insertion using scatter
+// Optimised column insertion using scatter
 static inline void dwt_2d_insert_column_avx512(
     float *tile_data, const float *column,
     int x, int width, int height

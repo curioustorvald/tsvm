@@ -17,7 +17,7 @@
 #include <time.h>
 #include <limits.h>
 #include <float.h>
-#include "tav_avx512.h"  // AVX-512 SIMD optimizations
+#include "tav_avx512.h"  // AVX-512 SIMD optimisations
 
 #define ENCODER_VENDOR_STRING "Encoder-TAV 20251124 (3d-dwt,tad,ssf-tc,cdf53-motion,avx512)"
 
@@ -2383,10 +2383,6 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
                                                            float *coeffs, int16_t *quantised, int size,
                                                            int base_quantiser, int width, int height,
                                                            int decomp_levels, int is_chroma, int frame_count);
-static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_encoder_t *enc,
-                                                           float *coeffs, int16_t *quantised, int size,
-                                                           int base_quantiser, int width, int height,
-                                                           int decomp_levels, int is_chroma, int frame_count);
 static size_t preprocess_coefficients_variable_layout(preprocess_mode_t preprocess_mode, int width, int height,
                                                        int16_t *coeffs_y, int16_t *coeffs_co, int16_t *coeffs_cg, int16_t *coeffs_alpha,
                                                        int coeff_count, int channel_layout, uint8_t *output_buffer);
@@ -2424,7 +2420,7 @@ static void show_usage(const char *program_name) {
     printf("  --enable-delta          Enable delta encoding\n");
     printf("  --delta-haar N          Apply N-level Haar DWT to delta coefficients (1-6, auto-enables delta)\n");
     printf("  --3d-dwt                Enable temporal 3D DWT (GOP-based encoding with temporal transform; the default encoding mode)\n");
-    printf("  --motion-coder N        Temporal wavelet: 0=Haar, 1=CDF 5/3 (default: auto-select based on resolution; use 0 for older version compatibility)\n");
+    printf("  --motion-coder N        Temporal wavelet: 0=Haar, 1=CDF 5/3 (default: auto-select based on resolution; use 0 for older version compatibility; use 1 for smoother motion)\n");
     printf("  --single-pass           Disable two-pass encoding with wavelet-based scene change detection (optimal GOP boundaries)\n");
 //    printf("  --mc-ezbc               Enable MC-EZBC block-based motion compensation (requires --temporal-dwt, implies --ezbc)\n");
     printf("  --ezbc                  Enable EZBC (Embedded Zero Block Coding) entropy coding. May help reducing file size on high-quality videos\n");
@@ -3388,37 +3384,18 @@ static void quantise_3d_dwt_coefficients(tav_encoder_t *enc,
         //   Q_effective = tH_base × spatial_weight
         // Where spatial_weight depends on spatial frequency (LL, LH, HL, HH subbands)
         // This reuses all existing perceptual weighting and dead-zone logic
-        //
-        // CRITICAL: Use no_normalisation variant when EZBC is enabled
-        // - EZBC mode: coefficients must be denormalised (quantise + multiply back)
-        // - Twobit-map/raw mode: coefficients stay normalised (quantise only)
-        if (enc->preprocess_mode == PREPROCESS_EZBC) {
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(
-                enc,
-                gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
-                quantised[t],            // Output: quantised spatial coefficients (denormalised for EZBC)
-                spatial_size,            // Number of spatial coefficients
-                temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
-                enc->width,              // Frame width
-                enc->height,             // Frame height
-                enc->decomp_levels,      // Spatial decomposition levels (typically 6)
-                is_chroma,               // Is chroma channel (gets additional quantisation)
-                enc->frame_count + t     // Frame number (for any frame-dependent logic)
-            );
-        } else {
-            quantise_dwt_coefficients_perceptual_per_coeff(
-                enc,
-                gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
-                quantised[t],            // Output: quantised spatial coefficients (normalised for twobit-map)
-                spatial_size,            // Number of spatial coefficients
-                temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
-                enc->width,              // Frame width
-                enc->height,             // Frame height
-                enc->decomp_levels,      // Spatial decomposition levels (typically 6)
-                is_chroma,               // Is chroma channel (gets additional quantisation)
-                enc->frame_count + t     // Frame number (for any frame-dependent logic)
-            );
-        }
+        quantise_dwt_coefficients_perceptual_per_coeff(
+            enc,
+            gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
+            quantised[t],            // Output: quantised spatial coefficients (normalised for twobit-map)
+            spatial_size,            // Number of spatial coefficients
+            temporal_base_quantiser, // Temporally-scaled base quantiser (tH_base)
+            enc->width,              // Frame width
+            enc->height,             // Frame height
+            enc->decomp_levels,      // Spatial decomposition levels (typically 6)
+            is_chroma,               // Is chroma channel (gets additional quantisation)
+            enc->frame_count + t     // Frame number (for any frame-dependent logic)
+        );
 
         if (enc->verbose && (t == 0 || t == num_frames - 1)) {
             printf("  Temporal subband %d: level=%d, tH_base=%d\n",
@@ -4092,13 +4069,13 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
         // EZBC mode: Quantise with perceptual weighting but no normalisation (division by quantiser)
         // EZBC will compress by encoding only significant bitplanes
 //        fprintf(stderr, "[EZBC-QUANT-PFRAME] Using perceptual quantisation without normalisation\n");
-        quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_y_dwt, quantised_y, frame_size,
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_y_dwt, quantised_y, frame_size,
                                                       qY, enc->width, enc->height,
                                                       enc->decomp_levels, 0, 0);
-        quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_co_dwt, quantised_co, frame_size,
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
                                                       enc->quantiser_co, enc->width, enc->height,
                                                       enc->decomp_levels, 1, 0);
-        quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, residual_cg_dwt, quantised_cg, frame_size,
+        quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
                                                       enc->quantiser_cg, enc->width, enc->height,
                                                       enc->decomp_levels, 1, 0);
 
@@ -6431,7 +6408,7 @@ static void quantise_dwt_coefficients(float *coeffs, int16_t *quantised, int siz
     effective_q = FCLAMP(effective_q, 1.0f, 4096.0f);
 
 #ifdef __AVX512F__
-    // Use AVX-512 optimized version if available (2x speedup against -Ofast)
+    // Use AVX-512 optimised version if available (2x speedup against -Ofast)
     if (g_simd_level >= SIMD_AVX512F) {
         quantise_dwt_coefficients_avx512(coeffs, quantised, size, effective_q, dead_zone_threshold,
                                          width, height, decomp_levels, is_chroma,
@@ -6739,76 +6716,6 @@ static void quantise_dwt_coefficients_perceptual_per_coeff(tav_encoder_t *enc,
     }
 }
 
-// Quantisation for EZBC mode: quantises to discrete levels but doesn't normalise (shrink) values
-// This reduces coefficient precision while preserving magnitude for EZBC's bitplane encoding
-static void quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(tav_encoder_t *enc,
-                                                          float *coeffs, int16_t *quantised, int size,
-                                                          int base_quantiser, int width, int height,
-                                                          int decomp_levels, int is_chroma, int frame_count) {
-    (void)frame_count;  // Unused parameter
-
-    float effective_base_q = base_quantiser;
-    effective_base_q = FCLAMP(effective_base_q, 1.0f, 4096.0f);
-
-    for (int i = 0; i < size; i++) {
-        // Apply perceptual weight based on coefficient's position in DWT layout
-        float weight = get_perceptual_weight_for_position(enc, i, width, height, decomp_levels, is_chroma);
-        float effective_q = effective_base_q * weight;
-
-        // Step 1: Quantise - divide by quantiser to get normalised value
-        float quantised_val = coeffs[i] / effective_q;
-
-        // Step 2: Apply dead-zone quantisation to normalised value
-        if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
-            int level = get_subband_level(i, width, height, decomp_levels);
-            int subband_type = get_subband_type(i, width, height, decomp_levels);
-            float level_threshold = 0.0f;
-
-            if (level == 1) {
-                // Finest level (level 1: 280x224)
-                if (subband_type == 3) {
-                    // HH1: full dead-zone
-                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
-                } else if (subband_type == 1 || subband_type == 2) {
-                    // LH1, HL1: half dead-zone
-                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
-                }
-            } else if (level == 2) {
-                // Second-finest level (level 2: 140x112)
-                if (subband_type == 3) {
-                    // HH2: half dead-zone
-                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
-                }
-                // LH2, HL2: no dead-zone
-            }
-            // Coarser levels (3-6): no dead-zone to preserve structural information
-
-            if (fabsf(quantised_val) <= level_threshold) {
-                quantised_val = 0.0f;
-            }
-        }
-
-        // Step 3: Round to discrete quantisation levels
-        quantised_val = roundf(quantised_val); // file size explodes without rounding
-
-        // FIX: Store normalised values (not denormalised) to avoid int16_t overflow
-        // EZBC bitplane encoding works fine with normalised coefficients
-        // Denormalisation was causing bright pixels to clip at 32767
-        quantised[i] = (int16_t)CLAMP((int)quantised_val, -32768, 32767);
-
-        // Debug: Print LL subband coefficients (9×7 at top-left for 560×448)
-        /*static int debug_once = 1;
-        if (debug_once && i < 63 && width == 560 && !is_chroma) {
-            int x = i % width;
-            int y = i / width;
-            if (x < 9 && y < 7) {
-                fprintf(stderr, "[EZBC-QUANT-DEBUG] LL coeff[%d,%d] (idx=%d): coeff=%.1f, weight=%.3f, effective_q=%.1f, quantised_val=%.1f, stored=%d\n",
-                        x, y, i, coeffs[i], weight, effective_q, quantised_val, quantised[i]);
-                if (i == 62) debug_once = 0;
-            }
-        }*/
-    }
-}
 
 // Serialise tile data for compression
 static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
@@ -6874,9 +6781,9 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
         if (enc->preprocess_mode == PREPROCESS_EZBC) {
             // EZBC mode: Quantise with perceptual weighting but no normalisation (division by quantiser)
 //            fprintf(stderr, "[EZBC-QUANT-INTRA] Using perceptual quantisation without normalisation\n");
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 0, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
-            quantise_dwt_coefficients_perceptual_per_coeff_no_normalisation(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_y_data, quantised_y, tile_size, this_frame_qY, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 0, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_co_data, quantised_co, tile_size, this_frame_qCo, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
+            quantise_dwt_coefficients_perceptual_per_coeff(enc, (float*)tile_cg_data, quantised_cg, tile_size, this_frame_qCg, enc->temporal_gop_width, enc->temporal_gop_height, enc->decomp_levels, 1, enc->frame_count);
 
             // Print max abs for debug
             int max_y = 0, max_co = 0, max_cg = 0;
@@ -8725,7 +8632,7 @@ static int detect_letterbox_pillarbox(tav_encoder_t *enc,
         for (int x = 0; x < width; x += SAMPLE_RATE_HORZ) {
             int idx = y * width + x;
 
-            // Use pre-converted YCoCg values (optimization: avoid RGB→YCoCg conversion in loop)
+            // Use pre-converted YCoCg values (optimisation: avoid RGB→YCoCg conversion in loop)
             float yval = enc->current_frame_y[idx];
              float co = enc->current_frame_co[idx];
              float cg = enc->current_frame_cg[idx];
@@ -8764,7 +8671,7 @@ static int detect_letterbox_pillarbox(tav_encoder_t *enc,
         for (int x = 0; x < width; x += SAMPLE_RATE_HORZ) {
             int idx = y * width + x;
 
-            // Use pre-converted YCoCg values (optimization)
+            // Use pre-converted YCoCg values (optimisation)
             float yval = enc->current_frame_y[idx];
              float co = enc->current_frame_co[idx];
              float cg = enc->current_frame_cg[idx];
@@ -8800,7 +8707,7 @@ static int detect_letterbox_pillarbox(tav_encoder_t *enc,
         for (int y = 0; y < height; y += SAMPLE_RATE_VERT) {
             int idx = y * width + x;
 
-            // Use pre-converted YCoCg values (optimization)
+            // Use pre-converted YCoCg values (optimisation)
             float yval = enc->current_frame_y[idx];
              float co = enc->current_frame_co[idx];
              float cg = enc->current_frame_cg[idx];
@@ -8836,7 +8743,7 @@ static int detect_letterbox_pillarbox(tav_encoder_t *enc,
         for (int y = 0; y < height; y += SAMPLE_RATE_VERT) {
             int idx = y * width + x;
 
-            // Use pre-converted YCoCg values (optimization)
+            // Use pre-converted YCoCg values (optimisation)
             float yval = enc->current_frame_y[idx];
              float co = enc->current_frame_co[idx];
              float cg = enc->current_frame_cg[idx];
@@ -11147,17 +11054,23 @@ int main(int argc, char *argv[]) {
     // For larger videos, use Haar (better compression, smoother motion matters less)
     if (enc->temporal_motion_coder == -1) {
         int num_pixels = enc->width * enc->height;
-        if (num_pixels >= 500000) {
+        if (
+            num_pixels >= 820000 && enc->quantiser_y <= 29 ||
+            num_pixels >= 500000 && enc->quantiser_y <= 14 ||
+            num_pixels >= 340000 && enc->quantiser_y <= 7 ||
+            num_pixels >= 260000 && enc->quantiser_y <= 3
+                ) {
             enc->temporal_motion_coder = 0;  // Haar
             if (enc->verbose) {
-                printf("Auto-selected Haar temporal wavelet (resolution: %dx%d = %d pixels)\n",
-                       enc->width, enc->height, num_pixels);
+                printf("Auto-selected Haar temporal wavelet (resolution: %dx%d = %d pixels, quantiser_y = %d)\n",
+                       enc->width, enc->height, num_pixels, enc->quantiser_y);
             }
-        } else {
+        }
+        else {
             enc->temporal_motion_coder = 1;  // CDF 5/3
             if (enc->verbose) {
-                printf("Auto-selected CDF 5/3 temporal wavelet (resolution: %dx%d = %d pixels)\n",
-                       enc->width, enc->height, num_pixels);
+                printf("Auto-selected CDF 5/3 temporal wavelet (resolution: %dx%d = %d pixels, quantiser_y = %d)\n",
+                       enc->width, enc->height, num_pixels, enc->quantiser_y);
             }
         }
     }

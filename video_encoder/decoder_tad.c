@@ -1065,12 +1065,6 @@ int main(int argc, char *argv[]) {
             size_t name_len = ext - basename_start;
             strncpy(output_file + dir_len, basename_start, name_len);
             output_file[dir_len + name_len] = '\0';
-
-            // Replace last dot with underscore (for .qNN pattern)
-            /*char *last_dot = strrchr(output_file, '.');
-            if (last_dot && last_dot > output_file + dir_len) {
-                *last_dot = '_';
-            }*/
         } else {
             // No .tad extension, copy entire basename
             strcpy(output_file + dir_len, basename_start);
