@@ -142,7 +142,7 @@ if (fullFilePathStr.startsWith('$:/TAPE') || fullFilePathStr.startsWith('$:\\TAP
 con.clear()
 con.curs_set(0)
 graphics.setGraphicsMode(4) // initially set to 4bpp mode
-//graphics.setGraphicsMode(5) // set to 8bpp mode. If GPU don't support it, mode will remain to 4
+graphics.setGraphicsMode(5) // then try to set to 5bpp mode
 graphics.clearPixels(0)
 graphics.clearPixels2(0)
 graphics.clearPixels3(0)
@@ -542,9 +542,11 @@ function getRGBfromScr(x, y) {
     let offset = y * WIDTH + x
     let fb1 = sys.peek(-1048577 - offset)
     let fb2 = sys.peek(-1310721 - offset)
-    let fb3 = sys.peek(-1310721 - (262144 * (gpuGraphicsMode - 4)) - offset)
+    let fb3 = sys.peek(-1310721 - 262144 - offset)
 
-    if (gpuGraphicsMode == 4)
+    if (gpuGraphicsMode == 5)
+        return [((fb1 >>> 2) & 31) / 31.0, (((fb1 & 3) << 3) | ((fb2 >>> 5) & 7)) / 31.0, (fb2 & 31) / 31.0]
+    else if (gpuGraphicsMode == 4)
         return [(fb1 >>> 4) / 15.0, (fb1 & 15) / 15.0, (fb2 >>> 4) / 15.0]
     else
         return [fb1 / 255.0, fb2 / 255.0, fb3 / 255.0]

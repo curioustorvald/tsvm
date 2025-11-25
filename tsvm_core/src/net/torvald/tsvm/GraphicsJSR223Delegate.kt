@@ -1495,7 +1495,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val videoY = (pixelIndex / width) + startY
             val videoX = (pixelIndex % width) + startX
             val nativePos = videoY * nativeWidth + videoX
-            if (graphicsMode == 4) {
+            if (graphicsMode == 4 || graphicsMode == 5) {
                 UnsafeHelper.memcpyRaw(
                     rgChunk, UnsafeHelper.getArrayOffset(rgChunk),
                     null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
@@ -1530,14 +1530,23 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         fun writeToChunk(r: Int, g: Int, b: Int, videoX: Int, videoY: Int, i: Int, coordInVideoFrame: Boolean = true) {
             if (graphicsMode == 4) {
                 // Apply Bayer dithering and convert to 4-bit
-                val r4 = ditherValue(r, videoX, videoY, frameCount)
-                val g4 = ditherValue(g, videoX, videoY, frameCount)
-                val b4 = ditherValue(b, videoX, videoY, frameCount)
+                val r4 = ditherValue4(r, videoX, videoY, frameCount)
+                val g4 = ditherValue4(g, videoX, videoY, frameCount)
+                val b4 = ditherValue4(b, videoX, videoY, frameCount)
 
                 // Pack RGB values and store in chunk arrays for batch processing
                 rgChunk[i] = ((r4 shl 4) or g4).toByte()
                 baChunk[i] = ((b4 shl 4) or coordInVideoFrame.toInt().times(15)).toByte()
+            }
+            else if (graphicsMode == 5) {
+                // Apply Bayer dithering and convert to 4-bit
+                val r5 = ditherValue5(r, videoX, videoY, frameCount)
+                val g5 = ditherValue5(g, videoX, videoY, frameCount)
+                val b5 = ditherValue5(b, videoX, videoY, frameCount)
 
+                // Pack RGB values and store in chunk arrays for batch processing
+                rgChunk[i] = (coordInVideoFrame.toInt(8) or r5.shl(2) or g5.ushr(3)).toByte()
+                baChunk[i] = (g5.and(7).shl(5) or b5).toByte()
             }
             else {
                 rChunk[i] = r.toByte()
@@ -1647,7 +1656,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     /**
      * Apply Bayer dithering to reduce banding when quantising to 4-bit
      */
-    private fun ditherValue(value: Int, x: Int, y: Int, f: Int): Int {
+    private fun ditherValue4(value: Int, x: Int, y: Int, f: Int): Int {
         // Preserve pure values (0 and 255) exactly to maintain colour primaries
         if (value == 0) return 0
         if (value == 255) return 15
@@ -1655,6 +1664,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
         val q = floor((t / 15f + (value / 255f)) * 15f) / 15f
         return round(15f * q)
+    }
+
+    private fun ditherValue5(value: Int, x: Int, y: Int, f: Int): Int {
+        // Preserve pure values (0 and 255) exactly to maintain colour primaries
+        if (value == 0) return 0
+        if (value == 255) return 31
+
+        val t = bayerKernels[f % 4][4 * (y % 4) + (x % 4)] // use rotating bayerKernel to time-dither the static pattern for even better visuals
+        val q = floor((t / 31f + (value / 255f)) * 31f) / 31f
+        return round(31f * q)
     }
 
     /**
@@ -6694,14 +6713,28 @@ class GraphicsJSR223Delegate(private val vm: VM) {
 
                 if (graphicsMode == 4) {
                     // 4bpp mode: dithered RGB (RG in fb1, B_ in fb2)
-                    val threshold = bayerKernelsInt[frameCount % 4][4 * (y % 4) + (x % 4)]
-                    val rDithered = ((r + (threshold - 8)) shr 4).coerceIn(0, 15)
-                    val gDithered = ((g + (threshold - 8)) shr 4).coerceIn(0, 15)
-                    val bDithered = ((b + (threshold - 8)) shr 4).coerceIn(0, 15)
+//                    val threshold = bayerKernelsInt[frameCount % 4][4 * (y % 4) + (x % 4)]
+//                    val r4 = ((r + (threshold - 8)) shr 4).coerceIn(0, 15)
+//                    val g4 = ((g + (threshold - 8)) shr 4).coerceIn(0, 15)
+//                    val b4 = ((b + (threshold - 8)) shr 4).coerceIn(0, 15)
 
-                    gpu.framebuffer[screenPixelIdx] = ((rDithered shl 4) or gDithered).toByte()
-                    gpu.framebuffer2?.set(screenPixelIdx, ((bDithered shl 4) or 15).toByte())
-                } else if (graphicsMode == 5) {
+                    val r4 = ditherValue4(r, x, y, frameCount)
+                    val g4 = ditherValue4(g, x, y, frameCount)
+                    val b4 = ditherValue4(b, x, y, frameCount)
+
+                    gpu.framebuffer[screenPixelIdx] = ((r4 shl 4) or g4).toByte()
+                    gpu.framebuffer2?.set(screenPixelIdx, ((b4 shl 4) or 15).toByte())
+                }
+                else if (graphicsMode == 5) {
+                    // 5bpp mode: dithered RGB (ARRRRRGG in fb1, GGGBBBBB in fb2; aka Targa 16bpp pixel format)
+                    val r5 = ditherValue5(r, x, y, frameCount)
+                    val g5 = ditherValue5(g, x, y, frameCount)
+                    val b5 = ditherValue5(b, x, y, frameCount)
+
+                    gpu.framebuffer[screenPixelIdx] = (0x80 or r5.shl(2) or g5.ushr(3)).toByte()
+                    gpu.framebuffer2?.set(screenPixelIdx, (g5.and(7).shl(5) or b5).toByte())
+                }
+                else if (graphicsMode == 8) {
                     // 8bpp mode: full RGB (R in fb1, G in fb2, B in fb3)
                     gpu.framebuffer[screenPixelIdx] = r.toByte()
                     gpu.framebuffer2?.set(screenPixelIdx, g.toByte())

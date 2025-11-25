@@ -994,7 +994,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         chrrom.pixels.position(0)
 
         framebufferOut.setColor(-1);framebufferOut.fill()
-        if (graphicsMode == 5 && framebuffer4 != null && framebuffer3 != null && framebuffer2 != null) {
+        if (graphicsMode == 8 && framebuffer4 != null && framebuffer3 != null && framebuffer2 != null) {
             for (y in 0 until HEIGHT) {
                 var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
                 if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
@@ -1008,6 +1008,31 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                         val a = framebuffer4[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
                         framebufferOut.setColor(
                             r.shl(24) or g.shl(16) or b.shl(8) or a
+                        )
+                        framebufferOut.drawPixel(x, y)
+                    }
+                }
+            }
+        }
+        else if (graphicsMode == 5 && framebuffer2 != null) {
+            for (y in 0 until HEIGHT) {
+                var xoff = scanlineOffsets[2L * y].toUint() or scanlineOffsets[2L * y + 1].toUint().shl(8)
+                if (xoff.and(0x8000) != 0) xoff = xoff or 0xFFFF0000.toInt()
+                val xs = (0 + xoff).coerceIn(0, WIDTH - 1)..(WIDTH - 1 + xoff).coerceIn(0, WIDTH - 1)
+
+                if (xoff in -(WIDTH - 1) until WIDTH) {
+                    for (x in xs) {
+                        val rg = framebuffer[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val ba = framebuffer2[y.toLong() * WIDTH + (x - xoff)].toUint() // coerceIn not required as (x - xoff) never escapes 0..559
+                        val r = rg.ushr(2).and(31)
+                        val g = rg.and(3).shl(3) or ba.ushr(5)
+                        val b = ba.and(31)
+                        val a = rg.ushr(7) * 255
+                        framebufferOut.setColor(
+                            r.shl(27) or r.ushr(2).shl(24) or
+                                    g.shl(19) or g.ushr(2).shl(16) or
+                                    b.shl(11) or b.ushr(2).shl(8) or
+                                    a
                         )
                         framebufferOut.drawPixel(x, y)
                     }
