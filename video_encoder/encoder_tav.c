@@ -19,7 +19,7 @@
 #include <float.h>
 #include "tav_avx512.h"  // AVX-512 SIMD optimisations
 
-#define ENCODER_VENDOR_STRING "Encoder-TAV 20251124 (3d-dwt,tad,ssf-tc,cdf53-motion,avx512,presets)"
+#define ENCODER_VENDOR_STRING "Encoder-TAV 20251128 (3d-dwt,tad,ssf-tc,cdf53-motion,avx512,presets)"
 
 // TSVM Advanced Video (TAV) format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVM TAV"
@@ -12158,13 +12158,13 @@ int main(int argc, char *argv[]) {
             printf("Updated header with actual frame count: %d\n", frame_count);
         }
 
-        // Update ENDT in extended header (calculate end time for last frame)
+        // Update ENDT in extended header (calculate end time of video)
         uint64_t endt_ns;
         if (enc->is_ntsc_framerate) {
             // NTSC framerates use denominator 1001 (e.g., 24000/1001, 30000/1001, 60000/1001)
-            endt_ns = ((uint64_t)(frame_count - 1) * 1001ULL * 1000000000ULL) / ((uint64_t)enc->output_fps * 1000ULL);
+            endt_ns = ((uint64_t)frame_count * 1001ULL * 1000000000ULL) / ((uint64_t)enc->output_fps * 1000ULL);
         } else {
-            endt_ns = ((uint64_t)(frame_count - 1) * 1000000000ULL) / (uint64_t)enc->output_fps;
+            endt_ns = ((uint64_t)frame_count * 1000000000ULL) / (uint64_t)enc->output_fps;
         }
         fseek(enc->output_fp, enc->extended_header_offset, SEEK_SET);
         fwrite(&endt_ns, sizeof(uint64_t), 1, enc->output_fp);

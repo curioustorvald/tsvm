@@ -8,31 +8,32 @@ if (!exec_args[1]) {
     return 1
 }
 
-let lowfilename = exec_args[1] + "_low.chr"
-let highfilename = exec_args[1] + "_high.chr"
+const fullFilePath = _G.shell.resolvePathInput(exec_args[1]).full
+let lowfilename = fullFilePath + "_low.chr"
+let highfilename = fullFilePath + "_high.chr"
 
 let workarea = sys.malloc(1920)
 
 // dump low rom
 sys.poke(-1299460, 16)
 for (let i = 0; i < 1920; i++) {
-    let byte = sys.peek(-1300607 - i)
+    let byte = sys.peek(-133121 - i)
     sys.poke(workarea + i, byte)
 }
 
-filesystem.open("A", lowfilename, "W")
-dma.ramToCom(workarea, filesystem._toPorts("A")[0], 1920)
+const lowfile = files.open(lowfilename)
+lowfile.pwrite(workarea, 1920, 0)
 println("Wrote CHR rom " + lowfilename)
 
 // dump high rom
 sys.poke(-1299460, 17)
 for (let i = 0; i < 1920; i++) {
-    let byte = sys.peek(-1300607 - i)
+    let byte = sys.peek(-133121 - i)
     sys.poke(workarea + i, byte)
 }
 
-filesystem.open("A", highfilename, "W")
-dma.ramToCom(workarea, filesystem._toPorts("A")[0], 1920)
+const highfile = files.open(highfilename)
+highfile.pwrite(workarea, 1920, 0)
 println("Wrote CHR rom " + highfilename)
 
 sys.free(workarea)

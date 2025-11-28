@@ -1005,7 +1005,7 @@ transmission capability, and region-of-interest coding.
     0x31: Subtitle in "Simple" format with timecodes
     0x32: Subtitle in "Karaoke" format
     0x33: Subtitle in "Karaoke" format with timecodes
-    0x3F: Videotex (full-frame text buffer image)
+    0x3F: Videotex (full-frame text buffer memory image)
     <synchronised tracks>
     0x40: MP2 audio track (32 KHz)
     0x41: Zstd-compressed 8-bit PCM (32 KHz, audio hardware's native format)
@@ -1083,9 +1083,9 @@ transmission capability, and region-of-interest coding.
 
     ### List of Keys
     - Uint64 BGNT: Video begin time in nanoseconds (must be equal to the value of the first Timecode packet)
-    - Uint64 ENDT: Video end time in nanoseconds (must be equal to the value of the last Timecode packet)
+    - Uint64 ENDT: Video end time in nanoseconds (must be equal to BGNT + playback time)
     - Uint64 CDAT: Creation time in microseconds since UNIX Epoch (must be in UTC timezone)
-    - Bytes VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014 (list,of,features)")
+    - Bytes  VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014 (list,of,features)")
     - Bytes FMPG: FFmpeg version (typically "ffmpeg version 8.0 Copyright (c) 2000-2025 the FFmpeg developers"; the first line of text FFmpeg emits)
 
 ## Extensible Packet Structure

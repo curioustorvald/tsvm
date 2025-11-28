@@ -15,6 +15,7 @@
 // === UNIFORMS ===
 uniform float time = 0.0;              // Frame count
 uniform vec2 resolution = vec2(640.0, 480.0); // Virtual resolution (e.g., 640x480)
+uniform float displayScale = 2.0;
 uniform sampler2D u_texture;     // Input texture
 uniform vec2 flip = vec2(0.0, 0.0); // UV flip control (0,1 = flip Y)
 
@@ -256,7 +257,7 @@ vec3 decodeCGAComposite(vec2 uv, vec2 texelSize, float pixelX, float pixelY) {
 // === TRINITRON PHOSPHOR MASK ===
 vec3 trinitronMask(vec2 screenPos) {
     float strength = getPhosphorStrength();
-    float outputX = screenPos.x * 2.0;  // 2x display scale
+    float outputX = screenPos.x * displayScale;
     float stripe = mod(outputX, 3.0);
 
     float bleed = 0.15;
@@ -279,7 +280,7 @@ vec3 trinitronMask(vec2 screenPos) {
 // === SCANLINE MASK ===
 float scanlineMask(vec2 screenPos) {
     float strength = getScanlineStrength();
-    float outputY = screenPos.y * 2.0;  // 2x display scale
+    float outputY = screenPos.y * displayScale;
 
     float scanline = sin(outputY * PI);
     scanline = scanline * 0.5 + 0.5;

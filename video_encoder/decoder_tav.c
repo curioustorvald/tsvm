@@ -17,7 +17,7 @@
 #include "decoder_tad.h"  // Shared TAD decoder library
 #include "tav_avx512.h"  // AVX-512 SIMD optimisations
 
-#define DECODER_VENDOR_STRING "Decoder-TAV 20251124 (avx512,presets)"
+#define DECODER_VENDOR_STRING "Decoder-TAV 20251126 (presets)"
 
 // TAV format constants
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"
@@ -315,7 +315,7 @@ static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, cons
         //                   Previous denormalization in EZBC caused int16_t overflow (clipping at 32767)
         //                   for bright pixels, creating dark DWT-pattern blemishes
 
-#ifdef __AVX512F__
+/*#ifdef __AVX512F__
         // Use AVX-512 optimised dequantization if available (1.1x speedup against -Ofast)
         // Check: subband has >=16 elements AND won't exceed buffer bounds
         const int subband_end = subband->coeff_start + subband->coeff_count;
@@ -327,7 +327,7 @@ static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, cons
                 effective_quantiser
             );
         } else {
-#endif
+#endif*/
             // Scalar fallback or small subbands
             for (int i = 0; i < subband->coeff_count; i++) {
                 const int idx = subband->coeff_start + i;
@@ -336,9 +336,9 @@ static void dequantise_dwt_subbands_perceptual(int q_index, int q_y_global, cons
                     dequantised[idx] = untruncated;
                 }
             }
-#ifdef __AVX512F__
+/*#ifdef __AVX512F__
         }
-#endif
+#endif*/
     }
 
     // Debug: Verify LL band was dequantised correctly

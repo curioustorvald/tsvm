@@ -24,8 +24,8 @@ Audio: MP2 encoding at 96 kbps, 32 KHz stereo (packet 0x20)
 Each text frame is treated as an I-frame with sync packet
 
 Usage:
-  gcc -O3 -std=c11 -Wall encoder_tav_text.c -o encoder_tav_text -lm -lzstd
-  ./encoder_tav_text -i video.mp4 -f font.chr -o output.vtx
+  gcc -Ofast -std=c11 -Wall encoder_tav_text.c -o encoder_tav_text -lm -lzstd
+  ./encoder_tav_text -i video.mp4 -f font.chr -o output.mv3
 */
 
 #define _POSIX_C_SOURCE 200809L
@@ -92,6 +92,9 @@ static void generate_random_filename(char *filename) {
 }
 
 char TEMP_AUDIO_FILE[42];
+
+// Global flag to disable inverted character matching
+int g_no_invert_char = 0;
 
 typedef struct {
     uint8_t *data;     // Binary glyph data (PATCH_SZ bytes per glyph)
@@ -193,7 +196,7 @@ FontROM *load_font_rom(const char *path) {
 
 // Find best matching glyph for a grayscale patch
 int find_best_glyph(const uint8_t *patch, const FontROM *rom, uint8_t *out_bg, uint8_t *out_fg) {
-    // Try both normal and inverted matching
+    // Try both normal and inverted matching (unless --no-invert-char is set)
     int best_glyph = 0;
     float best_error = INFINITY;
     uint8_t best_bg = COLOR_BLACK, best_fg = COLOR_WHITE;
@@ -209,25 +212,28 @@ int find_best_glyph(const uint8_t *patch, const FontROM *rom, uint8_t *out_bg, u
             err_normal += diff * diff;
         }
 
-        // Try inverted: glyph 0 = fg, glyph 1 = bg
-        float err_inverted = 0;
-        for (int i = 0; i < PATCH_SZ; i++) {
-            int expected = glyph[i] ? 0 : 255;
-            int diff = patch[i] - expected;
-            err_inverted += diff * diff;
-        }
-
         if (err_normal < best_error) {
             best_error = err_normal;
             best_glyph = g;
             best_bg = COLOR_BLACK;
             best_fg = COLOR_WHITE;
         }
-        if (err_inverted < best_error) {
-            best_error = err_inverted;
-            best_glyph = g;
-            best_bg = COLOR_WHITE;
-            best_fg = COLOR_BLACK;
+
+        // Try inverted: glyph 0 = fg, glyph 1 = bg (skip if --no-invert-char)
+        if (!g_no_invert_char) {
+            float err_inverted = 0;
+            for (int i = 0; i < PATCH_SZ; i++) {
+                int expected = glyph[i] ? 0 : 255;
+                int diff = patch[i] - expected;
+                err_inverted += diff * diff;
+            }
+
+            if (err_inverted < best_error) {
+                best_error = err_inverted;
+                best_glyph = g;
+                best_bg = COLOR_WHITE;
+                best_fg = COLOR_BLACK;
+            }
         }
     }
 
@@ -479,7 +485,7 @@ void write_text_packet(FILE *f, const uint8_t *bg_col, const uint8_t *fg_col,
 
 int main(int argc, char **argv) {
     if (argc < 7) {
-        fprintf(stderr, "Usage: %s -i <video> -f <font.chr> -o <output.tav>\n", argv[0]);
+        fprintf(stderr, "Usage: %s -i <video> -f <font.chr> -o <output.tav> [--no-invert-char]\n", argv[0]);
         return 1;
     }
 
@@ -491,11 +497,16 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-i") == 0 && i+1 < argc) input_video = argv[++i];
         else if (strcmp(argv[i], "-f") == 0 && i+1 < argc) font_path = argv[++i];
         else if (strcmp(argv[i], "-o") == 0 && i+1 < argc) output_path = argv[++i];
+        else if (strcmp(argv[i], "--no-invert-char") == 0) g_no_invert_char = 1;
     }
 
     if (!input_video || !font_path || !output_path) {
         fprintf(stderr, "Missing required arguments\n");
         return 1;
+    }
+
+    if (g_no_invert_char) {
+        fprintf(stderr, "Inverted character matching disabled\n");
     }
 
     // Generate random temp filename for audio
