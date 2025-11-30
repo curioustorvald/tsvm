@@ -2397,7 +2397,7 @@ static int parse_resolution(const char *res_str, int *width, int *height, const 
     }
     if (strcmp(res_str, "d1") == 0 || strcmp(res_str, "D1") == 0) {
         *width = 720;
-        *height = 486;
+        *height = 480;
         return 1;
     }
     if (strcmp(res_str, "d1pal") == 0 || strcmp(res_str, "D1PAL") == 0) {
