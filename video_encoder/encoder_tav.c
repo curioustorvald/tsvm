@@ -3457,7 +3457,9 @@ static int worker_thread_main(void *arg) {
         int height = slot->height;
         int num_pixels = width * height;
 
-        printf("worker_thread slot_idx=%d, num_frames=%d\n", slot_idx, num_frames);
+        if (enc->verbose) {
+            printf("worker_thread slot_idx=%d, num_frames=%d\n", slot_idx, num_frames);
+        }
 
         // Step 1: Convert RGB to YCoCg-R (or ICtCp)
         // Access frames from slot's own frame buffers (circular buffering)
@@ -3672,7 +3674,9 @@ static int worker_thread_main(void *arg) {
     ZSTD_freeCCtx(ctx->zstd_ctx);
     free(ctx);
 
-    printf("Worker %d complete: %d GOPs encoded\n", thread_id, jobs_processed);
+    if (enc->verbose) {
+        printf("Worker %d complete: %d GOPs encoded\n", thread_id, jobs_processed);
+    }
     return 0;
 }
 
@@ -3688,8 +3692,10 @@ static int producer_thread_main(void *arg) {
     thread_pool_t *pool = (thread_pool_t*)arg;
     tav_encoder_t *enc = pool->shared_enc;
 
-    printf("Producer thread starting (circular buffering mode)\n");
-    printf("  GOP buffer slots: %d\n", pool->num_slots);
+    if (enc->verbose) {
+        printf("Producer thread starting (circular buffering mode)\n");
+        printf("  GOP buffer slots: %d\n", pool->num_slots);
+    }
 
     gop_boundary_t *current_gop_boundary = enc->gop_boundaries;
     int global_frame_number = 0;
@@ -3784,7 +3790,7 @@ static int producer_thread_main(void *arg) {
         cnd_broadcast(&pool->job_available);
         mtx_unlock(&pool->job_queue_mutex);
 
-        if (pool->total_gops_produced % 50 == 0) {
+        if (enc->verbose && pool->total_gops_produced % 10 == 0) {
             printf("Producer: %d GOPs queued\n", pool->total_gops_produced);
         }
 
@@ -3799,8 +3805,10 @@ static int producer_thread_main(void *arg) {
     cnd_broadcast(&pool->job_available);
     mtx_unlock(&pool->job_queue_mutex);
 
-    printf("Producer thread complete: %d frames read, %d GOPs assigned\n",
-           pool->total_frames_produced, pool->total_gops_produced);
+    if (enc->verbose) {
+        printf("Producer thread complete: %d frames read, %d GOPs assigned\n",
+               pool->total_frames_produced, pool->total_gops_produced);
+    }
     return 0;
 }
 
@@ -3816,6 +3824,13 @@ static int writer_thread_main(void *arg) {
     tav_encoder_t *enc = pool->shared_enc;
     FILE *output = enc->output_fp;
     int gop_index = 0;
+
+    // Progress tracking
+    static int cumulative_frames = 0;
+    static struct timespec start_time = {0};
+    if (start_time.tv_sec == 0) {
+        timespec_get(&start_time, TIME_UTC);
+    }
 
     while (1) {
         // Find slot for next sequential GOP
@@ -3842,13 +3857,15 @@ static int writer_thread_main(void *arg) {
 
             if ((finished == 1 || finished == -1) && total_written >= total_produced) {
                 // Producer done and all GOPs written
-                printf("Writer: Exiting (finished=%d, written=%d, produced=%d)\n",
-                       finished, total_written, total_produced);
+                if (enc->verbose) {
+                    printf("Writer: Exiting (finished=%d, written=%d, produced=%d)\n",
+                           finished, total_written, total_produced);
+                }
                 break;
             }
 
             // Wait a bit and retry
-            if (gop_index % 10 == 0 || gop_index > 230) {
+            if (enc->verbose && (gop_index % 10 == 0 || gop_index > 230)) {
                 printf("Writer: Waiting for GOP %d (finished=%d, written=%d, produced=%d)\n",
                        gop_index, finished, total_written, total_produced);
             }
@@ -3927,20 +3944,37 @@ static int writer_thread_main(void *arg) {
         cnd_broadcast(&pool->slot_available);  // Wake up producer waiting for empty slot
         mtx_unlock(&pool->job_queue_mutex);
 
+        // Update cumulative frame count
+        cumulative_frames += num_frames_written;
+
         // Progress reporting (using saved values)
         if (enc->verbose) {
             printf("Written GOP %d (%d frames, %zu KB video + %d audio packets)\n",
                    gop_index, num_frames_written,
                    video_size_written / 1024,
                    audio_packets_written);
-        } else if (!enc->verbose && gops_written % 50 == 0) {
-            printf("Progress: %d GOPs written\n", gops_written);
+        } else if (!enc->verbose) {
+            // Calculate FPS
+            struct timespec current_time;
+            timespec_get(&current_time, TIME_UTC);
+            double elapsed_seconds = (current_time.tv_sec - start_time.tv_sec) +
+                                    (current_time.tv_nsec - start_time.tv_nsec) / 1e9;
+            double fps = (elapsed_seconds > 0) ? (cumulative_frames / elapsed_seconds) : 0.0;
+
+            // Determine GOP type
+            const char *gop_type = (num_frames_written > 1) ? "GOP-Unified" : "I-frame";
+
+            // Print detailed progress
+            printf("Encoded frame %d (%s, %.1f fps, qY=%d)\n",
+                   cumulative_frames, gop_type, fps, enc->quantiser_y);
         }
 
         gop_index++;
     }
 
-    printf("Writer thread complete: %d GOPs written\n", pool->total_gops_written);
+    if (enc->verbose) {
+        printf("Writer thread complete: %d GOPs written\n", pool->total_gops_written);
+    }
     return 0;
 }
 
