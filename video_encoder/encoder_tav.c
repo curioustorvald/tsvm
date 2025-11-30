@@ -2480,7 +2480,7 @@ static gop_slot_t* init_gop_slots(int num_slots, int width, int height, int capa
 static gop_slot_t* get_empty_slot(thread_pool_t *pool, int *slot_index);
 static void free_gop_slot(gop_slot_t *slot);
 static void destroy_gop_slots(gop_slot_t *slots, int num_slots, int capacity);
-static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, int total_gops);
+static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, int num_slots);
 static void shutdown_thread_pool(thread_pool_t *pool);
 static int srt_time_to_frame(const char *time_str, int fps);
 static int sami_ms_to_frame(int milliseconds, int fps);
@@ -3195,10 +3195,10 @@ static int count_total_gops(gop_boundary_t *gop_boundaries) {
 
 /**
  * Create thread pool with worker threads
- * total_gops: Total number of GOPs to allocate slots for (upfront allocation)
+ * num_slots: Fixed number of GOP slots for circular buffering (e.g., 8)
  * Returns NULL on failure
  */
-static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, int total_gops) {
+static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, int num_slots) {
     if (num_threads < 2) return NULL;
 
     thread_pool_t *pool = calloc(1, sizeof(thread_pool_t));
@@ -3208,7 +3208,7 @@ static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, in
     }
 
     pool->num_threads = num_threads;
-    pool->num_slots = total_gops;
+    pool->num_slots = num_slots;  // Fixed number for circular buffering
     pool->slot_capacity = TEMPORAL_GOP_SIZE;
     pool->shared_enc = enc;
     pool->shutdown = 0;
@@ -12540,16 +12540,16 @@ int main(int argc, char *argv[]) {
     // MULTI-THREADED vs SINGLE-THREADED MODE DECISION
     // =========================================================================
 
-    // Multi-threading with upfront allocation - one slot per GOP for correctness
+    // Multi-threading with circular buffering - fixed number of reusable slots
     if (enc->num_threads >= 2 && enc->enable_temporal_dwt) {
         // === MULTI-THREADED MODE ===
-        // Count total GOPs for upfront allocation
-        int total_gops = count_total_gops(enc->gop_boundaries);
-        printf("Using multi-threaded encoding: %d threads, %d GOP buffer slots (upfront allocation)\n",
-               enc->num_threads, total_gops);
+        // Use fixed number of GOP slots for circular buffering (memory efficient)
+        int num_gop_slots = 8;  // Fixed circular buffer size
+        printf("Using multi-threaded encoding: %d threads, %d GOP buffer slots (circular buffering)\n",
+               enc->num_threads, num_gop_slots);
 
-        // Create thread pool with upfront GOP slot allocation
-        enc->thread_pool = create_thread_pool(enc, enc->num_threads, total_gops);
+        // Create thread pool with circular GOP slot buffering
+        enc->thread_pool = create_thread_pool(enc, enc->num_threads, num_gop_slots);
         if (!enc->thread_pool) {
             fprintf(stderr, "Error: Failed to create thread pool, falling back to single-threaded\n");
             enc->num_threads = 1;
