@@ -1466,25 +1466,25 @@ static void apply_spatial_mv_prediction_to_tree(
         int block_y = node->y / residual_coding_min_block_size;
         int idx = block_y * blocks_x + block_x;
 
-        // Get neighbors: left, top, top-right
+        // Get neighbours: left, top, top-right
         int16_t left_x = 0, left_y = 0;
         int16_t top_x = 0, top_y = 0;
         int16_t top_right_x = 0, top_right_y = 0;
 
         if (block_x > 0) {
-            // Left neighbor
+            // Left neighbour
             int left_idx = idx - 1;
             left_x = mv_map_x[left_idx];
             left_y = mv_map_y[left_idx];
         }
 
         if (block_y > 0) {
-            // Top neighbor
+            // Top neighbour
             int top_idx = idx - blocks_x;
             top_x = mv_map_x[top_idx];
             top_y = mv_map_y[top_idx];
 
-            // Top-right neighbor
+            // Top-right neighbour
             if (block_x + 1 < blocks_x) {
                 int top_right_idx = top_idx + 1;
                 top_right_x = mv_map_x[top_right_idx];
@@ -1514,7 +1514,7 @@ static void apply_spatial_mv_prediction_to_tree(
 // Format: [split_flags_bitstream][leaf_mv_data]
 //   - split_flags: 1 bit per node (breadth-first), 1=split, 0=leaf
 //   - leaf_mv_data: For each leaf in order: [skip_flag:1bit][mvd_x:15bits][mvd_y:16bits]
-//   Note: MVs are now DIFFERENTIAL (predicted from spatial neighbors)
+//   Note: MVs are now DIFFERENTIAL (predicted from spatial neighbours)
 static size_t serialise_quad_tree(quad_tree_node_t *root, uint8_t *buffer, size_t buffer_size) {
     if (!root) return 0;
 
@@ -2069,9 +2069,9 @@ typedef struct thread_encoder_context {
     float **work_y_frames;        // [max_gop_size][max_pixels]
     float **work_co_frames;
     float **work_cg_frames;
-    int16_t **quantized_y;
-    int16_t **quantized_co;
-    int16_t **quantized_cg;
+    int16_t **quantised_y;
+    int16_t **quantised_co;
+    int16_t **quantised_cg;
     uint8_t *compression_buffer;
     size_t compression_buffer_size;
     ZSTD_CCtx *zstd_ctx;
@@ -2639,7 +2639,7 @@ static tav_encoder_t* create_encoder(void) {
     enc->tad_audio = 0;  // Default: use MP2 audio (TAD quality follows quality_level)
     enc->enable_crop_encoding = 0;  // Default: disabled (Phase 2 experimental)
 
-    // Active region tracking (initialized to full frame, updated when crop encoding enabled)
+    // Active region tracking (initialised to full frame, updated when crop encoding enabled)
     enc->active_mask_top = 0;
     enc->active_mask_right = 0;
     enc->active_mask_bottom = 0;
@@ -2730,6 +2730,8 @@ static tav_encoder_t* create_encoder(void) {
     enc->current_gop_boundary = NULL;
     enc->two_pass_current_frame = 0;
     enc->two_pass_analysis_file = NULL;
+
+    enc->num_threads = 0; // Default: undecided
 
     return enc;
 }
@@ -2978,7 +2980,7 @@ static int initialise_encoder(tav_encoder_t *enc) {
 // =============================================================================
 
 /**
- * Initialize GOP slots for circular buffer
+ * Initialise GOP slots for circular buffer
  * Allocates num_slots slots with frame buffers sized for width×height×capacity
  */
 static gop_slot_t* init_gop_slots(int num_slots, int width, int height, int capacity) {
@@ -2994,7 +2996,7 @@ static gop_slot_t* init_gop_slots(int num_slots, int width, int height, int capa
     for (int i = 0; i < num_slots; i++) {
         gop_slot_t *slot = &slots[i];
 
-        // Initialize status and synchronization
+        // Initialise status and synchronization
         slot->status = GOP_STATUS_EMPTY;
         slot->gop_index = -1;
         mtx_init(&slot->mutex, mtx_plain);
@@ -3041,7 +3043,7 @@ static gop_slot_t* init_gop_slots(int num_slots, int width, int height, int capa
             return NULL;
         }
 
-        // Initialize output pointers as NULL
+        // Initialise output pointers as NULL
         slot->video_packet = NULL;
         slot->audio_packets = NULL;
         slot->audio_packet_sizes = NULL;
@@ -3206,27 +3208,27 @@ static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, in
     }
 
     pool->num_threads = num_threads;
-    pool->num_slots = total_gops;  // UPFRONT ALLOCATION: one slot per GOP, no circular reuse
+    pool->num_slots = total_gops;
     pool->slot_capacity = TEMPORAL_GOP_SIZE;
     pool->shared_enc = enc;
     pool->shutdown = 0;
-    // Producer state already initialized earlier (lines 3232-3236)
+    // Producer state already initialised earlier (lines 3232-3236)
     pool->next_gop_to_write = 0;
     pool->total_gops_written = 0;
 
-    // Initialize job queue
+    // Initialise job queue
     pool->job_queue_capacity = pool->num_slots * 2;
     pool->job_queue = calloc(pool->job_queue_capacity, sizeof(int));
     pool->job_queue_head = 0;
     pool->job_queue_tail = 0;
     pool->job_queue_size = 0;
 
-    // Initialize synchronization primitives
+    // Initialise synchronization primitives
     mtx_init(&pool->job_queue_mutex, mtx_plain);
     cnd_init(&pool->job_available);
     cnd_init(&pool->slot_available);
 
-    // Initialize producer state for circular buffering
+    // Initialise producer state for circular buffering
     pool->next_slot_to_fill = 0;
     pool->total_gops_produced = 0;
     pool->total_frames_produced = 0;
@@ -3287,17 +3289,17 @@ static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, in
         ctx->work_y_frames = calloc(ctx->max_gop_frames, sizeof(float*));
         ctx->work_co_frames = calloc(ctx->max_gop_frames, sizeof(float*));
         ctx->work_cg_frames = calloc(ctx->max_gop_frames, sizeof(float*));
-        ctx->quantized_y = calloc(ctx->max_gop_frames, sizeof(int16_t*));
-        ctx->quantized_co = calloc(ctx->max_gop_frames, sizeof(int16_t*));
-        ctx->quantized_cg = calloc(ctx->max_gop_frames, sizeof(int16_t*));
+        ctx->quantised_y = calloc(ctx->max_gop_frames, sizeof(int16_t*));
+        ctx->quantised_co = calloc(ctx->max_gop_frames, sizeof(int16_t*));
+        ctx->quantised_cg = calloc(ctx->max_gop_frames, sizeof(int16_t*));
 
         for (int j = 0; j < ctx->max_gop_frames; j++) {
             ctx->work_y_frames[j] = malloc(ctx->max_frame_pixels * sizeof(float));
             ctx->work_co_frames[j] = malloc(ctx->max_frame_pixels * sizeof(float));
             ctx->work_cg_frames[j] = malloc(ctx->max_frame_pixels * sizeof(float));
-            ctx->quantized_y[j] = malloc(ctx->max_frame_pixels * sizeof(int16_t));
-            ctx->quantized_co[j] = malloc(ctx->max_frame_pixels * sizeof(int16_t));
-            ctx->quantized_cg[j] = malloc(ctx->max_frame_pixels * sizeof(int16_t));
+            ctx->quantised_y[j] = malloc(ctx->max_frame_pixels * sizeof(int16_t));
+            ctx->quantised_co[j] = malloc(ctx->max_frame_pixels * sizeof(int16_t));
+            ctx->quantised_cg[j] = malloc(ctx->max_frame_pixels * sizeof(int16_t));
         }
 
         ctx->compression_buffer_size = total_pixels * 3;
@@ -3312,16 +3314,16 @@ static thread_pool_t* create_thread_pool(tav_encoder_t *enc, int num_threads, in
                 free(ctx->work_y_frames[k]);
                 free(ctx->work_co_frames[k]);
                 free(ctx->work_cg_frames[k]);
-                free(ctx->quantized_y[k]);
-                free(ctx->quantized_co[k]);
-                free(ctx->quantized_cg[k]);
+                free(ctx->quantised_y[k]);
+                free(ctx->quantised_co[k]);
+                free(ctx->quantised_cg[k]);
             }
             free(ctx->work_y_frames);
             free(ctx->work_co_frames);
             free(ctx->work_cg_frames);
-            free(ctx->quantized_y);
-            free(ctx->quantized_co);
-            free(ctx->quantized_cg);
+            free(ctx->quantised_y);
+            free(ctx->quantised_co);
+            free(ctx->quantised_cg);
             free(ctx->compression_buffer);
             ZSTD_freeCCtx(ctx->zstd_ctx);
             free(ctx);
@@ -3486,7 +3488,7 @@ static int worker_thread_main(void *arg) {
                           enc->decomp_levels, enc->temporal_decomp_levels, enc->wavelet_filter);
         }
 
-        // Step 3: Quantize coefficients (using 3D DWT quantization for GOP)
+        // Step 3: Quantise coefficients (using 3D DWT quantisation for GOP)
         // Use channel-specific quantisers from encoder settings
         // Apply QLUT mapping to chroma quantisers (matches single-threaded path)
         int base_quantiser_y = enc->quantiser_y;
@@ -3495,11 +3497,11 @@ static int worker_thread_main(void *arg) {
 
         // Quantise 3D DWT coefficients with temporal-spatial quantisation
         // This applies temporal scaling based on subband level and spatial perceptual weighting
-        quantise_3d_dwt_coefficients(enc, ctx->work_y_frames, ctx->quantized_y, num_frames,
+        quantise_3d_dwt_coefficients(enc, ctx->work_y_frames, ctx->quantised_y, num_frames,
                                      num_pixels, base_quantiser_y, 0);  // Luma
-        quantise_3d_dwt_coefficients(enc, ctx->work_co_frames, ctx->quantized_co, num_frames,
+        quantise_3d_dwt_coefficients(enc, ctx->work_co_frames, ctx->quantised_co, num_frames,
                                      num_pixels, base_quantiser_co, 1);  // Chroma Co
-        quantise_3d_dwt_coefficients(enc, ctx->work_cg_frames, ctx->quantized_cg, num_frames,
+        quantise_3d_dwt_coefficients(enc, ctx->work_cg_frames, ctx->quantised_cg, num_frames,
                                      num_pixels, base_quantiser_cg, 1);  // Chroma Cg
 
         // Step 4: EZBC preprocessing
@@ -3509,7 +3511,7 @@ static int worker_thread_main(void *arg) {
 
         size_t preprocessed_size = preprocess_gop_unified(
             enc->preprocess_mode,  // Use encoder's preprocess mode (EZBC by default)
-            ctx->quantized_y, ctx->quantized_co, ctx->quantized_cg,
+            ctx->quantised_y, ctx->quantised_co, ctx->quantised_cg,
             num_frames, num_pixels, width, height,
             CHANNEL_LAYOUT_YCOCG,  // Standard YCoCg layout
             preprocessed_buffer
@@ -3653,9 +3655,9 @@ static int worker_thread_main(void *arg) {
         free(ctx->work_y_frames[i]);
         free(ctx->work_co_frames[i]);
         free(ctx->work_cg_frames[i]);
-        free(ctx->quantized_y[i]);
-        free(ctx->quantized_co[i]);
-        free(ctx->quantized_cg[i]);
+        free(ctx->quantised_y[i]);
+        free(ctx->quantised_co[i]);
+        free(ctx->quantised_cg[i]);
     }
     free(ctx->work_y_frames);
     free(ctx->work_co_frames);
@@ -3663,9 +3665,9 @@ static int worker_thread_main(void *arg) {
     // Save thread_id before freeing context
     int thread_id = ctx->thread_id;
 
-    free(ctx->quantized_y);
-    free(ctx->quantized_co);
-    free(ctx->quantized_cg);
+    free(ctx->quantised_y);
+    free(ctx->quantised_co);
+    free(ctx->quantised_cg);
     free(ctx->compression_buffer);
     ZSTD_freeCCtx(ctx->zstd_ctx);
     free(ctx);
@@ -3763,7 +3765,7 @@ static int producer_thread_main(void *arg) {
             slot->num_audio_samples = audio_read / (2 * sizeof(float));
         }
 
-        // 5. Initialize slot metadata
+        // 5. Initialise slot metadata
         mtx_lock(&slot->mutex);
         slot->gop_index = pool->total_gops_produced;
         slot->num_frames = frames_read;
@@ -3950,7 +3952,7 @@ static int writer_thread_main(void *arg) {
 static void dwt_53_forward_1d(float *data, int length) {
     if (length < 2) return;
 
-    float *temp = calloc(length, sizeof(float));  // Use calloc to zero-initialize for odd-length arrays
+    float *temp = calloc(length, sizeof(float));  // Use calloc to zero-initialise for odd-length arrays
     int half = (length + 1) / 2;  // Handle odd lengths properly
 
     // Predict step (high-pass)
@@ -4125,10 +4127,10 @@ static void dwt_dd4_forward_1d(float *data, int length) {
     }
 
     // DD-4 forward prediction step with four-point kernel
-    // Predict odd samples using four neighboring even samples
+    // Predict odd samples using four neighbouring even samples
     // Prediction: P(x) = (-1/16)*s[i-1] + (9/16)*s[i] + (9/16)*s[i+1] + (-1/16)*s[i+2]
     for (int i = 0; i < length / 2; i++) {
-        // Get four neighboring even samples with symmetric boundary extension
+        // Get four neighbouring even samples with symmetric boundary extension
         float s_m1, s_0, s_1, s_2;
 
         // s[i-1]
@@ -4773,7 +4775,7 @@ static void generate_bidirectional_prediction(
 }
 
 // Spatial motion vector prediction with differential coding
-// Predicts each block's MV from neighbors (left, top, top-right) using median
+// Predicts each block's MV from neighbours (left, top, top-right) using median
 // Converts absolute MVs to differential MVs for better compression
 // This enforces spatial coherence and is standard MPEG practice
 static void apply_mv_prediction(int16_t *mvs_x, int16_t *mvs_y,
@@ -4803,10 +4805,10 @@ static void apply_mv_prediction(int16_t *mvs_x, int16_t *mvs_y,
             int16_t mv_x = orig_mvs_x[block_idx];
             int16_t mv_y = orig_mvs_y[block_idx];
 
-            // Predict MV from spatial neighbors using median
+            // Predict MV from spatial neighbours using median
             int16_t pred_x = 0, pred_y = 0;
 
-            // Get neighbor indices (if they exist)
+            // Get neighbour indices (if they exist)
             int has_left = (bx > 0);
             int has_top = (by > 0);
             int has_top_right = (bx < residual_coding_num_blocks_x - 1 && by > 0);
@@ -4817,7 +4819,7 @@ static void apply_mv_prediction(int16_t *mvs_x, int16_t *mvs_y,
 
             // Standard MPEG median prediction
             if (has_left && has_top && has_top_right) {
-                // All three neighbors available: use median
+                // All three neighbours available: use median
                 pred_x = median3(orig_mvs_x[left_idx],
                                orig_mvs_x[top_idx],
                                orig_mvs_x[top_right_idx]);
@@ -4837,7 +4839,7 @@ static void apply_mv_prediction(int16_t *mvs_x, int16_t *mvs_y,
                 pred_x = orig_mvs_x[top_idx];
                 pred_y = orig_mvs_y[top_idx];
             }
-            // else: no neighbors, prediction remains (0, 0)
+            // else: no neighbours, prediction remains (0, 0)
 
             // Store differential MV = actual - predicted
             mvs_x[block_idx] = mv_x - pred_x;
@@ -5236,7 +5238,7 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
 
     // Step 8: Write P-frame packet
     // Packet format: [type=0x14][num_blocks:uint16][mvs_x][mvs_y][compressed_size:uint32][compressed_data]
-    // Note: MVs are now differential (predicted from neighbors)
+    // Note: MVs are now differential (predicted from neighbours)
 
     uint8_t packet_type = TAV_PACKET_PFRAME_RESIDUAL;
     int total_blocks = enc->residual_coding_num_blocks_x * enc->residual_coding_num_blocks_y;
@@ -5413,7 +5415,7 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
     // Differential MV coding doesn't help because:
     // 1. Too little MV data for Zstd to exploit patterns (only 63 trees/frame)
     // 2. Optical flow produces smooth absolute MVs that compress well already
-    // 3. Differential prediction can introduce noise if neighbors aren't perfect predictors
+    // 3. Differential prediction can introduce noise if neighbours aren't perfect predictors
     // Leaving code in place for future experimentation with entropy coding
     #if 0
     int mv_blocks_x = (enc->width + enc->residual_coding_min_block_size - 1) / enc->residual_coding_min_block_size;
@@ -6037,7 +6039,7 @@ static size_t gop_flush(tav_encoder_t *enc, FILE *output, int base_quantiser,
             // Phase 2: Use stored GOP dimensions (actual data size in buffers)
 
             // CRITICAL FIX: Temporarily override enc->widths/heights arrays for cropped dimensions
-            // dwt_2d_forward_flexible() uses these arrays, which were initialized with full frame dimensions
+            // dwt_2d_forward_flexible() uses these arrays, which were initialised with full frame dimensions
             // Save original arrays
             int array_size = enc->decomp_levels + 2;
             int *saved_widths = malloc(array_size * sizeof(int));
@@ -8058,7 +8060,7 @@ static size_t serialise_tile_data(tav_encoder_t *enc, int tile_x, int tile_y,
 
 // Compress and write frame data
 static size_t compress_and_write_frame(tav_encoder_t *enc, uint8_t packet_type) {
-    // Initialize GOP dimensions if not set (e.g., when not using temporal DWT)
+    // Initialise GOP dimensions if not set (e.g., when not using temporal DWT)
     if (enc->temporal_gop_width <= 0 || enc->temporal_gop_height <= 0) {
         enc->temporal_gop_width = enc->encoding_width;
         enc->temporal_gop_height = enc->encoding_height;
@@ -9532,7 +9534,7 @@ static float calculate_sobel_magnitude(const uint8_t *frame_rgb, int width, int 
     int y_prev = (y > 0) ? (y - 1) : 0;
     int y_next = (y < height - 1) ? (y + 1) : (height - 1);
 
-    // Sample 3x3 neighborhood (using luma only for efficiency)
+    // Sample 3x3 neighbourhood (using luma only for efficiency)
     float pixels[3][3];
     for (int dy = 0; dy < 3; dy++) {
         for (int dx = 0; dx < 3; dx++) {
@@ -9898,10 +9900,10 @@ static uint16_t median_uint16(uint16_t *values, int count) {
     return values[count / 2];
 }
 
-// Cluster and normalize a single dimension (top, right, bottom, or left)
-// Groups values within ±1 and normalizes each to the most frequent value in its cluster
+// Cluster and normalise a single dimension (top, right, bottom, or left)
+// Groups values within ±1 and normalises each to the most frequent value in its cluster
 // E.g., [55, 56, 55, 57, 55, 200, 201, 200] -> [55, 55, 55, 55, 55, 200, 200, 200]
-static void normalize_dimension_clusters(uint16_t *values, int count) {
+static void normalise_dimension_clusters(uint16_t *values, int count) {
     if (count == 0) return;
 
 #define MAX_GEOMETRY 2048  // Maximum dimension size (width or height)
@@ -9916,7 +9918,7 @@ static void normalize_dimension_clusters(uint16_t *values, int count) {
         }
     }
 
-    // For each value, find the most frequent value within ±1 range and normalize to it
+    // For each value, find the most frequent value within ±1 range and normalise to it
     for (int i = 0; i < count; i++) {
         uint16_t val = values[i];
         if (val >= MAX_GEOMETRY) continue;
@@ -9943,7 +9945,7 @@ static void normalize_dimension_clusters(uint16_t *values, int count) {
 }
 
 // Write all screen masking packets before first frame (similar to SSF-TC subtitles)
-// Uses median filtering + clustering to normalize geometry to predominant aspect ratios
+// Uses median filtering + clustering to normalise geometry to predominant aspect ratios
 static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
     if (!enc->enable_crop_encoding || !enc->two_pass_mode) {
         return;  // Letterbox detection requires two-pass mode
@@ -10059,8 +10061,8 @@ static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
         }
     }
 
-    // Step 3: Survey packet values and normalize clusters (second pass)
-    // Cluster values within ±1 across all packets and normalize to most frequent
+    // Step 3: Survey packet values and normalise clusters (second pass)
+    // Cluster values within ±1 across all packets and normalise to most frequent
     if (packet_count > 0) {
         // Extract dimension values from packets
         uint16_t *tops = malloc(packet_count * sizeof(uint16_t));
@@ -10075,13 +10077,13 @@ static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
             lefts[i] = packets[i].left;
         }
 
-        // Normalize each dimension independently (54,55,56 -> 55)
-        normalize_dimension_clusters(tops, packet_count);
-        normalize_dimension_clusters(rights, packet_count);
-        normalize_dimension_clusters(bottoms, packet_count);
-        normalize_dimension_clusters(lefts, packet_count);
+        // Normalise each dimension independently (54,55,56 -> 55)
+        normalise_dimension_clusters(tops, packet_count);
+        normalise_dimension_clusters(rights, packet_count);
+        normalise_dimension_clusters(bottoms, packet_count);
+        normalise_dimension_clusters(lefts, packet_count);
 
-        // Write normalized values back to packets
+        // Write normalised values back to packets
         for (int i = 0; i < packet_count; i++) {
             packets[i].top = tops[i];
             packets[i].right = rights[i];
@@ -10095,14 +10097,14 @@ static void write_all_screen_mask_packets(tav_encoder_t *enc, FILE *output) {
         free(lefts);
     }
 
-    // Step 4: Emit normalized packets to file
+    // Step 4: Emit normalised packets to file
     for (int i = 0; i < packet_count; i++) {
         write_screen_mask_packet(output, packets[i].frame_num,
                                 packets[i].top, packets[i].right,
                                 packets[i].bottom, packets[i].left);
 
         if (enc->verbose) {
-            printf("  Frame %d: Screen mask t=%u r=%u b=%u l=%u (normalized%s)\n",
+            printf("  Frame %d: Screen mask t=%u r=%u b=%u l=%u (normalised%s)\n",
                    packets[i].frame_num, packets[i].top, packets[i].right,
                    packets[i].bottom, packets[i].left,
                    i == 0 ? ", initial geometry" : "");
@@ -11432,7 +11434,7 @@ static void calculate_gop_geometry(tav_encoder_t *enc, gop_boundary_t *gop_list,
 
     gop_boundary_t *gop = gop_list;
     while (gop) {
-        // Initialize with full frame dimensions
+        // Initialise with full frame dimensions
         gop->max_active_width = 0;
         gop->max_active_height = 0;
         gop->geometry_changes = 0;
@@ -11445,7 +11447,7 @@ static void calculate_gop_geometry(tav_encoder_t *enc, gop_boundary_t *gop_list,
 
         // Track previous geometry for change detection
         uint16_t prev_top = 0, prev_right = 0, prev_bottom = 0, prev_left = 0;
-        int prev_initialized = 0;
+        int prev_initialised = 0;
 
         // Scan all frames in this GOP
         for (int f = gop->start_frame; f <= gop->end_frame; f++) {
@@ -11470,7 +11472,7 @@ static void calculate_gop_geometry(tav_encoder_t *enc, gop_boundary_t *gop_list,
             if (frame->letterbox_left < min_left) min_left = frame->letterbox_left;
 
             // Detect geometry changes
-            if (prev_initialized) {
+            if (prev_initialised) {
                 if (frame->letterbox_top != prev_top ||
                     frame->letterbox_right != prev_right ||
                     frame->letterbox_bottom != prev_bottom ||
@@ -11484,7 +11486,7 @@ static void calculate_gop_geometry(tav_encoder_t *enc, gop_boundary_t *gop_list,
             prev_right = frame->letterbox_right;
             prev_bottom = frame->letterbox_bottom;
             prev_left = frame->letterbox_left;
-            prev_initialized = 1;
+            prev_initialised = 1;
         }
 
         // Calculate unified mask from minimum letterbox values
@@ -11817,7 +11819,7 @@ int main(int argc, char *argv[]) {
 
     printf("Initialising encoder...\n");
 
-    // Initialize AVX-512 runtime detection
+    // Initialise AVX-512 runtime detection
     tav_simd_init();
 
     tav_encoder_t *enc = create_encoder();
@@ -12154,20 +12156,7 @@ int main(int argc, char *argv[]) {
             case 1060: // --threads
                 enc->num_threads = atoi(optarg);
                 if (enc->num_threads < 1) enc->num_threads = 1;
-
-                // Future: auto-detect with limit (currently commented out)
-                // if (enc->num_threads == 0) {
-                //     #ifdef _WIN32
-                //     SYSTEM_INFO sysinfo;
-                //     GetSystemInfo(&sysinfo);
-                //     int cores = sysinfo.dwNumberOfProcessors;
-                //     #else
-                //     int cores = sysconf(_SC_NPROCESSORS_ONLN);
-                //     #endif
-                //     enc->num_threads = (cores > 8) ? 8 : cores;  // Limit to 8
-                // }
-
-                printf("Multi-threading: %d threads\n", enc->num_threads);
+                printf("Multi-threading: %d threads (user-defined)\n", enc->num_threads);
                 break;
             case 'a':
                 int bitrate = atoi(optarg);
@@ -12226,6 +12215,19 @@ int main(int argc, char *argv[]) {
                        enc->width, enc->height, num_pixels, enc->quantiser_y);
             }
         }
+    }
+
+    //auto-detect with limit (currently commented out)
+    if (enc->num_threads == 0) {
+        #ifdef _WIN32
+        SYSTEM_INFO sysinfo;
+        GetSystemInfo(&sysinfo);
+        int cores = sysinfo.dwNumberOfProcessors;
+        #else
+        int cores = sysconf(_SC_NPROCESSORS_ONLN);
+        #endif
+        enc->num_threads = (cores > 8) ? 8 : cores;  // Limit to 8
+        printf("Multi-threading: %d threads (auto-selected)\n", enc->num_threads);
     }
 
     // generate division series

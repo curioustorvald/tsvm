@@ -8,7 +8,7 @@
  * Optimised functions:
  * - 1D DWT transforms (5/3, 9/7, Haar, Bior13/7, DD4)
  * - Quantisation functions
- * - RGB to YCoCg color conversion
+ * - RGB to YCoCg colour conversion
  * - 2D DWT gather/scatter operations
  *
  * Compile with: -mavx512f -mavx512dq -mavx512bw -mavx512vl
@@ -79,7 +79,7 @@ static inline float _mm512_reduce_add_ps_compat(__m512 v) {
     return _mm_cvtss_f32(sum128);
 }
 
-// Clamp helper for vectorized operations
+// Clamp helper for vectorised operations
 static inline __m512 _mm512_clamp_ps(__m512 v, __m512 min_val, __m512 max_val) {
     return _mm512_min_ps(_mm512_max_ps(v, min_val), max_val);
 }
@@ -95,7 +95,7 @@ static inline void dwt_53_forward_1d_avx512(float *data, int length) {
     float *temp = (float*)calloc(length, sizeof(float));
     int half = (length + 1) / 2;
 
-    // Predict step (high-pass) - vectorized
+    // Predict step (high-pass) - vectorised
     // temp[half + i] = data[2*i+1] - 0.5 * (data[2*i] + data[2*i+2])
     int i;
     for (i = 0; i + 16 <= half; i += 16) {
@@ -145,7 +145,7 @@ static inline void dwt_53_forward_1d_avx512(float *data, int length) {
         }
     }
 
-    // Update step (low-pass) - vectorized
+    // Update step (low-pass) - vectorised
     // temp[i] = data[2*i] + 0.25 * (temp[half+i-1] + temp[half+i])
     for (i = 0; i + 16 <= half; i += 16) {
         __m512 even = _mm512_loadu_ps(&data[2 * i]);  // Load with stride 2 (simplified)
@@ -157,7 +157,7 @@ static inline void dwt_53_forward_1d_avx512(float *data, int length) {
         }
         even = _mm512_loadu_ps(even_vals);
 
-        // Load high-pass neighbors
+        // Load high-pass neighbours
         float high_prev[16], high_curr[16];
         for (int j = 0; j < 16 && (i + j) < half; j++) {
             high_prev[j] = ((i + j) > 0) ? temp[half + (i + j) - 1] : 0.0f;
@@ -241,7 +241,7 @@ static inline void dwt_97_forward_1d_avx512(float *data, int length) {
                 temp[half + 0] += -1.586134342f * (temp[0] + temp[0]);
             }
         } else {
-            // main vectorized body: ensure s_next loads (i+1) valid -> i <= half-2
+            // main vectorised body: ensure s_next loads (i+1) valid -> i <= half-2
             int limit = (half - 1);
             int n_full = (limit / 16) * 16; // process up to n_full (multiple of 16)
             i = 0;
