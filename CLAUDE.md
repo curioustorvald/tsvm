@@ -153,7 +153,7 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - **Usage Examples**:
   ```bash
   # Quality mode
-  ./encoder_tev -i input.mp4 -q 2 -o output.tev
+  ./encoder_tev -i input.mp4 -o output.tev -q 3
 
   # Playback
   playtev output.tev
@@ -180,18 +180,18 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 - **Usage Examples**:
   ```bash
   # Different wavelets
-  ./encoder_tav -i input.mp4 -w 0 -q 2 -o output.tav    # 5/3 reversible (lossless capable)
-  ./encoder_tav -i input.mp4 -w 1 -q 2 -o output.tav    # 9/7 irreversible (default, best compression)
-  ./encoder_tav -i input.mp4 -w 2 -q 2 -o output.tav    # CDF 13/7 (experimental)
-  ./encoder_tav -i input.mp4 -w 16 -q 2 -o output.tav   # DD-4 (four-point interpolating)
-  ./encoder_tav -i input.mp4 -w 255 -q 2 -o output.tav  # Haar (demonstration)
+  ./encoder_tav -i input.mp4 -w 0 -o output.tav    # 5/3 reversible (lossless capable)
+  ./encoder_tav -i input.mp4 -w 1 -o output.tav    # 9/7 irreversible (default, best compression)
+  ./encoder_tav -i input.mp4 -w 2 -o output.tav    # CDF 13/7 (experimental)
+  ./encoder_tav -i input.mp4 -w 16 -o output.tav   # DD-4 (four-point interpolating)
+  ./encoder_tav -i input.mp4 -w 255 -o output.tav  # Haar (demonstration)
 
   # Quality levels (0-5)
   ./encoder_tav -i input.mp4 -q 0 -o output.tav         # Lowest quality, smallest file
   ./encoder_tav -i input.mp4 -q 5 -o output.tav         # Highest quality, largest file
 
   # Temporal 3D DWT (GOP-based encoding)
-  ./encoder_tav -i input.mp4 --temporal-dwt -q 2 -o output.tav
+  ./encoder_tav -i input.mp4 --temporal-dwt -o output.tav
 
   # Playback
   playtav output.tav
@@ -259,7 +259,7 @@ Implemented on 2025-10-15 for improved temporal compression through group-of-pic
 **Usage**:
 ```bash
 # Enable temporal 3D DWT
-./encoder_tav -i input.mp4 --temporal-dwt -q 2 -o output.tav
+./encoder_tav -i input.mp4 --temporal-dwt -o output.tav
 
 # Inspect GOP structure
 ./tav_inspector output.tav -v

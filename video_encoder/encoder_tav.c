@@ -1797,6 +1797,8 @@ typedef struct tav_encoder_s {
     
     // Encoding parameters
     int quality_level;
+    // IMPORTANT: quantiser_* stores RAW INDICES (0-255), not actual quantizer values
+    // When passing to quantization functions, MUST use QLUT[quantiser_*] to get actual values
     int quantiser_y, quantiser_co, quantiser_cg;
     int wavelet_filter;
     int decomp_levels;
@@ -3492,8 +3494,8 @@ static int worker_thread_main(void *arg) {
 
         // Step 3: Quantise coefficients (using 3D DWT quantisation for GOP)
         // Use channel-specific quantisers from encoder settings
-        // Apply QLUT mapping to chroma quantisers (matches single-threaded path)
-        int base_quantiser_y = enc->quantiser_y;
+        // Apply QLUT mapping to ALL quantisers (matches single-threaded path)
+        int base_quantiser_y = QLUT[enc->quantiser_y];    // Y quantiser from encoder (via QLUT)
         int base_quantiser_co = QLUT[enc->quantiser_co];  // Co quantiser from encoder (via QLUT)
         int base_quantiser_cg = QLUT[enc->quantiser_cg];  // Cg quantiser from encoder (via QLUT)
 
@@ -5212,10 +5214,10 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
                                                       qY, enc->width, enc->height,
                                                       enc->decomp_levels, 0, 0);
         quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
-                                                      enc->quantiser_co, enc->width, enc->height,
+                                                      QLUT[enc->quantiser_co], enc->width, enc->height,
                                                       enc->decomp_levels, 1, 0);
         quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
-                                                      enc->quantiser_cg, enc->width, enc->height,
+                                                      QLUT[enc->quantiser_cg], enc->width, enc->height,
                                                       enc->decomp_levels, 1, 0);
 
         // Print max abs for debug
@@ -5232,10 +5234,10 @@ static size_t encode_pframe_residual(tav_encoder_t *enc, int qY) {
                                                       qY, enc->width, enc->height,
                                                       enc->decomp_levels, 0, 0);
         quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
-                                                      enc->quantiser_co, enc->width, enc->height,
+                                                      QLUT[enc->quantiser_co], enc->width, enc->height,
                                                       enc->decomp_levels, 1, 0);
         quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
-                                                      enc->quantiser_cg, enc->width, enc->height,
+                                                      QLUT[enc->quantiser_cg], enc->width, enc->height,
                                                       enc->decomp_levels, 1, 0);
     }
 
@@ -5528,10 +5530,10 @@ static size_t encode_pframe_adaptive(tav_encoder_t *enc, int qY) {
                                                   qY, enc->width, enc->height,
                                                   enc->decomp_levels, 0, 0);
     quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
-                                                  enc->quantiser_co, enc->width, enc->height,
+                                                  QLUT[enc->quantiser_co], enc->width, enc->height,
                                                   enc->decomp_levels, 1, 0);
     quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
-                                                  enc->quantiser_cg, enc->width, enc->height,
+                                                  QLUT[enc->quantiser_cg], enc->width, enc->height,
                                                   enc->decomp_levels, 1, 0);
 
     // Step 8: Preprocess coefficients
@@ -5762,10 +5764,10 @@ static size_t encode_bframe_adaptive(tav_encoder_t *enc, int qY) {
                                                   qY, enc->width, enc->height,
                                                   enc->decomp_levels, 0, 0);
     quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_co_dwt, quantised_co, frame_size,
-                                                  enc->quantiser_co, enc->width, enc->height,
+                                                  QLUT[enc->quantiser_co], enc->width, enc->height,
                                                   enc->decomp_levels, 1, 0);
     quantise_dwt_coefficients_perceptual_per_coeff(enc, residual_cg_dwt, quantised_cg, frame_size,
-                                                  enc->quantiser_cg, enc->width, enc->height,
+                                                  QLUT[enc->quantiser_cg], enc->width, enc->height,
                                                   enc->decomp_levels, 1, 0);
 
     // Step 8: Preprocess coefficients
