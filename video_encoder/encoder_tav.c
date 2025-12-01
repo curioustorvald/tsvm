@@ -2385,6 +2385,7 @@ static int get_original_resolution(const char *input_file, int *width, int *heig
 // Parse resolution string like "1024x768" with keyword recognition
 static int parse_resolution(const char *res_str, int *width, int *height, const char *input_file) {
     if (!res_str) return 0;
+    // Video standards
     if (strcmp(res_str, "cif") == 0 || strcmp(res_str, "CIF") == 0) {
         *width = 352;
         *height = 288;
@@ -2505,6 +2506,7 @@ static int parse_resolution(const char *res_str, int *width, int *height, const 
         *height = 540;
         return 1;
     }
+    // TSVM Native
     if (strcmp(res_str, "half") == 0 || strcmp(res_str, "HALF") == 0) {
         *width = 280;
         *height = 224;
@@ -2520,6 +2522,7 @@ static int parse_resolution(const char *res_str, int *width, int *height, const 
         *height = DEFAULT_HEIGHT;
         return 1;
     }
+    // No size change
     if (strcmp(res_str, "original") == 0 || strcmp(res_str, "ORIGINAL") == 0) {
         return get_original_resolution(input_file, width, height);
     }

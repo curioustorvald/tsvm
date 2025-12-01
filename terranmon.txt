@@ -988,8 +988,8 @@ transmission capability, and region-of-interest coding.
 The encoder supports following presets:
 - Sports: use finer temporal quantisation, resulting in better-preserved motion. Less effective as resolution goes up
 - Anime: instructs the decoder to disable grain synthensis
-- D1/D1PAL: encode to D1-compatible video. This mode overrides quantiser setting, audio format is fixed to PCMu8, resolution is fixed to D1/D1PAL, interlacing is forced, and produces header-less file. All extra packets (subtitles, metadata, etc.) are dropped.
-- D1P/D1PALP: same as D1/D1PAL but progressive mode is used.
+- D1/D1PAL: encode to TAV-DT (NTSC/PAL) format. Any non-compliant setup will be ignored and substituted to compliant values
+- D1P/D1PALP: encode to TAV-DT Progressive (NTSC/PAL) format. Any non-compliant setup will be ignored and substituted to compliant values
 
 
 ## Packet Structure (some special packets have no payload. See Packet Types for details)
@@ -1120,7 +1120,7 @@ The encoder supports following presets:
       precedence.
 
 ## Timecode Packet Structure
-    uint8  Packet Type (0xFE)
+    uint8  Packet Type (0xFD)
     uint64 Time since stream start in nanoseconds (this may NOT start from zero if the video is coming from a livestream)
 
 ## Screen Masking Packet Structure
@@ -1602,6 +1602,44 @@ Number|Index
 3968|253
 4032|254
 4096|255
+
+--------------------------------------------------------------------------------
+
+TSVM Advanced Video - Digital Tape (TAV-DT) Format
+Created by CuriousTorvald on 2025-12-01
+
+TAV-DT is an extension to TAV format that is intended as filesystem-independent packetised video stream
+with easy syncing (playback can start from the arbitrary position and decoder can easily sync up to the
+start of the packet)
+
+# Video Format
+    - Dimension: 720x480 for NTSC, 720x576 for PAL
+    - FPS: arbitrary (defined in packet header)
+    - Wavelet: 9/7 Spatial, 5/3 Temporal
+    - Decomposition levels: 4 spatial, 2 temporal
+    - Quantiser and encoder quality level: arbitrary (defined in packet header as quality index)
+    - Extra features:
+        - Audio is mandatory (TAD codec only)
+        - Everything else is unsupported
+    - Video flags: Interlaced/NTSC framerate (defined in packet header)
+    - Channel layout: Y-Co-Cg
+    - Entropy coder: EZBC
+    - Encoder preset: default preset only
+    - Tiles: monoblock
+
+# Packet Structure
+    uint32 Sync pattern (0xE3537A1F for NTSC Dimension, 0xD193A745 for PAL Dimension)
+    uint8  Framerate
+    uint8  Flags
+        - bit 0 = interlaced
+        - bit 1 = is NTSC framerate
+        - bit 4-7 = quality index
+    int16  Reserved (zero-fill)
+    uint32 Total packet size past header
+    uint32 CRC-32 of 12-byte header
+    uint64 Timecode (0xFD packet) without header byte
+    *      TAD packet (full 0x24 packet)
+    *      TAV packet (full 0x10 or 0x12 packet)
 
 
 --------------------------------------------------------------------------------
