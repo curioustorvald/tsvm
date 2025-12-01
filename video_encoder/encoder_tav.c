@@ -67,6 +67,35 @@
 #define TAV_PACKET_SYNC_NTSC       0xFE  // NTSC Sync packet
 #define TAV_PACKET_SYNC            0xFF  // Sync packet
 
+// TAV-DT (Digital Tape) sync patterns (big endian)
+#define TAV_DT_SYNC_NTSC           0xE3537A1F  // NTSC dimension (720x480)
+#define TAV_DT_SYNC_PAL            0xD193A745  // PAL dimension (720x576)
+
+// TAV-DT quality index mapping table (16 levels)
+// Each entry: {Y_quantiser, Co_quantiser, Cg_quantiser, TAD_max_index}
+// Note: These are actual quantizer values, not QLUT indices
+static const struct {
+    uint16_t y, co, cg;
+    uint8_t tad_quality;
+} DT_QUALITY_MAP[16] = {
+    {60, 104, 312, 23},   // Q0
+    {44, 88, 248, 31},    // Q1
+    {36, 72, 188, 39},    // Q2
+    {28, 56, 136, 47},    // Q3
+    {20, 48, 106, 55},    // Q4
+    {16, 40, 80, 63},     // Q5
+    {12, 36, 68, 71},     // Q6
+    {10, 32, 58, 79},     // Q7
+    {8, 28, 48, 87},      // Q8
+    {6, 24, 38, 95},      // Q9
+    {5, 20, 30, 103},     // Q10
+    {4, 16, 22, 111},     // Q11
+    {3, 12, 16, 119},     // Q12
+    {2, 8, 10, 123},      // Q13
+    {2, 5, 6, 127},       // Q14
+    {1, 2, 2, 127}        // Q15
+};
+
 // TAD (Terrarum Advanced Audio) settings
 // TAD32 constants (updated to match Float32 version)
 #define TAD32_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples
@@ -148,14 +177,14 @@ typedef enum {
 
 // Two-pass scene change detection constants
 #define ANALYSIS_SUBSAMPLE_FACTOR 4  // Subsample to 1/4 resolution for speed
-#define ANALYSIS_DWT_LEVELS 3        // 3-level Haar DWT for analysis
-#define ANALYSIS_MOVING_WINDOW 30    // Moving average window (30 frames = ~1 second)
-#define ANALYSIS_STDDEV_MULTIPLIER 1.4  // Standard deviation multiplier for adaptive threshold (balanced sensitivity)
-#define ANALYSIS_LL_DIFF_MIN_THRESHOLD 1.5  // Minimum absolute threshold for LL_diff (avoid false positives)
-#define ANALYSIS_HB_RATIO_THRESHOLD 0.4  // Highband energy ratio threshold (balanced for scene cuts)
-#define ANALYSIS_HB_ENERGY_MULTIPLIER 1.4  // Energy spike multiplier (2.5× mean to trigger)
+#define ANALYSIS_DWT_LEVELS 2        // 3-level Haar DWT for analysis
+#define ANALYSIS_MOVING_WINDOW 12    // Moving average window (30 frames = ~1 second)
+#define ANALYSIS_STDDEV_MULTIPLIER 2.3  // Standard deviation multiplier for adaptive threshold (balanced sensitivity)
+#define ANALYSIS_LL_DIFF_MIN_THRESHOLD 1.3  // Minimum absolute threshold for LL_diff (avoid false positives)
+#define ANALYSIS_HB_RATIO_THRESHOLD 0.3  // Highband energy ratio threshold (balanced for scene cuts)
+#define ANALYSIS_HB_ENERGY_MULTIPLIER 1.2  // Energy spike multiplier (2.5× mean to trigger)
 #define ANALYSIS_FADE_THRESHOLD 50.0  // Brightness change threshold over 5 frames
-#define ANALYSIS_GOP_MIN_SIZE 10      // Minimum GOP size for two-pass mode. Keep it same as default settings.
+#define ANALYSIS_GOP_MIN_SIZE 8       // Minimum GOP size for two-pass mode. Keep it same as default settings.
 #define ANALYSIS_GOP_MAX_SIZE 24     // Maximum GOP size for two-pass mode. Keep it same as default settings.
 
 // Audio/subtitle constants (reused from TEV)
@@ -1840,6 +1869,14 @@ typedef struct tav_encoder_s {
     int enable_crop_encoding;    // 1 = encode cropped active region only (Phase 2), 0 = encode full frame (default)
     uint8_t encoder_preset;      // Encoder preset flags: bit 0 = sports (finer temporal quantisation), bit 1 = anime (no grain)
 
+    // TAV-DT (Digital Tape) mode
+    int dt_mode;                 // 1 = TAV-DT mode (headerless streaming format), 0 = normal TAV (default)
+    uint32_t dt_sync_pattern;    // Sync pattern for DT packets (0xE3537A1F for NTSC, 0xD193A745 for PAL)
+    uint8_t dt_quality_index;    // DT quality index (0-15, maps to Y/Co/Cg quantizers and TAD quality)
+    uint8_t *dt_packet_buffer;   // Buffer for accumulating DT packet contents
+    size_t dt_packet_buffer_size;     // Current size of buffered data
+    size_t dt_packet_buffer_capacity; // Allocated capacity
+
     // Active region tracking (for Phase 2 crop encoding)
     uint16_t active_mask_top, active_mask_right, active_mask_bottom, active_mask_left;
     int active_width, active_height;  // Dimensions of active region (width - left - right, height - top - bottom)
@@ -2585,6 +2622,13 @@ static subtitle_entry_t* parse_subtitle_file(const char *filename, int fps);
 static subtitle_entry_t* parse_srt_file(const char *filename, int fps);
 static subtitle_entry_t* parse_smi_file(const char *filename, int fps);
 
+// TAV-DT packet buffering prototypes
+static int dt_buffer_init(tav_encoder_t *enc);
+static int dt_buffer_append(tav_encoder_t *enc, const uint8_t *data, size_t size);
+static int dt_buffer_flush(tav_encoder_t *enc);
+static void dt_buffer_free(tav_encoder_t *enc);
+static int dt_write_timecode(tav_encoder_t *enc, int frame_num, int fps, int is_ntsc_framerate);
+
 // Multi-threading function prototypes
 static gop_slot_t* init_gop_slots(int num_slots, int width, int height, int capacity);
 static gop_slot_t* get_empty_slot(thread_pool_t *pool, int *slot_index);
@@ -2674,6 +2718,10 @@ static void show_usage(const char *program_name) {
     printf("  --preset PRESET         Encoder presets (comma-separated, e.g., 'sports,anime'):\n");
     printf("                            sports (or sport): Finer temporal quantisation for better motion detail\n");
     printf("                            anime (or animation): Disable grain synthesis for cleaner animated content\n");
+    printf("                            D1: TAV-DT NTSC interlaced (720x480i, headerless streaming format)\n");
+    printf("                            D1PAL: TAV-DT PAL interlaced (720x576i, headerless streaming format)\n");
+    printf("                            D1P: TAV-DT NTSC progressive (720x480p, headerless streaming format)\n");
+    printf("                            D1PALP: TAV-DT PAL progressive (720x576p, headerless streaming format)\n");
     printf("  --threads N             Number of worker threads for parallel GOP encoding (default: 1, requires --3d-dwt)\n");
     printf("  --help                  Show this help\n\n");
 
@@ -3079,6 +3127,11 @@ static int initialise_encoder(tav_encoder_t *enc) {
         !enc->tiles || !enc->zstd_ctx || !enc->compressed_buffer ||
         !enc->reusable_quantised_y || !enc->reusable_quantised_co || !enc->reusable_quantised_cg || !enc->reusable_quantised_alpha ||
         !enc->previous_coeffs_y || !enc->previous_coeffs_co || !enc->previous_coeffs_cg || !enc->previous_coeffs_alpha) {
+        return -1;
+    }
+
+    // Initialize DT packet buffer if in DT mode
+    if (dt_buffer_init(enc) != 0) {
         return -1;
     }
 
@@ -4004,44 +4057,71 @@ static int writer_thread_main(void *arg) {
             return -1;
         }
 
-        // Write timecode packet for first frame in GOP
-        write_timecode_packet(output, slot->frame_numbers[0],
-                             enc->output_fps, enc->is_ntsc_framerate);
+        // TAV-DT mode: Buffer packets with DT header
+        // Normal mode: Write packets directly
+        if (enc->dt_mode) {
+            // Reset buffer for new DT packet
+            enc->dt_packet_buffer_size = 0;
 
-        // Debug: Verify packet data before writing (first GOP only)
-        if (gop_index == 0 && enc->verbose) {
-            if (slot->num_audio_packets > 0) {
-                printf("[DEBUG] GOP 0 Audio packet 0: type=0x%02X, size=%zu, first_bytes=%02X %02X %02X %02X %02X\n",
-                       slot->audio_packets[0][0],
-                       slot->audio_packet_sizes[0],
-                       slot->audio_packets[0][0], slot->audio_packets[0][1],
-                       slot->audio_packets[0][2], slot->audio_packets[0][3],
-                       slot->audio_packets[0][4]);
+            // Write timecode to DT buffer (8 bytes, no packet header)
+            dt_write_timecode(enc, slot->frame_numbers[0],
+                            enc->output_fps, enc->is_ntsc_framerate);
+
+            // Write audio packets to DT buffer (full packets)
+            for (int i = 0; i < slot->num_audio_packets; i++) {
+                dt_buffer_append(enc, slot->audio_packets[i], slot->audio_packet_sizes[i]);
             }
-            printf("[DEBUG] GOP 0 Video packet: type=0x%02X, size=%zu, first_bytes=%02X %02X %02X %02X %02X\n",
-                   slot->video_packet[0],
-                   slot->video_packet_size,
-                   slot->video_packet[0], slot->video_packet[1],
-                   slot->video_packet[2], slot->video_packet[3],
-                   slot->video_packet[4]);
-        }
 
-        // Write audio packets
-        for (int i = 0; i < slot->num_audio_packets; i++) {
-            fwrite(slot->audio_packets[i], 1, slot->audio_packet_sizes[i], output);
-        }
+            // Write video packet to DT buffer (full packet)
+            dt_buffer_append(enc, slot->video_packet, slot->video_packet_size);
 
-        // Write video packet
-        fwrite(slot->video_packet, 1, slot->video_packet_size, output);
+            // Flush DT packet (write DT header + buffered data)
+            if (dt_buffer_flush(enc) != 0) {
+                fprintf(stderr, "Error: Failed to flush DT packet for GOP %d\n", gop_index);
+                mtx_unlock(&slot->mutex);
+                return -1;
+            }
+        } else {
+            // Normal TAV mode: Write packets directly
+            // Write timecode packet for first frame in GOP
+            write_timecode_packet(output, slot->frame_numbers[0],
+                                enc->output_fps, enc->is_ntsc_framerate);
+
+            // Debug: Verify packet data before writing (first GOP only)
+            if (gop_index == 0 && enc->verbose) {
+                if (slot->num_audio_packets > 0) {
+                    printf("[DEBUG] GOP 0 Audio packet 0: type=0x%02X, size=%zu, first_bytes=%02X %02X %02X %02X %02X\n",
+                           slot->audio_packets[0][0],
+                           slot->audio_packet_sizes[0],
+                           slot->audio_packets[0][0], slot->audio_packets[0][1],
+                           slot->audio_packets[0][2], slot->audio_packets[0][3],
+                           slot->audio_packets[0][4]);
+                }
+                printf("[DEBUG] GOP 0 Video packet: type=0x%02X, size=%zu, first_bytes=%02X %02X %02X %02X %02X\n",
+                       slot->video_packet[0],
+                       slot->video_packet_size,
+                       slot->video_packet[0], slot->video_packet[1],
+                       slot->video_packet[2], slot->video_packet[3],
+                       slot->video_packet[4]);
+            }
+
+            // Write audio packets
+            for (int i = 0; i < slot->num_audio_packets; i++) {
+                fwrite(slot->audio_packets[i], 1, slot->audio_packet_sizes[i], output);
+            }
+
+            // Write video packet
+            fwrite(slot->video_packet, 1, slot->video_packet_size, output);
+
+            // Write GOP_SYNC packet (not used in DT mode)
+            uint8_t gop_sync[2] = {TAV_PACKET_GOP_SYNC, (uint8_t)slot->num_frames};
+            fwrite(gop_sync, 1, 2, output);
+        }
 
         // Save values for progress reporting BEFORE freeing
         int num_frames_written = slot->num_frames;
         size_t video_size_written = slot->video_packet_size;
         int audio_packets_written = slot->num_audio_packets;
-
-        // Write GOP_SYNC packet
-        uint8_t gop_sync[2] = {TAV_PACKET_GOP_SYNC, (uint8_t)num_frames_written};
-        fwrite(gop_sync, 1, 2, output);
 
         mtx_unlock(&slot->mutex);
 
@@ -8714,6 +8794,169 @@ static int write_fontrom_packet(FILE *fp, const char *filename, uint8_t opcode) 
 }
 
 // Write TAV file header
+// CRC-32 lookup table and calculation function for TAV-DT packet headers
+static uint32_t crc32_table[256];
+static int crc32_table_initialized = 0;
+
+static void init_crc32_table(void) {
+    if (crc32_table_initialized) return;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; j++) {
+            if (crc & 1) {
+                crc = (crc >> 1) ^ 0xEDB88320;  // CRC-32 polynomial
+            } else {
+                crc >>= 1;
+            }
+        }
+        crc32_table[i] = crc;
+    }
+    crc32_table_initialized = 1;
+}
+
+static uint32_t calculate_crc32(const uint8_t *data, size_t length) {
+    init_crc32_table();
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc = (crc >> 8) ^ crc32_table[(crc ^ data[i]) & 0xFF];
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
+// Write TAV-DT packet header (16 bytes total)
+// Returns the file position after the header, or -1 on error
+static long write_dt_packet_header(tav_encoder_t *enc, uint32_t packet_size) {
+    if (!enc->output_fp) return -1;
+
+    uint8_t header[12];  // First 12 bytes (sync + framerate + flags + reserved + size)
+    int pos = 0;
+
+    // Write sync pattern (4 bytes, big endian)
+    header[pos++] = (enc->dt_sync_pattern >> 24) & 0xFF;
+    header[pos++] = (enc->dt_sync_pattern >> 16) & 0xFF;
+    header[pos++] = (enc->dt_sync_pattern >> 8) & 0xFF;
+    header[pos++] = enc->dt_sync_pattern & 0xFF;
+
+    // Write framerate (1 byte)
+    header[pos++] = enc->output_fps;
+
+    // Write flags (1 byte)
+    uint8_t flags = 0;
+    if (!enc->progressive_mode) flags |= 0x01;  // bit 0 = interlaced
+    if (enc->is_ntsc_framerate) flags |= 0x02;  // bit 1 = is NTSC framerate
+    flags |= ((enc->dt_quality_index) & 0x0F) << 4;  // bits 4-7 = quality index (0-15)
+    header[pos++] = flags;
+
+    // Write reserved (2 bytes, zero-fill)
+    header[pos++] = 0;
+    header[pos++] = 0;
+
+    // Write total packet size past header (4 bytes, little endian)
+    header[pos++] = packet_size & 0xFF;
+    header[pos++] = (packet_size >> 8) & 0xFF;
+    header[pos++] = (packet_size >> 16) & 0xFF;
+    header[pos++] = (packet_size >> 24) & 0xFF;
+
+    // Calculate CRC-32 of the 12-byte header
+    uint32_t crc = calculate_crc32(header, 12);
+
+    // Write the 12-byte header
+    if (fwrite(header, 1, 12, enc->output_fp) != 12) {
+        return -1;
+    }
+
+    // Write CRC-32 (4 bytes, little endian)
+    fputc(crc & 0xFF, enc->output_fp);
+    fputc((crc >> 8) & 0xFF, enc->output_fp);
+    fputc((crc >> 16) & 0xFF, enc->output_fp);
+    fputc((crc >> 24) & 0xFF, enc->output_fp);
+
+    return ftell(enc->output_fp);
+}
+
+// TAV-DT packet buffering functions
+static int dt_buffer_init(tav_encoder_t *enc) {
+    if (!enc->dt_mode) return 0;
+    enc->dt_packet_buffer_capacity = 10 * 1024 * 1024;  // 10MB initial capacity
+    enc->dt_packet_buffer = malloc(enc->dt_packet_buffer_capacity);
+    if (!enc->dt_packet_buffer) {
+        fprintf(stderr, "Error: Failed to allocate DT packet buffer\n");
+        return -1;
+    }
+    enc->dt_packet_buffer_size = 0;
+    return 0;
+}
+
+static int dt_buffer_append(tav_encoder_t *enc, const uint8_t *data, size_t size) {
+    if (!enc->dt_mode) return 0;
+
+    // Resize buffer if needed
+    while (enc->dt_packet_buffer_size + size > enc->dt_packet_buffer_capacity) {
+        enc->dt_packet_buffer_capacity *= 2;
+        uint8_t *new_buffer = realloc(enc->dt_packet_buffer, enc->dt_packet_buffer_capacity);
+        if (!new_buffer) {
+            fprintf(stderr, "Error: Failed to resize DT packet buffer\n");
+            return -1;
+        }
+        enc->dt_packet_buffer = new_buffer;
+    }
+
+    // Append data
+    memcpy(enc->dt_packet_buffer + enc->dt_packet_buffer_size, data, size);
+    enc->dt_packet_buffer_size += size;
+    return 0;
+}
+
+static int dt_buffer_flush(tav_encoder_t *enc) {
+    if (!enc->dt_mode || enc->dt_packet_buffer_size == 0) return 0;
+
+    // Write DT packet header
+    if (write_dt_packet_header(enc, enc->dt_packet_buffer_size) < 0) {
+        fprintf(stderr, "Error: Failed to write DT packet header\n");
+        return -1;
+    }
+
+    // Write buffered data
+    if (fwrite(enc->dt_packet_buffer, 1, enc->dt_packet_buffer_size, enc->output_fp) != enc->dt_packet_buffer_size) {
+        fprintf(stderr, "Error: Failed to write DT packet data\n");
+        return -1;
+    }
+
+    // Reset buffer
+    enc->dt_packet_buffer_size = 0;
+    return 0;
+}
+
+static void dt_buffer_free(tav_encoder_t *enc) {
+    if (enc->dt_packet_buffer) {
+        free(enc->dt_packet_buffer);
+        enc->dt_packet_buffer = NULL;
+    }
+    enc->dt_packet_buffer_size = 0;
+    enc->dt_packet_buffer_capacity = 0;
+}
+
+// Write timecode to DT buffer (8 bytes, no packet type header)
+static int dt_write_timecode(tav_encoder_t *enc, int frame_num, int fps, int is_ntsc_framerate) {
+    if (!enc->dt_mode) return 0;
+
+    // Calculate timecode in nanoseconds (same logic as write_timecode_packet)
+    uint64_t timecode_ns;
+    if (is_ntsc_framerate) {
+        timecode_ns = ((uint64_t)frame_num * 1001ULL * 1000000000ULL) / ((uint64_t)fps * 1000ULL);
+    } else {
+        timecode_ns = ((uint64_t)frame_num * 1000000000ULL) / (uint64_t)fps;
+    }
+
+    // Append timecode as little-endian uint64 (8 bytes, no packet type header for DT)
+    uint8_t timecode_bytes[8];
+    for (int i = 0; i < 8; i++) {
+        timecode_bytes[i] = (timecode_ns >> (i * 8)) & 0xFF;
+    }
+
+    return dt_buffer_append(enc, timecode_bytes, 8);
+}
+
 static int write_tav_header(tav_encoder_t *enc) {
     if (!enc->output_fp) return -1;
 
@@ -12284,8 +12527,28 @@ int main(int argc, char *argv[]) {
                     } else if (strcmp(token, "anime") == 0 || strcmp(token, "animation") == 0) {
                         enc->encoder_preset |= 0x02;
                         printf("Preset 'anime' enabled: grain synthesis disabled\n");
+                    } else if (strcmp(token, "D1") == 0) {
+                        enc->dt_mode = 1;
+                        enc->dt_sync_pattern = TAV_DT_SYNC_NTSC;
+                        enc->progressive_mode = 0;  // Interlaced
+                        printf("Preset 'D1' enabled: TAV-DT NTSC interlaced (720x480i)\n");
+                    } else if (strcmp(token, "D1PAL") == 0) {
+                        enc->dt_mode = 1;
+                        enc->dt_sync_pattern = TAV_DT_SYNC_PAL;
+                        enc->progressive_mode = 0;  // Interlaced
+                        printf("Preset 'D1PAL' enabled: TAV-DT PAL interlaced (720x576i)\n");
+                    } else if (strcmp(token, "D1P") == 0) {
+                        enc->dt_mode = 1;
+                        enc->dt_sync_pattern = TAV_DT_SYNC_NTSC;
+                        enc->progressive_mode = 1;  // Progressive
+                        printf("Preset 'D1P' enabled: TAV-DT NTSC progressive (720x480p)\n");
+                    } else if (strcmp(token, "D1PALP") == 0) {
+                        enc->dt_mode = 1;
+                        enc->dt_sync_pattern = TAV_DT_SYNC_PAL;
+                        enc->progressive_mode = 1;  // Progressive
+                        printf("Preset 'D1PALP' enabled: TAV-DT PAL progressive (720x576p)\n");
                     } else {
-                        fprintf(stderr, "Warning: Unknown preset '%s' (valid: sports, anime)\n", token);
+                        fprintf(stderr, "Warning: Unknown preset '%s' (valid: sports, anime, D1, D1PAL, D1P, D1PALP)\n", token);
                     }
 
                     token = strtok(NULL, ",");
@@ -12325,6 +12588,50 @@ int main(int argc, char *argv[]) {
                 cleanup_encoder(enc);
                 return 1;
         }
+    }
+
+    // Apply TAV-DT mode overrides (enforce format constraints)
+    if (enc->dt_mode) {
+        // Determine target dimensions based on sync pattern
+        int target_width = (enc->dt_sync_pattern == TAV_DT_SYNC_NTSC) ? 720 : 720;
+        int target_height = (enc->dt_sync_pattern == TAV_DT_SYNC_NTSC) ? 480 : 576;
+
+        // Override dimensions
+        if (enc->width != target_width || enc->height != target_height) {
+            printf("TAV-DT: Overriding dimensions %dx%d -> %dx%d\n",
+                   enc->width, enc->height, target_width, target_height);
+            enc->width = target_width;
+            enc->height = target_height;
+        }
+
+        // Enforce mandatory settings
+        enc->wavelet_filter = WAVELET_9_7_IRREVERSIBLE;  // 9/7 spatial
+        enc->decomp_levels = 4;  // 4 spatial levels
+        enc->temporal_motion_coder = 1;  // CDF 5/3 temporal
+        enc->temporal_decomp_levels = 2;  // 2 temporal levels
+        enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Y-Co-Cg only
+        enc->preprocess_mode = PREPROCESS_EZBC;  // EZBC entropy coder
+        enc->monoblock = 1;  // Monoblock tiles
+        enc->tad_audio = 1;  // TAD audio mandatory
+        enc->enable_temporal_dwt = 1;  // Temporal DWT required
+
+        // Map quality level (0-5) to DT quality index (0-15)
+        // Quality 0 -> Q0, Quality 1 -> Q3, Quality 2 -> Q6, Quality 3 -> Q9, Quality 4 -> Q12, Quality 5 -> Q15
+        if (enc->quality_level >= 0 && enc->quality_level <= 5) {
+            enc->dt_quality_index = enc->quality_level * 3;  // Linear mapping: 0->0, 1->3, 2->6, 3->9, 4->12, 5->15
+        } else {
+            enc->dt_quality_index = 9;  // Default to Q9 (equivalent to quality level 3)
+        }
+
+        // Apply quantizers from DT quality map
+        enc->quantiser_y = DT_QUALITY_MAP[enc->dt_quality_index].y;
+        enc->quantiser_co = DT_QUALITY_MAP[enc->dt_quality_index].co;
+        enc->quantiser_cg = DT_QUALITY_MAP[enc->dt_quality_index].cg;
+
+        printf("TAV-DT: Quality index %d -> Y=%d, Co=%d, Cg=%d, TAD_quality=%d\n",
+               enc->dt_quality_index, enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg,
+               DT_QUALITY_MAP[enc->dt_quality_index].tad_quality);
+        printf("TAV-DT: Enforcing format constraints (9/7 spatial, 5/3 temporal, 4+2 levels, EZBC, monoblock)\n");
     }
 
     // Halve internal height for interlaced mode (FFmpeg will output half-height fields)
@@ -12519,37 +12826,45 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Write TAV header
-    if (write_tav_header(enc) != 0) {
-        fprintf(stderr, "Error: Failed to write TAV header\n");
-        cleanup_encoder(enc);
-        return 1;
-    }
-
-    // Write extended header packet (before first timecode)
-    gettimeofday(&enc->start_time, NULL);
-    enc->extended_header_offset = write_extended_header(enc);
-
-    // Write separate audio track if enabled (packet 0x40)
-    if (enc->separate_audio_track) {
-        write_separate_audio_track(enc, enc->output_fp);
-    }
-
-    // Write font ROM packets if provided
-    if (enc->fontrom_lo_file) {
-        if (write_fontrom_packet(enc->output_fp, enc->fontrom_lo_file, 0x80) != 0) {
-            fprintf(stderr, "Warning: Failed to write low font ROM, continuing without it\n");
+    // Write TAV header (skip in DT mode - DT is headerless streaming format)
+    if (!enc->dt_mode) {
+        if (write_tav_header(enc) != 0) {
+            fprintf(stderr, "Error: Failed to write TAV header\n");
+            cleanup_encoder(enc);
+            return 1;
         }
-    }
-    if (enc->fontrom_hi_file) {
-        if (write_fontrom_packet(enc->output_fp, enc->fontrom_hi_file, 0x81) != 0) {
-            fprintf(stderr, "Warning: Failed to write high font ROM, continuing without it\n");
-        }
+
+        // Write extended header packet (before first timecode)
+        gettimeofday(&enc->start_time, NULL);
+        enc->extended_header_offset = write_extended_header(enc);
+    } else {
+        printf("TAV-DT mode: Skipping file header (headerless streaming format)\n");
+        gettimeofday(&enc->start_time, NULL);
     }
 
-    // Write all subtitles upfront in SSF-TC format (before first frame)
-    if (enc->subtitles) {
-        write_all_subtitles_tc(enc, enc->output_fp);
+    // Write separate audio track, font ROM, and subtitles (not supported in DT mode)
+    if (!enc->dt_mode) {
+        // Write separate audio track if enabled (packet 0x40)
+        if (enc->separate_audio_track) {
+            write_separate_audio_track(enc, enc->output_fp);
+        }
+
+        // Write font ROM packets if provided
+        if (enc->fontrom_lo_file) {
+            if (write_fontrom_packet(enc->output_fp, enc->fontrom_lo_file, 0x80) != 0) {
+                fprintf(stderr, "Warning: Failed to write low font ROM, continuing without it\n");
+            }
+        }
+        if (enc->fontrom_hi_file) {
+            if (write_fontrom_packet(enc->output_fp, enc->fontrom_hi_file, 0x81) != 0) {
+                fprintf(stderr, "Warning: Failed to write high font ROM, continuing without it\n");
+            }
+        }
+
+        // Write all subtitles upfront in SSF-TC format (before first frame)
+        if (enc->subtitles) {
+            write_all_subtitles_tc(enc, enc->output_fp);
+        }
     }
 
     // Write all screen masking packets upfront (before first frame)
@@ -12673,7 +12988,10 @@ int main(int argc, char *argv[]) {
         }
 
         // Write all screen masking packets NOW (after first pass analysis)
-        write_all_screen_mask_packets(enc, enc->output_fp);
+        // Skip in DT mode - screen masking not supported
+        if (!enc->dt_mode) {
+            write_all_screen_mask_packets(enc, enc->output_fp);
+        }
 
         printf("\n=== Two-Pass Encoding: Second Pass (Encoding) ===\n");
     }
@@ -12700,8 +13018,10 @@ int main(int argc, char *argv[]) {
             goto single_threaded_mode;
         }
 
-        // Write initial timecode
-        write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
+        // Write initial timecode (skip in DT mode - timecode embedded in DT packet headers)
+        if (!enc->dt_mode) {
+            write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
+        }
 
         // Start producer thread
         if (thrd_create(&enc->thread_pool->producer_thread, producer_thread_main,
@@ -12769,8 +13089,10 @@ single_threaded_mode:
     int true_frame_count = 0;
     int continue_encoding = 1;
 
-    // Write timecode packet for frame 0 (before the first frame group)
-    write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
+    // Write timecode packet for frame 0 (skip in DT mode - timecode embedded in DT packet headers)
+    if (!enc->dt_mode) {
+        write_timecode_packet(enc->output_fp, 0, enc->output_fps, enc->is_ntsc_framerate);
+    }
 
     while (continue_encoding) {
         // Check encode limit if specified
@@ -12782,7 +13104,8 @@ single_threaded_mode:
 
         // Write timecode packet for frames 1+ (right after sync packet from previous frame)
         // Skip timecode emission in temporal DWT mode (GOP handles its own timecodes)
-        if (frame_count > 0 && !enc->enable_temporal_dwt) {
+        // Skip in DT mode (timecode embedded in DT packet headers)
+        if (frame_count > 0 && !enc->enable_temporal_dwt && !enc->dt_mode) {
             write_timecode_packet(enc->output_fp, frame_count, enc->output_fps, enc->is_ntsc_framerate);
         }
 
@@ -13510,7 +13833,8 @@ encoding_complete:
     int actual_frame_count = (enc->thread_pool) ? enc->thread_pool->total_frames_produced : frame_count;
     enc->total_frames = actual_frame_count;
 
-    if (enc->output_fp != stdout) {
+    // Update header with actual frame count (skip in DT mode - no header to update)
+    if (enc->output_fp != stdout && !enc->dt_mode) {
         long current_pos = ftell(enc->output_fp);
         fseek(enc->output_fp, 14, SEEK_SET);  // Offset of total_frames field in TAV header
         uint32_t actual_frames = actual_frame_count;
@@ -13689,6 +14013,9 @@ static void cleanup_encoder(tav_encoder_t *enc) {
     if (enc->zstd_ctx) {
         ZSTD_freeCCtx(enc->zstd_ctx);
     }
+
+    // Free DT packet buffer
+    dt_buffer_free(enc);
 
     free(enc);
 }
