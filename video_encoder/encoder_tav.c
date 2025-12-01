@@ -2395,6 +2395,11 @@ static int parse_resolution(const char *res_str, int *width, int *height, const 
         *height = 144;
         return 1;
     }
+    if (strcmp(res_str, "vga") == 0 || strcmp(res_str, "VGA") == 0) {
+        *width = 640;
+        *height = 480;
+        return 1;
+    }
     if (strcmp(res_str, "d1") == 0 || strcmp(res_str, "D1") == 0) {
         *width = 720;
         *height = 480;
@@ -2405,9 +2410,109 @@ static int parse_resolution(const char *res_str, int *width, int *height, const 
         *height = 576;
         return 1;
     }
+    if (strcmp(res_str, "960h") == 0 || strcmp(res_str, "960H") == 0) {
+        *width = 960;
+        *height = 576;
+        return 1;
+    }
+    // HD-ish resolutions
+    if (strcmp(res_str, "540p") == 0 || strcmp(res_str, "540P") == 0 || strcmp(res_str, "qHD") == 0) {
+        *width = 960;
+        *height = 540;
+        return 1;
+    }
+    if (strcmp(res_str, "720p") == 0 || strcmp(res_str, "720P") == 0 || strcmp(res_str, "wxga") == 0 || strcmp(res_str, "WXGA") == 0) {
+        *width = 1280;
+        *height = 720;
+        return 1;
+    }
+    if (strcmp(res_str, "800p") == 0 || strcmp(res_str, "800P") == 0) {
+        *width = 1280;
+        *height = 800;
+        return 1;
+    }
+    if (strcmp(res_str, "900p") == 0 || strcmp(res_str, "900P") == 0) {
+        *width = 1600;
+        *height = 900;
+        return 1;
+    }
+    if (strcmp(res_str, "960p") == 0 || strcmp(res_str, "960P") == 0 || strcmp(res_str, "wsxga") == 0 || strcmp(res_str, "WSXGA") == 0) {
+        *width = 1706;
+        *height = 960;
+        return 1;
+    }
+    if (strcmp(res_str, "1080p") == 0 || strcmp(res_str, "1080P") == 0 || strcmp(res_str, "fhd") == 0 || strcmp(res_str, "FHD") == 0 || strcmp(res_str, "wuxga") == 0 || strcmp(res_str, "WUXGA") == 0) {
+        *width = 1920;
+        *height = 1080;
+        return 1;
+    }
+    if (strcmp(res_str, "1440p") == 0 || strcmp(res_str, "1440P") == 0 || strcmp(res_str, "wqhd") == 0 || strcmp(res_str, "WQHD") == 0) {
+        *width = 2560;
+        *height = 1440;
+        return 1;
+    }
+    if (strcmp(res_str, "4k") == 0 || strcmp(res_str, "4K") == 0 || strcmp(res_str, "2160p") == 0 || strcmp(res_str, "2160p") == 0 || strcmp(res_str, "uhd") == 0 || strcmp(res_str, "UHD") == 0) {
+        *width = 3840;
+        *height = 2160;
+        return 1;
+    }
+    // 4K Univisium
+    if (strcmp(res_str, "4ku") == 0 || strcmp(res_str, "4KU") == 0) {
+        *width = 4096;
+        *height = 2048;
+        return 1;
+    }
+    // 3K Univisium
+    if (strcmp(res_str, "3ku") == 0 || strcmp(res_str, "3KU") == 0) {
+        *width = 3072;
+        *height = 1536;
+        return 1;
+    }
+    // 2K Univisium
+    if (strcmp(res_str, "2ku") == 0 || strcmp(res_str, "2KU") == 0) {
+        *width = 2048;
+        *height = 1024;
+        return 1;
+    }
+    // 1K Univisium
+    if (strcmp(res_str, "1ku") == 0 || strcmp(res_str, "1KU") == 0) {
+        *width = 1024;
+        *height = 512;
+        return 1;
+    }
+    // 4K DCI
+    if (strcmp(res_str, "4kdci") == 0 || strcmp(res_str, "4KDCI") == 0 || strcmp(res_str, "4k_dci") == 0 || strcmp(res_str, "4K_DCI") == 0 || strcmp(res_str, "4k-dci") == 0 || strcmp(res_str, "4K-DCI") == 0) {
+        *width = 4096;
+        *height = 2160;
+        return 1;
+    }
+    // 2.5K DCI
+    if (strcmp(res_str, "2.5kdci") == 0 || strcmp(res_str, "2.5KDCI") == 0 || strcmp(res_str, "2.5k_dci") == 0 || strcmp(res_str, "2.5K_DCI") == 0 || strcmp(res_str, "2.5k-dci") == 0 || strcmp(res_str, "2.5K-DCI") == 0 ||
+        strcmp(res_str, "2,5kdci") == 0 || strcmp(res_str, "2,5KDCI") == 0 || strcmp(res_str, "2,5k_dci") == 0 || strcmp(res_str, "2,5K_DCI") == 0 || strcmp(res_str, "2,5k-dci") == 0 || strcmp(res_str, "2,5K-DCI") == 0) {
+        *width = 2560;
+        *height = 1350;
+        return 1;
+    }
+    // 2K DCI
+    if (strcmp(res_str, "2kdci") == 0 || strcmp(res_str, "2KDCI") == 0 || strcmp(res_str, "2k_dci") == 0 || strcmp(res_str, "2K_DCI") == 0 || strcmp(res_str, "2k-dci") == 0 || strcmp(res_str, "2K-DCI") == 0) {
+        *width = 2048;
+        *height = 1080;
+        return 1;
+    }
+    // 1K DCI
+    if (strcmp(res_str, "1kdci") == 0 || strcmp(res_str, "1KDCI") == 0 || strcmp(res_str, "1k_dci") == 0 || strcmp(res_str, "1K_DCI") == 0 || strcmp(res_str, "1k-dci") == 0 || strcmp(res_str, "1K-DCI") == 0) {
+        *width = 1024;
+        *height = 540;
+        return 1;
+    }
     if (strcmp(res_str, "half") == 0 || strcmp(res_str, "HALF") == 0) {
-        *width = DEFAULT_WIDTH >> 1;
-        *height = DEFAULT_HEIGHT >> 1;
+        *width = 280;
+        *height = 224;
+        return 1;
+    }
+    if (strcmp(res_str, "full") == 0 || strcmp(res_str, "FULL") == 0 || strcmp(res_str, "tsvm") == 0 || strcmp(res_str, "TSVM") == 0) {
+        *width = 560;
+        *height = 448;
         return 1;
     }
     if (strcmp(res_str, "default") == 0 || strcmp(res_str, "DEFAULT") == 0) {

@@ -697,7 +697,7 @@ DCT-based compression, optional motion compensation, and efficient temporal codi
 ...
 
 ## Header (24 bytes)
-    uint8  Magic[8]: "\x1F TSVM TEV" or "\x1F TSVM TEP"
+    uint8  Magic[8]: "\x1FTSVMTEV" or "\x1FTSVMTEP"
     uint8  Version: 2 (YCoCg-R) or 3 (ICtCp)
     uint16 Width: video width in pixels
     uint16 Height: video height in pixels
@@ -903,7 +903,7 @@ transmission capability, and region-of-interest coding.
 ...
 
 ## Header (32 bytes)
-    uint8  Magic[8]: "\x1F TSVM TAV" or "\x1F TSVM TAP"
+    uint8  Magic[8]: "\x1FTSVMTAV" or "\x1FTSVMTAP"
     uint8  Version:
             Base version number:
             - 1 = YCoCg-R multi-tile uniform
@@ -967,6 +967,7 @@ transmission capability, and region-of-interest coding.
             Preset "Default" -> 0x00
             Preset "Sports" -> 0x01
             Preset "Anime" -> 0x02
+            NOTE: not all presets have preset flags. See Preset section for details.
     uint8  Reserved[1]: fill with zeros
     uint8  Device Orientation
             - 0 = No rotation
@@ -982,6 +983,14 @@ transmission capability, and region-of-interest coding.
             - 1 = this file is header-only, and UCF payload will be followed (used by movie file with chapters)
                    When header-only file contain video packets, they should be presented as an Intro Movie
                    before the user-interactable selector (served by the UCF payoad)
+
+### Presets
+The encoder supports following presets:
+- Sports: use finer temporal quantisation, resulting in better-preserved motion. Less effective as resolution goes up
+- Anime: instructs the decoder to disable grain synthensis
+- D1/D1PAL: encode to D1-compatible video. This mode overrides quantiser setting, audio format is fixed to PCMu8, resolution is fixed to D1/D1PAL, interlacing is forced, and produces header-less file. All extra packets (subtitles, metadata, etc.) are dropped.
+- D1P/D1PALP: same as D1/D1PAL but progressive mode is used.
+
 
 ## Packet Structure (some special packets have no payload. See Packet Types for details)
     uint8  Packet Type
@@ -1618,7 +1627,7 @@ is stored separately and quality index is shared with that of the video.
 ...
 
 ## Header (16 bytes)
-    uint8  Magic[8]: "\x1F TSVM TAD"
+    uint8  Magic[8]: "\x1FTSVMTAD"
     uint8  Version: 1
     uint8  Quality Level: 0-5 (0=lowest quality/smallest, 5=highest quality/largest)
     uint8  Flags:
@@ -1911,7 +1920,7 @@ A universal, simple cue designed to work as both playlist to cue up external fil
 ...
 
 ## Header (16 bytes)
-    uint8  Magic[8]: "\x1F TSVM UCF"
+    uint8  Magic[8]: "\x1FTSVMUCF"
     uint8  Version: 1
     uint16 Number of cue elements
     uint32 (Optional) Size of the cue file, useful for allocating fixed length for future expansion; 0 when not used
