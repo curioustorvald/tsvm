@@ -18,6 +18,7 @@ uniform vec2 resolution = vec2(640.0, 480.0); // Virtual resolution (e.g., 640x4
 uniform float displayScale = 2.0;
 uniform sampler2D u_texture;     // Input texture
 uniform vec2 flip = vec2(0.0, 0.0); // UV flip control (0,1 = flip Y)
+uniform float noiseMagnitude = 0.0;
 
 // Signal mode: 0 = S-Video, 1 = Composite, 2 = CGA Composite
 // Can be changed at runtime without recompilation
@@ -108,9 +109,22 @@ float calcCarrierPhase(float pixelX, float pixelY, float frameOffset) {
     return phase;
 }
 
-float encodeComposite(vec3 rgb, float phase) {
+float rand(vec2 uv, vec3 v) {
+    // Combine spatial and temporal coordinates
+    vec3 p = vec3(uv, time);
+
+    // Hash function - creates pseudo-random values
+    p = fract(p * v);
+    p += dot(p, p.yzx + 19.19);
+    return fract((p.x + p.y) * p.z);
+}
+
+float encodeComposite(vec2 uv, vec3 rgb, float phase) {
     vec3 yiq = RGB_TO_YIQ * rgb;
-    return yiq.x + yiq.y * cos(phase) + yiq.z * sin(phase);
+    return yiq.x + yiq.y * cos(phase) + yiq.z * sin(phase) + (
+        rand(uv, vec3(443.897, 441.423, 437.195)) -
+        rand(uv, vec3(403.283, 479.028, 512.303))
+    ) * noiseMagnitude;
 }
 
 // === COMPOSITE SIGNAL DECODE ===
@@ -128,7 +142,7 @@ vec3 decodeComposite(vec2 uv, vec2 texelSize, float basePhase) {
 
         vec3 srcRGB = sampleTexture(sampleUV);
         float samplePhase = basePhase + offset * TAU * CC_PER_PIXEL;
-        float composite = encodeComposite(srcRGB, samplePhase);
+        float composite = encodeComposite(uv, srcRGB, samplePhase);
 
         // Low-pass for luma
         float yw = gaussianWeight(offset, compFilter);
