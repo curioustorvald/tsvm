@@ -702,15 +702,15 @@ int main(int argc, char *argv[]) {
         .decomp_levels = 4,           // TAV-DT fixed: 4 spatial levels
         .temporal_levels = 2,         // TAV-DT fixed: 2 temporal levels
         .wavelet_filter = 1,          // TAV-DT fixed: CDF 9/7
-        .temporal_wavelet = 1,        // TAV-DT fixed: CDF 5/3 (NOT Haar!)
+        .temporal_wavelet = 0,        // TAV-DT fixed: Haar
         .entropy_coder = 1,           // TAV-DT fixed: EZBC
         .channel_layout = 0,          // TAV-DT fixed: YCoCg-R
         .perceptual_tuning = 1,       // TAV-DT fixed: Perceptual
         .quantiser_y = (uint8_t)quant_y,     // From DT quality map
         .quantiser_co = (uint8_t)quant_co,
         .quantiser_cg = (uint8_t)quant_cg,
-        .encoder_preset = 0,          // No special presets
-        .monoblock = 1                // TAV-DT fixed: Single tile
+        .encoder_preset = 1,          // Sports mode
+        .monoblock = 1               // TAV-DT fixed: Single tile
     };
 
     decoder.video_ctx = tav_video_create(&video_params);
@@ -734,9 +734,7 @@ int main(int argc, char *argv[]) {
         long start_pos = ftell(decoder.input_fp);
 
         // Pass 1: Process all packets for audio only
-        if (decoder.verbose) {
-            printf("\n=== Pass 1: Extracting audio ===\n");
-        }
+        printf("\n=== Pass 1: Extracting audio ===\n");
         while ((result = process_dt_packet(&decoder)) == 0) {
             // Continue processing (only audio is written)
         }
@@ -754,9 +752,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Pass 2: Rewind and process all packets for video
-        if (decoder.verbose) {
-            printf("\n=== Pass 2: Decoding video ===\n");
-        }
+        printf("\n=== Pass 2: Decoding video ===\n");
         fseek(decoder.input_fp, start_pos, SEEK_SET);
         decoder.packets_processed = 0;  // Reset statistics
         decoder.frames_decoded = 0;

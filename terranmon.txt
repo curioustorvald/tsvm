@@ -1615,7 +1615,7 @@ start of the next packet
 # Video Format
     - Dimension: 720x480 for NTSC, 720x576 for PAL
     - FPS: arbitrary (defined in packet header)
-    - Wavelet: 9/7 Spatial, 5/3 Temporal
+    - Wavelet: 9/7 Spatial, Haar Temporal ("sport" preset always enabled)
     - Decomposition levels: 4 spatial, 2 temporal
     - Quantiser and encoder quality level: arbitrary (defined in packet header as quality index)
     - Extra features:

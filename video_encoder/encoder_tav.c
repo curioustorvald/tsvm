@@ -12581,7 +12581,8 @@ int main(int argc, char *argv[]) {
         // Enforce mandatory settings
         enc->wavelet_filter = WAVELET_9_7_IRREVERSIBLE;  // 9/7 spatial
         enc->decomp_levels = 4;  // 4 spatial levels
-        enc->temporal_motion_coder = 1;  // CDF 5/3 temporal
+        enc->temporal_motion_coder = 0;  // Haar temporal
+        enc->encoder_preset = 0x01; // Sports mode
         enc->temporal_decomp_levels = 2;  // 2 temporal levels
         enc->channel_layout = CHANNEL_LAYOUT_YCOCG;  // Y-Co-Cg only
         enc->preprocess_mode = PREPROCESS_EZBC;  // EZBC entropy coder
@@ -12603,7 +12604,7 @@ int main(int argc, char *argv[]) {
         printf("TAV-DT: Quality level %d -> Y=%d, Co=%d, Cg=%d, TAD_quality=%d\n",
                enc->quality_level, enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg,
                enc->quality_level);
-        printf("TAV-DT: Enforcing format constraints (9/7 spatial, 5/3 temporal, 4+2 levels, EZBC, monoblock)\n");
+        printf("TAV-DT: Enforcing format constraints (9/7 spatial, Haar temporal, sports mode, 4+2 levels, EZBC, monoblock)\n");
     }
 
     // Halve internal height for interlaced mode (FFmpeg will output half-height fields)
@@ -12615,7 +12616,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Smart preset for temporal motion coder based on resolution
-    // For small videos (<500k pixels), use CDF 5/3 (better for fine details)
+    // For small videos (<500k pixels), use Haar with sports preset (better for fine details)
     // For larger videos, use Haar (better compression, smoother motion matters less)
     if (enc->temporal_motion_coder == -1) {
         int num_pixels = enc->width * enc->height;
@@ -12632,9 +12633,10 @@ int main(int argc, char *argv[]) {
             }
         }
         else {
-            enc->temporal_motion_coder = 1;  // CDF 5/3
+            enc->temporal_motion_coder = 0;  // Haar
+            enc->encoder_preset |= 0x01;  // Sports mode
             if (enc->verbose) {
-                printf("Auto-selected CDF 5/3 temporal wavelet (resolution: %dx%d = %d pixels, quantiser_y = %d)\n",
+                printf("Auto-selected Haar temporal wavelet with sports preset (resolution: %dx%d = %d pixels, quantiser_y = %d)\n",
                        enc->width, enc->height, num_pixels, enc->quantiser_y);
             }
         }
