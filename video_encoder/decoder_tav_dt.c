@@ -695,6 +695,13 @@ int main(int argc, char *argv[]) {
     uint16_t quant_co = QUALITY_CO[decoder.quality_index];
     uint16_t quant_cg = QUALITY_CG[decoder.quality_index];
 
+    if (decoder.verbose) {
+        printf("=== Quantiser Mapping ===\n");
+        printf("  Quality index: %d\n", decoder.quality_index);
+        printf("  Quantiser indices: Y=%d Co=%d Cg=%d\n", quant_y, quant_co, quant_cg);
+        printf("=========================\n\n");
+    }
+
     // Initialize video decoder with TAV-DT fixed parameters
     tav_video_params_t video_params = {
         .width = decoder.width,

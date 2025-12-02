@@ -1560,10 +1560,10 @@ int tav_video_decode_gop(tav_video_context_t *ctx,
             dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                               gop_coeffs[t][0], gop_y[t], final_width, final_height,
                                               ctx->params.decomp_levels, base_q_y, 0);
-            dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_co],
+            dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                               gop_coeffs[t][1], gop_co[t], final_width, final_height,
                                               ctx->params.decomp_levels, base_q_co, 1);
-            dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_cg],
+            dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                               gop_coeffs[t][2], gop_cg[t], final_width, final_height,
                                               ctx->params.decomp_levels, base_q_cg, 1);
         } else {
@@ -1575,13 +1575,10 @@ int tav_video_decode_gop(tav_video_context_t *ctx,
             }
         }
 
-        // Apply grain synthesis
-        apply_grain_synthesis(gop_y[t], final_width, final_height, ctx->params.decomp_levels, t,
+        // Apply grain synthesis to Y channel ONLY (using ORIGINAL dimensions - grain must match encoder's frame size)
+        // Note: Grain synthesis is NOT applied to chroma channels
+        apply_grain_synthesis(gop_y[t], width, height, ctx->params.decomp_levels, t,
                             QLUT[ctx->params.quantiser_y], ctx->params.encoder_preset);
-        apply_grain_synthesis(gop_co[t], final_width, final_height, ctx->params.decomp_levels, t,
-                            QLUT[ctx->params.quantiser_co], ctx->params.encoder_preset);
-        apply_grain_synthesis(gop_cg[t], final_width, final_height, ctx->params.decomp_levels, t,
-                            QLUT[ctx->params.quantiser_cg], ctx->params.encoder_preset);
     }
 
     // Free quantised coefficients
@@ -1680,10 +1677,10 @@ int tav_video_decode_iframe(tav_video_context_t *ctx,
         dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                           coeffs_y, ctx->dwt_buffer_y, width, height,
                                           ctx->params.decomp_levels, base_q_y, 0);
-        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_co],
+        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                           coeffs_co, ctx->dwt_buffer_co, width, height,
                                           ctx->params.decomp_levels, base_q_co, 1);
-        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_cg],
+        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                           coeffs_cg, ctx->dwt_buffer_cg, width, height,
                                           ctx->params.decomp_levels, base_q_cg, 1);
     } else {
@@ -1698,13 +1695,9 @@ int tav_video_decode_iframe(tav_video_context_t *ctx,
     free(coeffs_co);
     free(coeffs_cg);
 
-    // Apply grain synthesis
+    // Apply grain synthesis to Y channel only (not applied to chroma)
     apply_grain_synthesis(ctx->dwt_buffer_y, width, height, ctx->params.decomp_levels, 0,
                         QLUT[ctx->params.quantiser_y], ctx->params.encoder_preset);
-    apply_grain_synthesis(ctx->dwt_buffer_co, width, height, ctx->params.decomp_levels, 0,
-                        QLUT[ctx->params.quantiser_co], ctx->params.encoder_preset);
-    apply_grain_synthesis(ctx->dwt_buffer_cg, width, height, ctx->params.decomp_levels, 0,
-                        QLUT[ctx->params.quantiser_cg], ctx->params.encoder_preset);
 
     // Apply inverse DWT
     apply_inverse_dwt_multilevel(ctx->dwt_buffer_y, width, height, ctx->params.decomp_levels, ctx->params.wavelet_filter);
@@ -1786,10 +1779,10 @@ int tav_video_decode_pframe(tav_video_context_t *ctx,
         dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                           coeffs_y, ctx->dwt_buffer_y, width, height,
                                           ctx->params.decomp_levels, base_q_y, 0);
-        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_co],
+        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                           coeffs_co, ctx->dwt_buffer_co, width, height,
                                           ctx->params.decomp_levels, base_q_co, 1);
-        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_cg],
+        dequantise_dwt_subbands_perceptual(0, QLUT[ctx->params.quantiser_y],
                                           coeffs_cg, ctx->dwt_buffer_cg, width, height,
                                           ctx->params.decomp_levels, base_q_cg, 1);
     } else {
@@ -1804,13 +1797,9 @@ int tav_video_decode_pframe(tav_video_context_t *ctx,
     free(coeffs_co);
     free(coeffs_cg);
 
-    // Apply grain synthesis
+    // Apply grain synthesis to Y channel only (not applied to chroma)
     apply_grain_synthesis(ctx->dwt_buffer_y, width, height, ctx->params.decomp_levels, 0,
                         QLUT[ctx->params.quantiser_y], ctx->params.encoder_preset);
-    apply_grain_synthesis(ctx->dwt_buffer_co, width, height, ctx->params.decomp_levels, 0,
-                        QLUT[ctx->params.quantiser_co], ctx->params.encoder_preset);
-    apply_grain_synthesis(ctx->dwt_buffer_cg, width, height, ctx->params.decomp_levels, 0,
-                        QLUT[ctx->params.quantiser_cg], ctx->params.encoder_preset);
 
     // Apply inverse DWT
     apply_inverse_dwt_multilevel(ctx->dwt_buffer_y, width, height, ctx->params.decomp_levels, ctx->params.wavelet_filter);
