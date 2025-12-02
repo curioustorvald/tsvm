@@ -6,6 +6,7 @@ CXX = g++
 CFLAGS = -std=c99 -Wall -Wextra -Ofast -D_GNU_SOURCE -march=native -mavx512f -mavx512dq -mavx512bw -mavx512vl
 CXXFLAGS = -std=c++11 -Wall -Wextra -Ofast -D_GNU_SOURCE -march=native -mavx512f -mavx512dq -mavx512bw -mavx512vl
 DBGFLAGS =
+PREFIX = /usr/local
 
 # Zstd flags (use pkg-config if available, fallback for cross-platform compatibility)
 ZSTD_CFLAGS = $(shell pkg-config --cflags libzstd 2>/dev/null || echo "")
@@ -17,7 +18,7 @@ OPENCV_CFLAGS = $(shell pkg-config --cflags opencv4)
 OPENCV_LIBS = $(shell pkg-config --libs opencv4)
 
 # Source files and targets
-TARGETS = tev tav tav_decoder tav_inspector
+TARGETS = tev tav tav_decoder tav_inspector tav_dt_decoder
 TAD_TARGETS = encoder_tad decoder_tad
 TEST_TARGETS = test_mesh_warp test_mesh_roundtrip
 
@@ -45,6 +46,13 @@ tav_decoder: decoder_tav.c decoder_tad.c decoder_tad.h
 tav_inspector: tav_inspector.c
 	rm -f tav_inspector
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o tav_inspector $< $(LIBS)
+
+tav_dt_decoder: decoder_tav_dt.c decoder_tad.c decoder_tad.h tav_video_decoder.c tav_video_decoder.h
+	rm -f decoder_tav_dt decoder_tav_dt.o tav_video_decoder.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -DTAD_DECODER_LIB -c decoder_tad.c -o decoder_tad.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c tav_video_decoder.c -o tav_video_decoder.o
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c decoder_tav_dt.c -o decoder_tav_dt.o
+	$(CC) $(DBGFLAGS) -o decoder_tav_dt decoder_tav_dt.o decoder_tad.o tav_video_decoder.o $(LIBS)
 
 # Build TAD (Terrarum Advanced Audio) tools
 encoder_tad: encoder_tad_standalone.c encoder_tad.c encoder_tad.h
@@ -91,11 +99,12 @@ clean:
 
 # Install (copy to PATH)
 install: $(TARGETS) $(TAD_TARGETS)
-	cp encoder_tev /usr/local/bin/
-	cp encoder_tav /usr/local/bin/
-	cp decoder_tav /usr/local/bin/
-	cp encoder_tad /usr/local/bin/
-	cp decoder_tad /usr/local/bin/
+	cp encoder_tev $(PREFIX)/bin/
+	cp encoder_tav $(PREFIX)/bin/
+	cp decoder_tav $(PREFIX)/bin/
+	cp encoder_tad $(PREFIX)/bin/
+	cp decoder_tad $(PREFIX)/bin/
+	cp decoder_tav_dt $(PREFIX)/bin/
 
 # Check for required dependencies
 check-deps:

@@ -1,6 +1,7 @@
 // TAV Packet Inspector - Comprehensive packet analysis tool for TAV files
 // to compile: gcc -o tav_inspector tav_inspector.c -lzstd -lm
 // Created by CuriousTorvald and Claude on 2025-10-14
+// Updated 2025-12-02: Added TAV-DT (Digital Tape) format support
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -8,6 +9,10 @@
 #include <time.h>
 #include <getopt.h>
 #include <zstd.h>
+
+// TAV-DT sync patterns (big endian)
+#define TAV_DT_SYNC_NTSC  0xE3537A1F  // 720x480
+#define TAV_DT_SYNC_PAL   0xD193A745  // 720x576
 
 // Frame mode constants (from TAV spec)
 #define FRAME_MODE_SKIP  0x00
@@ -109,6 +114,24 @@ typedef struct {
     int verbose;
     int summary_only;
 } display_options_t;
+
+// Helper to read data from either file or DT payload buffer
+static size_t read_packet_data(void *dest, size_t size, size_t count, FILE *fp,
+                               uint8_t *payload, uint32_t payload_size, uint32_t *offset) {
+    if (payload) {
+        // DT mode: read from payload buffer
+        size_t bytes_to_read = size * count;
+        if (*offset + bytes_to_read > payload_size) {
+            return 0;  // Not enough data
+        }
+        memcpy(dest, payload + *offset, bytes_to_read);
+        *offset += bytes_to_read;
+        return count;
+    } else {
+        // TAV mode: read from file
+        return fread(dest, size, count, fp);
+    }
+}
 
 const char* get_packet_type_name(uint8_t type) {
     switch (type) {
@@ -479,24 +502,87 @@ int main(int argc, char *argv[]) {
         printf("==================================================\n\n");
     }
 
-    // Read TAV header (32 bytes)
+    // Detect format: TAV (with magic) or TAV-DT (with sync pattern)
     uint8_t header[32];
-    if (fread(header, 1, 32, fp) != 32) {
-        fprintf(stderr, "Error: Failed to read TAV header\n");
+    int is_dt_format = 0;
+    uint16_t dt_width = 0, dt_height = 0;
+    uint8_t dt_framerate = 0;
+    uint8_t dt_quality = 0;
+    int dt_is_interlaced = 0;
+    int dt_is_ntsc_framerate = 0;
+
+    // Read first 4 bytes to check format
+    uint8_t format_check[4];
+    if (fread(format_check, 1, 4, fp) != 4) {
+        fprintf(stderr, "Error: Failed to read file header\n");
         fclose(fp);
         return 1;
     }
 
-    // Verify magic number
-    const char *magic = "\x1F\x54\x53\x56\x4D\x54\x41\x56";  // "\x1FTSVM TAV"
-    if (memcmp(header, magic, 8) != 0) {
-        fprintf(stderr, "Error: Invalid TAV magic number\n");
-        fclose(fp);
-        return 1;
+    // Check if it's a TAV-DT sync pattern
+    uint32_t sync = (format_check[0] << 24) | (format_check[1] << 16) |
+                    (format_check[2] << 8) | format_check[3];
+
+    if (sync == TAV_DT_SYNC_NTSC || sync == TAV_DT_SYNC_PAL) {
+        // TAV-DT format detected
+        is_dt_format = 1;
+        dt_width = (sync == TAV_DT_SYNC_NTSC) ? 720 : 720;
+        dt_height = (sync == TAV_DT_SYNC_NTSC) ? 480 : 576;
+
+        // Read rest of DT packet header (12 more bytes = 16 total)
+        uint8_t dt_header[12];
+        if (fread(dt_header, 1, 12, fp) != 12) {
+            fprintf(stderr, "Error: Failed to read TAV-DT packet header\n");
+            fclose(fp);
+            return 1;
+        }
+
+        dt_framerate = dt_header[0];
+        uint8_t flags = dt_header[1];
+        dt_is_interlaced = flags & 0x01;
+        dt_is_ntsc_framerate = flags & 0x02;
+        dt_quality = (flags >> 4) & 0x0F;
+
+        // Rewind to start of first packet so the loop can process it
+        fseek(fp, -(4 + 12), SEEK_CUR);  // Go back 16 bytes (full DT packet header)
+
+        if (!opts.summary_only) {
+            printf("TAV-DT Header (Headerless Streaming Format):\n");
+            printf("  Format:           %s %s\n",
+                   (sync == TAV_DT_SYNC_NTSC) ? "NTSC" : "PAL",
+                   dt_is_interlaced ? "interlaced" : "progressive");
+            printf("  Resolution:       %dx%d\n", dt_width, dt_height);
+            printf("  Frame rate:       %d fps", dt_framerate);
+            if (dt_is_ntsc_framerate) printf(" (NTSC)");
+            printf("\n");
+            printf("  Quality index:    %d (0-5)\n", dt_quality);
+            printf("  Total frames:     Unknown (streaming format)\n");
+            printf("  Wavelet:          1 (CDF 9/7, fixed for DT)\n");
+            printf("  Decomp levels:    4 spatial + 2 temporal (fixed for DT)\n");
+            printf("  Entropy coder:    EZBC (fixed for DT)\n");
+            printf("  Channel layout:   YCoCg-R (fixed for DT)\n");
+            printf("\n");
+        }
+    } else {
+        // Regular TAV format - rewind and read full header
+        rewind(fp);
+        if (fread(header, 1, 32, fp) != 32) {
+            fprintf(stderr, "Error: Failed to read TAV header\n");
+            fclose(fp);
+            return 1;
+        }
+
+        // Verify magic number
+        const char *magic = "\x1F\x54\x53\x56\x4D\x54\x41\x56";  // "\x1FTSVM TAV"
+        if (memcmp(header, magic, 8) != 0) {
+            fprintf(stderr, "Error: Invalid TAV magic number\n");
+            fclose(fp);
+            return 1;
+        }
     }
 
-    if (!opts.summary_only) {
-        // Parse header fields
+    if (!opts.summary_only && !is_dt_format) {
+        // Parse header fields (TAV format only)
         uint8_t version = header[8];
         uint8_t base_version = (version > 8) ? (version - 8) : version;
         uint8_t temporal_motion_coder = (version > 8) ? 1 : 0;
@@ -581,13 +667,76 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
     while (!feof(fp)) {
         long packet_offset = ftell(fp);
         uint8_t packet_type;
-        if (fread(&packet_type, 1, 1, fp) != 1) break;
+        uint8_t *packet_payload = NULL;
+        uint32_t payload_size = 0;
+        uint32_t payload_offset = 1;  // Start at 1 to skip packet type byte in DT mode
+
+        if (is_dt_format) {
+            // TAV-DT: Read 16-byte packet header
+            uint8_t dt_pkt_header[16];
+            if (fread(dt_pkt_header, 1, 16, fp) != 16) break;
+
+            // Parse DT packet header
+            uint32_t sync_check = (dt_pkt_header[0] << 24) | (dt_pkt_header[1] << 16) |
+                                  (dt_pkt_header[2] << 8) | dt_pkt_header[3];
+            payload_size = dt_pkt_header[8] | (dt_pkt_header[9] << 8) |
+                          (dt_pkt_header[10] << 16) | (dt_pkt_header[11] << 24);
+
+            // Verify sync pattern
+            if (sync_check != TAV_DT_SYNC_NTSC && sync_check != TAV_DT_SYNC_PAL) {
+                if (!opts.summary_only) {
+                    fprintf(stderr, "Warning: Invalid sync pattern 0x%08X at offset 0x%lX\n",
+                           sync_check, packet_offset);
+                }
+                break;
+            }
+
+            // Read packet payload
+            packet_payload = malloc(payload_size);
+            if (!packet_payload || fread(packet_payload, 1, payload_size, fp) != payload_size) {
+                free(packet_payload);
+                break;
+            }
+
+            // TAV-DT payload structure: [timecode(8)][TAD_packets...][video_packet]
+            // Skip past timecode (8 bytes) and any TAD packets to find the video packet
+            payload_offset = 8;  // Skip timecode
+
+            // Skip TAD audio packets (if any)
+            while (payload_offset < payload_size && packet_payload[payload_offset] == TAV_PACKET_AUDIO_TAD) {
+                payload_offset++;  // Skip packet type
+                if (payload_offset + 6 > payload_size) break;
+
+                // Skip past TAD packet header to get to payload size
+                payload_offset += 2;  // sample_count
+                uint32_t tad_payload_size = packet_payload[payload_offset] |
+                                           (packet_payload[payload_offset+1] << 8) |
+                                           (packet_payload[payload_offset+2] << 16) |
+                                           (packet_payload[payload_offset+3] << 24);
+                payload_offset += 4;  // payload_size field
+                payload_offset += tad_payload_size;  // Skip TAD payload
+            }
+
+            // Extract video packet type (should be at current offset)
+            if (payload_offset < payload_size) {
+                packet_type = packet_payload[payload_offset];
+                payload_offset++;  // Move past packet type for subsequent reads
+            } else {
+                packet_type = 0x00;  // No video packet
+            }
+        } else {
+            // Regular TAV: Read packet type directly
+            if (fread(&packet_type, 1, 1, fp) != 1) break;
+        }
 
         int display = should_display_packet(packet_type, &opts);
 
         if (!opts.summary_only && display) {
             printf("Packet %d (offset 0x%lX): Type 0x%02X (%s)",
                    packet_num, packet_offset, packet_type, get_packet_type_name(packet_type));
+            if (is_dt_format) {
+                printf(" [DT payload: %u bytes]", payload_size);
+            }
         }
 
         switch (packet_type) {
@@ -618,7 +767,7 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
             case TAV_PACKET_TIMECODE: {
                 stats.timecode_count++;
                 uint64_t timecode_ns;
-                if (fread(&timecode_ns, sizeof(uint64_t), 1, fp) != 1) break;
+                if (read_packet_data(&timecode_ns, sizeof(uint64_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 if (!opts.summary_only && display) {
                     double timecode_sec = timecode_ns / 1000000000.0;
@@ -630,22 +779,25 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
             case TAV_PACKET_GOP_UNIFIED: case TAV_PACKET_GOP_UNIFIED_MOTION: {
                 // Unified GOP packet: [gop_size][motion_vectors...][compressed_size][data]
                 uint8_t gop_size;
-                if (fread(&gop_size, 1, 1, fp) != 1) break;
+                if (read_packet_data(&gop_size, 1, 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 // Read motion vectors
                 uint32_t size0 = 0;
                 if (packet_type == TAV_PACKET_GOP_UNIFIED_MOTION) {
-                    if (fread(&size0, sizeof(uint32_t), 1, fp) != 1) { break; }
+                    if (read_packet_data(&size0, sizeof(uint32_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) { break; }
                     stats.total_video_bytes += size0;
                     stats.gop_unified_motion_count++;
-                    fseek(fp, size0, SEEK_CUR);
+                    if (!packet_payload) fseek(fp, size0, SEEK_CUR);
+                    else payload_offset += size0;
                 }
 
                 // Read compressed data size
                 uint32_t size1;
-                if (fread(&size1, sizeof(uint32_t), 1, fp) != 1) { break; }
+                if (read_packet_data(&size1, sizeof(uint32_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) { break; }
                 stats.total_video_bytes += size1;
-                fseek(fp, size1, SEEK_CUR);
+                if (!packet_payload) fseek(fp, size1, SEEK_CUR);
+                // else: data is already in payload buffer, skip ahead
+                else payload_offset += size1;
 
 
                 stats.total_gop_frames += gop_size;
@@ -664,7 +816,7 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
             case TAV_PACKET_GOP_SYNC: {
                 // GOP sync packet: [frame_count]
                 uint8_t frame_count;
-                if (fread(&frame_count, 1, 1, fp) != 1) break;
+                if (read_packet_data(&frame_count, 1, 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 stats.gop_sync_count++;
                 current_frame += frame_count;  // Advance frame counter
@@ -783,23 +935,23 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
 
                 // Read sample count
                 uint16_t sample_count0;
-                if (fread(&sample_count0, sizeof(uint16_t), 1, fp) != 1) break;
+                if (read_packet_data(&sample_count0, sizeof(uint16_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 // Read payload_size + 7
                 uint32_t payload_size_plus_7;
-                if (fread(&payload_size_plus_7, sizeof(uint32_t), 1, fp) != 1) break;
+                if (read_packet_data(&payload_size_plus_7, sizeof(uint32_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 // Read sample count
                 uint16_t sample_count;
-                if (fread(&sample_count, sizeof(uint16_t), 1, fp) != 1) break;
+                if (read_packet_data(&sample_count, sizeof(uint16_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 // Read quantiser index
                 uint8_t quantiser;
-                if (fread(&quantiser, sizeof(uint8_t), 1, fp) != 1) break;
+                if (read_packet_data(&quantiser, sizeof(uint8_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 // Read compressed size
                 uint32_t compressed_size;
-                if (fread(&compressed_size, sizeof(uint32_t), 1, fp) != 1) break;
+                if (read_packet_data(&compressed_size, sizeof(uint32_t), 1, fp, packet_payload, payload_size, &payload_offset) != 1) break;
 
                 stats.total_audio_bytes += compressed_size;
                 stats.audio_tad_bytes += compressed_size;
@@ -810,7 +962,8 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
                 }
 
                 // Skip compressed data
-                fseek(fp, compressed_size, SEEK_CUR);
+                if (!packet_payload) fseek(fp, compressed_size, SEEK_CUR);
+                else payload_offset += compressed_size;
                 break;
             }
 
@@ -946,6 +1099,11 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
 
         if (!opts.summary_only && display) {
             printf("\n");
+        }
+
+        // Free DT packet payload if allocated
+        if (packet_payload) {
+            free(packet_payload);
         }
 
         packet_num++;

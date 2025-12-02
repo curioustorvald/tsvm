@@ -71,31 +71,6 @@
 #define TAV_DT_SYNC_NTSC           0xE3537A1F  // NTSC dimension (720x480)
 #define TAV_DT_SYNC_PAL            0xD193A745  // PAL dimension (720x576)
 
-// TAV-DT quality index mapping table (16 levels)
-// Each entry: {Y_quantiser, Co_quantiser, Cg_quantiser, TAD_max_index}
-// Note: These are actual quantizer values, not QLUT indices
-static const struct {
-    uint16_t y, co, cg;
-    uint8_t tad_quality;
-} DT_QUALITY_MAP[16] = {
-    {60, 104, 312, 23},   // Q0
-    {44, 88, 248, 31},    // Q1
-    {36, 72, 188, 39},    // Q2
-    {28, 56, 136, 47},    // Q3
-    {20, 48, 106, 55},    // Q4
-    {16, 40, 80, 63},     // Q5
-    {12, 36, 68, 71},     // Q6
-    {10, 32, 58, 79},     // Q7
-    {8, 28, 48, 87},      // Q8
-    {6, 24, 38, 95},      // Q9
-    {5, 20, 30, 103},     // Q10
-    {4, 16, 22, 111},     // Q11
-    {3, 12, 16, 119},     // Q12
-    {2, 8, 10, 123},      // Q13
-    {2, 5, 6, 127},       // Q14
-    {1, 2, 2, 127}        // Q15
-};
-
 // TAD (Terrarum Advanced Audio) settings
 // TAD32 constants (updated to match Float32 version)
 #define TAD32_MIN_CHUNK_SIZE 1024       // Minimum: 1024 samples
@@ -210,7 +185,7 @@ typedef struct subtitle_entry {
 typedef struct frame_analysis {
     int frame_number;
 
-    // Wavelet-based metrics (3-level Haar on subsampled frame)
+    // Wavelet-based metrics (2-level Haar on subsampled frame)
     double ll_diff;              // L1 distance between consecutive LL bands
     double ll_mean;              // Mean brightness (LL band average)
     double ll_variance;          // Contrast estimate (LL band variance)
@@ -1872,7 +1847,6 @@ typedef struct tav_encoder_s {
     // TAV-DT (Digital Tape) mode
     int dt_mode;                 // 1 = TAV-DT mode (headerless streaming format), 0 = normal TAV (default)
     uint32_t dt_sync_pattern;    // Sync pattern for DT packets (0xE3537A1F for NTSC, 0xD193A745 for PAL)
-    uint8_t dt_quality_index;    // DT quality index (0-15, maps to Y/Co/Cg quantizers and TAD quality)
     uint8_t *dt_packet_buffer;   // Buffer for accumulating DT packet contents
     size_t dt_packet_buffer_size;     // Current size of buffered data
     size_t dt_packet_buffer_capacity; // Allocated capacity
@@ -8844,7 +8818,7 @@ static long write_dt_packet_header(tav_encoder_t *enc, uint32_t packet_size) {
     uint8_t flags = 0;
     if (!enc->progressive_mode) flags |= 0x01;  // bit 0 = interlaced
     if (enc->is_ntsc_framerate) flags |= 0x02;  // bit 1 = is NTSC framerate
-    flags |= ((enc->dt_quality_index) & 0x0F) << 4;  // bits 4-7 = quality index (0-15)
+    flags |= ((enc->quality_level) & 0x0F) << 4;  // bits 4-7 = quality index (0-5, stored in bits 4-7)
     header[pos++] = flags;
 
     // Write reserved (2 bytes, zero-fill)
@@ -12615,22 +12589,20 @@ int main(int argc, char *argv[]) {
         enc->tad_audio = 1;  // TAD audio mandatory
         enc->enable_temporal_dwt = 1;  // Temporal DWT required
 
-        // Map quality level (0-5) to DT quality index (0-15)
-        // Quality 0 -> Q0, Quality 1 -> Q3, Quality 2 -> Q6, Quality 3 -> Q9, Quality 4 -> Q12, Quality 5 -> Q15
-        if (enc->quality_level >= 0 && enc->quality_level <= 5) {
-            enc->dt_quality_index = enc->quality_level * 3;  // Linear mapping: 0->0, 1->3, 2->6, 3->9, 4->12, 5->15
-        } else {
-            enc->dt_quality_index = 9;  // Default to Q9 (equivalent to quality level 3)
+        // Validate and clamp quality level (0-5)
+        if (enc->quality_level < 0 || enc->quality_level > 5) {
+            printf("TAV-DT: Warning - quality level %d out of range, clamping to 3\n", enc->quality_level);
+            enc->quality_level = 3;  // Default to quality 3
         }
 
-        // Apply quantizers from DT quality map
-        enc->quantiser_y = DT_QUALITY_MAP[enc->dt_quality_index].y;
-        enc->quantiser_co = DT_QUALITY_MAP[enc->dt_quality_index].co;
-        enc->quantiser_cg = DT_QUALITY_MAP[enc->dt_quality_index].cg;
+        // Apply quantizers from standard quality arrays
+        enc->quantiser_y = QUALITY_Y[enc->quality_level];
+        enc->quantiser_co = QUALITY_CO[enc->quality_level];
+        enc->quantiser_cg = QUALITY_CG[enc->quality_level];
 
-        printf("TAV-DT: Quality index %d -> Y=%d, Co=%d, Cg=%d, TAD_quality=%d\n",
-               enc->dt_quality_index, enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg,
-               DT_QUALITY_MAP[enc->dt_quality_index].tad_quality);
+        printf("TAV-DT: Quality level %d -> Y=%d, Co=%d, Cg=%d, TAD_quality=%d\n",
+               enc->quality_level, enc->quantiser_y, enc->quantiser_co, enc->quantiser_cg,
+               enc->quality_level);
         printf("TAV-DT: Enforcing format constraints (9/7 spatial, 5/3 temporal, 4+2 levels, EZBC, monoblock)\n");
     }
 

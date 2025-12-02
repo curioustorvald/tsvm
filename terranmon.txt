@@ -1633,7 +1633,8 @@ start of the next packet
     uint8  Flags
         - bit 0 = interlaced
         - bit 1 = is NTSC framerate
-        - bit 4-7 = quality index (0-15)
+        - bit 4-7 = quality index (0-5)
+            * Quality indices follow TSVM encoder's
     int16  Reserved (zero-fill)
     uint32 Total packet size past header
     uint32 CRC-32 of 12-byte header
@@ -1649,26 +1650,6 @@ start of the next packet
     5. Check calculated CRC against stored CRC
     6. If they match, sync to the stream; if not, find a next sync pattern
 
-# Quality Indices
-
-QIndex | Y,Co,Cg (true value) | TAD quality (max index)
------------------------------------------
- 0 | 60,104,312 | 23
- 1 | 44,88,248 | 31
- 2 | 36,72,188 | 39
- 3 | 28,56,136 | 47
- 4 | 20,48,106 | 55
- 5 | 16,40,80 | 63
- 6 | 12,36,68 | 71
- 7 | 10,32,58 | 79
- 8 | 8,28,48 | 87
- 9 | 6,24,38 | 95
-10 | 5,20,30 | 103
-11 | 4,16,22 | 111
-12 | 3,12,16 | 119
-13 | 2,8,10 | 123
-14 | 2,5,6 | 127
-15 | 1,2,2  | 127
 
 --------------------------------------------------------------------------------
 
