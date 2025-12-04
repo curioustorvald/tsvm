@@ -9,6 +9,8 @@ buildapp/out/TerranBASIC*
 buildapp/TerranBASIC_linux.*
 buildapp/TerranBASIC_macOS.*
 buildapp/TerranBASIC_windows.*
+*.o
+*.a
 
 # Java native errors
 hs_err_pid*

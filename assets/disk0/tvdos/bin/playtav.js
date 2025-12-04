@@ -455,11 +455,6 @@ const isInterlaced = (header.videoFlags & 0x01) !== 0
 const isNTSC = (header.videoFlags & 0x02) !== 0
 const isLossless = (header.videoFlags & 0x04) !== 0
 
-// Calculate tile dimensions (112x112 vs TEV's 16x16 blocks)
-const tilesX = Math.ceil(header.width / 2)
-const tilesY = Math.ceil(header.height / 2)
-const numTiles = 4
-
 console.log(`TAV Decoder`)
 console.log(`Resolution: ${header.width}x${header.height}`)
 console.log(`FPS: ${header.fps}`)
@@ -469,7 +464,6 @@ console.log(`Decomposition levels: ${header.decompLevels}`)
 console.log(`Quality: Y=${QLUT[header.qualityY]}, Co=${QLUT[header.qualityCo]}, Cg=${QLUT[header.qualityCg]}`)
 console.log(`Channel layout: ${getChannelLayoutName(header.channelLayout)}`)
 console.log(`Entropy coder: ${header.entropyCoder === 0 ? "Twobit-map" : header.entropyCoder === 1 ? "EZBC" : "Unknown"}`)
-console.log(`Tiles: ${tilesX}x${tilesY} (${numTiles} total)`)
 console.log(`Colour space: ${header.version % 2 == 0 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
 console.log(`Video flags raw: 0x${header.videoFlags.toString(16)}`)

@@ -1624,7 +1624,7 @@ start of the next packet
     - Video flags: Interlaced/NTSC framerate (defined in packet header)
     - Channel layout: Y-Co-Cg
     - Entropy coder: EZBC
-    - Encoder preset: default preset only
+    - Encoder preset: sports preset always enabled
     - Tiles: monoblock
 
 # Packet Structure
@@ -1636,7 +1636,8 @@ start of the next packet
         - bit 4-7 = quality index (0-5)
             * Quality indices follow TSVM encoder's
     int16  Reserved (zero-fill)
-    uint32 Total packet size past header
+    uint32 Total packet size past 16-byte header, modulo 2^32
+        !! this value should NOT be used to derive the actual packet size !!
     uint32 CRC-32 of 12-byte header
     uint64 Timecode (0xFD packet) without header byte
     *      TAD packet (full 0x24 packet)
