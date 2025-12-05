@@ -49,6 +49,7 @@
 static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2};   // Quality levels 0-5
 static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29};
 static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39};
+static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.1f, 0.8f, 0.6f, 0.0f};
 
 static char TEMP_AUDIO_FILE[TEMP_AUDIO_FILE_SIZE];
 static char TEMP_PCM_FILE[TEMP_PCM_FILE_SIZE];
@@ -1255,6 +1256,7 @@ int main(int argc, char *argv[]) {
                 cli.enc_params.quality_y = QUALITY_Y[q];
                 cli.enc_params.quality_co = QUALITY_CO[q];
                 cli.enc_params.quality_cg = QUALITY_CG[q];
+                cli.enc_params.dead_zone_threshold = DEAD_ZONE_THRESHOLD[q];
                 break;
             }
             case 'Q': {

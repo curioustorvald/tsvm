@@ -64,6 +64,7 @@ void tav_quantise_uniform(float *coeffs, int16_t *quantised, int size, int quant
  * @param quantised       Output quantized coefficients (int16_t)
  * @param size            Number of coefficients
  * @param base_quantiser  Base quantizer value (before perceptual weighting)
+ * @param dead_zone_threshold  Dead-zone threshold (0.0 = disabled)
  * @param width           Frame width
  * @param height          Frame height
  * @param decomp_levels   Number of decomposition levels
@@ -72,7 +73,7 @@ void tav_quantise_uniform(float *coeffs, int16_t *quantised, int size, int quant
  */
 void tav_quantise_perceptual(tav_encoder_t *enc,
                               float *coeffs, int16_t *quantised, int size,
-                              int base_quantiser, int width, int height,
+                              int base_quantiser, float dead_zone_threshold, int width, int height,
                               int decomp_levels, int is_chroma, int frame_count);
 
 // =============================================================================

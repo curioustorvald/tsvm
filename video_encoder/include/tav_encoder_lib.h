@@ -61,7 +61,7 @@ typedef struct {
     int quality_y;                // Luma quality (0-5, default: 3)
     int quality_co;               // Orange chrominance quality (0-5, default: 3)
     int quality_cg;               // Green chrominance quality (0-5, default: 3)
-    int dead_zone_threshold;      // Dead-zone quantization threshold (0=disabled, 1-10 typical)
+    float dead_zone_threshold;    // Dead-zone quantization threshold (0.0=disabled, 0.6-1.5 typical)
 
     // === Entropy Coding ===
     int entropy_coder;            // 0=Twobitmap (default), 1=EZBC (better for high-quality)

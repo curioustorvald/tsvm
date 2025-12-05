@@ -43,6 +43,7 @@ static const int QLUT[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
 static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2};   // Quality levels 0-5
 static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29};
 static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39};
+static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.1f, 0.8f, 0.6f, 0.0f};
 
 // Channel layout definitions (from TAV specification)
 #define CHANNEL_LAYOUT_YCOCG     0
@@ -87,10 +88,17 @@ struct tav_encoder_s {
     int quality_level;           // For perceptual quantization
     int *widths;                 // Subband widths array (per decomposition level)
     int *heights;                // Subband heights array (per decomposition level)
-    int dead_zone_threshold;     // Dead-zone quantization threshold
+    int decomp_levels;           // Number of spatial DWT decomposition levels
+    float dead_zone_threshold;   // Dead-zone quantization threshold
     int encoder_preset;          // Preset flags (sports mode, etc.)
     int temporal_decomp_levels;  // Temporal DWT levels
     int verbose;                 // Verbose output flag
+    int frame_count;             // Current frame number for encoding
+    float adjusted_quantiser_y_float;  // For bitrate control (if needed)
+    float dither_accumulator;    // Dither accumulator for bitrate mode
+    int width;                   // Frame width
+    int height;                  // Frame height
+    int perceptual_tuning;       // 1 = perceptual quantization, 0 = uniform
 };
 
 // GOP slot for circular buffering
@@ -282,7 +290,7 @@ void tav_encoder_params_init(tav_encoder_params_t *params, int width, int height
     params->quality_y = QUALITY_Y[3];    // 11 - quantiser index
     params->quality_co = QUALITY_CO[3];  // 76 - quantiser index
     params->quality_cg = QUALITY_CG[3];  // 99 - quantiser index
-    params->dead_zone_threshold = 0;     // Disabled by default
+    params->dead_zone_threshold = DEAD_ZONE_THRESHOLD[3];  // 1.1 for Q3
 
     // Compression
     params->entropy_coder = 1;         // EZBC as default
@@ -963,6 +971,13 @@ static tav_encoder_t *create_compat_encoder(tav_encoder_context_t *ctx) {
     enc->encoder_preset = ctx->encoder_preset;
     enc->temporal_decomp_levels = ctx->temporal_levels;
     enc->verbose = ctx->verbose;
+    enc->perceptual_tuning = ctx->perceptual_tuning;
+
+    // Copy frame dimensions (needed by quantisation functions)
+    enc->width = ctx->width;
+    enc->height = ctx->height;
+    enc->decomp_levels = ctx->decomp_levels;
+    enc->frame_count = 0;  // Will be updated during encoding
 
     // Calculate subband widths and heights arrays
     // These are needed by the perceptual quantization module
@@ -1319,11 +1334,11 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
 
     if (ctx->perceptual_tuning) {
         tav_quantise_perceptual(ctx->compat_enc, work_y, quant_y, num_pixels,
-                               base_quantiser_y, width, height, ctx->decomp_levels, 0, 0);
+                               base_quantiser_y, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 0, 0);
         tav_quantise_perceptual(ctx->compat_enc, work_co, quant_co, num_pixels,
-                               base_quantiser_co, width, height, ctx->decomp_levels, 1, 0);
+                               base_quantiser_co, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
         tav_quantise_perceptual(ctx->compat_enc, work_cg, quant_cg, num_pixels,
-                               base_quantiser_cg, width, height, ctx->decomp_levels, 1, 0);
+                               base_quantiser_cg, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
     } else {
         tav_quantise_uniform(work_y, quant_y, num_pixels, base_quantiser_y,
                             (float)ctx->dead_zone_threshold, width, height,
@@ -1448,12 +1463,26 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     int base_quantiser_co = QLUT[ctx->quantiser_co];
     int base_quantiser_cg = QLUT[ctx->quantiser_cg];
 
+    // CRITICAL: Use UNIFORM quantization for 3D DWT GOPs to match old encoder behavior
+    // The old encoder had a bug where decomp_levels=0 caused perceptual weights to fallback to 1.0
+    // This accidentally produced better results than true perceptual quantization
+    // Preserve this behavior for compatibility with decoder expectations
+    int saved_perceptual = ctx->compat_enc->perceptual_tuning;
+    ctx->compat_enc->perceptual_tuning = 0;  // Temporarily disable for GOP encoding
+
+    if (ctx->verbose) {
+        fprintf(stderr, "[DEBUG] GOP quantization: decomp_levels=%d, base_q_y=%d, perceptual=%d (forced uniform), preset=0x%02x\n",
+                ctx->compat_enc->decomp_levels, base_quantiser_y, ctx->compat_enc->perceptual_tuning, ctx->compat_enc->encoder_preset);
+    }
+
     tav_quantise_3d_dwt(ctx->compat_enc, work_y, quant_y, num_frames, num_pixels,
                        base_quantiser_y, 0);
     tav_quantise_3d_dwt(ctx->compat_enc, work_co, quant_co, num_frames, num_pixels,
                        base_quantiser_co, 1);
     tav_quantise_3d_dwt(ctx->compat_enc, work_cg, quant_cg, num_frames, num_pixels,
                        base_quantiser_cg, 1);
+
+    ctx->compat_enc->perceptual_tuning = saved_perceptual;  // Restore for I-frames
 
     // Step 4: Unified GOP preprocessing (EZBC only)
     size_t preprocess_capacity = num_pixels * num_frames * 3 * sizeof(int16_t) + 65536;

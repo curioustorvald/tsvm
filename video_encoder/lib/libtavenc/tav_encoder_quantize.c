@@ -310,6 +310,7 @@ void tav_quantise_uniform(float *coeffs, int16_t *quantised, int size, int quant
  * @param quantised       Output quantized coefficients (int16_t)
  * @param size            Number of coefficients
  * @param base_quantiser  Base quantizer value (before perceptual weighting)
+ * @param dead_zone_threshold  Dead-zone threshold (0.0 = disabled)
  * @param width           Frame width
  * @param height          Frame height
  * @param decomp_levels   Number of decomposition levels
@@ -318,7 +319,7 @@ void tav_quantise_uniform(float *coeffs, int16_t *quantised, int size, int quant
  */
 void tav_quantise_perceptual(tav_encoder_t *enc,
                               float *coeffs, int16_t *quantised, int size,
-                              int base_quantiser, int width, int height,
+                              int base_quantiser, float dead_zone_threshold, int width, int height,
                               int decomp_levels, int is_chroma, int frame_count);
 
 /**
@@ -391,6 +392,7 @@ struct tav_encoder_s {
     float dither_accumulator;
     int width;
     int height;
+    int perceptual_tuning;
 };
 #endif
 
@@ -434,6 +436,11 @@ static float get_perceptual_weight(tav_encoder_t *enc, int level0, int subband_t
 }
 
 static float get_perceptual_weight_for_position(tav_encoder_t *enc, int linear_idx, int width, int height, int decomp_levels, int is_chroma) {
+    // If perceptual tuning is disabled, use uniform quantization (weight = 1.0)
+    if (!enc->perceptual_tuning) {
+        return 1.0f;
+    }
+
     // Map linear coefficient index to DWT subband using same layout as decoder
     int offset = 0;
 
@@ -525,7 +532,7 @@ void tav_quantise_uniform(float *coeffs, int16_t *quantised, int size, int quant
 
 void tav_quantise_perceptual(tav_encoder_t *enc,
                               float *coeffs, int16_t *quantised, int size,
-                              int base_quantiser, int width, int height,
+                              int base_quantiser, float dead_zone_threshold, int width, int height,
                               int decomp_levels, int is_chroma, int frame_count) {
     float effective_base_q = base_quantiser;
     effective_base_q = FCLAMP(effective_base_q, 1.0f, 4096.0f);
@@ -537,20 +544,20 @@ void tav_quantise_perceptual(tav_encoder_t *enc,
         float quantised_val = coeffs[i] / effective_q;
 
         // Apply dead-zone quantisation ONLY to luma channel
-        if (enc->dead_zone_threshold > 0.0f && !is_chroma) {
+        if (dead_zone_threshold > 0.0f && !is_chroma) {
             int level = get_subband_level(i, width, height, decomp_levels);
             int subband_type = get_subband_type(i, width, height, decomp_levels);
             float level_threshold = 0.0f;
 
             if (level == 1) {
                 if (subband_type == 3) {
-                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
+                    level_threshold = dead_zone_threshold * DEAD_ZONE_FINEST_SCALE;
                 } else if (subband_type == 1 || subband_type == 2) {
-                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                    level_threshold = dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
                 }
             } else if (level == 2) {
                 if (subband_type == 3) {
-                    level_threshold = enc->dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
+                    level_threshold = dead_zone_threshold * DEAD_ZONE_FINE_SCALE;
                 }
             }
 
@@ -583,12 +590,16 @@ void tav_quantise_3d_dwt(tav_encoder_t *enc,
         temporal_base_quantiser = CLAMP(temporal_base_quantiser, 1, 255);
 
         // Step 3: Apply spatial quantisation within this temporal subband
+        // Check if perceptual tuning is enabled (stored in encoder_preset bit 1)
+        // NOTE: perceptual_tuning field is NOT in tav_encoder_s, so we check context flag
+        // For now, just use perceptual (this will be controlled by caller disabling)
         tav_quantise_perceptual(
             enc,
             gop_coeffs[t],           // Input: spatial coefficients for this temporal subband
             quantised[t],            // Output: quantised spatial coefficients
             spatial_size,            // Number of spatial coefficients
             temporal_base_quantiser, // Temporally-scaled base quantiser
+            enc->dead_zone_threshold, // Dead zone threshold
             enc->width,              // Frame width
             enc->height,             // Frame height
             enc->decomp_levels,      // Spatial decomposition levels
