@@ -348,6 +348,7 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
     ctx->enable_temporal_dwt = params->enable_temporal_dwt;
     ctx->gop_size = params->gop_size;
     ctx->enable_two_pass = params->enable_two_pass;
+    ctx->quality_level = params->quality_level;  // CRITICAL: Was missing, caused quality_level=0
     ctx->quality_y = params->quality_y;
     ctx->quality_co = params->quality_co;
     ctx->quality_cg = params->quality_cg;
@@ -1463,15 +1464,15 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     int base_quantiser_co = QLUT[ctx->quantiser_co];
     int base_quantiser_cg = QLUT[ctx->quantiser_cg];
 
-    // CRITICAL: Use UNIFORM quantization for 3D DWT GOPs to match old encoder behavior
-    // The old encoder had a bug where decomp_levels=0 caused perceptual weights to fallback to 1.0
-    // This accidentally produced better results than true perceptual quantization
-    // Preserve this behavior for compatibility with decoder expectations
+    // CRITICAL: Force perceptual quantization for GOPs to match old encoder behavior
+    // The old encoder's quantise_dwt_coefficients_perceptual_per_coeff() does NOT check
+    // perceptual_tuning flag - it always applies perceptual weights for GOP encoding.
+    // The --no-perceptual-tuning flag only affects I-frame encoding in the old encoder.
     int saved_perceptual = ctx->compat_enc->perceptual_tuning;
-    ctx->compat_enc->perceptual_tuning = 0;  // Temporarily disable for GOP encoding
+    ctx->compat_enc->perceptual_tuning = 1;  // Force perceptual for GOP encoding
 
     if (ctx->verbose) {
-        fprintf(stderr, "[DEBUG] GOP quantization: decomp_levels=%d, base_q_y=%d, perceptual=%d (forced uniform), preset=0x%02x\n",
+        fprintf(stderr, "[DEBUG] GOP quantization: decomp_levels=%d, base_q_y=%d, perceptual=%d (forced on for GOP), preset=0x%02x\n",
                 ctx->compat_enc->decomp_levels, base_quantiser_y, ctx->compat_enc->perceptual_tuning, ctx->compat_enc->encoder_preset);
     }
 
