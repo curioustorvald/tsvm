@@ -67,10 +67,6 @@ tav: src/encoder_tav.c lib/libtadenc/encoder_tad.c encoder_tav_opencv.cpp
 	$(CXX) $(DBGFLAGS) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
 
 # New library-based TAV encoder
-tav_new: src/encoder_tav_new.c lib/libtavenc.a lib/libtadenc.a
-	rm -f encoder_tav_new
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o encoder_tav_new src/encoder_tav_new.c lib/libtavenc.a lib/libtadenc.a $(LIBS)
-
 tav_decoder: src/decoder_tav.c lib/libtaddec/decoder_tad.c include/decoder_tad.h
 	rm -f decoder_tav decoder_tav.o decoder_tad.o
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -DTAD_DECODER_LIB -c lib/libtaddec/decoder_tad.c -o decoder_tad.o
@@ -220,5 +216,13 @@ encoder_tav_ref: src/encoder_tav.c lib/libtavenc.a lib/libtadenc.a
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o encoder_tav_ref src/encoder_tav.c lib/libtavenc.a lib/libtadenc.a $(LIBS)
 	@echo ""
 	@echo "Reference encoder built: encoder_tav_ref"
+	@echo "This is the official reference implementation with all features"
+
+# Reference decoder using libtavdec (replaces old monolithic decoder)
+decoder_tav_ref: src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a
+	rm -f decoder_tav_ref
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o decoder_tav_ref src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a $(LIBS)
+	@echo ""
+	@echo "Reference decoder built: decoder_tav_ref"
 	@echo "This is the official reference implementation with all features"
 
