@@ -159,7 +159,7 @@ static void print_usage(const char *program) {
     printf("\nGOP Options:\n");
     printf("  --temporal-dwt           Enable 3D DWT GOP encoding (default)\n");
     printf("  --intra-only             Disable temporal compression (I-frames only)\n");
-    printf("  --gop-size N             GOP size 8/16/24 (default: auto-calculated)\n");
+    printf("  --gop-size N             GOP size 8/16/24 (default: 24)\n");
     printf("  --single-pass            Disable scene change detection\n");
     printf("\nCompression:\n");
     printf("  --zstd-level N           Zstd level 3-22 (default: 7)\n");

@@ -282,7 +282,7 @@ void tav_encoder_params_init(tav_encoder_params_t *params, int width, int height
 
     // GOP settings
     params->enable_temporal_dwt = 1;   // Enable 3D DWT GOP encoding
-    params->gop_size = 0;              // Auto (8 for 60fps, 16 for 30fps)
+    params->gop_size = 24;             // always 24
     params->enable_two_pass = 1;       // Enable scene change detection
 
     // Quality defaults (level 3 = balanced)
@@ -394,16 +394,8 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         ctx->decomp_levels = (levels > 6) ? 6 : levels;
     }
 
-    // Calculate GOP size if auto (0)
-    if (ctx->gop_size == 0) {
-        int fps = ctx->fps_num / ctx->fps_den;
-        if (fps >= 50) {
-            ctx->gop_size = 8;   // High frame rate: smaller GOPs
-        } else if (fps >= 25) {
-            ctx->gop_size = 16;  // Medium frame rate
-        } else {
-            ctx->gop_size = 24;  // Low frame rate: larger GOPs
-        }
+    if (ctx->gop_size <= 0) {
+        ctx->gop_size = 24;
     }
 
     // Auto-select temporal wavelet if still at default (255=Haar) and temporal DWT enabled
