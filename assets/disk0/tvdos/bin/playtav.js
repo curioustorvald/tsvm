@@ -1336,6 +1336,7 @@ try {
                     graphics.tavDecodeGopToVideoBufferAsync(
                         compressedPtr, compressedSize, gopSize,
                         header.width, decodeHeight,  // Use decodeHeight for interlaced field support
+                        baseVersion >= 5,
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
@@ -1411,6 +1412,7 @@ try {
                     graphics.tavDecodeGopToVideoBufferAsync(
                         compressedPtr, compressedSize, gopSize,
                         header.width, decodeHeight,  // Use decodeHeight for interlaced field support
+                        baseVersion >= 5,
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
@@ -1455,6 +1457,7 @@ try {
                     graphics.tavDecodeGopToVideoBufferAsync(
                         compressedPtr, compressedSize, gopSize,
                         header.width, decodeHeight,  // Use decodeHeight for interlaced field support
+                        baseVersion >= 5,
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
@@ -1824,6 +1827,7 @@ try {
                     graphics.tavDecodeGopToVideoBufferAsync(
                         readyGopData.compressedPtr, readyGopData.compressedSize, readyGopData.gopSize,
                         header.width, decodeHeight,  // Use decodeHeight for interlaced field support
+                        baseVersion >= 5,
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
@@ -2017,6 +2021,7 @@ try {
                     graphics.tavDecodeGopToVideoBufferAsync(
                         decodingGopData.compressedPtr, decodingGopData.compressedSize, decodingGopData.gopSize,
                         header.width, header.height,
+                        baseVersion >= 5,
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
@@ -2059,6 +2064,7 @@ try {
                     graphics.tavDecodeGopToVideoBufferAsync(
                         readyGopData.compressedPtr, readyGopData.compressedSize, readyGopData.gopSize,
                         header.width, decodeHeight,  // Use decodeHeight for interlaced field support
+                        baseVersion >= 5,
                         header.qualityLevel,
                         QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                         header.channelLayout,
@@ -2138,6 +2144,7 @@ try {
                             graphics.tavDecodeGopToVideoBufferAsync(
                             overflow.compressedPtr, overflow.compressedSize, overflow.gopSize,
                             header.width, decodeHeight,  // Use decodeHeight for interlaced field support
+                            baseVersion >= 5,
                             header.qualityLevel,
                             QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
                             header.channelLayout,

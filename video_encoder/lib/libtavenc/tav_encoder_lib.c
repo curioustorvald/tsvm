@@ -1464,15 +1464,9 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     int base_quantiser_co = QLUT[ctx->quantiser_co];
     int base_quantiser_cg = QLUT[ctx->quantiser_cg];
 
-    // CRITICAL: Force perceptual quantization for GOPs to match old encoder behavior
-    // The old encoder's quantise_dwt_coefficients_perceptual_per_coeff() does NOT check
-    // perceptual_tuning flag - it always applies perceptual weights for GOP encoding.
-    // The --no-perceptual-tuning flag only affects I-frame encoding in the old encoder.
-    int saved_perceptual = ctx->compat_enc->perceptual_tuning;
-    ctx->compat_enc->perceptual_tuning = 1;  // Force perceptual for GOP encoding
-
+    // Use perceptual or uniform quantization based on user setting
     if (ctx->verbose) {
-        fprintf(stderr, "[DEBUG] GOP quantization: decomp_levels=%d, base_q_y=%d, perceptual=%d (forced on for GOP), preset=0x%02x\n",
+        fprintf(stderr, "[DEBUG] GOP quantization: decomp_levels=%d, base_q_y=%d, perceptual=%d, preset=0x%02x\n",
                 ctx->compat_enc->decomp_levels, base_quantiser_y, ctx->compat_enc->perceptual_tuning, ctx->compat_enc->encoder_preset);
     }
 
@@ -1482,8 +1476,6 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
                        base_quantiser_co, 1);
     tav_quantise_3d_dwt(ctx->compat_enc, work_cg, quant_cg, num_frames, num_pixels,
                        base_quantiser_cg, 1);
-
-    ctx->compat_enc->perceptual_tuning = saved_perceptual;  // Restore for I-frames
 
     // Step 4: Unified GOP preprocessing (EZBC only)
     size_t preprocess_capacity = num_pixels * num_frames * 3 * sizeof(int16_t) + 65536;

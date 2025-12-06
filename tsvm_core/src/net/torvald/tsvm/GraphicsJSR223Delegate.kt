@@ -6483,6 +6483,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         gopSize: Int,
         width: Int,
         height: Int,
+        isPerceptual: Boolean,
         qIndex: Int,
         qYGlobal: Int,
         qCoGlobal: Int,
@@ -6577,28 +6578,33 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val baseQCo = kotlin.math.round(qCoGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
             val baseQCg = kotlin.math.round(qCgGlobal * temporalScale).coerceIn(1.0f, 4096.0f)
 
-
-            dequantiseDWTSubbandsPerceptual(
-                qIndex, qYGlobal,
-                quantizedCoeffs[t][0], gopY[t],
-                subbands, baseQY, false, spatialLevels,
-                isEZBCMode
-            )
-
-
-            dequantiseDWTSubbandsPerceptual(
-                qIndex, qYGlobal,
-                quantizedCoeffs[t][1], gopCo[t],
-                subbands, baseQCo, true, spatialLevels,
-                isEZBCMode
-            )
-
-            dequantiseDWTSubbandsPerceptual(
-                qIndex, qYGlobal,
-                quantizedCoeffs[t][2], gopCg[t],
-                subbands, baseQCg, true, spatialLevels,
-                isEZBCMode
-            )
+            if (isPerceptual) {
+                dequantiseDWTSubbandsPerceptual(
+                    qIndex, qYGlobal,
+                    quantizedCoeffs[t][0], gopY[t],
+                    subbands, baseQY, false, spatialLevels,
+                    isEZBCMode
+                )
+                dequantiseDWTSubbandsPerceptual(
+                    qIndex, qYGlobal,
+                    quantizedCoeffs[t][1], gopCo[t],
+                    subbands, baseQCo, true, spatialLevels,
+                    isEZBCMode
+                )
+                dequantiseDWTSubbandsPerceptual(
+                    qIndex, qYGlobal,
+                    quantizedCoeffs[t][2], gopCg[t],
+                    subbands, baseQCg, true, spatialLevels,
+                    isEZBCMode
+                )
+            }
+            else {
+                for (i in 0 until width * height) {
+                    gopY[t][i] = quantizedCoeffs[t][0][i] * baseQY
+                    gopCo[t][i] = quantizedCoeffs[t][1][i] * baseQCo
+                    gopCg[t][i] = quantizedCoeffs[t][2][i] * baseQCg
+                }
+            }
         }
 
 
@@ -6841,6 +6847,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         gopSize: Int,
         width: Int,
         height: Int,
+        isPerceptual: Boolean,
         qIndex: Int,
         qYGlobal: Int,
         qCoGlobal: Int,
@@ -6867,7 +6874,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             try {
                 val result = tavDecodeGopToVideoBuffer(
                     compressedDataPtr, compressedSize, gopSize,
-                    width, height,
+                    width, height, isPerceptual,
                     qIndex, qYGlobal, qCoGlobal, qCgGlobal,
                     channelLayout, spatialFilter, spatialLevels, temporalLevels,
                     entropyCoder, bufferOffset, temporalMotionCoder, encoderPreset
