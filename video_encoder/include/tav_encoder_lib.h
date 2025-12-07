@@ -153,38 +153,12 @@ int tav_encoder_validate_context(tav_encoder_context_t *ctx);
 // Video Encoding
 // =============================================================================
 
-/**
- * Encode a single RGB24 frame.
- *
- * Frames are buffered internally until a GOP is full, then encoded and returned.
- * For GOP encoding: returns NULL until GOP is complete.
- * For intra-only: returns packet immediately.
- *
- * Thread-safety: NOT thread-safe. Caller must serialize calls to encode_frame().
- *
- * @param ctx           Encoder context
- * @param rgb_frame     RGB24 frame data (planar: [R...][G...][B...]), width×height×3 bytes
- * @param frame_pts     Presentation timestamp (frame number or time)
- * @param packet        Output packet pointer (NULL if GOP not yet complete)
- * @return              1 if packet ready, 0 if buffering for GOP, -1 on error
+/*
+ * DEPRECATED: tav_encoder_encode_frame() and tav_encoder_flush() have been
+ * removed. Use tav_encoder_encode_gop() instead, which works for both
+ * single-threaded and multi-threaded modes. The CLI should buffer frames
+ * and call encode_gop() when a full GOP is ready.
  */
-int tav_encoder_encode_frame(tav_encoder_context_t *ctx,
-                              const uint8_t *rgb_frame,
-                              int64_t frame_pts,
-                              tav_encoder_packet_t **packet);
-
-/**
- * Flush encoder and encode any remaining buffered frames.
- *
- * Call at end of encoding to output final GOP (even if not full).
- * Returns packets one at a time through repeated calls.
- *
- * @param ctx     Encoder context
- * @param packet  Output packet pointer (NULL when no more packets)
- * @return        1 if packet ready, 0 if no more packets, -1 on error
- */
-int tav_encoder_flush(tav_encoder_context_t *ctx,
-                      tav_encoder_packet_t **packet);
 
 /**
  * Encode a complete GOP (Group of Pictures) directly.

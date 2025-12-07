@@ -13,6 +13,7 @@
 #include "tav_encoder_quantize.h"
 #include "tav_encoder_ezbc.h"
 #include "tav_encoder_utils.h"
+#include "tav_encoder_tile.h"
 #include "encoder_tad.h"
 
 #include <stdio.h>
@@ -390,26 +391,26 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         // Auto mode: use monoblock for <= D1 PAL, tiled for larger
         if (ctx->width > TAV_MONOBLOCK_MAX_WIDTH || ctx->height > TAV_MONOBLOCK_MAX_HEIGHT) {
             ctx->monoblock = 0;
-            if (ctx->verbose) {
+//            if (ctx->verbose) {
                 printf("Auto-selected Padded Tiling mode: %dx%d exceeds D1 PAL threshold (%dx%d)\n",
                        ctx->width, ctx->height, TAV_MONOBLOCK_MAX_WIDTH, TAV_MONOBLOCK_MAX_HEIGHT);
-            }
+//            }
         } else {
             ctx->monoblock = 1;
-            if (ctx->verbose) {
+//            if (ctx->verbose) {
                 printf("Auto-selected Monoblock mode: %dx%d within D1 PAL threshold\n",
                        ctx->width, ctx->height);
-            }
+//            }
         }
     } else if (ctx->monoblock == 0) {
-        if (ctx->verbose) {
+//        if (ctx->verbose) {
             printf("Forced Padded Tiling mode (--tiled)\n");
-        }
+//        }
     } else {
         // monoblock == 1: force monoblock even for large dimensions
-        if (ctx->verbose) {
+//        if (ctx->verbose) {
             printf("Forced Monoblock mode (--monoblock)\n");
-        }
+//        }
     }
 
     // Calculate tile dimensions based on monoblock setting
@@ -421,10 +422,10 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         // Padded Tiling mode: multiple tiles of TILE_SIZE_X × TILE_SIZE_Y
         ctx->tiles_x = (ctx->width + TAV_TILE_SIZE_X - 1) / TAV_TILE_SIZE_X;
         ctx->tiles_y = (ctx->height + TAV_TILE_SIZE_Y - 1) / TAV_TILE_SIZE_Y;
-        if (ctx->verbose) {
+//        if (ctx->verbose) {
             printf("Padded Tiling mode: %dx%d tiles (%d total)\n",
                    ctx->tiles_x, ctx->tiles_y, ctx->tiles_x * ctx->tiles_y);
-        }
+//        }
     }
 
     // Calculate decomp levels if auto (0)
@@ -655,9 +656,17 @@ void tav_encoder_get_stats(tav_encoder_context_t *ctx, tav_encoder_stats_t *stat
 }
 
 // =============================================================================
-// Frame Encoding (Single-threaded implementation for now)
+// Frame Encoding - DEPRECATED, use tav_encoder_encode_gop() instead
 // =============================================================================
 
+/*
+ * tav_encoder_encode_frame() is deprecated and will be removed.
+ * Use tav_encoder_encode_gop() which works for both single-threaded and
+ * multi-threaded modes. The CLI should buffer frames and call encode_gop()
+ * when a full GOP is ready.
+ */
+
+#if 0  // DEPRECATED - kept for reference, will be deleted
 int tav_encoder_encode_frame(tav_encoder_context_t *ctx,
                               const uint8_t *rgb_frame,
                               int64_t frame_pts,
@@ -733,11 +742,19 @@ int tav_encoder_encode_frame(tav_encoder_context_t *ctx,
              "Multi-threaded encoding not yet implemented");
     return -1;
 }
+#endif  // DEPRECATED
 
 // =============================================================================
-// Flush Encoder
+// Flush Encoder - DEPRECATED, CLI handles partial GOPs directly
 // =============================================================================
 
+/*
+ * tav_encoder_flush() is deprecated and will be removed.
+ * The CLI should track remaining frames and call tav_encoder_encode_gop()
+ * directly for partial GOPs at the end of encoding.
+ */
+
+#if 0  // DEPRECATED - kept for reference, will be deleted
 int tav_encoder_flush(tav_encoder_context_t *ctx,
                       tav_encoder_packet_t **packet) {
     if (!ctx || !packet) {
@@ -847,6 +864,7 @@ int tav_encoder_flush(tav_encoder_context_t *ctx,
 
     return 0;  // No more packets
 }
+#endif  // DEPRECATED
 
 void tav_encoder_free_packet(tav_encoder_packet_t *packet) {
     if (!packet) return;
@@ -1359,72 +1377,167 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
         return -1;
     }
 
-    // Allocate work buffers for single frame
-    float *work_y = tav_calloc(num_pixels, sizeof(float));
-    float *work_co = tav_calloc(num_pixels, sizeof(float));
-    float *work_cg = tav_calloc(num_pixels, sizeof(float));
-    int16_t *quant_y = tav_calloc(num_pixels, sizeof(int16_t));
-    int16_t *quant_co = tav_calloc(num_pixels, sizeof(int16_t));
-    int16_t *quant_cg = tav_calloc(num_pixels, sizeof(int16_t));
+    // Step 1: RGB to YCoCg-R (or ICtCp) for full frame
+    float *frame_y = tav_calloc(num_pixels, sizeof(float));
+    float *frame_co = tav_calloc(num_pixels, sizeof(float));
+    float *frame_cg = tav_calloc(num_pixels, sizeof(float));
 
-    // Step 1: RGB to YCoCg-R (or ICtCp)
-    rgb_to_colour_space_frame(ctx, slot->rgb_frames[0], work_y, work_co, work_cg, width, height);
+    rgb_to_colour_space_frame(ctx, slot->rgb_frames[0], frame_y, frame_co, frame_cg, width, height);
 
-    // Step 2: Apply 2D DWT
-    tav_dwt_2d_forward(work_y, width, height, ctx->decomp_levels, ctx->wavelet_type);
-    tav_dwt_2d_forward(work_co, width, height, ctx->decomp_levels, ctx->wavelet_type);
-    tav_dwt_2d_forward(work_cg, width, height, ctx->decomp_levels, ctx->wavelet_type);
-
-    // Step 3: Quantize coefficients
-    // ctx->quantiser_y/co/cg contain QLUT indices, lookup actual quantiser values
+    // Get quantiser values from QLUT indices
     int base_quantiser_y = QLUT[ctx->quantiser_y];
     int base_quantiser_co = QLUT[ctx->quantiser_co];
     int base_quantiser_cg = QLUT[ctx->quantiser_cg];
 
-    if (ctx->perceptual_tuning) {
-        tav_quantise_perceptual(ctx->compat_enc, work_y, quant_y, num_pixels,
-                               base_quantiser_y, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 0, 0);
-        tav_quantise_perceptual(ctx->compat_enc, work_co, quant_co, num_pixels,
-                               base_quantiser_co, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
-        tav_quantise_perceptual(ctx->compat_enc, work_cg, quant_cg, num_pixels,
-                               base_quantiser_cg, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
+    // Allocate preprocess buffer for all tiles
+    // For tiled mode: num_tiles * (4-byte header + max_tile_coeff_size * 3 * sizeof(int16_t))
+    // For monoblock: just the frame
+    const int tile_coeff_count = ctx->monoblock ? num_pixels : (TAV_PADDED_TILE_SIZE_X * TAV_PADDED_TILE_SIZE_Y);
+    const int num_tiles = ctx->tiles_x * ctx->tiles_y;
+    size_t preprocess_capacity = num_tiles * (4 + tile_coeff_count * 3 * sizeof(int16_t) * 2);  // Conservative with EZBC overhead
+    uint8_t *preprocess_buffer = tav_malloc(preprocess_capacity);
+    size_t preprocess_offset = 0;
+
+    if (ctx->monoblock) {
+        // ======================================================================
+        // Monoblock mode: process entire frame as single tile
+        // ======================================================================
+        int16_t *quant_y = tav_calloc(num_pixels, sizeof(int16_t));
+        int16_t *quant_co = tav_calloc(num_pixels, sizeof(int16_t));
+        int16_t *quant_cg = tav_calloc(num_pixels, sizeof(int16_t));
+
+        // Apply 2D DWT to full frame
+        tav_dwt_2d_forward(frame_y, width, height, ctx->decomp_levels, ctx->wavelet_type);
+        tav_dwt_2d_forward(frame_co, width, height, ctx->decomp_levels, ctx->wavelet_type);
+        tav_dwt_2d_forward(frame_cg, width, height, ctx->decomp_levels, ctx->wavelet_type);
+
+        // Quantize
+        if (ctx->perceptual_tuning) {
+            tav_quantise_perceptual(ctx->compat_enc, frame_y, quant_y, num_pixels,
+                                   base_quantiser_y, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 0, 0);
+            tav_quantise_perceptual(ctx->compat_enc, frame_co, quant_co, num_pixels,
+                                   base_quantiser_co, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
+            tav_quantise_perceptual(ctx->compat_enc, frame_cg, quant_cg, num_pixels,
+                                   base_quantiser_cg, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
+        } else {
+            tav_quantise_uniform(frame_y, quant_y, num_pixels, base_quantiser_y,
+                                (float)ctx->dead_zone_threshold, width, height,
+                                ctx->decomp_levels, 0);
+            tav_quantise_uniform(frame_co, quant_co, num_pixels, base_quantiser_co,
+                                (float)ctx->dead_zone_threshold, width, height,
+                                ctx->decomp_levels, 1);
+            tav_quantise_uniform(frame_cg, quant_cg, num_pixels, base_quantiser_cg,
+                                (float)ctx->dead_zone_threshold, width, height,
+                                ctx->decomp_levels, 1);
+        }
+
+        // EZBC encode
+        preprocess_offset = preprocess_coefficients_ezbc(
+            quant_y, quant_co, quant_cg, NULL,
+            num_pixels, width, height, ctx->channel_layout,
+            preprocess_buffer
+        );
+
+        free(quant_y); free(quant_co); free(quant_cg);
+
     } else {
-        tav_quantise_uniform(work_y, quant_y, num_pixels, base_quantiser_y,
-                            (float)ctx->dead_zone_threshold, width, height,
-                            ctx->decomp_levels, 0);
-        tav_quantise_uniform(work_co, quant_co, num_pixels, base_quantiser_co,
-                            (float)ctx->dead_zone_threshold, width, height,
-                            ctx->decomp_levels, 1);
-        tav_quantise_uniform(work_cg, quant_cg, num_pixels, base_quantiser_cg,
-                            (float)ctx->dead_zone_threshold, width, height,
-                            ctx->decomp_levels, 1);
+        // ======================================================================
+        // Tiled mode: process each tile independently
+        // ======================================================================
+        const int padded_pixels = TAV_PADDED_TILE_SIZE_X * TAV_PADDED_TILE_SIZE_Y;
+
+        // Allocate reusable tile buffers
+        float *tile_y = tav_calloc(padded_pixels, sizeof(float));
+        float *tile_co = tav_calloc(padded_pixels, sizeof(float));
+        float *tile_cg = tav_calloc(padded_pixels, sizeof(float));
+        int16_t *quant_y = tav_calloc(padded_pixels, sizeof(int16_t));
+        int16_t *quant_co = tav_calloc(padded_pixels, sizeof(int16_t));
+        int16_t *quant_cg = tav_calloc(padded_pixels, sizeof(int16_t));
+
+        for (int tile_y_idx = 0; tile_y_idx < ctx->tiles_y; tile_y_idx++) {
+            for (int tile_x_idx = 0; tile_x_idx < ctx->tiles_x; tile_x_idx++) {
+                // Write tile header: [mode(1)][qY_override(1)][qCo_override(1)][qCg_override(1)]
+                preprocess_buffer[preprocess_offset++] = 0x01;  // TAV_MODE_INTRA
+                preprocess_buffer[preprocess_offset++] = 0;     // qY override (0 = use header)
+                preprocess_buffer[preprocess_offset++] = 0;     // qCo override
+                preprocess_buffer[preprocess_offset++] = 0;     // qCg override
+
+                // Extract padded tile from full frame
+                tav_extract_padded_tile(frame_y, frame_co, frame_cg,
+                                       width, height,
+                                       tile_x_idx, tile_y_idx,
+                                       tile_y, tile_co, tile_cg);
+
+                // Apply 2D DWT to padded tile
+                tav_dwt_2d_forward_padded_tile(tile_y, ctx->decomp_levels, ctx->wavelet_type);
+                tav_dwt_2d_forward_padded_tile(tile_co, ctx->decomp_levels, ctx->wavelet_type);
+                tav_dwt_2d_forward_padded_tile(tile_cg, ctx->decomp_levels, ctx->wavelet_type);
+
+                // Quantize tile coefficients
+                if (ctx->perceptual_tuning) {
+                    tav_quantise_perceptual(ctx->compat_enc, tile_y, quant_y, padded_pixels,
+                                           base_quantiser_y, (float)ctx->dead_zone_threshold,
+                                           TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                                           ctx->decomp_levels, 0, 0);
+                    tav_quantise_perceptual(ctx->compat_enc, tile_co, quant_co, padded_pixels,
+                                           base_quantiser_co, (float)ctx->dead_zone_threshold,
+                                           TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                                           ctx->decomp_levels, 1, 0);
+                    tav_quantise_perceptual(ctx->compat_enc, tile_cg, quant_cg, padded_pixels,
+                                           base_quantiser_cg, (float)ctx->dead_zone_threshold,
+                                           TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                                           ctx->decomp_levels, 1, 0);
+                } else {
+                    tav_quantise_uniform(tile_y, quant_y, padded_pixels, base_quantiser_y,
+                                        (float)ctx->dead_zone_threshold,
+                                        TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                                        ctx->decomp_levels, 0);
+                    tav_quantise_uniform(tile_co, quant_co, padded_pixels, base_quantiser_co,
+                                        (float)ctx->dead_zone_threshold,
+                                        TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                                        ctx->decomp_levels, 1);
+                    tav_quantise_uniform(tile_cg, quant_cg, padded_pixels, base_quantiser_cg,
+                                        (float)ctx->dead_zone_threshold,
+                                        TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                                        ctx->decomp_levels, 1);
+                }
+
+                // EZBC encode tile
+                size_t tile_size = preprocess_coefficients_ezbc(
+                    quant_y, quant_co, quant_cg, NULL,
+                    padded_pixels, TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
+                    ctx->channel_layout,
+                    preprocess_buffer + preprocess_offset
+                );
+                preprocess_offset += tile_size;
+
+                // Clear tile buffers for next iteration
+                memset(tile_y, 0, padded_pixels * sizeof(float));
+                memset(tile_co, 0, padded_pixels * sizeof(float));
+                memset(tile_cg, 0, padded_pixels * sizeof(float));
+            }
+        }
+
+        free(tile_y); free(tile_co); free(tile_cg);
+        free(quant_y); free(quant_co); free(quant_cg);
     }
 
-    // Step 4: Preprocess coefficients
-    size_t preprocess_capacity = num_pixels * 3 * sizeof(int16_t) + 65536;  // Conservative
-    uint8_t *preprocess_buffer = tav_malloc(preprocess_capacity);
+    // Free full-frame YCoCg buffers
+    free(frame_y); free(frame_co); free(frame_cg);
 
-    // Use EZBC preprocessing (Twobitmap is deprecated)
-    size_t preprocessed_size = preprocess_coefficients_ezbc(
-        quant_y, quant_co, quant_cg, NULL,
-        num_pixels, width, height, ctx->channel_layout,
-        preprocess_buffer
-    );
-
-    // Step 5: Zstd compress
-    size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
+    // Step 5: Zstd compress all tile data
+    size_t compressed_bound = ZSTD_compressBound(preprocess_offset);
     uint8_t *compression_buffer = tav_malloc(compressed_bound);
 
     size_t compressed_size = ZSTD_compress(
         compression_buffer, compressed_bound,
-        preprocess_buffer, preprocessed_size,
+        preprocess_buffer, preprocess_offset,
         ctx->zstd_level
     );
 
+    free(preprocess_buffer);
+
     if (ZSTD_isError(compressed_size)) {
-        free(work_y); free(work_co); free(work_cg);
-        free(quant_y); free(quant_co); free(quant_cg);
-        free(preprocess_buffer);
         free(compression_buffer);
         snprintf(slot->error_message, MAX_ERROR_MESSAGE,
                  "Zstd compression failed: %s", ZSTD_getErrorName(compressed_size));
@@ -1452,10 +1565,6 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     slot->packets = pkt;
     slot->num_packets = 1;
 
-    // Cleanup
-    free(work_y); free(work_co); free(work_cg);
-    free(quant_y); free(quant_co); free(quant_cg);
-    free(preprocess_buffer);
     free(compression_buffer);
 
     return 0;  // Success

@@ -27,7 +27,8 @@ LIBTAVENC_OBJ = lib/libtavenc/tav_encoder_lib.o \
                 lib/libtavenc/tav_encoder_dwt.o \
                 lib/libtavenc/tav_encoder_quantize.o \
                 lib/libtavenc/tav_encoder_ezbc.o \
-                lib/libtavenc/tav_encoder_utils.o
+                lib/libtavenc/tav_encoder_utils.o \
+                lib/libtavenc/tav_encoder_tile.o
 
 # libtavdec - TAV decoder library
 LIBTAVDEC_OBJ = lib/libtavdec/tav_video_decoder.o

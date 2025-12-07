@@ -91,6 +91,11 @@ typedef struct {
     size_t total_bytes;
     time_t start_time;
 
+    // GOP frame buffer (for tav_encoder_encode_gop())
+    uint8_t **gop_frames;         // Array of frame pointers [gop_size]
+    int gop_frame_count;          // Number of frames in current GOP
+    int *gop_frame_numbers;       // Frame numbers for timecodes [gop_size]
+
     // CLI options
     int verbose;
     int encode_limit;  // Max frames to encode (0=all)
@@ -254,7 +259,7 @@ static int get_video_info(const char *input_file, int *width, int *height,
 static FILE* open_ffmpeg_pipe(const char *input_file, int width, int height) {
     char cmd[MAX_PATH * 2];
     snprintf(cmd, sizeof(cmd),
-             "ffmpeg -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
+             "ffmpeg -hide_banner -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
              input_file, width, height, width, height);
 
     FILE *fp = popen(cmd, "r");
@@ -305,12 +310,22 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
     //   6 = ICtCp monoblock perceptual
     //   Add 8 if using CDF 5/3 temporal wavelet
     uint8_t version;
-    if (params->perceptual_tuning) {
-        // Monoblock perceptual: version 5 (YCoCg-R) or 6 (ICtCp)
-        version = params->channel_layout ? 6 : 5;
+    if (params->monoblock) {
+        if (params->perceptual_tuning) {
+            // Monoblock perceptual: version 5 (YCoCg-R) or 6 (ICtCp)
+            version = params->channel_layout ? 6 : 5;
+        } else {
+            // Monoblock uniform: version 3 (YCoCg-R) or 4 (ICtCp)
+            version = params->channel_layout ? 4 : 3;
+        }
     } else {
-        // Monoblock uniform: version 3 (YCoCg-R) or 4 (ICtCp)
-        version = params->channel_layout ? 4 : 3;
+        if (params->perceptual_tuning) {
+            // Tiled perceptual: version 7 (YCoCg-R) or 8 (ICtCp)
+            version = params->channel_layout ? 7 : 8;
+        } else {
+            // Tiled uniform: version 1 (YCoCg-R) or 2 (ICtCp)
+            version = params->channel_layout ? 1 : 2;
+        }
     }
     // Add 8 if using CDF 5/3 temporal wavelet
     if (params->enable_temporal_dwt && params->temporal_wavelet == 0) {
@@ -468,7 +483,7 @@ static int write_gop_sync_packet(FILE *fp, int frame_count) {
 static int extract_audio_to_file(const char *input_file, const char *output_file) {
     char cmd[MAX_PATH * 2];
     snprintf(cmd, sizeof(cmd),
-             "ffmpeg -v quiet -i \"%s\" -f f32le -acodec pcm_f32le -ar %d -ac 2 "
+             "ffmpeg -hide_banner -v quiet -i \"%s\" -f f32le -acodec pcm_f32le -ar %d -ac 2 "
              "-af \"aresample=resampler=soxr:precision=28:cutoff=0.99:dither_scale=0,highpass=f=16\" "
              "-y \"%s\" 2>/dev/null",
              input_file, AUDIO_SAMPLE_RATE, output_file);
@@ -952,11 +967,51 @@ static int encode_video(cli_context_t *cli) {
         }
     }
 
-    // Allocate frame buffer
+    // Allocate GOP frame buffer for tav_encoder_encode_gop()
     size_t frame_size = cli->enc_params.width * cli->enc_params.height * 3;
+    int gop_size = cli->enc_params.gop_size;
+
+    // In intra-only mode, encode each frame immediately (GOP size = 1)
+    if (!cli->enc_params.enable_temporal_dwt) {
+        gop_size = 1;
+    }
+
+    cli->gop_frames = malloc(gop_size * sizeof(uint8_t*));
+    cli->gop_frame_numbers = malloc(gop_size * sizeof(int));
+    cli->gop_frame_count = 0;
+
+    if (!cli->gop_frames || !cli->gop_frame_numbers) {
+        fprintf(stderr, "Error: Failed to allocate GOP frame buffer\n");
+        tav_encoder_free(ctx);
+        pclose(cli->ffmpeg_pipe);
+        return -1;
+    }
+
+    for (int i = 0; i < gop_size; i++) {
+        cli->gop_frames[i] = malloc(frame_size);
+        if (!cli->gop_frames[i]) {
+            fprintf(stderr, "Error: Failed to allocate GOP frame %d\n", i);
+            for (int j = 0; j < i; j++) free(cli->gop_frames[j]);
+            free(cli->gop_frames);
+            free(cli->gop_frame_numbers);
+            tav_encoder_free(ctx);
+            pclose(cli->ffmpeg_pipe);
+            return -1;
+        }
+    }
+
+    if (cli->verbose) {
+        printf("  GOP frame buffer: %d frames x %zu bytes = %zu KB\n",
+               gop_size, frame_size, (gop_size * frame_size) / 1024);
+    }
+
+    // Temporary frame buffer for reading from FFmpeg
     uint8_t *rgb_frame = malloc(frame_size);
     if (!rgb_frame) {
         fprintf(stderr, "Error: Failed to allocate frame buffer\n");
+        for (int i = 0; i < gop_size; i++) free(cli->gop_frames[i]);
+        free(cli->gop_frames);
+        free(cli->gop_frame_numbers);
         tav_encoder_free(ctx);
         pclose(cli->ffmpeg_pipe);
         return -1;
@@ -981,12 +1036,12 @@ static int encode_video(cli_context_t *cli) {
         write_fontrom_packet(cli->output_fp, cli->fontrom_high, FONTROM_OPCODE_HIGH, cli->verbose);
     }
 
-    // Encoding loop
+    // Encoding loop using tav_encoder_encode_gop()
     printf("Encoding frames...\n");
     cli->start_time = time(NULL);
 
-    int64_t frame_pts = 0;
     tav_encoder_packet_t *packet = NULL;
+    int encoding_error = 0;
 
     while (1) {
         // Check encode limit
@@ -1000,8 +1055,14 @@ static int encode_video(cli_context_t *cli) {
             break;  // EOF
         } else if (result < 0) {
             fprintf(stderr, "Error reading frame\n");
+            encoding_error = 1;
             break;
         }
+
+        // Copy frame to GOP buffer
+        memcpy(cli->gop_frames[cli->gop_frame_count], rgb_frame, frame_size);
+        cli->gop_frame_numbers[cli->gop_frame_count] = (int)cli->frame_count;
+        cli->gop_frame_count++;
 
         // Accumulate audio samples for this frame (will write when GOP completes)
         if (cli->has_audio && cli->audio_buffer && cli->gop_audio_buffer) {
@@ -1015,40 +1076,55 @@ static int encode_video(cli_context_t *cli) {
             }
         }
 
-        // Encode frame
-        result = tav_encoder_encode_frame(ctx, rgb_frame, frame_pts, &packet);
+        cli->frame_count++;
 
-        if (result < 0) {
-            fprintf(stderr, "Error: %s\n", tav_encoder_get_error(ctx));
-            break;
-        }
+        // Check if GOP is full
+        if (cli->gop_frame_count >= gop_size) {
+            // Encode complete GOP
+            result = tav_encoder_encode_gop(ctx,
+                                            (const uint8_t**)cli->gop_frames,
+                                            cli->gop_frame_count,
+                                            cli->gop_frame_numbers,
+                                            &packet);
 
-        if (result > 0 && packet) {
-            // GOP is complete - write in correct order: TIMECODE, AUDIO, VIDEO, GOP_SYNC
-
-            // 1. Write timecode before GOP
-            write_timecode_packet(cli->output_fp, cli->frame_count - (cli->frame_count % cli->enc_params.gop_size),
-                                 cli->enc_params.fps_num, cli->enc_params.fps_den);
-
-            // 2. Write accumulated audio for this GOP as single TAD packet
-            if (cli->has_audio && cli->gop_audio_samples > 0) {
-                write_audio_packet(cli->output_fp, cli, cli->gop_audio_buffer, cli->gop_audio_samples);
-                cli->gop_audio_samples = 0;  // Reset for next GOP
+            if (result < 0) {
+                fprintf(stderr, "Error: %s\n", tav_encoder_get_error(ctx));
+                encoding_error = 1;
+                break;
             }
 
-            // 3. Write video GOP packet
-            write_tav_packet(cli->output_fp, packet);
-            cli->total_bytes += packet->size;
-            cli->gop_count++;
+            if (packet) {
+                // GOP is complete - write in correct order: TIMECODE, AUDIO, VIDEO, GOP_SYNC
 
-            // 4. Write GOP_SYNC after GOP packets (0x12 = GOP unified)
-            if (packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
-                // Extract GOP size from packet (byte 1)
-                int gop_size = packet->data[1];
-                write_gop_sync_packet(cli->output_fp, gop_size);
+                // 1. Write timecode before GOP (use first frame number in GOP)
+                write_timecode_packet(cli->output_fp, cli->gop_frame_numbers[0],
+                                     cli->enc_params.fps_num, cli->enc_params.fps_den);
+
+                // 2. Write accumulated audio for this GOP as single TAD packet
+                if (cli->has_audio && cli->gop_audio_samples > 0) {
+                    write_audio_packet(cli->output_fp, cli, cli->gop_audio_buffer, cli->gop_audio_samples);
+                    cli->gop_audio_samples = 0;  // Reset for next GOP
+                }
+
+                // 3. Write video GOP packet
+                write_tav_packet(cli->output_fp, packet);
+                cli->total_bytes += packet->size;
+                cli->gop_count++;
+
+                // 4. Write GOP_SYNC after GOP packets
+                if (packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
+                    int frames_in_gop = packet->data[1];
+                    write_gop_sync_packet(cli->output_fp, frames_in_gop);
+                } else if (packet->packet_type == TAV_PACKET_IFRAME) {
+                    write_gop_sync_packet(cli->output_fp, 1);
+                }
+
+                tav_encoder_free_packet(packet);
+                packet = NULL;
             }
 
-            tav_encoder_free_packet(packet);
+            // Reset GOP buffer
+            cli->gop_frame_count = 0;
 
             // Progress
             if (cli->verbose || cli->frame_count % 60 == 0) {
@@ -1065,21 +1141,27 @@ static int encode_video(cli_context_t *cli) {
                 fflush(stdout);
             }
         }
-
-        cli->frame_count++;
-        frame_pts++;
     }
 
     printf("\n");
 
-    // Flush encoder
-    printf("Flushing encoder...\n");
-    while (tav_encoder_flush(ctx, &packet) > 0) {
-        if (packet) {
+    // Encode remaining frames in GOP buffer (partial GOP)
+    if (!encoding_error && cli->gop_frame_count > 0) {
+        printf("Encoding final partial GOP (%d frames)...\n", cli->gop_frame_count);
+
+        int result = tav_encoder_encode_gop(ctx,
+                                            (const uint8_t**)cli->gop_frames,
+                                            cli->gop_frame_count,
+                                            cli->gop_frame_numbers,
+                                            &packet);
+
+        if (result < 0) {
+            fprintf(stderr, "Error encoding final GOP: %s\n", tav_encoder_get_error(ctx));
+        } else if (packet) {
             // Write remaining packets in correct order: TIMECODE, AUDIO, VIDEO, GOP_SYNC
 
             // 1. Write timecode
-            write_timecode_packet(cli->output_fp, cli->frame_count - (cli->frame_count % cli->enc_params.gop_size),
+            write_timecode_packet(cli->output_fp, cli->gop_frame_numbers[0],
                                  cli->enc_params.fps_num, cli->enc_params.fps_den);
 
             // 2. Write any remaining accumulated audio for this GOP
@@ -1095,8 +1177,8 @@ static int encode_video(cli_context_t *cli) {
 
             // 4. Write GOP_SYNC after GOP packets
             if (packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
-                int gop_size = packet->data[1];
-                write_gop_sync_packet(cli->output_fp, gop_size);
+                int frames_in_gop = packet->data[1];
+                write_gop_sync_packet(cli->output_fp, frames_in_gop);
             } else if (packet->packet_type == TAV_PACKET_IFRAME) {
                 write_gop_sync_packet(cli->output_fp, 1);
             }
@@ -1112,6 +1194,19 @@ static int encode_video(cli_context_t *cli) {
     free(rgb_frame);
     tav_encoder_free(ctx);
     pclose(cli->ffmpeg_pipe);
+
+    // Cleanup GOP frame buffer
+    if (cli->gop_frames) {
+        for (int i = 0; i < gop_size; i++) {
+            free(cli->gop_frames[i]);
+        }
+        free(cli->gop_frames);
+        cli->gop_frames = NULL;
+    }
+    if (cli->gop_frame_numbers) {
+        free(cli->gop_frame_numbers);
+        cli->gop_frame_numbers = NULL;
+    }
 
     // Cleanup audio resources
     if (cli->audio_buffer) {
