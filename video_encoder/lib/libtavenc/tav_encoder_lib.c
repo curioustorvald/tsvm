@@ -308,7 +308,8 @@ void tav_encoder_params_init(tav_encoder_params_t *params, int width, int height
 
     // Advanced
     params->verbose = 0;
-    params->monoblock = -1;            // -1=auto (based on dimensions), 0=force tiled, 1=force monoblock
+    params->monoblock = 1;            // -1=auto (based on dimensions), 0=force tiled, 1=force monoblock
+    // monoblock: default to forced monoblock mode because tiling is not working very well...
 }
 
 // =============================================================================

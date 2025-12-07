@@ -166,10 +166,10 @@ static void print_usage(const char *program) {
     printf("  --intra-only             Disable temporal compression (I-frames only)\n");
     printf("  --gop-size N             GOP size 8/16/24 (default: 24)\n");
     printf("  --single-pass            Disable scene change detection\n");
-    printf("\nTiling:\n");
-    printf("  --monoblock              Force single-tile mode (auto-disabled for > %dx%d)\n",
-           TAV_MONOBLOCK_MAX_WIDTH, TAV_MONOBLOCK_MAX_HEIGHT);
-    printf("  --tiled                  Force multi-tile mode (Padded Tiling)\n");
+//    printf("\nTiling:\n");
+//    printf("  --monoblock              Force single-tile mode (auto-disabled for > %dx%d)\n",
+//           TAV_MONOBLOCK_MAX_WIDTH, TAV_MONOBLOCK_MAX_HEIGHT);
+//    printf("  --tiled                  Force multi-tile mode (Padded Tiling)\n");
     printf("\nCompression:\n");
     printf("  --zstd-level N           Zstd level 3-22 (default: 7)\n");
     printf("  --no-perceptual-tuning   Disable HVS perceptual quantization\n");
