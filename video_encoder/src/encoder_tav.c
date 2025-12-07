@@ -161,6 +161,10 @@ static void print_usage(const char *program) {
     printf("  --intra-only             Disable temporal compression (I-frames only)\n");
     printf("  --gop-size N             GOP size 8/16/24 (default: 24)\n");
     printf("  --single-pass            Disable scene change detection\n");
+    printf("\nTiling:\n");
+    printf("  --monoblock              Force single-tile mode (auto-disabled for > %dx%d)\n",
+           TAV_MONOBLOCK_MAX_WIDTH, TAV_MONOBLOCK_MAX_HEIGHT);
+    printf("  --tiled                  Force multi-tile mode (Padded Tiling)\n");
     printf("\nCompression:\n");
     printf("  --zstd-level N           Zstd level 3-22 (default: 7)\n");
     printf("  --no-perceptual-tuning   Disable HVS perceptual quantization\n");
@@ -1212,6 +1216,8 @@ int main(int argc, char *argv[]) {
         {"no-audio", no_argument, 0, 1017},
         {"preset-sports", no_argument, 0, 1026},
         {"preset-anime", no_argument, 0, 1027},
+        {"monoblock", no_argument, 0, 1028},
+        {"tiled", no_argument, 0, 1029},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -1358,6 +1364,12 @@ int main(int argc, char *argv[]) {
                 break;
             case 1027:  // --preset-anime
                 cli.enc_params.encoder_preset |= 0x02;
+                break;
+            case 1028:  // --monoblock
+                cli.enc_params.monoblock = 1;
+                break;
+            case 1029:  // --tiled
+                cli.enc_params.monoblock = 0;
                 break;
             case '?':
             default:

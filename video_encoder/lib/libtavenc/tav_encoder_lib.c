@@ -206,6 +206,9 @@ struct tav_encoder_context {
     int verbose;
     int monoblock;
 
+    // Tile configuration (derived from monoblock and dimensions)
+    int tiles_x, tiles_y;         // Number of tiles in x/y directions
+
     // Derived quantizer values (QLUT indices)
     int quantiser_y, quantiser_co, quantiser_cg;
 
@@ -304,7 +307,7 @@ void tav_encoder_params_init(tav_encoder_params_t *params, int width, int height
 
     // Advanced
     params->verbose = 0;
-    params->monoblock = 1;             // Single tile (always 1 for current implementation)
+    params->monoblock = -1;            // -1=auto (based on dimensions), 0=force tiled, 1=force monoblock
 }
 
 // =============================================================================
@@ -381,10 +384,60 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
     // Force temporal level 2
     ctx->temporal_levels = 2;
 
+    // Handle monoblock mode:
+    // -1 = auto (select based on dimensions), 0 = force tiled, 1 = force monoblock
+    if (ctx->monoblock == -1) {
+        // Auto mode: use monoblock for <= D1 PAL, tiled for larger
+        if (ctx->width > TAV_MONOBLOCK_MAX_WIDTH || ctx->height > TAV_MONOBLOCK_MAX_HEIGHT) {
+            ctx->monoblock = 0;
+            if (ctx->verbose) {
+                printf("Auto-selected Padded Tiling mode: %dx%d exceeds D1 PAL threshold (%dx%d)\n",
+                       ctx->width, ctx->height, TAV_MONOBLOCK_MAX_WIDTH, TAV_MONOBLOCK_MAX_HEIGHT);
+            }
+        } else {
+            ctx->monoblock = 1;
+            if (ctx->verbose) {
+                printf("Auto-selected Monoblock mode: %dx%d within D1 PAL threshold\n",
+                       ctx->width, ctx->height);
+            }
+        }
+    } else if (ctx->monoblock == 0) {
+        if (ctx->verbose) {
+            printf("Forced Padded Tiling mode (--tiled)\n");
+        }
+    } else {
+        // monoblock == 1: force monoblock even for large dimensions
+        if (ctx->verbose) {
+            printf("Forced Monoblock mode (--monoblock)\n");
+        }
+    }
+
+    // Calculate tile dimensions based on monoblock setting
+    if (ctx->monoblock) {
+        // Monoblock mode: single tile covering entire frame
+        ctx->tiles_x = 1;
+        ctx->tiles_y = 1;
+    } else {
+        // Padded Tiling mode: multiple tiles of TILE_SIZE_X × TILE_SIZE_Y
+        ctx->tiles_x = (ctx->width + TAV_TILE_SIZE_X - 1) / TAV_TILE_SIZE_X;
+        ctx->tiles_y = (ctx->height + TAV_TILE_SIZE_Y - 1) / TAV_TILE_SIZE_Y;
+        if (ctx->verbose) {
+            printf("Padded Tiling mode: %dx%d tiles (%d total)\n",
+                   ctx->tiles_x, ctx->tiles_y, ctx->tiles_x * ctx->tiles_y);
+        }
+    }
+
     // Calculate decomp levels if auto (0)
+    // For multi-tile mode, use tile size as the basis; for monoblock, use frame size
     if (ctx->decomp_levels == 0) {
         int levels = 0;
-        int min_dim = (ctx->width < ctx->height) ? ctx->width : ctx->height;
+        int min_dim;
+        if (ctx->monoblock) {
+            min_dim = (ctx->width < ctx->height) ? ctx->width : ctx->height;
+        } else {
+            // For tiled mode, calculate based on tile size
+            min_dim = (TAV_TILE_SIZE_X < TAV_TILE_SIZE_Y) ? TAV_TILE_SIZE_X : TAV_TILE_SIZE_Y;
+        }
         // Keep halving until we reach minimum size
         while (min_dim >= 32) {
             min_dim /= 2;
@@ -483,6 +536,9 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         printf("%s created:\n", ENCODER_VERSION);
         printf("  Resolution: %dx%d @ %d/%d fps\n",
                ctx->width, ctx->height, ctx->fps_num, ctx->fps_den);
+        printf("  Tiling: %s (%dx%d tiles)\n",
+               ctx->monoblock ? "Monoblock" : "Padded Tiling",
+               ctx->tiles_x, ctx->tiles_y);
         printf("  GOP size: %d frames\n", ctx->gop_size);
         printf("  Wavelet: %d (spatial), %d (temporal)\n",
                ctx->wavelet_type, ctx->temporal_wavelet);

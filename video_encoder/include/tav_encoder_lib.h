@@ -75,7 +75,7 @@ typedef struct {
 
     // === Advanced Options ===
     int verbose;                  // 1=enable debug output, 0=quiet (default)
-    int monoblock;                // 1=single tile encoding (always 1 for current implementation)
+    int monoblock;                // -1=auto (based on dimensions), 0=force tiled, 1=force monoblock
 
 } tav_encoder_params_t;
 
@@ -295,6 +295,23 @@ void tav_encoder_get_stats(tav_encoder_context_t *ctx, tav_encoder_stats_t *stat
 #define TAV_PACKET_LOOP_START    0xF0  // Loop point start (no payload)
 #define TAV_PACKET_GOP_SYNC      0xFC  // GOP sync (frame count marker)
 #define TAV_PACKET_TIMECODE      0xFD  // Timecode metadata
+
+// =============================================================================
+// Tile Settings (for multi-tile mode)
+// =============================================================================
+
+#define TAV_TILE_SIZE_X 640               // Base tile width
+#define TAV_TILE_SIZE_Y 540               // Base tile height
+#define TAV_DWT_FILTER_HALF_SUPPORT 4     // For 9/7 filter (filter lengths 9,7 → L=4)
+#define TAV_TILE_MARGIN_LEVELS 3          // Use margin for 3 levels: 4 * (2^3) = 32px
+#define TAV_TILE_MARGIN (TAV_DWT_FILTER_HALF_SUPPORT * (1 << TAV_TILE_MARGIN_LEVELS))  // 32px
+#define TAV_PADDED_TILE_SIZE_X (TAV_TILE_SIZE_X + 2 * TAV_TILE_MARGIN)  // 704
+#define TAV_PADDED_TILE_SIZE_Y (TAV_TILE_SIZE_Y + 2 * TAV_TILE_MARGIN)  // 604
+
+// Monoblock threshold: D1 PAL resolution (720x576)
+// If width > 720 OR height > 576, automatically switch to tiled mode
+#define TAV_MONOBLOCK_MAX_WIDTH  720
+#define TAV_MONOBLOCK_MAX_HEIGHT 576
 
 #ifdef __cplusplus
 }
