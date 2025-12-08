@@ -58,9 +58,9 @@ typedef struct {
 
     // === Quality Control ===
     int quality_level;
-    int quality_y;                // Luma quality (0-5, default: 3)
-    int quality_co;               // Orange chrominance quality (0-5, default: 3)
-    int quality_cg;               // Green chrominance quality (0-5, default: 3)
+    int quantiser_y;                // Luma quantiser (0-255, indexed against QLUT)
+    int quantiser_co;               // Orange chrominance quantiser (0-255, indexed against QLUT)
+    int quantiser_cg;               // Green chrominance quantiser (0-255, indexed against QLUT)
     float dead_zone_threshold;    // Dead-zone quantization threshold (0.0=disabled, 0.6-1.5 typical)
 
     // === Entropy Coding ===

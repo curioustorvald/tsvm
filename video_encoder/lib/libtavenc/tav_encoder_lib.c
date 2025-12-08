@@ -198,7 +198,7 @@ struct tav_encoder_context {
     int enable_temporal_dwt;
     int gop_size;
     int enable_two_pass;
-    int quality_level, quality_y, quality_co, quality_cg;
+    int quality_level;
     int dead_zone_threshold;
     int entropy_coder;
     int zstd_level;
@@ -291,9 +291,9 @@ void tav_encoder_params_init(tav_encoder_params_t *params, int width, int height
 
     // Quality defaults (level 3 = balanced)
     params->quality_level = 3;
-    params->quality_y = QUALITY_Y[3];    // 11 - quantiser index
-    params->quality_co = QUALITY_CO[3];  // 76 - quantiser index
-    params->quality_cg = QUALITY_CG[3];  // 99 - quantiser index
+    params->quantiser_y = QUALITY_Y[3];    // 11 - quantiser index
+    params->quantiser_co = QUALITY_CO[3];  // 76 - quantiser index
+    params->quantiser_cg = QUALITY_CG[3];  // 99 - quantiser index
     params->dead_zone_threshold = DEAD_ZONE_THRESHOLD[3];  // 1.1 for Q3
 
     // Compression
@@ -354,9 +354,9 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
     ctx->gop_size = params->gop_size;
     ctx->enable_two_pass = params->enable_two_pass;
     ctx->quality_level = params->quality_level;  // CRITICAL: Was missing, caused quality_level=0
-    ctx->quality_y = params->quality_y;
-    ctx->quality_co = params->quality_co;
-    ctx->quality_cg = params->quality_cg;
+    ctx->quantiser_y = params->quantiser_y;
+    ctx->quantiser_co = params->quantiser_co;
+    ctx->quantiser_cg = params->quantiser_cg;
     ctx->dead_zone_threshold = params->dead_zone_threshold;
     ctx->entropy_coder = params->entropy_coder;
     ctx->zstd_level = params->zstd_level;
@@ -365,19 +365,19 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
     ctx->verbose = params->verbose;
     ctx->monoblock = params->monoblock;
 
-    // quality_y/co/cg already contain quantiser indices (0-255)
+    // quantiser_y/co/cg already contain quantiser indices (0-255)
     // Clamp to valid range
-    if (ctx->quality_y < 0) ctx->quality_y = 0;
-    if (ctx->quality_y > 255) ctx->quality_y = 255;
-    if (ctx->quality_co < 0) ctx->quality_co = 0;
-    if (ctx->quality_co > 255) ctx->quality_co = 255;
-    if (ctx->quality_cg < 0) ctx->quality_cg = 0;
-    if (ctx->quality_cg > 255) ctx->quality_cg = 255;
+    if (ctx->quantiser_y < 0) ctx->quantiser_y = 0;
+    if (ctx->quantiser_y > 255) ctx->quantiser_y = 255;
+    if (ctx->quantiser_co < 0) ctx->quantiser_co = 0;
+    if (ctx->quantiser_co > 255) ctx->quantiser_co = 255;
+    if (ctx->quantiser_cg < 0) ctx->quantiser_cg = 0;
+    if (ctx->quantiser_cg > 255) ctx->quantiser_cg = 255;
 
     // Copy quantiser indices for encoding
-    ctx->quantiser_y = ctx->quality_y;
-    ctx->quantiser_co = ctx->quality_co;
-    ctx->quantiser_cg = ctx->quality_cg;
+    ctx->quantiser_y = ctx->quantiser_y;
+    ctx->quantiser_co = ctx->quantiser_co;
+    ctx->quantiser_cg = ctx->quantiser_cg;
 
     // Force EZBC entropy coder (Twobitmap is deprecated)
     ctx->entropy_coder = 1;
@@ -516,8 +516,8 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         }
     }
 
-    // Set TAD audio quality mapping (from quality_y)
-    ctx->tad_max_index = tad32_quality_to_max_index(ctx->quality_y);
+    // Set TAD audio quality mapping (from quantiser_y)
+    ctx->tad_max_index = tad32_quality_to_max_index(ctx->quantiser_y);
 
     // Initialize statistics
     ctx->start_time = time(NULL);
@@ -547,7 +547,7 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         printf("  DWT levels: %d (spatial), %d (temporal)\n",
                ctx->decomp_levels, ctx->temporal_levels);
         printf("  Quality: Y=%d, Co=%d, Cg=%d\n",
-               ctx->quality_y, ctx->quality_co, ctx->quality_cg);
+               ctx->quantiser_y, ctx->quantiser_co, ctx->quantiser_cg);
         printf("  Threads: %d\n", ctx->num_threads);
     }
 
@@ -603,9 +603,9 @@ void tav_encoder_get_params(tav_encoder_context_t *ctx, tav_encoder_params_t *pa
     params->enable_temporal_dwt = ctx->enable_temporal_dwt;
     params->gop_size = ctx->gop_size;                     // Calculated value
     params->enable_two_pass = ctx->enable_two_pass;
-    params->quality_y = ctx->quality_y;
-    params->quality_co = ctx->quality_co;
-    params->quality_cg = ctx->quality_cg;
+    params->quantiser_y = ctx->quantiser_y;
+    params->quantiser_co = ctx->quantiser_co;
+    params->quantiser_cg = ctx->quantiser_cg;
     params->dead_zone_threshold = ctx->dead_zone_threshold;
     params->entropy_coder = ctx->entropy_coder;           // Forced to 1 (EZBC)
     params->zstd_level = ctx->zstd_level;

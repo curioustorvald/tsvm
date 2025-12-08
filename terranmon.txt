@@ -1644,43 +1644,43 @@ start of the next packet
         int16  Reserved (zero-fill)
         uint32 Total packet size past 16-byte header
         uint32 CRC-32 of 12-byte header
-    <packet header end; encoded with rate 1/2 LPDC>
+    <packet header end; encoded with rate 1/2 LDPC>
     uint64 Timecode in nanoseconds (repeated thrice; bitwise majority)
-    *      TAD with LPDC (0x50)
+    *      TAD with LDPC (0x50)
         uint8  Packet type (0x50)
         <TAD header start>
             uint16 Sample Count
             uint32 Compressed Size + 14
-        <TAD header end; encoded with rate 1/2 LPDC>
+        <TAD header end; encoded with rate 1/2 LDPC>
         <TAD chunk header start>
             uint16 Sample Count
             uint8  Quantiser Bits
             uint32 Compressed Size
-        <TAD chunk header end; encoded with rate 1/2 LPDC>
-        <LPDC header start>
+        <TAD chunk header end; encoded with rate 1/2 LDPC>
+        <LDPC header start>
             uint8  FEC Code ID
             uint16 FEC Block size or codebook ID
             uint16 FEC parity length
-        <LPDC header end; encoded with rate 1/2 LPDC>
-        <Reed-Solomon block start>
+        <LDPC header end; encoded with rate 1/2 LDPC>
+        <Reed-Solomon (255,223) block start>
             *      Zstd-compressed TAD
             *      Parity for Zstd-compressed TAD
-        <Reed-Solomon block end>
-    *      TAV with LPDC (0x51)
+        <Reed-Solomon (255,223) block end>
+    *      TAV with LDPC (0x51)
         uint8  Packet type (0x51)
         <TAV header start>
             uint8  GOP Size (number of frames in this GOP)
             uint32 Compressed Size
-        <TAV header end; encoded with rate 1/2 LPDC>
-        <LPDC header start>
+        <TAV header end; encoded with rate 1/2 LDPC>
+        <LDPC header start>
             uint8  FEC Code ID
             uint16 FEC Block size or codebook ID
             uint16 FEC parity length
-        <LPDC header end; encoded with rate 1/2 LPDC>
-        <Reed-Solomon block start>
+        <LDPC header end; encoded with rate 1/2 LDPC>
+        <Reed-Solomon (255,223) block start>
             *      Zstd-compressed Unified Block Data
             *      Parity for Zstd-compressed Unified Block Data
-        <Reed-Solomon block end>
+        <Reed-Solomon (255,223) block end>
 
 # How to sync to the stream
     1. Find a sync pattern
@@ -1689,6 +1689,8 @@ start of the next packet
     4. Read 4 bytes (stored CRC)
     5. Check calculated CRC against stored CRC
     6. If they match, sync to the stream; if not, find a next sync pattern
+
+    The decoder "may" try to sync to the sync pattern that appears damaged when its contents are seem to be intact.
 
 --------------------------------------------------------------------------------
 

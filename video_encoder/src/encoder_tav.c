@@ -74,6 +74,7 @@ typedef struct gop_job {
 #define MAX_SUBTITLE_LENGTH 2048
 #define TAV_PACKET_SUBTITLE_TC 0x31  // Subtitle packet with timecode (SSF-TC format)
 #define TAV_PACKET_SSF 0x30          // SSF packet (for font ROM)
+#define TAV_PACKET_EXTENDED_HDR 0xEF // Extended header packet
 #define FONTROM_OPCODE_LOW 0x80      // Low font ROM opcode
 #define FONTROM_OPCODE_HIGH 0x81     // High font ROM opcode
 #define MAX_FONTROM_SIZE 1920        // Max font ROM size in bytes
@@ -152,6 +153,12 @@ typedef struct {
     // Subtitle processing
     subtitle_entry_t *subtitles;
 
+    // Extended Header support
+    char *ffmpeg_version;        // FFmpeg version string (first line of "ffmpeg -version")
+    uint64_t creation_time_us;   // Creation time in microseconds since UNIX Epoch (UTC)
+    long extended_header_offset; // File offset for updating ENDT value at end
+    int suppress_xhdr;           // If 1, don't write Extended Header
+
     // Multithreading
     int num_threads;             // 0 = single-threaded, 1+ = num worker threads
     gop_job_t *gop_jobs;         // Array of GOP job slots [num_threads]
@@ -184,6 +191,83 @@ static void generate_random_filename(char *filename) {
     filename[37] = '\0';
 }
 
+/**
+ * Execute command and capture its output.
+ * Returns dynamically allocated string that caller must free(), or NULL on error.
+ */
+static char* execute_command(const char* command) {
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return NULL;
+
+    size_t buffer_size = 4096;
+    char* buffer = malloc(buffer_size);
+    if (!buffer) {
+        pclose(pipe);
+        return NULL;
+    }
+
+    size_t total_size = 0;
+    size_t bytes_read;
+
+    while ((bytes_read = fread(buffer + total_size, 1, buffer_size - total_size - 1, pipe)) > 0) {
+        total_size += bytes_read;
+        if (total_size + 1 >= buffer_size) {
+            buffer_size *= 2;
+            char* new_buffer = realloc(buffer, buffer_size);
+            if (!new_buffer) {
+                free(buffer);
+                pclose(pipe);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+    }
+
+    buffer[total_size] = '\0';
+    pclose(pipe);
+    return buffer;
+}
+
+/**
+ * Get FFmpeg version string (first line of "ffmpeg -version").
+ * Returns dynamically allocated string that caller must free(), or NULL on error.
+ */
+static char* get_ffmpeg_version(void) {
+    char *output = execute_command("ffmpeg -version 2>&1 | head -1");
+    if (!output) return NULL;
+
+    // Trim trailing newline/carriage return
+    size_t len = strlen(output);
+    while (len > 0 && (output[len-1] == '\n' || output[len-1] == '\r')) {
+        output[len-1] = '\0';
+        len--;
+    }
+
+    return output;  // Caller must free
+}
+
+/**
+ * Get number of available CPU cores.
+ * Returns the number of online processors, or 1 on error.
+ */
+static int get_available_cpus(void) {
+#ifdef _SC_NPROCESSORS_ONLN
+    long nproc = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nproc > 0) {
+        return (int)nproc;
+    }
+#endif
+    return 1;  // Fallback to single core
+}
+
+/**
+ * Get default thread count: min(8, available_cpus)
+ */
+static int get_default_thread_count(void) {
+    int available = get_available_cpus();
+    return available < 8 ? available : 8;
+}
+
 static void print_usage(const char *program) {
     printf("TAV Encoder - TSVM Advanced Video Codec (Reference Implementation)\n");
     printf("\nUsage: %s -i input.mp4 -o output.tav [options]\n\n", program);
@@ -194,13 +278,10 @@ static void print_usage(const char *program) {
     printf("  -s, --size WxH           Frame size (auto-detected if omitted)\n");
     printf("  -f, --fps NUM/DEN        Framerate (e.g., 60/1, 30000/1001)\n");
     printf("  -q, --quality N          Quality level 0-5 (default: 3)\n");
-    printf("  --quality-y N            Luma quality 0-5 (overrides -q)\n");
-    printf("  --quality-co N           Orange chroma quality 0-5 (overrides -q)\n");
-    printf("  --quality-cg N           Green chroma quality 0-5 (overrides -q)\n");
     printf("  -Q, --quantiser Y,Co,Cg  Custom quantisers (advanced)\n");
     printf("  -w, --wavelet N          Spatial wavelet: 0=5/3, 1=9/7 (default), 2=13/7, 16=DD-4, 255=Haar\n");
     printf("  --temporal-wavelet N     Temporal wavelet: 0=Haar (default), 1=CDF 5/3\n");
-    printf("  -c, --channel-layout N   Color space: 0=YCoCg-R (default), 1=ICtCp\n");
+    printf("  -c, --colour-space N     Colour space: 0=YCoCg-R (default), 1=ICtCp\n");
     printf("  --decomp-levels N        Spatial DWT levels (0=auto, default: 6)\n");
     printf("  --temporal-levels N      Temporal DWT levels (0=auto, default: 2)\n");
     printf("\nGOP Options:\n");
@@ -209,7 +290,8 @@ static void print_usage(const char *program) {
     printf("  --gop-size N             GOP size 8/16/24 (default: 24)\n");
     printf("  --single-pass            Disable scene change detection\n");
     printf("\nPerformance:\n");
-    printf("  -t, --threads N          Parallel encoding threads (0=single-threaded, default: 0)\n");
+    printf("  -t, --threads N          Parallel encoding threads (default: min(8, available CPUs))\n");
+    printf("                           0 or 1 = single-threaded, 2-16 = multithreaded\n");
     printf("                           Each thread encodes one GOP independently\n");
 //    printf("\nTiling:\n");
 //    printf("  --monoblock              Force single-tile mode (auto-disabled for > %dx%d)\n",
@@ -235,6 +317,7 @@ static void print_usage(const char *program) {
     printf("  --subtitle FILE          Add subtitle track (.srt)\n");
     printf("  --fontrom-low FILE       Font ROM for low ASCII (.chr)\n");
     printf("  --fontrom-high FILE      Font ROM for high ASCII (.chr)\n");
+    printf("  --suppress-xhdr          Suppress Extended Header packet (enabled by default)\n");
     printf("  -v, --verbose            Verbose output\n");
     printf("  --help                   Show this help\n");
     printf("\nExamples:\n");
@@ -244,8 +327,8 @@ static void print_usage(const char *program) {
     printf("  %s -i video.mp4 -o out.tav -q 5 -w 0\n\n", program);
     printf("  # Sports mode with larger GOP\n");
     printf("  %s -i video.mp4 -o out.tav --preset-sports --gop-size 24\n\n", program);
-    printf("  # Advanced: separate quality per channel\n");
-    printf("  %s -i video.mp4 -o out.tav --quality-y 5 --quality-co 4 --quality-cg 3\n\n", program);
+    printf("  # Advanced: separate quantiser per channel\n");
+    printf("  %s -i video.mp4 -o out.tav -Q 3,5,6\n\n", program);
     printf("  # Multithreaded encoding with 4 threads\n");
     printf("  %s -i video.mp4 -o out.tav -t 4 -q 3\n", program);
 }
@@ -403,9 +486,9 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
     fputc((uint8_t)params->decomp_levels, fp);
 
     // Quantisers (3 bytes: Y, Co, Cg)
-    fputc((uint8_t)params->quality_y, fp);
-    fputc((uint8_t)params->quality_co, fp);
-    fputc((uint8_t)params->quality_cg, fp);
+    fputc((uint8_t)params->quantiser_y, fp);
+    fputc((uint8_t)params->quantiser_co, fp);
+    fputc((uint8_t)params->quantiser_cg, fp);
 
     // Extra flags (uint8_t, 1 byte)
     uint8_t extra_flags = 0;
@@ -438,6 +521,90 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
 
     // File role (uint8_t, 1 byte)
     fputc(0, fp);
+
+    return 0;
+}
+
+/**
+ * Write Extended Header packet (0xEF) with metadata.
+ * Returns the file offset of the ENDT value for later update, or -1 on error.
+ */
+static long write_extended_header(cli_context_t *cli) {
+    FILE *fp = cli->output_fp;
+
+    // Write packet type (0xEF)
+    uint8_t packet_type = TAV_PACKET_EXTENDED_HDR;
+    if (fwrite(&packet_type, 1, 1, fp) != 1) return -1;
+
+    // Count key-value pairs: BGNT, ENDT, CDAT, VNDR, and optionally FMPG
+    uint16_t num_pairs = cli->ffmpeg_version ? 5 : 4;
+    if (fwrite(&num_pairs, sizeof(uint16_t), 1, fp) != 1) return -1;
+
+    // Helper macros for writing key-value pairs
+    #define WRITE_KV_UINT64(key_str, value) do { \
+        if (fwrite(key_str, 1, 4, fp) != 4) return -1; \
+        uint8_t value_type = 0x04; /* Uint64 */ \
+        if (fwrite(&value_type, 1, 1, fp) != 1) return -1; \
+        uint64_t val = (value); \
+        if (fwrite(&val, sizeof(uint64_t), 1, fp) != 1) return -1; \
+    } while(0)
+
+    #define WRITE_KV_BYTES(key_str, data, len) do { \
+        if (fwrite(key_str, 1, 4, fp) != 4) return -1; \
+        uint8_t value_type = 0x10; /* Bytes */ \
+        if (fwrite(&value_type, 1, 1, fp) != 1) return -1; \
+        uint16_t length = (len); \
+        if (fwrite(&length, sizeof(uint16_t), 1, fp) != 1) return -1; \
+        if (fwrite((data), 1, (len), fp) != (len)) return -1; \
+    } while(0)
+
+    // BGNT: Video begin time (0 nanoseconds for frame 0)
+    WRITE_KV_UINT64("BGNT", 0ULL);
+
+    // ENDT: Video end time (placeholder, will be updated at end)
+    // Save the file offset of the ENDT value (after key + type byte)
+    long endt_offset = ftell(fp) + 4 + 1;  // 4 bytes for "ENDT", 1 byte for type
+    WRITE_KV_UINT64("ENDT", 0ULL);
+
+    // CDAT: Creation time in microseconds since UNIX Epoch (UTC)
+    WRITE_KV_UINT64("CDAT", cli->creation_time_us);
+
+    // VNDR: Encoder name and version
+    const char *vendor_str = "Encoder-TAV 20251208 (reference)";
+    WRITE_KV_BYTES("VNDR", vendor_str, strlen(vendor_str));
+
+    // FMPG: FFmpeg version (if available)
+    if (cli->ffmpeg_version) {
+        WRITE_KV_BYTES("FMPG", cli->ffmpeg_version, strlen(cli->ffmpeg_version));
+    }
+
+    #undef WRITE_KV_UINT64
+    #undef WRITE_KV_BYTES
+
+    return endt_offset;
+}
+
+/**
+ * Update ENDT value in Extended Header.
+ * Seeks to the stored offset and updates the uint64_t ENDT value.
+ */
+static int update_extended_header_endt(FILE *fp, long endt_offset, uint64_t end_time_ns) {
+    if (endt_offset < 0) return -1;  // Extended Header not written
+
+    long current_pos = ftell(fp);
+    if (current_pos < 0) return -1;
+
+    // Seek to ENDT value offset
+    if (fseek(fp, endt_offset, SEEK_SET) != 0) return -1;
+
+    // Write ENDT value
+    if (fwrite(&end_time_ns, sizeof(uint64_t), 1, fp) != 1) {
+        fseek(fp, current_pos, SEEK_SET);
+        return -1;
+    }
+
+    // Restore file position
+    if (fseek(fp, current_pos, SEEK_SET) != 0) return -1;
 
     return 0;
 }
@@ -1281,6 +1448,14 @@ static int encode_video_mt(cli_context_t *cli) {
     // Write TAV header
     write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL);
 
+    // Write Extended Header (unless suppressed)
+    if (!cli->suppress_xhdr) {
+        cli->extended_header_offset = write_extended_header(cli);
+        if (cli->extended_header_offset < 0) {
+            fprintf(stderr, "Warning: Failed to write Extended Header\n");
+        }
+    }
+
     // Write subtitles upfront
     if (cli->subtitles) {
         printf("Writing subtitles...\n");
@@ -1564,6 +1739,13 @@ static int encode_video_mt(cli_context_t *cli) {
     // Update total frames in header
     update_total_frames(cli->output_fp, (uint32_t)cli->frame_count);
 
+    // Update ENDT in Extended Header
+    if (!cli->suppress_xhdr && cli->extended_header_offset >= 0) {
+        // Calculate end time in nanoseconds
+        uint64_t end_time_ns = (uint64_t)cli->frame_count * 1000000000ULL * cli->enc_params.fps_den / cli->enc_params.fps_num;
+        update_extended_header_endt(cli->output_fp, cli->extended_header_offset, end_time_ns);
+    }
+
     // Free per-job frame buffers (must be done before shutdown_threading)
     for (int slot = 0; slot < cli->num_threads; slot++) {
         if (cli->gop_jobs[slot].rgb_frames) {
@@ -1720,6 +1902,14 @@ static int encode_video(cli_context_t *cli) {
 
     // Write TAV header (with actual encoder params)
     write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL);
+
+    // Write Extended Header (unless suppressed)
+    if (!cli->suppress_xhdr) {
+        cli->extended_header_offset = write_extended_header(cli);
+        if (cli->extended_header_offset < 0) {
+            fprintf(stderr, "Warning: Failed to write Extended Header\n");
+        }
+    }
 
     // Write subtitles upfront (SSF-TC format)
     if (cli->subtitles) {
@@ -1891,6 +2081,13 @@ static int encode_video(cli_context_t *cli) {
     // Update total frames in header
     update_total_frames(cli->output_fp, (uint32_t)cli->frame_count);
 
+    // Update ENDT in Extended Header
+    if (!cli->suppress_xhdr && cli->extended_header_offset >= 0) {
+        // Calculate end time in nanoseconds
+        uint64_t end_time_ns = (uint64_t)cli->frame_count * 1000000000ULL * cli->enc_params.fps_den / cli->enc_params.fps_num;
+        update_extended_header_endt(cli->output_fp, cli->extended_header_offset, end_time_ns);
+    }
+
     // Cleanup
     free(rgb_frame);
     tav_encoder_free(ctx);
@@ -1976,6 +2173,9 @@ int main(int argc, char *argv[]) {
     cli.audio_quality = -1;         // Will match video quality if not specified
     cli.use_native_audio = 0;       // TAD by default
 
+    // Initialize threading defaults: min(8, available CPUs)
+    cli.num_threads = get_default_thread_count();
+
     // Command-line options
     static struct option long_options[] = {
         {"input", required_argument, 0, 'i'},
@@ -1983,13 +2183,10 @@ int main(int argc, char *argv[]) {
         {"size", required_argument, 0, 's'},
         {"fps", required_argument, 0, 'f'},
         {"quality", required_argument, 0, 'q'},
-        {"quality-y", required_argument, 0, 1018},
-        {"quality-co", required_argument, 0, 1019},
-        {"quality-cg", required_argument, 0, 1020},
         {"quantiser", required_argument, 0, 'Q'},
         {"wavelet", required_argument, 0, 'w'},
         {"temporal-wavelet", required_argument, 0, 1021},
-        {"channel-layout", required_argument, 0, 'c'},
+        {"colour-space", required_argument, 0, 'c'},
         {"verbose", no_argument, 0, 'v'},
         {"intra-only", no_argument, 0, 1001},
         {"temporal-dwt", no_argument, 0, 1002},
@@ -2014,6 +2211,7 @@ int main(int argc, char *argv[]) {
         {"preset-anime", no_argument, 0, 1027},
         {"monoblock", no_argument, 0, 1028},
         {"tiled", no_argument, 0, 1029},
+        {"suppress-xhdr", no_argument, 0, 1030},
         {"threads", required_argument, 0, 't'},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
@@ -2056,9 +2254,9 @@ int main(int argc, char *argv[]) {
                 }
                 // Convert quality level to quantiser indices
                 cli.enc_params.quality_level = q;
-                cli.enc_params.quality_y = QUALITY_Y[q];
-                cli.enc_params.quality_co = QUALITY_CO[q];
-                cli.enc_params.quality_cg = QUALITY_CG[q];
+                cli.enc_params.quantiser_y = QUALITY_Y[q];
+                cli.enc_params.quantiser_co = QUALITY_CO[q];
+                cli.enc_params.quantiser_cg = QUALITY_CG[q];
                 cli.enc_params.dead_zone_threshold = DEAD_ZONE_THRESHOLD[q];
                 break;
             }
@@ -2068,9 +2266,9 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Invalid quantiser format. Use Y,Co,Cg\n");
                     return 1;
                 }
-                cli.enc_params.quality_y = y;
-                cli.enc_params.quality_co = co;
-                cli.enc_params.quality_cg = cg;
+                cli.enc_params.quantiser_y = y;
+                cli.enc_params.quantiser_co = co;
+                cli.enc_params.quantiser_cg = cg;
                 break;
             }
             case 'w':
@@ -2135,15 +2333,6 @@ int main(int argc, char *argv[]) {
             case 1017:  // --no-audio
                 cli.has_audio = 0;
                 break;
-            case 1018:  // --quality-y
-                cli.enc_params.quality_y = atoi(optarg);
-                break;
-            case 1019:  // --quality-co
-                cli.enc_params.quality_co = atoi(optarg);
-                break;
-            case 1020:  // --quality-cg
-                cli.enc_params.quality_cg = atoi(optarg);
-                break;
             case 1021:  // --temporal-wavelet
                 cli.enc_params.temporal_wavelet = atoi(optarg);
                 break;
@@ -2168,13 +2357,17 @@ int main(int argc, char *argv[]) {
             case 1029:  // --tiled
                 cli.enc_params.monoblock = 0;
                 break;
+            case 1030:  // --suppress-xhdr
+                cli.suppress_xhdr = 1;
+                break;
             case 't': {  // --threads
                 int threads = atoi(optarg);
                 if (threads < 0 || threads > MAX_THREADS) {
-                    fprintf(stderr, "Error: Thread count must be 0-%d (0=single-threaded)\n", MAX_THREADS);
+                    fprintf(stderr, "Error: Thread count must be 0-%d\n", MAX_THREADS);
                     return 1;
                 }
-                cli.num_threads = threads;
+                // Both 0 and 1 mean single-threaded (use value 0 internally)
+                cli.num_threads = (threads <= 1) ? 0 : threads;
                 break;
             }
             case '?':
@@ -2220,7 +2413,7 @@ int main(int argc, char *argv[]) {
 
     // Set audio quality to match video quality if not specified
     if (cli.audio_quality < 0) {
-        cli.audio_quality = cli.enc_params.quality_y;  // Match luma quality
+        cli.audio_quality = cli.enc_params.quality_level;  // Match luma quality
     }
 
     // Extract audio if enabled
@@ -2273,6 +2466,16 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Initialize Extended Header metadata
+    cli.ffmpeg_version = get_ffmpeg_version();  // May return NULL if FFmpeg not found
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+        cli.creation_time_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+    } else {
+        // Fallback to time() if clock_gettime fails
+        cli.creation_time_us = (uint64_t)time(NULL) * 1000000ULL;
+    }
+
     // Open output file
     cli.output_fp = fopen(cli.output_file, "wb");
     if (!cli.output_fp) {
@@ -2303,6 +2506,9 @@ int main(int argc, char *argv[]) {
     }
     if (cli.fontrom_high) {
         free(cli.fontrom_high);
+    }
+    if (cli.ffmpeg_version) {
+        free(cli.ffmpeg_version);
     }
 
     if (result < 0) {
