@@ -24,6 +24,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <pthread.h>
+#include <limits.h>
 
 #include "tav_video_decoder.h"
 #include "decoder_tad.h"
@@ -53,6 +55,31 @@
 #define TAV_PACKET_SYNC_NTSC       0xFE
 #define TAV_PACKET_SYNC            0xFF
 
+// Threading constants
+#define MAX_DECODE_THREADS 16
+#define DECODE_SLOT_PENDING     0
+#define DECODE_SLOT_PROCESSING  1
+#define DECODE_SLOT_DONE        2
+
+// =============================================================================
+// GOP Decode Job Structure (for multithreading)
+// =============================================================================
+
+typedef struct {
+    int job_id;
+    volatile int status;  // DECODE_SLOT_*
+
+    // Input (compressed data read from file)
+    uint8_t *compressed_data;
+    uint32_t compressed_size;
+    int gop_size;
+
+    // Output (decoded frames)
+    uint8_t **frames;
+    int frames_allocated;
+    int decode_result;
+
+} gop_decode_job_t;
 
 // =============================================================================
 // TAV Header Structure (32 bytes)
@@ -121,6 +148,21 @@ typedef struct {
     int output_raw;         // Output raw video instead of FFV1
     int no_audio;           // Skip audio decoding
     int dump_packets;       // Debug: dump packet info
+
+    // Threading support
+    int num_threads;
+    int num_slots;
+    gop_decode_job_t *slots;
+    tav_video_context_t **worker_video_ctx;  // Per-thread decoder contexts
+    pthread_t *worker_threads;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond_job_available;
+    pthread_cond_t cond_slot_free;
+    volatile int threads_should_exit;
+    volatile int next_write_slot;      // Next slot to write to FFmpeg
+    volatile int next_read_slot;       // Next slot for reading from file
+    volatile int jobs_submitted;
+    volatile int jobs_completed;
 
 } decoder_context_t;
 
@@ -292,6 +334,231 @@ static int spawn_ffmpeg(decoder_context_t *ctx) {
     }
 
     return 0;
+}
+
+// =============================================================================
+// Multithreading Support
+// =============================================================================
+
+// Worker thread function - decodes GOPs in parallel
+static void *decoder_worker_thread(void *arg) {
+    decoder_context_t *ctx = (decoder_context_t *)arg;
+
+    // Get thread index by finding our thread ID in the array
+    int thread_idx = -1;
+    pthread_t self = pthread_self();
+    for (int i = 0; i < ctx->num_threads; i++) {
+        if (pthread_equal(ctx->worker_threads[i], self)) {
+            thread_idx = i;
+            break;
+        }
+    }
+    if (thread_idx < 0) thread_idx = 0;  // Fallback
+
+    tav_video_context_t *my_video_ctx = ctx->worker_video_ctx[thread_idx];
+
+    while (1) {
+        pthread_mutex_lock(&ctx->mutex);
+
+        // Find a pending slot to work on
+        int slot_idx = -1;
+        while (slot_idx < 0 && !ctx->threads_should_exit) {
+            for (int i = 0; i < ctx->num_slots; i++) {
+                if (ctx->slots[i].status == DECODE_SLOT_PENDING &&
+                    ctx->slots[i].compressed_data != NULL) {
+                    slot_idx = i;
+                    ctx->slots[i].status = DECODE_SLOT_PROCESSING;
+                    break;
+                }
+            }
+            if (slot_idx < 0 && !ctx->threads_should_exit) {
+                pthread_cond_wait(&ctx->cond_job_available, &ctx->mutex);
+            }
+        }
+
+        if (ctx->threads_should_exit && slot_idx < 0) {
+            pthread_mutex_unlock(&ctx->mutex);
+            break;
+        }
+
+        pthread_mutex_unlock(&ctx->mutex);
+
+        if (slot_idx < 0) continue;
+
+        gop_decode_job_t *job = &ctx->slots[slot_idx];
+
+        // Decode GOP using our thread's decoder context
+        job->decode_result = tav_video_decode_gop(
+            my_video_ctx,
+            job->compressed_data,
+            job->compressed_size,
+            job->gop_size,
+            job->frames
+        );
+
+        // Free compressed data after decoding
+        free(job->compressed_data);
+        job->compressed_data = NULL;
+
+        // Mark as done
+        pthread_mutex_lock(&ctx->mutex);
+        job->status = DECODE_SLOT_DONE;
+        ctx->jobs_completed++;
+        pthread_cond_broadcast(&ctx->cond_slot_free);
+        pthread_mutex_unlock(&ctx->mutex);
+    }
+
+    return NULL;
+}
+
+static int init_decoder_threads(decoder_context_t *ctx) {
+    if (ctx->num_threads <= 0) {
+        return 0;  // Single-threaded mode
+    }
+
+    // Limit threads
+    if (ctx->num_threads > MAX_DECODE_THREADS) {
+        ctx->num_threads = MAX_DECODE_THREADS;
+    }
+
+    // Number of slots = threads + 2 for pipelining
+    ctx->num_slots = ctx->num_threads + 2;
+
+    // Allocate slots
+    ctx->slots = calloc(ctx->num_slots, sizeof(gop_decode_job_t));
+    if (!ctx->slots) {
+        fprintf(stderr, "Error: Failed to allocate decode slots\n");
+        return -1;
+    }
+
+    // Pre-allocate frame buffers for each slot (assuming max GOP size of 32)
+    size_t frame_size = ctx->header.width * ctx->header.height * 3;
+    int max_gop_size = 32;
+
+    for (int i = 0; i < ctx->num_slots; i++) {
+        ctx->slots[i].job_id = -1;
+        ctx->slots[i].status = DECODE_SLOT_DONE;  // Available
+        ctx->slots[i].frames = malloc(max_gop_size * sizeof(uint8_t*));
+        if (!ctx->slots[i].frames) {
+            fprintf(stderr, "Error: Failed to allocate frame pointers for slot %d\n", i);
+            return -1;
+        }
+        for (int j = 0; j < max_gop_size; j++) {
+            ctx->slots[i].frames[j] = malloc(frame_size);
+            if (!ctx->slots[i].frames[j]) {
+                fprintf(stderr, "Error: Failed to allocate frame buffer for slot %d frame %d\n", i, j);
+                return -1;
+            }
+        }
+        ctx->slots[i].frames_allocated = max_gop_size;
+    }
+
+    // Create per-thread video decoder contexts
+    ctx->worker_video_ctx = malloc(ctx->num_threads * sizeof(tav_video_context_t*));
+    if (!ctx->worker_video_ctx) {
+        fprintf(stderr, "Error: Failed to allocate worker video contexts\n");
+        return -1;
+    }
+
+    tav_video_params_t video_params = {
+        .width = ctx->header.width,
+        .height = ctx->header.height,
+        .decomp_levels = ctx->header.decomp_levels,
+        .temporal_levels = 2,
+        .wavelet_filter = ctx->header.wavelet_filter,
+        .temporal_wavelet = 0,
+        .entropy_coder = ctx->header.entropy_coder,
+        .channel_layout = ctx->header.channel_layout,
+        .perceptual_tuning = ctx->perceptual_mode,
+        .quantiser_y = ctx->header.quantiser_y,
+        .quantiser_co = ctx->header.quantiser_co,
+        .quantiser_cg = ctx->header.quantiser_cg,
+        .encoder_preset = ctx->header.encoder_preset,
+        .monoblock = 1
+    };
+
+    for (int i = 0; i < ctx->num_threads; i++) {
+        ctx->worker_video_ctx[i] = tav_video_create(&video_params);
+        if (!ctx->worker_video_ctx[i]) {
+            fprintf(stderr, "Error: Failed to create video context for thread %d\n", i);
+            return -1;
+        }
+    }
+
+    // Initialize synchronization primitives
+    pthread_mutex_init(&ctx->mutex, NULL);
+    pthread_cond_init(&ctx->cond_job_available, NULL);
+    pthread_cond_init(&ctx->cond_slot_free, NULL);
+    ctx->threads_should_exit = 0;
+    ctx->next_write_slot = 0;
+    ctx->next_read_slot = 0;
+    ctx->jobs_submitted = 0;
+    ctx->jobs_completed = 0;
+
+    // Create worker threads
+    ctx->worker_threads = malloc(ctx->num_threads * sizeof(pthread_t));
+    if (!ctx->worker_threads) {
+        fprintf(stderr, "Error: Failed to allocate worker threads\n");
+        return -1;
+    }
+
+    for (int i = 0; i < ctx->num_threads; i++) {
+        if (pthread_create(&ctx->worker_threads[i], NULL, decoder_worker_thread, ctx) != 0) {
+            fprintf(stderr, "Error: Failed to create worker thread %d\n", i);
+            return -1;
+        }
+    }
+
+    if (ctx->verbose) {
+        printf("Initialized %d decoder worker threads with %d slots\n",
+               ctx->num_threads, ctx->num_slots);
+    }
+
+    return 0;
+}
+
+static void cleanup_decoder_threads(decoder_context_t *ctx) {
+    if (ctx->num_threads <= 0) return;
+
+    // Signal threads to exit
+    pthread_mutex_lock(&ctx->mutex);
+    ctx->threads_should_exit = 1;
+    pthread_cond_broadcast(&ctx->cond_job_available);
+    pthread_mutex_unlock(&ctx->mutex);
+
+    // Wait for threads to finish
+    for (int i = 0; i < ctx->num_threads; i++) {
+        pthread_join(ctx->worker_threads[i], NULL);
+    }
+    free(ctx->worker_threads);
+    ctx->worker_threads = NULL;
+
+    // Free per-thread video contexts
+    for (int i = 0; i < ctx->num_threads; i++) {
+        tav_video_free(ctx->worker_video_ctx[i]);
+    }
+    free(ctx->worker_video_ctx);
+    ctx->worker_video_ctx = NULL;
+
+    // Free slots
+    for (int i = 0; i < ctx->num_slots; i++) {
+        if (ctx->slots[i].frames) {
+            for (int j = 0; j < ctx->slots[i].frames_allocated; j++) {
+                free(ctx->slots[i].frames[j]);
+            }
+            free(ctx->slots[i].frames);
+        }
+        if (ctx->slots[i].compressed_data) {
+            free(ctx->slots[i].compressed_data);
+        }
+    }
+    free(ctx->slots);
+    ctx->slots = NULL;
+
+    // Destroy sync primitives
+    pthread_mutex_destroy(&ctx->mutex);
+    pthread_cond_destroy(&ctx->cond_job_available);
+    pthread_cond_destroy(&ctx->cond_slot_free);
 }
 
 // =============================================================================
@@ -711,6 +978,301 @@ static int process_packet(decoder_context_t *ctx) {
 }
 
 // =============================================================================
+// Multithreaded Video Decoding (Pass 2)
+// =============================================================================
+
+// Read a single GOP packet without decoding - for multithreaded submission
+static int read_gop_packet_mt(decoder_context_t *ctx, int slot_idx) {
+    gop_decode_job_t *job = &ctx->slots[slot_idx];
+
+    // Read GOP size (1 byte)
+    uint8_t gop_size;
+    if (fread(&gop_size, 1, 1, ctx->input_fp) != 1) {
+        return -1;
+    }
+    ctx->bytes_read++;
+
+    // Read compressed size (4 bytes)
+    uint32_t compressed_size;
+    if (fread(&compressed_size, 4, 1, ctx->input_fp) != 1) {
+        return -1;
+    }
+    ctx->bytes_read += 4;
+
+    // Read compressed data
+    uint8_t *compressed_data = malloc(compressed_size);
+    if (!compressed_data) {
+        fprintf(stderr, "Error: Failed to allocate compressed data buffer\n");
+        return -1;
+    }
+
+    if (fread(compressed_data, 1, compressed_size, ctx->input_fp) != compressed_size) {
+        free(compressed_data);
+        return -1;
+    }
+    ctx->bytes_read += compressed_size;
+
+    // Fill job
+    job->compressed_data = compressed_data;
+    job->compressed_size = compressed_size;
+    job->gop_size = gop_size;
+    job->decode_result = 0;
+
+    return gop_size;
+}
+
+// Multithreaded pass 2 decoding loop
+static int decode_video_pass2_mt(decoder_context_t *ctx) {
+    size_t frame_size = ctx->header.width * ctx->header.height * 3;
+    int done = 0;
+    int job_counter = 0;
+
+    while (!done) {
+        // Try to submit new jobs to any free slots
+        pthread_mutex_lock(&ctx->mutex);
+
+        // Find a free slot
+        int free_slot = -1;
+        for (int i = 0; i < ctx->num_slots; i++) {
+            if (ctx->slots[i].status == DECODE_SLOT_DONE &&
+                ctx->slots[i].compressed_data == NULL) {
+                free_slot = i;
+                break;
+            }
+        }
+
+        pthread_mutex_unlock(&ctx->mutex);
+
+        if (free_slot >= 0) {
+            // Read next packet
+            uint8_t packet_type;
+            if (fread(&packet_type, 1, 1, ctx->input_fp) != 1) {
+                // EOF
+                done = 1;
+            } else {
+                ctx->bytes_read++;
+
+                if (packet_type == TAV_PACKET_GOP_UNIFIED) {
+                    // Read GOP and submit to slot
+                    int gop_size = read_gop_packet_mt(ctx, free_slot);
+                    if (gop_size > 0) {
+                        pthread_mutex_lock(&ctx->mutex);
+                        ctx->slots[free_slot].job_id = job_counter++;
+                        ctx->slots[free_slot].status = DECODE_SLOT_PENDING;
+                        ctx->jobs_submitted++;
+                        pthread_cond_broadcast(&ctx->cond_job_available);
+                        pthread_mutex_unlock(&ctx->mutex);
+                    } else {
+                        done = 1;
+                    }
+                } else if (packet_type == TAV_PACKET_IFRAME) {
+                    // For I-frames, decode synchronously (they're rare)
+                    process_iframe_packet(ctx);
+                } else {
+                    // Skip other packets (audio already extracted in Pass 1)
+                    switch (packet_type) {
+                        case TAV_PACKET_AUDIO_TAD: {
+                            // TAD format: [sample_count(2)][payload_size+7(4)][data...]
+                            uint16_t sample_count;
+                            uint32_t payload_size;
+                            if (fread(&sample_count, 2, 1, ctx->input_fp) != 1) { done = 1; break; }
+                            if (fread(&payload_size, 4, 1, ctx->input_fp) != 1) { done = 1; break; }
+                            ctx->bytes_read += 6;
+                            fseek(ctx->input_fp, payload_size, SEEK_CUR);
+                            ctx->bytes_read += payload_size;
+                            break;
+                        }
+                        case TAV_PACKET_AUDIO_PCM8:
+                        case TAV_PACKET_AUDIO_MP2:
+                        case TAV_PACKET_AUDIO_TRACK:
+                        case TAV_PACKET_SUBTITLE:
+                        case TAV_PACKET_SUBTITLE_TC:
+                        case TAV_PACKET_PFRAME: {
+                            uint32_t size;
+                            if (fread(&size, 4, 1, ctx->input_fp) != 1) { done = 1; break; }
+                            ctx->bytes_read += 4;
+                            fseek(ctx->input_fp, size, SEEK_CUR);
+                            ctx->bytes_read += size;
+                            break;
+                        }
+                        case TAV_PACKET_SCREEN_MASK:
+                            fseek(ctx->input_fp, 4, SEEK_CUR);
+                            ctx->bytes_read += 4;
+                            break;
+                        case TAV_PACKET_GOP_SYNC:
+                            fseek(ctx->input_fp, 1, SEEK_CUR);
+                            ctx->bytes_read += 1;
+                            break;
+                        case TAV_PACKET_TIMECODE:
+                            fseek(ctx->input_fp, 8, SEEK_CUR);
+                            ctx->bytes_read += 8;
+                            break;
+                        case TAV_PACKET_EXTENDED_HDR: {
+                            // Skip extended header
+                            uint16_t num_pairs;
+                            if (fread(&num_pairs, 2, 1, ctx->input_fp) != 1) { done = 1; break; }
+                            ctx->bytes_read += 2;
+                            for (int i = 0; i < num_pairs; i++) {
+                                uint8_t kv_header[5];
+                                if (fread(kv_header, 1, 5, ctx->input_fp) != 5) break;
+                                ctx->bytes_read += 5;
+                                uint8_t value_type = kv_header[4];
+                                if (value_type == 0x04) {
+                                    fseek(ctx->input_fp, 8, SEEK_CUR);
+                                    ctx->bytes_read += 8;
+                                } else if (value_type == 0x10) {
+                                    uint16_t length;
+                                    if (fread(&length, 2, 1, ctx->input_fp) != 1) break;
+                                    ctx->bytes_read += 2;
+                                    fseek(ctx->input_fp, length, SEEK_CUR);
+                                    ctx->bytes_read += length;
+                                } else if (value_type <= 0x04) {
+                                    int sizes[] = {2, 3, 4, 6, 8};
+                                    fseek(ctx->input_fp, sizes[value_type], SEEK_CUR);
+                                    ctx->bytes_read += sizes[value_type];
+                                }
+                            }
+                            break;
+                        }
+                        case TAV_PACKET_SYNC_NTSC:
+                        case TAV_PACKET_SYNC:
+                            // No payload
+                            break;
+                        default:
+                            // Unknown packet, try to skip
+                            {
+                                uint32_t size;
+                                if (fread(&size, 4, 1, ctx->input_fp) == 1 && size < 1000000) {
+                                    fseek(ctx->input_fp, size, SEEK_CUR);
+                                    ctx->bytes_read += 4 + size;
+                                }
+                            }
+                            break;
+                    }
+                }
+            }
+        }
+
+        // Write completed jobs in order
+        pthread_mutex_lock(&ctx->mutex);
+        while (1) {
+            // Find the next job to write (by job_id order)
+            int write_slot = -1;
+            int min_job_id = INT32_MAX;
+            for (int i = 0; i < ctx->num_slots; i++) {
+                if (ctx->slots[i].status == DECODE_SLOT_DONE &&
+                    ctx->slots[i].job_id >= 0 &&
+                    ctx->slots[i].job_id < min_job_id) {
+                    // Check if this is the next expected job
+                    if (ctx->slots[i].job_id == ctx->next_write_slot) {
+                        write_slot = i;
+                        break;
+                    }
+                    min_job_id = ctx->slots[i].job_id;
+                }
+            }
+
+            if (write_slot < 0) {
+                // No jobs ready in order, wait if there are pending jobs
+                if (!done && ctx->jobs_submitted > ctx->next_write_slot) {
+                    // Wait for job to complete
+                    pthread_cond_wait(&ctx->cond_slot_free, &ctx->mutex);
+                    continue;
+                }
+                break;
+            }
+
+            pthread_mutex_unlock(&ctx->mutex);
+
+            // Write frames to FFmpeg
+            gop_decode_job_t *job = &ctx->slots[write_slot];
+            if (job->decode_result >= 0) {
+                for (int i = 0; i < job->gop_size; i++) {
+                    if (ctx->video_pipe) {
+                        fwrite(job->frames[i], 1, frame_size, ctx->video_pipe);
+                    }
+                    ctx->frames_decoded++;
+
+                    if (ctx->decode_limit > 0 && ctx->frames_decoded >= (uint64_t)ctx->decode_limit) {
+                        done = 1;
+                        break;
+                    }
+                }
+                ctx->gops_decoded++;
+            }
+
+            // Mark slot as free
+            pthread_mutex_lock(&ctx->mutex);
+            job->job_id = -1;
+            ctx->next_write_slot++;
+            pthread_mutex_unlock(&ctx->mutex);
+
+            // Progress
+            time_t elapsed = time(NULL) - ctx->start_time;
+            double fps = elapsed > 0 ? (double)ctx->frames_decoded / elapsed : 0.0;
+            printf("\rFrames: %lu | GOPs: %lu | %.1f fps",
+                   ctx->frames_decoded, ctx->gops_decoded, fps);
+            fflush(stdout);
+
+            pthread_mutex_lock(&ctx->mutex);
+        }
+        pthread_mutex_unlock(&ctx->mutex);
+
+        // Check decode limit
+        if (ctx->decode_limit > 0 && ctx->frames_decoded >= (uint64_t)ctx->decode_limit) {
+            done = 1;
+        }
+    }
+
+    // Wait for remaining jobs to complete
+    pthread_mutex_lock(&ctx->mutex);
+    while (ctx->jobs_completed < ctx->jobs_submitted) {
+        pthread_cond_wait(&ctx->cond_slot_free, &ctx->mutex);
+    }
+
+    // Write any remaining completed jobs
+    while (1) {
+        int write_slot = -1;
+        for (int i = 0; i < ctx->num_slots; i++) {
+            if (ctx->slots[i].status == DECODE_SLOT_DONE &&
+                ctx->slots[i].job_id == ctx->next_write_slot) {
+                write_slot = i;
+                break;
+            }
+        }
+
+        if (write_slot < 0) break;
+
+        pthread_mutex_unlock(&ctx->mutex);
+
+        gop_decode_job_t *job = &ctx->slots[write_slot];
+        if (job->decode_result >= 0) {
+            for (int i = 0; i < job->gop_size; i++) {
+                if (ctx->video_pipe) {
+                    fwrite(job->frames[i], 1, frame_size, ctx->video_pipe);
+                }
+                ctx->frames_decoded++;
+            }
+            ctx->gops_decoded++;
+        }
+
+        pthread_mutex_lock(&ctx->mutex);
+        job->job_id = -1;
+        ctx->next_write_slot++;
+
+        time_t elapsed = time(NULL) - ctx->start_time;
+        double fps = elapsed > 0 ? (double)ctx->frames_decoded / elapsed : 0.0;
+        printf("\rFrames: %lu | GOPs: %lu | %.1f fps",
+               ctx->frames_decoded, ctx->gops_decoded, fps);
+        fflush(stdout);
+    }
+    pthread_mutex_unlock(&ctx->mutex);
+
+    printf("\n");
+    return 0;
+}
+
+// =============================================================================
 // Main Decoding Loop
 // =============================================================================
 
@@ -755,27 +1317,44 @@ static int decode_video(decoder_context_t *ctx) {
         return -1;
     }
 
-    // Pass 2: Video decoding
-    uint64_t last_reported = 0;
-    while (process_packet(ctx) == 0) {
-        // Progress reporting - show when frames were decoded
-        if (ctx->frames_decoded != last_reported) {
-            time_t elapsed = time(NULL) - ctx->start_time;
-            double fps = elapsed > 0 ? (double)ctx->frames_decoded / elapsed : 0.0;
-            printf("\rFrames: %lu | GOPs: %lu | %.1f fps",
-                   ctx->frames_decoded, ctx->gops_decoded, fps);
-            fflush(stdout);
-            last_reported = ctx->frames_decoded;
+    // Initialize decoder threads if multithreaded mode
+    if (ctx->num_threads > 0) {
+        if (init_decoder_threads(ctx) < 0) {
+            fprintf(stderr, "Error: Failed to initialize decoder threads\n");
+            return -1;
         }
-
-        // Check decode limit
-        if (ctx->decode_limit > 0 && ctx->frames_decoded >= (uint64_t)ctx->decode_limit) {
-            break;
-        }
+        printf("  Using %d decoder threads\n", ctx->num_threads);
     }
 
-    printf("\n");
-    return 0;
+    // Pass 2: Video decoding
+    if (ctx->num_threads > 0) {
+        // Multithreaded decode
+        int result = decode_video_pass2_mt(ctx);
+        cleanup_decoder_threads(ctx);
+        return result;
+    } else {
+        // Single-threaded decode
+        uint64_t last_reported = 0;
+        while (process_packet(ctx) == 0) {
+            // Progress reporting - show when frames were decoded
+            if (ctx->frames_decoded != last_reported) {
+                time_t elapsed = time(NULL) - ctx->start_time;
+                double fps = elapsed > 0 ? (double)ctx->frames_decoded / elapsed : 0.0;
+                printf("\rFrames: %lu | GOPs: %lu | %.1f fps",
+                       ctx->frames_decoded, ctx->gops_decoded, fps);
+                fflush(stdout);
+                last_reported = ctx->frames_decoded;
+            }
+
+            // Check decode limit
+            if (ctx->decode_limit > 0 && ctx->frames_decoded >= (uint64_t)ctx->decode_limit) {
+                break;
+            }
+        }
+
+        printf("\n");
+        return 0;
+    }
 }
 
 // =============================================================================
@@ -816,6 +1395,7 @@ static void print_usage(const char *program) {
     printf("  --no-audio               Skip audio decoding\n");
     printf("  --decode-limit N         Decode only first N frames\n");
     printf("  --dump-packets           Debug: print packet info\n");
+    printf("  -t, --threads N          Number of decoder threads (0=single-threaded, default)\n");
     printf("  -v, --verbose            Verbose output\n");
     printf("  --help                   Show this help\n");
     printf("\nExamples:\n");
@@ -835,6 +1415,7 @@ int main(int argc, char *argv[]) {
         {"input",        required_argument, 0, 'i'},
         {"output",       required_argument, 0, 'o'},
         {"verbose",      no_argument,       0, 'v'},
+        {"threads",      required_argument, 0, 't'},
         {"raw",          no_argument,       0, 1001},
         {"no-audio",     no_argument,       0, 1002},
         {"decode-limit", required_argument, 0, 1003},
@@ -844,7 +1425,7 @@ int main(int argc, char *argv[]) {
     };
 
     int c, option_index = 0;
-    while ((c = getopt_long(argc, argv, "i:o:vh", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:t:vh", long_options, &option_index)) != -1) {
         switch (c) {
             case 'i':
                 ctx.input_file = strdup(optarg);
@@ -854,6 +1435,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'v':
                 ctx.verbose = 1;
+                break;
+            case 't':
+                ctx.num_threads = atoi(optarg);
                 break;
             case 1001:
                 ctx.output_raw = 1;

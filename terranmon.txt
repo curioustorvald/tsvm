@@ -988,9 +988,10 @@ transmission capability, and region-of-interest coding.
 The encoder supports following presets:
 - Sports: use finer temporal quantisation, resulting in better-preserved motion. Less effective as resolution goes up
 - Anime: instructs the decoder to disable grain synthensis
+
+2025-12-08 Addendum: TAV-DT should be its own encoder, not preset
 - D1/D1PAL: encode to TAV-DT (NTSC/PAL) format. Any non-compliant setup will be ignored and substituted to compliant values
 - D1P/D1PALP: encode to TAV-DT Progressive (NTSC/PAL) format. Any non-compliant setup will be ignored and substituted to compliant values
-
 
 ## Packet Structure (some special packets have no payload. See Packet Types for details)
     uint8  Packet Type
@@ -1021,6 +1022,9 @@ The encoder supports following presets:
     0x42: Zstd-compressed 16-bit PCM (32 KHz, little endian)
     0x43: Zstd-compressed ADPCM (32 KHz)
     0x44: TAD (TSVM Advanced Audio)
+    <TAV-DT specific>
+    0x50: TAV-DT audio packet with forward error correction
+    0x51: TAV-DT video packet with forward error correction
     <multiplexed video>
     0x70..7F: Reserved for Future Version
     <Standard metadata payloads>
@@ -1626,22 +1630,57 @@ start of the next packet
     - Entropy coder: EZBC
     - Encoder preset: sports preset always enabled
     - Tiles: monoblock
+    - GOP size: always 16 frames
 
 # Packet Structure
     uint32 Sync pattern (0xE3537A1F for NTSC Dimension, 0xD193A745 for PAL Dimension)
-    uint8  Framerate
-    uint8  Flags
-        - bit 0 = interlaced
-        - bit 1 = is NTSC framerate
-        - bit 4-7 = quality index (0-5)
-            * Quality indices follow TSVM encoder's
-    int16  Reserved (zero-fill)
-    uint32 Total packet size past 16-byte header, modulo 2^32
-        !! this value should NOT be used to derive the actual packet size !!
-    uint32 CRC-32 of 12-byte header
-    uint64 Timecode (0xFD packet) without header byte
-    *      TAD packet (full 0x24 packet)
-    *      TAV packet (full 0x10 or 0x12 packet)
+    <packet header start>
+        uint8  Framerate
+        uint8  Flags
+            - bit 0 = interlaced
+            - bit 1 = is NTSC framerate
+            - bit 4-7 = quality index (0-5)
+                * Quality indices follow TSVM encoder's
+        int16  Reserved (zero-fill)
+        uint32 Total packet size past 16-byte header
+        uint32 CRC-32 of 12-byte header
+    <packet header end; encoded with rate 1/2 LPDC>
+    uint64 Timecode in nanoseconds (repeated thrice; bitwise majority)
+    *      TAD with LPDC (0x50)
+        uint8  Packet type (0x50)
+        <TAD header start>
+            uint16 Sample Count
+            uint32 Compressed Size + 14
+        <TAD header end; encoded with rate 1/2 LPDC>
+        <TAD chunk header start>
+            uint16 Sample Count
+            uint8  Quantiser Bits
+            uint32 Compressed Size
+        <TAD chunk header end; encoded with rate 1/2 LPDC>
+        <LPDC header start>
+            uint8  FEC Code ID
+            uint16 FEC Block size or codebook ID
+            uint16 FEC parity length
+        <LPDC header end; encoded with rate 1/2 LPDC>
+        <Reed-Solomon block start>
+            *      Zstd-compressed TAD
+            *      Parity for Zstd-compressed TAD
+        <Reed-Solomon block end>
+    *      TAV with LPDC (0x51)
+        uint8  Packet type (0x51)
+        <TAV header start>
+            uint8  GOP Size (number of frames in this GOP)
+            uint32 Compressed Size
+        <TAV header end; encoded with rate 1/2 LPDC>
+        <LPDC header start>
+            uint8  FEC Code ID
+            uint16 FEC Block size or codebook ID
+            uint16 FEC parity length
+        <LPDC header end; encoded with rate 1/2 LPDC>
+        <Reed-Solomon block start>
+            *      Zstd-compressed Unified Block Data
+            *      Parity for Zstd-compressed Unified Block Data
+        <Reed-Solomon block end>
 
 # How to sync to the stream
     1. Find a sync pattern
@@ -1650,7 +1689,6 @@ start of the next packet
     4. Read 4 bytes (stored CRC)
     5. Check calculated CRC against stored CRC
     6. If they match, sync to the stream; if not, find a next sync pattern
-
 
 --------------------------------------------------------------------------------
 
