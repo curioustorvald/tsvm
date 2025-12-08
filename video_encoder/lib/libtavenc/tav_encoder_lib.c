@@ -392,26 +392,26 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         // Auto mode: use monoblock for <= D1 PAL, tiled for larger
         if (ctx->width > TAV_MONOBLOCK_MAX_WIDTH || ctx->height > TAV_MONOBLOCK_MAX_HEIGHT) {
             ctx->monoblock = 0;
-//            if (ctx->verbose) {
+            if (ctx->verbose) {
                 printf("Auto-selected Padded Tiling mode: %dx%d exceeds D1 PAL threshold (%dx%d)\n",
                        ctx->width, ctx->height, TAV_MONOBLOCK_MAX_WIDTH, TAV_MONOBLOCK_MAX_HEIGHT);
-//            }
+            }
         } else {
             ctx->monoblock = 1;
-//            if (ctx->verbose) {
+            if (ctx->verbose) {
                 printf("Auto-selected Monoblock mode: %dx%d within D1 PAL threshold\n",
                        ctx->width, ctx->height);
-//            }
+            }
         }
     } else if (ctx->monoblock == 0) {
-//        if (ctx->verbose) {
+        if (ctx->verbose) {
             printf("Forced Padded Tiling mode (--tiled)\n");
-//        }
+        }
     } else {
         // monoblock == 1: force monoblock even for large dimensions
-//        if (ctx->verbose) {
+        if (ctx->verbose) {
             printf("Forced Monoblock mode (--monoblock)\n");
-//        }
+        }
     }
 
     // Calculate tile dimensions based on monoblock setting
@@ -423,10 +423,10 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         // Padded Tiling mode: multiple tiles of TILE_SIZE_X × TILE_SIZE_Y
         ctx->tiles_x = (ctx->width + TAV_TILE_SIZE_X - 1) / TAV_TILE_SIZE_X;
         ctx->tiles_y = (ctx->height + TAV_TILE_SIZE_Y - 1) / TAV_TILE_SIZE_Y;
-//        if (ctx->verbose) {
+        if (ctx->verbose) {
             printf("Padded Tiling mode: %dx%d tiles (%d total)\n",
                    ctx->tiles_x, ctx->tiles_y, ctx->tiles_x * ctx->tiles_y);
-//        }
+        }
     }
 
     // Calculate decomp levels if auto (0)
