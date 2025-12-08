@@ -1575,9 +1575,9 @@ int tav_video_decode_gop(tav_video_context_t *ctx,
             }
         }
 
-        // Apply grain synthesis to Y channel ONLY (using ORIGINAL dimensions - grain must match encoder's frame size)
+        // Apply grain synthesis to Y channel ONLY (use final dimensions to match allocated buffer)
         // Note: Grain synthesis is NOT applied to chroma channels
-        apply_grain_synthesis(gop_y[t], width, height, ctx->params.decomp_levels, t,
+        apply_grain_synthesis(gop_y[t], final_width, final_height, ctx->params.decomp_levels, t,
                             QLUT[ctx->params.quantiser_y], ctx->params.encoder_preset);
     }
 

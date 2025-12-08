@@ -145,9 +145,9 @@ test_mpeg_motion: test_mpeg_motion.cpp
 tests: $(TEST_TARGETS)
 
 # Build with debug symbols
-debug: CFLAGS += -g -DDEBUG -fsanitize=address
-debug: DBGFLAGS += -fsanitize=address
-debug: tav_new #$(TARGETS)
+debug: CFLAGS += -g -DDEBUG -fsanitize=address -fno-omit-frame-pointer
+debug: DBGFLAGS += -fsanitize=address -fno-omit-frame-pointer
+debug: $(TARGETS)
 
 # Clean build artifacts
 clean:

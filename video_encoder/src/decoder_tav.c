@@ -121,6 +121,8 @@ typedef struct {
     // TAV header info
     tav_header_t header;
     int perceptual_mode;
+    int interlaced;        // 1 if video is interlaced (from video_flags bit 0)
+    int decode_height;     // Actual decode height (half of header.height when interlaced)
 
     // Video decoder context
     tav_video_context_t *video_ctx;
@@ -214,10 +216,24 @@ static int read_tav_header(decoder_context_t *ctx) {
     int base_version = ctx->header.version & 0x07;  // Remove temporal wavelet flag
     ctx->perceptual_mode = (base_version == 5 || base_version == 6);
 
+    // Detect interlaced mode from video_flags bit 0
+    ctx->interlaced = (ctx->header.video_flags & 0x01) ? 1 : 0;
+
+    // Calculate decode height: half of header height for interlaced video
+    // The header stores the full display height, but encoded frames are half-height
+    if (ctx->interlaced) {
+        ctx->decode_height = ctx->header.height / 2;
+    } else {
+        ctx->decode_height = ctx->header.height;
+    }
+
     if (ctx->verbose) {
         printf("=== TAV Header ===\n");
         printf("  Version: %d\n", ctx->header.version);
         printf("  Resolution: %dx%d\n", ctx->header.width, ctx->header.height);
+        if (ctx->interlaced) {
+            printf("  Interlaced: yes (decode height: %d)\n", ctx->decode_height);
+        }
         printf("  FPS: %d\n", ctx->header.fps);
         printf("  Total frames: %u\n", ctx->header.total_frames);
         printf("  Wavelet filter: %d\n", ctx->header.wavelet_filter);
@@ -260,63 +276,126 @@ static int spawn_ffmpeg(decoder_context_t *ctx) {
         // Child process - execute FFmpeg
         close(video_pipe_fd[1]);  // Close write end
 
+        // For interlaced video: input is half-height fields, output is full-height interlaced
+        // For progressive video: input and output are both full-height
         char video_size[32];
         char framerate[16];
-        snprintf(video_size, sizeof(video_size), "%dx%d", ctx->header.width, ctx->header.height);
+        snprintf(video_size, sizeof(video_size), "%dx%d", ctx->header.width, ctx->decode_height);
         snprintf(framerate, sizeof(framerate), "%d", ctx->header.fps);
 
         // Redirect video pipe to fd 3
         dup2(video_pipe_fd[0], 3);
         close(video_pipe_fd[0]);
 
-        if (ctx->output_raw) {
-            // Raw video output (no compression)
-            execl("/usr/bin/ffmpeg", "ffmpeg",
-                  "-f", "rawvideo",
-                  "-pixel_format", "rgb24",
-                  "-video_size", video_size,
-                  "-framerate", framerate,
-                  "-i", "pipe:3",
-                  "-f", "u8",
-                  "-ar", "32000",
-                  "-ac", "2",
-                  "-i", ctx->audio_temp_file,
-                  "-c:v", "rawvideo",
-                  "-pixel_format", "rgb24",
-                  "-c:a", "pcm_u8",
-                  "-f", "matroska",
-                  ctx->output_file,
-                  "-y",
-                  "-v", "warning",
-                  (char*)NULL);
+        if (ctx->interlaced) {
+            // Interlaced mode: merge separate fields into interlaced frames
+            // tinterlace=interleave_top combines consecutive fields into interlaced frames
+            // Output will be full height (header.height) at half framerate
+            // Field order is set to top-field-first to match encoder
+            if (ctx->output_raw) {
+                // Raw video output (no compression)
+                execl("/usr/bin/ffmpeg", "ffmpeg",
+                      "-f", "rawvideo",
+                      "-pixel_format", "rgb24",
+                      "-video_size", video_size,
+                      "-framerate", framerate,
+                      "-i", "pipe:3",
+                      "-f", "u8",
+                      "-ar", "32000",
+                      "-ac", "2",
+                      "-i", ctx->audio_temp_file,
+                      "-vf", "tinterlace=interleave_top",
+                      "-field_order", "tt",
+                      "-c:v", "rawvideo",
+                      "-pixel_format", "rgb24",
+                      "-c:a", "pcm_u8",
+                      "-f", "matroska",
+                      ctx->output_file,
+                      "-y",
+                      "-v", "warning",
+                      (char*)NULL);
+            } else {
+                // FFV1 output (lossless compression) with interlaced flag
+                execl("/usr/bin/ffmpeg", "ffmpeg",
+                      "-f", "rawvideo",
+                      "-pixel_format", "rgb24",
+                      "-video_size", video_size,
+                      "-framerate", framerate,
+                      "-i", "pipe:3",
+                      "-f", "u8",
+                      "-ar", "32000",
+                      "-ac", "2",
+                      "-i", ctx->audio_temp_file,
+                      "-vf", "tinterlace=interleave_top",
+                      "-field_order", "tt",
+                      "-color_range", "2",
+                      "-c:v", "ffv1",
+                      "-level", "3",
+                      "-coder", "1",
+                      "-context", "1",
+                      "-g", "1",
+                      "-slices", "24",
+                      "-slicecrc", "1",
+                      "-pixel_format", "rgb24",
+                      "-color_range", "2",
+                      "-c:a", "pcm_u8",
+                      "-f", "matroska",
+                      ctx->output_file,
+                      "-y",
+                      "-v", "warning",
+                      (char*)NULL);
+            }
         } else {
-            // FFV1 output (lossless compression)
-            execl("/usr/bin/ffmpeg", "ffmpeg",
-                  "-f", "rawvideo",
-                  "-pixel_format", "rgb24",
-                  "-video_size", video_size,
-                  "-framerate", framerate,
-                  "-i", "pipe:3",
-                  "-f", "u8",
-                  "-ar", "32000",
-                  "-ac", "2",
-                  "-i", ctx->audio_temp_file,
-                  "-color_range", "2",
-                  "-c:v", "ffv1",
-                  "-level", "3",
-                  "-coder", "1",
-                  "-context", "1",
-                  "-g", "1",
-                  "-slices", "24",
-                  "-slicecrc", "1",
-                  "-pixel_format", "rgb24",
-                  "-color_range", "2",
-                  "-c:a", "pcm_u8",
-                  "-f", "matroska",
-                  ctx->output_file,
-                  "-y",
-                  "-v", "warning",
-                  (char*)NULL);
+            // Progressive mode - simple passthrough
+            if (ctx->output_raw) {
+                // Raw video output (no compression)
+                execl("/usr/bin/ffmpeg", "ffmpeg",
+                      "-f", "rawvideo",
+                      "-pixel_format", "rgb24",
+                      "-video_size", video_size,
+                      "-framerate", framerate,
+                      "-i", "pipe:3",
+                      "-f", "u8",
+                      "-ar", "32000",
+                      "-ac", "2",
+                      "-i", ctx->audio_temp_file,
+                      "-c:v", "rawvideo",
+                      "-pixel_format", "rgb24",
+                      "-c:a", "pcm_u8",
+                      "-f", "matroska",
+                      ctx->output_file,
+                      "-y",
+                      "-v", "warning",
+                      (char*)NULL);
+            } else {
+                // FFV1 output (lossless compression)
+                execl("/usr/bin/ffmpeg", "ffmpeg",
+                      "-f", "rawvideo",
+                      "-pixel_format", "rgb24",
+                      "-video_size", video_size,
+                      "-framerate", framerate,
+                      "-i", "pipe:3",
+                      "-f", "u8",
+                      "-ar", "32000",
+                      "-ac", "2",
+                      "-i", ctx->audio_temp_file,
+                      "-color_range", "2",
+                      "-c:v", "ffv1",
+                      "-level", "3",
+                      "-coder", "1",
+                      "-context", "1",
+                      "-g", "1",
+                      "-slices", "24",
+                      "-slicecrc", "1",
+                      "-pixel_format", "rgb24",
+                      "-color_range", "2",
+                      "-c:a", "pcm_u8",
+                      "-f", "matroska",
+                      ctx->output_file,
+                      "-y",
+                      "-v", "warning",
+                      (char*)NULL);
+            }
         }
 
         fprintf(stderr, "Error: Failed to execute FFmpeg\n");
@@ -432,7 +511,8 @@ static int init_decoder_threads(decoder_context_t *ctx) {
     }
 
     // Pre-allocate frame buffers for each slot (assuming max GOP size of 32)
-    size_t frame_size = ctx->header.width * ctx->header.height * 3;
+    // Use decode_height for interlaced video (half of header height)
+    size_t frame_size = ctx->header.width * ctx->decode_height * 3;
     int max_gop_size = 32;
 
     for (int i = 0; i < ctx->num_slots; i++) {
@@ -462,7 +542,7 @@ static int init_decoder_threads(decoder_context_t *ctx) {
 
     tav_video_params_t video_params = {
         .width = ctx->header.width,
-        .height = ctx->header.height,
+        .height = ctx->decode_height,  // Use decode_height for interlaced video
         .decomp_levels = ctx->header.decomp_levels,
         .temporal_levels = 2,
         .wavelet_filter = ctx->header.wavelet_filter,

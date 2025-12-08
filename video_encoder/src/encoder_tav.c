@@ -138,6 +138,8 @@ typedef struct {
     char *fontrom_high;
     int separate_audio_track;
     int use_native_audio;  // PCM8 instead of TAD
+    int interlaced;        // Interlaced mode (half-height internally, full height in header)
+    int header_height;     // Height to write to header (may differ from enc_params.height when interlaced)
 
     // Audio encoding
     int has_audio;
@@ -318,6 +320,7 @@ static void print_usage(const char *program) {
     printf("  --fontrom-low FILE       Font ROM for low ASCII (.chr)\n");
     printf("  --fontrom-high FILE      Font ROM for high ASCII (.chr)\n");
     printf("  --suppress-xhdr          Suppress Extended Header packet (enabled by default)\n");
+    printf("  --interlaced             Enable interlaced video mode (half-height encoding)\n");
     printf("  -v, --verbose            Verbose output\n");
     printf("  --help                   Show this help\n");
     printf("\nExamples:\n");
@@ -385,12 +388,35 @@ static int get_video_info(const char *input_file, int *width, int *height,
 
 /**
  * Open FFmpeg pipe for reading RGB24 frames.
+ *
+ * When interlaced=1:
+ *   - full_height is the full display height (written to header)
+ *   - FFmpeg outputs half-height frames via tinterlace+separatefields
+ *   - Filtergraph: scale/crop to full size, then tinterlace weave halves
+ *     framerate, then separatefields restores framerate at half height
  */
-static FILE* open_ffmpeg_pipe(const char *input_file, int width, int height) {
+static FILE* open_ffmpeg_pipe(const char *input_file, int width, int height,
+                              int interlaced, int full_height) {
     char cmd[MAX_PATH * 2];
-    snprintf(cmd, sizeof(cmd),
-             "ffmpeg -hide_banner -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
-             input_file, width, height, width, height);
+
+    if (interlaced) {
+        // Interlaced mode filtergraph:
+        // 1. scale and crop to full size (width x full_height)
+        // 2. tinterlace interleave_top:cvlpf - weave fields, halves framerate
+        // 3. separatefields - separate into half-height frames, doubles framerate back
+        // Final output: width x (full_height/2) at original framerate
+        snprintf(cmd, sizeof(cmd),
+                 "ffmpeg -hide_banner -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf "
+                 "\"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
+                 "tinterlace=interleave_top:cvlpf,separatefields\" -",
+                 input_file, width, full_height, width, full_height);
+    } else {
+        // Progressive mode - simple scale and crop
+        snprintf(cmd, sizeof(cmd),
+                 "ffmpeg -hide_banner -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf "
+                 "\"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
+                 input_file, width, height, width, height);
+    }
 
     FILE *fp = popen(cmd, "r");
     if (!fp) {
@@ -427,8 +453,15 @@ static int read_rgb_frame(FILE *fp, uint8_t *rgb_frame, size_t frame_size) {
 
 /**
  * Write TAV file header.
+ *
+ * When interlaced mode is enabled:
+ *   - header_height should be the full display height (e.g., 448)
+ *   - params->height is the internal encoding height (e.g., 224)
+ *   - video_flags bit 0 is set to indicate interlaced
  */
-static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int has_audio, int has_subtitles) {
+static int write_tav_header(FILE *fp, const tav_encoder_params_t *params,
+                            int has_audio, int has_subtitles,
+                            int interlaced, int header_height) {
     // Magic (8 bytes: \x1FTSVMTAV)
     fwrite(TAV_MAGIC, 1, 8, fp);
 
@@ -469,8 +502,11 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
     fwrite(&width, sizeof(uint16_t), 1, fp);
 
     // Height (uint16_t, 2 bytes)
+    // For interlaced mode, write the full display height (header_height)
+    // For progressive mode, write params->height
     // Write 0 if height exceeds 65535 (extended dimensions will be in XDIM)
-    uint16_t height = (params->height > 65535) ? 0 : (uint16_t)params->height;
+    int actual_height = interlaced ? header_height : params->height;
+    uint16_t height = (actual_height > 65535) ? 0 : (uint16_t)actual_height;
     fwrite(&height, sizeof(uint16_t), 1, fp);
 
     // FPS (uint8_t, 1 byte) - simplified to just fps_num
@@ -499,7 +535,9 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
     fputc(extra_flags, fp);
 
     // Video flags (uint8_t, 1 byte)
-    uint8_t video_flags = 0;  // Progressive, non-NTSC, lossy
+    // Bit 0 = interlaced, Bit 1 = NTSC framerate, Bit 2 = lossless, etc.
+    uint8_t video_flags = 0;
+    if (interlaced) video_flags |= 0x01;  // Bit 0: interlaced
     fputc(video_flags, fp);
 
     // Quality level (uint8_t, 1 byte)
@@ -1379,7 +1417,9 @@ static int encode_video_mt(cli_context_t *cli) {
     printf("Opening FFmpeg pipe...\n");
     cli->ffmpeg_pipe = open_ffmpeg_pipe(cli->input_file,
                                         cli->enc_params.width,
-                                        cli->enc_params.height);
+                                        cli->enc_params.height,
+                                        cli->interlaced,
+                                        cli->header_height);
     if (!cli->ffmpeg_pipe) {
         return -1;
     }
@@ -1468,11 +1508,14 @@ static int encode_video_mt(cli_context_t *cli) {
     }
 
     // Write TAV header
-    write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL);
+    write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL,
+                     cli->interlaced, cli->header_height);
 
     // Write Extended Header (unless suppressed)
+    // For interlaced mode, use header_height for XDIM if needed
+    int xhdr_height = cli->interlaced ? cli->header_height : cli->enc_params.height;
     if (!cli->suppress_xhdr) {
-        cli->extended_header_offset = write_extended_header(cli, cli->enc_params.width, cli->enc_params.height);
+        cli->extended_header_offset = write_extended_header(cli, cli->enc_params.width, xhdr_height);
         if (cli->extended_header_offset < 0) {
             fprintf(stderr, "Warning: Failed to write Extended Header\n");
         }
@@ -1838,7 +1881,9 @@ static int encode_video(cli_context_t *cli) {
     printf("Opening FFmpeg pipe...\n");
     cli->ffmpeg_pipe = open_ffmpeg_pipe(cli->input_file,
                                         cli->enc_params.width,
-                                        cli->enc_params.height);
+                                        cli->enc_params.height,
+                                        cli->interlaced,
+                                        cli->header_height);
     if (!cli->ffmpeg_pipe) {
         return -1;
     }
@@ -1925,11 +1970,14 @@ static int encode_video(cli_context_t *cli) {
     }
 
     // Write TAV header (with actual encoder params)
-    write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL);
+    write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL,
+                     cli->interlaced, cli->header_height);
 
     // Write Extended Header (unless suppressed)
+    // For interlaced mode, use header_height for XDIM if needed
+    int xhdr_height_st = cli->interlaced ? cli->header_height : cli->enc_params.height;
     if (!cli->suppress_xhdr) {
-        cli->extended_header_offset = write_extended_header(cli, cli->enc_params.width, cli->enc_params.height);
+        cli->extended_header_offset = write_extended_header(cli, cli->enc_params.width, xhdr_height_st);
         if (cli->extended_header_offset < 0) {
             fprintf(stderr, "Warning: Failed to write Extended Header\n");
         }
@@ -2237,6 +2285,7 @@ int main(int argc, char *argv[]) {
         {"tiled", no_argument, 0, 1029},
         {"suppress-xhdr", no_argument, 0, 1030},
         {"threads", required_argument, 0, 't'},
+        {"interlaced", no_argument, 0, 1031},
         {"help", no_argument, 0, '?'},
         {0, 0, 0, 0}
     };
@@ -2384,6 +2433,9 @@ int main(int argc, char *argv[]) {
             case 1030:  // --suppress-xhdr
                 cli.suppress_xhdr = 1;
                 break;
+            case 1031:  // --interlaced
+                cli.interlaced = 1;
+                break;
             case 't': {  // --threads
                 int threads = atoi(optarg);
                 if (threads < 0 || threads > MAX_THREADS) {
@@ -2433,6 +2485,20 @@ int main(int argc, char *argv[]) {
             cli.enc_params.fps_den = cli.original_fps_den;
             printf("  Framerate: %d/%d\n", cli.original_fps_num, cli.original_fps_den);
         }
+    }
+
+    // Handle interlaced mode: store full height for header, use half-height internally
+    if (cli.interlaced) {
+        // Store full height for the header
+        cli.header_height = cli.enc_params.height;
+        // Use half-height internally (FFmpeg will output half-height frames)
+        cli.enc_params.height = cli.enc_params.height / 2;
+        printf("Interlaced mode: header=%dx%d, internal=%dx%d\n",
+               cli.enc_params.width, cli.header_height,
+               cli.enc_params.width, cli.enc_params.height);
+    } else {
+        // Progressive mode: header_height equals internal height
+        cli.header_height = cli.enc_params.height;
     }
 
     // Set audio quality to match video quality if not specified
