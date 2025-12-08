@@ -686,6 +686,16 @@ static int write_gop_sync_packet(FILE *fp, int frame_count) {
     return 0;
 }
 
+/**
+ * Write sync packet (0xFF) for intra-only mode.
+ * Format: [type(1)] (no payload)
+ */
+static int write_sync_packet(FILE *fp) {
+    uint8_t packet = TAV_PACKET_SYNC;
+    fwrite(&packet, 1, 1, fp);
+    return 0;
+}
+
 // =============================================================================
 // Audio Encoding Functions
 // =============================================================================
@@ -1517,12 +1527,14 @@ static int encode_video_mt(cli_context_t *cli) {
                 cli->total_bytes += job->packet->size;
                 cli->gop_count++;
 
-                // Write GOP_SYNC
+                // Write sync packet
                 if (job->packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
+                    // For 3D-DWT mode, write GOP_SYNC (0xFC) with frame count
                     int frames_in_gop = job->packet->data[1];
                     write_gop_sync_packet(cli->output_fp, frames_in_gop);
                 } else if (job->packet->packet_type == TAV_PACKET_IFRAME) {
-                    write_gop_sync_packet(cli->output_fp, 1);
+                    // For intra-only mode, write SYNC (0xFF) with no payload
+                    write_sync_packet(cli->output_fp);
                 }
 
                 tav_encoder_free_packet(job->packet);
@@ -1583,7 +1595,7 @@ static int encode_video_mt(cli_context_t *cli) {
                         if (job->packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
                             write_gop_sync_packet(cli->output_fp, job->packet->data[1]);
                         } else if (job->packet->packet_type == TAV_PACKET_IFRAME) {
-                            write_gop_sync_packet(cli->output_fp, 1);
+                            write_sync_packet(cli->output_fp);
                         }
 
                         tav_encoder_free_packet(job->packet);
@@ -1718,7 +1730,7 @@ static int encode_video_mt(cli_context_t *cli) {
                 if (job->packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
                     write_gop_sync_packet(cli->output_fp, job->packet->data[1]);
                 } else if (job->packet->packet_type == TAV_PACKET_IFRAME) {
-                    write_gop_sync_packet(cli->output_fp, 1);
+                    write_sync_packet(cli->output_fp);
                 }
 
                 tav_encoder_free_packet(job->packet);
@@ -2002,12 +2014,12 @@ static int encode_video(cli_context_t *cli) {
                 cli->total_bytes += packet->size;
                 cli->gop_count++;
 
-                // 4. Write GOP_SYNC after GOP packets
+                // 4. Write sync packet after video packets
                 if (packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
                     int frames_in_gop = packet->data[1];
                     write_gop_sync_packet(cli->output_fp, frames_in_gop);
                 } else if (packet->packet_type == TAV_PACKET_IFRAME) {
-                    write_gop_sync_packet(cli->output_fp, 1);
+                    write_sync_packet(cli->output_fp);
                 }
 
                 tav_encoder_free_packet(packet);
@@ -2066,12 +2078,12 @@ static int encode_video(cli_context_t *cli) {
             cli->total_bytes += packet->size;
             cli->gop_count++;
 
-            // 4. Write GOP_SYNC after GOP packets
+            // 4. Write sync packet after video packets
             if (packet->packet_type == TAV_PACKET_GOP_UNIFIED) {
                 int frames_in_gop = packet->data[1];
                 write_gop_sync_packet(cli->output_fp, frames_in_gop);
             } else if (packet->packet_type == TAV_PACKET_IFRAME) {
-                write_gop_sync_packet(cli->output_fp, 1);
+                write_sync_packet(cli->output_fp);
             }
 
             tav_encoder_free_packet(packet);

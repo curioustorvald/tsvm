@@ -704,7 +704,7 @@ int tav_encoder_encode_frame(tav_encoder_context_t *ctx,
 
             // Encode GOP
             int result;
-            if (ctx->enable_temporal_dwt && ctx->gop_size > 1) {
+            if (ctx->enable_temporal_dwt) {
                 result = encode_gop_unified(ctx, &slot);
             } else {
                 result = encode_gop_intra_only(ctx, &slot);

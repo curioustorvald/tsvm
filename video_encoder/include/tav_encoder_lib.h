@@ -269,6 +269,7 @@ void tav_encoder_get_stats(tav_encoder_context_t *ctx, tav_encoder_stats_t *stat
 #define TAV_PACKET_LOOP_START    0xF0  // Loop point start (no payload)
 #define TAV_PACKET_GOP_SYNC      0xFC  // GOP sync (frame count marker)
 #define TAV_PACKET_TIMECODE      0xFD  // Timecode metadata
+#define TAV_PACKET_SYNC          0xFF  // Sync packet (no payload)
 
 // =============================================================================
 // Tile Settings (for multi-tile mode)
