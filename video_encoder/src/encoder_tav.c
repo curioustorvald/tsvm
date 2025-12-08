@@ -464,11 +464,13 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
     fputc(version, fp);
 
     // Width (uint16_t, 2 bytes)
-    uint16_t width = (uint16_t)params->width;
+    // Write 0 if width exceeds 65535 (extended dimensions will be in XDIM)
+    uint16_t width = (params->width > 65535) ? 0 : (uint16_t)params->width;
     fwrite(&width, sizeof(uint16_t), 1, fp);
 
     // Height (uint16_t, 2 bytes)
-    uint16_t height = (uint16_t)params->height;
+    // Write 0 if height exceeds 65535 (extended dimensions will be in XDIM)
+    uint16_t height = (params->height > 65535) ? 0 : (uint16_t)params->height;
     fwrite(&height, sizeof(uint16_t), 1, fp);
 
     // FPS (uint8_t, 1 byte) - simplified to just fps_num
@@ -529,15 +531,18 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params, int ha
  * Write Extended Header packet (0xEF) with metadata.
  * Returns the file offset of the ENDT value for later update, or -1 on error.
  */
-static long write_extended_header(cli_context_t *cli) {
+static long write_extended_header(cli_context_t *cli, int width, int height) {
     FILE *fp = cli->output_fp;
 
     // Write packet type (0xEF)
     uint8_t packet_type = TAV_PACKET_EXTENDED_HDR;
     if (fwrite(&packet_type, 1, 1, fp) != 1) return -1;
 
-    // Count key-value pairs: BGNT, ENDT, CDAT, VNDR, and optionally FMPG
-    uint16_t num_pairs = cli->ffmpeg_version ? 5 : 4;
+    // Count key-value pairs: BGNT, ENDT, CDAT, VNDR, optionally FMPG, and optionally XDIM
+    int has_xdim = (width > 65535 || height > 65535);
+    uint16_t num_pairs = 4;  // BGNT, ENDT, CDAT, VNDR
+    if (cli->ffmpeg_version) num_pairs++;  // FMPG
+    if (has_xdim) num_pairs++;  // XDIM
     if (fwrite(&num_pairs, sizeof(uint16_t), 1, fp) != 1) return -1;
 
     // Helper macros for writing key-value pairs
@@ -576,6 +581,13 @@ static long write_extended_header(cli_context_t *cli) {
     // FMPG: FFmpeg version (if available)
     if (cli->ffmpeg_version) {
         WRITE_KV_BYTES("FMPG", cli->ffmpeg_version, strlen(cli->ffmpeg_version));
+    }
+
+    // XDIM: Extended dimensions (if width or height exceeds 65535)
+    if (has_xdim) {
+        char xdim_str[32];
+        snprintf(xdim_str, sizeof(xdim_str), "%d,%d", width, height);
+        WRITE_KV_BYTES("XDIM", xdim_str, strlen(xdim_str));
     }
 
     #undef WRITE_KV_UINT64
@@ -1460,7 +1472,7 @@ static int encode_video_mt(cli_context_t *cli) {
 
     // Write Extended Header (unless suppressed)
     if (!cli->suppress_xhdr) {
-        cli->extended_header_offset = write_extended_header(cli);
+        cli->extended_header_offset = write_extended_header(cli, cli->enc_params.width, cli->enc_params.height);
         if (cli->extended_header_offset < 0) {
             fprintf(stderr, "Warning: Failed to write Extended Header\n");
         }
@@ -1917,7 +1929,7 @@ static int encode_video(cli_context_t *cli) {
 
     // Write Extended Header (unless suppressed)
     if (!cli->suppress_xhdr) {
-        cli->extended_header_offset = write_extended_header(cli);
+        cli->extended_header_offset = write_extended_header(cli, cli->enc_params.width, cli->enc_params.height);
         if (cli->extended_header_offset < 0) {
             fprintf(stderr, "Warning: Failed to write Extended Header\n");
         }

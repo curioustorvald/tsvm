@@ -918,6 +918,7 @@ transmission capability, and region-of-interest coding.
             When motion coder is CDF 5/3, add 8 to the base version number.
     uint16 Width: picture width in pixels. Columns count for Videotex-only file.
     uint16 Height: picture height in pixels. Rows count for Videotex-only file.
+            If either width or height exceeds 65535 pixels, above two fields must be filled with zero and the dimension must be sourced from XDIM entry of the Extended Header
     uint8  FPS: frames per second. Use 0x00 for still pictures
     uint32 Total Frames: number of video frames
             - use 0 to denote not-finalised video stream
@@ -1091,8 +1092,9 @@ The encoder supports following presets:
     <if Value Type is Bytes>
     uint16 Length of bytes
     *      Bytes
-    <otherwise>
+    <else>
     type_t Value
+    <fi>
 
     ### List of Keys
     - Uint64 BGNT: Video begin time in nanoseconds (must be equal to the value of the first Timecode packet)
@@ -1100,6 +1102,7 @@ The encoder supports following presets:
     - Uint64 CDAT: Creation time in microseconds since UNIX Epoch (must be in UTC timezone)
     - Bytes  VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014 (list,of,features)")
     - Bytes FMPG: FFmpeg version (typically "ffmpeg version 8.0 Copyright (c) 2000-2025 the FFmpeg developers"; the first line of text FFmpeg emits)
+    - Bytes XDIM: Video dimension in '<width>,<height>' format. Mandatory if either width or height exceeds 65535
 
 ## Extensible Packet Structure
     uint8  Packet Type
@@ -1108,8 +1111,9 @@ The encoder supports following presets:
     uint8  Identifier[4]
     <if 64-bit size>
     uint64 Length of the payload
-    <if not>
+    <else>
     uint32 Length of the payload
+    <fi>
     *      Payload
 
 ## Standard Metadata Payload Packet Structure
@@ -1178,7 +1182,7 @@ temporal compression.
     <if packet type is 0x13>
     uint32 Compressed Size
     *      Zstd-compressed Motion Data
-    <endif>
+    <fi>
     uint32 Compressed Size
     *      Zstd-compressed Unified Block Data
 
@@ -1192,6 +1196,7 @@ The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single
     int16  Y Non-zero Values[variable length]                          // All Y non-zero coefficients
     int16  Co Non-zero Values[variable length]                         // All Co non-zero coefficients
     int16  Cg Non-zero Values[variable length]                         // All Cg non-zero coefficients
+    <fi>
 
     <if EZBC is used>
     uint32 EZBC Size for Y
@@ -1200,6 +1205,7 @@ The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single
     *      EZBC Structure for Co
     uint32 EZBC Size for Cg
     *      EZBC Structure for Cg
+    <fi>
 
 This layout enables Zstd to find patterns across both spatial and temporal dimensions,
 resulting in superior compression compared to per-frame encoding.
@@ -2028,9 +2034,11 @@ A universal, simple cue designed to work as both playlist to cue up external fil
     <if external addressing mode>
     uint16 String Length for relative path
     *       Relative path
+    <fi>
 
     <if internal addressing mode>
     uint48 Offset to the file
+    <fi>
 
 --------------------------------------------------------------------------------
 
