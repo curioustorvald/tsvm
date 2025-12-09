@@ -454,14 +454,13 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
     }
 
     // Auto-select temporal wavelet if still at default (255=Haar) and temporal DWT enabled
-    // Logic from old encoder: use Haar for large videos, CDF 5/3 for small/low-quality videos
     if (ctx->enable_temporal_dwt && ctx->temporal_wavelet == 255) {
         int num_pixels = ctx->width * ctx->height;
         int use_pure_haar = 0;
 
         // Smart preset based on resolution and quality
         // For large videos with reasonable quality, use Haar (better compression)
-        // For smaller videos or low quality, use CDF 5/3 (better detail preservation)
+        // For smaller videos or low quality, use Haar with sports mode (better motion preservation)
         if ((num_pixels >= 820000 && ctx->quantiser_y <= 29) ||
             (num_pixels >= 500000 && ctx->quantiser_y <= 14) ||
             (num_pixels >= 340000 && ctx->quantiser_y <= 7) ||

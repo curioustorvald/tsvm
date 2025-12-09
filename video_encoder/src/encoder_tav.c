@@ -34,7 +34,6 @@
 // Multithreading Structures
 // =============================================================================
 
-#define MAX_THREADS 16
 #define GOP_SLOT_EMPTY 0
 #define GOP_SLOT_READY 1
 #define GOP_SLOT_ENCODING 2
@@ -263,7 +262,7 @@ static int get_available_cpus(void) {
 }
 
 /**
- * Get default thread count: min(8, available_cpus)
+ * Get default thread count (cap at 8)
  */
 static int get_default_thread_count(void) {
     int available = get_available_cpus();
@@ -2245,7 +2244,7 @@ int main(int argc, char *argv[]) {
     cli.audio_quality = -1;         // Will match video quality if not specified
     cli.use_native_audio = 0;       // TAD by default
 
-    // Initialize threading defaults: min(8, available CPUs)
+    // Initialize threading
     cli.num_threads = get_default_thread_count();
 
     // Command-line options
@@ -2438,8 +2437,8 @@ int main(int argc, char *argv[]) {
                 break;
             case 't': {  // --threads
                 int threads = atoi(optarg);
-                if (threads < 0 || threads > MAX_THREADS) {
-                    fprintf(stderr, "Error: Thread count must be 0-%d\n", MAX_THREADS);
+                if (threads < 0) {
+                    fprintf(stderr, "Error: Thread count must be positive\n");
                     return 1;
                 }
                 // Both 0 and 1 mean single-threaded (use value 0 internally)
