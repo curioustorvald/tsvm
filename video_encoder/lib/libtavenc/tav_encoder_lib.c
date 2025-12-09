@@ -31,6 +31,8 @@
 #define ENCODER_VERSION "TAV Encoder Library v1.0"
 #define MAX_ERROR_MESSAGE 256
 
+#define GOP_SIZE_MAX 24
+
 // GOP status values
 #define GOP_STATUS_EMPTY      0
 #define GOP_STATUS_FILLING    1
@@ -530,9 +532,6 @@ tav_encoder_context_t *tav_encoder_create(const tav_encoder_params_t *params) {
         return NULL;
     }
 
-    // TODO: Initialize thread pool if multi-threaded
-    // (Thread pool implementation deferred - requires extracting worker logic)
-
     if (ctx->verbose) {
         printf("%s created:\n", ENCODER_VERSION);
         printf("  Resolution: %dx%d @ %d/%d fps\n",
@@ -618,9 +617,9 @@ int tav_encoder_validate_context(tav_encoder_context_t *ctx) {
     if (!ctx) return 0;
 
     // Basic sanity checks
-    if (ctx->width < 16 || ctx->width > 8192) return 0;
-    if (ctx->height < 16 || ctx->height > 8192) return 0;
-    if (ctx->gop_size < 1 || ctx->gop_size > 48) return 0;
+    if (ctx->width < 16 || ctx->width > 16777215) return 0;
+    if (ctx->height < 16 || ctx->height > 16777215) return 0;
+    if (ctx->gop_size < 1 || ctx->gop_size > GOP_SIZE_MAX) return 0;
 
     return 1;
 }
@@ -656,215 +655,8 @@ void tav_encoder_get_stats(tav_encoder_context_t *ctx, tav_encoder_stats_t *stat
 }
 
 // =============================================================================
-// Frame Encoding - DEPRECATED, use tav_encoder_encode_gop() instead
-// =============================================================================
-
-/*
- * tav_encoder_encode_frame() is deprecated and will be removed.
- * Use tav_encoder_encode_gop() which works for both single-threaded and
- * multi-threaded modes. The CLI should buffer frames and call encode_gop()
- * when a full GOP is ready.
- */
-
-#if 0  // DEPRECATED - kept for reference, will be deleted
-int tav_encoder_encode_frame(tav_encoder_context_t *ctx,
-                              const uint8_t *rgb_frame,
-                              int64_t frame_pts,
-                              tav_encoder_packet_t **packet) {
-    if (!ctx || !rgb_frame || !packet) {
-        if (ctx) {
-            snprintf(ctx->error_message, MAX_ERROR_MESSAGE, "Invalid parameters");
-        }
-        return -1;
-    }
-
-    *packet = NULL;  // No packet until GOP is complete
-
-    // Single-threaded implementation: buffer frames until GOP full
-    if (ctx->num_threads == 0) {
-        // Copy RGB frame to GOP buffer
-        size_t frame_size = ctx->width * ctx->height * 3;
-        memcpy(ctx->gop_rgb_frames[ctx->gop_frame_count], rgb_frame, frame_size);
-        ctx->gop_frame_pts[ctx->gop_frame_count] = frame_pts;
-        ctx->gop_frame_count++;
-
-        // Check if GOP is full
-        if (ctx->gop_frame_count >= ctx->gop_size) {
-            // Create temporary GOP slot
-            gop_slot_t slot = {0};
-            slot.rgb_frames = ctx->gop_rgb_frames;
-            slot.num_frames = ctx->gop_frame_count;
-            slot.frame_numbers = tav_calloc(ctx->gop_frame_count, sizeof(int));
-            for (int i = 0; i < ctx->gop_frame_count; i++) {
-                slot.frame_numbers[i] = (int)(ctx->frames_encoded + i);
-            }
-            slot.width = ctx->width;
-            slot.height = ctx->height;
-
-            // Encode GOP
-            int result;
-            if (ctx->enable_temporal_dwt) {
-                result = encode_gop_unified(ctx, &slot);
-            } else {
-                result = encode_gop_intra_only(ctx, &slot);
-            }
-
-            free(slot.frame_numbers);
-
-            if (result < 0) {
-                // Error message already set by encoding function
-                return -1;
-            }
-
-            // Extract packets from slot
-            if (slot.num_packets > 0) {
-                *packet = &slot.packets[0];
-            }
-
-            // Update statistics
-            ctx->frames_encoded += ctx->gop_frame_count;
-            ctx->gops_encoded++;
-            ctx->video_bytes += slot.packets[0].size;
-            ctx->total_bytes += slot.packets[0].size;
-
-            // Reset GOP buffer
-            ctx->gop_frame_count = 0;
-
-            return 1;  // Packet ready
-        }
-
-        return 0;  // Buffering, no packet yet
-    }
-
-    // Multi-threaded implementation
-    // TODO: Submit frame to thread pool
-    snprintf(ctx->error_message, MAX_ERROR_MESSAGE,
-             "Multi-threaded encoding not yet implemented");
-    return -1;
-}
-#endif  // DEPRECATED
-
-// =============================================================================
 // Flush Encoder - DEPRECATED, CLI handles partial GOPs directly
 // =============================================================================
-
-/*
- * tav_encoder_flush() is deprecated and will be removed.
- * The CLI should track remaining frames and call tav_encoder_encode_gop()
- * directly for partial GOPs at the end of encoding.
- */
-
-#if 0  // DEPRECATED - kept for reference, will be deleted
-int tav_encoder_flush(tav_encoder_context_t *ctx,
-                      tav_encoder_packet_t **packet) {
-    if (!ctx || !packet) {
-        if (ctx) {
-            snprintf(ctx->error_message, MAX_ERROR_MESSAGE, "Invalid parameters");
-        }
-        return -1;
-    }
-
-    *packet = NULL;
-
-    // Encode any remaining frames in GOP buffer
-    if (ctx->num_threads == 0 && ctx->gop_frame_count > 0) {
-        // Create temporary GOP slot for partial GOP
-        gop_slot_t slot = {0};
-        slot.rgb_frames = ctx->gop_rgb_frames;
-        slot.num_frames = ctx->gop_frame_count;
-        slot.frame_numbers = tav_calloc(ctx->gop_frame_count, sizeof(int));
-        for (int i = 0; i < ctx->gop_frame_count; i++) {
-            slot.frame_numbers[i] = (int)(ctx->frames_encoded + i);
-        }
-        slot.width = ctx->width;
-        slot.height = ctx->height;
-
-        int result;
-
-        // For partial GOPs: use unified mode if temporal DWT enabled and >1 frame,
-        // otherwise encode as I-frames one at a time
-        if (ctx->enable_temporal_dwt && ctx->gop_frame_count > 1) {
-            result = encode_gop_unified(ctx, &slot);
-        } else if (ctx->gop_frame_count == 1) {
-            result = encode_gop_intra_only(ctx, &slot);
-        } else {
-            // Encode each frame separately as I-frame
-            // TODO: This is inefficient - should encode them in a batch
-            // For now, just encode the first frame
-            gop_slot_t single_slot = {0};
-            single_slot.rgb_frames = malloc(sizeof(uint8_t*));
-            single_slot.rgb_frames[0] = ctx->gop_rgb_frames[0];
-            single_slot.num_frames = 1;
-            single_slot.frame_numbers = malloc(sizeof(int));
-            single_slot.frame_numbers[0] = (int)ctx->frames_encoded;
-            single_slot.width = ctx->width;
-            single_slot.height = ctx->height;
-
-            result = encode_gop_intra_only(ctx, &single_slot);
-
-            if (result == 0 && single_slot.num_packets > 0) {
-                // Copy packet pointer
-                slot.packets = single_slot.packets;
-                slot.num_packets = single_slot.num_packets;
-
-                // Don't free single_slot.packets - we transferred ownership
-            }
-
-            free(single_slot.rgb_frames);
-            free(single_slot.frame_numbers);
-
-            // Mark only 1 frame as encoded (we'll call flush again for others)
-            ctx->gop_frame_count--;
-            // Shift remaining frames down
-            for (int i = 0; i < ctx->gop_frame_count; i++) {
-                ctx->gop_rgb_frames[i] = ctx->gop_rgb_frames[i+1];
-            }
-        }
-
-        free(slot.frame_numbers);
-
-        if (result < 0) {
-            // Error message already set by encoding function
-            return -1;
-        }
-
-        // Extract packets from slot
-        if (slot.num_packets > 0) {
-            *packet = slot.packets;  // Transfer ownership to caller
-        }
-
-        // Update statistics (only for frames actually encoded)
-        int frames_in_packet = (ctx->enable_temporal_dwt || ctx->gop_frame_count == 1)
-                              ? slot.num_frames : 1;
-        ctx->frames_encoded += frames_in_packet;
-        ctx->gops_encoded++;
-        if (slot.num_packets > 0) {
-            ctx->video_bytes += slot.packets[0].size;
-            ctx->total_bytes += slot.packets[0].size;
-        }
-
-        // Reset GOP buffer if we encoded everything
-        if (!ctx->enable_temporal_dwt && ctx->gop_frame_count > 0) {
-            // Still have frames to encode - return 1 to continue flushing
-            return 1;
-        }
-
-        ctx->gop_frame_count = 0;
-
-        return 1;  // Packet ready
-    }
-
-    // Multi-threaded: wait for all pending GOPs to complete
-    if (ctx->num_threads > 0) {
-        // TODO: Flush thread pool
-        snprintf(ctx->error_message, MAX_ERROR_MESSAGE,
-                 "Multi-threaded flush not yet implemented");
-        return -1;
-    }
-
-    return 0;  // No more packets
-}
-#endif  // DEPRECATED
 
 void tav_encoder_free_packet(tav_encoder_packet_t *packet) {
     if (!packet) return;
@@ -891,9 +683,9 @@ int tav_encoder_encode_gop(tav_encoder_context_t *ctx,
         return -1;
     }
 
-    if (num_frames < 1 || num_frames > 24) {
+    if (num_frames < 1 || num_frames > GOP_SIZE_MAX) {
         snprintf(ctx->error_message, MAX_ERROR_MESSAGE,
-                 "Invalid GOP size: %d (must be 1-24)", num_frames);
+                 "Invalid GOP size: %d (must be 1-%d)", num_frames, GOP_SIZE_MAX);
         return -1;
     }
 
@@ -1406,6 +1198,12 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
         int16_t *quant_co = tav_calloc(num_pixels, sizeof(int16_t));
         int16_t *quant_cg = tav_calloc(num_pixels, sizeof(int16_t));
 
+        // Write tile header: [mode(1)][qY_override(1)][qCo_override(1)][qCg_override(1)]
+        preprocess_buffer[preprocess_offset++] = 0x01;  // TAV_MODE_INTRA
+        preprocess_buffer[preprocess_offset++] = 0;     // qY override (0 = use header)
+        preprocess_buffer[preprocess_offset++] = 0;     // qCo override
+        preprocess_buffer[preprocess_offset++] = 0;     // qCg override
+
         // Apply 2D DWT to full frame
         tav_dwt_2d_forward(frame_y, width, height, ctx->decomp_levels, ctx->wavelet_type);
         tav_dwt_2d_forward(frame_co, width, height, ctx->decomp_levels, ctx->wavelet_type);
@@ -1432,11 +1230,12 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
         }
 
         // EZBC encode
-        preprocess_offset = preprocess_coefficients_ezbc(
+        size_t tile_size = preprocess_coefficients_ezbc(
             quant_y, quant_co, quant_cg, NULL,
             num_pixels, width, height, ctx->channel_layout,
-            preprocess_buffer
+            preprocess_buffer + preprocess_offset
         );
+        preprocess_offset += tile_size;
 
         free(quant_y); free(quant_co); free(quant_cg);
 
