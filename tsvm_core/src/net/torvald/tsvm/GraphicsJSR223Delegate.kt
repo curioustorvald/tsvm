@@ -1505,7 +1505,7 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                     null, gpu.framebuffer2!!.ptr + nativePos, pixelsInChunk.toLong()
                 )
             }
-            else {
+            else if (graphicsMode == 8) {
                 UnsafeHelper.memcpyRaw(
                     rChunk, UnsafeHelper.getArrayOffset(rChunk),
                     null, gpu.framebuffer.ptr + nativePos, pixelsInChunk.toLong()
@@ -1539,16 +1539,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 baChunk[i] = ((b4 shl 4) or coordInVideoFrame.toInt().times(15)).toByte()
             }
             else if (graphicsMode == 5) {
-                // Apply Bayer dithering and convert to 4-bit
+                // Apply Bayer dithering and convert to 5-bit
                 val r5 = ditherValue5(r, videoX, videoY, frameCount)
                 val g5 = ditherValue5(g, videoX, videoY, frameCount)
                 val b5 = ditherValue5(b, videoX, videoY, frameCount)
 
                 // Pack RGB values and store in chunk arrays for batch processing
-                rgChunk[i] = (coordInVideoFrame.toInt(8) or r5.shl(2) or g5.ushr(3)).toByte()
+                rgChunk[i] = (coordInVideoFrame.toInt(7) or r5.shl(2) or g5.ushr(3)).toByte()
                 baChunk[i] = (g5.and(7).shl(5) or b5).toByte()
             }
-            else {
+            else if (graphicsMode == 8) {
                 rChunk[i] = r.toByte()
                 gChunk[i] = g.toByte()
                 bChunk[i] = b.toByte()
