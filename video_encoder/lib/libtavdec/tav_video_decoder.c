@@ -1024,7 +1024,7 @@ static void apply_inverse_3d_dwt(float **gop_y, float **gop_co, float **gop_cg,
             for (int level = temporal_levels - 1; level >= 0; level--) {
                 const int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
-                    if (temporal_wavelet == 0) {
+                    if (temporal_wavelet == 255) {
                         dwt_haar_inverse_1d(temporal_line, level_frames);
                     } else {
                         dwt_53_inverse_1d(temporal_line, level_frames);
@@ -1042,7 +1042,7 @@ static void apply_inverse_3d_dwt(float **gop_y, float **gop_co, float **gop_cg,
             for (int level = temporal_levels - 1; level >= 0; level--) {
                 const int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
-                    if (temporal_wavelet == 0) {
+                    if (temporal_wavelet == 255) {
                         dwt_haar_inverse_1d(temporal_line, level_frames);
                     } else {
                         dwt_53_inverse_1d(temporal_line, level_frames);
@@ -1060,7 +1060,7 @@ static void apply_inverse_3d_dwt(float **gop_y, float **gop_co, float **gop_cg,
             for (int level = temporal_levels - 1; level >= 0; level--) {
                 const int level_frames = temporal_lengths[level];
                 if (level_frames >= 2) {
-                    if (temporal_wavelet == 0) {
+                    if (temporal_wavelet == 255) {
                         dwt_haar_inverse_1d(temporal_line, level_frames);
                     } else {
                         dwt_53_inverse_1d(temporal_line, level_frames);

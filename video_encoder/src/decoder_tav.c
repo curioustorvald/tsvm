@@ -573,7 +573,7 @@ static int init_decoder_threads(decoder_context_t *ctx) {
         .decomp_levels = ctx->header.decomp_levels,
         .temporal_levels = 2,
         .wavelet_filter = ctx->header.wavelet_filter,
-        .temporal_wavelet = 0,
+        .temporal_wavelet = 255,
         .entropy_coder = ctx->header.entropy_coder,
         .channel_layout = ctx->header.channel_layout,
         .perceptual_tuning = ctx->perceptual_mode,
@@ -1944,7 +1944,7 @@ int main(int argc, char *argv[]) {
         .decomp_levels = ctx.header.decomp_levels,
         .temporal_levels = 2,  // Default
         .wavelet_filter = ctx.header.wavelet_filter,
-        .temporal_wavelet = 0,  // Haar
+        .temporal_wavelet = 255,  // Haar
         .entropy_coder = ctx.header.entropy_coder,
         .channel_layout = ctx.header.channel_layout,
         .perceptual_tuning = ctx.perceptual_mode,

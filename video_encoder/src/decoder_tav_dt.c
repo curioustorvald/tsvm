@@ -1,40 +1,79 @@
-// Created by CuriousTorvald and Claude on 2025-12-02.
-// TAV-DT (Digital Tape) Decoder - Headerless streaming format decoder
-// Decodes TAV-DT packets to video (FFV1/rawvideo) and audio (PCMu8)
+/**
+ * TAV-DT Decoder - Digital Tape Format Decoder
+ *
+ * Decodes TAV-DT format with forward error correction.
+ *
+ * TAV-DT is a packetised streaming format designed for digital tape/broadcast:
+ * - Fixed dimensions: 720x480 (NTSC) or 720x576 (PAL)
+ * - 16-frame GOPs with 9/7 spatial wavelet, Haar temporal
+ * - Mandatory TAD audio
+ * - LDPC rate 1/2 for headers, Reed-Solomon (255,223) for payloads
+ *
+ * Packet structure (revised 2025-12-11):
+ * - Main header: 24 bytes → 48 bytes LDPC encoded
+ *   (sync + fps + flags + reserved + size + crc + timecode + offset_to_video)
+ * - TAD subpacket: header (10→20 bytes LDPC) + RS-encoded payload
+ * - TAV subpacket: header (8→16 bytes LDPC) + RS-encoded payload
+ * - No packet type bytes - always audio then video
+ *
+ * Created by CuriousTorvald and Claude on 2025-12-09.
+ * Revised 2025-12-11 for updated TAV-DT specification.
+ */
 
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <getopt.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
-#include <getopt.h>
-#include "decoder_tad.h"         // Shared TAD decoder library
-#include "tav_video_decoder.h"   // Shared TAV video decoder library
+#include <time.h>
 
-#define DECODER_VENDOR_STRING "Decoder-TAV-DT 20251202"
+#include "tav_video_decoder.h"
+#include "decoder_tad.h"
+#include "reed_solomon.h"
+#include "ldpc.h"
+
+// =============================================================================
+// Constants
+// =============================================================================
 
 // TAV-DT sync patterns (big endian)
-#define TAV_DT_SYNC_NTSC  0xE3537A1F  // 720x480
-#define TAV_DT_SYNC_PAL   0xD193A745  // 720x576
+#define TAV_DT_SYNC_NTSC  0xE3537A1F
+#define TAV_DT_SYNC_PAL   0xD193A745
 
-// Standard TAV quality arrays (0-5, must match encoder)
-static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2, 0};
-static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29, 3};
-static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39, 5};
+// TAV-DT dimensions
+#define DT_WIDTH          720
+#define DT_HEIGHT_NTSC    480
+#define DT_HEIGHT_PAL     576
 
-// TAV-DT packet types (reused from TAV)
-#define TAV_PACKET_IFRAME          0x10
-#define TAV_PACKET_GOP_UNIFIED     0x12
-#define TAV_PACKET_AUDIO_TAD       0x24
+// Fixed parameters
+#define DT_SPATIAL_LEVELS  4
+#define DT_TEMPORAL_LEVELS 2
 
-// CRC-32 table and functions
+// Header sizes (before LDPC encoding)
+#define DT_MAIN_HEADER_SIZE   28   // sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + crc(4) + timecode(8) + offset(4)
+#define DT_TAD_HEADER_SIZE    10   // sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3)
+#define DT_TAV_HEADER_SIZE    8    // gop_size(1) + compressed_size(4) + rs_block_count(3)
+
+// Quality level to quantiser mapping (must match encoder)
+static const int QUALITY_Y[]  = {79, 47, 23, 11, 5, 2};
+static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29};
+static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39};
+
+#define MAX_PATH 4096
+
+// =============================================================================
+// CRC-32
+// =============================================================================
+
 static uint32_t crc32_table[256];
-static int crc32_table_initialized = 0;
+static int crc32_initialized = 0;
 
 static void init_crc32_table(void) {
-    if (crc32_table_initialized) return;
+    if (crc32_initialized) return;
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t crc = i;
         for (int j = 0; j < 8; j++) {
@@ -46,7 +85,7 @@ static void init_crc32_table(void) {
         }
         crc32_table[i] = crc;
     }
-    crc32_table_initialized = 1;
+    crc32_initialized = 1;
 }
 
 static uint32_t calculate_crc32(const uint8_t *data, size_t length) {
@@ -58,36 +97,34 @@ static uint32_t calculate_crc32(const uint8_t *data, size_t length) {
     return crc ^ 0xFFFFFFFF;
 }
 
-// DT packet header structure (16 bytes)
-typedef struct {
-    uint32_t sync_pattern;   // 0xE3537A1F (NTSC) or 0xD193A745 (PAL)
-    uint8_t framerate;
-    uint8_t flags;           // bit 0=interlaced, bit 1=NTSC framerate, bits 4-7=quality index
-    uint16_t reserved;
-    uint32_t packet_size;    // Size of data after header
-    uint32_t crc32;          // CRC-32 of first 12 bytes
-} dt_packet_header_t;
+// =============================================================================
+// Decoder Context
+// =============================================================================
 
-// Decoder state
 typedef struct {
+    // Input/output
+    char *input_file;
+    char *output_file;
     FILE *input_fp;
-    FILE *output_video_fp;   // For packet dump mode
-    FILE *output_audio_fp;
 
     // FFmpeg integration
     pid_t ffmpeg_pid;
-    FILE *video_pipe;        // Pipe to FFmpeg for RGB24 frames
-    char *audio_temp_file;   // Temporary file for PCMu8 audio
+    FILE *video_pipe;
+    char audio_temp_file[MAX_PATH];
+    FILE *audio_temp_fp;
+    char video_temp_file[MAX_PATH];
+    FILE *video_temp_fp;
 
-    // Video parameters (derived from sync pattern and quality index)
+    // Video parameters (derived from first packet)
     int width;
     int height;
     int framerate;
     int is_interlaced;
     int is_ntsc_framerate;
     int quality_index;
+    int is_pal;
 
-    // Video decoding context (uses shared library)
+    // Video decoder context
     tav_video_context_t *video_ctx;
 
     // Statistics
@@ -95,66 +132,165 @@ typedef struct {
     uint64_t frames_decoded;
     uint64_t bytes_read;
     uint64_t crc_errors;
+    uint64_t fec_corrections;
     uint64_t sync_losses;
 
     // Options
     int verbose;
-    int ffmpeg_output;  // If 1, output to FFmpeg (FFV1/MKV), if 0, dump packets
+    int dump_mode;  // Just dump packets, don't decode
 } dt_decoder_t;
 
-// Read DT packet header and verify
-static int read_dt_header(dt_decoder_t *dec, dt_packet_header_t *header) {
-    uint8_t header_bytes[16];
+// =============================================================================
+// Utility Functions
+// =============================================================================
 
-    // Read 16-byte header
-    size_t bytes_read = fread(header_bytes, 1, 16, dec->input_fp);
-    if (bytes_read < 16) {
-        if (bytes_read > 0) {
-            fprintf(stderr, "Warning: Incomplete header at end of file (%zu bytes)\n", bytes_read);
-        }
-        return -1;  // EOF or incomplete
+static void print_usage(const char *program) {
+    printf("TAV-DT Decoder - Digital Tape Format with FEC\n");
+    printf("\nUsage: %s -i input.tavdt -o output.mkv [options]\n\n", program);
+    printf("Required:\n");
+    printf("  -i, --input FILE     Input TAV-DT file\n");
+    printf("  -o, --output FILE    Output video file (FFV1/MKV)\n");
+    printf("\nOptions:\n");
+    printf("  --dump               Dump packet info without decoding\n");
+    printf("  -v, --verbose        Verbose output\n");
+    printf("  --help               Show this help\n");
+}
+
+static void generate_random_filename(char *filename, size_t size) {
+    static int seeded = 0;
+    if (!seeded) {
+        srand((unsigned int)time(NULL));
+        seeded = 1;
     }
 
-    dec->bytes_read += 16;
+    const char charset[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+    snprintf(filename, size, "/tmp/tavdt_dec_");
+    size_t prefix_len = strlen(filename);
+    for (int i = 0; i < 16; i++) {
+        filename[prefix_len + i] = charset[rand() % (sizeof(charset) - 1)];
+    }
+    filename[prefix_len + 16] = '\0';
+}
+
+// =============================================================================
+// Sync Pattern Search
+// =============================================================================
+
+static int find_sync_pattern(dt_decoder_t *dec) {
+    uint8_t sync_bytes[4] = {0};
+    uint8_t byte;
+
+    // NTSC and PAL sync patterns as byte arrays (big endian)
+    const uint8_t ntsc_sync[4] = {0xE3, 0x53, 0x7A, 0x1F};
+    const uint8_t pal_sync[4] = {0xD1, 0x93, 0xA7, 0x45};
+
+    // Sliding window search
+    while (fread(&byte, 1, 1, dec->input_fp) == 1) {
+        dec->bytes_read++;
+
+        // Shift window
+        sync_bytes[0] = sync_bytes[1];
+        sync_bytes[1] = sync_bytes[2];
+        sync_bytes[2] = sync_bytes[3];
+        sync_bytes[3] = byte;
+
+        // Check NTSC sync
+        if (memcmp(sync_bytes, ntsc_sync, 4) == 0) {
+            dec->is_pal = 0;
+            // Seek back to start of sync pattern
+            fseek(dec->input_fp, -4, SEEK_CUR);
+            dec->bytes_read -= 4;
+            return 0;
+        }
+
+        // Check PAL sync
+        if (memcmp(sync_bytes, pal_sync, 4) == 0) {
+            dec->is_pal = 1;
+            // Seek back to start of sync pattern
+            fseek(dec->input_fp, -4, SEEK_CUR);
+            dec->bytes_read -= 4;
+            return 0;
+        }
+    }
+
+    return -1;  // EOF
+}
+
+// =============================================================================
+// Header Decoding
+// =============================================================================
+
+typedef struct {
+    uint32_t sync_pattern;
+    uint8_t framerate;
+    uint8_t flags;
+    uint16_t reserved;
+    uint32_t packet_size;
+    uint32_t crc32;
+    uint64_t timecode_ns;
+    uint32_t offset_to_video;
+} dt_packet_header_t;
+
+static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header) {
+    // Read LDPC-encoded header (56 bytes = 28 bytes * 2)
+    uint8_t encoded_header[DT_MAIN_HEADER_SIZE * 2];
+    size_t bytes_read = fread(encoded_header, 1, DT_MAIN_HEADER_SIZE * 2, dec->input_fp);
+    if (bytes_read < DT_MAIN_HEADER_SIZE * 2) return -1;
+    dec->bytes_read += DT_MAIN_HEADER_SIZE * 2;
+
+    // LDPC decode header (56 bytes -> 28 bytes)
+    uint8_t decoded_header[DT_MAIN_HEADER_SIZE];
+    int ldpc_result = ldpc_decode(encoded_header, DT_MAIN_HEADER_SIZE * 2, decoded_header);
+    if (ldpc_result < 0) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: LDPC decode failed for main header\n");
+        }
+        // Try to use raw data anyway (first half)
+        memcpy(decoded_header, encoded_header, DT_MAIN_HEADER_SIZE);
+    } else if (ldpc_result > 0) {
+        dec->fec_corrections++;
+    }
 
     // Parse header fields
-    header->sync_pattern = (header_bytes[0] << 24) | (header_bytes[1] << 16) |
-                          (header_bytes[2] << 8) | header_bytes[3];
-    header->framerate = header_bytes[4];
-    header->flags = header_bytes[5];
-    header->reserved = header_bytes[6] | (header_bytes[7] << 8);
-    header->packet_size = header_bytes[8] | (header_bytes[9] << 8) |
-                         (header_bytes[10] << 16) | (header_bytes[11] << 24);
-    header->crc32 = header_bytes[12] | (header_bytes[13] << 8) |
-                   (header_bytes[14] << 16) | (header_bytes[15] << 24);
+    header->sync_pattern = ((uint32_t)decoded_header[0] << 24) | ((uint32_t)decoded_header[1] << 16) |
+                           ((uint32_t)decoded_header[2] << 8) | decoded_header[3];
+    header->framerate = decoded_header[4];
+    header->flags = decoded_header[5];
+    header->reserved = decoded_header[6] | ((uint16_t)decoded_header[7] << 8);
+    memcpy(&header->packet_size, decoded_header + 8, 4);
+    memcpy(&header->crc32, decoded_header + 12, 4);
+    memcpy(&header->timecode_ns, decoded_header + 16, 8);
+    memcpy(&header->offset_to_video, decoded_header + 24, 4);
 
     // Verify sync pattern
     if (header->sync_pattern != TAV_DT_SYNC_NTSC && header->sync_pattern != TAV_DT_SYNC_PAL) {
         if (dec->verbose) {
-            fprintf(stderr, "Warning: Invalid sync pattern 0x%08X at offset %lu\n",
-                   header->sync_pattern, dec->bytes_read - 16);
+            fprintf(stderr, "Warning: Invalid sync pattern 0x%08X\n", header->sync_pattern);
         }
         dec->sync_losses++;
-        return -2;  // Invalid sync
+        return -2;
     }
 
-    // Calculate and verify CRC-32 of first 12 bytes
-    uint32_t calculated_crc = calculate_crc32(header_bytes, 12);
+    // Verify CRC-32 (covers first 12 bytes: sync + fps + flags + reserved + size)
+    uint32_t calculated_crc = calculate_crc32(decoded_header, 12);
     if (calculated_crc != header->crc32) {
-        fprintf(stderr, "Warning: CRC mismatch at offset %lu (expected 0x%08X, got 0x%08X)\n",
-               dec->bytes_read - 16, header->crc32, calculated_crc);
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: CRC mismatch (expected 0x%08X, got 0x%08X)\n",
+                   header->crc32, calculated_crc);
+        }
         dec->crc_errors++;
-        // Continue anyway - data might still be usable
+        // Continue anyway
     }
 
-    // Update decoder state from header (first packet only)
+    // Update decoder state from first packet
     if (dec->packets_processed == 0) {
-        dec->width = (header->sync_pattern == TAV_DT_SYNC_NTSC) ? 720 : 720;
-        dec->height = (header->sync_pattern == TAV_DT_SYNC_NTSC) ? 480 : 576;
+        dec->width = DT_WIDTH;
+        dec->height = (header->sync_pattern == TAV_DT_SYNC_PAL) ? DT_HEIGHT_PAL : DT_HEIGHT_NTSC;
         dec->framerate = header->framerate;
         dec->is_interlaced = header->flags & 0x01;
         dec->is_ntsc_framerate = header->flags & 0x02;
         dec->quality_index = (header->flags >> 4) & 0x0F;
+        if (dec->quality_index > 5) dec->quality_index = 5;
 
         if (dec->verbose) {
             printf("=== TAV-DT Stream Info ===\n");
@@ -172,82 +308,353 @@ static int read_dt_header(dt_decoder_t *dec, dt_packet_header_t *header) {
     return 0;
 }
 
-// Search for next sync pattern (for recovery from errors)
-static int find_next_sync(dt_decoder_t *dec) {
-    uint8_t sync_bytes[4] = {0};
-    uint8_t byte;
+// =============================================================================
+// Subpacket Decoding
+// =============================================================================
 
-    // NTSC and PAL sync patterns as byte arrays (big endian)
-    const uint8_t ntsc_sync[4] = {0xE3, 0x53, 0x7A, 0x1F};
-    const uint8_t pal_sync[4] = {0xD1, 0x93, 0xA7, 0x45};
+static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t data_len,
+                                   size_t *consumed) {
+    // Minimum: 20 byte LDPC header
+    if (data_len < DT_TAD_HEADER_SIZE * 2) return -1;
 
-    // Read first 4 bytes to initialize window
-    for (int i = 0; i < 4; i++) {
-        if (fread(&byte, 1, 1, dec->input_fp) != 1) {
-            return -1;  // EOF
+    size_t offset = 0;
+
+    // LDPC decode TAD header (20 bytes -> 10 bytes)
+    uint8_t decoded_tad_header[DT_TAD_HEADER_SIZE];
+    int ldpc_result = ldpc_decode(data + offset, DT_TAD_HEADER_SIZE * 2, decoded_tad_header);
+    if (ldpc_result < 0) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: LDPC decode failed for TAD header\n");
         }
-        dec->bytes_read++;
-        sync_bytes[i] = byte;
+        memcpy(decoded_tad_header, data + offset, DT_TAD_HEADER_SIZE);
+    } else if (ldpc_result > 0) {
+        dec->fec_corrections++;
+    }
+    offset += DT_TAD_HEADER_SIZE * 2;
+
+    // Parse TAD header
+    uint16_t sample_count;
+    uint8_t quant_bits;
+    uint32_t compressed_size;
+    uint32_t rs_block_count;
+
+    memcpy(&sample_count, decoded_tad_header, 2);
+    quant_bits = decoded_tad_header[2];
+    memcpy(&compressed_size, decoded_tad_header + 3, 4);
+    // uint24 rs_block_count (little endian)
+    rs_block_count = decoded_tad_header[7] |
+                     ((uint32_t)decoded_tad_header[8] << 8) |
+                     ((uint32_t)decoded_tad_header[9] << 16);
+
+    if (dec->verbose) {
+        printf("  TAD: samples=%u, quant_bits=%u, compressed=%u, rs_blocks=%u\n",
+               sample_count, quant_bits, compressed_size, rs_block_count);
     }
 
-    // Check if we already have a sync pattern at current position
-    if (memcmp(sync_bytes, ntsc_sync, 4) == 0 || memcmp(sync_bytes, pal_sync, 4) == 0) {
-        // Rewind to start of sync pattern
-        fseek(dec->input_fp, -4, SEEK_CUR);
-        dec->bytes_read -= 4;
+    // Calculate RS payload size
+    size_t rs_total = rs_block_count * RS_BLOCK_SIZE;
+
+    if (offset + rs_total > data_len) {
         if (dec->verbose) {
-            printf("Found sync at offset %lu\n", dec->bytes_read);
+            fprintf(stderr, "Warning: Audio packet truncated\n");
+        }
+        *consumed = data_len;
+        return -1;
+    }
+
+    // RS decode payload
+    uint8_t *rs_data = malloc(rs_total);
+    if (!rs_data) return -1;
+    memcpy(rs_data, data + offset, rs_total);
+
+    uint8_t *decoded_payload = malloc(compressed_size);
+    if (!decoded_payload) {
+        free(rs_data);
+        return -1;
+    }
+
+    int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
+    if (rs_result < 0) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: RS decode failed for audio\n");
+        }
+    } else if (rs_result > 0) {
+        dec->fec_corrections += rs_result;
+    }
+
+    // decoded_payload already contains the full TAD chunk format:
+    // [sample_count(2)][max_index(1)][payload_size(4)][zstd_data]
+    // No need to rebuild the header - pass it directly to the TAD decoder
+
+    // Decode TAD to PCMu8
+    uint8_t *pcmu8_output = malloc(sample_count * 2);
+    if (!pcmu8_output) {
+        free(rs_data);
+        free(decoded_payload);
+        return -1;
+    }
+
+    size_t bytes_consumed_tad, samples_decoded;
+    int tad_result = tad32_decode_chunk(decoded_payload, compressed_size, pcmu8_output,
+                                         &bytes_consumed_tad, &samples_decoded);
+
+    if (tad_result == 0 && samples_decoded > 0 && dec->audio_temp_fp) {
+        fwrite(pcmu8_output, 1, samples_decoded * 2, dec->audio_temp_fp);
+    }
+
+    free(pcmu8_output);
+    free(rs_data);
+    free(decoded_payload);
+
+    offset += rs_total;
+    *consumed = offset;
+
+    return 0;
+}
+
+static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t data_len,
+                                   size_t *consumed) {
+    // Minimum: 16 byte LDPC header
+    if (data_len < DT_TAV_HEADER_SIZE * 2) return -1;
+
+    size_t offset = 0;
+
+    // LDPC decode TAV header (16 bytes -> 8 bytes)
+    uint8_t decoded_tav_header[DT_TAV_HEADER_SIZE];
+    int ldpc_result = ldpc_decode(data + offset, DT_TAV_HEADER_SIZE * 2, decoded_tav_header);
+    if (ldpc_result < 0) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: LDPC decode failed for TAV header\n");
+        }
+        memcpy(decoded_tav_header, data + offset, DT_TAV_HEADER_SIZE);
+    } else if (ldpc_result > 0) {
+        dec->fec_corrections++;
+    }
+    offset += DT_TAV_HEADER_SIZE * 2;
+
+    // Parse TAV header
+    uint8_t gop_size = decoded_tav_header[0];
+    uint32_t compressed_size;
+    uint32_t rs_block_count;
+
+    memcpy(&compressed_size, decoded_tav_header + 1, 4);
+    // uint24 rs_block_count (little endian)
+    rs_block_count = decoded_tav_header[5] |
+                     ((uint32_t)decoded_tav_header[6] << 8) |
+                     ((uint32_t)decoded_tav_header[7] << 16);
+
+    if (dec->verbose) {
+        printf("  TAV: gop_size=%u, compressed=%u, rs_blocks=%u\n",
+               gop_size, compressed_size, rs_block_count);
+    }
+
+    // Calculate RS payload size
+    size_t rs_total = rs_block_count * RS_BLOCK_SIZE;
+
+    if (offset + rs_total > data_len) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: Video packet truncated\n");
+        }
+        *consumed = data_len;
+        return -1;
+    }
+
+    // RS decode payload
+    uint8_t *rs_data = malloc(rs_total);
+    if (!rs_data) return -1;
+    memcpy(rs_data, data + offset, rs_total);
+
+    uint8_t *decoded_payload = malloc(compressed_size);
+    if (!decoded_payload) {
+        free(rs_data);
+        return -1;
+    }
+
+    int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
+    if (rs_result < 0) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: RS decode failed for video\n");
+        }
+    } else if (rs_result > 0) {
+        dec->fec_corrections += rs_result;
+    }
+
+    // Initialize video decoder if needed
+    if (!dec->video_ctx) {
+        tav_video_params_t vparams;
+        vparams.width = dec->width;
+        vparams.height = dec->is_interlaced ? dec->height / 2 : dec->height;
+        vparams.decomp_levels = DT_SPATIAL_LEVELS;
+        vparams.temporal_levels = DT_TEMPORAL_LEVELS;
+        vparams.wavelet_filter = 1;     // CDF 9/7
+        vparams.temporal_wavelet = 255; // Haar
+        vparams.entropy_coder = 1;      // EZBC
+        vparams.channel_layout = 0;     // YCoCg-R
+        vparams.perceptual_tuning = 1;
+        vparams.quantiser_y = QUALITY_Y[dec->quality_index];
+        vparams.quantiser_co = QUALITY_CO[dec->quality_index];
+        vparams.quantiser_cg = QUALITY_CG[dec->quality_index];
+        vparams.encoder_preset = 0x01;  // Sports
+        vparams.monoblock = 1;
+
+        dec->video_ctx = tav_video_create(&vparams);
+        if (!dec->video_ctx) {
+            fprintf(stderr, "Error: Cannot create video decoder\n");
+            free(rs_data);
+            free(decoded_payload);
+            return -1;
+        }
+        if (dec->verbose) {
+            tav_video_set_verbose(dec->video_ctx, 1);
+        }
+    }
+
+    // Allocate frame buffers
+    int internal_height = dec->is_interlaced ? dec->height / 2 : dec->height;
+    size_t frame_size = dec->width * internal_height * 3;
+    uint8_t **rgb_frames = malloc(gop_size * sizeof(uint8_t *));
+    for (int i = 0; i < gop_size; i++) {
+        rgb_frames[i] = malloc(frame_size);
+    }
+
+    // Decode GOP
+    // The encoder packet format is [type(1)][gop_size(1)][size(4)][zstd_data]
+    // Skip the 6-byte header to get to the raw Zstd-compressed data
+    const uint8_t *zstd_data = decoded_payload + 6;
+    size_t zstd_size = compressed_size > 6 ? compressed_size - 6 : 0;
+
+    // Debug: check packet header
+    if (dec->verbose && decoded_payload) {
+        fprintf(stderr, "DEBUG: Video packet header: type=0x%02x gop=%d size=%u (total=%u, zstd=%zu)\n",
+                decoded_payload[0], decoded_payload[1],
+                *(uint32_t*)(decoded_payload + 2), (unsigned)compressed_size, zstd_size);
+        fprintf(stderr, "DEBUG: First 16 bytes of zstd data: ");
+        for (int i = 0; i < 16 && i < (int)zstd_size; i++) {
+            fprintf(stderr, "%02x ", zstd_data[i]);
+        }
+        fprintf(stderr, "\n");
+    }
+
+    int decode_result = tav_video_decode_gop(dec->video_ctx, zstd_data, zstd_size,
+                                              gop_size, rgb_frames);
+
+    if (decode_result == 0) {
+        // Write frames to video temp file
+        for (int i = 0; i < gop_size; i++) {
+            if (dec->video_temp_fp) {
+                fwrite(rgb_frames[i], 1, frame_size, dec->video_temp_fp);
+            }
+            dec->frames_decoded++;
+        }
+    } else {
+        if (dec->verbose) {
+            const char *err = tav_video_get_error(dec->video_ctx);
+            fprintf(stderr, "Warning: Video decode failed: %s\n", err ? err : "unknown error");
+        }
+    }
+
+    // Cleanup
+    for (int i = 0; i < gop_size; i++) {
+        free(rgb_frames[i]);
+    }
+    free(rgb_frames);
+    free(rs_data);
+    free(decoded_payload);
+
+    offset += rs_total;
+    *consumed = offset;
+
+    return 0;
+}
+
+// =============================================================================
+// FFmpeg Output
+// =============================================================================
+
+// Mux decoded video and audio temp files into final output
+static int mux_output(dt_decoder_t *dec) {
+    if (!dec->output_file) {
+        if (dec->verbose) {
+            printf("No output file specified, skipping mux\n");
         }
         return 0;
     }
 
-    // Sliding window search
-    while (fread(&byte, 1, 1, dec->input_fp) == 1) {
-        dec->bytes_read++;
-
-        // Shift window
-        sync_bytes[0] = sync_bytes[1];
-        sync_bytes[1] = sync_bytes[2];
-        sync_bytes[2] = sync_bytes[3];
-        sync_bytes[3] = byte;
-
-        // Check NTSC sync
-        if (memcmp(sync_bytes, ntsc_sync, 4) == 0) {
-            // Rewind to start of sync pattern
-            fseek(dec->input_fp, -4, SEEK_CUR);
-            dec->bytes_read -= 4;
-            if (dec->verbose) {
-                printf("Found NTSC sync at offset %lu\n", dec->bytes_read);
-            }
-            return 0;
-        }
-
-        // Check PAL sync
-        if (memcmp(sync_bytes, pal_sync, 4) == 0) {
-            // Rewind to start of sync pattern
-            fseek(dec->input_fp, -4, SEEK_CUR);
-            dec->bytes_read -= 4;
-            if (dec->verbose) {
-                printf("Found PAL sync at offset %lu\n", dec->bytes_read);
-            }
-            return 0;
-        }
+    if (dec->frames_decoded == 0) {
+        fprintf(stderr, "Warning: No frames decoded, skipping mux\n");
+        return -1;
     }
 
-    return -1;  // EOF without finding sync
+    if (dec->verbose) {
+        printf("Muxing output to %s...\n", dec->output_file);
+    }
+
+    int internal_height = dec->is_interlaced ? dec->height / 2 : dec->height;
+    char video_size[32];
+    char framerate[16];
+    snprintf(video_size, sizeof(video_size), "%dx%d", dec->width, internal_height);
+    snprintf(framerate, sizeof(framerate), "%d", dec->framerate);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Error: Failed to fork for FFmpeg\n");
+        return -1;
+    }
+
+    if (pid == 0) {
+        // Child process - execute FFmpeg
+        execl("/usr/bin/ffmpeg", "ffmpeg",
+              "-f", "rawvideo",
+              "-pixel_format", "rgb24",
+              "-video_size", video_size,
+              "-framerate", framerate,
+              "-i", dec->video_temp_file,
+              "-f", "u8",
+              "-ar", "32000",
+              "-ac", "2",
+              "-i", dec->audio_temp_file,
+              "-c:v", "ffv1",
+              "-level", "3",
+              "-coder", "1",
+              "-context", "1",
+              "-g", "1",
+              "-slices", "24",
+              "-slicecrc", "1",
+              "-pixel_format", "rgb24",
+              "-c:a", "pcm_u8",
+              "-f", "matroska",
+              dec->output_file,
+              "-y",
+              "-v", "warning",
+              (char*)NULL);
+
+        fprintf(stderr, "Error: Failed to execute FFmpeg\n");
+        exit(1);
+    } else {
+        // Parent process - wait for FFmpeg
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            if (dec->verbose) {
+                printf("Output written to %s\n", dec->output_file);
+            }
+            return 0;
+        } else {
+            fprintf(stderr, "Warning: FFmpeg mux failed (status %d)\n", WEXITSTATUS(status));
+            return -1;
+        }
+    }
 }
 
-// Spawn FFmpeg process for video/audio muxing
-static int spawn_ffmpeg(dt_decoder_t *dec, const char *output_file) {
+// Spawn FFmpeg for streaming output (unused in current implementation)
+static int spawn_ffmpeg(dt_decoder_t *dec) {
     int video_pipe_fd[2];
 
-    // Create pipe for video data
     if (pipe(video_pipe_fd) < 0) {
         fprintf(stderr, "Error: Failed to create video pipe\n");
         return -1;
     }
 
-    // Fork FFmpeg process
     dec->ffmpeg_pid = fork();
 
     if (dec->ffmpeg_pid < 0) {
@@ -259,14 +666,14 @@ static int spawn_ffmpeg(dt_decoder_t *dec, const char *output_file) {
 
     if (dec->ffmpeg_pid == 0) {
         // Child process - execute FFmpeg
-        close(video_pipe_fd[1]);  // Close write end
+        close(video_pipe_fd[1]);
 
+        int internal_height = dec->is_interlaced ? dec->height / 2 : dec->height;
         char video_size[32];
         char framerate[16];
-        snprintf(video_size, sizeof(video_size), "%dx%d", dec->width, dec->height);
+        snprintf(video_size, sizeof(video_size), "%dx%d", dec->width, internal_height);
         snprintf(framerate, sizeof(framerate), "%d", dec->framerate);
 
-        // Redirect video pipe to fd 3
         dup2(video_pipe_fd[0], 3);
         close(video_pipe_fd[0]);
 
@@ -275,37 +682,33 @@ static int spawn_ffmpeg(dt_decoder_t *dec, const char *output_file) {
               "-pixel_format", "rgb24",
               "-video_size", video_size,
               "-framerate", framerate,
-              "-i", "pipe:3",              // Video from fd 3
-              "-f", "u8",                  // Raw unsigned 8-bit PCM
-              "-ar", "32000",              // 32 KHz sample rate
-              "-ac", "2",                  // Stereo
-              "-i", dec->audio_temp_file,  // Audio from temp file
-              "-color_range", "2",
-              "-c:v", "ffv1",              // FFV1 codec
-              "-level", "3",               // FFV1 level 3
-              "-coder", "1",               // Range coder
-              "-context", "1",             // Large context
-              "-g", "1",                   // GOP size 1 (all I-frames)
-              "-slices", "24",             // 24 slices for threading
-              "-slicecrc", "1",            // CRC per slice
+              "-i", "pipe:3",
+              "-f", "u8",
+              "-ar", "32000",
+              "-ac", "2",
+              "-i", dec->audio_temp_file,
+              "-c:v", "ffv1",
+              "-level", "3",
+              "-coder", "1",
+              "-context", "1",
+              "-g", "1",
+              "-slices", "24",
+              "-slicecrc", "1",
               "-pixel_format", "rgb24",
-              "-color_range", "2",
-              "-c:a", "pcm_u8",            // Audio codec (PCM unsigned 8-bit)
-              "-f", "matroska",            // MKV container
-              output_file,
-              "-y",                        // Overwrite output
-              "-v", "warning",             // Minimal logging
+              "-c:a", "pcm_u8",
+              "-f", "matroska",
+              dec->output_file,
+              "-y",
+              "-v", "warning",
               (char*)NULL);
 
         fprintf(stderr, "Error: Failed to execute FFmpeg\n");
         exit(1);
     } else {
-        // Parent process
-        close(video_pipe_fd[0]);  // Close read end
-
+        close(video_pipe_fd[0]);
         dec->video_pipe = fdopen(video_pipe_fd[1], "wb");
         if (!dec->video_pipe) {
-            fprintf(stderr, "Error: Failed to open video pipe for writing\n");
+            fprintf(stderr, "Error: Failed to open video pipe\n");
             kill(dec->ffmpeg_pid, SIGTERM);
             return -1;
         }
@@ -314,495 +717,190 @@ static int spawn_ffmpeg(dt_decoder_t *dec, const char *output_file) {
     return 0;
 }
 
-// Process single DT packet
-static int process_dt_packet(dt_decoder_t *dec) {
+// =============================================================================
+// Main Decoding Loop
+// =============================================================================
+
+static int process_packet(dt_decoder_t *dec) {
     dt_packet_header_t header;
 
-    // Read and verify header
-    int result = read_dt_header(dec, &header);
-    if (result == -1) {
+    // Find and read header
+    if (find_sync_pattern(dec) != 0) {
         return -1;  // EOF
-    } else if (result == -2) {
-        // Invalid sync - try to recover (sync search always enabled)
-        if (find_next_sync(dec) == 0) {
-            // Found sync, try again
-            return process_dt_packet(dec);
-        }
-        return -2;  // Unrecoverable sync loss
     }
 
-    // Allocate buffer for packet data
+    if (read_and_decode_header(dec, &header) != 0) {
+        // Try to recover
+        return 0;  // Continue
+    }
+
+    if (dec->verbose) {
+        double timecode_sec = header.timecode_ns / 1000000000.0;
+        printf("Packet %lu: timecode=%.3fs, size=%u, offset_to_video=%u\n",
+               dec->packets_processed + 1, timecode_sec, header.packet_size, header.offset_to_video);
+    }
+
+    // Read packet payload (contains both TAD and TAV subpackets)
     uint8_t *packet_data = malloc(header.packet_size);
-    if (!packet_data) {
-        fprintf(stderr, "Error: Failed to allocate %u bytes for packet data\n", header.packet_size);
-        return -3;
-    }
+    if (!packet_data) return -1;
 
-    // Read packet data
     size_t bytes_read = fread(packet_data, 1, header.packet_size, dec->input_fp);
     if (bytes_read < header.packet_size) {
-        fprintf(stderr, "Error: Incomplete packet data (%zu/%u bytes)\n", bytes_read, header.packet_size);
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: Incomplete packet (got %zu, expected %u)\n",
+                   bytes_read, header.packet_size);
+        }
         free(packet_data);
-        return -4;
+        return -1;
     }
-
     dec->bytes_read += bytes_read;
 
-    // Parse packet contents:
-    // 1. Timecode (8 bytes, no header)
-    // 2. TAD audio packet(s) (full packet with 0x24 header)
-    // 3. TAV video packet (full packet with 0x10 or 0x12 header)
-
-    size_t offset = 0;
-
-    // 1. Read timecode (8 bytes)
-    if (offset + 8 > header.packet_size) {
-        fprintf(stderr, "Error: Packet too small for timecode\n");
-        free(packet_data);
-        return -5;
+    // Process TAD subpacket (audio comes first, no type byte)
+    size_t tad_consumed = 0;
+    if (header.offset_to_video > 0) {
+        decode_audio_subpacket(dec, packet_data, header.offset_to_video, &tad_consumed);
     }
 
-    uint64_t timecode_ns = 0;
-    for (int i = 0; i < 8; i++) {
-        timecode_ns |= ((uint64_t)packet_data[offset + i]) << (i * 8);
-    }
-    offset += 8;
-
-    if (dec->verbose && dec->packets_processed % 100 == 0) {
-        double timecode_sec = timecode_ns / 1000000000.0;
-        printf("Packet %lu: timecode=%.3fs, size=%u bytes\n",
-               dec->packets_processed, timecode_sec, header.packet_size);
+    // Process TAV subpacket (video comes after audio)
+    if (header.offset_to_video < header.packet_size) {
+        size_t tav_consumed = 0;
+        decode_video_subpacket(dec, packet_data + header.offset_to_video,
+                                header.packet_size - header.offset_to_video, &tav_consumed);
     }
 
-    // 2. Process TAD audio packet(s)
-    while (offset < header.packet_size && packet_data[offset] == TAV_PACKET_AUDIO_TAD) {
-        offset++;  // Skip packet type byte (0x24)
+    dec->packets_processed++;
 
-        // Parse TAD packet format: [sample_count(2)][payload_size+7(4)][sample_count(2)][quant_index(1)][compressed_size(4)][compressed_data]
-        if (offset + 6 > header.packet_size) break;
-
-        uint16_t sample_count = packet_data[offset] | (packet_data[offset+1] << 8);
-        offset += 2;
-
-        uint32_t payload_size_plus_7 = packet_data[offset] | (packet_data[offset+1] << 8) |
-                                       (packet_data[offset+2] << 16) | (packet_data[offset+3] << 24);
-        offset += 4;
-
-        // Total TAD packet content size (everything after the payload_size_plus_7 field)
-        uint32_t tad_content_size = payload_size_plus_7;
-
-        // TAD packet data (sample_count repeat + quant_index + compressed_size + compressed_data)
-        if (offset + tad_content_size > header.packet_size) {
-            fprintf(stderr, "Warning: TAD packet extends beyond DT packet boundary (offset=%zu, content=%u, packet_size=%u)\n",
-                    offset, tad_content_size, header.packet_size);
-            break;
-        }
-
-        // The TAD decoder expects: [sample_count(2)][quant_index(1)][compressed_size(4)][compressed_data]
-        // This is exactly what we have starting at the current offset (the repeated sample_count field)
-
-        // Peek at the TAD packet structure for verbose output
-        uint16_t sample_count_repeat = packet_data[offset] | (packet_data[offset+1] << 8);
-        uint8_t quant_index = packet_data[offset + 2];
-        uint32_t compressed_size = packet_data[offset+3] | (packet_data[offset+4] << 8) |
-                                   (packet_data[offset+5] << 16) | (packet_data[offset+6] << 24);
-
-        if (dec->verbose) {
-            printf("  TAD: samples=%u, quant=%u, compressed=%u bytes\n",
-                   sample_count, quant_index, compressed_size);
-        }
-
-        // Decode TAD audio using shared decoder
-        // Allocate output buffer (max chunk size * 2 channels)
-        uint8_t *pcm_output = malloc(65536 * 2);  // Max chunk size for TAD
-        if (!pcm_output) {
-            fprintf(stderr, "Error: Failed to allocate audio decode buffer\n");
-            offset += tad_content_size;
-            continue;
-        }
-
-        size_t bytes_consumed = 0;
-        size_t samples_decoded = 0;
-
-        // Pass the TAD data starting from repeated sample_count
-        // The decoder expects: [sample_count(2)][quant(1)][payload_size(4)][compressed_data]
-        int decode_result = tad32_decode_chunk(packet_data + offset, tad_content_size,
-                                              pcm_output, &bytes_consumed, &samples_decoded);
-        if (decode_result == 0) {
-            // Write PCMu8 to output (samples * 2 channels)
-            if (dec->output_audio_fp) {
-                fwrite(pcm_output, 1, samples_decoded * 2, dec->output_audio_fp);
-            }
-        } else {
-            fprintf(stderr, "Warning: TAD decode failed at offset %zu\n", offset);
-        }
-
-        free(pcm_output);
-
-        offset += tad_content_size;
-    }
-
-    // 3. Process TAV video packet
-    if (offset < header.packet_size) {
-        uint8_t packet_type = packet_data[offset];
-        offset++;  // Skip packet type byte
-
-        if (packet_type == TAV_PACKET_GOP_UNIFIED) {
-            // Read GOP_UNIFIED packet structure: [gop_size(1)][compressed_size(4)][compressed_data]
-            if (offset + 5 > header.packet_size) {
-                fprintf(stderr, "Warning: Incomplete GOP packet header\n");
-                free(packet_data);
-                return 0;
-            }
-
-            uint8_t gop_size = packet_data[offset];
-            offset++;
-
-            uint32_t compressed_size = packet_data[offset] | (packet_data[offset+1] << 8) |
-                                      (packet_data[offset+2] << 16) | (packet_data[offset+3] << 24);
-            offset += 4;
-
-            if (dec->verbose) {
-                printf("  Video packet: GOP_UNIFIED, %u frames, %u bytes compressed\n",
-                       gop_size, compressed_size);
-            }
-
-            if (offset + compressed_size > header.packet_size) {
-                fprintf(stderr, "Warning: GOP data extends beyond packet boundary\n");
-                free(packet_data);
-                return 0;
-            }
-
-            // Allocate frame buffers for GOP
-            uint8_t **rgb_frames = malloc(gop_size * sizeof(uint8_t*));
-            for (int i = 0; i < gop_size; i++) {
-                rgb_frames[i] = malloc(dec->width * dec->height * 3);
-            }
-
-            // Decode GOP using shared library
-            int decode_result = tav_video_decode_gop(dec->video_ctx,
-                                                     packet_data + offset, compressed_size,
-                                                     gop_size, rgb_frames);
-
-            if (decode_result == 0) {
-                // Write frames to FFmpeg or dump file
-                for (int i = 0; i < gop_size; i++) {
-                    if (dec->video_pipe) {
-                        // Write RGB24 frame to FFmpeg
-                        fwrite(rgb_frames[i], 1, dec->width * dec->height * 3, dec->video_pipe);
-                    } else if (dec->output_video_fp) {
-                        // Packet dump mode - write raw packet
-                        if (i == 0) {  // Only write packet once
-                            fwrite(&packet_type, 1, 1, dec->output_video_fp);
-                            fwrite(&gop_size, 1, 1, dec->output_video_fp);
-                            fwrite(&compressed_size, 4, 1, dec->output_video_fp);
-                            fwrite(packet_data + offset, 1, compressed_size, dec->output_video_fp);
-                        }
-                    }
-                }
-                dec->frames_decoded += gop_size;
-            } else {
-                fprintf(stderr, "Warning: GOP decode failed: %s\n",
-                       tav_video_get_error(dec->video_ctx));
-            }
-
-            // Free frame buffers
-            for (int i = 0; i < gop_size; i++) {
-                free(rgb_frames[i]);
-            }
-            free(rgb_frames);
-
-        } else if (packet_type == TAV_PACKET_IFRAME) {
-            // I-frame packet - for packet dump mode
-            if (dec->output_video_fp) {
-                fwrite(&packet_type, 1, 1, dec->output_video_fp);
-                fwrite(packet_data + offset, 1, header.packet_size - offset, dec->output_video_fp);
-            }
-            dec->frames_decoded++;
-        }
+    if (!dec->verbose && dec->packets_processed % 10 == 0) {
+        fprintf(stderr, "\rDecoding packet %lu, frames: %lu...",
+               dec->packets_processed, dec->frames_decoded);
     }
 
     free(packet_data);
-    dec->packets_processed++;
+    return 0;
+}
+
+static int run_decoder(dt_decoder_t *dec) {
+    // Open input file
+    dec->input_fp = fopen(dec->input_file, "rb");
+    if (!dec->input_fp) {
+        fprintf(stderr, "Error: Cannot open input file: %s\n", dec->input_file);
+        return -1;
+    }
+
+    // Create temp file for audio
+    generate_random_filename(dec->audio_temp_file, sizeof(dec->audio_temp_file));
+    dec->audio_temp_fp = fopen(dec->audio_temp_file, "wb");
+    if (!dec->audio_temp_fp) {
+        fprintf(stderr, "Warning: Cannot create temp audio file, audio will be skipped\n");
+    }
+
+    // Create temp file for video
+    generate_random_filename(dec->video_temp_file, sizeof(dec->video_temp_file));
+    dec->video_temp_fp = fopen(dec->video_temp_file, "wb");
+    if (!dec->video_temp_fp) {
+        fprintf(stderr, "Warning: Cannot create temp video file, video will be skipped\n");
+    }
+
+    // Decode all packets
+    if (dec->verbose) {
+        printf("Decoding TAV-DT stream...\n");
+    }
+
+    // Decode all packets, writing to temp files
+    while (process_packet(dec) == 0) {
+        // Progress is shown in process_packet
+    }
+
+    // Close temp files for reading by FFmpeg
+    if (dec->audio_temp_fp) {
+        fclose(dec->audio_temp_fp);
+        dec->audio_temp_fp = NULL;
+    }
+    if (dec->video_temp_fp) {
+        fclose(dec->video_temp_fp);
+        dec->video_temp_fp = NULL;
+    }
+
+    fprintf(stderr, "\n");
+    printf("\nDecoding complete:\n");
+    printf("  Packets processed: %lu\n", dec->packets_processed);
+    printf("  Frames decoded: %lu\n", dec->frames_decoded);
+    printf("  Bytes read: %lu\n", dec->bytes_read);
+    printf("  FEC corrections: %lu\n", dec->fec_corrections);
+    printf("  CRC errors: %lu\n", dec->crc_errors);
+    printf("  Sync losses: %lu\n", dec->sync_losses);
+
+    // Mux output files
+    mux_output(dec);
+
+    // Cleanup
+    if (dec->video_ctx) {
+        tav_video_free(dec->video_ctx);
+    }
+    if (dec->video_pipe) {
+        fclose(dec->video_pipe);
+        waitpid(dec->ffmpeg_pid, NULL, 0);
+    }
+    if (dec->input_fp) {
+        fclose(dec->input_fp);
+    }
+
+    // Remove temp files
+    unlink(dec->audio_temp_file);
+    unlink(dec->video_temp_file);
 
     return 0;
 }
 
-static void show_usage(const char *prog_name) {
-    printf("Usage: %s [options] -i input.tav -o output.mkv\n\n", prog_name);
-    printf("TAV-DT Decoder - Headerless streaming format decoder\n\n");
-    printf("Options:\n");
-    printf("  -i, --input FILE         Input TAV-DT file (required)\n");
-    printf("  -o, --output FILE        Output MKV file (default: input with .mkv extension)\n");
-    printf("  -v, --verbose            Verbose output\n");
-    printf("  -h, --help               Show this help\n\n");
-    printf("Notes:\n");
-    printf("  - Audio is decoded to temporary file in /tmp/\n");
-    printf("  - Sync pattern searching is always enabled\n\n");
-    printf("Example:\n");
-    printf("  %s -i stream.tavdt              # Creates stream.mkv\n", prog_name);
-    printf("  %s -i stream.tavdt -o out.mkv   # Creates out.mkv\n\n", prog_name);
-}
+// =============================================================================
+// Main
+// =============================================================================
 
-int main(int argc, char *argv[]) {
-    dt_decoder_t decoder = {0};
-    char *input_file = NULL;
-    char *output_file = NULL;
+int main(int argc, char **argv) {
+    dt_decoder_t dec;
+    memset(&dec, 0, sizeof(dec));
 
-    // Parse command line options
+    // Initialize FEC libraries
+    rs_init();
+    ldpc_init();
+
     static struct option long_options[] = {
-        {"input",       required_argument, 0, 'i'},
-        {"output",      required_argument, 0, 'o'},
-        {"verbose",     no_argument,       0, 'v'},
-        {"help",        no_argument,       0, 'h'},
+        {"input",   required_argument, 0, 'i'},
+        {"output",  required_argument, 0, 'o'},
+        {"dump",    no_argument,       0, 'd'},
+        {"verbose", no_argument,       0, 'v'},
+        {"help",    no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "i:o:vh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:dvh", long_options, NULL)) != -1) {
         switch (opt) {
             case 'i':
-                input_file = optarg;
+                dec.input_file = optarg;
                 break;
             case 'o':
-                output_file = optarg;
+                dec.output_file = optarg;
+                break;
+            case 'd':
+                dec.dump_mode = 1;
                 break;
             case 'v':
-                decoder.verbose = 1;
+                dec.verbose = 1;
                 break;
             case 'h':
-                show_usage(argv[0]);
-                return 0;
             default:
-                show_usage(argv[0]);
-                return 1;
+                print_usage(argv[0]);
+                return opt == 'h' ? 0 : 1;
         }
     }
 
-    if (!input_file) {
-        fprintf(stderr, "Error: Input file must be specified\n");
-        show_usage(argv[0]);
+    // Validate arguments
+    if (!dec.input_file || !dec.output_file) {
+        fprintf(stderr, "Error: Input and output files are required\n");
+        print_usage(argv[0]);
         return 1;
     }
 
-    // Generate output filename if not provided
-    if (!output_file) {
-        size_t input_len = strlen(input_file);
-        output_file = malloc(input_len + 32);  // Extra space for extension
-
-        // Find the last directory separator
-        const char *basename_start = strrchr(input_file, '/');
-        if (!basename_start) basename_start = strrchr(input_file, '\\');
-        basename_start = basename_start ? basename_start + 1 : input_file;
-
-        // Copy directory part
-        size_t dir_len = basename_start - input_file;
-        strncpy(output_file, input_file, dir_len);
-
-        // Find the extension
-        const char *ext = strrchr(basename_start, '.');
-        if (ext && (strcmp(ext, ".tavdt") == 0 || strcmp(ext, ".tav") == 0 || strcmp(ext, ".dt") == 0)) {
-            // Copy basename without extension
-            size_t name_len = ext - basename_start;
-            strncpy(output_file + dir_len, basename_start, name_len);
-            output_file[dir_len + name_len] = '\0';
-        } else {
-            // No recognized extension, copy entire basename
-            strcpy(output_file + dir_len, basename_start);
-        }
-
-        // Append .mkv extension
-        strcat(output_file, ".mkv");
-
-        if (decoder.verbose) {
-            printf("Auto-generated output path: %s\n", output_file);
-        }
-    }
-
-    // Open input file
-    decoder.input_fp = fopen(input_file, "rb");
-    if (!decoder.input_fp) {
-        fprintf(stderr, "Error: Cannot open input file: %s\n", input_file);
-        return 1;
-    }
-
-    // Determine output mode based on file extension
-    int output_is_mkv = (strstr(output_file, ".mkv") != NULL || strstr(output_file, ".MKV") != NULL);
-    decoder.ffmpeg_output = output_is_mkv;
-
-    // Create temporary audio file in /tmp/ (using process ID for uniqueness)
-    char temp_audio_file[256];
-    snprintf(temp_audio_file, sizeof(temp_audio_file), "/tmp/tav_dt_audio_%d.pcm", getpid());
-    decoder.audio_temp_file = strdup(temp_audio_file);
-
-    // Open audio output file
-    decoder.output_audio_fp = fopen(decoder.audio_temp_file, "wb");
-    if (!decoder.output_audio_fp) {
-        fprintf(stderr, "Error: Cannot open temporary audio file: %s\n", decoder.audio_temp_file);
-        fclose(decoder.input_fp);
-        return 1;
-    }
-
-    // In packet dump mode, open video packet file
-    char video_packets_file[256];
-    if (!decoder.ffmpeg_output) {
-        snprintf(video_packets_file, sizeof(video_packets_file), "%s.packets", output_file);
-        decoder.output_video_fp = fopen(video_packets_file, "wb");
-    }
-
-    printf("TAV-DT Decoder - %s\n", DECODER_VENDOR_STRING);
-    printf("Input: %s\n", input_file);
-    if (decoder.ffmpeg_output) {
-        printf("Output: %s (FFV1/MKV)\n", output_file);
-    } else {
-        printf("Output video: %s (packet dump)\n", video_packets_file);
-    }
-    printf("\n");
-
-    // Find first sync pattern (works even when sync is at offset 0)
-    if (decoder.verbose) {
-        printf("Searching for first sync pattern...\n");
-    }
-    if (find_next_sync(&decoder) != 0) {
-        fprintf(stderr, "Error: No sync pattern found in file\n");
-        fclose(decoder.input_fp);
-        fclose(decoder.output_audio_fp);
-        if (decoder.output_video_fp) fclose(decoder.output_video_fp);
-        return 1;
-    }
-
-    // Read first DT packet header to get video parameters (without processing content)
-    dt_packet_header_t first_header;
-    if (read_dt_header(&decoder, &first_header) != 0) {
-        fprintf(stderr, "Error: Failed to read first packet header\n");
-        fclose(decoder.input_fp);
-        fclose(decoder.output_audio_fp);
-        if (decoder.output_video_fp) fclose(decoder.output_video_fp);
-        return 1;
-    }
-
-    // Rewind to start of header so process_dt_packet() can read it again
-    fseek(decoder.input_fp, -16, SEEK_CUR);
-
-    // Validate quality index (0-5)
-    if (decoder.quality_index > 5) {
-        fprintf(stderr, "Warning: Quality index %d out of range (0-5), clamping to 5\n", decoder.quality_index);
-        decoder.quality_index = 5;
-    }
-
-    // Map quality index to actual quantiser values using standard TAV arrays
-    uint16_t quant_y = QUALITY_Y[decoder.quality_index];
-    uint16_t quant_co = QUALITY_CO[decoder.quality_index];
-    uint16_t quant_cg = QUALITY_CG[decoder.quality_index];
-
-    if (decoder.verbose) {
-        printf("=== Quantiser Mapping ===\n");
-        printf("  Quality index: %d\n", decoder.quality_index);
-        printf("  Quantiser indices: Y=%d Co=%d Cg=%d\n", quant_y, quant_co, quant_cg);
-        printf("=========================\n\n");
-    }
-
-    // Initialize video decoder with TAV-DT fixed parameters
-    tav_video_params_t video_params = {
-        .width = decoder.width,
-        .height = decoder.height,
-        .decomp_levels = 4,           // TAV-DT fixed: 4 spatial levels
-        .temporal_levels = 2,         // TAV-DT fixed: 2 temporal levels
-        .wavelet_filter = 1,          // TAV-DT fixed: CDF 9/7
-        .temporal_wavelet = 0,        // TAV-DT fixed: Haar
-        .entropy_coder = 1,           // TAV-DT fixed: EZBC
-        .channel_layout = 0,          // TAV-DT fixed: YCoCg-R
-        .perceptual_tuning = 1,       // TAV-DT fixed: Perceptual
-        .quantiser_y = (uint8_t)quant_y,     // From DT quality map
-        .quantiser_co = (uint8_t)quant_co,
-        .quantiser_cg = (uint8_t)quant_cg,
-        .encoder_preset = 1,          // Sports mode
-        .monoblock = 1               // TAV-DT fixed: Single tile
-    };
-
-    decoder.video_ctx = tav_video_create(&video_params);
-    if (!decoder.video_ctx) {
-        fprintf(stderr, "Error: Failed to create video decoder context\n");
-        fclose(decoder.input_fp);
-        fclose(decoder.output_audio_fp);
-        if (decoder.output_video_fp) fclose(decoder.output_video_fp);
-        return 1;
-    }
-
-    tav_video_set_verbose(decoder.video_ctx, decoder.verbose);
-
-    int result;
-
-    // In MKV mode, use two-pass approach:
-    // Pass 1: Extract all audio (video_pipe is NULL)
-    // Pass 2: Spawn FFmpeg and decode all video (audio file is complete)
-    if (decoder.ffmpeg_output) {
-        // Save starting position
-        long start_pos = ftell(decoder.input_fp);
-
-        // Pass 1: Process all packets for audio only
-        printf("\n=== Pass 1: Extracting audio ===\n");
-        while ((result = process_dt_packet(&decoder)) == 0) {
-            // Continue processing (only audio is written)
-        }
-
-        // Close and flush audio file
-        fclose(decoder.output_audio_fp);
-        decoder.output_audio_fp = NULL;
-
-        // Spawn FFmpeg with complete audio file
-        if (spawn_ffmpeg(&decoder, output_file) != 0) {
-            fprintf(stderr, "Error: Failed to spawn FFmpeg process\n");
-            tav_video_free(decoder.video_ctx);
-            fclose(decoder.input_fp);
-            return 1;
-        }
-
-        // Pass 2: Rewind and process all packets for video
-        printf("\n=== Pass 2: Decoding video ===\n");
-        fseek(decoder.input_fp, start_pos, SEEK_SET);
-        decoder.packets_processed = 0;  // Reset statistics
-        decoder.frames_decoded = 0;
-        decoder.bytes_read = 0;
-
-        while ((result = process_dt_packet(&decoder)) == 0) {
-            // Continue processing (only video is written)
-        }
-    } else {
-        // Dump mode: Single pass for both audio and video
-        while ((result = process_dt_packet(&decoder)) == 0) {
-            // Continue processing
-        }
-    }
-
-    // Cleanup
-    if (decoder.video_pipe) {
-        fclose(decoder.video_pipe);
-        waitpid(decoder.ffmpeg_pid, NULL, 0);
-    }
-
-    if (decoder.video_ctx) {
-        tav_video_free(decoder.video_ctx);
-    }
-
-    fclose(decoder.input_fp);
-    if (decoder.output_audio_fp) fclose(decoder.output_audio_fp);
-    if (decoder.output_video_fp) fclose(decoder.output_video_fp);
-
-    // Clean up temporary audio file
-    if (decoder.audio_temp_file) {
-        unlink(decoder.audio_temp_file);
-        free(decoder.audio_temp_file);
-    }
-
-    // Print statistics
-    printf("\n=== Decoding Complete ===\n");
-    printf("  Packets processed: %lu\n", decoder.packets_processed);
-    printf("  Frames decoded: %lu (estimate)\n", decoder.frames_decoded);
-    printf("  Bytes read: %lu\n", decoder.bytes_read);
-    printf("  CRC errors: %lu\n", decoder.crc_errors);
-    printf("  Sync losses: %lu\n", decoder.sync_losses);
-    printf("=========================\n");
-
-    return 0;
+    return run_decoder(&dec);
 }

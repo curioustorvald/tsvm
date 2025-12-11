@@ -13,10 +13,6 @@ ZSTD_CFLAGS = $(shell pkg-config --cflags libzstd 2>/dev/null || echo "")
 ZSTD_LIBS = $(shell pkg-config --libs libzstd 2>/dev/null || echo "-lzstd")
 LIBS = -lm $(ZSTD_LIBS)
 
-# OpenCV flags (for TAV encoder with mesh warping)
-OPENCV_CFLAGS = $(shell pkg-config --cflags opencv4)
-OPENCV_LIBS = $(shell pkg-config --libs opencv4)
-
 # =============================================================================
 # Library Object Files
 # =============================================================================
@@ -39,44 +35,47 @@ LIBTADENC_OBJ = lib/libtadenc/encoder_tad.o
 # libtaddec - TAD decoder library
 LIBTADDEC_OBJ = lib/libtaddec/decoder_tad.o
 
+# libfec - Forward Error Correction library (LDPC + Reed-Solomon)
+LIBFEC_OBJ = lib/libfec/ldpc.o lib/libfec/reed_solomon.o
+
 # =============================================================================
 # Targets
 # =============================================================================
 
 # Source files and targets
-TARGETS = clean libs encoder_tav_ref decoder_tav_ref tav_inspector
+TARGETS = libs encoder_tav_ref decoder_tav_ref tav_inspector tad tav_dt
+LIBRARIES = lib/libtavenc.a lib/libtavdec.a lib/libtadenc.a lib/libtaddec.a lib/libfec.a
+TAV_TARGETS = encoder_tav_ref decoder_tav_ref tav_inspector
 TAD_TARGETS = encoder_tad decoder_tad
-LIBRARIES = lib/libtavenc.a lib/libtavdec.a lib/libtadenc.a lib/libtaddec.a
-TEST_TARGETS = test_mesh_warp test_mesh_roundtrip
+DT_TARGETS = encoder_tav_dt decoder_tav_dt
 
 # Build all encoders (default)
-all: $(TARGETS)
+all: clean $(TARGETS)
 
 # Build all libraries
 libs: $(LIBRARIES)
 
-# Build main encoder
-tev: encoder_tev.c
-	rm -f encoder_tev
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o encoder_tev $< $(LIBS)
+# Reference encoder using libtavenc (replaces old monolithic encoder)
+encoder_tav_ref: src/encoder_tav.c lib/libtavenc.a lib/libtadenc.a
+	rm -f encoder_tav_ref
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o encoder_tav_ref src/encoder_tav.c lib/libtavenc.a lib/libtadenc.a $(LIBS)
+	@echo ""
+	@echo "Reference encoder built: encoder_tav_ref"
+	@echo "This is the official reference implementation with all features"
 
-tav: src/encoder_tav.c lib/libtadenc/encoder_tad.c encoder_tav_opencv.cpp
-	rm -f encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c src/encoder_tav.c -o encoder_tav.o
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c lib/libtadenc/encoder_tad.c -o encoder_tad.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) $(ZSTD_CFLAGS) -c encoder_tav_opencv.cpp -o encoder_tav_opencv.o
-	$(CXX) $(DBGFLAGS) -o encoder_tav encoder_tav.o encoder_tad.o encoder_tav_opencv.o $(LIBS) $(OPENCV_LIBS)
+# Reference decoder using libtavdec (replaces old monolithic decoder)
+decoder_tav_ref: src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a
+	rm -f decoder_tav_ref
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o decoder_tav_ref src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a $(LIBS)
+	@echo ""
+	@echo "Reference decoder built: decoder_tav_ref"
+	@echo "This is the official reference implementation with all features"
 
 tav_inspector: tav_inspector.c
 	rm -f tav_inspector
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o tav_inspector $< $(LIBS)
 
-tav_dt_decoder: src/decoder_tav_dt.c lib/libtaddec/decoder_tad.c include/decoder_tad.h lib/libtavdec/tav_video_decoder.c include/tav_video_decoder.h
-	rm -f decoder_tav_dt decoder_tav_dt.o tav_video_decoder.o decoder_tad.o
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -DTAD_DECODER_LIB -c lib/libtaddec/decoder_tad.c -o decoder_tad.o
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c lib/libtavdec/tav_video_decoder.c -o tav_video_decoder.o
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -c src/decoder_tav_dt.c -o decoder_tav_dt.o
-	$(CC) $(DBGFLAGS) -o decoder_tav_dt decoder_tav_dt.o decoder_tad.o tav_video_decoder.o $(LIBS)
+tav: $(TAV_TARGETS)
 
 # Build TAD (Terrarum Advanced Audio) tools
 encoder_tad: src/encoder_tad_standalone.c lib/libtadenc/encoder_tad.c include/encoder_tad.h
@@ -109,6 +108,9 @@ lib/libtadenc/%.o: lib/libtadenc/%.c
 lib/libtaddec/%.o: lib/libtaddec/%.c
 	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -DTAD_DECODER_LIB -c $< -o $@
 
+lib/libfec/%.o: lib/libfec/%.c
+	$(CC) $(CFLAGS) -Ilib/libfec -c $< -o $@
+
 # Build static libraries
 lib/libtavenc.a: $(LIBTAVENC_OBJ)
 	ar rcs $@ $^
@@ -122,62 +124,66 @@ lib/libtadenc.a: $(LIBTADENC_OBJ)
 lib/libtaddec.a: $(LIBTADDEC_OBJ)
 	ar rcs $@ $^
 
+lib/libfec.a: $(LIBFEC_OBJ)
+	ar rcs $@ $^
+
 # =============================================================================
-# Test Programs
+# TAV-DT (Digital Tape) Encoder/Decoder
 # =============================================================================
 
-test_mesh_roundtrip: test_mesh_roundtrip.cpp encoder_tav_opencv.cpp
-	rm -f test_mesh_roundtrip test_mesh_roundtrip.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_mesh_roundtrip test_mesh_roundtrip.cpp encoder_tav_opencv.cpp $(OPENCV_LIBS)
+# TAV-DT encoder with FEC (multithreaded)
+encoder_tav_dt: src/encoder_tav_dt.c lib/libtavenc.a lib/libtadenc.a lib/libfec.a
+	rm -f encoder_tav_dt
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -Ilib/libfec -o encoder_tav_dt src/encoder_tav_dt.c lib/libtavenc.a lib/libtadenc.a lib/libfec.a $(LIBS) -lpthread
+	@echo ""
+	@echo "TAV-DT encoder built: encoder_tav_dt"
+	@echo "Digital Tape format with LDPC and Reed-Solomon FEC (multithreaded)"
 
-test_interpolation_comparison: test_interpolation_comparison.cpp encoder_tav_opencv.cpp
-	rm -f test_interpolation_comparison test_interpolation_comparison.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_interpolation_comparison test_interpolation_comparison.cpp encoder_tav_opencv.cpp $(OPENCV_LIBS)
+# TAV-DT decoder with FEC (multithreaded)
+decoder_tav_dt: src/decoder_tav_dt.c lib/libtavdec.a lib/libtaddec.a lib/libfec.a
+	rm -f decoder_tav_dt
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -Ilib/libfec -o decoder_tav_dt src/decoder_tav_dt.c lib/libtavdec.a lib/libtaddec.a lib/libfec.a $(LIBS) -lpthread
+	@echo ""
+	@echo "TAV-DT decoder built: decoder_tav_dt"
+	@echo "Digital Tape format with LDPC and Reed-Solomon FEC (multithreaded)"
 
-test_bidirectional_prediction: test_bidirectional_prediction.cpp encoder_tav_opencv.cpp
-	rm -f test_bidirectional_prediction test_bidirectional_prediction.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_bidirectional_prediction test_bidirectional_prediction.cpp encoder_tav_opencv.cpp $(OPENCV_LIBS)
-
-test_mpeg_motion: test_mpeg_motion.cpp
-	rm -f test_mpeg_motion test_mpeg_motion.o
-	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) -o test_mpeg_motion test_mpeg_motion.cpp $(OPENCV_LIBS)
-
-tests: $(TEST_TARGETS)
+# Build all TAV-DT tools
+tav_dt: $(DT_TARGETS)
 
 # Build with debug symbols
 debug: CFLAGS += -g -DDEBUG -fsanitize=address -fno-omit-frame-pointer
 debug: DBGFLAGS += -fsanitize=address -fno-omit-frame-pointer
-debug: $(TARGETS)
+debug: clean $(TARGETS)
 
 # Clean build artifacts
 clean:
-	rm -f $(TARGETS) $(TAD_TARGETS) $(LIBRARIES) *.o lib/*/*.o
+	rm -f $(TARGETS) $(TAD_TARGETS) $(DT_TARGETS) $(LIBRARIES) *.o lib/*/*.o
 
 # Install (copy to PATH)
-install: $(TARGETS) $(TAD_TARGETS)
-	cp encoder_tev $(PREFIX)/bin/
-	cp encoder_tav $(PREFIX)/bin/
-	cp decoder_tav $(PREFIX)/bin/
+install: $(TARGETS)
+	cp encoder_tav_ref $(PREFIX)/bin/
+	cp decoder_tav_ref $(PREFIX)/bin/
 	cp encoder_tad $(PREFIX)/bin/
 	cp decoder_tad $(PREFIX)/bin/
+	cp encoder_tav_dt $(PREFIX)/bin/
 	cp decoder_tav_dt $(PREFIX)/bin/
+	cp tav_inspector $(PREFIX)/bin/
 
 # Check for required dependencies
 check-deps:
 	@echo "Checking dependencies..."
 	@pkg-config --exists libzstd || (echo "Error: libzstd-dev not found. Install with: sudo apt install libzstd-dev" && exit 1)
-	@pkg-config --exists opencv4 || (echo "Error: OpenCV 4 not found. Install with: sudo apt install libopencv-dev" && exit 1)
 	@echo "All dependencies found."
 
 # Help
 help:
-	@echo "TSVM Enhanced Video (TEV) and Audio (TAD) Encoders"
+	@echo "TSVM Advanced Video (TAV) and Audio (TAD) Encoders"
 	@echo ""
 	@echo "Targets:"
 	@echo "  all          - Build video encoders (default)"
 	@echo "  libs         - Build all codec libraries (.a files)"
-	@echo "  tev          - Build the TEV video encoder"
 	@echo "  tav          - Build the TAV advanced video encoder"
+	@echo "  tav_dt       - Build all TAV-DT (Digital Tape) tools with FEC"
 	@echo "  tad          - Build all TAD audio tools (encoder, decoder)"
 	@echo "  encoder_tad  - Build TAD audio encoder"
 	@echo "  decoder_tad  - Build TAD audio decoder"
@@ -193,30 +199,14 @@ help:
 	@echo "  lib/libtavdec.a  - TAV decoder library"
 	@echo "  lib/libtadenc.a  - TAD encoder library"
 	@echo "  lib/libtaddec.a  - TAD decoder library"
+	@echo "  lib/libfec.a     - Forward Error Correction library (LDPC + RS)"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make               # Build video encoders"
 	@echo "  make libs          # Build all libraries"
-	@echo "  make tev           # Build TEV encoder"
 	@echo "  make tav           # Build TAV encoder"
+	@echo "  make tav_dt        # Build TAV-DT encoder/decoder with FEC"
 	@echo "  make tad           # Build all TAD audio tools"
 	@echo "  sudo make install  # Install all encoders"
 
-.PHONY: all libs clean install check-deps help debug tad tests
-
-# Reference encoder using libtavenc (replaces old monolithic encoder)
-encoder_tav_ref: src/encoder_tav.c lib/libtavenc.a lib/libtadenc.a
-	rm -f encoder_tav_ref
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o encoder_tav_ref src/encoder_tav.c lib/libtavenc.a lib/libtadenc.a $(LIBS)
-	@echo ""
-	@echo "Reference encoder built: encoder_tav_ref"
-	@echo "This is the official reference implementation with all features"
-
-# Reference decoder using libtavdec (replaces old monolithic decoder)
-decoder_tav_ref: src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a
-	rm -f decoder_tav_ref
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Iinclude -o decoder_tav_ref src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a $(LIBS)
-	@echo ""
-	@echo "Reference decoder built: decoder_tav_ref"
-	@echo "This is the official reference implementation with all features"
-
+.PHONY: all libs clean install check-deps help debug tad tav_dt tests
