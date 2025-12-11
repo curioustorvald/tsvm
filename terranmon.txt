@@ -1023,9 +1023,6 @@ The encoder supports following presets:
     0x42: Zstd-compressed 16-bit PCM (32 KHz, little endian)
     0x43: Zstd-compressed ADPCM (32 KHz)
     0x44: TAD (TSVM Advanced Audio)
-    <TAV-DT specific>
-    0x50: TAV-DT audio packet with forward error correction
-    0x51: TAV-DT video packet with forward error correction
     <multiplexed video>
     0x70..7F: Reserved for Future Version
     <Standard metadata payloads>
@@ -1632,6 +1629,7 @@ start of the next packet
         - Audio is mandatory (TAD codec only)
         - Everything else is unsupported
     - Video flags: Interlaced/NTSC framerate (defined in packet header)
+        * interlaced is enabled by default
     - Channel layout: Y-Co-Cg
     - Entropy coder: EZBC
     - Encoder preset: sports preset always enabled
@@ -1648,45 +1646,38 @@ start of the next packet
             - bit 4-7 = quality index (0-5)
                 * Quality indices follow TSVM encoder's
         int16  Reserved (zero-fill)
-        uint32 Total packet size past 16-byte header
-        uint32 CRC-32 of 12-byte header
+        uint32 Total packet size (sum of TAD packet and TAV packet size)
+        uint32 CRC-32 of [sync pattern + framerate + flags + reserved + total packet size]
+        uint64 Timecode in nanoseconds
+        uint32 Offset to video packet
     <packet header end; encoded with rate 1/2 LDPC>
-    uint64 Timecode in nanoseconds (repeated thrice; bitwise majority)
-    *      TAD with LDPC (0x50)
-        uint8  Packet type (0x50)
+    bytes  TAD with forward error correction
         <TAD header start>
-            uint16 Sample Count
-            uint32 Compressed Size + 14
-        <TAD header end; encoded with rate 1/2 LDPC>
-        <TAD chunk header start>
             uint16 Sample Count
             uint8  Quantiser Bits
             uint32 Compressed Size
+            uint24 Reed-Solomon Block Count
         <TAD chunk header end; encoded with rate 1/2 LDPC>
-        <LDPC header start>
-            uint8  FEC Code ID
-            uint16 FEC Block size or codebook ID
-            uint16 FEC parity length
-        <LDPC header end; encoded with rate 1/2 LDPC>
         <Reed-Solomon (255,223) block start>
-            *      Zstd-compressed TAD
-            *      Parity for Zstd-compressed TAD
+            bytes  Zstd-compressed TAD
+            bytes  Parity for Zstd-compressed TAD
         <Reed-Solomon (255,223) block end>
-    *      TAV with LDPC (0x51)
-        uint8  Packet type (0x51)
+    bytes  TAV with forward error correction
         <TAV header start>
             uint8  GOP Size (number of frames in this GOP)
             uint32 Compressed Size
+            uint24 Reed-Solomon Block Count
         <TAV header end; encoded with rate 1/2 LDPC>
-        <LDPC header start>
-            uint8  FEC Code ID
-            uint16 FEC Block size or codebook ID
-            uint16 FEC parity length
-        <LDPC header end; encoded with rate 1/2 LDPC>
         <Reed-Solomon (255,223) block start>
-            *      Zstd-compressed Unified Block Data
-            *      Parity for Zstd-compressed Unified Block Data
+            bytes  Zstd-compressed Unified Block Data
+            bytes  Parity for Zstd-compressed Unified Block Data
         <Reed-Solomon (255,223) block end>
+
+    Q1. Why headers have such low encoding rate (n byte input -> 2n byte output)?
+    A1. Headers are crucial for the decoding and thus must be protected rigorously
+
+    Q2. What to do when payload is smaller than RS block capacity?
+    A2. Fill with zero. It shouldn't affect Zstd, and compressed size is already specified, so they complement each other.
 
 # How to sync to the stream
     1. Find a sync pattern
@@ -1695,6 +1686,7 @@ start of the next packet
     4. Read 4 bytes (stored CRC)
     5. Check calculated CRC against stored CRC
     6. If they match, sync to the stream; if not, find a next sync pattern
+    7. "Offset to video packet" and the actual length of the TAD packet can be used together to recover video packet when stream is damaged, using the fact that in error-free stream, length of TAD packet is equal to "Offset to video packet", and the internal packet order is always audio-then-video
 
     The decoder "may" try to sync to the sync pattern that appears damaged when its contents are seem to be intact.
 
