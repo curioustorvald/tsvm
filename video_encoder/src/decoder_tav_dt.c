@@ -204,6 +204,13 @@ typedef struct {
 
     // Timing
     time_t start_time;
+
+    // Error concealment
+    uint8_t *freeze_frame;         // Last good video frame for error concealment
+    size_t freeze_frame_size;
+    uint64_t last_timecode_ns;     // Last processed timecode
+    uint64_t audio_samples_written; // Total audio samples written
+    uint64_t video_frames_written; // Total video frames written (for sync check)
 } dt_decoder_t;
 
 // =============================================================================
@@ -238,6 +245,102 @@ static void generate_random_filename(char *filename, size_t size) {
         filename[prefix_len + i] = charset[rand() % (sizeof(charset) - 1)];
     }
     filename[prefix_len + 16] = '\0';
+}
+
+// =============================================================================
+// Error Concealment Functions
+// =============================================================================
+
+/**
+ * Write silent audio samples for error concealment.
+ * Generates PCMu8 silence (value 128) for the specified number of stereo samples.
+ */
+static int write_silent_audio(dt_decoder_t *dec, size_t num_samples) {
+    if (!dec->audio_temp_fp || num_samples == 0) {
+        return 0;
+    }
+
+    // PCMu8 silence is value 128 (0x80)
+    uint8_t *silence = malloc(num_samples * 2);
+    if (!silence) {
+        fprintf(stderr, "Warning: Cannot allocate silence buffer\n");
+        return -1;
+    }
+
+    memset(silence, 128, num_samples * 2);
+    fwrite(silence, 1, num_samples * 2, dec->audio_temp_fp);
+    free(silence);
+
+    dec->audio_samples_written += num_samples;
+
+    if (dec->verbose) {
+        printf("  Error concealment: Wrote %zu samples of silent audio\n", num_samples);
+    }
+
+    return 0;
+}
+
+/**
+ * Write frozen video frame(s) for error concealment.
+ * Repeats the last good frame or writes black frame if no freeze frame exists.
+ */
+static int write_frozen_frames(dt_decoder_t *dec, int num_frames) {
+    if (!dec->video_temp_fp || num_frames <= 0) {
+        return 0;
+    }
+
+    int internal_height = dec->is_interlaced ? dec->height / 2 : dec->height;
+    size_t frame_size = dec->width * internal_height * 3;
+
+    // If no freeze frame exists, create a black frame
+    if (!dec->freeze_frame) {
+        dec->freeze_frame = calloc(1, frame_size);
+        if (!dec->freeze_frame) {
+            fprintf(stderr, "Warning: Cannot allocate freeze frame buffer\n");
+            return -1;
+        }
+        dec->freeze_frame_size = frame_size;
+        if (dec->verbose) {
+            printf("  Error concealment: Using black frame (no reference frame available)\n");
+        }
+    }
+
+    // Write the freeze frame multiple times
+    for (int i = 0; i < num_frames; i++) {
+        fwrite(dec->freeze_frame, 1, dec->freeze_frame_size, dec->video_temp_fp);
+        dec->video_frames_written++;
+        dec->frames_decoded++;
+    }
+
+    if (dec->verbose) {
+        printf("  Error concealment: Wrote %d frozen frame(s)\n", num_frames);
+    }
+
+    return 0;
+}
+
+/**
+ * Update the freeze frame buffer with the last successfully decoded frame.
+ */
+static int update_freeze_frame(dt_decoder_t *dec, const uint8_t *frame_data, size_t frame_size) {
+    if (!frame_data || frame_size == 0) {
+        return -1;
+    }
+
+    // Allocate or reallocate freeze frame buffer
+    if (!dec->freeze_frame || dec->freeze_frame_size != frame_size) {
+        free(dec->freeze_frame);
+        dec->freeze_frame = malloc(frame_size);
+        if (!dec->freeze_frame) {
+            fprintf(stderr, "Warning: Cannot allocate freeze frame buffer\n");
+            dec->freeze_frame_size = 0;
+            return -1;
+        }
+        dec->freeze_frame_size = frame_size;
+    }
+
+    memcpy(dec->freeze_frame, frame_data, frame_size);
+    return 0;
 }
 
 // =============================================================================
@@ -592,7 +695,9 @@ static void cleanup_decoder_threads(dt_decoder_t *dec) {
 // =============================================================================
 
 static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t data_len,
-                                   size_t *consumed) {
+                                   size_t *consumed, size_t *samples_written) {
+    *samples_written = 0;
+
     // Minimum: 20 byte LDPC header
     if (data_len < DT_TAD_HEADER_SIZE * 2) return -1;
 
@@ -644,7 +749,7 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
             fprintf(stderr, "Warning: Audio packet truncated\n");
         }
         *consumed = data_len;
-        return -1;
+        return -1;  // Unrecoverable
     }
 
     // RS decode payload
@@ -661,8 +766,12 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
     if (rs_result < 0) {
         if (dec->verbose) {
-            fprintf(stderr, "Warning: RS decode failed for audio\n");
+            fprintf(stderr, "Warning: RS decode failed for audio - UNRECOVERABLE\n");
         }
+        free(rs_data);
+        free(decoded_payload);
+        *consumed = offset + rs_total;
+        return -1;  // Unrecoverable - RS failed
     } else if (rs_result > 0) {
         dec->fec_corrections += rs_result;
     }
@@ -690,6 +799,17 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
 
     if (tad_result == 0 && samples_decoded > 0 && dec->audio_temp_fp) {
         fwrite(pcmu8_output, 1, samples_decoded * 2, dec->audio_temp_fp);
+        *samples_written = samples_decoded;
+        dec->audio_samples_written += samples_decoded;
+    } else {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: TAD decode failed - UNRECOVERABLE\n");
+        }
+        free(pcmu8_output);
+        free(rs_data);
+        free(decoded_payload);
+        *consumed = offset + rs_total;
+        return -1;  // Unrecoverable - TAD decode failed
     }
 
     free(pcmu8_output);
@@ -699,14 +819,16 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     offset += rs_total;
     *consumed = offset;
 
-    return 0;
+    return 0;  // Success
 }
 
 /**
  * Multithreaded video decoding - submit GOP to worker pool
  */
 static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, size_t data_len,
-                                      size_t *consumed) {
+                                      size_t *consumed, int *frames_written) {
+    *frames_written = 0;
+
     // Minimum: 16 byte LDPC header
     if (data_len < DT_TAV_HEADER_SIZE * 2) return -1;
 
@@ -740,7 +862,7 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
 
     if (offset + rs_total > data_len) {
         *consumed = data_len;
-        return -1;
+        return -1;  // Unrecoverable
     }
 
     // RS decode payload
@@ -755,7 +877,15 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
     }
 
     int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
-    if (rs_result > 0) {
+    if (rs_result < 0) {
+        if (dec->verbose) {
+            fprintf(stderr, "Warning: RS decode failed for video (MT) - UNRECOVERABLE\n");
+        }
+        free(rs_data);
+        free(decoded_payload);
+        *consumed = offset + rs_total;
+        return -1;  // Unrecoverable - RS failed
+    } else if (rs_result > 0) {
         dec->fec_corrections += rs_result;
     }
     free(rs_data);
@@ -788,11 +918,13 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
                 gop_decode_job_t *job = &dec->slots[i];
                 pthread_mutex_unlock(&dec->mutex);
 
-                // Write frames to temp file
+                // Write frames to temp file and update freeze frame
                 if (job->decode_result == 0 && dec->video_temp_fp) {
                     for (int f = 0; f < job->gop_size; f++) {
                         fwrite(job->rgb_frames[f], 1, job->frame_size, dec->video_temp_fp);
+                        update_freeze_frame(dec, job->rgb_frames[f], job->frame_size);
                         dec->frames_decoded++;
+                        dec->video_frames_written++;
                     }
                 }
 
@@ -853,12 +985,15 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
 
     offset += rs_total;
     *consumed = offset;
+    *frames_written = gop_size;  // Optimistic - assume decode will succeed
 
-    return 0;
+    return 0;  // Success - job submitted
 }
 
 static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t data_len,
-                                   size_t *consumed) {
+                                   size_t *consumed, int *frames_written) {
+    *frames_written = 0;
+
     // Minimum: 16 byte LDPC header
     if (data_len < DT_TAV_HEADER_SIZE * 2) return -1;
 
@@ -901,7 +1036,7 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
             fprintf(stderr, "Warning: Video packet truncated\n");
         }
         *consumed = data_len;
-        return -1;
+        return -1;  // Unrecoverable
     }
 
     // RS decode payload
@@ -918,8 +1053,12 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
     if (rs_result < 0) {
         if (dec->verbose) {
-            fprintf(stderr, "Warning: RS decode failed for video\n");
+            fprintf(stderr, "Warning: RS decode failed for video - UNRECOVERABLE\n");
         }
+        free(rs_data);
+        free(decoded_payload);
+        *consumed = offset + rs_total;
+        return -1;  // Unrecoverable - RS failed
     } else if (rs_result > 0) {
         dec->fec_corrections += rs_result;
     }
@@ -984,18 +1123,31 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
                                               gop_size, rgb_frames);
 
     if (decode_result == 0) {
-        // Write frames to video temp file
+        // Write frames to video temp file and update freeze frame
         for (int i = 0; i < gop_size; i++) {
             if (dec->video_temp_fp) {
                 fwrite(rgb_frames[i], 1, frame_size, dec->video_temp_fp);
             }
+            // Update freeze frame with last successfully decoded frame
+            update_freeze_frame(dec, rgb_frames[i], frame_size);
             dec->frames_decoded++;
+            dec->video_frames_written++;
         }
+        *frames_written = gop_size;
     } else {
         if (dec->verbose) {
             const char *err = tav_video_get_error(dec->video_ctx);
-            fprintf(stderr, "Warning: Video decode failed: %s\n", err ? err : "unknown error");
+            fprintf(stderr, "Warning: Video decode failed: %s - UNRECOVERABLE\n", err ? err : "unknown error");
         }
+        // Cleanup and return error
+        for (int i = 0; i < gop_size; i++) {
+            free(rgb_frames[i]);
+        }
+        free(rgb_frames);
+        free(rs_data);
+        free(decoded_payload);
+        *consumed = offset + rs_total;
+        return -1;  // Unrecoverable - video decode failed
     }
 
     // Cleanup
@@ -1009,7 +1161,7 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     offset += rs_total;
     *consumed = offset;
 
-    return 0;
+    return 0;  // Success
 }
 
 // =============================================================================
@@ -1187,6 +1339,146 @@ static int process_packet(dt_decoder_t *dec) {
                dec->packets_processed + 1, timecode_sec, header.packet_size, header.offset_to_video);
     }
 
+    // Calculate expected samples/frames based on timecode
+    // TAD audio is 32000 Hz stereo, GOP size varies
+    uint64_t timecode_delta_ns = 0;
+    size_t expected_audio_samples = 0;
+    int expected_video_frames = 0;
+    int timecode_valid = 0;
+
+    if (dec->packets_processed > 0) {
+        // Sanity check: detect obviously garbage timecodes (corrupted header data)
+        // A timecode is "garbage" if it's impossibly large (> 24 hours) or if it went backwards
+        // Large forward jumps are OK - they indicate lost packets and should be trusted
+        uint64_t max_reasonable_timecode_ns = 86400ULL * 1000000000ULL;  // 24 hours
+
+        uint64_t reconstructed_timecode_ns = 0;
+        int use_reconstructed = 0;
+        uint64_t gop_duration_ns = (16ULL * 1000000000ULL) / dec->framerate;
+
+        if (header.timecode_ns > max_reasonable_timecode_ns) {
+            // Timecode is garbage (e.g., 9007208.588s = 104 days) - reconstruct
+            reconstructed_timecode_ns = dec->last_timecode_ns + gop_duration_ns;
+            timecode_delta_ns = gop_duration_ns;
+            use_reconstructed = 1;
+
+            if (dec->verbose) {
+                double corrupted_tc = header.timecode_ns / 1000000000.0;
+                double reconstructed_tc = reconstructed_timecode_ns / 1000000000.0;
+                fprintf(stderr, "Warning: Timecode garbage (%.3fs), reconstructed as %.3fs based on GOP size\n",
+                        corrupted_tc, reconstructed_tc);
+            }
+        } else if (header.timecode_ns > dec->last_timecode_ns) {
+            // Valid timecode moving forward - trust it (even with large jumps from lost packets)
+            timecode_delta_ns = header.timecode_ns - dec->last_timecode_ns;
+        } else if (header.timecode_ns == dec->last_timecode_ns) {
+            // Duplicate timecode - corrupted, reconstruct
+            reconstructed_timecode_ns = dec->last_timecode_ns + gop_duration_ns;
+            timecode_delta_ns = gop_duration_ns;
+            use_reconstructed = 1;
+
+            if (dec->verbose) {
+                fprintf(stderr, "Warning: Duplicate timecode detected, reconstructed based on GOP size\n");
+            }
+        } else {
+            // Timecode went backwards - corrupted, reconstruct
+            reconstructed_timecode_ns = dec->last_timecode_ns + gop_duration_ns;
+            timecode_delta_ns = gop_duration_ns;
+            use_reconstructed = 1;
+
+            if (dec->verbose) {
+                fprintf(stderr, "Warning: Timecode went backwards, reconstructed based on GOP size\n");
+            }
+        }
+
+        // Calculate expected samples/frames from (possibly reconstructed) timecode delta
+        // NOTE: These variables are currently unused - cumulative logic below uses absolute timecodes
+        expected_audio_samples = (timecode_delta_ns * 64000) / 1000000000ULL;  // 32kHz stereo = 64000 samples/sec
+        expected_video_frames = (int)((timecode_delta_ns * dec->framerate) / 1000000000ULL);
+        timecode_valid = 1;
+
+        // Store which timecode to use for next packet
+        if (use_reconstructed) {
+            // Override header timecode with reconstructed value
+            header.timecode_ns = reconstructed_timecode_ns;
+        }
+    }
+
+    // Error concealment: Insert gaps BEFORE decoding current packet
+    // This ensures concealment data appears in the correct timeline position
+
+    // Also handle first packet - if timecode > 0, insert concealment for missed initial data
+    if (dec->packets_processed == 0 && header.timecode_ns > 0) {
+        // First packet but timecode is not 0 - we missed the beginning
+        // Audio: 32000 Hz stereo = 64000 total samples per second (L+R combined)
+        uint64_t expected_cumulative_audio = (header.timecode_ns * 64000ULL) / 1000000000ULL;
+        uint64_t expected_cumulative_video = (header.timecode_ns * (uint64_t)dec->framerate) / 1000000000ULL;
+
+        if (dec->verbose) {
+            printf("  FIRST PACKET CONCEALMENT: timecode=%.3fs, inserting %lu silent samples + %lu frozen frames\n",
+                   header.timecode_ns / 1000000000.0, expected_cumulative_audio, expected_cumulative_video);
+        }
+
+        if (expected_cumulative_audio > 0) {
+            write_silent_audio(dec, expected_cumulative_audio);
+        }
+        if (expected_cumulative_video > 0) {
+            write_frozen_frames(dec, (int)expected_cumulative_video);
+        }
+    }
+
+    if (dec->packets_processed > 0 && timecode_valid) {
+        // Save cumulative counts BEFORE decoding this packet
+        uint64_t cumulative_audio_before = dec->audio_samples_written;
+        uint64_t cumulative_video_before = dec->video_frames_written;
+
+        // Calculate expected CUMULATIVE samples/frames at this timecode
+        // Audio: 32000 Hz stereo = 64000 total samples per second (L+R combined)
+        uint64_t expected_cumulative_audio = (header.timecode_ns * 64000ULL) / 1000000000ULL;
+        uint64_t expected_cumulative_video = (header.timecode_ns * (uint64_t)dec->framerate) / 1000000000ULL;
+
+        // Calculate gap between expected and actual (BEFORE this packet)
+        size_t audio_gap = 0;
+        int video_gap = 0;
+
+        if (expected_cumulative_audio > cumulative_audio_before) {
+            audio_gap = expected_cumulative_audio - cumulative_audio_before;
+        }
+
+        if (expected_cumulative_video > cumulative_video_before) {
+            video_gap = expected_cumulative_video - cumulative_video_before;
+        }
+
+        // Insert concealment data FIRST (fills gap from lost packets)
+        if (audio_gap > 0 || video_gap > 0) {
+            if (dec->verbose) {
+                if (audio_gap > 0 && video_gap > 0) {
+                    printf("  ERROR CONCEALMENT: Inserting %zu silent samples + %d frozen frames\n",
+                           audio_gap, video_gap);
+                    printf("    (Expected: %lu samples/%lu frames, Actual: %lu samples/%lu frames)\n",
+                           expected_cumulative_audio, expected_cumulative_video,
+                           cumulative_audio_before, cumulative_video_before);
+                } else if (audio_gap > 0) {
+                    printf("  ERROR CONCEALMENT: Inserting %zu silent samples\n", audio_gap);
+                    printf("    (Expected: %lu samples, Actual: %lu samples)\n",
+                           expected_cumulative_audio, cumulative_audio_before);
+                } else {
+                    printf("  ERROR CONCEALMENT: Inserting %d frozen frames\n", video_gap);
+                    printf("    (Expected: %lu frames, Actual: %lu frames)\n",
+                           expected_cumulative_video, cumulative_video_before);
+                }
+            }
+
+            if (audio_gap > 0) {
+                write_silent_audio(dec, audio_gap);
+            }
+            if (video_gap > 0) {
+                write_frozen_frames(dec, video_gap);
+            }
+        }
+    }
+
+    // NOW decode current packet (writes AFTER concealment)
     // Read packet payload (contains both TAD and TAV subpackets)
     uint8_t *packet_data = malloc(header.packet_size);
     if (!packet_data) return -1;
@@ -1202,10 +1494,15 @@ static int process_packet(dt_decoder_t *dec) {
     }
     dec->bytes_read += bytes_read;
 
+    // Decode audio and video
+    size_t audio_samples_written = 0;
+    int video_frames_written = 0;
+
     // Process TAD subpacket (audio comes first, no type byte)
     size_t tad_consumed = 0;
     if (header.offset_to_video > 0) {
-        decode_audio_subpacket(dec, packet_data, header.offset_to_video, &tad_consumed);
+        decode_audio_subpacket(dec, packet_data, header.offset_to_video,
+                               &tad_consumed, &audio_samples_written);
     }
 
     // Process TAV subpacket (video comes after audio)
@@ -1213,13 +1510,17 @@ static int process_packet(dt_decoder_t *dec) {
         size_t tav_consumed = 0;
         if (dec->num_threads > 1) {
             decode_video_subpacket_mt(dec, packet_data + header.offset_to_video,
-                                       header.packet_size - header.offset_to_video, &tav_consumed);
+                                      header.packet_size - header.offset_to_video,
+                                      &tav_consumed, &video_frames_written);
         } else {
             decode_video_subpacket(dec, packet_data + header.offset_to_video,
-                                   header.packet_size - header.offset_to_video, &tav_consumed);
+                                   header.packet_size - header.offset_to_video,
+                                   &tav_consumed, &video_frames_written);
         }
     }
 
+    // Update timecode tracking
+    dec->last_timecode_ns = header.timecode_ns;
     dec->packets_processed++;
 
     if (!dec->verbose && dec->packets_processed % 10 == 0) {
@@ -1285,11 +1586,13 @@ static int run_decoder(dt_decoder_t *dec) {
                 gop_decode_job_t *job = &dec->slots[found];
                 pthread_mutex_unlock(&dec->mutex);
 
-                // Write frames
+                // Write frames and update freeze frame
                 if (job->decode_result == 0 && dec->video_temp_fp) {
                     for (int f = 0; f < job->gop_size; f++) {
                         fwrite(job->rgb_frames[f], 1, job->frame_size, dec->video_temp_fp);
+                        update_freeze_frame(dec, job->rgb_frames[f], job->frame_size);
                         dec->frames_decoded++;
+                        dec->video_frames_written++;
                     }
                 }
 
@@ -1350,6 +1653,10 @@ static int run_decoder(dt_decoder_t *dec) {
     }
     if (dec->input_fp) {
         fclose(dec->input_fp);
+    }
+    if (dec->freeze_frame) {
+        free(dec->freeze_frame);
+        dec->freeze_frame = NULL;
     }
 
     // Remove temp files

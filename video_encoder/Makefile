@@ -47,7 +47,7 @@ TARGETS = libs encoder_tav_ref decoder_tav_ref tav_inspector tad tav_dt
 LIBRARIES = lib/libtavenc.a lib/libtavdec.a lib/libtadenc.a lib/libtaddec.a lib/libfec.a
 TAV_TARGETS = encoder_tav_ref decoder_tav_ref tav_inspector
 TAD_TARGETS = encoder_tad decoder_tad
-DT_TARGETS = encoder_tav_dt decoder_tav_dt
+DT_TARGETS = encoder_tav_dt decoder_tav_dt tavdt_noise_injector
 
 # Build all encoders (default)
 all: clean $(TARGETS)
@@ -147,6 +147,14 @@ decoder_tav_dt: src/decoder_tav_dt.c lib/libtavdec.a lib/libtaddec.a lib/libfec.
 	@echo "TAV-DT decoder built: decoder_tav_dt"
 	@echo "Digital Tape format with LDPC and Reed-Solomon FEC (multithreaded)"
 
+# TAV-DT noise injector (channel simulator)
+tavdt_noise_injector: tavdt_noise_injector.c
+	rm -f tavdt_noise_injector
+	$(CC) -std=c99 -Wall -O2 -D_GNU_SOURCE -o tavdt_noise_injector tavdt_noise_injector.c -lm
+	@echo ""
+	@echo "TAV-DT noise injector built: tavdt_noise_injector"
+	@echo "Simulates QPSK satellite channel noise (AWGN + burst)"
+
 # Build all TAV-DT tools
 tav_dt: $(DT_TARGETS)
 
@@ -184,6 +192,7 @@ help:
 	@echo "  libs         - Build all codec libraries (.a files)"
 	@echo "  tav          - Build the TAV advanced video encoder"
 	@echo "  tav_dt       - Build all TAV-DT (Digital Tape) tools with FEC"
+	@echo "  tavdt_noise_injector - Build TAV-DT channel noise simulator"
 	@echo "  tad          - Build all TAD audio tools (encoder, decoder)"
 	@echo "  encoder_tad  - Build TAD audio encoder"
 	@echo "  decoder_tad  - Build TAD audio decoder"
