@@ -36,6 +36,11 @@
 #include "decoder_tad.h"
 #include "reed_solomon.h"
 #include "ldpc.h"
+#include "ldpc_payload.h"
+
+// FEC mode for payloads (must match encoder setting)
+#define FEC_MODE_RS   0    // Reed-Solomon (255,223) - default
+#define FEC_MODE_LDPC 1    // LDPC (255,223) - experimental
 
 // =============================================================================
 // Constants
@@ -187,6 +192,7 @@ typedef struct {
     // Options
     int verbose;
     int dump_mode;  // Just dump packets, don't decode
+    int fec_mode;   // FEC_MODE_RS or FEC_MODE_LDPC (must match encoder)
 
     // Multithreading
     int num_threads;
@@ -226,9 +232,25 @@ static void print_usage(const char *program) {
     printf("\nOptions:\n");
     printf("  -t, --threads N      Number of decoder threads (default: min(8, available CPUs))\n");
     printf("                       0 or 1 = single-threaded, 2-16 = multithreaded\n");
+    printf("  --ldpc-payload       Use LDPC(255,223) instead of RS(255,223) for payloads\n");
+    printf("                       (must match encoder setting)\n");
     printf("  --dump               Dump packet info without decoding\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  --help               Show this help\n");
+}
+
+// =============================================================================
+// FEC Block Decoding (RS or LDPC based on mode)
+// =============================================================================
+
+static int decode_fec_blocks(uint8_t *data, size_t total_len, uint8_t *output, size_t output_len, int fec_mode) {
+    if (fec_mode == FEC_MODE_LDPC) {
+        // Use LDPC(255,223) decoding
+        return ldpc_p_decode_blocks(data, total_len, output, output_len);
+    } else {
+        // Use RS(255,223) decoding (default)
+        return rs_decode_blocks(data, total_len, output, output_len);
+    }
 }
 
 static void generate_random_filename(char *filename, size_t size) {
@@ -763,17 +785,17 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         return -1;
     }
 
-    int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
-    if (rs_result < 0) {
+    int fec_result = decode_fec_blocks(rs_data, rs_total, decoded_payload, compressed_size, dec->fec_mode);
+    if (fec_result < 0) {
         if (dec->verbose) {
-            fprintf(stderr, "Warning: RS decode failed for audio - UNRECOVERABLE\n");
+            fprintf(stderr, "Warning: FEC decode failed for audio - UNRECOVERABLE\n");
         }
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - RS failed
-    } else if (rs_result > 0) {
-        dec->fec_corrections += rs_result;
+        return -1;  // Unrecoverable - FEC failed
+    } else if (fec_result > 0) {
+        dec->fec_corrections += fec_result;
     }
 
     // decoded_payload already contains the full TAD chunk format:
@@ -876,17 +898,17 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
         return -1;
     }
 
-    int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
-    if (rs_result < 0) {
+    int fec_result = decode_fec_blocks(rs_data, rs_total, decoded_payload, compressed_size, dec->fec_mode);
+    if (fec_result < 0) {
         if (dec->verbose) {
-            fprintf(stderr, "Warning: RS decode failed for video (MT) - UNRECOVERABLE\n");
+            fprintf(stderr, "Warning: FEC decode failed for video (MT) - UNRECOVERABLE\n");
         }
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - RS failed
-    } else if (rs_result > 0) {
-        dec->fec_corrections += rs_result;
+        return -1;  // Unrecoverable - FEC failed
+    } else if (fec_result > 0) {
+        dec->fec_corrections += fec_result;
     }
     free(rs_data);
 
@@ -1050,17 +1072,17 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         return -1;
     }
 
-    int rs_result = rs_decode_blocks(rs_data, rs_total, decoded_payload, compressed_size);
-    if (rs_result < 0) {
+    int fec_result = decode_fec_blocks(rs_data, rs_total, decoded_payload, compressed_size, dec->fec_mode);
+    if (fec_result < 0) {
         if (dec->verbose) {
-            fprintf(stderr, "Warning: RS decode failed for video - UNRECOVERABLE\n");
+            fprintf(stderr, "Warning: FEC decode failed for video - UNRECOVERABLE\n");
         }
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - RS failed
-    } else if (rs_result > 0) {
-        dec->fec_corrections += rs_result;
+        return -1;  // Unrecoverable - FEC failed
+    } else if (fec_result > 0) {
+        dec->fec_corrections += fec_result;
     }
 
     // Initialize video decoder if needed
@@ -1680,14 +1702,16 @@ int main(int argc, char **argv) {
     // Initialize FEC libraries
     rs_init();
     ldpc_init();
+    ldpc_p_init();  // LDPC payload codec
 
     static struct option long_options[] = {
-        {"input",   required_argument, 0, 'i'},
-        {"output",  required_argument, 0, 'o'},
-        {"threads", required_argument, 0, 't'},
-        {"dump",    no_argument,       0, 'd'},
-        {"verbose", no_argument,       0, 'v'},
-        {"help",    no_argument,       0, 'h'},
+        {"input",        required_argument, 0, 'i'},
+        {"output",       required_argument, 0, 'o'},
+        {"threads",      required_argument, 0, 't'},
+        {"ldpc-payload", no_argument,       0, 'D'},
+        {"dump",         no_argument,       0, 'd'},
+        {"verbose",      no_argument,       0, 'v'},
+        {"help",         no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
@@ -1711,6 +1735,9 @@ int main(int argc, char **argv) {
                 if (dec.num_threads > MAX_DECODE_THREADS) dec.num_threads = MAX_DECODE_THREADS;
                 break;
             }
+            case 'D':
+                dec.fec_mode = FEC_MODE_LDPC;
+                break;
             case 'd':
                 dec.dump_mode = 1;
                 break;

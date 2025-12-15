@@ -36,6 +36,11 @@
 #include "encoder_tad.h"
 #include "reed_solomon.h"
 #include "ldpc.h"
+#include "ldpc_payload.h"
+
+// FEC mode for payloads (stored in flags byte bit 2)
+#define FEC_MODE_RS   0    // Reed-Solomon (255,223) - default
+#define FEC_MODE_LDPC 1    // LDPC (255,223) - experimental
 
 // =============================================================================
 // Constants
@@ -197,6 +202,7 @@ typedef struct {
     // Options
     int verbose;
     int encode_limit;
+    int fec_mode;                // FEC_MODE_RS or FEC_MODE_LDPC for payloads
 
     // Multithreading
     int num_threads;             // 0 = single-threaded, 1+ = num worker threads
@@ -226,6 +232,8 @@ static void print_usage(const char *program) {
     printf("  --ntsc               Force NTSC format (720x480, default)\n");
     printf("  --pal                Force PAL format (720x576)\n");
     printf("  --interlaced         Interlaced output\n");
+    printf("  --ldpc-payload       Use LDPC(255,223) instead of RS(255,223) for payloads\n");
+    printf("                       (experimental: better at high error rates)\n");
     printf("  --encode-limit N     Encode only N frames (for testing)\n");
     printf("  -t, --threads N      Parallel encoding threads (default: min(8, available CPUs))\n");
     printf("                       0 or 1 = single-threaded, 2-16 = multithreaded\n");
@@ -234,31 +242,37 @@ static void print_usage(const char *program) {
 }
 
 // =============================================================================
-// RS Block Encoding
+// FEC Block Encoding (RS or LDPC based on mode)
 // =============================================================================
 
-static size_t encode_rs_blocks(const uint8_t *data, size_t data_len, uint8_t *output) {
-    size_t output_len = 0;
-    size_t remaining = data_len;
-    const uint8_t *src = data;
-    uint8_t *dst = output;
+static size_t encode_fec_blocks(const uint8_t *data, size_t data_len, uint8_t *output, int fec_mode) {
+    if (fec_mode == FEC_MODE_LDPC) {
+        // Use LDPC(255,223) encoding
+        return ldpc_p_encode_blocks(data, data_len, output);
+    } else {
+        // Use RS(255,223) encoding (default)
+        size_t output_len = 0;
+        size_t remaining = data_len;
+        const uint8_t *src = data;
+        uint8_t *dst = output;
 
-    while (remaining > 0) {
-        size_t block_data = (remaining > RS_DATA_SIZE) ? RS_DATA_SIZE : remaining;
-        size_t encoded_len = rs_encode(src, block_data, dst);
+        while (remaining > 0) {
+            size_t block_data = (remaining > RS_DATA_SIZE) ? RS_DATA_SIZE : remaining;
+            size_t encoded_len = rs_encode(src, block_data, dst);
 
-        // Pad to full block size for consistent block boundaries
-        if (encoded_len < RS_BLOCK_SIZE) {
-            memset(dst + encoded_len, 0, RS_BLOCK_SIZE - encoded_len);
+            // Pad to full block size for consistent block boundaries
+            if (encoded_len < RS_BLOCK_SIZE) {
+                memset(dst + encoded_len, 0, RS_BLOCK_SIZE - encoded_len);
+            }
+
+            src += block_data;
+            dst += RS_BLOCK_SIZE;
+            output_len += RS_BLOCK_SIZE;
+            remaining -= block_data;
         }
 
-        src += block_data;
-        dst += RS_BLOCK_SIZE;
-        output_len += RS_BLOCK_SIZE;
-        remaining -= block_data;
+        return output_len;
     }
-
-    return output_len;
 }
 
 // =============================================================================
@@ -355,12 +369,12 @@ static int write_packet(dt_encoder_t *enc, uint64_t timecode_ns,
     uint8_t ldpc_tav_header[DT_TAV_HEADER_SIZE * 2];
     ldpc_encode(tav_header, DT_TAV_HEADER_SIZE, ldpc_tav_header);
 
-    // RS encode payloads
+    // FEC encode payloads (RS or LDPC based on mode)
     uint8_t *tad_rs_data = malloc(tad_rs_size);
     uint8_t *tav_rs_data = malloc(tav_rs_size);
 
-    encode_rs_blocks(tad_data, tad_size, tad_rs_data);
-    encode_rs_blocks(tav_data, tav_size, tav_rs_data);
+    encode_fec_blocks(tad_data, tad_size, tad_rs_data, enc->fec_mode);
+    encode_fec_blocks(tav_data, tav_size, tav_rs_data, enc->fec_mode);
 
     // Write everything
     fwrite(ldpc_header, 1, DT_MAIN_HEADER_SIZE * 2, enc->output_fp);
@@ -1268,6 +1282,7 @@ int main(int argc, char **argv) {
     // Initialize FEC libraries
     rs_init();
     ldpc_init();
+    ldpc_p_init();  // LDPC payload codec
 
     static struct option long_options[] = {
         {"input",        required_argument, 0, 'i'},
@@ -1277,6 +1292,7 @@ int main(int argc, char **argv) {
         {"ntsc",         no_argument,       0, 'N'},
         {"pal",          no_argument,       0, 'P'},
         {"interlaced",   no_argument,       0, 'I'},
+        {"ldpc-payload", no_argument,       0, 'D'},
         {"encode-limit", required_argument, 0, 'L'},
         {"verbose",      no_argument,       0, 'v'},
         {"help",         no_argument,       0, 'h'},
@@ -1318,6 +1334,9 @@ int main(int argc, char **argv) {
                 break;
             case 'I':
                 enc.is_interlaced = 1;
+                break;
+            case 'D':
+                enc.fec_mode = FEC_MODE_LDPC;
                 break;
             case 'L':
                 enc.encode_limit = atoi(optarg);
@@ -1366,6 +1385,7 @@ int main(int argc, char **argv) {
     printf("  Framerate: %d/%d\n", enc.fps_num, enc.fps_den);
     printf("  Quality: %d\n", enc.quality_index);
     printf("  GOP size: %d\n", DT_GOP_SIZE);
+    printf("  Payload FEC: %s\n", enc.fec_mode == FEC_MODE_LDPC ? "LDPC(255,223)" : "RS(255,223)");
     printf("  Threads: %d%s\n", enc.num_threads > 0 ? enc.num_threads : 1,
            enc.num_threads > 0 ? " (multithreaded)" : " (single-threaded)");
     printf("  Header sizes: main=%dB tad=%dB tav=%dB (after LDPC)\n",
