@@ -9,15 +9,19 @@
  * - Mandatory TAD audio
  * - LDPC rate 1/2 for headers, Reed-Solomon (255,223) for payloads
  *
- * Packet structure (revised 2025-12-11):
- * - Main header: 24 bytes → 48 bytes LDPC encoded
- *   (sync + fps + flags + reserved + size + crc + timecode + offset_to_video)
+ * Packet structure (revised 2025-12-15):
+ * - Main header: 28 bytes → 56 bytes LDPC encoded
+ *   Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + crc(4)
+ *   CRC covers bytes 0-23 (everything except CRC itself)
  * - TAD subpacket: header (10→20 bytes LDPC) + RS-encoded payload
  * - TAV subpacket: header (8→16 bytes LDPC) + RS-encoded payload
  * - No packet type bytes - always audio then video
  *
+ * Features (revised 2025-12-15):
+ * - Soft Sync Recovery: Attempts to recover corrupted headers using known values
+ *
  * Created by CuriousTorvald and Claude on 2025-12-09.
- * Revised 2025-12-11 for updated TAV-DT specification.
+ * Revised 2025-12-15 for updated TAV-DT specification (CRC over timecode+offset, Soft Sync Recovery).
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -217,6 +221,13 @@ typedef struct {
     uint64_t last_timecode_ns;     // Last processed timecode
     uint64_t audio_samples_written; // Total audio samples written
     uint64_t video_frames_written; // Total video frames written (for sync check)
+
+    // Soft Sync Recovery state
+    uint8_t last_valid_framerate;
+    uint8_t last_valid_flags;
+    uint64_t last_valid_timecode_ns;
+    int packets_since_valid_sync;
+    int soft_sync_recoveries;      // Statistics counter
 } dt_decoder_t;
 
 // =============================================================================
@@ -419,10 +430,96 @@ typedef struct {
     uint8_t flags;
     uint16_t reserved;
     uint32_t packet_size;
-    uint32_t crc32;
-    uint64_t timecode_ns;
-    uint32_t offset_to_video;
+    uint64_t timecode_ns;      // Now at offset 12 (moved before CRC)
+    uint32_t offset_to_video;  // Now at offset 20 (moved before CRC)
+    uint32_t crc32;            // Now at offset 24 (last field)
 } dt_packet_header_t;
+
+// Soft Sync Recovery state
+typedef struct {
+    uint8_t last_framerate;
+    uint8_t last_flags;
+    uint64_t last_timecode_ns;
+    int packets_since_valid;
+    int is_initialized;
+} soft_sync_state_t;
+
+/**
+ * Attempt Soft Sync Recovery on a header with CRC mismatch.
+ * Returns 1 if recovery succeeded, 0 if failed.
+ *
+ * Stage 1: Substitute known sync pattern, zero-fill reserved, recalculate CRC
+ * Stage 2: Also substitute framerate, flags, timecode with last known values
+ */
+static int attempt_soft_sync_recovery(dt_decoder_t *dec, uint8_t *decoded_header,
+                                       dt_packet_header_t *header __attribute__((unused))) {
+    uint32_t stored_crc;
+    memcpy(&stored_crc, decoded_header + 24, 4);
+
+    // Get the expected sync pattern (NTSC or PAL based on first packet)
+    uint32_t expected_sync = dec->is_pal ? TAV_DT_SYNC_PAL : TAV_DT_SYNC_NTSC;
+
+    // === Stage 1 ===
+    // Substitute sync pattern and zero-fill reserved
+    uint8_t recovery_header[DT_MAIN_HEADER_SIZE];
+    memcpy(recovery_header, decoded_header, DT_MAIN_HEADER_SIZE);
+
+    // Substitute sync pattern (big-endian)
+    recovery_header[0] = (expected_sync >> 24) & 0xFF;
+    recovery_header[1] = (expected_sync >> 16) & 0xFF;
+    recovery_header[2] = (expected_sync >> 8) & 0xFF;
+    recovery_header[3] = expected_sync & 0xFF;
+
+    // Zero-fill reserved
+    recovery_header[6] = 0;
+    recovery_header[7] = 0;
+
+    // Recalculate CRC over bytes 0-23
+    uint32_t calculated_crc = calculate_crc32(recovery_header, 24);
+    if (calculated_crc == stored_crc) {
+        if (dec->verbose) {
+            printf("  Soft Sync Recovery Stage 1: SUCCESS (sync/reserved corrected)\n");
+        }
+        // Use recovered header
+        memcpy(decoded_header, recovery_header, DT_MAIN_HEADER_SIZE);
+        dec->soft_sync_recoveries++;
+        return 1;
+    }
+
+    // === Stage 2 ===
+    // Also substitute framerate, flags, and timecode with last known values
+    if (dec->packets_processed > 0) {
+        recovery_header[4] = dec->last_valid_framerate;
+        recovery_header[5] = dec->last_valid_flags;
+
+        // Calculate expected timecode based on last known timecode + GOP duration
+        // GOP duration = 16 frames / framerate
+        uint64_t gop_duration_ns = (16ULL * 1000000000ULL) / dec->framerate;
+        uint64_t expected_timecode = dec->last_valid_timecode_ns +
+                                     (dec->packets_since_valid_sync + 1) * gop_duration_ns;
+
+        // Write expected timecode to bytes 12-19
+        memcpy(recovery_header + 12, &expected_timecode, 8);
+
+        // Recalculate CRC
+        calculated_crc = calculate_crc32(recovery_header, 24);
+        if (calculated_crc == stored_crc) {
+            if (dec->verbose) {
+                printf("  Soft Sync Recovery Stage 2: SUCCESS (sync/reserved/fps/flags/timecode corrected)\n");
+                printf("    Reconstructed timecode: %.3f s\n", expected_timecode / 1000000000.0);
+            }
+            // Use recovered header
+            memcpy(decoded_header, recovery_header, DT_MAIN_HEADER_SIZE);
+            dec->soft_sync_recoveries++;
+            return 1;
+        }
+    }
+
+    if (dec->verbose) {
+        fprintf(stderr, "  Soft Sync Recovery: FAILED (all stages exhausted)\n");
+    }
+    return 0;
+}
 
 static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header) {
     // Read LDPC-encoded header (56 bytes = 28 bytes * 2)
@@ -444,36 +541,70 @@ static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header)
         dec->fec_corrections++;
     }
 
-    // Parse header fields
+    // Parse header fields (revised layout 2025-12-15)
+    // Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + crc(4)
     header->sync_pattern = ((uint32_t)decoded_header[0] << 24) | ((uint32_t)decoded_header[1] << 16) |
                            ((uint32_t)decoded_header[2] << 8) | decoded_header[3];
     header->framerate = decoded_header[4];
     header->flags = decoded_header[5];
     header->reserved = decoded_header[6] | ((uint16_t)decoded_header[7] << 8);
     memcpy(&header->packet_size, decoded_header + 8, 4);
-    memcpy(&header->crc32, decoded_header + 12, 4);
-    memcpy(&header->timecode_ns, decoded_header + 16, 8);
-    memcpy(&header->offset_to_video, decoded_header + 24, 4);
+    memcpy(&header->timecode_ns, decoded_header + 12, 8);      // Now at offset 12
+    memcpy(&header->offset_to_video, decoded_header + 20, 4);  // Now at offset 20
+    memcpy(&header->crc32, decoded_header + 24, 4);            // Now at offset 24
 
     // Verify sync pattern
-    if (header->sync_pattern != TAV_DT_SYNC_NTSC && header->sync_pattern != TAV_DT_SYNC_PAL) {
-        if (dec->verbose) {
-            fprintf(stderr, "Warning: Invalid sync pattern 0x%08X\n", header->sync_pattern);
-        }
-        dec->sync_losses++;
-        return -2;
+    int sync_valid = (header->sync_pattern == TAV_DT_SYNC_NTSC || header->sync_pattern == TAV_DT_SYNC_PAL);
+    if (!sync_valid && dec->verbose) {
+        fprintf(stderr, "Warning: Invalid sync pattern 0x%08X\n", header->sync_pattern);
     }
 
-    // Verify CRC-32 (covers first 12 bytes: sync + fps + flags + reserved + size)
-    uint32_t calculated_crc = calculate_crc32(decoded_header, 12);
-    if (calculated_crc != header->crc32) {
+    // Verify CRC-32 (covers bytes 0-23: sync + fps + flags + reserved + size + timecode + offset)
+    uint32_t calculated_crc = calculate_crc32(decoded_header, 24);
+    int crc_valid = (calculated_crc == header->crc32);
+
+    if (!crc_valid) {
         if (dec->verbose) {
             fprintf(stderr, "Warning: CRC mismatch (expected 0x%08X, got 0x%08X)\n",
                    header->crc32, calculated_crc);
         }
-        dec->crc_errors++;
-        // Continue anyway
+
+        // Attempt Soft Sync Recovery
+        if (dec->packets_processed > 0 && attempt_soft_sync_recovery(dec, decoded_header, header)) {
+            // Re-parse header from recovered data
+            header->sync_pattern = ((uint32_t)decoded_header[0] << 24) | ((uint32_t)decoded_header[1] << 16) |
+                                   ((uint32_t)decoded_header[2] << 8) | decoded_header[3];
+            header->framerate = decoded_header[4];
+            header->flags = decoded_header[5];
+            header->reserved = decoded_header[6] | ((uint16_t)decoded_header[7] << 8);
+            memcpy(&header->packet_size, decoded_header + 8, 4);
+            memcpy(&header->timecode_ns, decoded_header + 12, 8);
+            memcpy(&header->offset_to_video, decoded_header + 20, 4);
+            memcpy(&header->crc32, decoded_header + 24, 4);
+            crc_valid = 1;  // Recovery succeeded
+        } else {
+            dec->crc_errors++;
+            dec->packets_since_valid_sync++;
+
+            // Per spec: If CRC is unmatched after all soft recovery stages, packet MUST be discarded
+            if (dec->verbose) {
+                fprintf(stderr, "Warning: Packet discarded due to unrecoverable CRC error\n");
+            }
+            dec->sync_losses++;
+            return -2;
+        }
     }
+
+    if (!sync_valid) {
+        dec->sync_losses++;
+        return -2;
+    }
+
+    // CRC is valid - update soft sync recovery state
+    dec->last_valid_framerate = header->framerate;
+    dec->last_valid_flags = header->flags;
+    dec->last_valid_timecode_ns = header->timecode_ns;
+    dec->packets_since_valid_sync = 0;
 
     // Update decoder state from first packet
     if (dec->packets_processed == 0) {
@@ -1660,6 +1791,7 @@ static int run_decoder(dt_decoder_t *dec) {
     printf("  Bytes read: %lu\n", dec->bytes_read);
     printf("  FEC corrections: %lu\n", dec->fec_corrections);
     printf("  CRC errors: %lu\n", dec->crc_errors);
+    printf("  Soft sync recoveries: %d\n", dec->soft_sync_recoveries);
     printf("  Sync losses: %lu\n", dec->sync_losses);
 
     // Mux output files

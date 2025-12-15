@@ -9,15 +9,16 @@
  * - Mandatory TAD audio
  * - LDPC rate 1/2 for headers, Reed-Solomon (255,223) for payloads
  *
- * Packet structure (revised 2025-12-11):
+ * Packet structure (revised 2025-12-15):
  * - Main header: 28 bytes -> 56 bytes LDPC encoded
- *   (sync + fps + flags + reserved + size + crc + timecode + offset_to_video)
+ *   Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + crc(4)
+ *   CRC covers bytes 0-23 (everything except CRC itself)
  * - TAD subpacket: header (10->20 bytes LDPC) + RS-encoded payload
  * - TAV subpacket: header (8->16 bytes LDPC) + RS-encoded payload
  * - No packet type bytes - always audio then video
  *
  * Created by CuriousTorvald and Claude on 2025-12-09.
- * Revised 2025-12-11 for updated TAV-DT specification.
+ * Revised 2025-12-15 for updated TAV-DT specification (CRC now covers timecode and offset).
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -299,6 +300,8 @@ static int write_packet(dt_encoder_t *enc, uint64_t timecode_ns,
     uint32_t packet_size = tad_subpacket_size + tav_subpacket_size;
 
     // Build main header (28 bytes)
+    // Layout (revised 2025-12-15): sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + crc(4)
+    // CRC is calculated over bytes 0-23 (everything except CRC itself)
     uint8_t header[DT_MAIN_HEADER_SIZE];
     // Write sync pattern in big-endian (network byte order)
     uint32_t sync = enc->is_pal ? TAV_DT_SYNC_PAL : TAV_DT_SYNC_NTSC;
@@ -328,15 +331,15 @@ static int write_packet(dt_encoder_t *enc, uint64_t timecode_ns,
     // Packet size (4 bytes)
     memcpy(header + 8, &packet_size, 4);
 
-    // CRC placeholder (will be calculated over header bytes 0-11)
-    uint32_t crc = calculate_crc32(header, 12);
-    memcpy(header + 12, &crc, 4);
+    // Timecode (8 bytes) - now at offset 12
+    memcpy(header + 12, &timecode_ns, 8);
 
-    // Timecode (8 bytes)
-    memcpy(header + 16, &timecode_ns, 8);
+    // Offset to video (4 bytes) - now at offset 20
+    memcpy(header + 20, &offset_to_video, 4);
 
-    // Offset to video (4 bytes)
-    memcpy(header + 24, &offset_to_video, 4);
+    // CRC-32 (4 bytes) - calculated over bytes 0-23 (sync + fps + flags + reserved + size + timecode + offset)
+    uint32_t crc = calculate_crc32(header, 24);
+    memcpy(header + 24, &crc, 4);
 
     // LDPC encode main header
     uint8_t ldpc_header[DT_MAIN_HEADER_SIZE * 2];

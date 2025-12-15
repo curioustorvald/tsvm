@@ -36,7 +36,7 @@ LIBTADENC_OBJ = lib/libtadenc/encoder_tad.o
 LIBTADDEC_OBJ = lib/libtaddec/decoder_tad.o
 
 # libfec - Forward Error Correction library (LDPC + Reed-Solomon)
-LIBFEC_OBJ = lib/libfec/ldpc.o lib/libfec/reed_solomon.o
+LIBFEC_OBJ = lib/libfec/ldpc.o lib/libfec/reed_solomon.o lib/libfec/ldpc_payload.o
 
 # =============================================================================
 # Targets
@@ -150,7 +150,7 @@ decoder_tav_dt: src/decoder_tav_dt.c lib/libtavdec.a lib/libtaddec.a lib/libfec.
 # TAV-DT noise injector (channel simulator)
 tavdt_noise_injector: tavdt_noise_injector.c
 	rm -f tavdt_noise_injector
-	$(CC) -std=c99 -Wall -O2 -D_GNU_SOURCE -o tavdt_noise_injector tavdt_noise_injector.c -lm
+	$(CC) -std=c99 -Wall -Ofast -D_GNU_SOURCE -o tavdt_noise_injector tavdt_noise_injector.c -lm
 	@echo ""
 	@echo "TAV-DT noise injector built: tavdt_noise_injector"
 	@echo "Simulates QPSK satellite channel noise (AWGN + burst)"
@@ -180,7 +180,7 @@ install: $(TARGETS)
 # Check for required dependencies
 check-deps:
 	@echo "Checking dependencies..."
-	@pkg-config --exists libzstd || (echo "Error: libzstd-dev not found. Install with: sudo apt install libzstd-dev" && exit 1)
+	@pkg-config --exists libzstd || (echo "Error: libzstd-dev not found. Install libzstd-dev or equivalent" && exit 1)
 	@echo "All dependencies found."
 
 # Help

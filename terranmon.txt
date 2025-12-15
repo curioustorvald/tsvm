@@ -1647,9 +1647,9 @@ start of the next packet
                 * Quality indices follow TSVM encoder's
         int16  Reserved (zero-fill)
         uint32 Total packet size (sum of TAD packet and TAV packet size)
-        uint32 CRC-32 of [sync pattern + framerate + flags + reserved + total packet size]
         uint64 Timecode in nanoseconds
         uint32 Offset to video packet
+        uint32 CRC-32 of [sync pattern + framerate + flags + reserved + total packet size + timecode + offset]
     <packet header end; encoded with rate 1/2 LDPC>
     bytes  TAD with forward error correction
         <TAD header start>
@@ -1688,7 +1688,24 @@ start of the next packet
     6. If they match, sync to the stream; if not, find a next sync pattern
     7. "Offset to video packet" and the actual length of the TAD packet can be used together to recover video packet when stream is damaged, using the fact that in error-free stream, length of TAD packet is equal to "Offset to video packet", and the internal packet order is always audio-then-video
 
-    The decoder "may" try to sync to the sync pattern that appears damaged when its contents are seem to be intact.
+## Soft Sync Recovery
+
+The decoder MAY try to sync to the sync pattern that appears damaged when its contents are seem to be intact, under the following strategies.
+
+### Stage 1
+
+On the stream position where the sync pattern is supposed to be:
+
+1. Substitute damaged sync pattern with known sync pattern (videos are not allowed to change NTSC/PAL mode mid-stream, so there's only one known value)
+2. Zero-fill the reserved area if haven't already
+3. Re-calculate CRC. If match, sync. If not, head to the next stage
+
+### Stage 2
+
+1. Further substitute the framerate, flags, timecode to the last known value (as these values rarely change mid-stream; timecode must be incremented appropriately. e.g. FPS=16, last known timecode=5.0, packets missed so far=4, then assumed timecode is 5.0 + 4 + 1 = 10.0)
+2. Re-calculate CRC. If match, sync. If not, soft sync recovery is failed, and discard the packet
+
+Note: If CRC is unmatched, the packet MUST be discarded, as the header content cannot be trusted if all soft recovery stages have failed
 
 --------------------------------------------------------------------------------
 
