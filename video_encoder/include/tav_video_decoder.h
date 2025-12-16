@@ -27,6 +27,7 @@ typedef struct {
     uint8_t quantiser_cg;     // Base quantiser index for Cg/Cp
     uint8_t encoder_preset;   // Encoder preset flags (sports, anime, etc.)
     int monoblock;            // 1=single tile (monoblock), 0=multi-tile
+    int no_zstd;              // 1=packets are uncompressed (Video Flags bit 4), 0=Zstd compressed
 } tav_video_params_t;
 
 // Create video decoder context

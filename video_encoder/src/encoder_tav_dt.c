@@ -556,7 +556,8 @@ static void *worker_thread_main(void *arg) {
                     if (job->success && job->audio_sample_count > 0) {
                         int max_index = tad32_quality_to_max_index(enc->quality_index);
                         job->tad_size = tad32_encode_chunk(job->audio_samples, job->audio_sample_count,
-                                                           max_index, 1.0f, job->tad_output);
+                                                           max_index, 1.0f, enc->enc_params.zstd_level,
+                                                           job->tad_output);
                     }
 
                     tav_encoder_free(ctx);
@@ -783,7 +784,8 @@ static int run_encoder_st(dt_encoder_t *enc, FILE *video_pipe, FILE *audio_pipe,
 
             int max_index = tad32_quality_to_max_index(enc->quality_index);
             size_t tad_size = tad32_encode_chunk(enc->audio_buffer, enc->audio_buffer_samples,
-                                                  max_index, 1.0f, tad_output);
+                                                  max_index, 1.0f, enc->enc_params.zstd_level,
+                                                  tad_output);
 
             write_packet(enc, enc->current_timecode_ns,
                          tad_output, tad_size,
@@ -827,7 +829,8 @@ static int run_encoder_st(dt_encoder_t *enc, FILE *video_pipe, FILE *audio_pipe,
         if (result >= 0 && video_packet) {
             int max_index = tad32_quality_to_max_index(enc->quality_index);
             size_t tad_size = tad32_encode_chunk(enc->audio_buffer, enc->audio_buffer_samples,
-                                                  max_index, 1.0f, tad_output);
+                                                  max_index, 1.0f, enc->enc_params.zstd_level,
+                                                  tad_output);
 
             write_packet(enc, enc->current_timecode_ns,
                          tad_output, tad_size,
@@ -1168,6 +1171,7 @@ static int run_encoder(dt_encoder_t *enc) {
     enc->enc_params.encoder_preset = 0x01;      // Sports mode
     enc->enc_params.monoblock = 1;              // Force monoblock
     enc->enc_params.verbose = enc->verbose;
+    enc->enc_params.zstd_level = -1; // disable Zstd
 
     // For single-threaded mode, create a context to validate params
     enc->video_ctx = tav_encoder_create(&enc->enc_params);

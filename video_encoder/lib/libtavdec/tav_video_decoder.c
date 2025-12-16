@@ -1478,25 +1478,38 @@ int tav_video_decode_gop(tav_video_context_t *ctx,
     const int height = ctx->params.height;
     const int num_pixels = width * height;
 
-    // Decompress with Zstd
-    const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, compressed_size);
-    if (ZSTD_isError(decompressed_bound)) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
-        return -1;
-    }
+    // Decompress with Zstd (or use raw data if no_zstd flag is set)
+    uint8_t *decompressed_data;
+    size_t decompressed_size;
+    int should_free_data;
 
-    uint8_t *decompressed_data = malloc(decompressed_bound);
-    if (!decompressed_data) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Memory allocation failed");
-        return -1;
-    }
+    if (ctx->params.no_zstd) {
+        // No Zstd compression - use data directly
+        decompressed_data = (uint8_t *)compressed_data;  // Cast away const, won't modify
+        decompressed_size = compressed_size;
+        should_free_data = 0;
+    } else {
+        // Normal Zstd decompression
+        const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, compressed_size);
+        if (ZSTD_isError(decompressed_bound)) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
+            return -1;
+        }
 
-    const size_t decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
-                                                      compressed_data, compressed_size);
-    if (ZSTD_isError(decompressed_size)) {
-        free(decompressed_data);
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
-        return -1;
+        decompressed_data = malloc(decompressed_bound);
+        if (!decompressed_data) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Memory allocation failed");
+            return -1;
+        }
+
+        decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
+                                            compressed_data, compressed_size);
+        if (ZSTD_isError(decompressed_size)) {
+            free(decompressed_data);
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
+            return -1;
+        }
+        should_free_data = 1;
     }
 
     // Postprocess GOP data based on entropy coder type
@@ -1512,7 +1525,9 @@ int tav_video_decode_gop(tav_video_context_t *ctx,
         gop_coeffs = postprocess_gop_raw(decompressed_data, decompressed_size, gop_size, num_pixels, ctx->params.channel_layout);
     }
 
-    free(decompressed_data);
+    if (should_free_data) {
+        free(decompressed_data);
+    }
 
     if (!gop_coeffs) {
         snprintf(ctx->error_msg, sizeof(ctx->error_msg), "GOP postprocessing failed");
@@ -1638,20 +1653,33 @@ int tav_video_decode_iframe(tav_video_context_t *ctx,
     const int height = ctx->params.height;
     const int num_pixels = width * height;
 
-    // Decompress
-    const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, packet_size);
-    if (ZSTD_isError(decompressed_bound)) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
-        return -1;
-    }
+    // Decompress (or use raw data if no_zstd flag is set)
+    uint8_t *decompressed_data;
+    size_t decompressed_size;
+    int should_free_data;
 
-    uint8_t *decompressed_data = malloc(decompressed_bound);
-    const size_t decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
-                                                      compressed_data, packet_size);
-    if (ZSTD_isError(decompressed_size)) {
-        free(decompressed_data);
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
-        return -1;
+    if (ctx->params.no_zstd) {
+        // No Zstd compression - use data directly
+        decompressed_data = (uint8_t *)compressed_data;
+        decompressed_size = packet_size;
+        should_free_data = 0;
+    } else {
+        // Normal Zstd decompression
+        const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, packet_size);
+        if (ZSTD_isError(decompressed_bound)) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
+            return -1;
+        }
+
+        decompressed_data = malloc(decompressed_bound);
+        decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
+                                            compressed_data, packet_size);
+        if (ZSTD_isError(decompressed_size)) {
+            free(decompressed_data);
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
+            return -1;
+        }
+        should_free_data = 1;
     }
 
     // Allocate coefficient buffers
@@ -1666,7 +1694,9 @@ int tav_video_decode_iframe(tav_video_context_t *ctx,
         postprocess_coefficients_ezbc(decompressed_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg, ctx->params.channel_layout);
     }
 
-    free(decompressed_data);
+    if (should_free_data) {
+        free(decompressed_data);
+    }
 
     // Dequantise
     const float base_q_y = QLUT[ctx->params.quantiser_y];
@@ -1740,20 +1770,33 @@ int tav_video_decode_pframe(tav_video_context_t *ctx,
     const int height = ctx->params.height;
     const int num_pixels = width * height;
 
-    // Decompress
-    const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, packet_size);
-    if (ZSTD_isError(decompressed_bound)) {
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
-        return -1;
-    }
+    // Decompress (or use raw data if no_zstd flag is set)
+    uint8_t *decompressed_data;
+    size_t decompressed_size;
+    int should_free_data;
 
-    uint8_t *decompressed_data = malloc(decompressed_bound);
-    const size_t decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
-                                                      compressed_data, packet_size);
-    if (ZSTD_isError(decompressed_size)) {
-        free(decompressed_data);
-        snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
-        return -1;
+    if (ctx->params.no_zstd) {
+        // No Zstd compression - use data directly
+        decompressed_data = (uint8_t *)compressed_data;
+        decompressed_size = packet_size;
+        should_free_data = 0;
+    } else {
+        // Normal Zstd decompression
+        const size_t decompressed_bound = ZSTD_getFrameContentSize(compressed_data, packet_size);
+        if (ZSTD_isError(decompressed_bound)) {
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
+            return -1;
+        }
+
+        decompressed_data = malloc(decompressed_bound);
+        decompressed_size = ZSTD_decompress(decompressed_data, decompressed_bound,
+                                            compressed_data, packet_size);
+        if (ZSTD_isError(decompressed_size)) {
+            free(decompressed_data);
+            snprintf(ctx->error_msg, sizeof(ctx->error_msg), "Zstd decompression failed");
+            return -1;
+        }
+        should_free_data = 1;
     }
 
     // Allocate coefficient buffers
@@ -1768,7 +1811,9 @@ int tav_video_decode_pframe(tav_video_context_t *ctx,
         postprocess_coefficients_ezbc(decompressed_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg, ctx->params.channel_layout);
     }
 
-    free(decompressed_data);
+    if (should_free_data) {
+        free(decompressed_data);
+    }
 
     // Dequantise
     const float base_q_y = QLUT[ctx->params.quantiser_y];

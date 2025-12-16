@@ -1824,12 +1824,35 @@ static int run_decoder(dt_decoder_t *dec) {
 // Main
 // =============================================================================
 
+// Generate output filename by replacing extension with .mkv
+static char *generate_output_filename(const char *input_file) {
+    size_t len = strlen(input_file);
+    char *output = malloc(len + 5);  // Worst case: add ".mkv" + null
+    if (!output) return NULL;
+
+    strcpy(output, input_file);
+
+    // Find last dot in filename (not in path)
+    char *last_dot = strrchr(output, '.');
+    char *last_slash = strrchr(output, '/');
+
+    // Only replace if dot is after last slash (i.e., in filename, not path)
+    if (last_dot && (!last_slash || last_dot > last_slash)) {
+        strcpy(last_dot, ".mkv");
+    } else {
+        // No extension found, append .mkv
+        strcat(output, ".mkv");
+    }
+
+    return output;
+}
+
 int main(int argc, char **argv) {
     dt_decoder_t dec;
     memset(&dec, 0, sizeof(dec));
 
     // Default thread count
-    dec.num_threads = get_default_thread_count();
+    dec.num_threads = 0;//get_default_thread_count();
 
     // Initialize FEC libraries
     rs_init();
@@ -1884,10 +1907,19 @@ int main(int argc, char **argv) {
     }
 
     // Validate arguments
-    if (!dec.input_file || !dec.output_file) {
+    if (!dec.input_file) {
         fprintf(stderr, "Error: Input and output files are required\n");
         print_usage(argv[0]);
         return 1;
+    }
+
+    // Generate output filename if not provided
+    if (!dec.output_file) {
+        dec.output_file = generate_output_filename(dec.input_file);
+        if (!dec.output_file) {
+            fprintf(stderr, "Error: Failed to generate output filename\n");
+            return 1;
+        }
     }
 
     return run_decoder(&dec);

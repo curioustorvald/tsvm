@@ -826,7 +826,8 @@ static int write_audio_packet(FILE *fp, cli_context_t *cli, float *pcm_samples, 
 
     // Encode with TAD (returns: sample_count(2) + max_index(1) + payload_size(4) + payload)
     int max_index = tad32_quality_to_max_index(cli->audio_quality);
-    size_t tad_chunk_size = tad32_encode_chunk(pcm_samples, num_samples, max_index, 1.0f, tad_buffer);
+    size_t tad_chunk_size = tad32_encode_chunk(pcm_samples, num_samples, max_index, 1.0f,
+                                               cli->enc_params.zstd_level, tad_buffer);
 
     if (tad_chunk_size == 0) {
         fprintf(stderr, "Error: TAD encoding failed\n");

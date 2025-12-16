@@ -779,9 +779,10 @@ int tav_encoder_encode_audio(tav_encoder_context_t *ctx,
         return -1;
     }
 
-    // Encode audio with TAD encoder
+    // Encode audio with TAD encoder (use same zstd_level as video)
     size_t tad_size = tad32_encode_chunk(pcm_samples, num_samples,
-                                         ctx->tad_max_index, 1.0f, tad_data);
+                                         ctx->tad_max_index, 1.0f,
+                                         ctx->zstd_level, tad_data);
     if (tad_size == 0) {
         free(tad_data);
         snprintf(ctx->error_message, MAX_ERROR_MESSAGE,
@@ -1324,28 +1325,41 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     // Free full-frame YCoCg buffers
     free(frame_y); free(frame_co); free(frame_cg);
 
-    // Step 5: Zstd compress all tile data
-    size_t compressed_bound = ZSTD_compressBound(preprocess_offset);
-    uint8_t *compression_buffer = tav_malloc(compressed_bound);
+    // Step 5: Zstd compress all tile data (or bypass if zstd_level < 0)
+    size_t output_size;
+    uint8_t *output_buffer;
+    int is_uncompressed = 0;
 
-    size_t compressed_size = ZSTD_compress(
-        compression_buffer, compressed_bound,
-        preprocess_buffer, preprocess_offset,
-        ctx->zstd_level
-    );
+    if (ctx->zstd_level < 0) {
+        // Bypass Zstd compression - use raw data
+        output_size = preprocess_offset;
+        output_buffer = preprocess_buffer;  // Transfer ownership
+        is_uncompressed = 1;
+    } else {
+        // Normal Zstd compression
+        size_t compressed_bound = ZSTD_compressBound(preprocess_offset);
+        output_buffer = tav_malloc(compressed_bound);
 
-    free(preprocess_buffer);
+        output_size = ZSTD_compress(
+            output_buffer, compressed_bound,
+            preprocess_buffer, preprocess_offset,
+            ctx->zstd_level
+        );
 
-    if (ZSTD_isError(compressed_size)) {
-        free(compression_buffer);
-        snprintf(slot->error_message, MAX_ERROR_MESSAGE,
-                 "Zstd compression failed: %s", ZSTD_getErrorName(compressed_size));
-        return -1;
+        free(preprocess_buffer);
+
+        if (ZSTD_isError(output_size)) {
+            free(output_buffer);
+            snprintf(slot->error_message, MAX_ERROR_MESSAGE,
+                     "Zstd compression failed: %s", ZSTD_getErrorName(output_size));
+            return -1;
+        }
     }
 
     // Step 6: Format I-frame packet
     // Packet format: [type(1)][size(4)][data(N)]
-    size_t packet_size = 1 + 4 + compressed_size;
+    // Size field MSB: 0=compressed, 1=uncompressed
+    size_t packet_size = 1 + 4 + output_size;
     tav_encoder_packet_t *pkt = calloc(1, sizeof(tav_encoder_packet_t));
     pkt->data = malloc(packet_size);
     pkt->size = packet_size;
@@ -1355,16 +1369,16 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
 
     uint8_t *write_ptr = pkt->data;
     *write_ptr++ = TAV_PACKET_IFRAME;
-    uint32_t size_field = (uint32_t)compressed_size;
+    uint32_t size_field = (uint32_t)output_size;
     memcpy(write_ptr, &size_field, 4);
     write_ptr += 4;
-    memcpy(write_ptr, compression_buffer, compressed_size);
+    memcpy(write_ptr, output_buffer, output_size);
 
     // Store packet in slot
     slot->packets = pkt;
     slot->num_packets = 1;
 
-    free(compression_buffer);
+    free(output_buffer);
 
     return 0;  // Success
 }
@@ -1443,34 +1457,45 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
         preprocess_buffer
     );
 
-    // Step 5: Zstd compress
-    size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
-    uint8_t *compression_buffer = tav_malloc(compressed_bound);
+    // Step 5: Zstd compress (or bypass if zstd_level < 0)
+    size_t output_size;
+    uint8_t *output_buffer;
 
-    size_t compressed_size = ZSTD_compress(
-        compression_buffer, compressed_bound,
-        preprocess_buffer, preprocessed_size,
-        ctx->zstd_level
-    );
+    if (ctx->zstd_level < 0) {
+        // Bypass Zstd compression - use raw preprocessed data
+        output_size = preprocessed_size;
+        output_buffer = preprocess_buffer;  // Transfer ownership
+    } else {
+        // Normal Zstd compression
+        size_t compressed_bound = ZSTD_compressBound(preprocessed_size);
+        output_buffer = tav_malloc(compressed_bound);
 
-    if (ZSTD_isError(compressed_size)) {
-        // Cleanup and return error
-        for (int i = 0; i < num_frames; i++) {
-            free(work_y[i]); free(work_co[i]); free(work_cg[i]);
-            free(quant_y[i]); free(quant_co[i]); free(quant_cg[i]);
-        }
-        free(work_y); free(work_co); free(work_cg);
-        free(quant_y); free(quant_co); free(quant_cg);
+        output_size = ZSTD_compress(
+            output_buffer, compressed_bound,
+            preprocess_buffer, preprocessed_size,
+            ctx->zstd_level
+        );
+
         free(preprocess_buffer);
-        free(compression_buffer);
-        snprintf(slot->error_message, MAX_ERROR_MESSAGE,
-                 "Zstd compression failed: %s", ZSTD_getErrorName(compressed_size));
-        return -1;
+
+        if (ZSTD_isError(output_size)) {
+            // Cleanup and return error
+            for (int i = 0; i < num_frames; i++) {
+                free(work_y[i]); free(work_co[i]); free(work_cg[i]);
+                free(quant_y[i]); free(quant_co[i]); free(quant_cg[i]);
+            }
+            free(work_y); free(work_co); free(work_cg);
+            free(quant_y); free(quant_co); free(quant_cg);
+            free(output_buffer);
+            snprintf(slot->error_message, MAX_ERROR_MESSAGE,
+                     "Zstd compression failed: %s", ZSTD_getErrorName(output_size));
+            return -1;
+        }
     }
 
     // Step 6: Format GOP unified packet
     // Packet format: [type(1)][gop_size(1)][size(4)][data(N)]
-    size_t packet_size = 1 + 1 + 4 + compressed_size;
+    size_t packet_size = 1 + 1 + 4 + output_size;
     tav_encoder_packet_t *pkt = calloc(1, sizeof(tav_encoder_packet_t));
     pkt->data = malloc(packet_size);
     pkt->size = packet_size;
@@ -1481,10 +1506,10 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     uint8_t *write_ptr = pkt->data;
     *write_ptr++ = TAV_PACKET_GOP_UNIFIED;
     *write_ptr++ = (uint8_t)num_frames;
-    uint32_t size_field = (uint32_t)compressed_size;
+    uint32_t size_field = (uint32_t)output_size;
     memcpy(write_ptr, &size_field, 4);
     write_ptr += 4;
-    memcpy(write_ptr, compression_buffer, compressed_size);
+    memcpy(write_ptr, output_buffer, output_size);
 
     // Store packet in slot
     slot->packets = pkt;
@@ -1497,8 +1522,7 @@ static int encode_gop_unified(tav_encoder_context_t *ctx, gop_slot_t *slot) {
     }
     free(work_y); free(work_co); free(work_cg);
     free(quant_y); free(quant_co); free(quant_cg);
-    free(preprocess_buffer);
-    free(compression_buffer);
+    free(output_buffer);
 
     return 0;  // Success
 }

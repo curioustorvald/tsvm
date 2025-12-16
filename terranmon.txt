@@ -944,7 +944,7 @@ transmission capability, and region-of-interest coding.
             - bit 2 = is lossless mode
                 (shorthand for `-q 6 -Q0,0,0 -w 0 --intra-only --no-perceptual-tuning --arate 384`)
             - bit 3 = has region-of-interest coding (for still pictures only)
-            - bit 4 = reserved (crop encoding?)
+            - bit 4 = no Zstd compression
             - bit 7 = has no video
     uint8  Encoder quality level (stored with bias of 1 (q0=1); used to derive anisotropy value)
     uint8  Channel layout (bit-field: bit 0=has alpha, bit 1=has chroma inverted, bit 2=has luma inverted)
@@ -1659,8 +1659,8 @@ start of the next packet
             uint24 Reed-Solomon Block Count
         <TAD chunk header end; encoded with rate 1/2 LDPC>
         <Reed-Solomon (255,223) block start>
-            bytes  Zstd-compressed TAD
-            bytes  Parity for Zstd-compressed TAD
+            bytes  TAD (EZBC, no Zstd)
+            bytes  Parity for TAD
         <Reed-Solomon (255,223) block end>
     bytes  TAV with forward error correction
         <TAV header start>
@@ -1669,8 +1669,8 @@ start of the next packet
             uint24 Reed-Solomon Block Count
         <TAV header end; encoded with rate 1/2 LDPC>
         <Reed-Solomon (255,223) block start>
-            bytes  Zstd-compressed Unified Block Data
-            bytes  Parity for Zstd-compressed Unified Block Data
+            bytes  TAV (EZBC, no Zstd)
+            bytes  Parity for TAV
         <Reed-Solomon (255,223) block end>
 
     Q1. Why headers have such low encoding rate (n byte input -> 2n byte output)?

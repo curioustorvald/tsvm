@@ -289,7 +289,7 @@ int main(int argc, char *argv[]) {
         // Encode chunk using linked tad32_encode_chunk() from encoder_tad32.c
         size_t encoded_size = tad32_encode_chunk(chunk_buffer, TAD32_DEFAULT_CHUNK_SIZE,
                                                  max_index,
-                                                 quantiser_scale, output_buffer);
+                                                 quantiser_scale, TAD32_ZSTD_LEVEL, output_buffer);
 
         if (encoded_size == 0) {
             fprintf(stderr, "Error: Chunk encoding failed at chunk %zu\n", chunk_idx);

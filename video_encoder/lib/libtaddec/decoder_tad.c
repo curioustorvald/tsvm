@@ -878,8 +878,12 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
     uint8_t max_index = *read_ptr;
     read_ptr += sizeof(uint8_t);
 
-    uint32_t payload_size = *((const uint32_t*)read_ptr);
+    uint32_t payload_size_field = *((const uint32_t*)read_ptr);
     read_ptr += sizeof(uint32_t);
+
+    // Check MSB for uncompressed flag
+    int is_uncompressed = (payload_size_field & 0x80000000) != 0;
+    uint32_t payload_size = payload_size_field & 0x7FFFFFFF;
 
     // Calculate DWT levels from sample count
     int dwt_levels = calculate_dwt_levels(sample_count);
@@ -888,20 +892,30 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
         return -1;
     }
 
-    // Decompress Zstd
-    const uint8_t *payload;
+    // Decompress Zstd (or use raw data if uncompressed)
     uint8_t *decompressed = NULL;
+    size_t actual_size;
+    int should_free_decompressed;
 
-    // Estimate decompressed size (generous upper bound)
-    size_t decompressed_size = sample_count * 4 * sizeof(int8_t);
-    decompressed = malloc(decompressed_size);
+    if (is_uncompressed) {
+        // Data is not compressed - use directly
+        decompressed = (uint8_t *)read_ptr;  // Cast away const, won't modify
+        actual_size = payload_size;
+        should_free_decompressed = 0;
+    } else {
+        // Normal Zstd decompression
+        // Estimate decompressed size (generous upper bound)
+        size_t decompressed_size = sample_count * 4 * sizeof(int8_t);
+        decompressed = malloc(decompressed_size);
 
-    size_t actual_size = ZSTD_decompress(decompressed, decompressed_size, read_ptr, payload_size);
+        actual_size = ZSTD_decompress(decompressed, decompressed_size, read_ptr, payload_size);
 
-    if (ZSTD_isError(actual_size)) {
-        fprintf(stderr, "Error: Zstd decompression failed: %s\n", ZSTD_getErrorName(actual_size));
-        free(decompressed);
-        return -1;
+        if (ZSTD_isError(actual_size)) {
+            fprintf(stderr, "Error: Zstd decompression failed: %s\n", ZSTD_getErrorName(actual_size));
+            free(decompressed);
+            return -1;
+        }
+        should_free_decompressed = 1;
     }
 
     read_ptr += payload_size;
@@ -926,7 +940,7 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
     int result = tad_decode_channel_ezbc(decompressed, actual_size, quant_mid, &mid_bytes_consumed);
     if (result != 0) {
         fprintf(stderr, "Error: EZBC decoding failed for Mid channel\n");
-        free(decompressed);
+        if (should_free_decompressed) free(decompressed);
         free(quant_mid); free(quant_side); free(dwt_mid); free(dwt_side);
         free(pcm32_left); free(pcm32_right); free(pcm8_left); free(pcm8_right);
         return -1;
@@ -938,7 +952,7 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
                                       quant_side, &side_bytes_consumed);
     if (result != 0) {
         fprintf(stderr, "Error: EZBC decoding failed for Side channel\n");
-        free(decompressed);
+        if (should_free_decompressed) free(decompressed);
         free(quant_mid); free(quant_side); free(dwt_mid); free(dwt_side);
         free(pcm32_left); free(pcm32_right); free(pcm8_left); free(pcm8_right);
         return -1;
@@ -978,7 +992,7 @@ int tad32_decode_chunk(const uint8_t *input, size_t input_size, uint8_t *pcmu8_s
     // Cleanup
     free(quant_mid); free(quant_side); free(dwt_mid); free(dwt_side);
     free(pcm32_left); free(pcm32_right); free(pcm8_left); free(pcm8_right);
-    if (decompressed) free(decompressed);
+    if (should_free_decompressed && decompressed) free(decompressed);
 
     return 0;
 }

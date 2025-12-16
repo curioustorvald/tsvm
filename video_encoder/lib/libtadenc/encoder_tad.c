@@ -1145,7 +1145,7 @@ size_t tad_encode_channel_ezbc(int8_t *coeffs, size_t count, uint8_t **output) {
 
 size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
                           int max_index,
-                          float quantiser_scale, uint8_t *output) {
+                          float quantiser_scale, int zstd_level, uint8_t *output) {
     // Calculate DWT levels from chunk size
     int dwt_levels = calculate_dwt_levels(num_samples);
     if (dwt_levels < 0) {
@@ -1232,7 +1232,7 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     free(mid_ezbc);
     free(side_ezbc);
 
-    // Step 6: Zstd compression
+    // Step 6: Zstd compression (or bypass if zstd_level < 0)
     uint8_t *write_ptr = output;
 
     // Write chunk header
@@ -1246,26 +1246,40 @@ size_t tad32_encode_chunk(const float *pcm32_stereo, size_t num_samples,
     write_ptr += sizeof(uint32_t);
 
     size_t payload_size;
+    int is_uncompressed = 0;
 
-    size_t zstd_bound = ZSTD_compressBound(uncompressed_size);
-    uint8_t *zstd_buffer = malloc(zstd_bound);
+    if (zstd_level < 0) {
+        // Bypass Zstd compression - use raw EZBC data
+        payload_size = uncompressed_size;
+        memcpy(write_ptr, temp_buffer, payload_size);
+        is_uncompressed = 1;
+    } else {
+        // Normal Zstd compression
+        int effective_level = (zstd_level > 0) ? zstd_level : TAD32_ZSTD_LEVEL;
+        size_t zstd_bound = ZSTD_compressBound(uncompressed_size);
+        uint8_t *zstd_buffer = malloc(zstd_bound);
 
-    payload_size = ZSTD_compress(zstd_buffer, zstd_bound, temp_buffer, uncompressed_size, TAD32_ZSTD_LEVEL);
+        payload_size = ZSTD_compress(zstd_buffer, zstd_bound, temp_buffer, uncompressed_size, effective_level);
 
-    if (ZSTD_isError(payload_size)) {
-        fprintf(stderr, "Error: Zstd compression failed: %s\n", ZSTD_getErrorName(payload_size));
+        if (ZSTD_isError(payload_size)) {
+            fprintf(stderr, "Error: Zstd compression failed: %s\n", ZSTD_getErrorName(payload_size));
+            free(zstd_buffer);
+            free(pcm32_left); free(pcm32_right);
+            free(pcm32_mid); free(pcm32_side); free(dwt_mid); free(dwt_side);
+            free(quant_mid); free(quant_side); free(temp_buffer);
+            return 0;
+        }
+
+        memcpy(write_ptr, zstd_buffer, payload_size);
         free(zstd_buffer);
-        free(pcm32_left); free(pcm32_right);
-        free(pcm32_mid); free(pcm32_side); free(dwt_mid); free(dwt_side);
-        free(quant_mid); free(quant_side); free(temp_buffer);
-        return 0;
     }
 
-    memcpy(write_ptr, zstd_buffer, payload_size);
-    free(zstd_buffer);
-
-
-    *payload_size_ptr = (uint32_t)payload_size;
+    // Set payload size (MSB=1 indicates uncompressed data)
+    uint32_t size_field = (uint32_t)payload_size;
+    if (is_uncompressed) {
+        size_field |= 0x80000000;
+    }
+    *payload_size_ptr = size_field;
     write_ptr += payload_size;
 
     // Cleanup
