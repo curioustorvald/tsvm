@@ -140,6 +140,10 @@ typedef struct {
     int interlaced;        // Interlaced mode (half-height internally, full height in header)
     int header_height;     // Height to write to header (may differ from enc_params.height when interlaced)
 
+    // Framerate conversion
+    int target_fps_num;    // Target output framerate numerator (0 = no conversion)
+    int target_fps_den;    // Target output framerate denominator
+
     // Audio encoding
     int has_audio;
     int audio_quality;           // TAD quality level (0-5)
@@ -277,19 +281,19 @@ static void print_usage(const char *program) {
     printf("  -o, --output FILE        Output TAV file\n");
     printf("\nVideo Options:\n");
     printf("  -s, --size WxH           Frame size (auto-detected if omitted)\n");
-    printf("  -f, --fps NUM/DEN        Framerate (e.g., 60/1, 30000/1001)\n");
+    printf("  -f, --fps NUM/DEN        Output Framerate (e.g., 60/1, 30000/1001)\n");
     printf("  -q, --quality N          Quality level 0-5 (default: 3)\n");
     printf("  -Q, --quantiser Y,Co,Cg  Custom quantisers (advanced)\n");
     printf("  -w, --wavelet N          Spatial wavelet: 0=5/3, 1=9/7 (default), 2=13/7, 16=DD-4, 255=Haar\n");
     printf("  --temporal-wavelet N     Temporal wavelet: 0=Haar (default), 1=CDF 5/3\n");
     printf("  -c, --colour-space N     Colour space: 0=YCoCg-R (default), 1=ICtCp\n");
     printf("  --decomp-levels N        Spatial DWT levels (0=auto, default: 6)\n");
-    printf("  --temporal-levels N      Temporal DWT levels (0=auto, default: 2)\n");
+//    printf("  --temporal-levels N      Temporal DWT levels (0=auto, default: 2)\n");
     printf("\nGOP Options:\n");
     printf("  --temporal-dwt           Enable 3D DWT GOP encoding (default)\n");
     printf("  --intra-only             Disable temporal compression (I-frames only)\n");
     printf("  --gop-size N             GOP size 8/16/24 (default: 24)\n");
-    printf("  --single-pass            Disable scene change detection\n");
+//    printf("  --single-pass            Disable scene change detection\n");
     printf("\nPerformance:\n");
     printf("  -t, --threads N          Parallel encoding threads (default: min(8, available CPUs))\n");
     printf("                           0 or 1 = single-threaded, 2-16 = multithreaded\n");
@@ -309,7 +313,7 @@ static void print_usage(const char *program) {
     printf("  --preset-anime           Anime mode (disable grain)\n");
     printf("\nAudio:\n");
     printf("  --tad-audio              Use TAD audio codec (default)\n");
-    printf("  --pcm8-audio             Use native PCM8 audio\n");
+    printf("  --pcm8-audio             Use TSVM-native PCM8 audio\n");
     printf("  --audio-quality N        TAD audio quality 0-5 (default: matches video -q)\n");
     printf("  --no-audio               Disable audio encoding\n");
     printf("  --separate-audio-track   Multiplex audio as separate track\n");
@@ -393,28 +397,39 @@ static int get_video_info(const char *input_file, int *width, int *height,
  *   - FFmpeg outputs half-height frames via tinterlace+separatefields
  *   - Filtergraph: scale/crop to full size, then tinterlace weave halves
  *     framerate, then separatefields restores framerate at half height
+ *
+ * When target_fps_num > 0:
+ *   - Applies fps filter at the start to convert to target framerate
  */
 static FILE* open_ffmpeg_pipe(const char *input_file, int width, int height,
-                              int interlaced, int full_height) {
+                              int interlaced, int full_height,
+                              int target_fps_num, int target_fps_den) {
     char cmd[MAX_PATH * 2];
+    char fps_filter[64] = "";
+
+    // Build fps filter string if conversion is requested (applied first)
+    if (target_fps_num > 0 && target_fps_den > 0) {
+        snprintf(fps_filter, sizeof(fps_filter), "fps=%d/%d,", target_fps_num, target_fps_den);
+    }
 
     if (interlaced) {
         // Interlaced mode filtergraph:
-        // 1. scale and crop to full size (width x full_height)
-        // 2. tinterlace interleave_top:cvlpf - weave fields, halves framerate
-        // 3. separatefields - separate into half-height frames, doubles framerate back
-        // Final output: width x (full_height/2) at original framerate
+        // 1. fps filter (if conversion requested) - applied first
+        // 2. scale and crop to full size (width x full_height)
+        // 3. tinterlace interleave_top:cvlpf - weave fields, halves framerate
+        // 4. separatefields - separate into half-height frames, doubles framerate back
+        // Final output: width x (full_height/2) at target framerate
         snprintf(cmd, sizeof(cmd),
                  "ffmpeg -hide_banner -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf "
-                 "\"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
+                 "\"%sscale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
                  "tinterlace=interleave_top:cvlpf,separatefields\" -",
-                 input_file, width, full_height, width, full_height);
+                 input_file, fps_filter, width, full_height, width, full_height);
     } else {
-        // Progressive mode - simple scale and crop
+        // Progressive mode - optional fps conversion, then scale and crop
         snprintf(cmd, sizeof(cmd),
                  "ffmpeg -hide_banner -v quiet -i \"%s\" -f rawvideo -pix_fmt rgb24 -vf "
-                 "\"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
-                 input_file, width, height, width, height);
+                 "\"%sscale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
+                 input_file, fps_filter, width, height, width, height);
     }
 
     FILE *fp = popen(cmd, "r");
@@ -1419,7 +1434,9 @@ static int encode_video_mt(cli_context_t *cli) {
                                         cli->enc_params.width,
                                         cli->enc_params.height,
                                         cli->interlaced,
-                                        cli->header_height);
+                                        cli->header_height,
+                                        cli->target_fps_num,
+                                        cli->target_fps_den);
     if (!cli->ffmpeg_pipe) {
         return -1;
     }
@@ -1883,7 +1900,9 @@ static int encode_video(cli_context_t *cli) {
                                         cli->enc_params.width,
                                         cli->enc_params.height,
                                         cli->interlaced,
-                                        cli->header_height);
+                                        cli->header_height,
+                                        cli->target_fps_num,
+                                        cli->target_fps_den);
     if (!cli->ffmpeg_pipe) {
         return -1;
     }
@@ -2315,6 +2334,8 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Invalid fps format. Use NUM or NUM/DEN\n");
                     return 1;
                 }
+                cli.target_fps_num = num;
+                cli.target_fps_den = den;
                 cli.enc_params.fps_num = num;
                 cli.enc_params.fps_den = den;
                 break;
@@ -2499,6 +2520,17 @@ int main(int argc, char *argv[]) {
     } else {
         // Progressive mode: header_height equals internal height
         cli.header_height = cli.enc_params.height;
+    }
+
+    // Report fps conversion if enabled
+    if (cli.target_fps_num > 0 && cli.original_fps_num > 0) {
+        if (cli.target_fps_num != cli.original_fps_num || cli.target_fps_den != cli.original_fps_den) {
+            printf("Framerate conversion: %d/%d -> %d/%d\n",
+                   cli.original_fps_num, cli.original_fps_den,
+                   cli.target_fps_num, cli.target_fps_den);
+        }
+    } else if (cli.target_fps_num > 0) {
+        printf("Output framerate: %d/%d\n", cli.target_fps_num, cli.target_fps_den);
     }
 
     // Set audio quality to match video quality if not specified

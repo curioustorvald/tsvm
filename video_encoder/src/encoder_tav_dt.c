@@ -178,6 +178,8 @@ typedef struct {
     int height;
     int fps_num;
     int fps_den;
+    int target_fps_num;   // Target output framerate numerator (0 = no conversion)
+    int target_fps_den;   // Target output framerate denominator
     int is_interlaced;
     int is_pal;
     int quality_index;
@@ -230,6 +232,7 @@ static void print_usage(const char *program) {
     printf("  -o, --output FILE    Output TAV-DT file\n");
     printf("\nOptions:\n");
     printf("  -q, --quality N      Quality level 0-5 (default: 3)\n");
+    printf("  -f, --fps NUM/DEN    Output framerate (e.g., 30/1, 24000/1001)\n");
     printf("  --ntsc               Force NTSC format (720x480, default)\n");
     printf("  --pal                Force PAL format (720x576)\n");
     printf("  --interlaced         Interlaced output\n");
@@ -431,10 +434,18 @@ static FILE *spawn_ffmpeg_video(dt_encoder_t *enc, pid_t *pid) {
         char video_size[32];
         snprintf(video_size, sizeof(video_size), "%dx%d", enc->width, enc->height);
 
+        // Build fps filter prefix if conversion is requested
+        char fps_filter[64] = "";
+        if (enc->target_fps_num > 0 && enc->target_fps_den > 0) {
+            snprintf(fps_filter, sizeof(fps_filter), "fps=%d/%d,",
+                     enc->target_fps_num, enc->target_fps_den);
+        }
+
         // Use same filtergraph as reference TAV encoder
-        char vf[256];
+        char vf[320];
         snprintf(vf, sizeof(vf),
-                 "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d%s",
+                 "%sscale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d%s",
+                 fps_filter,
                  enc->width, enc->height, enc->width, enc->height,
                  enc->is_interlaced ? ",setfield=tff" : "");
 
@@ -1295,6 +1306,7 @@ int main(int argc, char **argv) {
         {"input",        required_argument, 0, 'i'},
         {"output",       required_argument, 0, 'o'},
         {"quality",      required_argument, 0, 'q'},
+        {"fps",          required_argument, 0, 'f'},
         {"threads",      required_argument, 0, 't'},
         {"ntsc",         no_argument,       0, 'N'},
         {"pal",          no_argument,       0, 'P'},
@@ -1307,7 +1319,7 @@ int main(int argc, char **argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "i:o:q:t:vhNPI", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:o:q:f:t:vhNPI", long_options, NULL)) != -1) {
         switch (opt) {
             case 'i':
                 enc.input_file = optarg;
@@ -1320,6 +1332,18 @@ int main(int argc, char **argv) {
                 if (enc.quality_index < 0) enc.quality_index = 0;
                 if (enc.quality_index > 5) enc.quality_index = 5;
                 break;
+            case 'f': {
+                int num, den = 1;
+                if (sscanf(optarg, "%d/%d", &num, &den) < 1) {
+                    fprintf(stderr, "Error: Invalid fps format. Use NUM or NUM/DEN\n");
+                    return 1;
+                }
+                enc.target_fps_num = num;
+                enc.target_fps_den = den;
+                enc.fps_num = num;
+                enc.fps_den = den;
+                break;
+            }
             case 't': {
                 int threads = atoi(optarg);
                 if (threads < 0) {
@@ -1367,6 +1391,7 @@ int main(int argc, char **argv) {
     }
 
     // Probe input file for framerate
+    int original_fps_num = 24, original_fps_den = 1;
     char probe_cmd[4096];
     snprintf(probe_cmd, sizeof(probe_cmd),
              "ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nw=1:nk=1 '%s'",
@@ -1376,12 +1401,18 @@ int main(int argc, char **argv) {
     if (probe) {
         char line[256];
         if (fgets(line, sizeof(line), probe)) {
-            if (sscanf(line, "%d/%d", &enc.fps_num, &enc.fps_den) != 2) {
-                enc.fps_num = 24;
-                enc.fps_den = 1;
+            if (sscanf(line, "%d/%d", &original_fps_num, &original_fps_den) != 2) {
+                original_fps_num = 24;
+                original_fps_den = 1;
             }
         }
         pclose(probe);
+    }
+
+    // If user didn't specify target fps, use probed fps
+    if (enc.target_fps_num == 0) {
+        enc.fps_num = original_fps_num;
+        enc.fps_den = original_fps_den;
     }
 
     printf("\nTAV-DT Encoder (Revised Spec 2025-12-11)\n");
@@ -1389,7 +1420,16 @@ int main(int argc, char **argv) {
            enc.is_interlaced ? "interlaced" : "progressive");
     printf("  Resolution: %dx%d (internal: %dx%d)\n", enc.width, enc.height,
            enc.width, enc.is_interlaced ? enc.height / 2 : enc.height);
-    printf("  Framerate: %d/%d\n", enc.fps_num, enc.fps_den);
+
+    // Report fps conversion if enabled
+    if (enc.target_fps_num > 0 &&
+        (enc.target_fps_num != original_fps_num || enc.target_fps_den != original_fps_den)) {
+        printf("  Framerate: %d/%d -> %d/%d (conversion)\n",
+               original_fps_num, original_fps_den,
+               enc.target_fps_num, enc.target_fps_den);
+    } else {
+        printf("  Framerate: %d/%d\n", enc.fps_num, enc.fps_den);
+    }
     printf("  Quality: %d\n", enc.quality_index);
     printf("  GOP size: %d\n", DT_GOP_SIZE);
     printf("  Payload FEC: %s\n", enc.fec_mode == FEC_MODE_LDPC ? "LDPC(255,223)" : "RS(255,223)");
