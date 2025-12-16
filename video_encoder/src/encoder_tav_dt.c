@@ -180,6 +180,8 @@ typedef struct {
     int fps_den;
     int target_fps_num;   // Target output framerate numerator (0 = no conversion)
     int target_fps_den;   // Target output framerate denominator
+    int original_fps_num; // Source framerate (always probed)
+    int original_fps_den;
     int is_interlaced;
     int is_pal;
     int quality_index;
@@ -435,10 +437,23 @@ static FILE *spawn_ffmpeg_video(dt_encoder_t *enc, pid_t *pid) {
         snprintf(video_size, sizeof(video_size), "%dx%d", enc->width, enc->height);
 
         // Build fps filter prefix if conversion is requested
-        char fps_filter[64] = "";
-        if (enc->target_fps_num > 0 && enc->target_fps_den > 0) {
-            snprintf(fps_filter, sizeof(fps_filter), "fps=%d/%d,",
-                     enc->target_fps_num, enc->target_fps_den);
+        char fps_filter[128] = "";
+        if (enc->target_fps_num > 0 && enc->target_fps_den > 0 &&
+            enc->original_fps_num > 0 && enc->original_fps_den > 0) {
+            // Compare framerates
+            long long target_rate = (long long)enc->target_fps_num * enc->original_fps_den;
+            long long source_rate = (long long)enc->original_fps_num * enc->target_fps_den;
+
+            if (target_rate > source_rate) {
+                // Upsampling: use motion interpolation
+                snprintf(fps_filter, sizeof(fps_filter), "minterpolate=fps=%d/%d,",
+                         enc->target_fps_num, enc->target_fps_den);
+            } else if (target_rate < source_rate) {
+                // Downsampling: use fps filter
+                snprintf(fps_filter, sizeof(fps_filter), "fps=%d/%d,",
+                         enc->target_fps_num, enc->target_fps_den);
+            }
+            // If equal, fps_filter remains empty
         }
 
         // Use same filtergraph as reference TAV encoder
@@ -1390,8 +1405,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Probe input file for framerate
-    int original_fps_num = 24, original_fps_den = 1;
+    // Probe input file for framerate (always probe to get original fps)
+    enc.original_fps_num = 24;
+    enc.original_fps_den = 1;
     char probe_cmd[4096];
     snprintf(probe_cmd, sizeof(probe_cmd),
              "ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nw=1:nk=1 '%s'",
@@ -1401,9 +1417,9 @@ int main(int argc, char **argv) {
     if (probe) {
         char line[256];
         if (fgets(line, sizeof(line), probe)) {
-            if (sscanf(line, "%d/%d", &original_fps_num, &original_fps_den) != 2) {
-                original_fps_num = 24;
-                original_fps_den = 1;
+            if (sscanf(line, "%d/%d", &enc.original_fps_num, &enc.original_fps_den) != 2) {
+                enc.original_fps_num = 24;
+                enc.original_fps_den = 1;
             }
         }
         pclose(probe);
@@ -1411,8 +1427,8 @@ int main(int argc, char **argv) {
 
     // If user didn't specify target fps, use probed fps
     if (enc.target_fps_num == 0) {
-        enc.fps_num = original_fps_num;
-        enc.fps_den = original_fps_den;
+        enc.fps_num = enc.original_fps_num;
+        enc.fps_den = enc.original_fps_den;
     }
 
     printf("\nTAV-DT Encoder (Revised Spec 2025-12-11)\n");
@@ -1420,15 +1436,23 @@ int main(int argc, char **argv) {
            enc.is_interlaced ? "interlaced" : "progressive");
     printf("  Resolution: %dx%d (internal: %dx%d)\n", enc.width, enc.height,
            enc.width, enc.is_interlaced ? enc.height / 2 : enc.height);
+    printf("  Source framerate: %d/%d\n", enc.original_fps_num, enc.original_fps_den);
 
     // Report fps conversion if enabled
-    if (enc.target_fps_num > 0 &&
-        (enc.target_fps_num != original_fps_num || enc.target_fps_den != original_fps_den)) {
-        printf("  Framerate: %d/%d -> %d/%d (conversion)\n",
-               original_fps_num, original_fps_den,
-               enc.target_fps_num, enc.target_fps_den);
-    } else {
-        printf("  Framerate: %d/%d\n", enc.fps_num, enc.fps_den);
+    if (enc.target_fps_num > 0) {
+        long long target_rate = (long long)enc.target_fps_num * enc.original_fps_den;
+        long long source_rate = (long long)enc.original_fps_num * enc.target_fps_den;
+
+        if (target_rate > source_rate) {
+            printf("  Framerate conversion: %d/%d -> %d/%d (minterpolate)\n",
+                   enc.original_fps_num, enc.original_fps_den,
+                   enc.target_fps_num, enc.target_fps_den);
+        } else if (target_rate < source_rate) {
+            printf("  Framerate conversion: %d/%d -> %d/%d (fps)\n",
+                   enc.original_fps_num, enc.original_fps_den,
+                   enc.target_fps_num, enc.target_fps_den);
+        }
+        // If equal, no conversion message needed
     }
     printf("  Quality: %d\n", enc.quality_index);
     printf("  GOP size: %d\n", DT_GOP_SIZE);

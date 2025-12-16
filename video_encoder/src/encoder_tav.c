@@ -401,18 +401,35 @@ static int get_video_info(const char *input_file, int *width, int *height,
  *   - Filtergraph: scale/crop to full size, then tinterlace weave halves
  *     framerate, then separatefields restores framerate at half height
  *
- * When target_fps_num > 0:
- *   - Applies fps filter at the start to convert to target framerate
+ * Framerate conversion:
+ *   - If target_fps > source_fps: uses minterpolate for motion interpolation
+ *   - If target_fps < source_fps: uses fps filter for frame dropping
+ *   - If target_fps == source_fps: no fps filter applied
  */
 static FILE* open_ffmpeg_pipe(const char *input_file, int width, int height,
                               int interlaced, int full_height,
-                              int target_fps_num, int target_fps_den) {
+                              int target_fps_num, int target_fps_den,
+                              int source_fps_num, int source_fps_den) {
     char cmd[MAX_PATH * 2];
-    char fps_filter[64] = "";
+    char fps_filter[128] = "";
 
     // Build fps filter string if conversion is requested (applied first)
-    if (target_fps_num > 0 && target_fps_den > 0) {
-        snprintf(fps_filter, sizeof(fps_filter), "fps=%d/%d,", target_fps_num, target_fps_den);
+    if (target_fps_num > 0 && target_fps_den > 0 &&
+        source_fps_num > 0 && source_fps_den > 0) {
+        // Compare framerates: target/1 vs source/1 -> target * source_den vs source * target_den
+        double target_rate = (double)target_fps_num / (double)source_fps_den;
+        double source_rate = (double)source_fps_num / (double)target_fps_den;
+
+        if (target_rate > source_rate) {
+            // Upsampling: use motion interpolation
+            snprintf(fps_filter, sizeof(fps_filter), "minterpolate=fps=%d/%d,",
+                     target_fps_num, target_fps_den);
+        } else if (target_rate < source_rate) {
+            // Downsampling: use fps filter
+            snprintf(fps_filter, sizeof(fps_filter), "fps=%d/%d,",
+                     target_fps_num, target_fps_den);
+        }
+        // If equal, fps_filter remains empty (no conversion needed)
     }
 
     if (interlaced) {
@@ -1439,7 +1456,9 @@ static int encode_video_mt(cli_context_t *cli) {
                                         cli->interlaced,
                                         cli->header_height,
                                         cli->target_fps_num,
-                                        cli->target_fps_den);
+                                        cli->target_fps_den,
+                                        cli->original_fps_num,
+                                        cli->original_fps_den);
     if (!cli->ffmpeg_pipe) {
         return -1;
     }
@@ -1905,7 +1924,9 @@ static int encode_video(cli_context_t *cli) {
                                         cli->interlaced,
                                         cli->header_height,
                                         cli->target_fps_num,
-                                        cli->target_fps_den);
+                                        cli->target_fps_den,
+                                        cli->original_fps_num,
+                                        cli->original_fps_den);
     if (!cli->ffmpeg_pipe) {
         return -1;
     }
@@ -2484,7 +2505,8 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Invalid fps format. Use NUM or NUM/DEN\n");
                     return 1;
                 }
-                need_probe_fps = 0;
+                // Keep need_probe_fps = 1 so we always probe source fps
+                // (needed for minterpolate vs fps filter decision)
                 cli.target_fps_num = num;
                 cli.target_fps_den = den;
                 cli.enc_params.fps_num = num;
@@ -2647,11 +2669,13 @@ int main(int argc, char *argv[]) {
             printf("  Resolution: %dx%d\n", cli.original_width, cli.original_height);
         }
 
+        // Always print source framerate
+        printf("  Framerate: %d/%d\n", cli.original_fps_num, cli.original_fps_den);
+
         // Use probed framerate if not specified by -f
-        if (need_probe_fps) {
+        if (cli.target_fps_num == 0) {
             cli.enc_params.fps_num = cli.original_fps_num;
             cli.enc_params.fps_den = cli.original_fps_den;
-            printf("  Framerate: %d/%d\n", cli.original_fps_num, cli.original_fps_den);
         }
     }
 
@@ -2671,11 +2695,19 @@ int main(int argc, char *argv[]) {
 
     // Report fps conversion if enabled
     if (cli.target_fps_num > 0 && cli.original_fps_num > 0) {
-        if (cli.target_fps_num != cli.original_fps_num || cli.target_fps_den != cli.original_fps_den) {
-            printf("Framerate conversion: %d/%d -> %d/%d\n",
+        long long target_rate = (long long)cli.target_fps_num * cli.original_fps_den;
+        long long source_rate = (long long)cli.original_fps_num * cli.target_fps_den;
+
+        if (target_rate > source_rate) {
+            printf("Framerate conversion: %d/%d -> %d/%d (minterpolate)\n",
+                   cli.original_fps_num, cli.original_fps_den,
+                   cli.target_fps_num, cli.target_fps_den);
+        } else if (target_rate < source_rate) {
+            printf("Framerate conversion: %d/%d -> %d/%d (fps)\n",
                    cli.original_fps_num, cli.original_fps_den,
                    cli.target_fps_num, cli.target_fps_den);
         }
+        // If equal, no message needed (no conversion)
     } else if (cli.target_fps_num > 0) {
         printf("Output framerate: %d/%d\n", cli.target_fps_num, cli.target_fps_den);
     }
