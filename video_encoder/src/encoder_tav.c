@@ -306,8 +306,8 @@ static void print_usage(const char *program) {
     printf("  --zstd-level N           Zstd level 3-22 (default: 7)\n");
     printf("  --no-perceptual-tuning   Disable HVS perceptual quantization\n");
     printf("  --no-dead-zone           Disable dead-zone quantization\n");
-    printf("  --dead-zone-threshold N  Dead-zone threshold 1-10 (default: 0=disabled)\n");
-    printf("  Note: EZBC entropy coder is always used (Twobitmap deprecated)\n");
+    printf("  --dead-zone-threshold N  Dead-zone threshold. Defaults by quality level:\n");
+    printf("                           0=1.5, 1=1.5, 2=1.2, 3=1.1, 4=0.8, 5=0.6\n");
     printf("\nEncoder Presets:\n");
     printf("  --preset-sports          Sports mode (finer temporal quantization)\n");
     printf("  --preset-anime           Anime mode (disable grain)\n");
@@ -2394,7 +2394,7 @@ int main(int argc, char *argv[]) {
                 cli.enc_params.perceptual_tuning = 0;
                 break;
             case 1007:  // --no-dead-zone
-                cli.enc_params.dead_zone_threshold = 0;
+                cli.enc_params.dead_zone_threshold = 0.0;
                 break;
             case 1009:  // --encode-limit
                 cli.encode_limit = atoi(optarg);
@@ -2431,7 +2431,7 @@ int main(int argc, char *argv[]) {
                 cli.enc_params.temporal_wavelet = atoi(optarg);
                 break;
             case 1023:  // --dead-zone-threshold
-                cli.enc_params.dead_zone_threshold = atoi(optarg);
+                cli.enc_params.dead_zone_threshold = atof(optarg);
                 break;
             case 1024:  // --decomp-levels
                 cli.enc_params.decomp_levels = atoi(optarg);

@@ -201,7 +201,7 @@ struct tav_encoder_context {
     int gop_size;
     int enable_two_pass;
     int quality_level;
-    int dead_zone_threshold;
+    float dead_zone_threshold;
     int entropy_coder;
     int zstd_level;
     int num_threads;
@@ -1213,20 +1213,20 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
         // Quantize
         if (ctx->perceptual_tuning) {
             tav_quantise_perceptual(ctx->compat_enc, frame_y, quant_y, num_pixels,
-                                   base_quantiser_y, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 0, 0);
+                                   base_quantiser_y, ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 0, 0);
             tav_quantise_perceptual(ctx->compat_enc, frame_co, quant_co, num_pixels,
-                                   base_quantiser_co, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
+                                   base_quantiser_co, ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
             tav_quantise_perceptual(ctx->compat_enc, frame_cg, quant_cg, num_pixels,
-                                   base_quantiser_cg, (float)ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
+                                   base_quantiser_cg, ctx->dead_zone_threshold, width, height, ctx->decomp_levels, 1, 0);
         } else {
             tav_quantise_uniform(frame_y, quant_y, num_pixels, base_quantiser_y,
-                                (float)ctx->dead_zone_threshold, width, height,
+                                ctx->dead_zone_threshold, width, height,
                                 ctx->decomp_levels, 0);
             tav_quantise_uniform(frame_co, quant_co, num_pixels, base_quantiser_co,
-                                (float)ctx->dead_zone_threshold, width, height,
+                                ctx->dead_zone_threshold, width, height,
                                 ctx->decomp_levels, 1);
             tav_quantise_uniform(frame_cg, quant_cg, num_pixels, base_quantiser_cg,
-                                (float)ctx->dead_zone_threshold, width, height,
+                                ctx->dead_zone_threshold, width, height,
                                 ctx->decomp_levels, 1);
         }
 
@@ -1276,28 +1276,28 @@ static int encode_gop_intra_only(tav_encoder_context_t *ctx, gop_slot_t *slot) {
                 // Quantize tile coefficients
                 if (ctx->perceptual_tuning) {
                     tav_quantise_perceptual(ctx->compat_enc, tile_y, quant_y, padded_pixels,
-                                           base_quantiser_y, (float)ctx->dead_zone_threshold,
+                                           base_quantiser_y, ctx->dead_zone_threshold,
                                            TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
                                            ctx->decomp_levels, 0, 0);
                     tav_quantise_perceptual(ctx->compat_enc, tile_co, quant_co, padded_pixels,
-                                           base_quantiser_co, (float)ctx->dead_zone_threshold,
+                                           base_quantiser_co, ctx->dead_zone_threshold,
                                            TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
                                            ctx->decomp_levels, 1, 0);
                     tav_quantise_perceptual(ctx->compat_enc, tile_cg, quant_cg, padded_pixels,
-                                           base_quantiser_cg, (float)ctx->dead_zone_threshold,
+                                           base_quantiser_cg, ctx->dead_zone_threshold,
                                            TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
                                            ctx->decomp_levels, 1, 0);
                 } else {
                     tav_quantise_uniform(tile_y, quant_y, padded_pixels, base_quantiser_y,
-                                        (float)ctx->dead_zone_threshold,
+                                        ctx->dead_zone_threshold,
                                         TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
                                         ctx->decomp_levels, 0);
                     tav_quantise_uniform(tile_co, quant_co, padded_pixels, base_quantiser_co,
-                                        (float)ctx->dead_zone_threshold,
+                                        ctx->dead_zone_threshold,
                                         TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
                                         ctx->decomp_levels, 1);
                     tav_quantise_uniform(tile_cg, quant_cg, padded_pixels, base_quantiser_cg,
-                                        (float)ctx->dead_zone_threshold,
+                                        ctx->dead_zone_threshold,
                                         TAV_PADDED_TILE_SIZE_X, TAV_PADDED_TILE_SIZE_Y,
                                         ctx->decomp_levels, 1);
                 }
