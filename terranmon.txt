@@ -1649,25 +1649,30 @@ start of the next packet
         uint32 Total packet size (sum of TAD packet and TAV packet size)
         uint64 Timecode in nanoseconds
         uint32 Offset to video packet
-        uint32 CRC-32 of [sync pattern + framerate + flags + reserved + total packet size + timecode + offset]
-    <packet header end; encoded with rate 1/2 LDPC>
+        uint32 Reserved (zero-fill)
+        uint32 CRC-32 of [sync pattern + above]
+    <packet header end; encoded with rate 256/512 LDPC>
     bytes  TAD with forward error correction
         <TAD header start>
             uint16 Sample Count
             uint8  Quantiser Bits
+            uint16 Reserved (zero-fill)
             uint32 Compressed Size
             uint24 Reed-Solomon Block Count
-        <TAD chunk header end; encoded with rate 1/2 LDPC>
+            uint32 CRC-32 of above
+        <TAD chunk header end; encoded with rate 128/256 LDPC>
         <Reed-Solomon (255,223) block start>
             bytes  TAD (EZBC, no Zstd)
             bytes  Parity for TAD
         <Reed-Solomon (255,223) block end>
     bytes  TAV with forward error correction
         <TAV header start>
+            uint32 TAV header sync pattern (0xA3F7C91E)
             uint8  GOP Size (number of frames in this GOP)
             uint32 Compressed Size
             uint24 Reed-Solomon Block Count
-        <TAV header end; encoded with rate 1/2 LDPC>
+            uint32 CRC-32 of above
+        <TAV header end; encoded with rate 128/256 LDPC>
         <Reed-Solomon (255,223) block start>
             bytes  TAV (EZBC, no Zstd)
             bytes  Parity for TAV
@@ -1678,6 +1683,8 @@ start of the next packet
 
     Q2. What to do when payload is smaller than RS block capacity?
     A2. Fill with zero. It shouldn't affect Zstd, and compressed size is already specified, so they complement each other.
+
+    When decoding, reserved areas must be filled with zero before the actual decoding.
 
 # How to sync to the stream
     1. Find a sync pattern
@@ -1703,7 +1710,13 @@ On the stream position where the sync pattern is supposed to be:
 ### Stage 2
 
 1. Further substitute the framerate, flags, timecode to the last known value (as these values rarely change mid-stream; timecode must be incremented appropriately. e.g. FPS=16, last known timecode=5.0, packets missed so far=4, then assumed timecode is 5.0 + 4 + 1 = 10.0)
-2. Re-calculate CRC. If match, sync. If not, soft sync recovery is failed, and discard the packet
+2. Re-calculate CRC. If match, sync. If not, head to the next stage
+
+### Stage 3 (mostly throwaway efforts)
+
+1. Search for 0xA3F7C91E or next sync pattern
+2. If 0xA3F7C91E is found, try to decode the subpacket by verifying header with CRC; if next sync pattern is found, sync to that packet.
+3. If successful, sync. If not, soft sync recovery is failed, and discard the packet
 
 Note: If CRC is unmatched, the packet MUST be discarded, as the header content cannot be trusted if all soft recovery stages have failed
 

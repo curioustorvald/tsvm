@@ -9,16 +9,18 @@
  * - Mandatory TAD audio
  * - LDPC rate 1/2 for headers, Reed-Solomon (255,223) for payloads
  *
- * Packet structure (revised 2025-12-15):
- * - Main header: 28 bytes -> 56 bytes LDPC encoded
- *   Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + crc(4)
- *   CRC covers bytes 0-23 (everything except CRC itself)
- * - TAD subpacket: header (10->20 bytes LDPC) + RS-encoded payload
- * - TAV subpacket: header (8->16 bytes LDPC) + RS-encoded payload
+ * Packet structure (revised 2025-12-17):
+ * - Main header: 32 bytes raw (256 bits) -> 64 bytes LDPC encoded (512 bits, rate 256/512)
+ *   Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+ *   CRC covers bytes 0-27 (everything except CRC itself)
+ * - TAD subpacket: header 16 bytes raw (128 bits) -> 32 bytes LDPC (256 bits, rate 128/256), + RS-encoded payload
+ *   Layout: sample_count(2) + quant_bits(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
+ * - TAV subpacket: header 16 bytes raw (128 bits) -> 32 bytes LDPC (256 bits, rate 128/256), + RS-encoded payload
+ *   Layout: sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
  * - No packet type bytes - always audio then video
  *
  * Created by CuriousTorvald and Claude on 2025-12-09.
- * Revised 2025-12-15 for updated TAV-DT specification (CRC now covers timecode and offset).
+ * Revised 2025-12-17 for power-of-two header sizes, subpacket CRCs, and TAV subpacket sync.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -61,10 +63,15 @@
 #define DT_SPATIAL_LEVELS  4
 #define DT_TEMPORAL_LEVELS 2
 
-// Header sizes (before LDPC encoding)
-#define DT_MAIN_HEADER_SIZE   28   // sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + crc(4) + timecode(8) + offset(4)
-#define DT_TAD_HEADER_SIZE    10   // sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3)
-#define DT_TAV_HEADER_SIZE    8    // gop_size(1) + compressed_size(4) + rs_block_count(3)
+// Header sizes (before LDPC encoding) - revised 2025-12-17
+// LDPC rates are specified in bits: 256/512 = 256 bits raw -> 512 bits encoded
+// Converted to bytes: 32 -> 64 bytes, 16 -> 32 bytes
+#define DT_MAIN_HEADER_SIZE   32   // sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+#define DT_TAD_HEADER_SIZE    16   // sample_count(2) + quant_bits(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
+#define DT_TAV_HEADER_SIZE    16   // sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+
+// TAV subpacket sync pattern (big endian)
+#define TAV_SUBPACKET_SYNC    0xA3F7C91E
 
 // Quality level to quantiser mapping
 static const int QUALITY_Y[]  = {79, 47, 23, 11, 5, 2};
@@ -298,16 +305,19 @@ static int write_packet(dt_encoder_t *enc, uint64_t timecode_ns,
     size_t tad_rs_size = tad_rs_blocks * RS_BLOCK_SIZE;
     size_t tav_rs_size = tav_rs_blocks * RS_BLOCK_SIZE;
 
-    size_t tad_subpacket_size = DT_TAD_HEADER_SIZE * 2 + tad_rs_size;  // LDPC header + RS payload
-    size_t tav_subpacket_size = DT_TAV_HEADER_SIZE * 2 + tav_rs_size;  // LDPC header + RS payload
+    // Subpacket sizes: LDPC header (16->32 bytes) + RS payload
+    size_t tad_subpacket_size = DT_TAD_HEADER_SIZE * 2 + tad_rs_size;
+    size_t tav_subpacket_size = DT_TAV_HEADER_SIZE * 2 + tav_rs_size;
 
     uint32_t offset_to_video = tad_subpacket_size;
     uint32_t packet_size = tad_subpacket_size + tav_subpacket_size;
 
-    // Build main header (28 bytes)
-    // Layout (revised 2025-12-15): sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + crc(4)
-    // CRC is calculated over bytes 0-23 (everything except CRC itself)
-    uint8_t header[DT_MAIN_HEADER_SIZE];
+    // Build main header (32 bytes raw = 256 bits)
+    // Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+    // CRC is calculated over bytes 0-27 (everything except CRC itself)
+    uint8_t header[DT_MAIN_HEADER_SIZE];  // 32 bytes
+    memset(header, 0, DT_MAIN_HEADER_SIZE);
+
     // Write sync pattern in big-endian (network byte order)
     uint32_t sync = enc->is_pal ? TAV_DT_SYNC_PAL : TAV_DT_SYNC_NTSC;
     header[0] = (sync >> 24) & 0xFF;
@@ -326,54 +336,79 @@ static int write_packet(dt_encoder_t *enc, uint64_t timecode_ns,
     uint8_t flags = 0;
     flags |= (enc->is_interlaced ? 0x01 : 0x00);
     flags |= (enc->fps_den == 1001 ? 0x02 : 0x00);
+    flags |= ((enc->fec_mode & 0x01) << 2);  // FEC mode in bit 2
     flags |= (enc->quality_index & 0x0F) << 4;
     header[5] = flags;
 
-    // Reserved (2 bytes)
+    // Reserved (2 bytes) at offset 6-7
     header[6] = 0;
     header[7] = 0;
 
-    // Packet size (4 bytes)
+    // Packet size (4 bytes) at offset 8-11
     memcpy(header + 8, &packet_size, 4);
 
-    // Timecode (8 bytes) - now at offset 12
+    // Timecode (8 bytes) at offset 12-19
     memcpy(header + 12, &timecode_ns, 8);
 
-    // Offset to video (4 bytes) - now at offset 20
+    // Offset to video (4 bytes) at offset 20-23
     memcpy(header + 20, &offset_to_video, 4);
 
-    // CRC-32 (4 bytes) - calculated over bytes 0-23 (sync + fps + flags + reserved + size + timecode + offset)
-    uint32_t crc = calculate_crc32(header, 24);
-    memcpy(header + 24, &crc, 4);
+    // Reserved (4 bytes) at offset 24-27
+    // Already zero from memset
 
-    // LDPC encode main header
+    // CRC-32 (4 bytes) at offset 28-31, calculated over bytes 0-27
+    uint32_t crc = calculate_crc32(header, 28);
+    memcpy(header + 28, &crc, 4);
+
+    // LDPC encode main header (32 -> 64 bytes, rate 256/512 bits)
     uint8_t ldpc_header[DT_MAIN_HEADER_SIZE * 2];
     ldpc_encode(header, DT_MAIN_HEADER_SIZE, ldpc_header);
 
-    // Build TAD subpacket header (10 bytes)
-    uint8_t tad_header[DT_TAD_HEADER_SIZE];
+    // Build TAD subpacket header (16 bytes raw = 128 bits)
+    // Layout: sample_count(2) + quant_bits(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
+    uint8_t tad_header[DT_TAD_HEADER_SIZE];  // 16 bytes
+    memset(tad_header, 0, DT_TAD_HEADER_SIZE);
+
     memcpy(tad_header + 0, &audio_samples, 2);
     tad_header[2] = audio_quant_bits;
+    // Reserved (2 bytes) at offset 3-4
     uint32_t tad_compressed_size = tad_size;
-    memcpy(tad_header + 3, &tad_compressed_size, 4);
-    // RS block count as uint24
-    tad_header[7] = tad_rs_blocks & 0xFF;
-    tad_header[8] = (tad_rs_blocks >> 8) & 0xFF;
-    tad_header[9] = (tad_rs_blocks >> 16) & 0xFF;
+    memcpy(tad_header + 5, &tad_compressed_size, 4);
+    // RS block count as uint24 at offset 9-11
+    tad_header[9] = tad_rs_blocks & 0xFF;
+    tad_header[10] = (tad_rs_blocks >> 8) & 0xFF;
+    tad_header[11] = (tad_rs_blocks >> 16) & 0xFF;
+    // CRC-32 (4 bytes) at offset 12-15, calculated over bytes 0-11
+    uint32_t tad_crc = calculate_crc32(tad_header, 12);
+    memcpy(tad_header + 12, &tad_crc, 4);
 
+    // LDPC encode TAD header (16 -> 32 bytes, rate 128/256 bits)
     uint8_t ldpc_tad_header[DT_TAD_HEADER_SIZE * 2];
     ldpc_encode(tad_header, DT_TAD_HEADER_SIZE, ldpc_tad_header);
 
-    // Build TAV subpacket header (8 bytes)
-    uint8_t tav_header[DT_TAV_HEADER_SIZE];
-    tav_header[0] = gop_size;
-    uint32_t tav_compressed_size = tav_size;
-    memcpy(tav_header + 1, &tav_compressed_size, 4);
-    // RS block count as uint24
-    tav_header[5] = tav_rs_blocks & 0xFF;
-    tav_header[6] = (tav_rs_blocks >> 8) & 0xFF;
-    tav_header[7] = (tav_rs_blocks >> 16) & 0xFF;
+    // Build TAV subpacket header (16 bytes raw = 128 bits)
+    // Layout: sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+    uint8_t tav_header[DT_TAV_HEADER_SIZE];  // 16 bytes
+    memset(tav_header, 0, DT_TAV_HEADER_SIZE);
 
+    // Write TAV subpacket sync pattern in big-endian
+    tav_header[0] = (TAV_SUBPACKET_SYNC >> 24) & 0xFF;
+    tav_header[1] = (TAV_SUBPACKET_SYNC >> 16) & 0xFF;
+    tav_header[2] = (TAV_SUBPACKET_SYNC >> 8) & 0xFF;
+    tav_header[3] = TAV_SUBPACKET_SYNC & 0xFF;
+
+    tav_header[4] = gop_size;
+    uint32_t tav_compressed_size = tav_size;
+    memcpy(tav_header + 5, &tav_compressed_size, 4);
+    // RS block count as uint24 at offset 9-11
+    tav_header[9] = tav_rs_blocks & 0xFF;
+    tav_header[10] = (tav_rs_blocks >> 8) & 0xFF;
+    tav_header[11] = (tav_rs_blocks >> 16) & 0xFF;
+    // CRC-32 (4 bytes) at offset 12-15, calculated over bytes 0-11
+    uint32_t tav_crc = calculate_crc32(tav_header, 12);
+    memcpy(tav_header + 12, &tav_crc, 4);
+
+    // LDPC encode TAV header (16 -> 32 bytes, rate 128/256 bits)
     uint8_t ldpc_tav_header[DT_TAV_HEADER_SIZE * 2];
     ldpc_encode(tav_header, DT_TAV_HEADER_SIZE, ldpc_tav_header);
 
