@@ -78,6 +78,9 @@ typedef struct gop_job {
 #define FONTROM_OPCODE_HIGH 0x81     // High font ROM opcode
 #define MAX_FONTROM_SIZE 1920        // Max font ROM size in bytes
 
+#define DEFAULT_WIDTH 560  // TSVM default
+#define DEFAULT_HEIGHT 448 // TSVM default
+
 // Quality level to quantiser mapping (must match library tables)
 static const int QUALITY_Y[] = {79, 47, 23, 11, 5, 2};   // Quality levels 0-5
 static const int QUALITY_CO[] = {123, 108, 91, 76, 59, 29};
@@ -280,7 +283,7 @@ static void print_usage(const char *program) {
     printf("  -i, --input FILE         Input video file\n");
     printf("  -o, --output FILE        Output TAV file\n");
     printf("\nVideo Options:\n");
-    printf("  -s, --size WxH           Frame size (auto-detected if omitted)\n");
+    printf("  -s, --size WxH           Frame size (using %dx%d if omitted)\n", DEFAULT_WIDTH, DEFAULT_HEIGHT);
     printf("  -f, --fps NUM/DEN        Output Framerate (e.g., 60/1, 30000/1001)\n");
     printf("  -q, --quality N          Quality level 0-5 (default: 3)\n");
     printf("  -Q, --quantiser Y,Co,Cg  Custom quantisers (advanced)\n");
@@ -2237,6 +2240,147 @@ static int encode_video(cli_context_t *cli) {
 // Main
 // =============================================================================
 
+// Parse resolution string like "1024x768" with keyword recognition
+static int parse_resolution(const char *res_str, int *width, int *height) {
+    if (!res_str) return 0;
+    if (strcmp(res_str, "cif") == 0 || strcmp(res_str, "CIF") == 0) {
+        *width = 352;
+        *height = 288;
+        return 1;
+    }
+    if (strcmp(res_str, "qcif") == 0 || strcmp(res_str, "QCIF") == 0) {
+        *width = 176;
+        *height = 144;
+        return 1;
+    }
+    if (strcmp(res_str, "vga") == 0 || strcmp(res_str, "VGA") == 0) {
+        *width = 640;
+        *height = 480;
+        return 1;
+    }
+    if (strcmp(res_str, "d1") == 0 || strcmp(res_str, "D1") == 0) {
+        *width = 720;
+        *height = 480;
+        return 1;
+    }
+    if (strcmp(res_str, "d1pal") == 0 || strcmp(res_str, "D1PAL") == 0) {
+        *width = 720;
+        *height = 576;
+        return 1;
+    }
+    if (strcmp(res_str, "960h") == 0 || strcmp(res_str, "960H") == 0) {
+        *width = 960;
+        *height = 576;
+        return 1;
+    }
+    // HD-ish resolutions
+    if (strcmp(res_str, "540p") == 0 || strcmp(res_str, "540P") == 0 || strcmp(res_str, "qHD") == 0) {
+        *width = 960;
+        *height = 540;
+        return 1;
+    }
+    if (strcmp(res_str, "720p") == 0 || strcmp(res_str, "720P") == 0 || strcmp(res_str, "wxga") == 0 || strcmp(res_str, "WXGA") == 0) {
+        *width = 1280;
+        *height = 720;
+        return 1;
+    }
+    if (strcmp(res_str, "800p") == 0 || strcmp(res_str, "800P") == 0) {
+        *width = 1280;
+        *height = 800;
+        return 1;
+    }
+    if (strcmp(res_str, "900p") == 0 || strcmp(res_str, "900P") == 0) {
+        *width = 1600;
+        *height = 900;
+        return 1;
+    }
+    if (strcmp(res_str, "960p") == 0 || strcmp(res_str, "960P") == 0 || strcmp(res_str, "wsxga") == 0 || strcmp(res_str, "WSXGA") == 0) {
+        *width = 1706;
+        *height = 960;
+        return 1;
+    }
+    if (strcmp(res_str, "1080p") == 0 || strcmp(res_str, "1080P") == 0 || strcmp(res_str, "fhd") == 0 || strcmp(res_str, "FHD") == 0 || strcmp(res_str, "wuxga") == 0 || strcmp(res_str, "WUXGA") == 0) {
+        *width = 1920;
+        *height = 1080;
+        return 1;
+    }
+    if (strcmp(res_str, "1440p") == 0 || strcmp(res_str, "1440P") == 0 || strcmp(res_str, "wqhd") == 0 || strcmp(res_str, "WQHD") == 0) {
+        *width = 2560;
+        *height = 1440;
+        return 1;
+    }
+    if (strcmp(res_str, "4k") == 0 || strcmp(res_str, "4K") == 0 || strcmp(res_str, "2160p") == 0 || strcmp(res_str, "2160p") == 0 || strcmp(res_str, "uhd") == 0 || strcmp(res_str, "UHD") == 0) {
+        *width = 3840;
+        *height = 2160;
+        return 1;
+    }
+    // 4K Univisium
+    if (strcmp(res_str, "4ku") == 0 || strcmp(res_str, "4KU") == 0) {
+        *width = 4096;
+        *height = 2048;
+        return 1;
+    }
+    // 3K Univisium
+    if (strcmp(res_str, "3ku") == 0 || strcmp(res_str, "3KU") == 0) {
+        *width = 3072;
+        *height = 1536;
+        return 1;
+    }
+    // 2K Univisium
+    if (strcmp(res_str, "2ku") == 0 || strcmp(res_str, "2KU") == 0) {
+        *width = 2048;
+        *height = 1024;
+        return 1;
+    }
+    // 1K Univisium
+    if (strcmp(res_str, "1ku") == 0 || strcmp(res_str, "1KU") == 0) {
+        *width = 1024;
+        *height = 512;
+        return 1;
+    }
+    // 4K DCI
+    if (strcmp(res_str, "4kdci") == 0 || strcmp(res_str, "4KDCI") == 0 || strcmp(res_str, "4k_dci") == 0 || strcmp(res_str, "4K_DCI") == 0 || strcmp(res_str, "4k-dci") == 0 || strcmp(res_str, "4K-DCI") == 0) {
+        *width = 4096;
+        *height = 2160;
+        return 1;
+    }
+    // 2.5K DCI
+    if (strcmp(res_str, "2.5kdci") == 0 || strcmp(res_str, "2.5KDCI") == 0 || strcmp(res_str, "2.5k_dci") == 0 || strcmp(res_str, "2.5K_DCI") == 0 || strcmp(res_str, "2.5k-dci") == 0 || strcmp(res_str, "2.5K-DCI") == 0 ||
+        strcmp(res_str, "2,5kdci") == 0 || strcmp(res_str, "2,5KDCI") == 0 || strcmp(res_str, "2,5k_dci") == 0 || strcmp(res_str, "2,5K_DCI") == 0 || strcmp(res_str, "2,5k-dci") == 0 || strcmp(res_str, "2,5K-DCI") == 0) {
+        *width = 2560;
+        *height = 1350;
+        return 1;
+    }
+    // 2K DCI
+    if (strcmp(res_str, "2kdci") == 0 || strcmp(res_str, "2KDCI") == 0 || strcmp(res_str, "2k_dci") == 0 || strcmp(res_str, "2K_DCI") == 0 || strcmp(res_str, "2k-dci") == 0 || strcmp(res_str, "2K-DCI") == 0) {
+        *width = 2048;
+        *height = 1080;
+        return 1;
+    }
+    // 1K DCI
+    if (strcmp(res_str, "1kdci") == 0 || strcmp(res_str, "1KDCI") == 0 || strcmp(res_str, "1k_dci") == 0 || strcmp(res_str, "1K_DCI") == 0 || strcmp(res_str, "1k-dci") == 0 || strcmp(res_str, "1K-DCI") == 0) {
+        *width = 1024;
+        *height = 540;
+        return 1;
+    }
+    if (strcmp(res_str, "half") == 0 || strcmp(res_str, "HALF") == 0) {
+        *width = 280;
+        *height = 224;
+        return 1;
+    }
+    if (strcmp(res_str, "full") == 0 || strcmp(res_str, "FULL") == 0 || strcmp(res_str, "tsvm") == 0 || strcmp(res_str, "TSVM") == 0) {
+        *width = 560;
+        *height = 448;
+        return 1;
+    }
+    if (strcmp(res_str, "default") == 0 || strcmp(res_str, "DEFAULT") == 0) {
+        *width = DEFAULT_WIDTH;
+        *height = DEFAULT_HEIGHT;
+        return 1;
+    }
+    return sscanf(res_str, "%dx%d", width, height) == 2;
+}
+
 int main(int argc, char *argv[]) {
     // Generate temp file names
     generate_random_filename(TEMP_AUDIO_FILE);
@@ -2251,7 +2395,7 @@ int main(int argc, char *argv[]) {
     cli_context_t cli = {0};
 
     // Initialize encoder params with defaults
-    tav_encoder_params_init(&cli.enc_params, 480, 360);
+    tav_encoder_params_init(&cli.enc_params, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 
     // Force EZBC entropy coder (Twobitmap is deprecated)
     cli.enc_params.entropy_coder = 1;  // Always use EZBC
@@ -2309,6 +2453,11 @@ int main(int argc, char *argv[]) {
         {0, 0, 0, 0}
     };
 
+
+    // Probe video to get resolution and framerate
+    int need_probe_dimensions = 0;
+    int need_probe_fps = 1;
+
     int c, option_index = 0;
     while ((c = getopt_long(argc, argv, "i:o:s:f:q:Q:w:c:t:v?", long_options, &option_index)) != -1) {
         switch (c) {
@@ -2319,13 +2468,14 @@ int main(int argc, char *argv[]) {
                 cli.output_file = strdup(optarg);
                 break;
             case 's': {
-                int w, h;
-                if (sscanf(optarg, "%dx%d", &w, &h) != 2) {
-                    fprintf(stderr, "Error: Invalid size format. Use WxH (e.g., 480x360)\n");
+                if (strcmp(optarg, "original") == 0 || strcmp(optarg, "ORIGINAL") == 0) {
+                    need_probe_dimensions = 1;
+                    break;
+                }
+                if (!parse_resolution(optarg, &cli.enc_params.width, &cli.enc_params.height)) {
+                    fprintf(stderr, "Invalid resolution format: %s\n", optarg);
                     return 1;
                 }
-                cli.enc_params.width = w;
-                cli.enc_params.height = h;
                 break;
             }
             case 'f': {
@@ -2334,6 +2484,7 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: Invalid fps format. Use NUM or NUM/DEN\n");
                     return 1;
                 }
+                need_probe_fps = 0;
                 cli.target_fps_num = num;
                 cli.target_fps_den = den;
                 cli.enc_params.fps_num = num;
@@ -2480,10 +2631,6 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-
-    // Probe video to get resolution and framerate
-    int need_probe_dimensions = (cli.enc_params.width == 480 && cli.enc_params.height == 360);
-    int need_probe_fps = (cli.enc_params.fps_num == 60 && cli.enc_params.fps_den == 1);
 
     if (need_probe_dimensions || need_probe_fps) {
         printf("Probing video file...\n");
