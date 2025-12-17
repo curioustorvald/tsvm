@@ -1650,29 +1650,29 @@ start of the next packet
         uint64 Timecode in nanoseconds
         uint32 Offset to video packet
         uint32 Reserved (zero-fill)
-        uint32 CRC-32 of [sync pattern + above]
-    <packet header end; encoded with rate 256/512 LDPC>
+        uint32 CRC-32 of above
+    <packet header end; encoded with rate 224/448 LDPC> // NOTE: sync pattern must not be LDPC-coded
     bytes  TAD with forward error correction
         <TAD header start>
             uint16 Sample Count
             uint8  Quantiser Bits
-            uint16 Reserved (zero-fill)
             uint32 Compressed Size
             uint24 Reed-Solomon Block Count
             uint32 CRC-32 of above
-        <TAD chunk header end; encoded with rate 128/256 LDPC>
+        <TAD chunk header end; encoded with rate 112/224 LDPC>
         <Reed-Solomon (255,223) block start>
             bytes  TAD (EZBC, no Zstd)
             bytes  Parity for TAD
         <Reed-Solomon (255,223) block end>
     bytes  TAV with forward error correction
+        uint32 TAV header sync pattern (0xA3F7C91E)
         <TAV header start>
-            uint32 TAV header sync pattern (0xA3F7C91E)
             uint8  GOP Size (number of frames in this GOP)
+            uint16 Reserved (zero-fill)
             uint32 Compressed Size
             uint24 Reed-Solomon Block Count
             uint32 CRC-32 of above
-        <TAV header end; encoded with rate 128/256 LDPC>
+        <TAV header end; encoded with rate 112/224 LDPC> // NOTE: sync pattern must not be LDPC-coded
         <Reed-Solomon (255,223) block start>
             bytes  TAV (EZBC, no Zstd)
             bytes  Parity for TAV

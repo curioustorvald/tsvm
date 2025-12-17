@@ -10,21 +10,22 @@
  * - LDPC rate 1/2 for headers, Reed-Solomon (255,223) for payloads
  *
  * Packet structure (revised 2025-12-17):
- * - Main header: 32 bytes raw (256 bits) -> 64 bytes LDPC encoded (512 bits, rate 256/512)
- *   Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
- *   CRC covers bytes 0-27 (everything except CRC itself)
- * - TAD subpacket: header 16 bytes raw (128 bits) -> 32 bytes LDPC (256 bits, rate 128/256), + RS-encoded payload
- *   Layout: sample_count(2) + quant_bits(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
- * - TAV subpacket: header 16 bytes raw (128 bits) -> 32 bytes LDPC (256 bits, rate 128/256), + RS-encoded payload
- *   Layout: sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+ * - Main packet: sync(4) NOT LDPC + header 28 bytes (224 bits) -> 56 bytes LDPC (448 bits, rate 224/448)
+ *   Header layout: fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+ *   CRC covers bytes 0-23 (everything except CRC itself)
+ * - TAD subpacket: header 14 bytes (112 bits) -> 28 bytes LDPC (224 bits, rate 112/224), + RS-encoded payload
+ *   Layout: sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+ * - TAV subpacket: sync(4) NOT LDPC + header 14 bytes (112 bits) -> 28 bytes LDPC (224 bits, rate 112/224), + RS payload
+ *   Header layout: gop_size(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
  * - No packet type bytes - always audio then video
  *
  * Features (revised 2025-12-17):
  * - Soft Sync Recovery: Attempts to recover corrupted headers using known values
  * - Stage 3 recovery uses TAV subpacket sync pattern (0xA3F7C91E) to locate video data
+ * - Sync patterns are NOT LDPC-coded for reliable packet boundary detection
  *
  * Created by CuriousTorvald and Claude on 2025-12-09.
- * Revised 2025-12-17 for power-of-two header sizes, subpacket CRCs, and TAV subpacket sync.
+ * Revised 2025-12-17 for separate sync patterns, power-of-two LDPC sizes, and subpacket CRCs.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -67,11 +68,12 @@
 #define DT_TEMPORAL_LEVELS 2
 
 // Header sizes (before LDPC encoding) - revised 2025-12-17
-// LDPC rates are specified in bits: 256/512 = 256 bits raw -> 512 bits encoded
-// Converted to bytes: 32 -> 64 bytes, 16 -> 32 bytes
-#define DT_MAIN_HEADER_SIZE   32   // sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
-#define DT_TAD_HEADER_SIZE    16   // sample_count(2) + quant_bits(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
-#define DT_TAV_HEADER_SIZE    16   // sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+// Sync patterns are written separately (not LDPC-coded)
+// Main header: 28 bytes raw (224 bits) -> 56 bytes LDPC (448 bits, rate 224/448)
+// Subpacket headers: 14 bytes raw (112 bits) -> 28 bytes LDPC (224 bits, rate 112/224)
+#define DT_MAIN_HEADER_SIZE   28   // fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+#define DT_TAD_HEADER_SIZE    14   // sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+#define DT_TAV_HEADER_SIZE    14   // gop_size(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
 
 // TAV subpacket sync pattern (big endian)
 #define TAV_SUBPACKET_SYNC    0xA3F7C91E
@@ -83,6 +85,12 @@ static const int QUALITY_CG[] = {148, 133, 113, 99, 76, 39};
 
 #define MAX_PATH 4096
 #define MAX_DECODE_THREADS 16
+
+// Subpacket decode result codes (for detailed statistics tracking)
+#define DECODE_OK               0   // Success
+#define DECODE_ERR_HEADER_CRC  -1   // Header CRC validation failed
+#define DECODE_ERR_PAYLOAD_FEC -2   // Payload FEC decode failed (unrecoverable)
+#define DECODE_ERR_TRUNCATED   -3   // Data truncated or other error
 
 // =============================================================================
 // Multithreading Structures
@@ -201,6 +209,24 @@ typedef struct {
     uint64_t fec_corrections;
     uint64_t sync_losses;
 
+    // Detailed packet outcome statistics
+    // Fully decoded (both audio and video present)
+    uint64_t stat_fully_decoded_intact;          // (a) Both A/V intact, no recovery needed
+    uint64_t stat_fully_decoded_recovered;       // (b) Header recovered by soft sync recovery
+
+    // Partially decoded (only audio or only video)
+    uint64_t stat_partial_video_ok_audio_hdr_damaged;       // (c) Video OK, audio lost - header CRC fail
+    uint64_t stat_partial_video_ok_audio_payload_damaged;   // (d) Video OK, audio lost - FEC fail
+    uint64_t stat_partial_video_rec_audio_hdr_damaged;      // (e) Video recovered, audio lost - header CRC fail
+    uint64_t stat_partial_video_rec_audio_payload_damaged;  // (f) Video recovered, audio lost - FEC fail
+    uint64_t stat_partial_audio_ok_video_hdr_damaged;       // (g) Audio OK, video lost - header CRC fail
+    uint64_t stat_partial_audio_ok_video_payload_damaged;   // (h) Audio OK, video lost - FEC fail
+
+    // Packets lost (no audio or video)
+    uint64_t stat_lost_sync_recovery_failure;    // (j) Main header sync/CRC unrecoverable
+    uint64_t stat_lost_both_headers_damaged;     // (k) Has sync but both subpacket headers damaged
+    uint64_t stat_lost_payloads_damaged;         // (l) All headers OK but both payloads unrecoverable
+
     // Options
     int verbose;
     int dump_mode;  // Just dump packets, don't decode
@@ -236,6 +262,7 @@ typedef struct {
     uint64_t last_valid_timecode_ns;
     int packets_since_valid_sync;
     int soft_sync_recoveries;      // Statistics counter
+    int current_packet_recovered;  // Flag: was current packet's main header recovered?
 } dt_decoder_t;
 
 // =============================================================================
@@ -461,37 +488,29 @@ typedef struct {
  */
 static int attempt_soft_sync_recovery(dt_decoder_t *dec, uint8_t *decoded_header,
                                        dt_packet_header_t *header __attribute__((unused))) {
-    // CRC is now at offset 28-31 (revised layout 2025-12-17)
+    // CRC is at offset 24-27 (revised layout 2025-12-17, sync is separate)
     uint32_t stored_crc;
-    memcpy(&stored_crc, decoded_header + 28, 4);
-
-    // Get the expected sync pattern (NTSC or PAL based on first packet)
-    uint32_t expected_sync = dec->is_pal ? TAV_DT_SYNC_PAL : TAV_DT_SYNC_NTSC;
+    memcpy(&stored_crc, decoded_header + 24, 4);
 
     // === Stage 1 ===
-    // Substitute sync pattern and zero-fill reserved fields
+    // Zero-fill reserved fields (sync is now read separately, not in LDPC header)
+    // Layout: fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
     uint8_t recovery_header[DT_MAIN_HEADER_SIZE];
     memcpy(recovery_header, decoded_header, DT_MAIN_HEADER_SIZE);
 
-    // Substitute sync pattern (big-endian)
-    recovery_header[0] = (expected_sync >> 24) & 0xFF;
-    recovery_header[1] = (expected_sync >> 16) & 0xFF;
-    recovery_header[2] = (expected_sync >> 8) & 0xFF;
-    recovery_header[3] = expected_sync & 0xFF;
+    // Zero-fill reserved fields (offset 2-3 and 20-23)
+    recovery_header[2] = 0;
+    recovery_header[3] = 0;
+    recovery_header[20] = 0;
+    recovery_header[21] = 0;
+    recovery_header[22] = 0;
+    recovery_header[23] = 0;
 
-    // Zero-fill reserved fields (offset 6-7 and 24-27)
-    recovery_header[6] = 0;
-    recovery_header[7] = 0;
-    recovery_header[24] = 0;
-    recovery_header[25] = 0;
-    recovery_header[26] = 0;
-    recovery_header[27] = 0;
-
-    // Recalculate CRC over bytes 0-27
-    uint32_t calculated_crc = calculate_crc32(recovery_header, 28);
+    // Recalculate CRC over bytes 0-23
+    uint32_t calculated_crc = calculate_crc32(recovery_header, 24);
     if (calculated_crc == stored_crc) {
         if (dec->verbose) {
-            printf("  Soft Sync Recovery Stage 1: SUCCESS (sync/reserved corrected)\n");
+            printf("  Soft Sync Recovery Stage 1: SUCCESS (reserved fields corrected)\n");
         }
         // Use recovered header
         memcpy(decoded_header, recovery_header, DT_MAIN_HEADER_SIZE);
@@ -502,8 +521,8 @@ static int attempt_soft_sync_recovery(dt_decoder_t *dec, uint8_t *decoded_header
     // === Stage 2 ===
     // Also substitute framerate, flags, and timecode with last known values
     if (dec->packets_processed > 0) {
-        recovery_header[4] = dec->last_valid_framerate;
-        recovery_header[5] = dec->last_valid_flags;
+        recovery_header[0] = dec->last_valid_framerate;
+        recovery_header[1] = dec->last_valid_flags;
 
         // Calculate expected timecode based on last known timecode + GOP duration
         // GOP duration = 16 frames / framerate
@@ -511,14 +530,14 @@ static int attempt_soft_sync_recovery(dt_decoder_t *dec, uint8_t *decoded_header
         uint64_t expected_timecode = dec->last_valid_timecode_ns +
                                      (dec->packets_since_valid_sync + 1) * gop_duration_ns;
 
-        // Write expected timecode to bytes 12-19
-        memcpy(recovery_header + 12, &expected_timecode, 8);
+        // Write expected timecode to bytes 8-15
+        memcpy(recovery_header + 8, &expected_timecode, 8);
 
         // Recalculate CRC
-        calculated_crc = calculate_crc32(recovery_header, 28);
+        calculated_crc = calculate_crc32(recovery_header, 24);
         if (calculated_crc == stored_crc) {
             if (dec->verbose) {
-                printf("  Soft Sync Recovery Stage 2: SUCCESS (sync/reserved/fps/flags/timecode corrected)\n");
+                printf("  Soft Sync Recovery Stage 2: SUCCESS (reserved/fps/flags/timecode corrected)\n");
                 printf("    Reconstructed timecode: %.3f s\n", expected_timecode / 1000000000.0);
             }
             // Use recovered header
@@ -540,13 +559,28 @@ static int attempt_soft_sync_recovery(dt_decoder_t *dec, uint8_t *decoded_header
 }
 
 static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header) {
-    // Read LDPC-encoded header (64 bytes = 32 bytes * 2, rate 256/512 bits)
+    // Read sync pattern first (4 bytes, NOT LDPC-coded)
+    uint8_t sync_bytes[4];
+    size_t bytes_read = fread(sync_bytes, 1, 4, dec->input_fp);
+    if (bytes_read < 4) return -1;
+    dec->bytes_read += 4;
+
+    header->sync_pattern = ((uint32_t)sync_bytes[0] << 24) | ((uint32_t)sync_bytes[1] << 16) |
+                           ((uint32_t)sync_bytes[2] << 8) | sync_bytes[3];
+
+    // Verify sync pattern early
+    int sync_valid = (header->sync_pattern == TAV_DT_SYNC_NTSC || header->sync_pattern == TAV_DT_SYNC_PAL);
+    if (!sync_valid && dec->verbose) {
+        fprintf(stderr, "Warning: Invalid sync pattern 0x%08X\n", header->sync_pattern);
+    }
+
+    // Read LDPC-encoded header (56 bytes = 28 bytes * 2, rate 224/448 bits)
     uint8_t encoded_header[DT_MAIN_HEADER_SIZE * 2];
-    size_t bytes_read = fread(encoded_header, 1, DT_MAIN_HEADER_SIZE * 2, dec->input_fp);
+    bytes_read = fread(encoded_header, 1, DT_MAIN_HEADER_SIZE * 2, dec->input_fp);
     if (bytes_read < DT_MAIN_HEADER_SIZE * 2) return -1;
     dec->bytes_read += DT_MAIN_HEADER_SIZE * 2;
 
-    // LDPC decode header (64 bytes -> 32 bytes)
+    // LDPC decode header (56 bytes -> 28 bytes)
     uint8_t decoded_header[DT_MAIN_HEADER_SIZE];
     int ldpc_result = ldpc_decode(encoded_header, DT_MAIN_HEADER_SIZE * 2, decoded_header);
     if (ldpc_result < 0) {
@@ -560,26 +594,19 @@ static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header)
     }
 
     // Parse header fields (revised layout 2025-12-17)
-    // Layout: sync(4) + fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
-    header->sync_pattern = ((uint32_t)decoded_header[0] << 24) | ((uint32_t)decoded_header[1] << 16) |
-                           ((uint32_t)decoded_header[2] << 8) | decoded_header[3];
-    header->framerate = decoded_header[4];
-    header->flags = decoded_header[5];
-    header->reserved = decoded_header[6] | ((uint16_t)decoded_header[7] << 8);
-    memcpy(&header->packet_size, decoded_header + 8, 4);
-    memcpy(&header->timecode_ns, decoded_header + 12, 8);      // At offset 12
-    memcpy(&header->offset_to_video, decoded_header + 20, 4);  // At offset 20
-    // Reserved at offset 24-27 (ignored)
-    memcpy(&header->crc32, decoded_header + 28, 4);            // At offset 28
+    // Layout: fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4) = 28 bytes
+    // (sync is read separately above)
+    header->framerate = decoded_header[0];
+    header->flags = decoded_header[1];
+    header->reserved = decoded_header[2] | ((uint16_t)decoded_header[3] << 8);
+    memcpy(&header->packet_size, decoded_header + 4, 4);
+    memcpy(&header->timecode_ns, decoded_header + 8, 8);       // At offset 8
+    memcpy(&header->offset_to_video, decoded_header + 16, 4);  // At offset 16
+    // Reserved at offset 20-23 (ignored)
+    memcpy(&header->crc32, decoded_header + 24, 4);            // At offset 24
 
-    // Verify sync pattern
-    int sync_valid = (header->sync_pattern == TAV_DT_SYNC_NTSC || header->sync_pattern == TAV_DT_SYNC_PAL);
-    if (!sync_valid && dec->verbose) {
-        fprintf(stderr, "Warning: Invalid sync pattern 0x%08X\n", header->sync_pattern);
-    }
-
-    // Verify CRC-32 (covers bytes 0-27: sync + fps + flags + reserved + size + timecode + offset + reserved)
-    uint32_t calculated_crc = calculate_crc32(decoded_header, 28);
+    // Verify CRC-32 (covers bytes 0-23: fps + flags + reserved + size + timecode + offset + reserved)
+    uint32_t calculated_crc = calculate_crc32(decoded_header, 24);
     int crc_valid = (calculated_crc == header->crc32);
 
     if (!crc_valid) {
@@ -591,17 +618,16 @@ static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header)
         // Attempt Soft Sync Recovery
         if (dec->packets_processed > 0 && attempt_soft_sync_recovery(dec, decoded_header, header)) {
             // Re-parse header from recovered data (revised layout 2025-12-17)
-            header->sync_pattern = ((uint32_t)decoded_header[0] << 24) | ((uint32_t)decoded_header[1] << 16) |
-                                   ((uint32_t)decoded_header[2] << 8) | decoded_header[3];
-            header->framerate = decoded_header[4];
-            header->flags = decoded_header[5];
-            header->reserved = decoded_header[6] | ((uint16_t)decoded_header[7] << 8);
-            memcpy(&header->packet_size, decoded_header + 8, 4);
-            memcpy(&header->timecode_ns, decoded_header + 12, 8);
-            memcpy(&header->offset_to_video, decoded_header + 20, 4);
-            // Reserved at offset 24-27 (ignored)
-            memcpy(&header->crc32, decoded_header + 28, 4);
+            header->framerate = decoded_header[0];
+            header->flags = decoded_header[1];
+            header->reserved = decoded_header[2] | ((uint16_t)decoded_header[3] << 8);
+            memcpy(&header->packet_size, decoded_header + 4, 4);
+            memcpy(&header->timecode_ns, decoded_header + 8, 8);
+            memcpy(&header->offset_to_video, decoded_header + 16, 4);
+            // Reserved at offset 20-23 (ignored)
+            memcpy(&header->crc32, decoded_header + 24, 4);
             crc_valid = 1;  // Recovery succeeded
+            dec->current_packet_recovered = 1;  // Track for detailed statistics
         } else {
             dec->crc_errors++;
             dec->packets_since_valid_sync++;
@@ -611,12 +637,14 @@ static int read_and_decode_header(dt_decoder_t *dec, dt_packet_header_t *header)
                 fprintf(stderr, "Warning: Packet discarded due to unrecoverable CRC error\n");
             }
             dec->sync_losses++;
+            dec->stat_lost_sync_recovery_failure++;  // (j) Sync recovery failure
             return -2;
         }
     }
 
     if (!sync_valid) {
         dec->sync_losses++;
+        dec->stat_lost_sync_recovery_failure++;  // (j) Sync recovery failure
         return -2;
     }
 
@@ -871,12 +899,12 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
                                    size_t *consumed, size_t *samples_written) {
     *samples_written = 0;
 
-    // Minimum: 32 byte LDPC header (16 bytes * 2, rate 128/256 bits)
+    // Minimum: 28 byte LDPC header (14 bytes * 2, rate 112/224 bits)
     if (data_len < DT_TAD_HEADER_SIZE * 2) return -1;
 
     size_t offset = 0;
 
-    // LDPC decode TAD header (32 bytes -> 16 bytes)
+    // LDPC decode TAD header (28 bytes -> 14 bytes)
     uint8_t decoded_tad_header[DT_TAD_HEADER_SIZE];
     int ldpc_result = ldpc_decode(data + offset, DT_TAD_HEADER_SIZE * 2, decoded_tad_header);
     if (ldpc_result < 0) {
@@ -890,7 +918,7 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     offset += DT_TAD_HEADER_SIZE * 2;
 
     // Parse TAD header (revised layout 2025-12-17)
-    // Layout: sample_count(2) + quant_bits(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
+    // Layout: sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3) + crc(4) = 14 bytes
     uint16_t sample_count;
     uint8_t quant_bits;
     uint32_t compressed_size;
@@ -899,16 +927,15 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
 
     memcpy(&sample_count, decoded_tad_header, 2);
     quant_bits = decoded_tad_header[2];
-    // Reserved at offset 3-4 (ignored)
-    memcpy(&compressed_size, decoded_tad_header + 5, 4);
-    // uint24 rs_block_count (little endian) at offset 9-11
-    rs_block_count = decoded_tad_header[9] |
-                     ((uint32_t)decoded_tad_header[10] << 8) |
-                     ((uint32_t)decoded_tad_header[11] << 16);
-    memcpy(&stored_crc, decoded_tad_header + 12, 4);
+    memcpy(&compressed_size, decoded_tad_header + 3, 4);
+    // uint24 rs_block_count (little endian) at offset 7-9
+    rs_block_count = decoded_tad_header[7] |
+                     ((uint32_t)decoded_tad_header[8] << 8) |
+                     ((uint32_t)decoded_tad_header[9] << 16);
+    memcpy(&stored_crc, decoded_tad_header + 10, 4);
 
-    // Verify CRC-32 (covers bytes 0-11)
-    uint32_t calculated_crc = calculate_crc32(decoded_tad_header, 12);
+    // Verify CRC-32 (covers bytes 0-9)
+    uint32_t calculated_crc = calculate_crc32(decoded_tad_header, 10);
     int tad_header_valid = (calculated_crc == stored_crc);
     if (!tad_header_valid) {
         if (dec->verbose) {
@@ -919,7 +946,7 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         // Cannot trust header data - skip audio decoding entirely
         // Error concealment will insert silence
         *consumed = offset;
-        return -1;
+        return DECODE_ERR_HEADER_CRC;
     }
 
     if (dec->verbose) {
@@ -939,13 +966,13 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
                    compressed_size, max_data_size);
         }
         *consumed = offset;
-        return -1;
+        return DECODE_ERR_HEADER_CRC;  // Header data invalid
     }
 
     // Handle empty audio packet (no samples in this GOP)
     if (compressed_size == 0 || rs_block_count == 0 || sample_count == 0) {
         *consumed = offset;
-        return 0;  // Successfully processed empty audio packet
+        return DECODE_OK;  // Successfully processed empty audio packet
     }
 
     if (offset + rs_total > data_len) {
@@ -953,18 +980,18 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
             fprintf(stderr, "Warning: Audio packet truncated\n");
         }
         *consumed = data_len;
-        return -1;  // Unrecoverable
+        return DECODE_ERR_TRUNCATED;
     }
 
     // RS decode payload
     uint8_t *rs_data = malloc(rs_total);
-    if (!rs_data) return -1;
+    if (!rs_data) return DECODE_ERR_TRUNCATED;
     memcpy(rs_data, data + offset, rs_total);
 
     uint8_t *decoded_payload = malloc(compressed_size);
     if (!decoded_payload) {
         free(rs_data);
-        return -1;
+        return DECODE_ERR_TRUNCATED;
     }
 
     int fec_result = decode_fec_blocks(rs_data, rs_total, decoded_payload, compressed_size, dec->fec_mode);
@@ -975,7 +1002,7 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - FEC failed
+        return DECODE_ERR_PAYLOAD_FEC;
     } else if (fec_result > 0) {
         dec->fec_corrections += fec_result;
     }
@@ -1013,7 +1040,7 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - TAD decode failed
+        return DECODE_ERR_PAYLOAD_FEC;  // Treat TAD decode failure as payload error
     }
 
     free(pcmu8_output);
@@ -1023,7 +1050,7 @@ static int decode_audio_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     offset += rs_total;
     *consumed = offset;
 
-    return 0;  // Success
+    return DECODE_OK;
 }
 
 /**
@@ -1033,12 +1060,26 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
                                       size_t *consumed, int *frames_written) {
     *frames_written = 0;
 
-    // Minimum: 32 byte LDPC header (16 bytes * 2, rate 128/256 bits)
-    if (data_len < DT_TAV_HEADER_SIZE * 2) return -1;
+    // Minimum: 4 byte sync + 28 byte LDPC header (14 bytes * 2, rate 112/224 bits)
+    if (data_len < 4 + DT_TAV_HEADER_SIZE * 2) return -1;
 
     size_t offset = 0;
 
-    // LDPC decode TAV header (32 bytes -> 16 bytes)
+    // Read TAV sync pattern (4 bytes, NOT LDPC-coded)
+    uint32_t subpacket_sync = ((uint32_t)data[offset] << 24) |
+                              ((uint32_t)data[offset + 1] << 16) |
+                              ((uint32_t)data[offset + 2] << 8) |
+                              data[offset + 3];
+    offset += 4;
+
+    // Verify sync pattern early
+    int sync_valid = (subpacket_sync == TAV_SUBPACKET_SYNC);
+    if (!sync_valid && dec->verbose) {
+        fprintf(stderr, "Warning: TAV subpacket sync mismatch (MT) (expected 0x%08X, got 0x%08X)\n",
+               TAV_SUBPACKET_SYNC, subpacket_sync);
+    }
+
+    // LDPC decode TAV header (28 bytes -> 14 bytes)
     uint8_t decoded_tav_header[DT_TAV_HEADER_SIZE];
     int ldpc_result = ldpc_decode(data + offset, DT_TAV_HEADER_SIZE * 2, decoded_tav_header);
     if (ldpc_result < 0) {
@@ -1052,31 +1093,23 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
     offset += DT_TAV_HEADER_SIZE * 2;
 
     // Parse TAV header (revised layout 2025-12-17)
-    // Layout: sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
-    uint32_t subpacket_sync = ((uint32_t)decoded_tav_header[0] << 24) |
-                              ((uint32_t)decoded_tav_header[1] << 16) |
-                              ((uint32_t)decoded_tav_header[2] << 8) |
-                              decoded_tav_header[3];
-    uint8_t gop_size = decoded_tav_header[4];
+    // Layout: gop_size(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4) = 14 bytes
+    // (sync is read separately above)
+    uint8_t gop_size = decoded_tav_header[0];
+    // Reserved at offset 1-2 (ignored)
     uint32_t compressed_size;
     uint32_t rs_block_count;
     uint32_t stored_crc;
 
-    memcpy(&compressed_size, decoded_tav_header + 5, 4);
-    rs_block_count = decoded_tav_header[9] |
-                     ((uint32_t)decoded_tav_header[10] << 8) |
-                     ((uint32_t)decoded_tav_header[11] << 16);
-    memcpy(&stored_crc, decoded_tav_header + 12, 4);
+    memcpy(&compressed_size, decoded_tav_header + 3, 4);
+    rs_block_count = decoded_tav_header[7] |
+                     ((uint32_t)decoded_tav_header[8] << 8) |
+                     ((uint32_t)decoded_tav_header[9] << 16);
+    memcpy(&stored_crc, decoded_tav_header + 10, 4);
 
-    // Verify sync pattern and CRC-32 (covers bytes 0-11)
-    int sync_valid = (subpacket_sync == TAV_SUBPACKET_SYNC);
-    uint32_t calculated_crc = calculate_crc32(decoded_tav_header, 12);
+    // Verify CRC-32 (covers bytes 0-9)
+    uint32_t calculated_crc = calculate_crc32(decoded_tav_header, 10);
     int crc_valid = (calculated_crc == stored_crc);
-
-    if (!sync_valid && dec->verbose) {
-        fprintf(stderr, "Warning: TAV subpacket sync mismatch (MT) (expected 0x%08X, got 0x%08X)\n",
-               TAV_SUBPACKET_SYNC, subpacket_sync);
-    }
 
     if (!crc_valid) {
         if (dec->verbose) {
@@ -1086,7 +1119,7 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
         dec->crc_errors++;
         // Cannot trust header data - skip video decoding entirely
         *consumed = offset;
-        return -1;
+        return DECODE_ERR_HEADER_CRC;
     }
 
     // Calculate RS payload size
@@ -1100,23 +1133,23 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
                    compressed_size, max_data_size);
         }
         *consumed = offset;
-        return -1;
+        return DECODE_ERR_HEADER_CRC;  // Header data invalid
     }
 
     if (offset + rs_total > data_len) {
         *consumed = data_len;
-        return -1;  // Unrecoverable
+        return DECODE_ERR_TRUNCATED;
     }
 
     // RS decode payload
     uint8_t *rs_data = malloc(rs_total);
-    if (!rs_data) return -1;
+    if (!rs_data) return DECODE_ERR_TRUNCATED;
     memcpy(rs_data, data + offset, rs_total);
 
     uint8_t *decoded_payload = malloc(compressed_size);
     if (!decoded_payload) {
         free(rs_data);
-        return -1;
+        return DECODE_ERR_TRUNCATED;
     }
 
     int fec_result = decode_fec_blocks(rs_data, rs_total, decoded_payload, compressed_size, dec->fec_mode);
@@ -1127,7 +1160,7 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - FEC failed
+        return DECODE_ERR_PAYLOAD_FEC;
     } else if (fec_result > 0) {
         dec->fec_corrections += fec_result;
     }
@@ -1141,7 +1174,7 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
             // Fall back to single-threaded decoding for this packet
             free(decoded_payload);
             *consumed = offset + rs_total;
-            return -1;
+            return DECODE_ERR_TRUNCATED;  // Treat as truncated/other error
         }
         if (dec->verbose) {
             printf("Initialized multithreaded decoding: %d threads\n", dec->num_threads);
@@ -1230,19 +1263,33 @@ static int decode_video_subpacket_mt(dt_decoder_t *dec, const uint8_t *data, siz
     *consumed = offset;
     *frames_written = gop_size;  // Optimistic - assume decode will succeed
 
-    return 0;  // Success - job submitted
+    return DECODE_OK;  // Success - job submitted
 }
 
 static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t data_len,
                                    size_t *consumed, int *frames_written) {
     *frames_written = 0;
 
-    // Minimum: 32 byte LDPC header (16 bytes * 2, rate 128/256 bits)
-    if (data_len < DT_TAV_HEADER_SIZE * 2) return -1;
+    // Minimum: 4 byte sync + 28 byte LDPC header (14 bytes * 2, rate 112/224 bits)
+    if (data_len < 4 + DT_TAV_HEADER_SIZE * 2) return -1;
 
     size_t offset = 0;
 
-    // LDPC decode TAV header (32 bytes -> 16 bytes)
+    // Read TAV sync pattern (4 bytes, NOT LDPC-coded)
+    uint32_t subpacket_sync = ((uint32_t)data[offset] << 24) |
+                              ((uint32_t)data[offset + 1] << 16) |
+                              ((uint32_t)data[offset + 2] << 8) |
+                              data[offset + 3];
+    offset += 4;
+
+    // Verify sync pattern early
+    int sync_valid = (subpacket_sync == TAV_SUBPACKET_SYNC);
+    if (!sync_valid && dec->verbose) {
+        fprintf(stderr, "Warning: TAV subpacket sync mismatch (expected 0x%08X, got 0x%08X)\n",
+               TAV_SUBPACKET_SYNC, subpacket_sync);
+    }
+
+    // LDPC decode TAV header (28 bytes -> 14 bytes)
     uint8_t decoded_tav_header[DT_TAV_HEADER_SIZE];
     int ldpc_result = ldpc_decode(data + offset, DT_TAV_HEADER_SIZE * 2, decoded_tav_header);
     if (ldpc_result < 0) {
@@ -1256,32 +1303,24 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     offset += DT_TAV_HEADER_SIZE * 2;
 
     // Parse TAV header (revised layout 2025-12-17)
-    // Layout: sync(4) + gop_size(1) + compressed_size(4) + rs_block_count(3) + crc(4)
-    uint32_t subpacket_sync = ((uint32_t)decoded_tav_header[0] << 24) |
-                              ((uint32_t)decoded_tav_header[1] << 16) |
-                              ((uint32_t)decoded_tav_header[2] << 8) |
-                              decoded_tav_header[3];
-    uint8_t gop_size = decoded_tav_header[4];
+    // Layout: gop_size(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4) = 14 bytes
+    // (sync is read separately above)
+    uint8_t gop_size = decoded_tav_header[0];
+    // Reserved at offset 1-2 (ignored)
     uint32_t compressed_size;
     uint32_t rs_block_count;
     uint32_t stored_crc;
 
-    memcpy(&compressed_size, decoded_tav_header + 5, 4);
-    // uint24 rs_block_count (little endian) at offset 9-11
-    rs_block_count = decoded_tav_header[9] |
-                     ((uint32_t)decoded_tav_header[10] << 8) |
-                     ((uint32_t)decoded_tav_header[11] << 16);
-    memcpy(&stored_crc, decoded_tav_header + 12, 4);
+    memcpy(&compressed_size, decoded_tav_header + 3, 4);
+    // uint24 rs_block_count (little endian) at offset 7-9
+    rs_block_count = decoded_tav_header[7] |
+                     ((uint32_t)decoded_tav_header[8] << 8) |
+                     ((uint32_t)decoded_tav_header[9] << 16);
+    memcpy(&stored_crc, decoded_tav_header + 10, 4);
 
-    // Verify sync pattern and CRC-32 (covers bytes 0-11)
-    int sync_valid = (subpacket_sync == TAV_SUBPACKET_SYNC);
-    uint32_t calculated_crc = calculate_crc32(decoded_tav_header, 12);
+    // Verify CRC-32 (covers bytes 0-9)
+    uint32_t calculated_crc = calculate_crc32(decoded_tav_header, 10);
     int crc_valid = (calculated_crc == stored_crc);
-
-    if (!sync_valid && dec->verbose) {
-        fprintf(stderr, "Warning: TAV subpacket sync mismatch (expected 0x%08X, got 0x%08X)\n",
-               TAV_SUBPACKET_SYNC, subpacket_sync);
-    }
 
     if (!crc_valid) {
         if (dec->verbose) {
@@ -1292,7 +1331,7 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         // Cannot trust header data - skip video decoding entirely
         // Error concealment will use freeze frame
         *consumed = offset;
-        return -1;
+        return DECODE_ERR_HEADER_CRC;
     }
 
     if (dec->verbose) {
@@ -1311,7 +1350,7 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
                    compressed_size, max_data_size);
         }
         *consumed = offset;
-        return -1;
+        return DECODE_ERR_HEADER_CRC;  // Header data invalid
     }
 
     if (offset + rs_total > data_len) {
@@ -1319,18 +1358,18 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
             fprintf(stderr, "Warning: Video packet truncated\n");
         }
         *consumed = data_len;
-        return -1;  // Unrecoverable
+        return DECODE_ERR_TRUNCATED;
     }
 
     // RS decode payload
     uint8_t *rs_data = malloc(rs_total);
-    if (!rs_data) return -1;
+    if (!rs_data) return DECODE_ERR_TRUNCATED;
     memcpy(rs_data, data + offset, rs_total);
 
     uint8_t *decoded_payload = malloc(compressed_size);
     if (!decoded_payload) {
         free(rs_data);
-        return -1;
+        return DECODE_ERR_TRUNCATED;
     }
 
     int fec_result = decode_fec_blocks(rs_data, rs_total, decoded_payload, compressed_size, dec->fec_mode);
@@ -1341,7 +1380,7 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
         free(rs_data);
         free(decoded_payload);
         *consumed = offset + rs_total;
-        return -1;  // Unrecoverable - FEC failed
+        return DECODE_ERR_PAYLOAD_FEC;
     } else if (fec_result > 0) {
         dec->fec_corrections += fec_result;
     }
@@ -1444,7 +1483,7 @@ static int decode_video_subpacket(dt_decoder_t *dec, const uint8_t *data, size_t
     offset += rs_total;
     *consumed = offset;
 
-    return 0;  // Success
+    return DECODE_OK;
 }
 
 // =============================================================================
@@ -1780,31 +1819,80 @@ static int process_packet(dt_decoder_t *dec) {
     // Decode audio and video
     size_t audio_samples_written = 0;
     int video_frames_written = 0;
+    int audio_result = DECODE_OK;
+    int video_result = DECODE_OK;
 
     // Process TAD subpacket (audio comes first, no type byte)
     size_t tad_consumed = 0;
     if (header.offset_to_video > 0) {
-        decode_audio_subpacket(dec, packet_data, header.offset_to_video,
-                               &tad_consumed, &audio_samples_written);
+        audio_result = decode_audio_subpacket(dec, packet_data, header.offset_to_video,
+                                              &tad_consumed, &audio_samples_written);
     }
 
     // Process TAV subpacket (video comes after audio)
     if (header.offset_to_video < header.packet_size) {
         size_t tav_consumed = 0;
         if (dec->num_threads > 1) {
-            decode_video_subpacket_mt(dec, packet_data + header.offset_to_video,
-                                      header.packet_size - header.offset_to_video,
-                                      &tav_consumed, &video_frames_written);
+            video_result = decode_video_subpacket_mt(dec, packet_data + header.offset_to_video,
+                                                     header.packet_size - header.offset_to_video,
+                                                     &tav_consumed, &video_frames_written);
         } else {
-            decode_video_subpacket(dec, packet_data + header.offset_to_video,
-                                   header.packet_size - header.offset_to_video,
-                                   &tav_consumed, &video_frames_written);
+            video_result = decode_video_subpacket(dec, packet_data + header.offset_to_video,
+                                                  header.packet_size - header.offset_to_video,
+                                                  &tav_consumed, &video_frames_written);
+        }
+    }
+
+    // Categorize packet outcome for detailed statistics
+    int audio_ok = (audio_result == DECODE_OK);
+    int video_ok = (video_result == DECODE_OK);
+    int audio_hdr_fail = (audio_result == DECODE_ERR_HEADER_CRC);
+    int video_hdr_fail = (video_result == DECODE_ERR_HEADER_CRC);
+
+    if (audio_ok && video_ok) {
+        // Fully decoded
+        if (dec->current_packet_recovered) {
+            dec->stat_fully_decoded_recovered++;   // (b)
+        } else {
+            dec->stat_fully_decoded_intact++;      // (a)
+        }
+    } else if (video_ok && !audio_ok) {
+        // Video OK, audio lost
+        if (dec->current_packet_recovered) {
+            // Video recovered by soft sync
+            if (audio_hdr_fail) {
+                dec->stat_partial_video_rec_audio_hdr_damaged++;      // (e)
+            } else {
+                dec->stat_partial_video_rec_audio_payload_damaged++;  // (f)
+            }
+        } else {
+            // Video intact
+            if (audio_hdr_fail) {
+                dec->stat_partial_video_ok_audio_hdr_damaged++;       // (c)
+            } else {
+                dec->stat_partial_video_ok_audio_payload_damaged++;   // (d)
+            }
+        }
+    } else if (audio_ok && !video_ok) {
+        // Audio OK, video lost
+        if (video_hdr_fail) {
+            dec->stat_partial_audio_ok_video_hdr_damaged++;   // (g)
+        } else {
+            dec->stat_partial_audio_ok_video_payload_damaged++;  // (h)
+        }
+    } else {
+        // Both audio and video lost
+        if (audio_hdr_fail && video_hdr_fail) {
+            dec->stat_lost_both_headers_damaged++;   // (k)
+        } else {
+            dec->stat_lost_payloads_damaged++;       // (l)
         }
     }
 
     // Update timecode tracking
     dec->last_timecode_ns = header.timecode_ns;
     dec->packets_processed++;
+    dec->current_packet_recovered = 0;  // Reset for next packet
 
     if (!dec->verbose && dec->packets_processed % 10 == 0) {
         fprintf(stderr, "\rDecoding packet %lu, frames: %lu...",
@@ -1915,14 +2003,50 @@ static int run_decoder(dt_decoder_t *dec) {
     }
 
     fprintf(stderr, "\n");
-    printf("\nDecoding complete:\n");
-    printf("  Packets processed: %lu\n", dec->packets_processed);
-    printf("  Frames decoded: %lu\n", dec->frames_decoded);
-    printf("  Bytes read: %lu\n", dec->bytes_read);
-    printf("  FEC corrections: %lu\n", dec->fec_corrections);
-    printf("  CRC errors: %lu\n", dec->crc_errors);
-    printf("  Soft sync recoveries: %d\n", dec->soft_sync_recoveries);
-    printf("  Sync losses: %lu\n", dec->sync_losses);
+
+    // Calculate summary totals
+    uint64_t fully_decoded = dec->stat_fully_decoded_intact + dec->stat_fully_decoded_recovered;
+    uint64_t partially_decoded = dec->stat_partial_video_ok_audio_hdr_damaged +
+                                  dec->stat_partial_video_ok_audio_payload_damaged +
+                                  dec->stat_partial_video_rec_audio_hdr_damaged +
+                                  dec->stat_partial_video_rec_audio_payload_damaged +
+                                  dec->stat_partial_audio_ok_video_hdr_damaged +
+                                  dec->stat_partial_audio_ok_video_payload_damaged;
+    uint64_t packets_lost = dec->stat_lost_sync_recovery_failure +
+                            dec->stat_lost_both_headers_damaged +
+                            dec->stat_lost_payloads_damaged;
+
+    printf("\n=== Decoding Statistics ===\n");
+    printf("Total packets: %lu\n", dec->packets_processed + packets_lost);
+    printf("Frames decoded: %lu\n", dec->frames_decoded);
+    printf("Bytes read: %lu\n", dec->bytes_read);
+    printf("FEC corrections: %lu\n", dec->fec_corrections);
+    printf("\n--- Packet Outcome Breakdown ---\n");
+
+    printf("Packets fully decoded (audio and video present): %lu\n", fully_decoded);
+    printf("  (a) Packets intact: %lu\n", dec->stat_fully_decoded_intact);
+    printf("  (b) Recovered by soft sync recovery: %lu\n", dec->stat_fully_decoded_recovered);
+
+    printf("Packets partially decoded (audio or video only): %lu\n", partially_decoded);
+    printf("  (c) Intact video, audio lost due to subpacket header damage: %lu\n",
+           dec->stat_partial_video_ok_audio_hdr_damaged);
+    printf("  (d) Intact video, audio lost due to payload damage: %lu\n",
+           dec->stat_partial_video_ok_audio_payload_damaged);
+    printf("  (e) Video resync'd by soft sync recovery, audio lost due to subpacket header damage: %lu\n",
+           dec->stat_partial_video_rec_audio_hdr_damaged);
+    printf("  (f) Video resync'd by soft sync recovery, audio lost due to payload damage: %lu\n",
+           dec->stat_partial_video_rec_audio_payload_damaged);
+    printf("  (g) Intact audio, video lost due to subpacket header damage: %lu\n",
+           dec->stat_partial_audio_ok_video_hdr_damaged);
+    printf("  (h) Intact audio, video lost due to payload damage: %lu\n",
+           dec->stat_partial_audio_ok_video_payload_damaged);
+
+    printf("Packets lost (no audio and video): %lu\n", packets_lost);
+    printf("  (j) Sync recovery failure: %lu\n", dec->stat_lost_sync_recovery_failure);
+    printf("  (k) Has sync but both subpacket headers damaged: %lu\n", dec->stat_lost_both_headers_damaged);
+    printf("  (l) All headers intact but damaged payload: %lu\n", dec->stat_lost_payloads_damaged);
+
+    printf("===========================\n");
 
     // Mux output files
     mux_output(dec);
