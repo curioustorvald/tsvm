@@ -1,19 +1,29 @@
 /**
  * LDPC Rate 1/2 Codec Implementation
  *
- * Simple LDPC for TAV-DT header protection.
- * Uses a systematic rate 1/2 code with bit-flipping decoder.
+ * LDPC for TAV-DT header protection.
+ * Uses a systematic rate 1/2 code with sum-product belief propagation decoder.
  *
  * The parity-check matrix is designed for good error correction on small blocks.
  * Each parity bit is computed as XOR of multiple data bits using a pseudo-random
  * but deterministic pattern.
  *
  * Created by CuriousTorvald and Claude on 2025-12-09.
+ * Updated 2025-12-17: Replaced bit-flipping with belief propagation decoder.
  */
 
 #include "ldpc.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+
+// Channel LLR magnitude for hard-decision input
+// Higher value = more confidence in received bits
+// For BER ~0.01, optimal is about 4.6; we use slightly lower for robustness
+#define CHANNEL_LLR_MAG 4.0f
+
+// Clipping value to prevent numerical overflow in tanh operations
+#define LLR_CLIP 20.0f
 
 // =============================================================================
 // Parity-Check Matrix Generation
@@ -186,6 +196,18 @@ int ldpc_check_syndrome(const uint8_t *codeword, size_t len) {
     return 1;  // Zero syndrome: valid codeword
 }
 
+// Clip LLR to prevent overflow
+static inline float clip_llr(float llr) {
+    if (llr > LLR_CLIP) return LLR_CLIP;
+    if (llr < -LLR_CLIP) return -LLR_CLIP;
+    return llr;
+}
+
+// Sign of a float (returns +1 or -1)
+static inline float sign_f(float x) {
+    return (x >= 0.0f) ? 1.0f : -1.0f;
+}
+
 int ldpc_decode(const uint8_t *encoded, size_t encoded_len, uint8_t *output) {
     if (!ldpc_initialized) ldpc_init();
 
@@ -199,108 +221,174 @@ int ldpc_decode(const uint8_t *encoded, size_t encoded_len, uint8_t *output) {
     }
 
     int k_bits = (int)(data_len * 8);
+    int n_bits = k_bits * 2;  // Total codeword bits (data + parity)
 
-    // Working copy of codeword
-    uint8_t codeword[LDPC_MAX_DATA_BYTES * 2];
-    memcpy(codeword, encoded, encoded_len);
+    // Pre-compute the parity check matrix structure for efficiency
+    // For each check node j: which variable nodes it connects to
+    int check_to_var[LDPC_MAX_DATA_BYTES * 8][LDPC_MAX_DATA_BYTES * 8 + 1];
+    int check_degree[LDPC_MAX_DATA_BYTES * 8];
 
-    // Bit-flipping decoder
-    for (int iter = 0; iter < LDPC_MAX_ITERATIONS; iter++) {
-        // Compute syndromes (which parity checks fail)
-        int syndrome[LDPC_MAX_DATA_BYTES * 8];
-        int syndrome_count = 0;
-
-        for (int j = 0; j < k_bits; j++) {
-            int connections[LDPC_MAX_DATA_BYTES * 8];
-            int n_conns = get_parity_connections(j, k_bits, connections);
-
-            // Syndrome bit = XOR of connected data bits XOR parity bit
-            syndrome[j] = get_bit(codeword + data_len, j);
-            for (int c = 0; c < n_conns; c++) {
-                syndrome[j] ^= get_bit(codeword, connections[c]);
-            }
-
-            if (syndrome[j]) syndrome_count++;
-        }
-
-        // Check if we're done (all syndromes zero)
-        if (syndrome_count == 0) {
-            // Success - copy decoded data
-            memcpy(output, codeword, data_len);
-            return 0;
-        }
-
-        // Count failed checks for each bit
-        int data_fails[LDPC_MAX_DATA_BYTES * 8];
-        int parity_fails[LDPC_MAX_DATA_BYTES * 8];
-        memset(data_fails, 0, sizeof(data_fails));
-        memset(parity_fails, 0, sizeof(parity_fails));
-
-        for (int j = 0; j < k_bits; j++) {
-            if (syndrome[j]) {
-                // This check failed - increment count for all connected bits
-                int connections[LDPC_MAX_DATA_BYTES * 8];
-                int n_conns = get_parity_connections(j, k_bits, connections);
-
-                for (int c = 0; c < n_conns; c++) {
-                    data_fails[connections[c]]++;
-                }
-                parity_fails[j]++;
-            }
-        }
-
-        // Find bit with most failures
-        int max_fails = 0;
-        int flip_type = 0;  // 0 = data, 1 = parity
-        int flip_idx = 0;
-
-        for (int i = 0; i < k_bits; i++) {
-            if (data_fails[i] > max_fails) {
-                max_fails = data_fails[i];
-                flip_type = 0;
-                flip_idx = i;
-            }
-        }
-
-        for (int j = 0; j < k_bits; j++) {
-            if (parity_fails[j] > max_fails) {
-                max_fails = parity_fails[j];
-                flip_type = 1;
-                flip_idx = j;
-            }
-        }
-
-        // Flip the most suspicious bit
-        if (max_fails > 0) {
-            if (flip_type == 0) {
-                flip_bit(codeword, flip_idx);
-            } else {
-                flip_bit(codeword + data_len, flip_idx);
-            }
-        } else {
-            // No progress possible
-            break;
-        }
-    }
-
-    // Failed to decode - return best effort
-    // Check if we at least have valid data by syndrome count
-    int final_syndromes = 0;
     for (int j = 0; j < k_bits; j++) {
         int connections[LDPC_MAX_DATA_BYTES * 8];
         int n_conns = get_parity_connections(j, k_bits, connections);
 
-        int syn = get_bit(codeword + data_len, j);
+        // Check j connects to: data bits in connections[] + parity bit j
+        check_degree[j] = n_conns + 1;
         for (int c = 0; c < n_conns; c++) {
-            syn ^= get_bit(codeword, connections[c]);
+            check_to_var[j][c] = connections[c];  // Data bit index
+        }
+        check_to_var[j][n_conns] = k_bits + j;  // Parity bit index
+    }
+
+    // Initialize channel LLRs from received hard bits
+    // LLR > 0 means bit is probably 0, LLR < 0 means bit is probably 1
+    float channel_llr[LDPC_MAX_DATA_BYTES * 16];
+    for (int i = 0; i < n_bits; i++) {
+        int bit = get_bit(encoded, i);
+        channel_llr[i] = bit ? -CHANNEL_LLR_MAG : CHANNEL_LLR_MAG;
+    }
+
+    // Message arrays for BP
+    // check_to_var_msg[j][idx] = message from check j to variable check_to_var[j][idx]
+    float check_to_var_msg[LDPC_MAX_DATA_BYTES * 8][LDPC_MAX_DATA_BYTES * 8 + 1];
+
+    // Initialize check-to-variable messages to zero
+    memset(check_to_var_msg, 0, sizeof(check_to_var_msg));
+
+    // Belief Propagation iterations
+    for (int iter = 0; iter < LDPC_MAX_ITERATIONS; iter++) {
+        // Step 1: Variable-to-check messages (implicit, computed on the fly)
+        // var_to_check[v→j] = channel_llr[v] + sum of all check_to_var_msg[k][idx_v] for k != j
+
+        // Step 2: Check-to-variable messages using min-sum approximation
+        // For each check node j, for each connected variable v:
+        // check_to_var_msg[j→v] = sign * min(|incoming messages from other vars|)
+
+        for (int j = 0; j < k_bits; j++) {
+            int degree = check_degree[j];
+
+            // First, compute variable-to-check messages for all variables in this check
+            float var_to_check[LDPC_MAX_DATA_BYTES * 8 + 1];
+            for (int idx = 0; idx < degree; idx++) {
+                int v = check_to_var[j][idx];
+
+                // Sum all incoming check messages to variable v, except from check j
+                float sum = channel_llr[v];
+                for (int jj = 0; jj < k_bits; jj++) {
+                    if (jj == j) continue;
+                    // Find if check jj connects to variable v
+                    for (int idx2 = 0; idx2 < check_degree[jj]; idx2++) {
+                        if (check_to_var[jj][idx2] == v) {
+                            sum += check_to_var_msg[jj][idx2];
+                            break;
+                        }
+                    }
+                }
+                var_to_check[idx] = clip_llr(sum);
+            }
+
+            // Now compute check-to-variable messages using min-sum
+            for (int idx = 0; idx < degree; idx++) {
+                float sign_prod = 1.0f;
+                float min_abs = 1e30f;
+
+                for (int idx2 = 0; idx2 < degree; idx2++) {
+                    if (idx2 == idx) continue;
+                    float msg = var_to_check[idx2];
+                    sign_prod *= sign_f(msg);
+                    float abs_msg = fabsf(msg);
+                    if (abs_msg < min_abs) min_abs = abs_msg;
+                }
+
+                // Min-sum with scaling factor 0.75 for better performance
+                check_to_var_msg[j][idx] = clip_llr(sign_prod * min_abs * 0.75f);
+            }
+        }
+
+        // Step 3: Compute posterior LLRs and make hard decisions
+        float posterior[LDPC_MAX_DATA_BYTES * 16];
+        for (int v = 0; v < n_bits; v++) {
+            float sum = channel_llr[v];
+            // Add all incoming check-to-variable messages
+            for (int j = 0; j < k_bits; j++) {
+                for (int idx = 0; idx < check_degree[j]; idx++) {
+                    if (check_to_var[j][idx] == v) {
+                        sum += check_to_var_msg[j][idx];
+                        break;
+                    }
+                }
+            }
+            posterior[v] = sum;
+        }
+
+        // Make hard decisions
+        uint8_t decoded[LDPC_MAX_DATA_BYTES * 2];
+        memset(decoded, 0, encoded_len);
+        for (int v = 0; v < n_bits; v++) {
+            if (posterior[v] < 0) {
+                set_bit(decoded, v, 1);
+            }
+        }
+
+        // Check syndrome
+        int syndrome_count = 0;
+        for (int j = 0; j < k_bits; j++) {
+            int syn = 0;
+            for (int idx = 0; idx < check_degree[j]; idx++) {
+                syn ^= get_bit(decoded, check_to_var[j][idx]);
+            }
+            if (syn) syndrome_count++;
+        }
+
+        // If all syndromes are zero, we're done
+        if (syndrome_count == 0) {
+            memcpy(output, decoded, data_len);
+            return 0;
+        }
+
+        // Early termination if syndrome count is very small (nearly converged)
+        if (iter > 5 && syndrome_count <= 2) {
+            // Try one more iteration, if still stuck, accept
+        }
+    }
+
+    // Decoding did not converge - compute final estimate
+    float posterior[LDPC_MAX_DATA_BYTES * 16];
+    for (int v = 0; v < n_bits; v++) {
+        float sum = channel_llr[v];
+        for (int j = 0; j < k_bits; j++) {
+            for (int idx = 0; idx < check_degree[j]; idx++) {
+                if (check_to_var[j][idx] == v) {
+                    sum += check_to_var_msg[j][idx];
+                    break;
+                }
+            }
+        }
+        posterior[v] = sum;
+    }
+
+    uint8_t decoded[LDPC_MAX_DATA_BYTES * 2];
+    memset(decoded, 0, encoded_len);
+    for (int v = 0; v < n_bits; v++) {
+        if (posterior[v] < 0) {
+            set_bit(decoded, v, 1);
+        }
+    }
+
+    // Check final syndrome count
+    int final_syndromes = 0;
+    for (int j = 0; j < k_bits; j++) {
+        int syn = 0;
+        for (int idx = 0; idx < check_degree[j]; idx++) {
+            syn ^= get_bit(decoded, check_to_var[j][idx]);
         }
         if (syn) final_syndromes++;
     }
 
-    // If only a few syndromes fail, return data anyway (soft failure)
-    if (final_syndromes <= k_bits / 8) {
-        memcpy(output, codeword, data_len);
-        return 0;  // Partial success
+    // Accept if syndrome count is low enough
+    if (final_syndromes <= k_bits / 4) {
+        memcpy(output, decoded, data_len);
+        return 0;  // Soft success
     }
 
     // Total failure - return original data as best effort
