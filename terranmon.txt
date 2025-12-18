@@ -1166,8 +1166,6 @@ The encoder supports following presets:
         *      Background colours
         *      Characters
 
-
-
 ## GOP Unified Packet Structure (0x12)
 Implemented on 2025-10-15 for temporal 3D DWT with unified preprocessing.
 
@@ -1206,12 +1204,6 @@ The entire GOP (width×height×N_frames×3_channels) is preprocessed as a single
 
 This layout enables Zstd to find patterns across both spatial and temporal dimensions,
 resulting in superior compression compared to per-frame encoding.
-
-### Motion Vectors
-- Stored in 1/4-pixel units (divide by 4.0 for pixel displacement)
-- Computed using dense optical flow
-- Cumulative relative to frame 0 (not frame-to-frame deltas)
-- First frame (frame 0) always has motion vector (0, 0)
 
 ### Temporal 3D DWT Process
 1. Detect where the scene change is happening on the first pass
@@ -1332,12 +1324,6 @@ The encoder expects linear alpha.
 - Multi-resolution representation enables scalable decoding
 - Better frequency localisation than DCT
 - Reduced blocking artifacts due to overlapping basis functions
-
-## Hardware Acceleration Functions
-TAV decoder requires new GraphicsJSR223Delegate functions:
-- tavDecode(): Main DWT decoding function
-- tavDWT2D(): 2D DWT/IDWT transforms  
-- tavQuantise(): Multi-band quantisation
 
 ## Audio Support
 MP2 frames, raw PCMu8, and TAD formats are supported.
@@ -1991,34 +1977,6 @@ TAD encoder uses two-pass FFmpeg extraction for optimal quality:
            output.pcm
 
 This ensures resampling happens after extraction with optimal quality parameters.
-
-## Hardware Acceleration API
-TAD decoder is accelerated through AudioAdapter.kt peripheral (backend) and
-AudioJSR223Delegate.kt (JavaScript API):
-
-Backend (AudioAdapter.kt):
-- decodeTad(): Main decoding function (chunk-based, reads from tadInputBin)
-- dwt97Inverse1d(): Single-level inverse CDF 9/7 DWT
-- dwt97InverseMultilevel(): 9-level inverse DWT with non-power-of-2 support
-
-JavaScript API (audio.* functions):
-- audio.tadDecode(): Trigger TAD decoding from peripheral input buffer
-- audio.tadUploadDecoded(offset, count): Upload decoded PCMu8 to playback buffer
-- audio.getMemAddr(): Get peripheral memory base address for buffer access
-
-## Usage Examples
-    # Encode with default quality (Q3)
-    tad_encoder -i input.mp4 -o output.tad
-
-    # Encode with highest quality
-    tad_encoder -i input.mp4 -o output.tad -q 5
-
-    # Encode without Zstd compression
-    tad_encoder -i input.mp4 -o output.tad --no-zstd
-
-    # Verbose output with statistics
-    tad_encoder -i input.mp4 -o output.tad -v
-
 
 --------------------------------------------------------------------------------
 
