@@ -1,5 +1,5 @@
 if (exec_args[1] === undefined) {
-    println("Usage: load myfile.out")
+    println("Usage: load myfile.exc")
     println("   This will load the binary image onto the Core Memory")
     return 1
 }

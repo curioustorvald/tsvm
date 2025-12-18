@@ -375,6 +375,9 @@ Array.prototype.shuffle = function() {
 
     return this;
 }
+Array.prototype.shuffled = function() {
+    return this.slice(0).shuffle()
+}
 Array.prototype.sum = function(selector) {
     return this.reduce((acc,val) => acc + ((selector === undefined) ? val : selector(val)), 0)
 }

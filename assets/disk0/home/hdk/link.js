@@ -11,7 +11,6 @@ let infile = files.open(infilePath)
 
 if (!infile.exists) throw Error("No such file: " + infilePath)
 
-let outfile = files.open(infilePath.substringBeforeLast(".") + ".out")
 let outMode = exec_args[1].toLowerCase()
 
 let type = {
@@ -19,6 +18,13 @@ let type = {
     "-e": "\x02",
     "-o": "\x03",
     "-c": "\x04"
+}
+
+let ext = {
+    "-r": ".exc", // executable
+    "-e": ".exc", // executable
+    "-o": ".lib", // library
+    "-c": ".cob"  // core object
 }
 
 function toI32(num) {
@@ -40,6 +46,7 @@ let addr = 0
 if (exec_args[3] !== undefined && exec_args[3].toLowerCase() == "-a" && exec_args[4] !== undefined)
     addr = parseInt(exec_args[4], 16)
 
+let outfile = files.open(infilePath.substringBeforeLast(".") + ext[exec_args[3].toLowerCase()])
 outfile.sappend("\x20\xC0\xCC\x0A")
 outfile.sappend(type[outMode] || "\x00")
 outfile.bappend(toI24(addr))

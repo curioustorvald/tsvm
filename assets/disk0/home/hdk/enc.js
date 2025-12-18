@@ -1,3 +1,5 @@
+// a simple, symmetric obfuscator with infinite-length key
+
 function seq(s) {
     let out = ""
     let cnt = 0

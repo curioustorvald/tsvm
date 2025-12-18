@@ -1,6 +1,6 @@
 if (exec_args[1] === undefined) {
-    println("Usage: decompile myfile.bin")
-    println("The compiled file will be myfile.bin.js")
+    println("Usage: decompile myfile.exc")
+    println("The compiled file will be myfile.exc.js")
     return 1
 }
 _G.shell.execute(`enc ${exec_args[1]} ${exec_args[1]}.gz`)

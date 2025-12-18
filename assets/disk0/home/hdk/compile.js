@@ -1,6 +1,6 @@
 if (exec_args[1] === undefined) {
     println("Usage: compile -le/-lo myfile.js")
-    println("    The compiled and linked file will be myfile.out")
+    println("    The compiled and linked file will be myfile.exc")
     return 1
 }
 
@@ -14,7 +14,7 @@ if (exec_args[2]) {
         _G.shell.execute(`rm ${tempFilename}.gz`)
 
         _G.shell.execute(`link -${exec_args[1][2]} ${tempFilename}.bin`)
-        _G.shell.execute(`mv ${tempFilename}.out ${filenameWithoutExt}.out`)
+        _G.shell.execute(`mv ${tempFilename}.exc ${filenameWithoutExt}.exc`)
         _G.shell.execute(`rm ${tempFilename}.bin`)
 }
 // with no linking
