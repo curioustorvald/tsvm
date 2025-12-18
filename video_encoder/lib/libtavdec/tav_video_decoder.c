@@ -800,6 +800,8 @@ static void dwt_53_inverse_1d(float *data, int length) {
 static void dwt_cdf137_inverse_1d(float *data, int length) {
     if (length < 2) return;
 
+    const float K = 1.230174105f;  // Same scaling factor as encoder
+
     float *temp = malloc(sizeof(float) * length);
     int half = (length + 1) / 2;
 
@@ -817,15 +819,26 @@ static void dwt_cdf137_inverse_1d(float *data, int length) {
         odd[i] = data[half + i];
     }
 
-    // Inverse update
+    // Undo scaling (reverse of encoder: low-pass /= K, high-pass *= K)
     for (int i = 0; i < nE; i++) {
-        float d = (i < nO) ? odd[i] : 0.0f;
-        even[i] = even[i] - 0.25f * d;
+        even[i] /= K;
+    }
+    for (int i = 0; i < nO; i++) {
+        odd[i] *= K;
     }
 
-    // Inverse predict
+    // Inverse update: undo even[i] += 0.25 * (odd[i-1] + odd[i])
+    for (int i = 0; i < nE; i++) {
+        float oddPrev = (i > 0) ? odd[i - 1] : 0.0f;
+        float oddCurr = (i < nE - 1 && i < nO) ? odd[i] : 0.0f;
+        even[i] -= 0.25f * (oddPrev + oddCurr);
+    }
+
+    // Inverse predict: undo odd[i] = data[odd] - 0.5 * (even[i] + even[i+1])
     for (int i = 0; i < nO; i++) {
-        odd[i] = odd[i] + 0.5f * even[i];
+        float evenLeft = even[i];
+        float evenRight = (i + 1 < nE) ? even[i + 1] : even[i];
+        odd[i] += 0.5f * (evenLeft + evenRight);
     }
 
     // Interleave

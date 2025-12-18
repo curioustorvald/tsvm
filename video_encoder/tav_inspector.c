@@ -1,7 +1,8 @@
 // TAV Packet Inspector - Comprehensive packet analysis tool for TAV files
-// to compile: gcc -o tav_inspector tav_inspector.c -lzstd -lm
+// to compile: gcc -o tav_inspector tav_inspector.c lib/libfec.a -lzstd -lm
 // Created by CuriousTorvald and Claude on 2025-10-14
 // Updated 2025-12-02: Added TAV-DT (Digital Tape) format support
+// Updated 2025-12-17: Updated for revised TAV-DT spec (sync outside LDPC, LDPC 1/2 headers)
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -9,10 +10,25 @@
 #include <time.h>
 #include <getopt.h>
 #include <zstd.h>
+#include "lib/libfec/ldpc.h"
 
 // TAV-DT sync patterns (big endian)
 #define TAV_DT_SYNC_NTSC  0xE3537A1F  // 720x480
 #define TAV_DT_SYNC_PAL   0xD193A745  // 720x576
+#define TAV_DT_SYNC_TAV   0xA3F7C91E  // TAV subpacket sync
+
+// TAV-DT header sizes (revised spec 2025-12-11)
+// Sync patterns are written separately (NOT LDPC-coded)
+#define DT_MAIN_HEADER_RAW    28   // fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+#define DT_MAIN_HEADER_LDPC   56   // After LDPC 1/2 encoding
+#define DT_TAD_HEADER_RAW     14   // sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+#define DT_TAD_HEADER_LDPC    28   // After LDPC 1/2 encoding
+#define DT_TAV_HEADER_RAW     14   // gop_size(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
+#define DT_TAV_HEADER_LDPC    28   // After LDPC 1/2 encoding
+
+// RS(255,223) parameters
+#define RS_DATA_LEN   223
+#define RS_PARITY_LEN 32
 
 // Frame mode constants (from TAV spec)
 #define FRAME_MODE_SKIP  0x00
@@ -524,30 +540,51 @@ int main(int argc, char *argv[]) {
                     (format_check[2] << 8) | format_check[3];
 
     if (sync == TAV_DT_SYNC_NTSC || sync == TAV_DT_SYNC_PAL) {
-        // TAV-DT format detected
+        // TAV-DT format detected (revised spec 2025-12-11)
+        // Structure: sync(4) + LDPC_header(56) + TAD_LDPC_header(28) + TAD_RS_payload + TAV_sync(4) + TAV_LDPC_header(28) + TAV_RS_payload
         is_dt_format = 1;
-        dt_width = (sync == TAV_DT_SYNC_NTSC) ? 720 : 720;
+        dt_width = 720;
         dt_height = (sync == TAV_DT_SYNC_NTSC) ? 480 : 576;
 
-        // Read rest of DT packet header (12 more bytes = 16 total)
-        uint8_t dt_header[12];
-        if (fread(dt_header, 1, 12, fp) != 12) {
-            fprintf(stderr, "Error: Failed to read TAV-DT packet header\n");
+        // Initialize LDPC decoder
+        ldpc_init();
+
+        // Read LDPC-coded main header (56 bytes)
+        uint8_t ldpc_header[DT_MAIN_HEADER_LDPC];
+        if (fread(ldpc_header, 1, DT_MAIN_HEADER_LDPC, fp) != DT_MAIN_HEADER_LDPC) {
+            fprintf(stderr, "Error: Failed to read TAV-DT LDPC header\n");
             fclose(fp);
             return 1;
         }
 
-        dt_framerate = dt_header[0];
-        uint8_t flags = dt_header[1];
+        // Decode LDPC to get raw header (28 bytes)
+        uint8_t raw_header[DT_MAIN_HEADER_RAW];
+        int ldpc_result = ldpc_decode(ldpc_header, DT_MAIN_HEADER_LDPC, raw_header);
+
+        // Parse raw header fields:
+        // fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+        dt_framerate = raw_header[0];
+        uint8_t flags = raw_header[1];
         dt_is_interlaced = flags & 0x01;
         dt_is_ntsc_framerate = flags & 0x02;
         dt_quality = (flags >> 4) & 0x0F;
 
+        uint32_t packet_size = raw_header[4] | (raw_header[5] << 8) |
+                               (raw_header[6] << 16) | (raw_header[7] << 24);
+        uint64_t timecode_ns = 0;
+        for (int i = 0; i < 8; i++) {
+            timecode_ns |= ((uint64_t)raw_header[8 + i]) << (i * 8);
+        }
+        uint32_t offset_to_video = raw_header[16] | (raw_header[17] << 8) |
+                                   (raw_header[18] << 16) | (raw_header[19] << 24);
+        uint32_t header_crc = raw_header[24] | (raw_header[25] << 8) |
+                              (raw_header[26] << 16) | (raw_header[27] << 24);
+
         // Rewind to start of first packet so the loop can process it
-        fseek(fp, -(4 + 12), SEEK_CUR);  // Go back 16 bytes (full DT packet header)
+        fseek(fp, -(4 + DT_MAIN_HEADER_LDPC), SEEK_CUR);
 
         if (!opts.summary_only) {
-            printf("TAV-DT Header (Headerless Streaming Format):\n");
+            printf("TAV-DT Header (Digital Tape Streaming Format, revised 2025-12-11):\n");
             printf("  Format:           %s %s\n",
                    (sync == TAV_DT_SYNC_NTSC) ? "NTSC" : "PAL",
                    dt_is_interlaced ? "interlaced" : "progressive");
@@ -556,7 +593,18 @@ int main(int argc, char *argv[]) {
             if (dt_is_ntsc_framerate) printf(" (NTSC)");
             printf("\n");
             printf("  Quality index:    %d (0-5)\n", dt_quality);
-            printf("  Total frames:     Unknown (streaming format)\n");
+            printf("  LDPC decode:      %s\n", ldpc_result == 0 ? "OK" : "FAILED (using best-effort)");
+            printf("  Header CRC:       0x%08X\n", header_crc);
+            printf("  First packet:     %u bytes, timecode=%.3fs, video_offset=%u\n",
+                   packet_size, timecode_ns / 1000000000.0, offset_to_video);
+            printf("  Packet structure:\n");
+            printf("    Main sync:      4 bytes (not LDPC)\n");
+            printf("    Main header:    %d bytes LDPC (%d bytes raw)\n", DT_MAIN_HEADER_LDPC, DT_MAIN_HEADER_RAW);
+            printf("    TAD header:     %d bytes LDPC (%d bytes raw)\n", DT_TAD_HEADER_LDPC, DT_TAD_HEADER_RAW);
+            printf("    TAD payload:    RS(255,223) coded\n");
+            printf("    TAV sync:       4 bytes (not LDPC)\n");
+            printf("    TAV header:     %d bytes LDPC (%d bytes raw)\n", DT_TAV_HEADER_LDPC, DT_TAV_HEADER_RAW);
+            printf("    TAV payload:    RS(255,223) coded\n");
             printf("  Wavelet:          1 (CDF 9/7, fixed for DT)\n");
             printf("  Decomp levels:    4 spatial + 2 temporal (fixed for DT)\n");
             printf("  Entropy coder:    EZBC (fixed for DT)\n");
@@ -672,15 +720,15 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
         uint32_t payload_offset = 1;  // Start at 1 to skip packet type byte in DT mode
 
         if (is_dt_format) {
-            // TAV-DT: Read 16-byte packet header
-            uint8_t dt_pkt_header[16];
-            if (fread(dt_pkt_header, 1, 16, fp) != 16) break;
+            // TAV-DT (revised spec 2025-12-11):
+            // Structure: sync(4) + LDPC_main_header(56) + LDPC_tad_header(28) + TAD_RS_payload + TAV_sync(4) + LDPC_tav_header(28) + TAV_RS_payload
 
-            // Parse DT packet header
-            uint32_t sync_check = (dt_pkt_header[0] << 24) | (dt_pkt_header[1] << 16) |
-                                  (dt_pkt_header[2] << 8) | dt_pkt_header[3];
-            payload_size = dt_pkt_header[8] | (dt_pkt_header[9] << 8) |
-                          (dt_pkt_header[10] << 16) | (dt_pkt_header[11] << 24);
+            // Read main sync (4 bytes)
+            uint8_t sync_bytes[4];
+            if (fread(sync_bytes, 1, 4, fp) != 4) break;
+
+            uint32_t sync_check = (sync_bytes[0] << 24) | (sync_bytes[1] << 16) |
+                                  (sync_bytes[2] << 8) | sync_bytes[3];
 
             // Verify sync pattern
             if (sync_check != TAV_DT_SYNC_NTSC && sync_check != TAV_DT_SYNC_PAL) {
@@ -691,39 +739,101 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
                 break;
             }
 
-            // Read packet payload
-            packet_payload = malloc(payload_size);
-            if (!packet_payload || fread(packet_payload, 1, payload_size, fp) != payload_size) {
-                free(packet_payload);
-                break;
+            // Read and decode main LDPC header (56 bytes -> 28 bytes raw)
+            uint8_t ldpc_main[DT_MAIN_HEADER_LDPC];
+            if (fread(ldpc_main, 1, DT_MAIN_HEADER_LDPC, fp) != DT_MAIN_HEADER_LDPC) break;
+
+            uint8_t raw_main[DT_MAIN_HEADER_RAW];
+            int main_ldpc_ok = (ldpc_decode(ldpc_main, DT_MAIN_HEADER_LDPC, raw_main) == 0);
+
+            // Parse main header: fps(1) + flags(1) + reserved(2) + size(4) + timecode(8) + offset(4) + reserved(4) + crc(4)
+            uint32_t packet_size_total = raw_main[4] | (raw_main[5] << 8) |
+                                         (raw_main[6] << 16) | (raw_main[7] << 24);
+            uint64_t timecode_ns = 0;
+            for (int i = 0; i < 8; i++) {
+                timecode_ns |= ((uint64_t)raw_main[8 + i]) << (i * 8);
+            }
+            uint32_t offset_to_video = raw_main[16] | (raw_main[17] << 8) |
+                                       (raw_main[18] << 16) | (raw_main[19] << 24);
+
+            // Read and decode TAD LDPC header (28 bytes -> 14 bytes raw)
+            uint8_t ldpc_tad[DT_TAD_HEADER_LDPC];
+            if (fread(ldpc_tad, 1, DT_TAD_HEADER_LDPC, fp) != DT_TAD_HEADER_LDPC) break;
+
+            uint8_t raw_tad[DT_TAD_HEADER_RAW];
+            int tad_ldpc_ok = (ldpc_decode(ldpc_tad, DT_TAD_HEADER_LDPC, raw_tad) == 0);
+
+            // Parse TAD header: sample_count(2) + quant_bits(1) + compressed_size(4) + rs_block_count(3) + crc(4)
+            uint16_t tad_sample_count = raw_tad[0] | (raw_tad[1] << 8);
+            uint8_t tad_quant_bits = raw_tad[2];
+            uint32_t tad_compressed_size = raw_tad[3] | (raw_tad[4] << 8) |
+                                           (raw_tad[5] << 16) | (raw_tad[6] << 24);
+            uint32_t tad_rs_blocks = raw_tad[7] | (raw_tad[8] << 8) | (raw_tad[9] << 16);
+
+            // Calculate TAD RS payload size
+            uint32_t tad_rs_size = tad_rs_blocks * 255;
+
+            // Skip TAD RS payload
+            fseek(fp, tad_rs_size, SEEK_CUR);
+
+            // Read TAV sync (4 bytes)
+            uint8_t tav_sync_bytes[4];
+            if (fread(tav_sync_bytes, 1, 4, fp) != 4) break;
+
+            uint32_t tav_sync_check = (tav_sync_bytes[0] << 24) | (tav_sync_bytes[1] << 16) |
+                                      (tav_sync_bytes[2] << 8) | tav_sync_bytes[3];
+
+            int tav_sync_ok = (tav_sync_check == TAV_DT_SYNC_TAV);
+
+            // Read and decode TAV LDPC header (28 bytes -> 14 bytes raw)
+            uint8_t ldpc_tav[DT_TAV_HEADER_LDPC];
+            if (fread(ldpc_tav, 1, DT_TAV_HEADER_LDPC, fp) != DT_TAV_HEADER_LDPC) break;
+
+            uint8_t raw_tav[DT_TAV_HEADER_RAW];
+            int tav_ldpc_ok = (ldpc_decode(ldpc_tav, DT_TAV_HEADER_LDPC, raw_tav) == 0);
+
+            // Parse TAV header: gop_size(1) + reserved(2) + compressed_size(4) + rs_block_count(3) + crc(4)
+            uint8_t tav_gop_size = raw_tav[0];
+            uint32_t tav_compressed_size = raw_tav[3] | (raw_tav[4] << 8) |
+                                           (raw_tav[5] << 16) | (raw_tav[6] << 24);
+            uint32_t tav_rs_blocks = raw_tav[7] | (raw_tav[8] << 8) | (raw_tav[9] << 16);
+
+            // Calculate TAV RS payload size
+            uint32_t tav_rs_size = tav_rs_blocks * 255;
+
+            // Skip TAV RS payload
+            fseek(fp, tav_rs_size, SEEK_CUR);
+
+            // For display, create a synthetic payload with the TAV inner packet
+            // The inspector will show this as a GOP packet
+            payload_size = tav_compressed_size + 16;  // Approximate
+            packet_payload = NULL;  // Don't read actual payload for now
+
+            // Set packet type to GOP unified
+            packet_type = TAV_PACKET_GOP_UNIFIED;
+
+            // Display DT packet info
+            if (!opts.summary_only && should_display_packet(packet_type, &opts)) {
+                printf("Packet %d (offset 0x%lX): TAV-DT Packet\n", packet_num, packet_offset);
+                printf("  Main header:  LDPC %s, timecode=%.3fs, size=%u\n",
+                       main_ldpc_ok ? "OK" : "ERR", timecode_ns / 1000000000.0, packet_size_total);
+                printf("  TAD subpkt:   LDPC %s, samples=%u, Q=%u, RS blocks=%u (%u bytes)\n",
+                       tad_ldpc_ok ? "OK" : "ERR", tad_sample_count, tad_quant_bits, tad_rs_blocks, tad_rs_size);
+                printf("  TAV subpkt:   sync %s, LDPC %s, GOP=%u, RS blocks=%u (%u bytes)\n",
+                       tav_sync_ok ? "OK" : "ERR", tav_ldpc_ok ? "OK" : "ERR",
+                       tav_gop_size, tav_rs_blocks, tav_rs_size);
             }
 
-            // TAV-DT payload structure: [timecode(8)][TAD_packets...][video_packet]
-            // Skip past timecode (8 bytes) and any TAD packets to find the video packet
-            payload_offset = 8;  // Skip timecode
+            // Update stats
+            stats.gop_unified_count++;
+            stats.total_gop_frames += tav_gop_size;
+            stats.audio_tad_count++;
+            stats.audio_tad_bytes += tad_compressed_size;
+            stats.total_audio_bytes += tad_compressed_size;
+            stats.total_video_bytes += tav_compressed_size;
 
-            // Skip TAD audio packets (if any)
-            while (payload_offset < payload_size && packet_payload[payload_offset] == TAV_PACKET_AUDIO_TAD) {
-                payload_offset++;  // Skip packet type
-                if (payload_offset + 6 > payload_size) break;
-
-                // Skip past TAD packet header to get to payload size
-                payload_offset += 2;  // sample_count
-                uint32_t tad_payload_size = packet_payload[payload_offset] |
-                                           (packet_payload[payload_offset+1] << 8) |
-                                           (packet_payload[payload_offset+2] << 16) |
-                                           (packet_payload[payload_offset+3] << 24);
-                payload_offset += 4;  // payload_size field
-                payload_offset += tad_payload_size;  // Skip TAD payload
-            }
-
-            // Extract video packet type (should be at current offset)
-            if (payload_offset < payload_size) {
-                packet_type = packet_payload[payload_offset];
-                payload_offset++;  // Move past packet type for subsequent reads
-            } else {
-                packet_type = 0x00;  // No video packet
-            }
+            packet_num++;
+            continue;  // Skip the normal packet processing
         } else {
             // Regular TAV: Read packet type directly
             if (fread(&packet_type, 1, 1, fp) != 1) break;

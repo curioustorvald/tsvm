@@ -71,9 +71,9 @@ decoder_tav_ref: src/decoder_tav.c lib/libtavdec.a lib/libtaddec.a
 	@echo "Reference decoder built: decoder_tav_ref"
 	@echo "This is the official reference implementation with all features"
 
-tav_inspector: tav_inspector.c
+tav_inspector: tav_inspector.c lib/libfec.a
 	rm -f tav_inspector
-	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -o tav_inspector $< $(LIBS)
+	$(CC) $(CFLAGS) $(ZSTD_CFLAGS) -Ilib/libfec -o tav_inspector $< lib/libfec.a $(LIBS)
 
 tav: $(TAV_TARGETS)
 
