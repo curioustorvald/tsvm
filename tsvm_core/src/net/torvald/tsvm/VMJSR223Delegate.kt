@@ -208,13 +208,14 @@ class VMJSR223Delegate(private val vm: VM) {
      * ^A-^Z: 1 through 26
      */
     fun readKey(): Int {
-        /*val inputStream = vm.getInputStream()
+        val inputStream = vm.getInputStream()
         var key: Int = inputStream.read()
         inputStream.close()
-        return key*/
+        return key
 
         // impl that doesn't rely on InputStream
-        vm.getIO().let {
+        // fixme it's causing event-wise delay
+        /*vm.getIO().let {
             it.mmio_write(38, 1)
 
             vm.isIdle.set(true)
@@ -225,7 +226,7 @@ class VMJSR223Delegate(private val vm: VM) {
 
             it.mmio_write(38, 0)
             return it.mmio_read(37L)!!.toUint()
-        }
+        }*/
     }
 
     /**
