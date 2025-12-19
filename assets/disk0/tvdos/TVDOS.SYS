@@ -870,11 +870,21 @@ Object.freeze(_TVDOS.DRV.FS.DEVPT)
 _TVDOS.DRV.FS.DEVFBIPF = {}
 
 _TVDOS.DRV.FS.DEVFBIPF.pwrite = (fd, infilePtr, count, _2) => {
-    let decodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[sys.peek(infilePtr + 13)]
+    let flags = sys.peek(infilePtr+12)
+    let ipfType = sys.peek(infilePtr+13)
+    let isProgressive = (flags & 0x80) != 0
+    let hasAlpha = (flags & 0x01) != 0
+
+    // Select decode function based on type and progressive flag
+    let decodefun
+    if (isProgressive) {
+        decodefun = ([graphics.decodeIpf1Progressive, graphics.decodeIpf2Progressive])[ipfType]
+    } else {
+        decodefun = ([graphics.decodeIpf1, graphics.decodeIpf2])[ipfType]
+    }
+
     let width = sys.peek(infilePtr+8) | (sys.peek(infilePtr+9) << 8)
     let height = sys.peek(infilePtr+10) | (sys.peek(infilePtr+11) << 8)
-    let hasAlpha = (sys.peek(infilePtr+12) != 0)
-    let ipfType = sys.peek(infilePtr+13)
     let imgLen = sys.peek(infilePtr+24) | (sys.peek(infilePtr+25) << 8) | (sys.peek(infilePtr+26) << 16) | (sys.peek(infilePtr+27) << 24)
 
     let ipfbuf = sys.malloc(imgLen)

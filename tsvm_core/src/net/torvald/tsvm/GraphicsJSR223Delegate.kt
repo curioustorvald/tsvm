@@ -1339,6 +1339,194 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
 
+    // Adam7 interlace pattern - pass number (1-7) for each pixel in 8x8 block
+    private val ADAM7_PASS = arrayOf(
+        intArrayOf(1, 6, 4, 6, 2, 6, 4, 6),
+        intArrayOf(7, 7, 7, 7, 7, 7, 7, 7),
+        intArrayOf(5, 6, 5, 6, 5, 6, 5, 6),
+        intArrayOf(7, 7, 7, 7, 7, 7, 7, 7),
+        intArrayOf(3, 6, 4, 6, 3, 6, 4, 6),
+        intArrayOf(7, 7, 7, 7, 7, 7, 7, 7),
+        intArrayOf(5, 6, 5, 6, 5, 6, 5, 6),
+        intArrayOf(7, 7, 7, 7, 7, 7, 7, 7)
+    )
+
+    /**
+     * Get Adam7 pass number for a block at (blockX, blockY).
+     * Uses the block's top-left pixel position to determine pass.
+     */
+    private fun getAdam7Pass(blockX: Int, blockY: Int): Int {
+        val px = (blockX * 4) % 8
+        val py = (blockY * 4) % 8
+        return ADAM7_PASS[py][px]
+    }
+
+    /**
+     * Build a mapping from progressive input order to (blockX, blockY) positions.
+     * Returns a list of Pair(blockX, blockY) in the order they appear in progressive data.
+     */
+    private fun buildAdam7BlockOrder(blocksX: Int, blocksY: Int): List<Pair<Int, Int>> {
+        val result = mutableListOf<Pair<Int, Int>>()
+        for (pass in 1..7) {
+            for (by in 0 until blocksY) {
+                for (bx in 0 until blocksX) {
+                    if (getAdam7Pass(bx, by) == pass) {
+                        result.add(Pair(bx, by))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /**
+     * Decode iPF1 with Adam7 progressive ordering.
+     * Blocks are stored in pass order (1-7), not raster order.
+     */
+    fun decodeIpf1Progressive(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
+        val sign = if (destRG >= 0) 1 else -1
+        if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
+        val sptr = srcPtr.toLong()
+        val dptr1 = destRG.toLong()
+        val dptr2 = destBA.toLong()
+        var readCount = 0
+        fun readShort() =
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
+
+        val blocksX = ceil(width / 4f).toInt()
+        val blocksY = ceil(height / 4f).toInt()
+        val blockOrder = buildAdam7BlockOrder(blocksX, blocksY)
+
+        for ((blockX, blockY) in blockOrder) {
+            val rg = IntArray(16)
+            val ba = IntArray(16)
+
+            val co = readShort()
+            val cg = readShort()
+            val y1 = readShort()
+            val y2 = readShort()
+            val y3 = readShort()
+            val y4 = readShort()
+
+            var a1 = 65535; var a2 = 65535; var a3 = 65535; var a4 = 65535
+
+            if (hasAlpha) {
+                a1 = readShort()
+                a2 = readShort()
+                a3 = readShort()
+                a4 = readShort()
+            }
+
+            var corner = ipf1YcocgToRGB(co and 15, cg and 15, y1, a1)
+            rg[0] = corner[0];ba[0] = corner[1]
+            rg[1] = corner[2];ba[1] = corner[3]
+            rg[4] = corner[4];ba[4] = corner[5]
+            rg[5] = corner[6];ba[5] = corner[7]
+
+            corner = ipf1YcocgToRGB((co shr 4) and 15, (cg shr 4) and 15, y2, a2)
+            rg[2] = corner[0];ba[2] = corner[1]
+            rg[3] = corner[2];ba[3] = corner[3]
+            rg[6] = corner[4];ba[6] = corner[5]
+            rg[7] = corner[6];ba[7] = corner[7]
+
+            corner = ipf1YcocgToRGB((co shr 8) and 15, (cg shr 8) and 15, y3, a3)
+            rg[8] = corner[0];ba[8] = corner[1]
+            rg[9] = corner[2];ba[9] = corner[3]
+            rg[12] = corner[4];ba[12] = corner[5]
+            rg[13] = corner[6];ba[13] = corner[7]
+
+            corner = ipf1YcocgToRGB((co shr 12) and 15, (cg shr 12) and 15, y4, a4)
+            rg[10] = corner[0];ba[10] = corner[1]
+            rg[11] = corner[2];ba[11] = corner[3]
+            rg[14] = corner[4];ba[14] = corner[5]
+            rg[15] = corner[6];ba[15] = corner[7]
+
+            // move decoded pixels into memory
+            for (py in 0..3) { for (px in 0..3) {
+                val ox = blockX * 4 + px
+                val oy = blockY * 4 + py
+                val offset = oy * 560 + ox
+                vm.poke(dptr1 + offset*sign, rg[py * 4 + px].toByte())
+                vm.poke(dptr2 + offset*sign, ba[py * 4 + px].toByte())
+            }}
+        }
+    }
+
+    /**
+     * Decode iPF2 with Adam7 progressive ordering.
+     * Blocks are stored in pass order (1-7), not raster order.
+     */
+    fun decodeIpf2Progressive(srcPtr: Int, destRG: Int, destBA: Int, width: Int, height: Int, hasAlpha: Boolean) {
+        val sign = if (destRG >= 0) 1 else -1
+        if (destRG * destBA < 0) throw IllegalArgumentException("Both destination memories must be on the same domain (both being Usermem or HWmem)")
+        val sptr = srcPtr.toLong()
+        val dptr1 = destRG.toLong()
+        val dptr2 = destBA.toLong()
+        var readCount = 0
+        fun readShort() =
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8)
+        fun readInt() =
+            vm.peek(sptr + readCount++)!!.toUint() or vm.peek(sptr + readCount++)!!.toUint().shl(8) or vm.peek(sptr + readCount++)!!.toUint().shl(16) or vm.peek(sptr + readCount++)!!.toUint().shl(24)
+
+        val blocksX = ceil(width / 4f).toInt()
+        val blocksY = ceil(height / 4f).toInt()
+        val blockOrder = buildAdam7BlockOrder(blocksX, blocksY)
+
+        for ((blockX, blockY) in blockOrder) {
+            val rg = IntArray(16)
+            val ba = IntArray(16)
+
+            val co = readInt()
+            val cg = readInt()
+            val y1 = readShort()
+            val y2 = readShort()
+            val y3 = readShort()
+            val y4 = readShort()
+
+            var a1 = 65535; var a2 = 65535; var a3 = 65535; var a4 = 65535
+
+            if (hasAlpha) {
+                a1 = readShort()
+                a2 = readShort()
+                a3 = readShort()
+                a4 = readShort()
+            }
+
+            var corner = ipf2YcocgToRGB(co and 15, (co shr 8) and 15, cg and 15, (cg shr 8) and 15, y1, a1)
+            rg[0] = corner[0];ba[0] = corner[1]
+            rg[1] = corner[2];ba[1] = corner[3]
+            rg[4] = corner[4];ba[4] = corner[5]
+            rg[5] = corner[6];ba[5] = corner[7]
+
+            corner = ipf2YcocgToRGB((co shr 4) and 15, (co shr 12) and 15, (cg shr 4) and 15, (cg shr 12) and 15, y2, a2)
+            rg[2] = corner[0];ba[2] = corner[1]
+            rg[3] = corner[2];ba[3] = corner[3]
+            rg[6] = corner[4];ba[6] = corner[5]
+            rg[7] = corner[6];ba[7] = corner[7]
+
+            corner = ipf2YcocgToRGB((co shr 16) and 15, (co shr 24) and 15, (cg shr 16) and 15, (cg shr 24) and 15, y3, a3)
+            rg[8] = corner[0];ba[8] = corner[1]
+            rg[9] = corner[2];ba[9] = corner[3]
+            rg[12] = corner[4];ba[12] = corner[5]
+            rg[13] = corner[6];ba[13] = corner[7]
+
+            corner = ipf2YcocgToRGB((co shr 20) and 15, (co shr 28) and 15, (cg shr 20) and 15, (cg shr 28) and 15, y4, a4)
+            rg[10] = corner[0];ba[10] = corner[1]
+            rg[11] = corner[2];ba[11] = corner[3]
+            rg[14] = corner[4];ba[14] = corner[5]
+            rg[15] = corner[6];ba[15] = corner[7]
+
+            // move decoded pixels into memory
+            for (py in 0..3) { for (px in 0..3) {
+                val ox = blockX * 4 + px
+                val oy = blockY * 4 + py
+                val offset = oy * 560 + ox
+                vm.poke(dptr1 + offset*sign, rg[py * 4 + px].toByte())
+                vm.poke(dptr2 + offset*sign, ba[py * 4 + px].toByte())
+            }}
+        }
+    }
+
     private val SKIP = 0x00.toByte()
     private val PATCH = 0x01.toByte()
     private val REPEAT = 0x02.toByte()
