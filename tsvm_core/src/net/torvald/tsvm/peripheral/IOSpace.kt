@@ -99,7 +99,11 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             in 32..33 -> (mouseX.toInt() shr (adi - 32).times(8)).toByte()
             in 34..35 -> (mouseY.toInt() shr (adi - 34).times(8)).toByte()
             36L -> mouseDown.toInt().toByte()
-            37L -> keyboardBuffer.removeTail() ?: -1
+            37L -> {
+                val key = keyboardBuffer.removeTail() ?: -1
+                keyPushed = !keyboardBuffer.isEmpty  // Clear flag when buffer becomes empty
+                key
+            }
             38L -> keyboardInputRequested.toInt().toByte()
             39L -> rawInputFunctionLatched.toInt().toByte()
             in 40..47 -> keyEventBuffers[adi - 40]
@@ -174,6 +178,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                     keyboardInputRequested = (byte.isNonZero())
                     if (keyboardInputRequested) {
                         keyboardBuffer.clear()
+                        keyPushed = false  // Reset flag when buffer is cleared
                         vm.isIdle.set(true)
                     }
                     else
@@ -344,14 +349,11 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     override fun keyTyped(p0: Char): Boolean {
         if (keyboardInputRequested && p0.toInt() > 0) {
             //println("[IO] key typed = ${p0.toInt()}")
-            keyPushed = true
             keyboardBuffer.appendHead(p0.toByte())
-            Thread.sleep(6L)
-            keyPushed = false
+            keyPushed = true  // Set after append; cleared when buffer is emptied via mmio_read(37)
             return true
         }
         else {
-            keyPushed = false
             return false
         }
     }
@@ -389,11 +391,13 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
         if (keyboardInputRequested) {
             if (p0 in Input.Keys.A..Input.Keys.Z && (Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) || Gdx.input.isKeyPressed(Input.Keys.CONTROL_RIGHT))) {
                 keyboardBuffer.appendHead((p0 - 28).toByte())
+                keyPushed = true
             }
             else {
                 specialKeys[p0]?.let {
                     //println("[IO] key special = ${it.toUInt()}")
                     keyboardBuffer.appendHead(it)
+                    keyPushed = true
                 }
             }
             return true

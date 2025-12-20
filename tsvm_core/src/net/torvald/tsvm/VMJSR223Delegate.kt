@@ -208,25 +208,19 @@ class VMJSR223Delegate(private val vm: VM) {
      * ^A-^Z: 1 through 26
      */
     fun readKey(): Int {
-        val inputStream = vm.getInputStream()
-        var key: Int = inputStream.read()
-        inputStream.close()
-        return key
-
-        // impl that doesn't rely on InputStream
-        // fixme it's causing event-wise delay
-        /*vm.getIO().let {
-            it.mmio_write(38, 1)
+        // MMIO-based implementation that can be replicated by JS via MMIO read/writes
+        vm.getIO().let {
+            it.mmio_write(38, 1) // Set keyboardInputRequested = true (also clears buffer)
 
             vm.isIdle.set(true)
-            while (it.mmio_read(49L) == 0.toByte()) {
+            while (it.mmio_read(49L) == 0.toByte()) { // Wait for keyPushed flag
                 Thread.sleep(6L)
             }
             vm.isIdle.set(false)
 
-            it.mmio_write(38, 0)
-            return it.mmio_read(37L)!!.toUint()
-        }*/
+            it.mmio_write(38, 0) // Clear keyboardInputRequested
+            return it.mmio_read(37L)!!.toUint()  // Read and remove key from buffer
+        }
     }
 
     /**
