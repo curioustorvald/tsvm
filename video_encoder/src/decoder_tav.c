@@ -36,6 +36,7 @@
 
 #define DECODER_VENDOR_STRING "Decoder-TAV 20251207 (libtavdec)"
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVMTAV"
+#define TAP_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x50"  // "\x1FTSVMTAP" (still picture)
 #define MAX_PATH 4096
 
 // TAV packet types
@@ -167,6 +168,10 @@ typedef struct {
     int no_audio;           // Skip audio decoding
     int dump_packets;       // Debug: dump packet info
 
+    // Still image (TAP) mode
+    int is_still_image;     // 1 if input is a still picture (TAP format)
+    int output_tga;         // 1 for TGA output, 0 for PNG (default)
+
     // Threading support (video decoding)
     int num_threads;
     int num_slots;
@@ -208,9 +213,13 @@ static int read_tav_header(decoder_context_t *ctx) {
         return -1;
     }
 
-    // Verify magic
-    if (memcmp(header_bytes, TAV_MAGIC, 8) != 0) {
-        fprintf(stderr, "Error: Invalid TAV magic (not a TAV file)\n");
+    // Verify magic (accept both TAV and TAP)
+    if (memcmp(header_bytes, TAV_MAGIC, 8) == 0) {
+        ctx->is_still_image = 0;
+    } else if (memcmp(header_bytes, TAP_MAGIC, 8) == 0) {
+        ctx->is_still_image = 1;
+    } else {
+        fprintf(stderr, "Error: Invalid TAV/TAP magic (not a TAV/TAP file)\n");
         return -1;
     }
 
@@ -256,14 +265,17 @@ static int read_tav_header(decoder_context_t *ctx) {
     }
 
     if (ctx->verbose) {
-        printf("=== TAV Header ===\n");
+        printf("=== %s Header ===\n", ctx->is_still_image ? "TAP" : "TAV");
+        printf("  Format: %s\n", ctx->is_still_image ? "Still Picture" : "Video");
         printf("  Version: %d\n", ctx->header.version);
         printf("  Resolution: %dx%d\n", ctx->header.width, ctx->header.height);
         if (ctx->interlaced) {
             printf("  Interlaced: yes (decode height: %d)\n", ctx->decode_height);
         }
-        printf("  FPS: %d\n", ctx->header.fps);
-        printf("  Total frames: %u\n", ctx->header.total_frames);
+        if (!ctx->is_still_image) {
+            printf("  FPS: %d\n", ctx->header.fps);
+            printf("  Total frames: %u\n", ctx->header.total_frames);
+        }
         printf("  Wavelet filter: %d\n", ctx->header.wavelet_filter);
         printf("  Decomp levels: %d\n", ctx->header.decomp_levels);
         printf("  Quantisers: Y=%d, Co=%d, Cg=%d\n",
@@ -271,7 +283,9 @@ static int read_tav_header(decoder_context_t *ctx) {
         printf("  Perceptual mode: %s\n", ctx->perceptual_mode ? "yes" : "no");
         printf("  Entropy coder: %s\n", ctx->header.entropy_coder ? "EZBC" : "Twobitmap");
         printf("  Encoder preset: 0x%02X\n", ctx->header.encoder_preset);
-        printf("  Has audio: %s\n", (ctx->header.extra_flags & 0x01) ? "yes" : "no");
+        if (!ctx->is_still_image) {
+            printf("  Has audio: %s\n", (ctx->header.extra_flags & 0x01) ? "yes" : "no");
+        }
         printf("==================\n\n");
     }
 
@@ -707,6 +721,98 @@ static int allocate_gop_frames(decoder_context_t *ctx, int gop_size) {
 
     ctx->gop_frames_allocated = gop_size;
     return 0;
+}
+
+// =============================================================================
+// Still Image Output (TAP format)
+// =============================================================================
+
+/**
+ * Write RGB24 frame to TGA file.
+ * TGA format: uncompressed true-color image (type 2).
+ */
+static int write_tga_file(const char *filename, const uint8_t *rgb_data,
+                          int width, int height) {
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) {
+        fprintf(stderr, "Error: Cannot create TGA file: %s\n", filename);
+        return -1;
+    }
+
+    // TGA header (18 bytes)
+    uint8_t header[18] = {0};
+    header[2] = 2;  // Uncompressed true-color
+    header[12] = width & 0xFF;
+    header[13] = (width >> 8) & 0xFF;
+    header[14] = height & 0xFF;
+    header[15] = (height >> 8) & 0xFF;
+    header[16] = 24;  // Bits per pixel
+    header[17] = 0x20;  // Top-left origin
+
+    fwrite(header, 1, 18, fp);
+
+    // Write pixel data (convert RGB to BGR, flip vertically)
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int src_idx = (y * width + x) * 3;
+            uint8_t bgr[3] = {
+                rgb_data[src_idx + 2],  // B
+                rgb_data[src_idx + 1],  // G
+                rgb_data[src_idx + 0]   // R
+            };
+            fwrite(bgr, 1, 3, fp);
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+/**
+ * Write RGB24 frame to PNG file using FFmpeg.
+ */
+static int write_png_file(const char *filename, const uint8_t *rgb_data,
+                          int width, int height) {
+    char cmd[MAX_PATH * 2];
+    snprintf(cmd, sizeof(cmd),
+             "ffmpeg -hide_banner -v quiet -f rawvideo -pix_fmt rgb24 "
+             "-s %dx%d -i pipe:0 -y \"%s\"",
+             width, height, filename);
+
+    FILE *fp = popen(cmd, "w");
+    if (!fp) {
+        fprintf(stderr, "Error: Cannot start FFmpeg for PNG output\n");
+        return -1;
+    }
+
+    size_t frame_size = width * height * 3;
+    if (fwrite(rgb_data, 1, frame_size, fp) != frame_size) {
+        fprintf(stderr, "Error: Failed to write frame data to FFmpeg\n");
+        pclose(fp);
+        return -1;
+    }
+
+    int result = pclose(fp);
+    if (result != 0) {
+        fprintf(stderr, "Error: FFmpeg failed to write PNG file\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * Write decoded still image to file (PNG or TGA).
+ */
+static int write_still_image(decoder_context_t *ctx, const uint8_t *rgb_data) {
+    int width = ctx->header.width;
+    int height = ctx->decode_height;
+
+    if (ctx->output_tga) {
+        return write_tga_file(ctx->output_file, rgb_data, width, height);
+    } else {
+        return write_png_file(ctx->output_file, rgb_data, width, height);
+    }
 }
 
 // =============================================================================
@@ -1673,6 +1779,40 @@ static int decode_video(decoder_context_t *ctx) {
     printf("Decoding...\n");
     ctx->start_time = time(NULL);
 
+    // Special path for still images (TAP format) - output directly to PNG/TGA
+    if (ctx->is_still_image) {
+        printf("Decoding still picture...\n");
+
+        // Allocate frame buffer for single frame
+        if (allocate_gop_frames(ctx, 1) < 0) {
+            fprintf(stderr, "Error: Failed to allocate frame buffer\n");
+            return -1;
+        }
+
+        // Process packets until we get the first frame
+        int found_frame = 0;
+        while (!found_frame && process_packet(ctx) == 0) {
+            if (ctx->frames_decoded > 0) {
+                found_frame = 1;
+            }
+        }
+
+        if (!found_frame || ctx->frames_decoded == 0) {
+            fprintf(stderr, "Error: No video frame found in TAP file\n");
+            return -1;
+        }
+
+        // Write the decoded frame to output file
+        printf("Writing %s...\n", ctx->output_tga ? "TGA" : "PNG");
+        if (write_still_image(ctx, ctx->gop_frames[0]) < 0) {
+            fprintf(stderr, "Error: Failed to write output image\n");
+            return -1;
+        }
+
+        printf("Successfully decoded still picture\n");
+        return 0;
+    }
+
     // Two-pass approach for proper audio/video muxing:
     // Pass 1: Extract all audio to temp file
     // Pass 2: Spawn FFmpeg with complete audio, decode video
@@ -1810,12 +1950,12 @@ static int get_default_thread_count(void) {
 }
 
 static void print_usage(const char *program) {
-    printf("TAV Decoder - TSVM Advanced Video Codec (Reference Implementation)\n");
+    printf("TAV/TAP Decoder - TSVM Advanced Video/Picture Codec (Reference Implementation)\n");
     printf("\nUsage: %s -i input.tav [-o output.mkv] [options]\n\n", program);
     printf("Required:\n");
-    printf("  -i, --input FILE         Input TAV file\n");
+    printf("  -i, --input FILE         Input TAV (video) or TAP (still image) file\n");
     printf("\nOptional:\n");
-    printf("  -o, --output FILE        Output video file (default: input with .mkv extension)\n");
+    printf("  -o, --output FILE        Output file (default: input with .mkv/.png extension)\n");
     printf("  --raw                    Output raw video (no FFV1 compression)\n");
     printf("  --no-audio               Skip audio decoding\n");
     printf("  --decode-limit N         Decode only first N frames\n");
@@ -1823,10 +1963,14 @@ static void print_usage(const char *program) {
     printf("  -t, --threads N          Number of decoder threads (0=single-threaded, default)\n");
     printf("  -v, --verbose            Verbose output\n");
     printf("  --help                   Show this help\n");
+    printf("\nStill Image (TAP) Options:\n");
+    printf("  --tga                    Output TGA format instead of PNG (for TAP files)\n");
     printf("\nExamples:\n");
     printf("  %s -i video.tav                      # Output: video.mkv\n", program);
     printf("  %s -i video.tav -o custom.mkv\n", program);
     printf("  %s -i video.tav --verbose --decode-limit 100\n", program);
+    printf("  %s -i image.tap                      # Output: image.png\n", program);
+    printf("  %s -i image.tap --tga -o out.tga     # Output: out.tga\n", program);
 }
 
 int main(int argc, char *argv[]) {
@@ -1848,6 +1992,7 @@ int main(int argc, char *argv[]) {
         {"no-audio",     no_argument,       0, 1002},
         {"decode-limit", required_argument, 0, 1003},
         {"dump-packets", no_argument,       0, 1004},
+        {"tga",          no_argument,       0, 1005},
         {"help",         no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -1886,6 +2031,9 @@ int main(int argc, char *argv[]) {
             case 1004:
                 ctx.dump_packets = 1;
                 break;
+            case 1005:  // --tga
+                ctx.output_tga = 1;
+                break;
             case 'h':
             case '?':
             default:
@@ -1921,6 +2069,38 @@ int main(int argc, char *argv[]) {
     if (read_tav_header(&ctx) < 0) {
         fclose(ctx.input_fp);
         return 1;
+    }
+
+    // Handle still image (TAP) mode
+    if (ctx.is_still_image) {
+        printf("Detected still picture (TAP format)\n");
+
+        // Force single-threaded mode (override user option)
+        if (ctx.num_threads > 0) {
+            printf("  Disabling multithreading for still image\n");
+            ctx.num_threads = 0;
+        }
+
+        // Disable audio for still images
+        ctx.no_audio = 1;
+
+        // Bypass grain synthesis (set anime preset bit)
+        // Bit 1 of encoder_preset disables grain synthesis
+        ctx.header.encoder_preset |= 0x02;
+
+        // Set decode limit to 1 frame
+        ctx.decode_limit = 1;
+
+        // Update output filename to use .png or .tga if it ends with .mkv (auto-generated)
+        if (ctx.output_file) {
+            char *last_dot = strrchr(ctx.output_file, '.');
+            if (last_dot && strcmp(last_dot, ".mkv") == 0) {
+                const char *new_ext = ctx.output_tga ? ".tga" : ".png";
+                strcpy(last_dot, new_ext);
+            }
+        }
+
+        printf("  Output format: %s\n", ctx.output_tga ? "TGA" : "PNG");
     }
 
     // Create audio temp file
@@ -1967,7 +2147,11 @@ int main(int argc, char *argv[]) {
 
     printf("Input: %s\n", ctx.input_file);
     printf("Output: %s\n", ctx.output_file);
-    printf("Resolution: %dx%d @ %d fps\n", ctx.header.width, ctx.header.height, ctx.header.fps);
+    if (ctx.is_still_image) {
+        printf("Resolution: %dx%d (still picture)\n", ctx.header.width, ctx.header.height);
+    } else {
+        printf("Resolution: %dx%d @ %d fps\n", ctx.header.width, ctx.header.height, ctx.header.fps);
+    }
     printf("\n");
 
     // Decode
@@ -2003,14 +2187,22 @@ int main(int argc, char *argv[]) {
     time_t total_time = time(NULL) - ctx.start_time;
     double avg_fps = total_time > 0 ? (double)ctx.frames_decoded / total_time : 0.0;
 
-    printf("\n=== Decoding Complete ===\n");
-    printf("  Frames decoded: %lu\n", ctx.frames_decoded);
-    printf("  GOPs decoded: %lu\n", ctx.gops_decoded);
-    printf("  Audio samples: %lu\n", ctx.audio_samples_decoded);
-    printf("  Bytes read: %lu\n", ctx.bytes_read);
-    printf("  Decoding speed: %.1f fps\n", avg_fps);
-    printf("  Time taken: %ld seconds\n", total_time);
-    printf("=========================\n");
+    if (ctx.is_still_image) {
+        printf("\n=== Decoding Complete ===\n");
+        printf("  Still picture decoded successfully\n");
+        printf("  Bytes read: %lu\n", ctx.bytes_read);
+        printf("  Time taken: %ld seconds\n", total_time);
+        printf("=========================\n");
+    } else {
+        printf("\n=== Decoding Complete ===\n");
+        printf("  Frames decoded: %lu\n", ctx.frames_decoded);
+        printf("  GOPs decoded: %lu\n", ctx.gops_decoded);
+        printf("  Audio samples: %lu\n", ctx.audio_samples_decoded);
+        printf("  Bytes read: %lu\n", ctx.bytes_read);
+        printf("  Decoding speed: %.1f fps\n", avg_fps);
+        printf("  Time taken: %ld seconds\n", total_time);
+        printf("=========================\n");
+    }
 
     if (result < 0) {
         fprintf(stderr, "Decoding failed\n");

@@ -1700,11 +1700,15 @@ int tav_video_decode_iframe(tav_video_context_t *ctx,
     int16_t *coeffs_co = calloc(num_pixels, sizeof(int16_t));
     int16_t *coeffs_cg = calloc(num_pixels, sizeof(int16_t));
 
+    // Skip 4-byte tile header: [mode][qY_override][qCo_override][qCg_override]
+    // The tile header is written by the encoder before the EZBC/twobit data
+    uint8_t *coeff_data = decompressed_data + 4;
+
     // Postprocess based on entropy coder
     if (ctx->params.entropy_coder == 0) {
-        postprocess_coefficients_twobit(decompressed_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg);
+        postprocess_coefficients_twobit(coeff_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg);
     } else if (ctx->params.entropy_coder == 1) {
-        postprocess_coefficients_ezbc(decompressed_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg, ctx->params.channel_layout);
+        postprocess_coefficients_ezbc(coeff_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg, ctx->params.channel_layout);
     }
 
     if (should_free_data) {
@@ -1817,11 +1821,15 @@ int tav_video_decode_pframe(tav_video_context_t *ctx,
     int16_t *coeffs_co = calloc(num_pixels, sizeof(int16_t));
     int16_t *coeffs_cg = calloc(num_pixels, sizeof(int16_t));
 
+    // Skip 4-byte tile header: [mode][qY_override][qCo_override][qCg_override]
+    // The tile header is written by the encoder before the EZBC/twobit data
+    uint8_t *coeff_data = decompressed_data + 4;
+
     // Postprocess
     if (ctx->params.entropy_coder == 0) {
-        postprocess_coefficients_twobit(decompressed_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg);
+        postprocess_coefficients_twobit(coeff_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg);
     } else if (ctx->params.entropy_coder == 1) {
-        postprocess_coefficients_ezbc(decompressed_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg, ctx->params.channel_layout);
+        postprocess_coefficients_ezbc(coeff_data, num_pixels, coeffs_y, coeffs_co, coeffs_cg, ctx->params.channel_layout);
     }
 
     if (should_free_data) {

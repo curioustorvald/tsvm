@@ -9,6 +9,7 @@ const MAXMEM = sys.maxmem()
 const WIDTH = 560
 const HEIGHT = 448
 const TAV_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x41, 0x56] // "\x1FTSVM TAV"
+const TAP_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x54, 0x41, 0x50] // "\x1FTSVM TAP"
 const UCF_MAGIC = [0x1F, 0x54, 0x53, 0x56, 0x4D, 0x55, 0x43, 0x46] // "\x1FTSVM UCF"
 const TAV_VERSION = 1  // Initial DWT version
 const UCF_VERSION = 1
@@ -389,7 +390,7 @@ for (let i = 0; i < 8; i++) {
 // Validate magic number
 let magicValid = true
 for (let i = 0; i < 8; i++) {
-    if (header.magic[i] !== TAV_MAGIC[i]) {
+    if (header.magic[i] !== TAV_MAGIC[i] &&header.magic[i] !== TAP_MAGIC[i] ) {
         magicValid = false
         break
     }
@@ -840,7 +841,7 @@ function tryReadNextTAVHeader() {
         let isValidTAV = true
         let isValidUCF = true
         for (let i = 0; i < newMagic.length; i++) {
-            if (newMagic[i] !== TAV_MAGIC[i+1]) {
+            if (newMagic[i] !== TAV_MAGIC[i+1] && newMagic[i] !== TAP_MAGIC[i+1]) {
                 isValidTAV = false
             }
         }

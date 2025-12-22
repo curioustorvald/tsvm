@@ -66,6 +66,7 @@ typedef struct gop_job {
 // =============================================================================
 
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVMTAV"
+#define TAP_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x50"  // "\x1FTSVMTAP" (still picture)
 #define MAX_PATH 4096
 #define TEMP_AUDIO_FILE_SIZE 42
 #define TEMP_PCM_FILE_SIZE 42
@@ -175,6 +176,9 @@ typedef struct {
     pthread_cond_t job_ready;    // Signal when a job slot is ready for encoding
     pthread_cond_t job_complete; // Signal when a job slot is complete
     volatile int shutdown_workers; // 1 when workers should exit
+
+    // Still image (TAP) mode
+    int is_still_image;          // 1 if input is a still image (outputs TAP format)
 
 } cli_context_t;
 
@@ -393,6 +397,79 @@ static int get_video_info(const char *input_file, int *width, int *height,
 }
 
 /**
+ * Check if input file is a still image (not a video).
+ * Uses FFmpeg to check if the input has a video stream with frames.
+ * Returns 1 if still image, 0 if video, -1 on error.
+ */
+static int is_input_still_image(const char *input_file) {
+    char cmd[MAX_PATH * 2];
+
+    // Check for common image extensions first (quick path)
+    const char *ext = strrchr(input_file, '.');
+    if (ext) {
+        const char *image_exts[] = {
+            ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".tiff", ".tif",
+            ".webp", ".ppm", ".pgm", ".pbm", ".pnm", ".exr", ".hdr",
+            ".PNG", ".JPG", ".JPEG", ".BMP", ".TGA", ".GIF", ".TIFF", ".TIF",
+            ".WEBP", ".PPM", ".PGM", ".PBM", ".PNM", ".EXR", ".HDR",
+            NULL
+        };
+        for (int i = 0; image_exts[i]; i++) {
+            if (strcmp(ext, image_exts[i]) == 0) {
+                return 1;  // Known image extension
+            }
+        }
+    }
+
+    // Use ffprobe to check if it's a single-frame input
+    // For still images, nb_frames will be "1" or "N/A" and duration will be very short or N/A
+    snprintf(cmd, sizeof(cmd),
+             "ffprobe -v error -select_streams v:0 "
+             "-show_entries stream=nb_frames,duration "
+             "-of default=noprint_wrappers=1:nokey=1 \"%s\" 2>/dev/null",
+             input_file);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    char nb_frames_str[64] = {0};
+    char duration_str[64] = {0};
+
+    if (fgets(nb_frames_str, sizeof(nb_frames_str), fp) != NULL) {
+        fgets(duration_str, sizeof(duration_str), fp);
+    }
+    pclose(fp);
+
+    // Check if nb_frames is exactly "1" or "N/A"
+    // Also check if duration is very short (< 0.1 seconds) or N/A
+    if (nb_frames_str[0]) {
+        // Remove trailing newline
+        char *nl = strchr(nb_frames_str, '\n');
+        if (nl) *nl = '\0';
+        nl = strchr(duration_str, '\n');
+        if (nl) *nl = '\0';
+
+        // Still image if nb_frames is "1" or "N/A"
+        if (strcmp(nb_frames_str, "1") == 0 ||
+            strcmp(nb_frames_str, "N/A") == 0) {
+            return 1;
+        }
+
+        // Also check for very short duration (might be a single frame)
+        if (duration_str[0] && strcmp(duration_str, "N/A") != 0) {
+            double duration = atof(duration_str);
+            if (duration > 0 && duration < 0.1) {
+                return 1;  // Very short, likely a single frame
+            }
+        }
+    }
+
+    return 0;  // Assume video
+}
+
+/**
  * Open FFmpeg pipe for reading RGB24 frames.
  *
  * When interlaced=1:
@@ -486,18 +563,28 @@ static int read_rgb_frame(FILE *fp, uint8_t *rgb_frame, size_t frame_size) {
 // =============================================================================
 
 /**
- * Write TAV file header.
+ * Write TAV/TAP file header.
  *
  * When interlaced mode is enabled:
  *   - header_height should be the full display height (e.g., 448)
  *   - params->height is the internal encoding height (e.g., 224)
  *   - video_flags bit 0 is set to indicate interlaced
+ *
+ * When is_still_image is set:
+ *   - Writes TAP magic instead of TAV
+ *   - FPS is set to 0
+ *   - Total frames is set to 0xFFFFFFFF
  */
 static int write_tav_header(FILE *fp, const tav_encoder_params_t *params,
                             int has_audio, int has_subtitles,
-                            int interlaced, int header_height) {
-    // Magic (8 bytes: \x1FTSVMTAV)
-    fwrite(TAV_MAGIC, 1, 8, fp);
+                            int interlaced, int header_height,
+                            int is_still_image) {
+    // Magic (8 bytes: \x1FTSVMTAV or \x1FTSVMTAP)
+    if (is_still_image) {
+        fwrite(TAP_MAGIC, 1, 8, fp);
+    } else {
+        fwrite(TAV_MAGIC, 1, 8, fp);
+    }
 
     // Version (1 byte) - calculate based on params
     // Version encoding (monoblock mode always used):
@@ -543,12 +630,14 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params,
     uint16_t height = (actual_height > 65535) ? 0 : (uint16_t)actual_height;
     fwrite(&height, sizeof(uint16_t), 1, fp);
 
-    // FPS (uint8_t, 1 byte) - simplified to just fps_num
-    uint8_t fps = (uint8_t)params->fps_num;
+    // FPS (uint8_t, 1 byte) - 0 for still images, fps_num for video
+    uint8_t fps = is_still_image ? 0 : (uint8_t)params->fps_num;
     fputc(fps, fp);
 
-    // Total frames (uint32_t, 4 bytes) - will be updated later
-    uint32_t total_frames = 0;
+    // Total frames (uint32_t, 4 bytes)
+    // For still images: 0xFFFFFFFF
+    // For video: 0 (will be updated later)
+    uint32_t total_frames = is_still_image ? 0xFFFFFFFF : 0;
     fwrite(&total_frames, sizeof(uint32_t), 1, fp);
 
     // Wavelet filter (uint8_t, 1 byte)
@@ -1546,9 +1635,9 @@ static int encode_video_mt(cli_context_t *cli) {
         return -1;
     }
 
-    // Write TAV header
+    // Write TAV/TAP header
     write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL,
-                     cli->interlaced, cli->header_height);
+                     cli->interlaced, cli->header_height, cli->is_still_image);
 
     // Write Extended Header (unless suppressed)
     // For interlaced mode, use header_height for XDIM if needed
@@ -1842,11 +1931,13 @@ static int encode_video_mt(cli_context_t *cli) {
 
     printf("\n");
 
-    // Update total frames in header
-    update_total_frames(cli->output_fp, (uint32_t)cli->frame_count);
+    // Update total frames in header (skip for still images - already set to 0xFFFFFFFF)
+    if (!cli->is_still_image) {
+        update_total_frames(cli->output_fp, (uint32_t)cli->frame_count);
+    }
 
-    // Update ENDT in Extended Header
-    if (!cli->suppress_xhdr && cli->extended_header_offset >= 0) {
+    // Update ENDT in Extended Header (skip for still images)
+    if (!cli->is_still_image && !cli->suppress_xhdr && cli->extended_header_offset >= 0) {
         // Calculate end time in nanoseconds
         uint64_t end_time_ns = (uint64_t)cli->frame_count * 1000000000ULL * cli->enc_params.fps_den / cli->enc_params.fps_num;
         update_extended_header_endt(cli->output_fp, cli->extended_header_offset, end_time_ns);
@@ -2012,9 +2103,9 @@ static int encode_video(cli_context_t *cli) {
         return -1;
     }
 
-    // Write TAV header (with actual encoder params)
+    // Write TAV/TAP header (with actual encoder params)
     write_tav_header(cli->output_fp, &cli->enc_params, cli->has_audio, cli->subtitles != NULL,
-                     cli->interlaced, cli->header_height);
+                     cli->interlaced, cli->header_height, cli->is_still_image);
 
     // Write Extended Header (unless suppressed)
     // For interlaced mode, use header_height for XDIM if needed
@@ -2193,11 +2284,13 @@ static int encode_video(cli_context_t *cli) {
         }
     }
 
-    // Update total frames in header
-    update_total_frames(cli->output_fp, (uint32_t)cli->frame_count);
+    // Update total frames in header (skip for still images - already set to 0xFFFFFFFF)
+    if (!cli->is_still_image) {
+        update_total_frames(cli->output_fp, (uint32_t)cli->frame_count);
+    }
 
-    // Update ENDT in Extended Header
-    if (!cli->suppress_xhdr && cli->extended_header_offset >= 0) {
+    // Update ENDT in Extended Header (skip for still images)
+    if (!cli->is_still_image && !cli->suppress_xhdr && cli->extended_header_offset >= 0) {
         // Calculate end time in nanoseconds
         uint64_t end_time_ns = (uint64_t)cli->frame_count * 1000000000ULL * cli->enc_params.fps_den / cli->enc_params.fps_num;
         update_extended_header_endt(cli->output_fp, cli->extended_header_offset, end_time_ns);
@@ -2654,8 +2747,33 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Detect still images (TAP mode)
+    int still_image_check = is_input_still_image(cli.input_file);
+    if (still_image_check > 0) {
+        cli.is_still_image = 1;
+        printf("Detected still image - encoding as TAP format\n");
+
+        // Force single-threaded mode for still images (override user option)
+        if (cli.num_threads > 0) {
+            printf("  Disabling multithreading for still image\n");
+            cli.num_threads = 0;
+        }
+
+        // Force intra-only mode (no temporal DWT)
+        cli.enc_params.enable_temporal_dwt = 0;
+
+        // Disable audio for still images by default
+        if (cli.has_audio) {
+            printf("  Disabling audio for still image\n");
+            cli.has_audio = 0;
+        }
+
+        // Force encode limit to 1 frame
+        cli.encode_limit = 1;
+    }
+
     if (need_probe_dimensions || need_probe_fps) {
-        printf("Probing video file...\n");
+        printf("Probing input file...\n");
         if (get_video_info(cli.input_file,
                           &cli.original_width, &cli.original_height,
                           &cli.original_fps_num, &cli.original_fps_den) < 0) {
