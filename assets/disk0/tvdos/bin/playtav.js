@@ -841,7 +841,7 @@ function tryReadNextTAVHeader() {
         let isValidTAV = true
         let isValidUCF = true
         for (let i = 0; i < newMagic.length; i++) {
-            if (newMagic[i] !== TAV_MAGIC[i+1] && newMagic[i] !== TAP_MAGIC[i+1]) {
+            if (newMagic[i] !== TAV_MAGIC[i+1]) {
                 isValidTAV = false
             }
         }
