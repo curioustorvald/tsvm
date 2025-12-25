@@ -402,6 +402,9 @@ if (!magicValid) {
     return
 }
 
+// Check if this is a TAP still image file (magic ends with 'P' instead of 'V')
+const isTapFile = (header.magic[7] === TAP_MAGIC[7])
+
 header.version = seqread.readOneByte()
 header.width = seqread.readShort()
 header.height = seqread.readShort()
@@ -469,6 +472,123 @@ console.log(`Colour space: ${header.version % 2 == 0 ? "ICtCp" : "YCoCg-R"}`)
 console.log(`Features: ${hasAudio ? "Audio " : ""}${hasSubtitles ? "Subtitles " : ""}${progressiveTransmission ? "Progressive " : ""}${roiCoding ? "ROI " : ""}`)
 console.log(`Video flags raw: 0x${header.videoFlags.toString(16)}`)
 console.log(`Scan type: ${isInterlaced ? "Interlaced" : "Progressive"}`)
+
+// Handle TAP still image file
+if (isTapFile) {
+    console.log("TAP still image detected")
+
+    // Allocate single frame buffer for still image
+    const FRAME_PIXELS = header.width * header.height
+    const FRAME_SIZE = FRAME_PIXELS * 3
+
+    const RGB_BUFFER = sys.malloc(FRAME_SIZE)
+    const PREV_RGB_BUFFER = sys.malloc(FRAME_SIZE)
+    sys.memset(RGB_BUFFER, 0, FRAME_SIZE)
+    sys.memset(PREV_RGB_BUFFER, 0, FRAME_SIZE)
+
+    // Read the image packet (should be I-frame)
+    let packetType = seqread.readOneByte()
+
+    // Skip non-video packets until we find the image data
+    while (packetType !== TAV_PACKET_IFRAME) {
+        if (packetType === TAV_PACKET_EXTENDED_HDR) {
+            // Skip extended header - parse key-value pairs properly
+            let numPairs = seqread.readShort()
+            for (let i = 0; i < numPairs; i++) {
+                // Skip key (4 bytes)
+                let keyBytes = seqread.readBytes(4)
+                sys.free(keyBytes)
+
+                // Read value type and skip value
+                let valueType = seqread.readOneByte()
+                if (valueType === 0x04) {  // Uint64 - 8 bytes
+                    seqread.skip(8)
+                } else if (valueType === 0x10) {  // Bytes - length-prefixed
+                    let length = seqread.readShort()
+                    let dataBytes = seqread.readBytes(length)
+                    sys.free(dataBytes)
+                }
+            }
+        } else if (packetType === TAV_PACKET_SCREEN_MASK) {
+            // Skip screen mask packet - single entry: frame_num(4) + top(2) + right(2) + bottom(2) + left(2)
+            seqread.skip(12)
+        } else if (packetType === TAV_PACKET_TIMECODE) {
+            seqread.skip(8)
+        } else {
+            console.log(`got unknown packet type 0x${packetType.toString(16)}`)
+            // Unknown packet, try to skip it safely
+            break
+        }
+        packetType = seqread.readOneByte()
+    }
+
+    if (packetType === TAV_PACKET_IFRAME) {
+        // Read and decode I-frame
+        const compressedSize = seqread.readInt()
+        const compressedPtr = seqread.readBytes(compressedSize)
+
+        // Decode using TAV hardware decoder
+        graphics.tavDecodeCompressed(
+            compressedPtr, compressedSize,
+            RGB_BUFFER, PREV_RGB_BUFFER,
+            header.width, header.height,
+            header.qualityLevel,
+            QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
+            header.channelLayout, 0, header.waveletFilter, header.decompLevels,
+            isLossless, header.version, header.entropyCoder, 1
+        )
+        sys.free(compressedPtr)
+
+        // Upload to framebuffer
+        graphics.uploadRGBToFramebuffer(RGB_BUFFER, header.width, header.height, 0, false)
+
+    }
+
+    // Free buffers
+    sys.free(RGB_BUFFER)
+    sys.free(PREV_RGB_BUFFER)
+
+    // Show "backspace to exit" message
+    con.clear()
+    con.curs_set(0)
+    con.move(1, 1)
+    println("Push and hold Backspace to exit")
+
+    // Wait loop for still image viewing (similar to decodeipf.js)
+    let wait = true
+    let t1 = sys.nanoTime()
+    let tapNotifHideTimer = 0
+    const TAP_NOTIF_SHOWUPTIME = 3000000000  // 3 seconds
+
+    while (wait) {
+        sys.poke(-40, 1)
+        if (sys.peek(-41) == 67) {  // Backspace
+            wait = false
+            con.curs_set(1)
+        }
+
+        sys.sleep(50)
+
+        let t2 = sys.nanoTime()
+        tapNotifHideTimer += (t2 - t1)
+        if (tapNotifHideTimer > TAP_NOTIF_SHOWUPTIME) {
+            con.clear()
+        }
+        t1 = t2
+    }
+
+    // Clean up and exit (matching normal video playback cleanup)
+    con.clear()
+    con.curs_set(1)
+
+    // Reset font ROM
+    sys.poke(-1299460, 20)
+    sys.poke(-1299460, 21)
+
+    graphics.setPalette(0, 0, 0, 0, 0)
+    con.move(cy, cx) // restore cursor
+    return errorlevel
+}
 
 // Adjust decode height for interlaced content
 // For interlaced: header.height is display height (448)
