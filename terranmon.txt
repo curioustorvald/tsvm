@@ -920,6 +920,7 @@ transmission capability, and region-of-interest coding.
     uint16 Height: picture height in pixels. Rows count for Videotex-only file.
             If either width or height exceeds 65535 pixels, above two fields must be filled with zero and the dimension must be sourced from XDIM entry of the Extended Header
     uint8  FPS: frames per second. Use 0x00 for still pictures
+            If FPS is greater than 254 or fractional (excl. NTSC), the value must be 0xFF and the true framerate must be sourced from the XFPS entry of the Extended Header
     uint32 Total Frames: number of video frames
             - use 0 to denote not-finalised video stream
             - use 0xFFFFFFFF to denote still picture (.im3 file)
@@ -1099,6 +1100,9 @@ The encoder supports following presets:
     - Bytes  VNDR: Name and version of the encoder (for Reference encoder: "Encoder-TAV 20251014 (list,of,features)")
     - Bytes FMPG: FFmpeg version (typically "ffmpeg version 8.0 Copyright (c) 2000-2025 the FFmpeg developers"; the first line of text FFmpeg emits)
     - Bytes XDIM: Video dimension in '<width>,<height>' format. Mandatory if either width or height exceeds 65535
+    - Bytes XFPS: Framerate in '<numerator>/<denominator>' format. Mandatory if either:
+            1. FPS exceeds 254
+            2. denominator is not 1 or 1001
 
 ## Extensible Packet Structure
     uint8  Packet Type
