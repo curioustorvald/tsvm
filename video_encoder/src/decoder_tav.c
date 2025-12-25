@@ -172,6 +172,10 @@ typedef struct {
     int is_still_image;     // 1 if input is a still picture (TAP format)
     int output_tga;         // 1 for TGA output, 0 for PNG (default)
 
+    // Extended framerate support (XFPS)
+    int fps_num;            // Framerate numerator (from header or XFPS extended header)
+    int fps_den;            // Framerate denominator (1 for standard, 1001 for NTSC, or from XFPS)
+
     // Threading support (video decoding)
     int num_threads;
     int num_slots;
@@ -264,6 +268,23 @@ static int read_tav_header(decoder_context_t *ctx) {
         ctx->decode_height = ctx->header.height;
     }
 
+    // Initialize fps_num and fps_den from header
+    // If header.fps == 0xFF, the actual framerate is in the XFPS extended header entry
+    // If header.fps == 0x00, this is a still image
+    // Otherwise, fps_num = header.fps and fps_den is 1 (or 1001 for NTSC if video_flags bit 1 is set)
+    if (ctx->header.fps == 0xFF) {
+        // Will be set from XFPS extended header
+        ctx->fps_num = 0;
+        ctx->fps_den = 1;
+    } else if (ctx->header.fps == 0x00) {
+        // Still image
+        ctx->fps_num = 0;
+        ctx->fps_den = 1;
+    } else {
+        ctx->fps_num = ctx->header.fps;
+        ctx->fps_den = (ctx->header.video_flags & 0x02) ? 1001 : 1;
+    }
+
     if (ctx->verbose) {
         printf("=== %s Header ===\n", ctx->is_still_image ? "TAP" : "TAV");
         printf("  Format: %s\n", ctx->is_still_image ? "Still Picture" : "Video");
@@ -273,7 +294,11 @@ static int read_tav_header(decoder_context_t *ctx) {
             printf("  Interlaced: yes (decode height: %d)\n", ctx->decode_height);
         }
         if (!ctx->is_still_image) {
-            printf("  FPS: %d\n", ctx->header.fps);
+            if (ctx->header.fps == 0xFF) {
+                printf("  FPS: (extended - see XFPS)\n");
+            } else {
+                printf("  FPS: %d\n", ctx->header.fps);
+            }
             printf("  Total frames: %u\n", ctx->header.total_frames);
         }
         printf("  Wavelet filter: %d\n", ctx->header.wavelet_filter);
@@ -290,6 +315,84 @@ static int read_tav_header(decoder_context_t *ctx) {
     }
 
     return 0;
+}
+
+/**
+ * Scan for XFPS extended header entry if header.fps == 0xFF.
+ * Must be called after read_tav_header() while file position is at start of packets.
+ * Will restore file position after scanning.
+ */
+static void scan_for_xfps(decoder_context_t *ctx) {
+    if (ctx->header.fps != 0xFF) {
+        // No need to scan for XFPS
+        return;
+    }
+
+    long start_pos = ftell(ctx->input_fp);
+
+    // Scan packets looking for extended header
+    while (!feof(ctx->input_fp)) {
+        uint8_t packet_type;
+        if (fread(&packet_type, 1, 1, ctx->input_fp) != 1) break;
+
+        if (packet_type == TAV_PACKET_EXTENDED_HDR) {
+            // Parse extended header looking for XFPS
+            uint16_t num_pairs;
+            if (fread(&num_pairs, 2, 1, ctx->input_fp) != 1) break;
+
+            for (int i = 0; i < num_pairs; i++) {
+                char key[5] = {0};
+                uint8_t value_type;
+
+                if (fread(key, 1, 4, ctx->input_fp) != 4) break;
+                if (fread(&value_type, 1, 1, ctx->input_fp) != 1) break;
+
+                if (value_type == 0x10) {  // Bytes type
+                    uint16_t length;
+                    if (fread(&length, 2, 1, ctx->input_fp) != 1) break;
+
+                    if (strncmp(key, "XFPS", 4) == 0 && length < 32) {
+                        // Found XFPS - parse it
+                        char xfps_str[32] = {0};
+                        if (fread(xfps_str, 1, length, ctx->input_fp) != length) break;
+                        xfps_str[length] = '\0';
+
+                        int num, den;
+                        if (sscanf(xfps_str, "%d/%d", &num, &den) == 2) {
+                            ctx->fps_num = num;
+                            ctx->fps_den = den;
+                            if (ctx->verbose) {
+                                printf("  XFPS: %d/%d (%.3f fps)\n", num, den, (double)num / den);
+                            }
+                        }
+                        // Found XFPS, done scanning
+                        goto done;
+                    } else {
+                        // Skip this value
+                        fseek(ctx->input_fp, length, SEEK_CUR);
+                    }
+                } else if (value_type == 0x04) {  // Int64
+                    fseek(ctx->input_fp, 8, SEEK_CUR);
+                } else if (value_type <= 0x04) {  // Other int types
+                    int sizes[] = {2, 3, 4, 6, 8};
+                    fseek(ctx->input_fp, sizes[value_type], SEEK_CUR);
+                }
+            }
+            // Extended header parsed, done scanning (XFPS not found)
+            break;
+        } else if (packet_type == TAV_PACKET_TIMECODE) {
+            fseek(ctx->input_fp, 8, SEEK_CUR);
+        } else if (packet_type == TAV_PACKET_SYNC || packet_type == TAV_PACKET_SYNC_NTSC) {
+            // No payload
+        } else {
+            // Reached a non-metadata packet, stop scanning
+            break;
+        }
+    }
+
+done:
+    // Restore file position
+    fseek(ctx->input_fp, start_pos, SEEK_SET);
 }
 
 // =============================================================================
@@ -321,9 +424,14 @@ static int spawn_ffmpeg(decoder_context_t *ctx) {
         // For interlaced video: input is half-height fields, output is full-height interlaced
         // For progressive video: input and output are both full-height
         char video_size[32];
-        char framerate[16];
+        char framerate[32];
         snprintf(video_size, sizeof(video_size), "%dx%d", ctx->header.width, ctx->decode_height);
-        snprintf(framerate, sizeof(framerate), "%d", ctx->header.fps);
+        // Use fps_num/fps_den for extended framerates (XFPS)
+        if (ctx->fps_den == 1) {
+            snprintf(framerate, sizeof(framerate), "%d", ctx->fps_num);
+        } else {
+            snprintf(framerate, sizeof(framerate), "%d/%d", ctx->fps_num, ctx->fps_den);
+        }
 
         // Redirect video pipe to fd 3
         dup2(video_pipe_fd[0], 3);
@@ -2070,6 +2178,9 @@ int main(int argc, char *argv[]) {
         fclose(ctx.input_fp);
         return 1;
     }
+
+    // Scan for XFPS if header.fps == 0xFF
+    scan_for_xfps(&ctx);
 
     // Handle still image (TAP) mode
     if (ctx.is_still_image) {

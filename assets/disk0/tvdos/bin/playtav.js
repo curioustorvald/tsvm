@@ -516,8 +516,8 @@ if (isTapFile) {
             seqread.skip(8)
         } else {
             console.log(`got unknown packet type 0x${packetType.toString(16)}`)
-            // Unknown packet, try to skip it safely
-            break
+            let size = seqread.readInt()
+            seqread.skip(size)
         }
         packetType = seqread.readOneByte()
     }

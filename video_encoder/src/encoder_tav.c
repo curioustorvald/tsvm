@@ -630,8 +630,19 @@ static int write_tav_header(FILE *fp, const tav_encoder_params_t *params,
     uint16_t height = (actual_height > 65535) ? 0 : (uint16_t)actual_height;
     fwrite(&height, sizeof(uint16_t), 1, fp);
 
-    // FPS (uint8_t, 1 byte) - 0 for still images, fps_num for video
-    uint8_t fps = is_still_image ? 0 : (uint8_t)params->fps_num;
+    // FPS (uint8_t, 1 byte)
+    // - 0x00 for still images
+    // - 0xFF if fps_num > 254 or fps_den is not 1 or 1001 (use XFPS extended header)
+    // - otherwise fps_num
+    uint8_t fps;
+    if (is_still_image) {
+        fps = 0;
+    } else if (params->fps_num > 254 ||
+               (params->fps_den != 1 && params->fps_den != 1001)) {
+        fps = 0xFF;  // Extended framerate in XFPS
+    } else {
+        fps = (uint8_t)params->fps_num;
+    }
     fputc(fps, fp);
 
     // Total frames (uint32_t, 4 bytes)
@@ -699,11 +710,14 @@ static long write_extended_header(cli_context_t *cli, int width, int height) {
     uint8_t packet_type = TAV_PACKET_EXTENDED_HDR;
     if (fwrite(&packet_type, 1, 1, fp) != 1) return -1;
 
-    // Count key-value pairs: BGNT, ENDT, CDAT, VNDR, optionally FMPG, and optionally XDIM
+    // Count key-value pairs: BGNT, ENDT, CDAT, VNDR, optionally FMPG, XDIM, XFPS
     int has_xdim = (width > 65535 || height > 65535);
+    int has_xfps = (cli->enc_params.fps_num > 254 ||
+                    (cli->enc_params.fps_den != 1 && cli->enc_params.fps_den != 1001));
     uint16_t num_pairs = 4;  // BGNT, ENDT, CDAT, VNDR
     if (cli->ffmpeg_version) num_pairs++;  // FMPG
     if (has_xdim) num_pairs++;  // XDIM
+    if (has_xfps) num_pairs++;  // XFPS
     if (fwrite(&num_pairs, sizeof(uint16_t), 1, fp) != 1) return -1;
 
     // Helper macros for writing key-value pairs
@@ -749,6 +763,14 @@ static long write_extended_header(cli_context_t *cli, int width, int height) {
         char xdim_str[32];
         snprintf(xdim_str, sizeof(xdim_str), "%d,%d", width, height);
         WRITE_KV_BYTES("XDIM", xdim_str, strlen(xdim_str));
+    }
+
+    // XFPS: Extended framerate (if fps_num > 254 or fps_den is not 1 or 1001)
+    if (has_xfps) {
+        char xfps_str[32];
+        snprintf(xfps_str, sizeof(xfps_str), "%d/%d",
+                 cli->enc_params.fps_num, cli->enc_params.fps_den);
+        WRITE_KV_BYTES("XFPS", xfps_str, strlen(xfps_str));
     }
 
     #undef WRITE_KV_UINT64

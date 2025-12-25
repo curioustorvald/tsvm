@@ -360,14 +360,17 @@ void print_extended_header(FILE *fp, int verbose) {
             if (verbose) {
                 data[length] = '\0';
 
-                // Truncate long strings
-                /*if (length > 60) {
-                    data[57] = '.';
-                    data[58] = '.';
-                    data[59] = '.';
-                    data[60] = '\0';
-                }*/
-                printf("\"%s\"", data);
+                // Special handling for XFPS: show parsed framerate
+                if (strncmp(key, "XFPS", 4) == 0) {
+                    int num, den;
+                    if (sscanf(data, "%d/%d", &num, &den) == 2) {
+                        printf("%d/%d (%.3f fps)", num, den, (double)num / den);
+                    } else {
+                        printf("\"%s\"", data);
+                    }
+                } else {
+                    printf("\"%s\"", data);
+                }
             }
             free(data);
         } else {
@@ -663,9 +666,15 @@ static const char* TEMPORAL_WAVELET[] = {"Haar", "CDF 5/3"};
         printf("  Version:          %d (base: %d - %s, temporal: %s)\n",
                version, base_version, VERDESC[base_version], TEMPORAL_WAVELET[temporal_motion_coder]);
         printf("  Resolution:       %dx%d\n", width, height);
-        printf("  Frame rate:       %d fps", fps);
-        if (video_flags & 0x02) printf(" (NTSC)");
-        printf("\n");
+        if (fps == 0xFF) {
+            printf("  Frame rate:       (extended - see XFPS in extended header)\n");
+        } else if (fps == 0) {
+            printf("  Frame rate:       (still image)\n");
+        } else {
+            printf("  Frame rate:       %d fps", fps);
+            if (video_flags & 0x02) printf(" (NTSC)");
+            printf("\n");
+        }
         printf("  Total frames:     %u\n", total_frames);
         printf("  Wavelet:          %d", wavelet);
         const char *wavelet_names[] = {"LGT 5/3", "CDF 9/7", "CDF 13/7", "Reserved", "Reserved",
