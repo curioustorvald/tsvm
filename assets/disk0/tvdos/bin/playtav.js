@@ -535,7 +535,7 @@ if (isTapFile) {
             header.qualityLevel,
             QLUT[header.qualityY], QLUT[header.qualityCo], QLUT[header.qualityCg],
             header.channelLayout, 0, header.waveletFilter, header.decompLevels,
-            isLossless, header.version, header.entropyCoder, 1
+            isLossless, header.version, header.entropyCoder, 2
         )
         sys.free(compressedPtr)
 
