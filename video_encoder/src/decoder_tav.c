@@ -34,7 +34,7 @@
 // Constants
 // =============================================================================
 
-#define DECODER_VENDOR_STRING "Decoder-TAV 20251207 (libtavdec)"
+#define DECODER_VENDOR_STRING "Decoder-TAV 20251223 (reference)"
 #define TAV_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x56"  // "\x1FTSVMTAV"
 #define TAP_MAGIC "\x1F\x54\x53\x56\x4D\x54\x41\x50"  // "\x1FTSVMTAP" (still picture)
 #define MAX_PATH 4096
