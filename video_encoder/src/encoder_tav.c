@@ -26,6 +26,9 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <math.h>
+#include <float.h>
+#include <limits.h>
 
 #include "tav_encoder_lib.h"
 #include "encoder_tad.h"
@@ -90,6 +93,66 @@ static const float DEAD_ZONE_THRESHOLD[] = {1.5f, 1.5f, 1.2f, 1.1f, 0.8f, 0.6f, 
 
 static char TEMP_AUDIO_FILE[TEMP_AUDIO_FILE_SIZE];
 static char TEMP_PCM_FILE[TEMP_PCM_FILE_SIZE];
+
+// =============================================================================
+// Two-Pass Scene Change Detection Constants
+// =============================================================================
+
+// Fixed analysis resolution for scene change detection (performance-independent of source size)
+#define ANALYSIS_WIDTH 128
+#define ANALYSIS_HEIGHT 128
+#define ANALYSIS_DWT_LEVELS 3        // 3-level Haar DWT for analysis
+
+// Adaptive threshold parameters
+#define ANALYSIS_MOVING_WINDOW 30    // Moving average window (30 frames = ~1 second at 30fps)
+#define ANALYSIS_STDDEV_MULTIPLIER 1.4  // Standard deviation multiplier for adaptive threshold
+#define ANALYSIS_LL_DIFF_MIN_THRESHOLD 1.5  // Minimum absolute threshold for LL_diff
+#define ANALYSIS_HB_RATIO_THRESHOLD 0.4     // Highband energy ratio threshold
+#define ANALYSIS_HB_ENERGY_MULTIPLIER 1.4   // Energy spike multiplier (1.4× mean to trigger)
+#define ANALYSIS_FADE_THRESHOLD 50.0        // Brightness change threshold over 5 frames
+
+// GOP size constraints for two-pass mode
+#define ANALYSIS_GOP_MIN_SIZE 10      // Minimum GOP size for two-pass mode
+#define ANALYSIS_GOP_MAX_SIZE 24      // Maximum GOP size for two-pass mode
+
+// =============================================================================
+// Two-Pass Scene Change Detection Structures
+// =============================================================================
+
+// Frame analysis metrics for two-pass scene change detection
+typedef struct frame_analysis {
+    int frame_number;
+
+    // Wavelet-based metrics (3-level Haar on fixed-size analysis buffer)
+    double ll_diff;              // L1 distance between consecutive LL bands
+    double ll_mean;              // Mean brightness (LL band average)
+    double ll_variance;          // Contrast estimate (LL band variance)
+
+    double highband_energy;      // Sum of absolute values in LH/HL/HH bands
+    double total_energy;         // Total energy (all bands)
+    double highband_ratio;       // highband_energy / total_energy
+
+    // Per-band entropies (Shannon entropy of coefficient magnitudes)
+    double entropy_ll;
+    double entropy_lh[ANALYSIS_DWT_LEVELS];
+    double entropy_hl[ANALYSIS_DWT_LEVELS];
+    double entropy_hh[ANALYSIS_DWT_LEVELS];
+
+    // Texture change indicators
+    double zero_crossing_rate;   // Zero crossing rate in highbands
+
+    // Detection results
+    int is_scene_change;         // Final scene change flag
+    double scene_change_score;   // Composite score for debugging
+} frame_analysis_t;
+
+// GOP boundary list for two-pass encoding
+typedef struct gop_boundary {
+    int start_frame;
+    int end_frame;
+    int num_frames;
+    struct gop_boundary *next;
+} gop_boundary_t;
 
 // =============================================================================
 // Subtitle Structures
@@ -179,6 +242,14 @@ typedef struct {
 
     // Still image (TAP) mode
     int is_still_image;          // 1 if input is a still image (outputs TAP format)
+
+    // Two-pass scene change detection
+    int two_pass_mode;                    // 1 = two-pass enabled, 0 = disabled
+    frame_analysis_t *frame_analyses;     // Array of frame analyses from first pass
+    int frame_analyses_count;             // Number of frames analysed
+    int frame_analyses_capacity;          // Allocated capacity
+    gop_boundary_t *gop_boundaries;       // Linked list of GOP boundaries
+    gop_boundary_t *current_gop_boundary; // Current GOP being encoded
 
 } cli_context_t;
 
@@ -1169,6 +1240,712 @@ static void free_subtitle_list(subtitle_entry_t *list) {
     }
 }
 
+// =============================================================================
+// Two-Pass Scene Change Detection Functions
+// =============================================================================
+
+// 1D Haar forward transform (in-place)
+static void haar_forward_1d(float *data, int length) {
+    if (length < 2) return;
+
+    int half = length / 2;
+    float *temp = malloc(length * sizeof(float));
+
+    for (int i = 0; i < half; i++) {
+        float a = data[2 * i];
+        float b = data[2 * i + 1];
+        temp[i] = (a + b) * 0.5f;       // Low-pass (average)
+        temp[half + i] = (a - b) * 0.5f; // High-pass (difference)
+    }
+
+    memcpy(data, temp, length * sizeof(float));
+    free(temp);
+}
+
+// 2D Haar forward transform for analysis (works on ANALYSIS_WIDTH x ANALYSIS_HEIGHT buffer)
+static void analysis_haar_2d_forward(float *data, int width, int height, int levels) {
+    float *temp = malloc((width > height ? width : height) * sizeof(float));
+
+    // Generate division series for levels
+    int widths[levels + 1];
+    int heights[levels + 1];
+    widths[0] = width;
+    heights[0] = height;
+
+    for (int i = 1; i <= levels; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
+
+    for (int level = 0; level < levels; level++) {
+        int current_width = widths[level];
+        int current_height = heights[level];
+
+        if (current_width < 2 || current_height < 2) break;
+
+        // Horizontal pass
+        for (int y = 0; y < current_height; y++) {
+            for (int x = 0; x < current_width; x++) {
+                temp[x] = data[y * width + x];
+            }
+            haar_forward_1d(temp, current_width);
+            for (int x = 0; x < current_width; x++) {
+                data[y * width + x] = temp[x];
+            }
+        }
+
+        // Vertical pass
+        for (int x = 0; x < current_width; x++) {
+            for (int y = 0; y < current_height; y++) {
+                temp[y] = data[y * width + x];
+            }
+            haar_forward_1d(temp, current_height);
+            for (int y = 0; y < current_height; y++) {
+                data[y * width + x] = temp[y];
+            }
+        }
+    }
+
+    free(temp);
+}
+
+// Bilinear resize RGB frame to fixed 128x128 grayscale analysis buffer
+static float* resize_frame_to_analysis(const uint8_t *rgb_frame, int src_width, int src_height) {
+    float *gray = malloc(ANALYSIS_WIDTH * ANALYSIS_HEIGHT * sizeof(float));
+
+    float x_ratio = (float)(src_width - 1) / (ANALYSIS_WIDTH - 1);
+    float y_ratio = (float)(src_height - 1) / (ANALYSIS_HEIGHT - 1);
+
+    for (int y = 0; y < ANALYSIS_HEIGHT; y++) {
+        for (int x = 0; x < ANALYSIS_WIDTH; x++) {
+            float src_x = x * x_ratio;
+            float src_y = y * y_ratio;
+
+            int x0 = (int)src_x;
+            int y0 = (int)src_y;
+            int x1 = x0 + 1 < src_width ? x0 + 1 : x0;
+            int y1 = y0 + 1 < src_height ? y0 + 1 : y0;
+
+            float x_frac = src_x - x0;
+            float y_frac = src_y - y0;
+
+            // Get grayscale values at four corners
+            int idx00 = (y0 * src_width + x0) * 3;
+            int idx01 = (y0 * src_width + x1) * 3;
+            int idx10 = (y1 * src_width + x0) * 3;
+            int idx11 = (y1 * src_width + x1) * 3;
+
+            float g00 = 0.299f * rgb_frame[idx00] + 0.587f * rgb_frame[idx00 + 1] + 0.114f * rgb_frame[idx00 + 2];
+            float g01 = 0.299f * rgb_frame[idx01] + 0.587f * rgb_frame[idx01 + 1] + 0.114f * rgb_frame[idx01 + 2];
+            float g10 = 0.299f * rgb_frame[idx10] + 0.587f * rgb_frame[idx10 + 1] + 0.114f * rgb_frame[idx10 + 2];
+            float g11 = 0.299f * rgb_frame[idx11] + 0.587f * rgb_frame[idx11 + 1] + 0.114f * rgb_frame[idx11 + 2];
+
+            // Bilinear interpolation
+            float top = g00 * (1 - x_frac) + g01 * x_frac;
+            float bottom = g10 * (1 - x_frac) + g11 * x_frac;
+            gray[y * ANALYSIS_WIDTH + x] = top * (1 - y_frac) + bottom * y_frac;
+        }
+    }
+
+    return gray;
+}
+
+// Calculate Shannon entropy of coefficient magnitudes
+static double calculate_shannon_entropy(const float *coeffs, int count) {
+    if (count == 0) return 0.0;
+
+    // Build histogram of coefficient magnitudes (use 256 bins)
+    #define HIST_BINS 256
+    int histogram[HIST_BINS] = {0};
+
+    // Find min/max for normalisation
+    float min_val = FLT_MAX, max_val = -FLT_MAX;
+    for (int i = 0; i < count; i++) {
+        float abs_val = fabsf(coeffs[i]);
+        if (abs_val < min_val) min_val = abs_val;
+        if (abs_val > max_val) max_val = abs_val;
+    }
+
+    // Avoid division by zero
+    float range = max_val - min_val;
+    if (range < 1e-6) return 0.0;
+
+    // Build histogram
+    for (int i = 0; i < count; i++) {
+        float abs_val = fabsf(coeffs[i]);
+        int bin = (int)((abs_val - min_val) / range * (HIST_BINS - 1));
+        bin = bin < 0 ? 0 : (bin >= HIST_BINS ? HIST_BINS - 1 : bin);
+        histogram[bin]++;
+    }
+
+    // Calculate entropy: H = -sum(p_i * log2(p_i))
+    double entropy = 0.0;
+    for (int i = 0; i < HIST_BINS; i++) {
+        if (histogram[i] > 0) {
+            double p = (double)histogram[i] / count;
+            entropy -= p * log2(p);
+        }
+    }
+
+    return entropy;
+    #undef HIST_BINS
+}
+
+// Extract subband from DWT coefficients (helper for entropy calculation)
+static void extract_subband(const float *dwt_data, int width, int height, int level,
+                           int band, float *output, int *out_count) {
+    // band: 0=LL, 1=LH, 2=HL, 3=HH
+    // For level L, subbands are in top-left quadrant of size (width>>L, height>>L)
+
+    // Generate division series
+    int widths[10]; widths[0] = width;
+    int heights[10]; heights[0] = height;
+
+    for (int i = 1; i < 10; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
+
+    int level_width = widths[level];
+    int level_height = heights[level];
+    int half_width = level_width / 2;
+    int half_height = level_height / 2;
+
+    if (half_width < 1 || half_height < 1) {
+        *out_count = 0;
+        return;
+    }
+
+    int count = 0;
+    int offset_x = (band & 1) ? half_width : 0;   // LH, HH have x offset
+    int offset_y = (band & 2) ? half_height : 0;  // HL, HH have y offset
+
+    for (int y = 0; y < half_height; y++) {
+        for (int x = 0; x < half_width; x++) {
+            int src_x = offset_x + x;
+            int src_y = offset_y + y;
+            output[count++] = dwt_data[src_y * width + src_x];
+        }
+    }
+
+    *out_count = count;
+}
+
+// Compute comprehensive frame analysis metrics
+static void compute_frame_metrics(const float *dwt_current, const float *dwt_previous,
+                                  frame_analysis_t *metrics) {
+    int width = ANALYSIS_WIDTH;
+    int height = ANALYSIS_HEIGHT;
+    int num_pixels = width * height;
+    int levels = ANALYSIS_DWT_LEVELS;
+
+    // Generate division series
+    int widths[levels + 1]; widths[0] = width;
+    int heights[levels + 1]; heights[0] = height;
+
+    for (int i = 1; i <= levels; i++) {
+        widths[i] = (int)roundf(widths[i - 1] / 2.0f);
+        heights[i] = (int)roundf(heights[i - 1] / 2.0f);
+    }
+
+    // Initialise metrics
+    memset(metrics, 0, sizeof(frame_analysis_t));
+
+    // Extract LL band (approximation coefficients)
+    int ll_width = widths[levels];
+    int ll_height = heights[levels];
+    int ll_count = ll_width * ll_height;
+
+    if (ll_count <= 0) return;
+
+    // Metric 1: LL band statistics (mean, variance)
+    double ll_sum = 0.0, ll_sum_sq = 0.0;
+    for (int i = 0; i < ll_count; i++) {
+        float val = dwt_current[i];
+        ll_sum += val;
+        ll_sum_sq += val * val;
+    }
+    metrics->ll_mean = ll_sum / ll_count;
+    double ll_var = (ll_sum_sq / ll_count) - (metrics->ll_mean * metrics->ll_mean);
+    metrics->ll_variance = ll_var > 0 ? ll_var : 0;
+
+    // Metric 2: LL_diff (L1 distance between consecutive frames)
+    if (dwt_previous) {
+        double diff_sum = 0.0;
+        for (int i = 0; i < ll_count; i++) {
+            diff_sum += fabs(dwt_current[i] - dwt_previous[i]);
+        }
+        metrics->ll_diff = diff_sum / ll_count;
+    }
+
+    // Metric 3: Highband energy and ratio
+    double total_energy = 0.0, highband_energy = 0.0;
+    for (int i = 0; i < num_pixels; i++) {
+        float abs_val = fabsf(dwt_current[i]);
+        total_energy += abs_val;
+        if (i >= ll_count) {  // All coefficients except LL band
+            highband_energy += abs_val;
+        }
+    }
+    metrics->total_energy = total_energy;
+    metrics->highband_energy = highband_energy;
+    metrics->highband_ratio = total_energy > 0 ? (highband_energy / total_energy) : 0;
+
+    // Metric 4: Per-band entropies
+    float *subband_buffer = malloc(num_pixels * sizeof(float));
+    int subband_count;
+
+    // LL band entropy
+    extract_subband(dwt_current, width, height, levels, 0, subband_buffer, &subband_count);
+    metrics->entropy_ll = calculate_shannon_entropy(subband_buffer, subband_count);
+
+    // High-frequency bands entropy (LH, HL, HH for each level)
+    for (int level = 0; level < levels && level < ANALYSIS_DWT_LEVELS; level++) {
+        // LH band
+        extract_subband(dwt_current, width, height, level, 1, subband_buffer, &subband_count);
+        metrics->entropy_lh[level] = calculate_shannon_entropy(subband_buffer, subband_count);
+
+        // HL band
+        extract_subband(dwt_current, width, height, level, 2, subband_buffer, &subband_count);
+        metrics->entropy_hl[level] = calculate_shannon_entropy(subband_buffer, subband_count);
+
+        // HH band
+        extract_subband(dwt_current, width, height, level, 3, subband_buffer, &subband_count);
+        metrics->entropy_hh[level] = calculate_shannon_entropy(subband_buffer, subband_count);
+    }
+
+    // Metric 5: Zero crossing rate in highbands (texture change indicator)
+    int zero_crossings = 0;
+    int highband_coeffs = num_pixels - ll_count;
+    if (highband_coeffs > 1) {
+        for (int i = ll_count; i < num_pixels - 1; i++) {
+            if ((dwt_current[i] > 0 && dwt_current[i + 1] < 0) ||
+                (dwt_current[i] < 0 && dwt_current[i + 1] > 0)) {
+                zero_crossings++;
+            }
+        }
+        metrics->zero_crossing_rate = (double)zero_crossings / highband_coeffs;
+    }
+
+    free(subband_buffer);
+}
+
+// Hybrid scene change detector with adaptive thresholds
+// Returns 1 if scene change detected, 0 otherwise
+static int detect_scene_change_wavelet(int frame_number,
+                                      const frame_analysis_t *metrics_history,
+                                      int history_count,
+                                      const frame_analysis_t *current_metrics,
+                                      int verbose) {
+    if (history_count < 2) return 0;  // Need history for adaptive thresholds
+
+    // Calculate moving statistics for LL_diff (mean and stddev)
+    int window_size = history_count < ANALYSIS_MOVING_WINDOW ? history_count : ANALYSIS_MOVING_WINDOW;
+    int start_idx = history_count - window_size;
+
+    double ll_diff_sum = 0.0, ll_diff_sum_sq = 0.0;
+    for (int i = start_idx; i < history_count; i++) {
+        double val = metrics_history[i].ll_diff;
+        ll_diff_sum += val;
+        ll_diff_sum_sq += val * val;
+    }
+
+    double ll_diff_mean = ll_diff_sum / window_size;
+    double ll_diff_variance = (ll_diff_sum_sq / window_size) - (ll_diff_mean * ll_diff_mean);
+    double ll_diff_stddev = ll_diff_variance > 0 ? sqrt(ll_diff_variance) : 0;
+
+    // Adaptive threshold: mean + k*stddev (with minimum absolute threshold)
+    double ll_diff_threshold = ll_diff_mean + ANALYSIS_STDDEV_MULTIPLIER * ll_diff_stddev;
+    if (ll_diff_threshold < ANALYSIS_LL_DIFF_MIN_THRESHOLD) {
+        ll_diff_threshold = ANALYSIS_LL_DIFF_MIN_THRESHOLD;
+    }
+
+    // Detection rule 1: Hard cut or fast fade (LL_diff spike)
+    // Normalise LL_diff by LL_mean to handle exposure/lighting changes
+    double normalised_ll_diff = current_metrics->ll_mean > 1.0 ?
+        current_metrics->ll_diff / current_metrics->ll_mean : current_metrics->ll_diff;
+    double normalised_threshold = current_metrics->ll_mean > 1.0 ?
+        ll_diff_threshold / current_metrics->ll_mean : ll_diff_threshold;
+
+    if (normalised_ll_diff > normalised_threshold) {
+        if (verbose) {
+            printf("  Scene change detected frame %d: Normalised LL_diff=%.4f > threshold=%.4f (raw: %.2f > %.2f)\n",
+                   frame_number + 1, normalised_ll_diff, normalised_threshold,
+                   current_metrics->ll_diff, ll_diff_threshold);
+        }
+        return 1;
+    }
+
+    // Detection rule 2: Structural change (high-frequency energy spike)
+    double hb_ratio_threshold = ANALYSIS_HB_RATIO_THRESHOLD;
+
+    // Calculate average highband energy from history
+    double hb_energy_sum = 0.0;
+    for (int i = start_idx; i < history_count; i++) {
+        hb_energy_sum += metrics_history[i].highband_energy;
+    }
+    double hb_energy_mean = hb_energy_sum / window_size;
+    double hb_energy_threshold = hb_energy_mean * ANALYSIS_HB_ENERGY_MULTIPLIER;
+
+    // Check if highband spike is detected
+    if (current_metrics->highband_ratio > hb_ratio_threshold &&
+        current_metrics->highband_energy > hb_energy_threshold) {
+
+        // Calculate confidence: how much does it exceed threshold?
+        double ratio_confidence = current_metrics->highband_ratio / hb_ratio_threshold;
+        double energy_confidence = current_metrics->highband_energy / hb_energy_threshold;
+        double min_confidence = ratio_confidence < energy_confidence ? ratio_confidence : energy_confidence;
+
+        // High confidence (>1.3x threshold): Skip persistence check (likely hard cut)
+        if (min_confidence > 1.3) {
+            if (verbose) {
+                printf("  Scene change detected frame %d: HB_ratio=%.3f > %.3f AND HB_energy=%.1f > %.1f (high confidence: %.2fx)\n",
+                       frame_number + 1, current_metrics->highband_ratio, hb_ratio_threshold,
+                       current_metrics->highband_energy, hb_energy_threshold, min_confidence);
+            }
+            return 1;
+        }
+
+        // Borderline detection: Check persistence to avoid single-frame flashes
+        if (history_count >= 1) {
+            const frame_analysis_t *prev_metrics = &metrics_history[history_count - 1];
+            if (prev_metrics->highband_ratio > hb_ratio_threshold * 0.6 ||
+                prev_metrics->highband_energy > hb_energy_threshold * 0.6) {
+                if (verbose) {
+                    printf("  Scene change detected frame %d: HB_ratio=%.3f > %.3f AND HB_energy=%.1f > %.1f (persistent)\n",
+                           frame_number + 1, current_metrics->highband_ratio, hb_ratio_threshold,
+                           current_metrics->highband_energy, hb_energy_threshold);
+                }
+                return 1;
+            }
+        }
+    }
+
+    // Detection rule 3: Gradual transition (slow LL_mean change over several frames)
+    // Check if LL_mean changed significantly over last 5 frames
+    if (history_count >= 5) {
+        double ll_mean_5_frames_ago = metrics_history[history_count - 5].ll_mean;
+        double ll_mean_change = fabs(current_metrics->ll_mean - ll_mean_5_frames_ago);
+
+        if (ll_mean_change > ANALYSIS_FADE_THRESHOLD) {
+            if (verbose) {
+                printf("  Scene change detected frame %d: Gradual fade - LL_mean change=%.2f over 5 frames (threshold=%.1f)\n",
+                       frame_number + 1, ll_mean_change, ANALYSIS_FADE_THRESHOLD);
+            }
+            return 1;
+        }
+    }
+
+    return 0;  // No scene change detected
+}
+
+// Split a scene into evenly-sized GOPs
+// Returns linked list of GOP boundaries for the scene
+static gop_boundary_t* split_scene_into_gops(int scene_start, int scene_end,
+                                             int min_gop_size, int max_gop_size,
+                                             gop_boundary_t **tail_ptr, int verbose) {
+    int scene_length = scene_end - scene_start + 1;
+
+    if (scene_length < min_gop_size) {
+        // Scene too short, make it a single GOP
+        gop_boundary_t *boundary = malloc(sizeof(gop_boundary_t));
+        boundary->start_frame = scene_start;
+        boundary->end_frame = scene_end;
+        boundary->num_frames = scene_length;
+        boundary->next = NULL;
+        *tail_ptr = boundary;
+        return boundary;
+    }
+
+    // Calculate optimal number of GOPs for this scene
+    int num_gops = (scene_length + max_gop_size - 1) / max_gop_size;  // ceil(scene_length / max_gop_size)
+
+    // Make sure each GOP is at least min_gop_size
+    if (scene_length / num_gops < min_gop_size) {
+        num_gops = scene_length / min_gop_size;
+    }
+
+    if (num_gops < 1) num_gops = 1;
+
+    // Calculate base GOP size and remainder for even distribution
+    int base_gop_size = scene_length / num_gops;
+    int remainder = scene_length % num_gops;
+
+    gop_boundary_t *head = NULL;
+    gop_boundary_t *tail = NULL;
+    int current_frame = scene_start;
+
+    for (int i = 0; i < num_gops; i++) {
+        // Distribute remainder frames evenly across GOPs
+        int gop_size = base_gop_size + (i < remainder ? 1 : 0);
+
+        gop_boundary_t *boundary = malloc(sizeof(gop_boundary_t));
+        boundary->start_frame = current_frame;
+        boundary->end_frame = current_frame + gop_size - 1;
+        boundary->num_frames = gop_size;
+        boundary->next = NULL;
+
+        if (tail) {
+            tail->next = boundary;
+            tail = boundary;
+        } else {
+            head = tail = boundary;
+        }
+
+        if (verbose) {
+            printf("    GOP: frames %d-%d (length %d)\n",
+                   boundary->start_frame, boundary->end_frame, boundary->num_frames);
+        }
+
+        current_frame += gop_size;
+    }
+
+    *tail_ptr = tail;
+    return head;
+}
+
+// Build GOP boundaries from frame analysis data
+// First detects scene boundaries, then splits each scene into evenly-sized GOPs
+static gop_boundary_t* build_gop_boundaries(const frame_analysis_t *analyses, int num_frames,
+                                           int min_gop_size, int max_gop_size, int verbose) {
+    if (num_frames < min_gop_size) return NULL;
+
+    // Step 1: Detect scene boundaries (actual hard cuts only)
+    int *scene_boundaries = malloc((num_frames + 1) * sizeof(int));
+    int num_scenes = 0;
+    scene_boundaries[num_scenes++] = 0;  // First scene starts at frame 0
+
+    for (int i = 1; i < num_frames; i++) {
+        if (analyses[i].is_scene_change) {
+            scene_boundaries[num_scenes++] = i;
+            if (verbose) {
+                printf("  Scene boundary candidate at frame %d\n", i);
+            }
+        }
+    }
+    scene_boundaries[num_scenes++] = num_frames;  // End of last scene
+
+    // Step 1.5: Merge tiny scenes (< min_gop_size) with adjacent scenes
+    // This prevents false positives from creating 1-frame GOPs
+    int *merged_boundaries = malloc((num_scenes + 1) * sizeof(int));
+    int num_merged = 0;
+    merged_boundaries[num_merged++] = scene_boundaries[0];  // Always keep first boundary
+
+    for (int s = 1; s < num_scenes; s++) {
+        int scene_length = scene_boundaries[s] - scene_boundaries[s - 1];
+
+        // If this scene is too short, skip this boundary (merge with next scene)
+        if (scene_length >= min_gop_size || s == num_scenes - 1) {
+            merged_boundaries[num_merged++] = scene_boundaries[s];
+        } else if (verbose) {
+            printf("  Merging tiny scene at frame %d (length %d)\n",
+                   scene_boundaries[s - 1], scene_length);
+        }
+    }
+
+    // Replace original boundaries with merged ones
+    free(scene_boundaries);
+    scene_boundaries = merged_boundaries;
+    num_scenes = num_merged;
+
+    if (verbose) {
+        printf("  After merging: %d scenes\n", num_scenes - 1);
+    }
+
+    // Step 2: Split each scene into evenly-sized GOPs
+    gop_boundary_t *head = NULL;
+    gop_boundary_t *tail = NULL;
+
+    for (int s = 0; s < num_scenes - 1; s++) {
+        int scene_start = scene_boundaries[s];
+        int scene_end = scene_boundaries[s + 1] - 1;
+        int scene_length = scene_end - scene_start + 1;
+
+        if (verbose) {
+            printf("  Scene %d: frames %d-%d (length %d)\n",
+                   s + 1, scene_start, scene_end, scene_length);
+        }
+
+        // Split scene into evenly-sized GOPs
+        gop_boundary_t *scene_tail = NULL;
+        gop_boundary_t *scene_gops = split_scene_into_gops(scene_start, scene_end,
+                                                           min_gop_size, max_gop_size,
+                                                           &scene_tail, verbose);
+
+        // Link to main GOP list
+        if (head == NULL) {
+            head = scene_gops;
+            tail = scene_tail;
+        } else {
+            tail->next = scene_gops;
+            tail = scene_tail;
+        }
+    }
+
+    free(scene_boundaries);
+    return head;
+}
+
+// Free GOP boundary list
+static void free_gop_boundaries(gop_boundary_t *head) {
+    while (head) {
+        gop_boundary_t *next = head->next;
+        free(head);
+        head = next;
+    }
+}
+
+// First pass: Analyse all frames and build GOP boundaries
+// Returns 0 on success, -1 on error
+static int two_pass_first_pass(cli_context_t *cli) {
+    printf("=== Two-Pass Encoding: First Pass (Scene Analysis) ===\n");
+    printf("  Using fixed 128x128 analysis resolution for all video sizes\n");
+
+    // Allocate analysis array (estimate: 10000 frames max for in-memory storage)
+    cli->frame_analyses_capacity = 10000;
+    cli->frame_analyses = malloc(cli->frame_analyses_capacity * sizeof(frame_analysis_t));
+    cli->frame_analyses_count = 0;
+
+    if (!cli->frame_analyses) {
+        fprintf(stderr, "Error: Failed to allocate frame analysis buffer\n");
+        return -1;
+    }
+
+    // Open FFmpeg pipe for first pass
+    char ffmpeg_cmd[MAX_PATH * 2];
+    if (cli->interlaced) {
+        snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
+                 "ffmpeg -loglevel error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                 "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
+                 "tinterlace=interleave_top:cvlpf,separatefields\" -",
+                 cli->input_file, cli->enc_params.width, cli->header_height,
+                 cli->enc_params.width, cli->header_height);
+    } else {
+        snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
+                 "ffmpeg -loglevel error -i \"%s\" -f rawvideo -pix_fmt rgb24 "
+                 "-vf \"scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d\" -",
+                 cli->input_file, cli->enc_params.width, cli->enc_params.height,
+                 cli->enc_params.width, cli->enc_params.height);
+    }
+
+    FILE *ffmpeg_pipe = popen(ffmpeg_cmd, "r");
+    if (!ffmpeg_pipe) {
+        fprintf(stderr, "Error: Failed to open FFmpeg pipe for first pass\n");
+        free(cli->frame_analyses);
+        cli->frame_analyses = NULL;
+        return -1;
+    }
+
+    size_t frame_rgb_size = cli->enc_params.width * cli->enc_params.height * 3;
+    uint8_t *frame_rgb = malloc(frame_rgb_size);
+    float *prev_dwt = NULL;
+
+    int frame_num = 0;
+    size_t bytes_read;
+    while ((bytes_read = fread(frame_rgb, 1, frame_rgb_size, ffmpeg_pipe)) == frame_rgb_size) {
+        // Honor encode limit BEFORE processing
+        if (cli->encode_limit > 0 && frame_num >= cli->encode_limit) {
+            break;
+        }
+
+        // Resize to fixed 128x128 grayscale
+        float *gray = resize_frame_to_analysis(frame_rgb, cli->enc_params.width, cli->enc_params.height);
+
+        // Apply 3-level Haar DWT
+        analysis_haar_2d_forward(gray, ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ANALYSIS_DWT_LEVELS);
+
+        // Compute metrics
+        frame_analysis_t metrics;
+        compute_frame_metrics(gray, prev_dwt, &metrics);
+
+        // Set frame number AFTER compute_frame_metrics (which does memset)
+        metrics.frame_number = frame_num;
+
+        // Detect scene change using hybrid detector
+        if (frame_num > 0) {
+            metrics.is_scene_change = detect_scene_change_wavelet(
+                frame_num,
+                cli->frame_analyses,
+                cli->frame_analyses_count,
+                &metrics,
+                cli->verbose
+            );
+        } else {
+            metrics.is_scene_change = 0;  // First frame is always start of first GOP
+        }
+
+        // Store analysis
+        if (cli->frame_analyses_count >= cli->frame_analyses_capacity) {
+            // Expand array
+            cli->frame_analyses_capacity *= 2;
+            cli->frame_analyses = realloc(cli->frame_analyses,
+                                         cli->frame_analyses_capacity * sizeof(frame_analysis_t));
+            if (!cli->frame_analyses) {
+                fprintf(stderr, "Error: Failed to reallocate analysis buffer\n");
+                free(gray);
+                if (prev_dwt) free(prev_dwt);
+                free(frame_rgb);
+                pclose(ffmpeg_pipe);
+                return -1;
+            }
+        }
+
+        cli->frame_analyses[cli->frame_analyses_count++] = metrics;
+
+        // Update previous DWT
+        if (prev_dwt) free(prev_dwt);
+        prev_dwt = gray;
+
+        frame_num++;
+
+        if (frame_num % 100 == 0) {
+            printf("  Analysed %d frames...\r", frame_num);
+            fflush(stdout);
+        }
+    }
+
+    printf("\n  Analysed %d frames total\n", frame_num);
+
+    free(frame_rgb);
+    if (prev_dwt) free(prev_dwt);
+    pclose(ffmpeg_pipe);
+
+    // Build GOP boundaries
+    printf("  Building GOP boundaries...\n");
+    cli->gop_boundaries = build_gop_boundaries(
+        cli->frame_analyses,
+        cli->frame_analyses_count,
+        ANALYSIS_GOP_MIN_SIZE,
+        ANALYSIS_GOP_MAX_SIZE,
+        cli->verbose
+    );
+
+    // Count and print GOP statistics
+    int num_gops = 0;
+    int total_gop_frames = 0;
+    int min_gop = INT_MAX, max_gop = 0;
+    gop_boundary_t *gop = cli->gop_boundaries;
+    while (gop) {
+        num_gops++;
+        total_gop_frames += gop->num_frames;
+        if (gop->num_frames < min_gop) min_gop = gop->num_frames;
+        if (gop->num_frames > max_gop) max_gop = gop->num_frames;
+        gop = gop->next;
+    }
+
+    printf("  GOP Statistics:\n");
+    printf("    Total GOPs: %d\n", num_gops);
+    if (num_gops > 0) {
+        printf("    Average GOP size: %.1f frames\n", (double)total_gop_frames / num_gops);
+        printf("    Min GOP size: %d frames\n", min_gop);
+        printf("    Max GOP size: %d frames\n", max_gop);
+    }
+
+    printf("=== First Pass Complete ===\n\n");
+
+    return 0;
+}
+
 /**
  * Write subtitle packet in SSF-TC format.
  * Packet structure:
@@ -1599,17 +2376,20 @@ static int encode_video_mt(cli_context_t *cli) {
         gop_size = 1;
     }
 
+    // In two-pass mode, use max GOP size for buffer since GOPs have variable sizes
+    int buffer_gop_size = cli->two_pass_mode ? ANALYSIS_GOP_MAX_SIZE : gop_size;
+
     // Allocate frame buffers for each job slot
     for (int slot = 0; slot < cli->num_threads; slot++) {
-        cli->gop_jobs[slot].rgb_frames = malloc(gop_size * sizeof(uint8_t*));
-        cli->gop_jobs[slot].frame_numbers = malloc(gop_size * sizeof(int));
+        cli->gop_jobs[slot].rgb_frames = malloc(buffer_gop_size * sizeof(uint8_t*));
+        cli->gop_jobs[slot].frame_numbers = malloc(buffer_gop_size * sizeof(int));
         if (!cli->gop_jobs[slot].rgb_frames || !cli->gop_jobs[slot].frame_numbers) {
             fprintf(stderr, "Error: Failed to allocate job slot %d buffers\n", slot);
             shutdown_threading(cli);
             pclose(cli->ffmpeg_pipe);
             return -1;
         }
-        for (int f = 0; f < gop_size; f++) {
+        for (int f = 0; f < buffer_gop_size; f++) {
             cli->gop_jobs[slot].rgb_frames[f] = malloc(frame_size);
             if (!cli->gop_jobs[slot].rgb_frames[f]) {
                 fprintf(stderr, "Error: Failed to allocate frame buffer for slot %d\n", slot);
@@ -1626,7 +2406,7 @@ static int encode_video_mt(cli_context_t *cli) {
 
     // Allocate audio buffers if needed
     if (cli->has_audio) {
-        size_t max_gop_audio = gop_size * cli->samples_per_frame * 2;
+        size_t max_gop_audio = buffer_gop_size * cli->samples_per_frame * 2;
         cli->gop_audio_buffer = malloc(max_gop_audio * sizeof(float));
         cli->gop_audio_samples = 0;
         if (!cli->gop_audio_buffer) {
@@ -1861,8 +2641,14 @@ static int encode_video_mt(cli_context_t *cli) {
                     }
                 }
 
+                // Determine current GOP size for two-pass mode
+                int current_gop_size = gop_size;
+                if (cli->two_pass_mode && cli->current_gop_boundary) {
+                    current_gop_size = cli->current_gop_boundary->num_frames;
+                }
+
                 // Check if GOP is complete
-                if (frames_in_current_gop >= gop_size) {
+                if (frames_in_current_gop >= current_gop_size) {
                     slot->num_frames = frames_in_current_gop;
                     slot->gop_index = current_gop_index;
 
@@ -1871,6 +2657,11 @@ static int encode_video_mt(cli_context_t *cli) {
                     slot->status = GOP_SLOT_READY;
                     pthread_cond_broadcast(&cli->job_ready);
                     pthread_mutex_unlock(&cli->job_mutex);
+
+                    // Advance to next GOP boundary (two-pass mode)
+                    if (cli->two_pass_mode && cli->current_gop_boundary) {
+                        cli->current_gop_boundary = cli->current_gop_boundary->next;
+                    }
 
                     // Move to next slot
                     current_slot = (current_slot + 1) % cli->num_threads;
@@ -1968,7 +2759,7 @@ static int encode_video_mt(cli_context_t *cli) {
     // Free per-job frame buffers (must be done before shutdown_threading)
     for (int slot = 0; slot < cli->num_threads; slot++) {
         if (cli->gop_jobs[slot].rgb_frames) {
-            for (int f = 0; f < gop_size; f++) {
+            for (int f = 0; f < buffer_gop_size; f++) {
                 free(cli->gop_jobs[slot].rgb_frames[f]);
             }
             free(cli->gop_jobs[slot].rgb_frames);
@@ -2084,8 +2875,11 @@ static int encode_video(cli_context_t *cli) {
         gop_size = 1;
     }
 
-    cli->gop_frames = malloc(gop_size * sizeof(uint8_t*));
-    cli->gop_frame_numbers = malloc(gop_size * sizeof(int));
+    // In two-pass mode, use max GOP size for buffer since GOPs have variable sizes
+    int buffer_gop_size = cli->two_pass_mode ? ANALYSIS_GOP_MAX_SIZE : gop_size;
+
+    cli->gop_frames = malloc(buffer_gop_size * sizeof(uint8_t*));
+    cli->gop_frame_numbers = malloc(buffer_gop_size * sizeof(int));
     cli->gop_frame_count = 0;
 
     if (!cli->gop_frames || !cli->gop_frame_numbers) {
@@ -2095,7 +2889,7 @@ static int encode_video(cli_context_t *cli) {
         return -1;
     }
 
-    for (int i = 0; i < gop_size; i++) {
+    for (int i = 0; i < buffer_gop_size; i++) {
         cli->gop_frames[i] = malloc(frame_size);
         if (!cli->gop_frames[i]) {
             fprintf(stderr, "Error: Failed to allocate GOP frame %d\n", i);
@@ -2109,15 +2903,16 @@ static int encode_video(cli_context_t *cli) {
     }
 
     if (cli->verbose) {
-        printf("  GOP frame buffer: %d frames x %zu bytes = %zu KB\n",
-               gop_size, frame_size, (gop_size * frame_size) / 1024);
+        printf("  GOP frame buffer: %d frames x %zu bytes = %zu KB%s\n",
+               buffer_gop_size, frame_size, (buffer_gop_size * frame_size) / 1024,
+               cli->two_pass_mode ? " (two-pass mode)" : "");
     }
 
     // Temporary frame buffer for reading from FFmpeg
     uint8_t *rgb_frame = malloc(frame_size);
     if (!rgb_frame) {
         fprintf(stderr, "Error: Failed to allocate frame buffer\n");
-        for (int i = 0; i < gop_size; i++) free(cli->gop_frames[i]);
+        for (int i = 0; i < buffer_gop_size; i++) free(cli->gop_frames[i]);
         free(cli->gop_frames);
         free(cli->gop_frame_numbers);
         tav_encoder_free(ctx);
@@ -2197,8 +2992,14 @@ static int encode_video(cli_context_t *cli) {
 
         cli->frame_count++;
 
-        // Check if GOP is full
-        if (cli->gop_frame_count >= gop_size) {
+        // Determine current GOP size for two-pass mode
+        int current_gop_size = gop_size;
+        if (cli->two_pass_mode && cli->current_gop_boundary) {
+            current_gop_size = cli->current_gop_boundary->num_frames;
+        }
+
+        // Check if GOP is full (either reached fixed size or two-pass boundary)
+        if (cli->gop_frame_count >= current_gop_size) {
             // Encode complete GOP
             result = tav_encoder_encode_gop(ctx,
                                             (const uint8_t**)cli->gop_frames,
@@ -2244,6 +3045,11 @@ static int encode_video(cli_context_t *cli) {
 
             // Reset GOP buffer
             cli->gop_frame_count = 0;
+
+            // Advance to next GOP boundary (two-pass mode)
+            if (cli->two_pass_mode && cli->current_gop_boundary) {
+                cli->current_gop_boundary = cli->current_gop_boundary->next;
+            }
 
             // Progress
             if (cli->verbose || cli->frame_count % 60 == 0) {
@@ -2924,6 +3730,23 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Two-pass scene change detection (if enabled and temporal DWT is active)
+    if (cli.enc_params.enable_two_pass && cli.enc_params.enable_temporal_dwt && !cli.is_still_image) {
+        if (two_pass_first_pass(&cli) == 0) {
+            cli.two_pass_mode = 1;
+            cli.current_gop_boundary = cli.gop_boundaries;  // Start at first GOP
+            printf("Two-pass mode: Using adaptive GOP sizes based on scene detection\n");
+        } else {
+            fprintf(stderr, "Warning: Two-pass analysis failed, falling back to single-pass\n");
+            cli.two_pass_mode = 0;
+        }
+    } else {
+        cli.two_pass_mode = 0;
+        if (cli.enc_params.enable_two_pass && !cli.enc_params.enable_temporal_dwt) {
+            printf("Note: Two-pass mode requires temporal DWT (disabled in intra-only mode)\n");
+        }
+    }
+
     // Encode video
     int result = encode_video(&cli);
 
@@ -2950,6 +3773,14 @@ int main(int argc, char *argv[]) {
     }
     if (cli.ffmpeg_version) {
         free(cli.ffmpeg_version);
+    }
+
+    // Cleanup two-pass data structures
+    if (cli.frame_analyses) {
+        free(cli.frame_analyses);
+    }
+    if (cli.gop_boundaries) {
+        free_gop_boundaries(cli.gop_boundaries);
     }
 
     if (result < 0) {
