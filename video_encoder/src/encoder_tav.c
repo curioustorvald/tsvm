@@ -3677,8 +3677,8 @@ int main(int argc, char *argv[]) {
                 cli.audio_remaining = ftell(cli.pcm_file);
                 fseek(cli.pcm_file, 0, SEEK_SET);
 
-                // Calculate samples per frame
-                cli.samples_per_frame = (AUDIO_SAMPLE_RATE + cli.enc_params.fps_num - 1) / cli.enc_params.fps_num;
+                // Calculate samples per frame (accounting for fractional fps via fps_den)
+                cli.samples_per_frame = (AUDIO_SAMPLE_RATE * cli.enc_params.fps_den + cli.enc_params.fps_num - 1) / cli.enc_params.fps_num;
 
                 // Allocate per-frame audio buffer
                 cli.audio_buffer_size = cli.samples_per_frame * 2;  // Stereo
