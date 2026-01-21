@@ -825,7 +825,7 @@ static long write_extended_header(cli_context_t *cli, int width, int height) {
     WRITE_KV_UINT64("CDAT", cli->creation_time_us);
 
     // VNDR: Encoder name and version
-    const char *vendor_str = "Encoder-TAV 20251230 (reference)";
+    const char *vendor_str = "Encoder-TAV 20260121 (reference)";
     WRITE_KV_BYTES("VNDR", vendor_str, strlen(vendor_str));
 
     // FMPG: FFmpeg version (if available)
