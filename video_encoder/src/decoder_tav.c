@@ -1679,7 +1679,6 @@ static int collect_audio_packets(decoder_context_t *ctx) {
 
     // Scan through file
     while (1) {
-        long packet_pos = ftell(ctx->input_fp);
         uint8_t packet_type;
 
         if (fread(&packet_type, 1, 1, ctx->input_fp) != 1) break;

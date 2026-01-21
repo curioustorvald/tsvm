@@ -133,10 +133,10 @@ typedef struct frame_analysis {
     double highband_ratio;       // highband_energy / total_energy
 
     // Per-band entropies (Shannon entropy of coefficient magnitudes)
-    double entropy_ll;
-    double entropy_lh[ANALYSIS_DWT_LEVELS];
-    double entropy_hl[ANALYSIS_DWT_LEVELS];
-    double entropy_hh[ANALYSIS_DWT_LEVELS];
+//    double entropy_ll;
+//    double entropy_lh[ANALYSIS_DWT_LEVELS];
+//    double entropy_hl[ANALYSIS_DWT_LEVELS];
+//    double entropy_hh[ANALYSIS_DWT_LEVELS];
 
     // Texture change indicators
     double zero_crossing_rate;   // Zero crossing rate in highbands
@@ -489,6 +489,10 @@ static int is_input_still_image(const char *input_file) {
             if (strcmp(ext, image_exts[i]) == 0) {
                 return 1;  // Known image extension
             }
+        }
+
+        if (strcmp(ext, ".webm") == 0 || strcmp(ext, ".WEBM") == 0) {
+            return 0;  // Known video extension
         }
     }
 
@@ -1351,7 +1355,7 @@ static float* resize_frame_to_analysis(const uint8_t *rgb_frame, int src_width, 
 }
 
 // Calculate Shannon entropy of coefficient magnitudes
-static double calculate_shannon_entropy(const float *coeffs, int count) {
+/*static double calculate_shannon_entropy(const float *coeffs, int count) {
     if (count == 0) return 0.0;
 
     // Build histogram of coefficient magnitudes (use 256 bins)
@@ -1389,10 +1393,10 @@ static double calculate_shannon_entropy(const float *coeffs, int count) {
 
     return entropy;
     #undef HIST_BINS
-}
+}*/
 
 // Extract subband from DWT coefficients (helper for entropy calculation)
-static void extract_subband(const float *dwt_data, int width, int height, int level,
+/*static void extract_subband(const float *dwt_data, int width, int height, int level,
                            int band, float *output, int *out_count) {
     // band: 0=LL, 1=LH, 2=HL, 3=HH
     // For level L, subbands are in top-left quadrant of size (width>>L, height>>L)
@@ -1429,7 +1433,7 @@ static void extract_subband(const float *dwt_data, int width, int height, int le
     }
 
     *out_count = count;
-}
+}*/
 
 // Compute comprehensive frame analysis metrics
 static void compute_frame_metrics(const float *dwt_current, const float *dwt_previous,
@@ -1492,7 +1496,7 @@ static void compute_frame_metrics(const float *dwt_current, const float *dwt_pre
     metrics->highband_ratio = total_energy > 0 ? (highband_energy / total_energy) : 0;
 
     // Metric 4: Per-band entropies
-    float *subband_buffer = malloc(num_pixels * sizeof(float));
+    /*float *subband_buffer = malloc(num_pixels * sizeof(float));
     int subband_count;
 
     // LL band entropy
@@ -1512,7 +1516,7 @@ static void compute_frame_metrics(const float *dwt_current, const float *dwt_pre
         // HH band
         extract_subband(dwt_current, width, height, level, 3, subband_buffer, &subband_count);
         metrics->entropy_hh[level] = calculate_shannon_entropy(subband_buffer, subband_count);
-    }
+    }*/
 
     // Metric 5: Zero crossing rate in highbands (texture change indicator)
     int zero_crossings = 0;
@@ -1527,7 +1531,7 @@ static void compute_frame_metrics(const float *dwt_current, const float *dwt_pre
         metrics->zero_crossing_rate = (double)zero_crossings / highband_coeffs;
     }
 
-    free(subband_buffer);
+    //free(subband_buffer);
 }
 
 // Hybrid scene change detector with adaptive thresholds
