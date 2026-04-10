@@ -624,6 +624,8 @@ class VM(
         return null
     }
 
+    private val zeroBlock = ByteArray(MALLOC_UNIT)
+
     internal fun malloc(size: Int): Int {
         if (size <= 0) throw IllegalArgumentException("Invalid malloc size: $size")
 
@@ -632,6 +634,22 @@ class VM(
 
         allocatedBlockCount += allocBlocks
         mallocSizes[blockStart] = allocBlocks
+        return blockStart * MALLOC_UNIT
+    }
+
+    internal fun calloc(size: Int): Int {
+        if (size <= 0) throw IllegalArgumentException("Invalid malloc size: $size")
+
+        val allocBlocks = ceil(size.toDouble() / MALLOC_UNIT).toInt()
+        val blockStart = findEmptySpace(allocBlocks) ?: throw OutOfMemoryError("No space for $allocBlocks blocks ($size bytes requested)")
+
+        allocatedBlockCount += allocBlocks
+        mallocSizes[blockStart] = allocBlocks
+
+        for (i in 0 until allocBlocks) {
+            UnsafeHelper.memcpyRaw(zeroBlock, UnsafeHelper.getArrayOffset(zeroBlock), null, usermem.ptr + (blockStart + i) * MALLOC_UNIT, MALLOC_UNIT.toLong())
+        }
+
         return blockStart * MALLOC_UNIT
     }
 

@@ -149,6 +149,16 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    fun plotPixelMode1(x: Int, y: Int, colour: Int, plane: Int) {
+        getFirstGPU()?.let {
+            val planesize = it.config.width * it.config.height / 4
+            if (x in 0 until it.config.width/2 && y in 0 until it.config.height/2) {
+                it.poke(y.toLong() * it.config.width/2 + x + planesize * plane, colour.toByte())
+                it.applyDelay()
+            }
+        }
+    }
+
     /**
      * Sets absolute position of scrolling
      */

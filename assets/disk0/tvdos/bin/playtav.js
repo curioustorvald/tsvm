@@ -368,6 +368,8 @@ let header = {
     width: 0,
     height: 0,
     fps: 0,
+    fps_num: 0,           // Fractional FPS numerator (from XFPS or derived from fps)
+    fps_den: 1,           // Fractional FPS denominator (from XFPS, default 1)
     totalFrames: 0,
     waveletFilter: 0,     // TAV-specific: wavelet filter type
     decompLevels: 0,      // TAV-specific: decomposition levels
@@ -380,6 +382,22 @@ let header = {
     channelLayout: 0,
     entropyCoder: 0,      // 0 = Twobit-map, 1 = EZBC
     fileRole: 0
+}
+
+// Helper function to parse XFPS string ("num/den" format) and update header
+function parseXFPS(xfpsStr) {
+    let parts = xfpsStr.split("/")
+    if (parts.length === 2) {
+        let num = parseInt(parts[0], 10)
+        let den = parseInt(parts[1], 10)
+        if (!isNaN(num) && !isNaN(den) && den > 0) {
+            header.fps_num = num
+            header.fps_den = den
+            header.fps = num / den
+            return true
+        }
+    }
+    return false
 }
 
 // Read and validate header
@@ -409,6 +427,9 @@ header.version = seqread.readOneByte()
 header.width = seqread.readShort()
 header.height = seqread.readShort()
 header.fps = seqread.readOneByte()
+// Set default fractional fps (will be overridden by XFPS if present)
+header.fps_num = header.fps
+header.fps_den = 1
 header.totalFrames = seqread.readInt()
 header.waveletFilter = seqread.readOneByte()
 header.decompLevels = seqread.readOneByte()
@@ -461,7 +482,7 @@ const isLossless = (header.videoFlags & 0x04) !== 0
 
 console.log(`TAV Decoder`)
 console.log(`Resolution: ${header.width}x${header.height}`)
-console.log(`FPS: ${header.fps}`)
+console.log(`FPS: ${header.fps === 255 ? "(see XFPS)" : header.fps}`)
 console.log(`Total frames: ${header.totalFrames}`)
 console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : header.waveletFilter === WAVELET_9_7_IRREVERSIBLE ? "9/7 irreversible" : header.waveletFilter === WAVELET_BIORTHOGONAL_13_7 ? "Biorthogonal 13/7" : header.waveletFilter === WAVELET_DD4 ? "DD-4" : header.waveletFilter === WAVELET_HAAR ? "Haar" : "unknown"}`)
 console.log(`Decomposition levels: ${header.decompLevels}`)
@@ -492,20 +513,32 @@ if (isTapFile) {
     // Skip non-video packets until we find the image data
     while (packetType !== TAV_PACKET_IFRAME) {
         if (packetType === TAV_PACKET_EXTENDED_HDR) {
-            // Skip extended header - parse key-value pairs properly
+            // Parse extended header - look for XFPS
             let numPairs = seqread.readShort()
             for (let i = 0; i < numPairs; i++) {
-                // Skip key (4 bytes)
+                // Read key (4 bytes)
                 let keyBytes = seqread.readBytes(4)
+                let key = ""
+                for (let j = 0; j < 4; j++) {
+                    key += String.fromCharCode(sys.peek(keyBytes + j))
+                }
                 sys.free(keyBytes)
 
-                // Read value type and skip value
+                // Read value type and value
                 let valueType = seqread.readOneByte()
                 if (valueType === 0x04) {  // Uint64 - 8 bytes
                     seqread.skip(8)
                 } else if (valueType === 0x10) {  // Bytes - length-prefixed
                     let length = seqread.readShort()
                     let dataBytes = seqread.readBytes(length)
+                    // Check for XFPS key
+                    if (key === "XFPS") {
+                        let xfpsStr = ""
+                        for (let j = 0; j < length; j++) {
+                            xfpsStr += String.fromCharCode(sys.peek(dataBytes + j))
+                        }
+                        parseXFPS(xfpsStr)
+                    }
                     sys.free(dataBytes)
                 }
             }
@@ -1291,7 +1324,7 @@ try {
 
                     console.log(`\nStarting file ${currentFileIndex}:`)
                     console.log(`Resolution: ${header.width}x${header.height}`)
-                    console.log(`FPS: ${header.fps}`)
+                    console.log(`FPS: ${header.fps === 255 ? "(see XFPS)" : header.fps}`)
                     console.log(`Total frames: ${header.totalFrames}`)
                     console.log(`Wavelet filter: ${header.waveletFilter === WAVELET_5_3_REVERSIBLE ? "5/3 reversible" : header.waveletFilter === WAVELET_9_7_IRREVERSIBLE ? "9/7 irreversible" : header.waveletFilter === WAVELET_BIORTHOGONAL_13_7 ? "Biorthogonal 13/7" : header.waveletFilter === WAVELET_DD4 ? "DD-4" : header.waveletFilter === WAVELET_HAAR ? "Haar" : "unknown"}`)
                     console.log(`Quality: Y=${header.qualityY}, Co=${header.qualityCo}, Cg=${header.qualityCg}`)
@@ -1825,7 +1858,19 @@ try {
                         }
                         sys.free(dataBytes)
 
-                        if (interactive) {
+                        // Parse XFPS if present (always try, not just when fps=255)
+                        if (key === "XFPS") {
+                            if (parseXFPS(dataStr)) {
+                                // Update frame timing with new fps
+                                frametime = 1000000000.0 / header.fps
+                                FRAME_TIME = 1.0 / header.fps
+                                if (interactive) {
+                                    serial.println(`  ${key}: ${dataStr} -> ${header.fps.toFixed(3)} fps`)
+                                }
+                            } else if (interactive) {
+                                serial.println(`  ${key}: "${dataStr}" (parse failed)`)
+                            }
+                        } else if (interactive) {
                             serial.println(`  ${key}: "${dataStr}"`)
                         }
                     } else {

@@ -12,6 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - TerranBASIC integration
 - Multiple platform build system
 
+## Documentations
+
+Documentation for TSVM and TVDOS are available on `./doc/*.tex` as machine-readable format.
+
+Documentatino for TSVM architecture is available on `terranmon.txt`
+
 ## Architecture
 
 ### Core Components

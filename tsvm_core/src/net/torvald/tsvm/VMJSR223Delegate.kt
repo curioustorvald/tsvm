@@ -109,6 +109,7 @@ class VMJSR223Delegate(private val vm: VM) {
     
     fun nanoTime() = System.nanoTime()
     fun malloc(size: Int) = vm.malloc(size)
+    fun calloc(size: Int) = vm.calloc(size)
     fun memset(dest: Int, ch: Int, count: Int) = vm.memset(dest, ch, count)
     fun free(ptr: Int) = vm.free(ptr)
     fun forceAlloc(ptr: Int, size: Int) = vm.forceAlloc(ptr, size)
