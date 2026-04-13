@@ -4,7 +4,7 @@ import net.torvald.tsvm.VM
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean, val baudRate: Int = 20_000_000) {
+abstract class BlockTransferInterface(val isMaster: Boolean, val isSlave: Boolean, val baudRate: Int = 0) {
 
     var recipient: BlockTransferInterface? = null; protected set
 

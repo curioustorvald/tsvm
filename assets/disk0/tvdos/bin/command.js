@@ -35,7 +35,7 @@ function print_prompt_text() {
         print(" "+CURRENT_DRIVE+":")
         con.color_pair(161,253)
         con.addch(16);con.curs_right()
-        con.color_pair(0,253)
+        con.color_pair(240,253)
         print(" \\"+shell_pwd.join("\\").substring(1)+" ")
         if (errorlevel != 0 && errorlevel != "undefined" && errorlevel != undefined) {
             con.color_pair(166,253)
@@ -61,7 +61,7 @@ function greet() {
         con.clear()
         con.color_pair(253,255)
         print('  ');con.addch(17);con.curs_right()
-        con.color_pair(0,253)
+        con.color_pair(240,253)
         print(" ".repeat(greetLeftPad)+welcome_text+" ".repeat(greetRightPad))
         con.color_pair(253,255)
         con.addch(16);con.curs_right();print('  ')

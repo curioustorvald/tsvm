@@ -141,6 +141,26 @@ class VMJSR223Delegate(private val vm: VM) {
             for (i in 0 until len) vm.poke(to + i*toVector, vm.peek(from + i*fromVector)!!)
         }
     }
+    fun pokeBytes(dest: Int, src: org.graalvm.polyglot.Value, len: Int) {
+        val destL = dest.toLong()
+        val lenL = len.toLong()
+        val devPtr = getDev(destL, lenL, true)
+        if (devPtr != null) {
+            var i = 0
+            while (i < len) {
+                UnsafeHelper.unsafe.putByte(devPtr + i, src.getArrayElement(i.toLong()).asInt().toByte())
+                i++
+            }
+        } else {
+            val vector = if (destL >= 0) 1L else -1L
+            var i = 0
+            while (i < len) {
+                vm.poke(destL + i * vector, src.getArrayElement(i.toLong()).asInt().toByte())
+                i++
+            }
+        }
+    }
+
     fun mapRom(slot: Int) {
         vm.romMapping = slot.and(255)
     }

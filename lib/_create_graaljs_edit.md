@@ -1,20 +1,8 @@
-## How To Edit the Graaljs Jars
+## GraalJS JAR Editing (OBSOLETE)
 
-0. Download following from Maven:
+The META-INF/services cross-registration hack was needed for GraalJS 22.3.1 where
+`js` and `regex` JARs each needed the other's `TruffleLanguage$Provider` registered.
 
-    org.graalvm.js:js:00.0.0
-    org.graalvm.js:js-scriptengine:00.0.0
-
-1. grab `js-00.0.0.jar`
-2. on `META-INF/services/com.oracle.truffle.api.TruffleLanguage$Provider`, edit as shown:
-
-    com.oracle.truffle.js.lang.JavaScriptLanguageProvider (existing line)
-    com.oracle.truffle.regex.RegexLanguageProvider        (<< add this line)
-
-3. grab `regex-00.0.0.jar`
-4. on `META-INF/services/com.oracle.truffle.api.TruffleLanguage$Provider`, edit as shown:
-
-    com.oracle.truffle.regex.RegexLanguageProvider        (existing line)
-    com.oracle.truffle.js.lang.JavaScriptLanguageProvider (<< add this line)
-
-5. Re-zip two files
+As of GraalJS 24.1.2, the service discovery mechanism changed to
+`TruffleLanguageProvider` and each JAR registers its own provider independently.
+No JAR editing is required.
