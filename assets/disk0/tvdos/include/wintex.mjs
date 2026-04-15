@@ -1,3 +1,8 @@
+/**
+ * WinTex — TUI window management and renderer
+ * @author CuriousTorvald
+ */
+
 class WindowObject {
 
     constructor(x, y, w, h, inputProcessor, drawContents, title, drawFrame) {

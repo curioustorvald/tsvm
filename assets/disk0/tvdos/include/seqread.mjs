@@ -1,4 +1,7 @@
-
+/**
+ * LibSeqread — sequentially read files from disk drive
+ * @author CuriousTorvald
+ */
 let readCount = 0
 let port = undefined
 let fileHeader = new Uint8Array(4096)

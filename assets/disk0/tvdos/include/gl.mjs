@@ -1,7 +1,7 @@
-/*
-TVDOS Graphics Library
-
-Has no affiliation with OpenGL by Khronos Group
+/**
+ * LibGL — TVDOS Graphics Library
+ * Has no affiliation with OpenGL by Khronos Group
+ * @author CuriousTorvald
  */
 
 

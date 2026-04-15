@@ -1,3 +1,8 @@
+/**
+ * LibSeqread extension for Tape Drive — sequentially read tape
+ * @author CuriousTorvald
+ */
+
 // Sequential reader for HSDPA TAPE devices
 // Unlike seqread.mjs which is limited to 4096 bytes per read due to serial communication,
 // this module can read larger chunks efficiently from HSDPA devices.

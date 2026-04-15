@@ -1,3 +1,8 @@
+/**
+ * LibPCM — PCM decoder for TSVM
+ * @author CuriousTorvald
+ */
+
 const HW_SAMPLING_RATE = 32000
 function printdbg(s) { if (0) serial.println(s) }
 function printvis(s) { if (0) println(s) }
@@ -29,7 +34,7 @@ function s16Tou8(i) {
 }
 function u16Tos16(i) { return (i > 32767) ? i - 65536 : i }
 function randomRound(k) {
-    let rnd = (Math.random() + Math.random()) / 2.0 // this produces triangular distribution
+    let rnd = Math.random() // note to self: no triangular here
     return (rnd < (k - (k|0))) ? Math.ceil(k) : Math.floor(k)
 }
 function lerp(start, end, x) {
