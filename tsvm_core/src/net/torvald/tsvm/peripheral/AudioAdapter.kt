@@ -41,7 +41,7 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
 //                printdbg("P${playhead.index+1} go back to spinning")
 
-                        Thread.sleep(12)
+                        Thread.sleep(6)
                     }
                     else if (playhead.isPlaying && writeQueue.isEmpty) {
                         printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
@@ -49,7 +49,7 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
                         // TODO: wait for 1-2 seconds then finally stop the device
 //                    playhead.audioDevice.stop()
 
-                        Thread.sleep(12)
+                        Thread.sleep(6)
                     }
                 }
 

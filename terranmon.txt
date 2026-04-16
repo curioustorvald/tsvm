@@ -1978,6 +1978,11 @@ Sound Adapter
 Endianness: little
 
 
+TSVM Sound Adapter is consisted of 4 playheads, each playhead is capable of playing one PCM or Tracker track.
+
+Synchronisation between playheads are not guaranteed. Do not play music in multiple tracks.
+
+
 Memory Space
 
 0..114687 RW: Sample bin

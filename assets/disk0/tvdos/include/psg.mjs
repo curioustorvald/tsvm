@@ -119,7 +119,7 @@ function mixInto(buf, lengthSec, offsetSec, op, amp, pan, sampleFn) {
 
 // ── Waveform generators ─────────────────────────────────────────────────────
 
-function makeSquare(buf, length, offset, freq, duty, op, amp, pan) {
+function makeSquare(buf, length, offset, freq, duty, op, amp, pan, phaseOffset) {
     // buffer: [Uint8Array, Uint8Array] or native buffer
     // length: in seconds
     // offset: in seconds
@@ -128,13 +128,16 @@ function makeSquare(buf, length, offset, freq, duty, op, amp, pan) {
     // op: add / mul / sub; default: add
     // amp: 0.0 to 1.0; default: 0.5
     // pan: -1.0 to 1.0; default: 0.0
+    // phaseOffset: optional absolute-time base (seconds) added to phase calc only,
+    //              not to the buffer write position — use to ensure phase continuity
+    //              across successive calls (e.g. frame boundaries).
     if (duty == null) duty = 0.5
     if (op   == null) op   = 'add'
     if (amp  == null) amp  = 0.5
     if (pan  == null) pan  = 0.0
+    const tBase = (phaseOffset || 0) + offset
     mixInto(buf, length, offset, op, amp, pan, function(i) {
-        const t = offset + i / HW_SAMPLING_RATE
-        const phase = (t * freq) % 1
+        const phase = ((tBase + i / HW_SAMPLING_RATE) * freq) % 1
         return (phase < duty) ? 1.0 : -1.0
     })
 }
@@ -225,7 +228,7 @@ function lfsrAdvance(state, steps, mode) {
 const LFSR_PERIOD_LONG  = 32767  // mode 0
 const LFSR_PERIOD_SHORT = 93     // mode 1
 
-function makeNoise(buf, length, offset, freq, type, op, amp, pan) {
+function makeNoise(buf, length, offset, freq, type, op, amp, pan, phaseOffset) {
     // buffer: [Uint8Array, Uint8Array] or native buffer
     // length: in seconds
     // offset: in seconds
@@ -238,20 +241,23 @@ function makeNoise(buf, length, offset, freq, type, op, amp, pan) {
     // op: add / mul / sub; default: add
     // amp: 0.0 to 1.0; default: 0.5
     // pan: -1.0 to 1.0; default: 0.0
+    // phaseOffset: optional absolute-time base (seconds) added to phase/LFSR calc only —
+    //              see makeSquare for details.
     //
-    // LFSR types (1 and 2) are deterministic given (offset, freq): calling with
-    // monotonically advancing offset values produces a seamless noise stream
+    // LFSR types (1 and 2) are deterministic given (phaseOffset+offset, freq): calling
+    // with monotonically advancing phaseOffset+offset produces a seamless noise stream
     // across frames. White noise types (-1, 0) are random per call.
     if (op  == null) op  = 'add'
     if (amp == null) amp = 0.5
     if (pan == null) pan = 0.0
+    const tBase = (phaseOffset || 0) + offset
 
     if (type === -1) {
         // 8-bit white: new random float in [-1, 1] each clock period
         let prevClock = -1
         let noiseVal = 0.0
         mixInto(buf, length, offset, op, amp, pan, function(i) {
-            const currentClock = Math.floor((offset + i / HW_SAMPLING_RATE) * freq) | 0
+            const currentClock = Math.floor((tBase + i / HW_SAMPLING_RATE) * freq) | 0
             if (currentClock !== prevClock) {
                 prevClock = currentClock
                 noiseVal = Math.random() * 2.0 - 1.0
@@ -263,7 +269,7 @@ function makeNoise(buf, length, offset, freq, type, op, amp, pan) {
         let prevClock = -1
         let noiseVal = 1.0
         mixInto(buf, length, offset, op, amp, pan, function(i) {
-            const currentClock = Math.floor((offset + i / HW_SAMPLING_RATE) * freq) | 0
+            const currentClock = Math.floor((tBase + i / HW_SAMPLING_RATE) * freq) | 0
             if (currentClock !== prevClock) {
                 prevClock = currentClock
                 noiseVal = (Math.random() >= 0.5) ? 1.0 : -1.0
@@ -274,13 +280,13 @@ function makeNoise(buf, length, offset, freq, type, op, amp, pan) {
         // LFSR-based noise (types 1 and 2)
         const mode   = (type === 2) ? 1 : 0
         const period = (mode === 0) ? LFSR_PERIOD_LONG : LFSR_PERIOD_SHORT
-        // Advance to deterministic position for this offset so consecutive frame
-        // calls with advancing offsets produce a seamless noise stream.
-        const startClock = Math.floor(offset * freq) | 0
+        // Advance to deterministic position for this tBase so consecutive frame
+        // calls with monotonically advancing phaseOffset produce a seamless noise stream.
+        const startClock = Math.floor(tBase * freq) | 0
         let lfsr      = lfsrAdvance(1, startClock % period, mode)
         let prevClock = startClock
         mixInto(buf, length, offset, op, amp, pan, function(i) {
-            const currentClock = Math.floor((offset + i / HW_SAMPLING_RATE) * freq) | 0
+            const currentClock = Math.floor((tBase + i / HW_SAMPLING_RATE) * freq) | 0
             const delta = currentClock - prevClock
             if (delta > 0) {
                 const steps = delta % period
@@ -292,17 +298,18 @@ function makeNoise(buf, length, offset, freq, type, op, amp, pan) {
     }
 }
 
-function makeAliasedTriangleNES(buf, length, offset, freq, duty, op, amp, pan) {
+function makeAliasedTriangleNES(buf, length, offset, freq, duty, op, amp, pan, phaseOffset) {
     // NES APU triangle — quantised to the authentic 32-step, 4-bit (0..15) staircase.
     // The 32-step sequence is: 15,14,...,1,0, 0,1,...,14,15 (descending then ascending).
     // This mirrors the real NES triangle DAC which has 32 equal-height steps per period.
     // duty parameter is accepted for API symmetry but ignored (NES triangle is always symmetric).
+    // phaseOffset: optional absolute-time base (seconds) — see makeSquare for details.
     if (op  == null) op  = 'add'
     if (amp == null) amp = 0.5
     if (pan == null) pan = 0.0
+    const tBase = (phaseOffset || 0) + offset
     mixInto(buf, length, offset, op, amp, pan, function(i) {
-        const t = offset + i / HW_SAMPLING_RATE
-        const phase = (t * freq) % 1
+        const phase = ((tBase + i / HW_SAMPLING_RATE) * freq) % 1
         const step32 = Math.floor(phase * 32) | 0  // 0..31
         // step 0..15: descend from 15 to 0; step 16..31: ascend from 0 to 15
         const level = (step32 < 16) ? (15 - step32) : (step32 - 16)
@@ -341,7 +348,7 @@ function sendBuffer(buf, playhead, offsetSec, lengthSec, stagingPtr) {
         }
         // Wait for room in the playback queue (mirrors playwav.js idiom)
         // while (audio.getPosition(playhead) > 2) sys.sleep(2)
-        audio.putPcmDataByPtr(stagingPtr, take * 2, playhead)
+        audio.putPcmDataByPtr(playhead, stagingPtr, take * 2, 0)
         audio.setSampleUploadLength(playhead, take * 2)
         audio.startSampleUpload(playhead)
         remaining -= take

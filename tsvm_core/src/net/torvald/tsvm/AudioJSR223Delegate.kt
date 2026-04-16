@@ -10,7 +10,7 @@ import net.torvald.tsvm.peripheral.MP2Env
  *
  * NOTES:
  * 1. tracker mode is currently unimplemented.
- * 2. PCM upload buffer (accessed by `putPcmDataByPtr`) is shared between four playheads
+ * 2. Synchronisation between playheads are not guaranteed. Do not play music in multiple tracks.
  *
  * ## How to upload PCM audio into a playhead
  *
