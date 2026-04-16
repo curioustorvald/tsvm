@@ -763,7 +763,7 @@ class VM(
             else if (dev is AudioAdapter) {
                 if (relPtrInDev(fromRel, len, 64, 2367)) dev.mediaDecodedBin.ptr + fromRel - 64
                 else if (relPtrInDev(fromRel, len, 2368, 4096)) dev.mediaFrameBin.ptr + fromRel - 2368
-                else if (relPtrInDev(fromRel, len, 65536, 131072)) dev.pcmBin.ptr + fromRel - 65536
+                else if (relPtrInDev(fromRel, len, 65536, 131072)) dev.pcmBin[dev.selectedPcmBin].ptr + fromRel - 65536
                 else null
             }
             else if (dev is GraphicsAdapter) {

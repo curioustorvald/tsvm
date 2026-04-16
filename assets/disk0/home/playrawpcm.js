@@ -4,7 +4,7 @@ music.pread(samples, 65534)
 
 audio.setPcmMode(0)
 audio.setMasterVolume(0, 255)
-audio.putPcmDataByPtr(samples, 65534, 0)
+audio.putPcmDataByPtr(0, samples, 65534, 0)
 audio.setLoopPoint(0, 65534)
 audio.play(0)*/
 
@@ -127,7 +127,7 @@ while (sampleSize > 0) {
             let readLength = (sampleSize < BLOCK_SIZE) ? sampleSize : BLOCK_SIZE
             readBytes(readLength, decodePtr)
 
-            audio.putPcmDataByPtr(decodePtr, readLength, 0)
+            audio.putPcmDataByPtr(0, decodePtr, readLength, 0)
             audio.setSampleUploadLength(0, readLength)
             audio.startSampleUpload(0)
 

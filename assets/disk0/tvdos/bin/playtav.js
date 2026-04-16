@@ -18,6 +18,7 @@ const ADDRESSING_INTERNAL = 0x02
 const SND_BASE_ADDR = audio.getBaseAddr()
 const SND_MEM_ADDR = audio.getMemAddr()
 const pcm = require("pcm")
+const AUDIO_DEVICE = 3
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
 const TAV_TEMPORAL_LEVELS = 2
 
@@ -152,10 +153,10 @@ graphics.clearPixels4(0)
 const gpuGraphicsMode = graphics.getGraphicsMode()
 
 // Initialize audio
-audio.resetParams(0)
-audio.purgeQueue(0)
-audio.setPcmMode(0)
-audio.setMasterVolume(0, 255)
+audio.resetParams(AUDIO_DEVICE)
+audio.purgeQueue(AUDIO_DEVICE)
+audio.setPcmMode(AUDIO_DEVICE)
+audio.setMasterVolume(AUDIO_DEVICE, 255)
 
 // set colour zero as half-opaque black
 graphics.setPalette(0, 0, 0, 0, 7)
@@ -1152,10 +1153,10 @@ try {
                 else if (keyCode == 62) { // SPACE - pause/resume
                     paused = !paused
                     if (paused) {
-                        audio.stop(0)
+                        audio.stop(AUDIO_DEVICE)
                         serial.println(`Paused at frame ${frameCount}`)
                     } else {
-                        audio.play(0)
+                        audio.play(AUDIO_DEVICE)
                         serial.println(`Resumed`)
                     }
                 }
@@ -1176,10 +1177,10 @@ try {
                         baseTimecodeFrameCount = 0
                         currentTimecodeNs = 0
                         nextSubtitleEventIndex = 0  // Reset subtitle event processing
-                        audio.purgeQueue(0)
+                        audio.purgeQueue(AUDIO_DEVICE)
                         if (paused) {
-                            audio.play(0)
-                            audio.stop(0)
+                            audio.play(AUDIO_DEVICE)
+                            audio.stop(AUDIO_DEVICE)
                         }
                         skipped = true
                     }
@@ -1201,10 +1202,10 @@ try {
                         baseTimecodeFrameCount = 0
                         currentTimecodeNs = 0
                         nextSubtitleEventIndex = 0  // Reset subtitle event processing
-                        audio.purgeQueue(0)
+                        audio.purgeQueue(AUDIO_DEVICE)
                         if (paused) {
-                            audio.play(0)
-                            audio.stop(0)
+                            audio.play(AUDIO_DEVICE)
+                            audio.stop(AUDIO_DEVICE)
                         }
                         skipped = true
                     }
@@ -1232,10 +1233,10 @@ try {
                                 break
                             }
                         }
-                        audio.purgeQueue(0)
+                        audio.purgeQueue(AUDIO_DEVICE)
                         if (paused) {
-                            audio.play(0)
-                            audio.stop(0)
+                            audio.play(AUDIO_DEVICE)
+                            audio.stop(AUDIO_DEVICE)
                         }
                         skipped = true
                     }
@@ -1271,10 +1272,10 @@ try {
                                 break
                             }
                         }
-                        audio.purgeQueue(0)
+                        audio.purgeQueue(AUDIO_DEVICE)
                         if (paused) {
-                            audio.play(0)
-                            audio.stop(0)
+                            audio.play(AUDIO_DEVICE)
+                            audio.stop(AUDIO_DEVICE)
                         }
                         skipped = true
                     } else if (!seekTarget) {
@@ -1313,7 +1314,7 @@ try {
                     baseTimecodeFrameCount = 0
                     currentTimecodeNs = 0
                     nextSubtitleEventIndex = 0  // Reset subtitle event processing
-                    audio.purgeQueue(0)
+                    audio.purgeQueue(AUDIO_DEVICE)
                     currentFileIndex++
                     if (skipped) {
                         skipped = false
@@ -1737,7 +1738,7 @@ try {
 
                 seqread.readBytes(audioLen, SND_BASE_ADDR - 2368)
                 audio.mp2Decode()
-                audio.mp2UploadDecoded(0)
+                audio.mp2UploadDecoded(AUDIO_DEVICE)
 
             }
             else if (packetType === TAV_PACKET_AUDIO_TAD) {
@@ -1750,7 +1751,7 @@ try {
 
                 seqread.readBytes(payloadLen, SND_MEM_ADDR - 262144)
                 audio.tadDecode()
-                audio.tadUploadDecoded(0, sampleLen)
+                audio.tadUploadDecoded(AUDIO_DEVICE, sampleLen)
             }
             else if (packetType === TAV_PACKET_AUDIO_NATIVE) {
                 // PCM length must not exceed 65536 bytes!
@@ -1762,10 +1763,10 @@ try {
                 let pcmLen = gzip.decompFromTo(zstdPtr, zstdLen, pcmPtr) // <- segfaults!
                 if (pcmLen > 65536) throw Error(`PCM data too long -- got ${pcmLen} bytes`)
 
-                audio.putPcmDataByPtr(pcmPtr, pcmLen, 0)
+                audio.putPcmDataByPtr(AUDIO_DEVICE, pcmPtr, pcmLen, 0)
 
-                audio.setSampleUploadLength(0, pcmLen)
-                audio.startSampleUpload(0)
+                audio.setSampleUploadLength(AUDIO_DEVICE, pcmLen)
+                audio.startSampleUpload(AUDIO_DEVICE)
                 sys.free(zstdPtr)
 
                 sys.free(pcmPtr)
@@ -2049,7 +2050,7 @@ try {
 
                 // Fire audio on first frame
                 if (!audioFired) {
-                    audio.play(0)
+                    audio.play(AUDIO_DEVICE)
                     audioFired = true
                 }
 
@@ -2137,7 +2138,7 @@ try {
 
                 // Fire audio on first frame
                 if (!audioFired) {
-                    audio.play(0)
+                    audio.play(AUDIO_DEVICE)
                     audioFired = true
                 }
 
@@ -2173,8 +2174,8 @@ try {
                     sys.memcpy(predecodedPcmBuffer + predecodedPcmOffset, SND_BASE_ADDR, uploadSize)
 
                     // Set upload parameters and trigger upload to queue
-                    audio.setSampleUploadLength(0, uploadSize)
-                    audio.startSampleUpload(0)
+                    audio.setSampleUploadLength(AUDIO_DEVICE, uploadSize)
+                    audio.startSampleUpload(AUDIO_DEVICE)
 
                     predecodedPcmOffset += uploadSize
                 }
@@ -2458,8 +2459,8 @@ finally {
     sys.poke(-1299460, 20)
     sys.poke(-1299460, 21)
 
-    audio.stop(0)
-    audio.purgeQueue(0)
+    audio.stop(AUDIO_DEVICE)
+    audio.purgeQueue(AUDIO_DEVICE)
 }
 
 graphics.setPalette(0, 0, 0, 0, 0)

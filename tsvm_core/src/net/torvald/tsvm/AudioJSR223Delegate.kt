@@ -5,6 +5,23 @@ import net.torvald.tsvm.peripheral.AudioAdapter
 import net.torvald.tsvm.peripheral.MP2Env
 
 /**
+ * Each playhead is separate OpenAL device with its own PCM sample buffers.
+ * Media decoders (MP2, TAD) are independent to the playheads and there is only one.
+ *
+ * NOTES:
+ * 1. tracker mode is currently unimplemented.
+ * 2. PCM upload buffer (accessed by `putPcmDataByPtr`) is shared between four playheads
+ *
+ * ## How to upload PCM audio into a playhead
+ *
+ * 1. prepare PCM data
+ * 2. queue up PCM data by `audio.putPcmDataByPtr(pcmDataPtr, pcmDataLength, playhead)`
+ * 3. specify PCM upload length by `audio.setSampleUploadLength(playhead, pcmDataLength)`
+ * 4. start uploading `audio.startSampleUpload(playhead)`
+ * 5. sample will be ready after a few microseconds.
+ *
+ * Uploaded samples will be queued by the playhead for gapless playback
+ *
  * Created by minjaesong on 2022-12-31.
  */
 class AudioJSR223Delegate(private val vm: VM) {
@@ -51,16 +68,16 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun setTickRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.tickRate = rate and 255 }
     fun getTickRate(playhead: Int) = getPlayhead(playhead)?.tickRate
 
-    fun putPcmDataByPtr(ptr: Int, length: Int, destOffset: Int) {
+    fun putPcmDataByPtr(playhead: Int, ptr: Int, length: Int, destOffset: Int) {
         getFirstSnd()?.let {
             val vkMult = if (ptr >= 0) 1 else -1
             for (k in 0L until length) {
                 val vk = k * vkMult
-                it.pcmBin[k + destOffset] = vm.peek(ptr + vk)!!
+                it.pcmBin[playhead][k + destOffset] = vm.peek(ptr + vk)!!
             }
         }
     }
-    fun getPcmData(index: Int) = getFirstSnd()?.pcmBin?.get(index.toLong())
+    fun getPcmData(playhead: Int, index: Int) = getFirstSnd()?.pcmBin?.get(playhead)?.get(index.toLong())
 
     fun setPcmQueueCapacityIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex = index }
     fun getPcmQueueCapacityIndex(playhead: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex }

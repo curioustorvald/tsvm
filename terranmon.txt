@@ -2014,17 +2014,17 @@ notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using t
 
 Sound Adapter MMIO
 
-0..1 RW:  Play head #1 position
-2..3 RW:  Play head #1 length param
-4 RW:     Play head #1 master volume
-5 RW:     Play head #1 master pan
-6..9 RW:  Play head #1 flags
+0..1 RW:  Play head #0 position (how many samples has been queued)
+2..3 RW:  Play head #0 length param
+4 RW:     Play head #0 master volume
+5 RW:     Play head #0 master pan
+6..9 RW:  Play head #0 flags
 
-10..11 RW:Play head #2 position
-12..13 RW:Play head #2 length param
-14 RW:    Play head #2 master volume
-15 RW:    Play head #2 master pan
-16..19 RW:Play head #2 flags
+10..11 RW:Play head #1 position (how many samples has been queued)
+12..13 RW:Play head #1 length param
+14 RW:    Play head #1 master volume
+15 RW:    Play head #1 master pan
+16..19 RW:Play head #1 flags
 
 ... auto-fill to Play head #4
 
@@ -2034,13 +2034,16 @@ Sound Adapter MMIO
 
     When called with byte 17, initialisation will precede before the decoding
 
-41 RO: Media Decoder Status
+41 RO: MP2 Decoder Status
     Non-zero value indicates the decoder is busy
 
 42 WO: TAD Decoder Control
     Write 1 to decode TAD data
 43 RW: TAD Quality
     Must be set to appropriate value before decoding
+44 RW: TAD Decoder Status
+
+45 RW: Select PCM Bin for playhead (writing causes side effects)
 
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded

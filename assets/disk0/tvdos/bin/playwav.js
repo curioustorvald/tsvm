@@ -289,7 +289,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE - 8) {
                     let decodedSampleLength = decodeInfilePcm(readPtr, decodePtr, readLength)
                     printdbg(`        decodedSampleLength: ${decodedSampleLength}`)
 
-                    audio.putPcmDataByPtr(decodePtr, decodedSampleLength, 0)
+                    audio.putPcmDataByPtr(0, decodePtr, decodedSampleLength, 0)
                     audio.setSampleUploadLength(0, decodedSampleLength)
                     audio.startSampleUpload(0)
 

@@ -292,6 +292,24 @@ function makeNoise(buf, length, offset, freq, type, op, amp, pan) {
     }
 }
 
+function makeAliasedTriangleNES(buf, length, offset, freq, duty, op, amp, pan) {
+    // NES APU triangle — quantised to the authentic 32-step, 4-bit (0..15) staircase.
+    // The 32-step sequence is: 15,14,...,1,0, 0,1,...,14,15 (descending then ascending).
+    // This mirrors the real NES triangle DAC which has 32 equal-height steps per period.
+    // duty parameter is accepted for API symmetry but ignored (NES triangle is always symmetric).
+    if (op  == null) op  = 'add'
+    if (amp == null) amp = 0.5
+    if (pan == null) pan = 0.0
+    mixInto(buf, length, offset, op, amp, pan, function(i) {
+        const t = offset + i / HW_SAMPLING_RATE
+        const phase = (t * freq) % 1
+        const step32 = Math.floor(phase * 32) | 0  // 0..31
+        // step 0..15: descend from 15 to 0; step 16..31: ascend from 0 to 15
+        const level = (step32 < 16) ? (15 - step32) : (step32 - 16)
+        return level / 7.5 - 1.0  // map 0..15 → -1..+1
+    })
+}
+
 // ── Send to audio hardware ──────────────────────────────────────────────────
 
 function sendBuffer(buf, playhead, offsetSec, lengthSec, stagingPtr) {
@@ -322,8 +340,49 @@ function sendBuffer(buf, playhead, offsetSec, lengthSec, stagingPtr) {
             sys.poke(stagingPtr + 2 * i + 1, readU8(buf, 1, cursor + i))
         }
         // Wait for room in the playback queue (mirrors playwav.js idiom)
-        while (audio.getPosition(playhead) > 2) sys.sleep(2)
-        audio.putPcmDataByPtr(stagingPtr, take * 2, 0)
+        // while (audio.getPosition(playhead) > 2) sys.sleep(2)
+        audio.putPcmDataByPtr(stagingPtr, take * 2, playhead)
+        audio.setSampleUploadLength(playhead, take * 2)
+        audio.startSampleUpload(playhead)
+        remaining -= take
+        cursor    += take
+    }
+
+    if (ownsStaging) sys.free(stagingPtr)
+}
+
+// Lazily-allocated JS-side interleave scratch; shared across sendBufferFast calls.
+let _sendFastScratch = null
+
+function sendBufferFast(buf, playhead, offsetSec, lengthSec, stagingPtr) {
+    // Like sendBuffer but interleaves L/R via a JS Uint8Array + one sys.pokeBytes per chunk,
+    // instead of ~2n sys.poke calls.  Requires a non-native (JS-backed) buffer.
+    // Falls back to sendBuffer for native buffers.
+    if (isNative(buf)) { sendBuffer(buf, playhead, offsetSec, lengthSec, stagingPtr); return }
+
+    const start = (offsetSec != null) ? secToSamples(offsetSec) : 0
+    const total = (lengthSec != null) ? secToSamples(lengthSec) : (buf.samples - start)
+    const MAX_CHUNK = 32768
+    const ownsStaging = (stagingPtr == null)
+    if (ownsStaging) stagingPtr = sys.malloc(Math.min(total, MAX_CHUNK) * 2)
+
+    const scratchNeeded = Math.min(total, MAX_CHUNK) * 2
+    if (_sendFastScratch == null || _sendFastScratch.length < scratchNeeded) {
+        _sendFastScratch = new Uint8Array(scratchNeeded)
+    }
+
+    let remaining = total
+    let cursor    = start
+    while (remaining > 0) {
+        const take = Math.min(remaining, MAX_CHUNK)
+        const L = buf[0], R = buf[1], sc = _sendFastScratch
+        for (let i = 0; i < take; i++) {
+            sc[2 * i]     = L[cursor + i]
+            sc[2 * i + 1] = R[cursor + i]
+        }
+        sys.pokeBytes(stagingPtr, sc.subarray(0, take * 2), take * 2)
+        // while (audio.getPosition(playhead) > 2) sys.sleep(2)
+        audio.putPcmDataByPtr(playhead, stagingPtr, take * 2, 0)
         audio.setSampleUploadLength(playhead, take * 2)
         audio.startSampleUpload(playhead)
         remaining -= take
@@ -336,6 +395,6 @@ function sendBuffer(buf, playhead, offsetSec, lengthSec, stagingPtr) {
 exports = {
     HW_SAMPLING_RATE,
     makeBuffer, makeBufferNative, freeBufferNative, clearBuffer,
-    makeSquare, makeTriangle, makeAliasedTriangle, makeNoise,
-    sendBuffer
+    makeSquare, makeTriangle, makeAliasedTriangle, makeAliasedTriangleNES, makeNoise,
+    sendBuffer, sendBufferFast
 }

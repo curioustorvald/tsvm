@@ -162,7 +162,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
 
             seqread.readBytes(readLength, readPtr)
 
-            audio.putPcmDataByPtr(readPtr, readLength, 0)
+            audio.putPcmDataByPtr(0, readPtr, readLength, 0)
             audio.setSampleUploadLength(0, readLength)
             audio.startSampleUpload(0)
 

@@ -122,12 +122,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal val playdata = Array(256) { Array(64) { TaudPlayData(0,0,0,0,0,0,0,0) } }
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(2048) { PlayCue() }
-    internal val pcmBin = UnsafeHelper.allocate(65536L, this)
+    internal val pcmBin = arrayOf(
+        UnsafeHelper.allocate(65536L, this),
+        UnsafeHelper.allocate(65536L, this),
+        UnsafeHelper.allocate(65536L, this),
+        UnsafeHelper.allocate(65536L, this),
+    )
 
     internal val mediaFrameBin = UnsafeHelper.allocate(1728, this)
     internal val mediaDecodedBin = UnsafeHelper.allocate(2304, this)
 
     @Volatile private var mp2Busy = false
+
+    @Volatile var selectedPcmBin = 0
 
     // TAD (Terrarum Advanced Audio) decoder buffers
     internal val tadInputBin = UnsafeHelper.allocate(65536L, this)   // Input: compressed TAD chunk (max 64KB)
@@ -241,7 +248,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         renderRunnables = Array(4) { RenderRunnable(playheads[it]) }
         renderThreads = Array(4) { Thread(renderThreadGroup, renderRunnables[it], "AudioRenderHead${it+1}!$hash") }
-        writeQueueingRunnables = Array(4) { WriteQueueingRunnable(playheads[it], pcmBin) }
+        writeQueueingRunnables = Array(4) { WriteQueueingRunnable(playheads[it], pcmBin[it]) }
         writeQueueingThreads = Array(4) { Thread(writeQueueingGroup, writeQueueingRunnables[it], "AudioQueueingHead${it+1}!$hash") }
 
 //        printdbg("AudioAdapter latency: ${audioDevice.latency}")
@@ -315,13 +322,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             42 -> -1  // TAD control (write-only)
             43 -> tadQuality.toByte()
             44 -> tadBusy.toInt().toByte()
+            45 -> selectedPcmBin.toByte()
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
             in 32768..65535 -> (adi - 32768).let {
                 cueSheet[it / 16].read(it % 15)
             }
-            in 65536..131071 -> pcmBin[addr - 65536]
+            in 65536..131071 -> pcmBin[selectedPcmBin][addr - 65536]
             else -> {
                 println("[AudioAdapter] Bus mirroring on mmio_reading while trying to read address $addr")
                 mmio_read(addr % 131072)
@@ -349,12 +357,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // TAD quality (0-5)
                 tadQuality = bi.coerceIn(0, 5)
             }
+            45 -> selectedPcmBin = bi % 4
             in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
             in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
             in 32768..65535 -> { (adi - 32768).let {
                 cueSheet[it / 16].write(it % 15, bi)
             } }
-            in 65536..131071 -> { pcmBin[addr - 65536] = byte }
+            in 65536..131071 -> { pcmBin[selectedPcmBin][addr - 65536] = byte }
         }
     }
 
@@ -368,7 +377,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             writeQueueingGroup.interrupt()
             playheads.forEach { it.dispose() }
             sampleBin.destroy()
-            pcmBin.destroy()
+            pcmBin.forEach { it.destroy() }
             mediaFrameBin.destroy()
             mediaDecodedBin.destroy()
             tadInputBin.destroy()

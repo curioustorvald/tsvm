@@ -326,7 +326,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                     // RAW PCM packets (decode on the fly)
                     else if (packetType == 0x1000 || packetType == 0x1001) {
                         let frame = seqread.readBytes(readLength)
-                        audio.putPcmDataByPtr(frame, readLength, 0)
+                        audio.putPcmDataByPtr(0, frame, readLength, 0)
                         audio.setSampleUploadLength(0, readLength)
                         audio.startSampleUpload(0)
                         sys.free(frame)
