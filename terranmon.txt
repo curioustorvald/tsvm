@@ -2012,9 +2012,15 @@ Instrument bin: Registry for 256 instruments, formatted as:
 Play Data: play data are series of tracker-like instructions, visualised as:
 
 rr||NOTE|Ins|E.Vol|E.Pan|EE.ff|
-63||FFFF|255|3+ 64|3+ 64|16 FF| (8 bytes per line, 512 bytes per pattern, 256 patterns on 128 kB block)
+63||FFFF|255|3 63|3 63|FF FFFF| (8 bytes per line, 512 bytes per pattern, 256 patterns on 128 kB block)
 
 notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using their Sampling rate value.
+
+Special values:
+
+note 0xFFFF: no-op
+note 0xFFFE: note cut
+note 0x0000: key-off
 
 
 Sound Adapter MMIO

@@ -1156,17 +1156,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 0xEC -> voice.cutAtTick = row.effectArg and 0xFF
             }
 
-            if (row.note != 0xFFFF) {
-                val inst = instruments[row.instrment]
-                voice.instrumentId = row.instrment
-                voice.samplePos = inst.samplePlayStart.toDouble()
-                voice.forward = true
-                voice.active = true
-                voice.envIndex = 0
-                voice.envTimeSec = 0.0
-                voice.envVolume = inst.envelopes[0].volume / 255.0
-                voice.noteVal = row.note
-                voice.playbackRate = computePlaybackRate(inst, row.note)
+            when (row.note) {
+                0xFFFF -> {}                  // no-op: continue current note unchanged
+                0x0000 -> voice.active = false // key-off (TODO: trigger envelope release phase)
+                0xFFFE -> voice.active = false // note cut: immediate silence
+                else -> {
+                    val inst = instruments[row.instrment]
+                    voice.instrumentId = row.instrment
+                    voice.samplePos = inst.samplePlayStart.toDouble()
+                    voice.forward = true
+                    voice.active = true
+                    voice.envIndex = 0
+                    voice.envTimeSec = 0.0
+                    voice.envVolume = inst.envelopes[0].volume / 255.0
+                    voice.noteVal = row.note
+                    voice.playbackRate = computePlaybackRate(inst, row.note)
+                }
             }
         }
     }
