@@ -1,0 +1,16 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="TerranBASIC" type="Application" factoryName="Application" nameIsGenerated="true">
+    <option name="MAIN_CLASS_NAME" value="net.torvald.tsvm.TerranBASIC" />
+    <module name="TerranBASICexecutable" />
+    <option name="VM_PARAMETERS" value="--upgrade-module-path=lib/compiler-23.1.10.jar:lib/compiler-management-23.1.10.jar:lib/truffle-compiler-23.1.10.jar:lib/truffle-api-23.1.10.jar:lib/truffle-runtime-23.1.10.jar:lib/polyglot-23.1.10.jar:lib/collections-23.1.10.jar:lib/word-23.1.10.jar:lib/nativeimage-23.1.10.jar:lib/jniutils-23.1.10.jar -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI --add-exports=java.base/jdk.internal.misc=jdk.internal.vm.compiler" />
+    <extension name="coverage">
+      <pattern>
+        <option name="PATTERN" value="net.torvald.tsvm.*" />
+        <option name="ENABLED" value="true" />
+      </pattern>
+    </extension>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

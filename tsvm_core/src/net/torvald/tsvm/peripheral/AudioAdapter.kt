@@ -1465,7 +1465,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
     data class TaudInst(
-        var samplePtr: Int, // 17-bit number
+        var samplePtr: Int, // 20-bit number
         var sampleLength: Int,
         var samplingRate: Int,
         var samplePlayStart: Int,
@@ -1496,8 +1496,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             10 -> sampleLoopEnd.toByte()
             11 -> sampleLoopEnd.ushr(8).toByte()
 
-            12 -> (samplePtr.ushr(16).and(1).shl(7) or loopMode.and(3)).toByte()
-            13,14,15 -> -1
+            12 -> (samplePtr.ushr(16).and(15).shl(4) or loopMode.and(3)).toByte()
+            13,14,15 -> 0
             in 16..63 step 2 -> envelopes[(offset - 16) / 2].volume.toByte()
             in 17..63 step 2 -> envelopes[(offset - 17) / 2].offset.index.toByte()
             else -> throw InternalError("Bad offset $offset")
@@ -1523,7 +1523,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             11 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
 
             12 -> {
-                samplePtr = if (byte and 0b1000_0000 != 0) samplePtr or 0x10000
+                samplePtr = if (byte and 0b1111_0000 != 0) samplePtr or ((byte ushr 4) shl 16)
                             else samplePtr and 0x0ffff
                 loopMode = byte and 3
             }
