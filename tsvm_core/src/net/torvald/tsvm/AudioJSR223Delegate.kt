@@ -9,8 +9,21 @@ import net.torvald.tsvm.peripheral.MP2Env
  * Media decoders (MP2, TAD) are independent to the playheads and there is only one.
  *
  * NOTES:
- * 1. tracker mode is currently unimplemented.
- * 2. Synchronisation between playheads are not guaranteed. Do not play music in multiple tracks.
+ * 1. Synchronisation between playheads are not guaranteed. Do not play music in multiple tracks.
+ *
+ * ## How to use Tracker Mode
+ *
+ * 1. Call `setTrackerMode(playhead)` to switch to tracker mode.
+ * 2. Write sample data into the sample bin via `vm.poke` (peripheral memory space, offset 0+).
+ * 3. Define instruments via `uploadInstrument(slot, byteArray)` or raw `vm.poke`.
+ * 4. Define patterns via `uploadPattern(slot, byteArray)` or raw `vm.poke`.
+ * 5. Define cue entries via `uploadCue(idx, byteArray)` or raw `vm.poke`.
+ * 6. Set `setBPM(playhead, bpm)` and `setTickRate(playhead, rate)`.
+ * 7. Set `setMasterVolume(playhead, 255)`.
+ * 8. Call `setCuePosition(playhead, 0)` then `play(playhead)`.
+ *
+ * Note values: 0x4000 = C3 (sample's native pitch), 4096 steps per octave.
+ * Empty row: note = 0xFFFF (no trigger). All 256 instrument slots (0-255) are valid.
  *
  * ## How to upload PCM audio into a playhead
  *
@@ -68,6 +81,35 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun setTickRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.tickRate = rate and 255 }
     fun getTickRate(playhead: Int) = getPlayhead(playhead)?.tickRate
 
+    fun setCuePosition(playhead: Int, pos: Int) {
+        getPlayhead(playhead)?.let { ph ->
+            ph.position = pos and 2047
+            ph.trackerState?.cuePos = ph.position
+        }
+    }
+    fun getCuePosition(playhead: Int) = getPlayhead(playhead)?.position
+
+    /** Upload 64 bytes defining instrument `slot` (0-255). */
+    fun uploadInstrument(slot: Int, bytes: IntArray) {
+        getFirstSnd()?.instruments?.get(slot and 0xFF)?.let { inst ->
+            for (i in 0 until minOf(64, bytes.size)) inst.setByte(i, bytes[i] and 0xFF)
+        }
+    }
+
+    /** Upload 512 bytes (64 rows × 8 bytes) defining pattern `slot` (0-255). */
+    fun uploadPattern(slot: Int, bytes: IntArray) {
+        getFirstSnd()?.playdata?.get(slot and 0xFF)?.let { pat ->
+            for (i in 0 until minOf(512, bytes.size)) pat[i / 8].setByte(i % 8, bytes[i] and 0xFF)
+        }
+    }
+
+    /** Upload 16 bytes defining cue entry `idx` (0-2047): bytes 0-14 = pattern numbers for voices 0-14, byte 15 = instruction. */
+    fun uploadCue(idx: Int, bytes: IntArray) {
+        getFirstSnd()?.cueSheet?.get(idx and 0x7FF)?.let { cue ->
+            for (i in 0 until minOf(16, bytes.size)) cue.write(i, bytes[i] and 0xFF)
+        }
+    }
+
     fun putPcmDataByPtr(playhead: Int, ptr: Int, length: Int, destOffset: Int) {
         getFirstSnd()?.let {
             val vkMult = if (ptr >= 0) 1 else -1
@@ -80,7 +122,7 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getPcmData(playhead: Int, index: Int) = getFirstSnd()?.pcmBin?.get(playhead)?.get(index.toLong())
 
     fun setPcmQueueCapacityIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex = index }
-    fun getPcmQueueCapacityIndex(playhead: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex }
+    fun getPcmQueueCapacityIndex(playhead: Int) = getPlayhead(playhead)?.pcmQueueSizeIndex
     fun getPcmQueueCapacity(playhead: Int) = getPlayhead(playhead)?.getPcmQueueCapacity()
 
     fun resetParams(playhead: Int) {

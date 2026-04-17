@@ -81,9 +81,12 @@ function clearBuffer(buf, offsetSec, lengthSec) {
     // Re-silence a buffer region (fill with 128) for re-use across frames.
     const start = (offsetSec != null) ? secToSamples(offsetSec) : 0
     const total = (lengthSec != null) ? secToSamples(lengthSec) : (buf.samples - start)
-    for (let i = 0; i < total; i++) {
-        writeU8(buf, 0, start + i, 128)
-        writeU8(buf, 1, start + i, 128)
+    if (!buf.native) {
+        buf[0].fill(128, start, start + total)
+        buf[1].fill(128, start, start + total)
+    } else {
+        sys.memset(buf[0] + start, 128, total)
+        sys.memset(buf[1] + start, 128, total)
     }
 }
 
@@ -142,7 +145,7 @@ function makeSquare(buf, length, offset, freq, duty, op, amp, pan, phaseOffset) 
     })
 }
 
-function makeTriangle(buf, length, offset, freq, duty, op, amp, pan) {
+function makeTriangle(buf, length, offset, freq, duty, op, amp, pan, phaseOffset) {
     // buffer: [Uint8Array, Uint8Array] or native buffer
     // length: in seconds
     // offset: in seconds
@@ -151,6 +154,8 @@ function makeTriangle(buf, length, offset, freq, duty, op, amp, pan) {
     // op: add / mul / sub; default: add
     // amp: 0.0 to 1.0; default: 0.5
     // pan: -1.0 to 1.0; default: 0.0
+    // phaseOffset: optional absolute-time base (seconds) added to phase calc only —
+    //              see makeSquare for details.
     if (duty == null) duty = 0.0
     if (op   == null) op   = 'add'
     if (amp  == null) amp  = 0.5
@@ -158,9 +163,9 @@ function makeTriangle(buf, length, offset, freq, duty, op, amp, pan) {
     // riseFrac: fraction of period spent rising from -1 to +1
     // 0.0 → falling saw, 0.5 → symmetric triangle, 1.0 → rising saw
     const riseFrac = (duty + 1.0) * 0.5
+    const tBase = (phaseOffset || 0) + offset
     mixInto(buf, length, offset, op, amp, pan, function(i) {
-        const t = offset + i / HW_SAMPLING_RATE
-        const phase = (t * freq) % 1
+        const phase = ((tBase + i / HW_SAMPLING_RATE) * freq) % 1
         if (riseFrac <= 0) {
             return 1.0 - 2.0 * phase                               // falling saw
         } else if (riseFrac >= 1) {
@@ -173,7 +178,7 @@ function makeTriangle(buf, length, offset, freq, duty, op, amp, pan) {
     })
 }
 
-function makeAliasedTriangle(buf, length, offset, freq, duty, op, amp, pan) {
+function makeAliasedTriangle(buf, length, offset, freq, duty, op, amp, pan, phaseOffset) {
     // buffer: [Uint8Array, Uint8Array] or native buffer
     // Famicom-style triangle — output is quantised to 16 DAC levels (4-bit, NES APU style).
     // The staircase quantisation introduces harmonics that mimic NES character.
@@ -184,14 +189,16 @@ function makeAliasedTriangle(buf, length, offset, freq, duty, op, amp, pan) {
     // op: add / mul / sub; default: add
     // amp: 0.0 to 1.0; default: 0.5
     // pan: -1.0 to 1.0; default: 0.0
+    // phaseOffset: optional absolute-time base (seconds) added to phase calc only —
+    //              see makeSquare for details.
     if (duty == null) duty = 0.0
     if (op   == null) op   = 'add'
     if (amp  == null) amp  = 0.5
     if (pan  == null) pan  = 0.0
     const riseFrac = (duty + 1.0) * 0.5
+    const tBase = (phaseOffset || 0) + offset
     mixInto(buf, length, offset, op, amp, pan, function(i) {
-        const t = offset + i / HW_SAMPLING_RATE
-        const phase = (t * freq) % 1
+        const phase = ((tBase + i / HW_SAMPLING_RATE) * freq) % 1
         let v
         if (riseFrac <= 0) {
             v = 1.0 - 2.0 * phase

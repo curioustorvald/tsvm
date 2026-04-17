@@ -18,7 +18,7 @@ const ADDRESSING_INTERNAL = 0x02
 const SND_BASE_ADDR = audio.getBaseAddr()
 const SND_MEM_ADDR = audio.getMemAddr()
 const pcm = require("pcm")
-const AUDIO_DEVICE = 3
+const AUDIO_DEVICE = 0
 const MP2_FRAME_SIZE = [144,216,252,288,360,432,504,576,720,864,1008,1152,1440,1728]
 const TAV_TEMPORAL_LEVELS = 2
 

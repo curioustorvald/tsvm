@@ -34,21 +34,22 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
                         val samples = writeQueue.removeFirst()
                         playhead.position = writeQueue.size
 
-//                printdbg("P${playhead.index+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
-//                    printdbg(""+(0..42).joinToString { String.format("%.2f", samples[it]) })
-
                         playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
-
-//                printdbg("P${playhead.index+1} go back to spinning")
 
                         Thread.sleep(6)
                     }
                     else if (playhead.isPlaying && writeQueue.isEmpty) {
                         printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
 
-                        // TODO: wait for 1-2 seconds then finally stop the device
-//                    playhead.audioDevice.stop()
-
+                        Thread.sleep(6)
+                    }
+                } else {
+                    // Tracker mode
+                    if (playhead.isPlaying) {
+                        val out = playhead.parent.generateTrackerAudio(playhead)
+                        if (out != null) {
+                            playhead.audioDevice.writeStereoSamplesUI8(out, 0, AudioAdapter.TRACKER_CHUNK)
+                        }
                         Thread.sleep(6)
                     }
                 }
@@ -115,11 +116,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     companion object {
         internal val DBGPRN = false
         const val SAMPLING_RATE = 32000
+        const val TRACKER_CHUNK = 512
+        const val TRACKER_C3 = 0x4000
     }
 
     internal val sampleBin = UnsafeHelper.allocate(114687L, this)
     internal val instruments = Array(256) { TaudInst() }
-    internal val playdata = Array(256) { Array(64) { TaudPlayData(0,0,0,0,0,0,0,0) } }
+    internal val playdata = Array(256) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(2048) { PlayCue() }
     internal val pcmBin = arrayOf(
@@ -327,7 +330,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
             in 32768..65535 -> (adi - 32768).let {
-                cueSheet[it / 16].read(it % 15)
+                cueSheet[it / 16].read(it % 16)
             }
             in 65536..131071 -> pcmBin[selectedPcmBin][addr - 65536]
             else -> {
@@ -361,7 +364,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
             in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
             in 32768..65535 -> { (adi - 32768).let {
-                cueSheet[it / 16].write(it % 15, bi)
+                cueSheet[it / 16].write(it % 16, bi)
             } }
             in 65536..131071 -> { pcmBin[selectedPcmBin][addr - 65536] = byte }
         }
@@ -1068,23 +1071,189 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
 
 
+    //=========================================================================
+    // Tracker Engine
+    //
+    // Effect codes (non-canonical MVP; spec is silent on values):
+    //   0x00: no effect
+    //   0x01 arg: pitch slide up, arg = 4096-TET units per tick
+    //   0x02 arg: pitch slide down, arg = 4096-TET units per tick
+    //   0x0A arg: volume slide, high nibble = up/tick, low nibble = down/tick
+    //   0xEC arg: note cut at tick (arg & 0xFF)
+    //=========================================================================
+
+    private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
+        inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C3) / 4096.0)
+
+    private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
+        if (voice.envIndex >= 23) {
+            voice.envVolume = inst.envelopes[23].volume / 255.0
+            return
+        }
+        val offset = inst.envelopes[voice.envIndex].offset.toFloat().toDouble()
+        if (offset == 0.0) {
+            voice.envVolume = inst.envelopes[voice.envIndex].volume / 255.0
+            return
+        }
+        voice.envTimeSec += tickSec
+        if (voice.envTimeSec >= offset) {
+            voice.envTimeSec -= offset
+            voice.envIndex = (voice.envIndex + 1).coerceAtMost(23)
+            voice.envVolume = inst.envelopes[voice.envIndex].volume / 255.0
+        } else {
+            val cur = inst.envelopes[voice.envIndex].volume / 255.0
+            val nxt = inst.envelopes[(voice.envIndex + 1).coerceAtMost(23)].volume / 255.0
+            voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / offset)
+        }
+    }
+
+    private fun fetchTrackerSample(voice: Voice, inst: TaudInst): Double {
+        val basePtr = inst.samplePtr and 0x1FFFF
+        val sampleLen = inst.sampleLength.coerceAtLeast(1)
+        val loopStart = inst.sampleLoopStart.toDouble()
+        val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
+        val binMax = 114686  // sampleBin is 114687 bytes (0..114686)
+
+        val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
+        val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)
+        val frac = voice.samplePos - i0.toDouble()
+        val s0 = (sampleBin[(basePtr + i0).coerceAtMost(binMax).toLong()].toUint() - 128) / 128.0
+        val s1 = (sampleBin[(basePtr + i1).coerceAtMost(binMax).toLong()].toUint() - 128) / 128.0
+        val sample = s0 + (s1 - s0) * frac
+
+        if (voice.forward) {
+            voice.samplePos += voice.playbackRate
+            when (inst.loopMode) {
+                0 -> if (voice.samplePos >= sampleLen) voice.active = false
+                1 -> if (voice.samplePos >= loopEnd) voice.samplePos -= (loopEnd - loopStart).coerceAtLeast(1.0)
+                2 -> if (voice.samplePos >= loopEnd) { voice.samplePos = loopEnd; voice.forward = false }
+                3 -> if (voice.samplePos >= sampleLen) { voice.samplePos = sampleLen.toDouble() - 1; voice.active = false }
+            }
+        } else {
+            voice.samplePos -= voice.playbackRate
+            if (voice.samplePos < loopStart) { voice.samplePos = loopStart; voice.forward = true }
+        }
+        return sample
+    }
+
+    private fun applyTrackerRow(ts: TrackerState, playhead: Playhead) {
+        val cue = cueSheet[ts.cuePos]
+        for (vi in 0..14) {
+            val patIdx = cue.patterns[vi].coerceIn(0, 255)
+            val row = playdata[patIdx][ts.rowIndex]
+            val voice = ts.voices[vi]
+
+            voice.rowVolume = row.volume
+            voice.rowPan = row.pan
+            voice.cutAtTick = -1
+            voice.pitchSlideAmount = 0.0
+            voice.volSlidePerTick = 0
+
+            when (row.effect) {
+                0x01 -> voice.pitchSlideAmount = row.effectArg.toDouble()
+                0x02 -> voice.pitchSlideAmount = -row.effectArg.toDouble()
+                0x0A -> { val a = row.effectArg and 0xFF; voice.volSlidePerTick = ((a ushr 4) and 0xF) - (a and 0xF) }
+                0xEC -> voice.cutAtTick = row.effectArg and 0xFF
+            }
+
+            if (row.note != 0xFFFF) {
+                val inst = instruments[row.instrment]
+                voice.instrumentId = row.instrment
+                voice.samplePos = inst.samplePlayStart.toDouble()
+                voice.forward = true
+                voice.active = true
+                voice.envIndex = 0
+                voice.envTimeSec = 0.0
+                voice.envVolume = inst.envelopes[0].volume / 255.0
+                voice.noteVal = row.note
+                voice.playbackRate = computePlaybackRate(inst, row.note)
+            }
+        }
+    }
+
+    private fun applyTrackerTick(ts: TrackerState, playhead: Playhead) {
+        val tickSec = 2.5 / playhead.bpm
+        for (voice in ts.voices) {
+            if (!voice.active) continue
+            val inst = instruments[voice.instrumentId]
+            if (voice.cutAtTick == ts.tickInRow) { voice.active = false; continue }
+            if (voice.pitchSlideAmount != 0.0) {
+                voice.noteVal = (voice.noteVal + voice.pitchSlideAmount).toInt().coerceIn(0, 0xFFFE)
+                voice.playbackRate = computePlaybackRate(inst, voice.noteVal)
+            }
+            if (voice.volSlidePerTick != 0) {
+                voice.rowVolume = (voice.rowVolume + voice.volSlidePerTick).coerceIn(0, 63)
+            }
+            advanceEnvelope(voice, inst, tickSec)
+        }
+    }
+
+    private fun advanceTrackerCue(ts: TrackerState, playhead: Playhead) {
+        val instr = cueSheet[ts.cuePos].instruction
+        ts.cuePos = when (instr) {
+            is PlayInstGoBack -> (ts.cuePos - instr.arg).coerceAtLeast(0)
+            is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(2047)
+            else              -> (ts.cuePos + 1).coerceAtMost(2047)
+        }
+        playhead.position = ts.cuePos
+    }
+
+    internal fun generateTrackerAudio(playhead: Playhead): ByteArray? {
+        val ts = playhead.trackerState ?: return null
+        val bpm = playhead.bpm
+        val spt = SAMPLING_RATE * 2.5 / bpm
+
+        val out = ByteArray(TRACKER_CHUNK * 2)
+
+        if (ts.firstRow) {
+            ts.firstRow = false
+            applyTrackerRow(ts, playhead)
+        }
+
+        for (n in 0 until TRACKER_CHUNK) {
+            ts.samplesIntoTick += 1.0
+            if (ts.samplesIntoTick >= spt) {
+                ts.samplesIntoTick -= spt
+                applyTrackerTick(ts, playhead)
+                ts.tickInRow++
+                if (ts.tickInRow >= playhead.tickRate) {
+                    ts.tickInRow = 0
+                    ts.rowIndex++
+                    if (ts.rowIndex >= 64) {
+                        ts.rowIndex = 0
+                        advanceTrackerCue(ts, playhead)
+                    }
+                    applyTrackerRow(ts, playhead)
+                }
+            }
+
+            var mixL = 0.0
+            var mixR = 0.0
+            for (voice in ts.voices) {
+                if (!voice.active) continue
+                val s = fetchTrackerSample(voice, instruments[voice.instrumentId])
+                val vol = voice.envVolume * voice.rowVolume / 63.0 * playhead.masterVolume / 255.0
+                mixL += s * vol * (63 - voice.rowPan) / 63.0
+                mixR += s * vol * voice.rowPan / 63.0
+            }
+
+            out[n * 2]     = ((mixL.coerceIn(-1.0, 1.0) * 127 + 128).toInt()).toByte()
+            out[n * 2 + 1] = ((mixR.coerceIn(-1.0, 1.0) * 127 + 128).toInt()).toByte()
+        }
+
+        return out
+    }
+
     internal data class PlayCue(
         val patterns: IntArray = IntArray(15) { it },
         var instruction: PlayInstruction = PlayInstNop
     ) {
         fun write(index: Int, byte: Int) = when (index) {
             in 0..14 -> { patterns[index] = byte }
-            15 -> { instruction = when (byte) {
-                    in 128..255 -> PlayInstGoBack(byte and 127)
-//                    in 64..127 -> Inst(byte and 63)
-//                    in 32..63 -> Inst(byte and 31)
-                    in 16..31 -> PlayInstSkip(byte and 15)
-//                    in 8..15 -> Inst(byte and 7)
-//                    in 4..7 -> Inst(byte and 3)
-//                    in 2..3 -> Inst(byte and 1)
-//                    1 -> Inst()
-                    0 -> PlayInstNop
-                    else -> throw InternalError("Bad offset $index")
+            15 -> { instruction = when {
+                    byte >= 128 -> PlayInstGoBack(byte and 127)
+                    byte in 16..31 -> PlayInstSkip(byte and 15)
+                    else -> PlayInstNop
             } }
             else -> throw InternalError("Bad offset $index")
         }
@@ -1107,8 +1276,34 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
     internal object PlayInstNop : PlayInstruction(0)
 
+    class Voice {
+        var active = false
+        var instrumentId = 0
+        var samplePos = 0.0
+        var playbackRate = 1.0
+        var forward = true
+        var rowVolume = 63
+        var rowPan = 32
+        var envIndex = 0
+        var envTimeSec = 0.0
+        var envVolume = 1.0
+        var noteVal = 0xFFFF
+        var pitchSlideAmount = 0.0  // 4096-TET units per tick; +up, -down
+        var volSlidePerTick = 0
+        var cutAtTick = -1
+    }
+
+    class TrackerState {
+        var cuePos = 0
+        var rowIndex = 0
+        var tickInRow = 0
+        var samplesIntoTick = 0.0
+        var firstRow = true
+        val voices = Array(15) { Voice() }
+    }
+
     class Playhead(
-        private val parent: AudioAdapter,
+        internal val parent: AudioAdapter,
         val index: Int,
 
         var position: Int = 0,
@@ -1124,20 +1319,25 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var pcmQueueSizeIndex: Int = 0,
         val audioDevice: OpenALBufferedAudioDevice,
     ) {
+        var trackerState: TrackerState? = TrackerState()  // default mode is tracker (isPcmMode=false)
+
         // flags
         var isPcmMode: Boolean = false
             set(value) {
-                if (value != isPcmMode) {
+                if (value != field) {
                     resetParams()
+                    trackerState = if (!value) TrackerState() else null
                 }
                 field = value
             }
         var isPlaying: Boolean = false
             set(value) {
                 // play last bit from the buffer by feeding 0s
-                if (isPlaying && !value) {
+                if (field && !value) {
 //                    println("!! inserting dummy bytes")
-                    pcmQueue.addLast(ByteArray(audioDevice.bufferSize * audioDevice.bufferCount))
+                    if (isPcmMode) {
+                        pcmQueue.addLast(ByteArray(audioDevice.bufferSize * audioDevice.bufferCount))
+                    }
                 }
                 field = value
             }
@@ -1159,10 +1359,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         fun write(index: Int, byte: Int) {
             val byte = byte and 255
             when (index) {
-                0 -> if (!isPcmMode) { position = position.and(0xff00) or position } else {}
-                1 -> if (!isPcmMode) { position = position.and(0x00ff) or position.shl(8) } else {}
-                2 -> { pcmUploadLength = pcmUploadLength.and(0xff00) or pcmUploadLength }
-                3 -> { pcmUploadLength = pcmUploadLength.and(0x00ff) or pcmUploadLength.shl(8) }
+                0 -> if (!isPcmMode) { position = (position and 0xff00) or byte; trackerState?.cuePos = position } else {}
+                1 -> if (!isPcmMode) { position = (position and 0x00ff) or (byte shl 8); trackerState?.cuePos = position } else {}
+                2 -> { pcmUploadLength = (pcmUploadLength and 0xff00) or byte }
+                3 -> { pcmUploadLength = (pcmUploadLength and 0x00ff) or (byte shl 8) }
                 4 -> {
                     masterVolume = byte
                     audioDevice.setVolume(masterVolume / 255f)
@@ -1170,10 +1370,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 5 -> { masterPan = byte }
                 6 -> { byte.let {
                     isPcmMode = (it and 0b10000000) != 0
+                    if (it and 0b01000000 != 0) resetParams()
                     isPlaying = (it and 0b00010000) != 0
                     pcmQueueSizeIndex = (it and 0b00001111)
-
-
                     if (it and 0b00100000 != 0) purgeQueue()
                 } }
                 7 -> if (isPcmMode) { pcmUpload = true } else {}
@@ -1195,6 +1394,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             pcmUploadLength = 0
             isPlaying = false
             pcmQueueSizeIndex = 2
+            trackerState?.let { ts ->
+                ts.cuePos = 0; ts.rowIndex = 0; ts.tickInRow = 0
+                ts.samplesIntoTick = 0.0; ts.firstRow = true
+                ts.voices.forEach { it.active = false }
+            }
         }
 
         fun purgeQueue() {
@@ -1289,36 +1493,39 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             12 -> (samplePtr.ushr(16).and(1).shl(7) or loopMode.and(3)).toByte()
             13,14,15 -> -1
-            in 16..63 step 2 -> envelopes[offset - 16].volume.toByte()
-            in 17..63 step 2 -> envelopes[offset - 16].offset.index.toByte()
+            in 16..63 step 2 -> envelopes[(offset - 16) / 2].volume.toByte()
+            in 17..63 step 2 -> envelopes[(offset - 17) / 2].offset.index.toByte()
             else -> throw InternalError("Bad offset $offset")
         }
 
         fun setByte(offset: Int, byte: Int) = when (offset) {
-            0 -> { samplePtr = samplePtr.and(0x1ff00) or byte }
-            1 -> { samplePtr = samplePtr.and(0x000ff) or byte.shl(8) }
+            0 -> { samplePtr = (samplePtr and 0x1ff00) or byte }
+            1 -> { samplePtr = (samplePtr and 0x000ff) or (byte shl 8) }
 
-            2 -> { sampleLength = sampleLength.and(0x1ff00) or byte }
-            3 -> { sampleLength = sampleLength.and(0x000ff) or byte.shl(8) }
+            2 -> { sampleLength = (sampleLength and 0xff00) or byte }
+            3 -> { sampleLength = (sampleLength and 0x00ff) or (byte shl 8) }
 
-            4 -> { samplingRate = samplingRate.and(0x1ff00) or byte }
-            5 -> { samplingRate = samplingRate.and(0x000ff) or byte.shl(8) }
+            4 -> { samplingRate = (samplingRate and 0xff00) or byte }
+            5 -> { samplingRate = (samplingRate and 0x00ff) or (byte shl 8) }
 
-            6 -> { sampleLoopStart = sampleLoopStart.and(0x1ff00) or byte }
-            7 -> { sampleLoopStart = sampleLoopStart.and(0x000ff) or byte.shl(8) }
+            6 -> { samplePlayStart = (samplePlayStart and 0xff00) or byte }
+            7 -> { samplePlayStart = (samplePlayStart and 0x00ff) or (byte shl 8) }
 
-            8 -> { sampleLoopEnd = sampleLoopEnd.and(0x1ff00) or byte }
-            9 -> { sampleLoopEnd = sampleLoopEnd.and(0x000ff) or byte.shl(8) }
+            8 -> { sampleLoopStart = (sampleLoopStart and 0xff00) or byte }
+            9 -> { sampleLoopStart = (sampleLoopStart and 0x00ff) or (byte shl 8) }
 
-            10 -> {
-                if (byte.and(0b1000_0000) != 0)
-                    samplePtr = samplePtr or 0x10000
+            10 -> { sampleLoopEnd = (sampleLoopEnd and 0xff00) or byte }
+            11 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
 
-                loopMode = byte.and(3)
+            12 -> {
+                samplePtr = if (byte and 0b1000_0000 != 0) samplePtr or 0x10000
+                            else samplePtr and 0x0ffff
+                loopMode = byte and 3
             }
+            13, 14, 15 -> {}
 
-            in 16..63 step 2 -> envelopes[offset - 16].volume = byte
-            in 17..63 step 2 -> envelopes[offset - 16].offset = ThreeFiveMiniUfloat(byte)
+            in 16..63 step 2 -> envelopes[(offset - 16) / 2].volume = byte
+            in 17..63 step 2 -> envelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
             else -> throw InternalError("Bad offset $offset")
         }
     }

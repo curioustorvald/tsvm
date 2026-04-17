@@ -81,6 +81,20 @@ class OpenALBufferedAudioDevice(
         writeSamples(bytes!!, 0, numSamples * 2)
     }
 
+    /** Write interleaved stereo unsigned-8-bit samples [L0, R0, L1, R1, ...] to the device. */
+    fun writeStereoSamplesUI8(samples: ByteArray, offset: Int, numPairs: Int) {
+        if (bytes == null || bytes!!.size < numPairs * 4) bytes = ByteArray(numPairs * 4)
+        var i = offset
+        var ii = 0
+        repeat(numPairs) {
+            val l = ui8toI16Hi[samples[i++].toUint()]
+            val r = ui8toI16Hi[samples[i++].toUint()]
+            bytes!![ii++] = l; bytes!![ii++] = l  // L int16 LE
+            bytes!![ii++] = r; bytes!![ii++] = r  // R int16 LE
+        }
+        writeSamples(bytes!!, 0, numPairs * 4)
+    }
+
     override fun writeSamples(samples: ShortArray, offset: Int, numSamples: Int) {
         if (bytes == null || bytes!!.size < numSamples * 2) bytes = ByteArray(numSamples * 2)
         val end = Math.min(offset + numSamples, samples.size)
