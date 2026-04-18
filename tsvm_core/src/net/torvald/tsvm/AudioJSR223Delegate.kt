@@ -83,7 +83,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun setCuePosition(playhead: Int, pos: Int) {
         getPlayhead(playhead)?.let { ph ->
-            ph.position = pos and 2047
+            ph.position = pos and 1023
             ph.trackerState?.cuePos = ph.position
         }
     }
@@ -96,17 +96,17 @@ class AudioJSR223Delegate(private val vm: VM) {
         }
     }
 
-    /** Upload 512 bytes (64 rows × 8 bytes) defining pattern `slot` (0-255). */
+    /** Upload 512 bytes (64 rows × 8 bytes) defining pattern `slot` (0-4094). */
     fun uploadPattern(slot: Int, bytes: IntArray) {
-        getFirstSnd()?.playdata?.get(slot and 0xFF)?.let { pat ->
+        getFirstSnd()?.playdata?.get(slot and 0xFFF)?.let { pat ->
             for (i in 0 until minOf(512, bytes.size)) pat[i / 8].setByte(i % 8, bytes[i] and 0xFF)
         }
     }
 
-    /** Upload 16 bytes defining cue entry `idx` (0-2047): bytes 0-14 = pattern numbers for voices 0-14, byte 15 = instruction. */
+    /** Upload 32 bytes defining cue entry `idx` (0-1023): packed 12-bit pattern numbers for 20 voices + instruction. */
     fun uploadCue(idx: Int, bytes: IntArray) {
-        getFirstSnd()?.cueSheet?.get(idx and 0x7FF)?.let { cue ->
-            for (i in 0 until minOf(16, bytes.size)) cue.write(i, bytes[i] and 0xFF)
+        getFirstSnd()?.cueSheet?.get(idx and 0x3FF)?.let { cue ->
+            for (i in 0 until minOf(32, bytes.size)) cue.write(i, bytes[i] and 0xFF)
         }
     }
 

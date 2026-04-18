@@ -10,6 +10,7 @@ import com.badlogic.gdx.utils.JsonValue
 import com.badlogic.gdx.utils.JsonWriter
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.FlippingSpriteBatch
+import net.torvald.terrarum.imagefont.PatternView
 import net.torvald.terrarum.imagefont.TinyAlphNum
 import net.torvald.terrarum.utils.JsonFetcher
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
@@ -25,10 +26,12 @@ class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var pa
     companion object {
         lateinit var SQTEX: Texture; private set
         lateinit var FONT: TinyAlphNum; private set
+        lateinit var TINY: PatternView; private set
     }
 
     override fun create() {
         FONT = TinyAlphNum
+        TINY = PatternView
         SQTEX = Texture(Gdx.files.internal("net/torvald/tsvm/sq.tga"))
         executable = VMEmuExecutable(windowWidth, windowHeight, panelsX, panelsY, diskPathRoot)
         executable.create()
@@ -54,6 +57,8 @@ class VMEmuExecutableWrapper(val windowWidth: Int, val windowHeight: Int, var pa
 //        println("App Dispose")
         executable.dispose()
         SQTEX.dispose()
+        FONT.dispose()
+        TINY.dispose()
         exitProcess(0)
     }
 }

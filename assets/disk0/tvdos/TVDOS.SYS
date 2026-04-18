@@ -225,8 +225,9 @@ class TVDOSFileDescriptor {
     }
 
     /** reads the file bytewise and puts it to the specified memory address
-     * @param count optional -- how many bytes to read
-     * @param offset optional -- how many bytes to skip initially
+     * @param ptr -- where the bytes should be dumped
+     * @param count -- how many bytes to read
+     * @param offset -- how many bytes to skip initially from the file
      */
     pread(ptr, count, offset) {
         this.driver.pread(this, ptr, count, offset)
@@ -241,7 +242,9 @@ class TVDOSFileDescriptor {
     }
 
     /** writes the bytes stored in the memory[ptr .. ptr+count-1] to file[offset .. offset+count-1]
-     * - @param offset is optional
+     * @param ptr -- where the bytes are
+     * @param count -- how many bytes to write
+     * @param offset -- position in the file
      */
     pwrite(ptr, count, offset) {
         this.driver.pwrite(this, ptr, count, offset)
@@ -1023,136 +1026,6 @@ _TVDOS.DRV.FS.NET.exists = (fd) => {
 
     return (0 == com.getStatusCode(port[0]))
 }
-
-///////////////////////////////////////////////////////////////////////////////
-
-
-// Legacy Serial filesystem, !!pending for removal!!
-
-
-/*const filesystem = {};
-
-filesystem._toPorts = (driveLetter) => {
-    if (driveLetter.toUpperCase === undefined) {
-        throw Error("'"+driveLetter+"' (type: "+typeof driveLetter+") is not a valid drive letter");
-    }
-    var port = _TVDOS.DRIVES[driveLetter.toUpperCase()];
-    if (port === undefined) {
-        throw Error("Drive letter '" + driveLetter.toUpperCase() + "' does not exist");
-    }
-    return port
-};
-filesystem._close = (portNo) => {
-    com.sendMessage(portNo, "CLOSE")
-}
-filesystem._flush = (portNo) => {
-    com.sendMessage(portNo, "FLUSH")
-}
-
-// @return disk status code (0 for successful operation)
-//         throws if:
-//             - java.lang.NullPointerException if path is null
-//             - Error if operation mode is not "R", "W" nor "A"
-filesystem.open = (driveLetter, path, operationMode) => {
-    var port = filesystem._toPorts(driveLetter);
-
-    filesystem._flush(port[0]); filesystem._close(port[0]);
-
-    var mode = operationMode.toUpperCase();
-    if (mode != "R" && mode != "W" && mode != "A") {
-        throw Error("Unknown file opening mode: " + mode);
-    }
-
-    com.sendMessage(port[0], "OPEN"+mode+'"'+path+'",'+port[1]);
-    return com.getStatusCode(port[0]);
-};
-filesystem.getFileLen = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "GETLEN");
-    var response = com.getStatusCode(port[0]);
-    if (135 == response) {
-        throw Error("File not opened");
-    }
-    if (response < 0 || response >= 128) {
-        throw Error("Reading a file failed with "+response);
-    }
-    return Number(com.pullMessage(port[0]));
-};
-// @return the entire contents of the file in String
-filesystem.readAll = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "READ");
-    var response = com.getStatusCode(port[0]);
-    if (135 == response) {
-        throw Error("File not opened");
-    }
-    if (response < 0 || response >= 128) {
-        throw Error("Reading a file failed with "+response);
-    }
-    return com.pullMessage(port[0]);
-};
-filesystem.readAllBytes = (driveLetter) => {
-    var str = filesystem.readAll(driveLetter);
-    var bytes = new Uint8Array(str.length);
-    for (let i = 0; i < str.length; i++) {
-        bytes[i] = str.charCodeAt(i);
-    }
-    return bytes;
-};
-filesystem.write = (driveLetter, string) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "WRITE"+string.length);
-    var response = com.getStatusCode(port[0]);
-    if (135 == response) {
-        throw Error("File not opened");
-    }
-    if (response < 0 || response >= 128) {
-        throw Error("Writing a file failed with "+response);
-    }
-    com.sendMessage(port[0], string);
-    filesystem._flush(port[0]); filesystem._close(port[0]);
-};
-filesystem.writeBytes = (driveLetter, bytes) => {
-    var string = btostr(bytes); // no spreading: has length limit
-    filesystem.write(driveLetter, string);
-};
-filesystem.isDirectory = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "LISTFILES");
-    var response = com.getStatusCode(port[0]);
-    return (response === 0);
-};
-filesystem.mkDir = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "MKDIR");
-    var response = com.getStatusCode(port[0]);
-
-    if (response < 0 || response >= 128) {
-        var status = com.getDeviceStatus(port[0]);
-        throw Error("Creating a directory failed with ("+response+"): "+status.message+"\n");
-    }
-    return (response === 0); // possible status codes: 0 (success), 1 (fail)
-};
-filesystem.touch = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "TOUCH");
-    var response = com.getStatusCode(port[0]);
-    return (response === 0);
-};
-filesystem.mkFile = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "MKFILE");
-    var response = com.getStatusCode(port[0]);
-    return (response === 0);
-};
-filesystem.remove = (driveLetter) => {
-    var port = filesystem._toPorts(driveLetter);
-    com.sendMessage(port[0], "DELETE");
-    var response = com.getStatusCode(port[0]);
-    return (response === 0);
-};
-Object.freeze(filesystem);*/
-
 
 ///////////////////////////////////////////////////////////////////////////////
 

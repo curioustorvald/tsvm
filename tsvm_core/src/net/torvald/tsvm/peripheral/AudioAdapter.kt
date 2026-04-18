@@ -57,8 +57,12 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
                 Thread.sleep(1)
             }
-            catch (_: InterruptedException) {
+            catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
+            }
+            catch (e: Exception) {
+                System.err.println("[AudioAdapter] RenderRunnable crashed: $e")
+                e.printStackTrace()
             }
         }
     }
@@ -120,11 +124,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val TRACKER_C3 = 0x4000
     }
 
-    internal val sampleBin = UnsafeHelper.allocate(114687L, this)
+    internal val sampleBin = UnsafeHelper.allocate(770048L, this)
     internal val instruments = Array(256) { TaudInst() }
-    internal val playdata = Array(256) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
+    internal val playdata = Array(4096) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
-    internal val cueSheet = Array(2048) { PlayCue() }
+    internal val cueSheet = Array(1024) { PlayCue() }
     internal val pcmBin = arrayOf(
         UnsafeHelper.allocate(65536L, this),
         UnsafeHelper.allocate(65536L, this),
@@ -292,12 +296,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
-            in 0..114687 -> sampleBin[addr]
-            in 114688..131071 -> (adi - 114688).let { instruments[it / 64].getByte(it % 64) }
-            in 131072..262143 -> (adi - 131072).let { playdata[it / (8*64)][(it / 8) % 64].getByte(it % 8) }
-            in 262144..327679 -> tadInputBin[addr - 262144]   // TAD input buffer (65536 bytes)
-            in 327680..393215 -> tadDecodedBin[addr - 327680]  // TAD decoded output (65536 bytes)
-            else -> peek(addr % 393216)
+            in 0..770047 -> sampleBin[addr]
+            in 770048..786431 -> (adi - 770048).let { instruments[it / 64].getByte(it % 64) }
+            in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
+            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
+            in 917504..983039 -> tadInputBin[addr - 917504]   // TAD input buffer (65536 bytes)
+            in 983040..1048575 -> tadDecodedBin[addr - 983040]  // TAD decoded output (65536 bytes)
+            else -> peek(addr % 1048576)
         }
     }
 
@@ -305,11 +310,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val adi = addr.toInt()
         val bi = byte.toUint()
         when (adi) {
-            in 0..114687 -> { sampleBin[addr] = byte }
-            in 114688..131071 -> (adi - 114688).let { instruments[it / 64].setByte(it % 64, bi) }
-            in 131072..262143 -> (adi - 131072).let { playdata[it / (8*64)][(it / 8) % 64].setByte(it % 8, bi) }
-            in 262144..327679 -> tadInputBin[addr - 262144] = byte   // TAD input buffer
-            in 327680..393215 -> tadDecodedBin[addr - 327680] = byte  // TAD decoded output
+            in 0..770047 -> { sampleBin[addr] = byte }
+            in 770048..786431 -> (adi - 770048).let { instruments[it / 64].setByte(it % 64, bi) }
+            in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
+            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
+            in 917504..983039 -> tadInputBin[addr - 917504] = byte   // TAD input buffer
+            in 983040..1048575 -> tadDecodedBin[addr - 983040] = byte  // TAD decoded output
         }
     }
 
@@ -330,7 +336,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
             in 32768..65535 -> (adi - 32768).let {
-                cueSheet[it / 16].read(it % 16)
+                cueSheet[it / 32].read(it % 32)
             }
             in 65536..131071 -> pcmBin[selectedPcmBin][addr - 65536]
             else -> {
@@ -364,7 +370,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
             in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
             in 32768..65535 -> { (adi - 32768).let {
-                cueSheet[it / 16].write(it % 16, bi)
+                cueSheet[it / 32].write(it % 32, bi)
             } }
             in 65536..131071 -> { pcmBin[selectedPcmBin][addr - 65536] = byte }
         }
@@ -398,7 +404,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private var mp2Context = mp2Env.initialise()
 
     private fun decodeMp2() {
-        val periMmioBase = vm.findPeriSlotNum(this)!! * -131072 - 1L
+        val periMmioBase = vm.findPeriSlotNum(this)!! * -786432 - 1L
         mp2Env.decodeFrameU8(mp2Context, periMmioBase - 2368, true, periMmioBase - 64)
     }
 
@@ -1108,11 +1114,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun fetchTrackerSample(voice: Voice, inst: TaudInst): Double {
-        val basePtr = inst.samplePtr and 0x1FFFF
+        val basePtr = inst.samplePtr
         val sampleLen = inst.sampleLength.coerceAtLeast(1)
         val loopStart = inst.sampleLoopStart.toDouble()
         val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
-        val binMax = 114686  // sampleBin is 114687 bytes (0..114686)
+        val binMax = 770047  // sampleBin is 770048 bytes (0..770047)
 
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
         val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)
@@ -1138,8 +1144,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private fun applyTrackerRow(ts: TrackerState, playhead: Playhead) {
         val cue = cueSheet[ts.cuePos]
-        for (vi in 0..14) {
-            val patIdx = cue.patterns[vi].coerceIn(0, 255)
+        for (vi in 0..19) {
+            val patNum = cue.patterns[vi]
+            if (patNum == 0xFFF) continue
+            val patIdx = patNum.coerceIn(0, 4095)
             val row = playdata[patIdx][ts.rowIndex]
             val voice = ts.voices[vi]
 
@@ -1195,10 +1203,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private fun advanceTrackerCue(ts: TrackerState, playhead: Playhead) {
         val instr = cueSheet[ts.cuePos].instruction
+        if (instr is PlayInstHalt) { playhead.isPlaying = false; return }
         ts.cuePos = when (instr) {
             is PlayInstGoBack -> (ts.cuePos - instr.arg).coerceAtLeast(0)
-            is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(2047)
-            else              -> (ts.cuePos + 1).coerceAtMost(2047)
+            is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(1023)
+            else              -> (ts.cuePos + 1).coerceAtMost(1023)
         }
         playhead.position = ts.cuePos
     }
@@ -1250,28 +1259,60 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     internal data class PlayCue(
-        val patterns: IntArray = IntArray(15) { it },
+        val patterns: IntArray = IntArray(20) { 0xFFF },
         var instruction: PlayInstruction = PlayInstNop
     ) {
+        // Cue layout (32 bytes, 20 voices, 12-bit pattern numbers):
+        //   bytes  0-9:  packed low nybbles  (byte i => voice i*2 in hi, voice i*2+1 in lo)
+        //   bytes 10-19: packed mid nybbles  (same packing)
+        //   bytes 20-29: packed high nybbles (same packing)
+        //   byte  30:    instruction
+        //   byte  31:    unused
         fun write(index: Int, byte: Int) = when (index) {
-            in 0..14 -> { patterns[index] = byte }
-            15 -> { instruction = when {
+            in 0..9 -> {
+                val b = index * 2
+                patterns[b]     = (patterns[b]     and 0xFF0) or ((byte ushr 4) and 0xF)
+                patterns[b + 1] = (patterns[b + 1] and 0xFF0) or (byte and 0xF)
+            }
+            in 10..19 -> {
+                val b = (index - 10) * 2
+                patterns[b]     = (patterns[b]     and 0xF0F) or (((byte ushr 4) and 0xF) shl 4)
+                patterns[b + 1] = (patterns[b + 1] and 0xF0F) or ((byte and 0xF) shl 4)
+            }
+            in 20..29 -> {
+                val b = (index - 20) * 2
+                patterns[b]     = (patterns[b]     and 0x0FF) or (((byte ushr 4) and 0xF) shl 8)
+                patterns[b + 1] = (patterns[b + 1] and 0x0FF) or ((byte and 0xF) shl 8)
+            }
+            30 -> { instruction = when {
                     byte >= 128 -> PlayInstGoBack(byte and 127)
                     byte in 16..31 -> PlayInstSkip(byte and 15)
+                    byte == 1 -> PlayInstHalt
                     else -> PlayInstNop
             } }
+            31 -> {}
             else -> throw InternalError("Bad offset $index")
         }
-        fun read(index: Int): Byte = when(index) {
-            in 0..14 -> patterns[index].toByte()
-            15 -> {
-                when (instruction) {
-                    is PlayInstGoBack -> (0b10000000 or instruction.arg).toByte()
-                    is PlayInstSkip -> (0b00010000 or instruction.arg).toByte()
-                    is PlayInstNop -> 0
-                    else -> throw InternalError("Bad instruction ${instruction.javaClass.simpleName}")
-                }
+        fun read(index: Int): Byte = when (index) {
+            in 0..9 -> {
+                val b = index * 2
+                (((patterns[b] and 0xF) shl 4) or (patterns[b + 1] and 0xF)).toByte()
             }
+            in 10..19 -> {
+                val b = (index - 10) * 2
+                ((((patterns[b] ushr 4) and 0xF) shl 4) or ((patterns[b + 1] ushr 4) and 0xF)).toByte()
+            }
+            in 20..29 -> {
+                val b = (index - 20) * 2
+                ((((patterns[b] ushr 8) and 0xF) shl 4) or ((patterns[b + 1] ushr 8) and 0xF)).toByte()
+            }
+            30 -> when (instruction) {
+                is PlayInstGoBack -> (0b10000000 or instruction.arg).toByte()
+                is PlayInstSkip   -> (0b00010000 or instruction.arg).toByte()
+                is PlayInstHalt   -> 1
+                else              -> 0
+            }
+            31 -> 0
             else -> throw InternalError("Bad offset $index")
         }
     }
@@ -1279,6 +1320,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal open class PlayInstruction(val arg: Int)
     internal class PlayInstGoBack(arg: Int) : PlayInstruction(arg)
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
+    internal object PlayInstHalt : PlayInstruction(0)
     internal object PlayInstNop : PlayInstruction(0)
 
     class Voice {
@@ -1304,7 +1346,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var tickInRow = 0
         var samplesIntoTick = 0.0
         var firstRow = true
-        val voices = Array(15) { Voice() }
+        val voices = Array(20) { Voice() }
     }
 
     class Playhead(
@@ -1316,9 +1358,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var masterVolume: Int = 0,
         var masterPan: Int = 128,
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
-        var bpm: Int = 120, // "stored" as 96
+        var bpm: Int = 120,
         var tickRate: Int = 6,
         var pcmUpload: Boolean = false,
+        var patBank1: Int = 0,
+        var patBank2: Int = 0,
 
         var pcmQueue: Queue<ByteArray> = Queue<ByteArray>(),
         var pcmQueueSizeIndex: Int = 0,
@@ -1350,8 +1394,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         fun read(index: Int): Byte = when (index) {
             0 -> position.toByte()
             1 -> position.ushr(8).toByte()
-            2 -> pcmUploadLength.toByte()
-            3 -> pcmUploadLength.ushr(8).toByte()
+            2 -> if (isPcmMode) pcmUploadLength.toByte() else patBank1.toByte()
+            3 -> if (isPcmMode) pcmUploadLength.ushr(8).toByte() else patBank2.toByte()
             4 -> masterVolume.toByte()
             5 -> masterPan.toByte()
             6 -> (isPcmMode.toInt(7) or isPlaying.toInt(4) or pcmQueueSizeIndex.and(15)).toByte()
@@ -1366,8 +1410,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             when (index) {
                 0 -> if (!isPcmMode) { position = (position and 0xff00) or byte; trackerState?.cuePos = position } else {}
                 1 -> if (!isPcmMode) { position = (position and 0x00ff) or (byte shl 8); trackerState?.cuePos = position } else {}
-                2 -> { pcmUploadLength = (pcmUploadLength and 0xff00) or byte }
-                3 -> { pcmUploadLength = (pcmUploadLength and 0x00ff) or (byte shl 8) }
+                2 -> if (isPcmMode) { pcmUploadLength = (pcmUploadLength and 0xff00) or byte } else { patBank1 = byte and 0x1F }
+                3 -> if (isPcmMode) { pcmUploadLength = (pcmUploadLength and 0x00ff) or (byte shl 8) } else { patBank2 = byte and 0x1F }
                 4 -> {
                     masterVolume = byte
                     audioDevice.setVolume(masterVolume / 255f)
@@ -1504,7 +1548,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
 
         fun setByte(offset: Int, byte: Int) = when (offset) {
-            0 -> { samplePtr = (samplePtr and 0x1ff00) or byte }
+            0 -> { samplePtr = (samplePtr and 0xfff00) or byte }
             1 -> { samplePtr = (samplePtr and 0x000ff) or (byte shl 8) }
 
             2 -> { sampleLength = (sampleLength and 0xff00) or byte }
