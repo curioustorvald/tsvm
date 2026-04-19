@@ -2167,6 +2167,10 @@ Table of 3.5 Minifloat values (CSV)
 11111,0.96875,1.96875,3.9375,7.875,15.75,31.5,63,126
 LSB
 
+## Tracker Note Effects
+
+Tracker Note Effects has been moved to `TAUD_NOTE_EFFECTS.md`
+
 --------------------------------------------------------------------------------
 
 Taud serialisation format
@@ -2199,7 +2203,7 @@ Rows of 16 bytes:
     Uint32  Song offset
     Uint8   Number of voices
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
-    Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=280)
+    Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
     Uint8   Initial Tickrate(0 is invalid)
     Byte[7] Reserved for future versions
 

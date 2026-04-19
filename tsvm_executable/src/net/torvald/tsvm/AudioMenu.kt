@@ -164,7 +164,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 FONT.draw(batch, "Tickrate", x, y + 6*FONT.H)
 
                 batch.color = COL_ACTIVE3
-                FONT.drawRalign(batch, "${ahead.trackerState?.cuePos}:${ahead.trackerState?.rowIndex?.toString(16)?.uppercase()?.padStart(2,'0')}", x + 84, y + 2*FONT.H)
+                FONT.drawRalign(batch, "${ahead.trackerState?.cuePos}:${ahead.trackerState?.rowIndex?.toString()?.uppercase()?.padStart(2,'0')}", x + 84, y + 2*FONT.H)
                 FONT.drawRalign(batch, "${ahead.masterVolume}", x + 84, y + 3*FONT.H)
                 FONT.drawRalign(batch, "${ahead.masterPan}", x + 84, y + 4*FONT.H)
                 FONT.drawRalign(batch, "${ahead.bpm}", x + 84, y + 5*FONT.H)
@@ -187,7 +187,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private fun bipolarCeil(d: Double) =  (if (d >= 0.0) ceil(d) else floor(d)).toInt()
     private fun bipolarFloor(d: Double) = (if (d >= 0.0) floor(d) else ceil(d)).toInt()
 
-    private val VOX_PER_VIEW = arrayOf(5,8,16)
+    private val VOX_PER_VIEW = arrayOf(5,13,17)
 
     private fun drawSoundscope(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float) {
         val gdxadev = ahead.audioDevice
@@ -357,9 +357,16 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 for (vi in 0 until VOICES) {
                                     val pat12 = cuePats[vi]
                                     if (pat12 == 0xFFF) {
-                                        // disabled voice — dimmed placeholder, same width as a live voice
-                                        batch.color = COL_SOUNDSCOPE_FORE
-                                        TINY.draw(batch, "(NO PATTERN DATA OR REACHED THE END OF THE SONG)                         ", cx, ry)
+                                        if (vi == 0) {
+                                            // disabled voice — dimmed placeholder, same width as a live voice
+                                            batch.color = COL_SOUNDSCOPE_FORE
+                                            TINY.draw(
+                                                batch,
+                                                "(NO PATTERN DATA OR REACHED THE END OF THE SONG)                         ",
+                                                cx,
+                                                ry
+                                            )
+                                        }
                                     } else {
                                         val localPat = pat12 and 0xFF
                                         val base = if (localPat < 128) 786432L + localPat * 512 + ri * 8
@@ -402,17 +409,24 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                             TINY.draw(batch, "$volEff.${vol.toString().padStart(2, '0')}", cx, ry)
                                             cx += 4 * TINY.W
                                         }
+                                        else if (scopeMode[index] == 1) {
+                                            batch.color = if (here) Color.WHITE else COL_VOL
+                                            TINY.draw(batch, vol.toString().padStart(2, '0'), cx, ry)
+                                            cx += 2 * TINY.W
+                                        }
                                         // pan
                                         if (scopeMode[index] == 0) {
                                             batch.color = if (here) Color.WHITE else COL_PAN
                                             TINY.draw(batch, "$panEff.${pan.toString().padStart(2, '0')}", cx, ry)
                                             cx += 4 * TINY.W
                                         }
-                                        if (scopeMode[index] < 2) {
+                                        if (scopeMode[index] == 0) {
                                             // effect opcode
                                             batch.color = if (here) Color.WHITE else COL_EFF
                                             TINY.draw(batch, eff.toString(16).padStart(2, '0').uppercase(), cx, ry)
                                             cx += 2 * TINY.W
+                                        }
+                                        if (scopeMode[index] == 0) {
                                             // effect argument
                                             batch.color = if (here) Color.WHITE else COL_EFFARG
                                             TINY.draw(batch, effArg.toString(16).padStart(4, '0').uppercase(), cx, ry)
