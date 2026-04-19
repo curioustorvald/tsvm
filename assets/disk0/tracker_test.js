@@ -47,7 +47,7 @@ instBytes[4] = 0x00; instBytes[5] = 0x7D;  // samplingRate = 32000
 instBytes[10] = 0x00; instBytes[11] = 0x01;  // sampleLoopEnd = 256 (whole sample)
 instBytes[12] = 1;                           // loopMode = 1 (forward)
 instBytes[16] = 255; instBytes[17] = 0;     // envelope: vol=255, hold
-audio.uploadInstrument(0, instBytes);
+audio.uploadInstrument(1, instBytes);
 
 // -- 3. Piano-roll builder -----------------------------------------------------
 // Source convention: C1=0, C2=12, C3=24, C4=36 (i.e. C3=24, octave every 12).
@@ -148,7 +148,7 @@ for (var p = 0; p < numPatterns; p++) {
         var off = r * 8;
         patBytes[off]     = noteVal & 0xFF;
         patBytes[off + 1] = (noteVal >> 8) & 0xFF;
-        patBytes[off + 2] = 0;              // instrument 0
+        patBytes[off + 2] = 1;              // instrument 1
         patBytes[off + 3] = 63;  // volume
         patBytes[off + 4] = 31;  // pan (centre)
     }

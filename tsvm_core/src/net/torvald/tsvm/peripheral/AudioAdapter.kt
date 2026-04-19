@@ -1226,6 +1226,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun triggerNote(voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
         if (instId != 0) voice.instrumentId = instId
         val inst = instruments[voice.instrumentId]
+        voice.tonePortaTarget = -1   // fresh note trigger cancels any running porta
         voice.samplePos = inst.samplePlayStart.toDouble()
         voice.forward = true
         voice.active = true
@@ -1301,7 +1302,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.vibratoActive = false
             voice.tremoloActive = false
             voice.retrigActive = false
-            voice.tonePortaTarget = -1
             voice.tempoSlideDir = 0
             voice.volColSlideUp = 0; voice.volColSlideDown = 0
             voice.panColSlideRight = 0; voice.panColSlideLeft = 0

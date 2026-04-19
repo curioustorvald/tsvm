@@ -238,7 +238,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 FONT.draw(batch, "Tickrate", x, y + 6*FONT.H)
 
                 batch.color = COL_ACTIVE3
-                FONT.drawRalign(batch, "${ahead.trackerState?.cuePos}:${ahead.trackerState?.rowIndex?.toString()?.uppercase()?.padStart(2,'0')}", x + 84, y + 2*FONT.H)
+                FONT.drawRalign(batch, "${ahead.trackerState?.cuePos?.toString(16)?.uppercase()?.padStart(2,'0')}:${ahead.trackerState?.rowIndex?.toString()?.uppercase()?.padStart(2,'0')}", x + 84, y + 2*FONT.H)
                 FONT.drawRalign(batch, "${ahead.masterVolume}", x + 84, y + 3*FONT.H)
                 FONT.drawRalign(batch, "${ahead.masterPan}", x + 84, y + 4*FONT.H)
                 FONT.drawRalign(batch, "${ahead.bpm}", x + 84, y + 5*FONT.H)
@@ -261,7 +261,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private fun bipolarCeil(d: Double) =  (if (d >= 0.0) ceil(d) else floor(d)).toInt()
     private fun bipolarFloor(d: Double) = (if (d >= 0.0) floor(d) else ceil(d)).toInt()
 
-    private val VOX_PER_VIEW = arrayOf(6,13,20)
+    private val VOX_PER_VIEW = arrayOf(6,20,20)
     private val VOL_SYM = arrayOf('@','^','&',' ')
     private val PAN_SYM = arrayOf('@','<','>',' ')
 
@@ -447,6 +447,10 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                         val localPat = pat12 and 0xFF
                                         val base = if (localPat < 128) 786432L + localPat * 512 + ri * 8
                                         else 851968L + (localPat - 128) * 512 + ri * 8
+
+                                        // perform correct bank change
+                                        audio.mmio_write(2, (pat12 ushr 8).toByte())
+                                        audio.mmio_write(3, (pat12 ushr 8).toByte())
 
                                         val noteLo  = audio.peek(base + 0).toUint()
                                         val noteHi  = audio.peek(base + 1).toUint()
