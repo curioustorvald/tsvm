@@ -759,7 +759,6 @@ def build_cue_sheet(order_list: list, num_pats_s3m: int, num_channels: int,
         if order == S3M_ORDER_END or cue_idx >= NUM_CUES:
             break
         if order == S3M_ORDER_SKIP:
-            cue_idx += 1
             continue
         orig = [order * num_channels + v for v in range(num_channels)]
         pats = [pat_remap[p] if pat_remap else p for p in orig]
