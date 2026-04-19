@@ -125,7 +125,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     internal val sampleBin = UnsafeHelper.allocate(770048L, this)
-    internal val instruments = Array(256) { TaudInst() }
+    internal val instruments = Array(256) { TaudInst(it) }
     internal val playdata = Array(4096) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(1024) { PlayCue() }
@@ -1080,13 +1080,79 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     //=========================================================================
     // Tracker Engine
     //
-    // Effect codes (non-canonical MVP; spec is silent on values):
-    //   0x00: no effect
-    //   0x01 arg: pitch slide up, arg = 4096-TET units per tick
-    //   0x02 arg: pitch slide down, arg = 4096-TET units per tick
-    //   0x0A arg: volume slide, high nibble = up/tick, low nibble = down/tick
-    //   0xEC arg: note cut at tick (arg & 0xFF)
+    // Effect opcodes follow base-36 digit values (see TAUD_NOTE_EFFECTS.md):
+    //   0x00       : no effect
+    //   0x0A..0x23 : letters A..Z (A=0x0A speed, B=0x0B order jump,
+    //                C=0x0C pattern break, D=0x0D vol slide, E=0x0E pitch
+    //                down, F=0x0F pitch up, G=0x10 tone porta,
+    //                H=0x11 vibrato, I=0x12 tremor, J=0x13 arpeggio,
+    //                K=0x14 K, L=0x15 L, O=0x18 sample offset,
+    //                Q=0x1A retrig, R=0x1B tremolo, S=0x1C subcommands,
+    //                T=0x1D tempo, U=0x1E fine vibrato, V=0x1F global vol).
+    //   K (0x14) and L (0x15) are intentionally no-op in the engine — the
+    //   converter is required to split them into a recall-only H/G plus a
+    //   volume-column slide cell.
     //=========================================================================
+
+    // 64-entry signed sine table (OpenMPT-style). See TAUD_NOTE_EFFECTS.md §H.
+    private val MOD_SIN_TABLE = intArrayOf(
+        0x00, 0x0C, 0x19, 0x25, 0x31, 0x3C, 0x47, 0x51,
+        0x5A, 0x62, 0x6A, 0x70, 0x75, 0x7A, 0x7D, 0x7E,
+        0x7F, 0x7E, 0x7D, 0x7A, 0x75, 0x70, 0x6A, 0x62,
+        0x5A, 0x51, 0x47, 0x3C, 0x31, 0x25, 0x19, 0x0C,
+        0x00, -0x0C, -0x19, -0x25, -0x31, -0x3C, -0x47, -0x51,
+        -0x5A, -0x62, -0x6A, -0x70, -0x75, -0x7A, -0x7D, -0x7E,
+        -0x7F, -0x7E, -0x7D, -0x7A, -0x75, -0x70, -0x6A, -0x62,
+        -0x5A, -0x51, -0x47, -0x3C, -0x31, -0x25, -0x19, -0x0C
+    )
+
+    // Funk repeat advance table (S $Fx00). See TAUD_NOTE_EFFECTS.md §S$Fx.
+    private val FUNK_TABLE = intArrayOf(
+        0, 5, 6, 7, 8, 0xA, 0xB, 0xD, 0x10, 0x13, 0x16, 0x1A, 0x20, 0x2B, 0x40, 0x80
+    )
+
+    // ST3-style fine-tune Hz reference offsets in 4096-TET units (S $2x00).
+    private val FINETUNE_OFFSET = intArrayOf(
+        -0x0154, -0x0132, -0x0111, -0x00E4, -0x00B8, -0x008B, -0x005D, -0x003B,
+        0x0000,  0x0023,  0x0046,  0x0074,  0x0098,  0x00C8,  0x00F9,  0x0110
+    )
+
+    // LFO sample for vibrato/tremolo waveforms; pos is the 8-bit phase accumulator.
+    // See TAUD_NOTE_EFFECTS.md §S$3x for shape semantics.
+    private fun lfoSample(pos: Int, wave: Int): Int {
+        val idx = (pos ushr 2) and 0x3F
+        return when (wave and 3) {
+            0 -> MOD_SIN_TABLE[idx]                                  // sine
+            1 -> 0x7F - (idx shl 2)                                  // ramp down
+            2 -> if (idx < 32) 0x7F else -0x7F                       // square
+            else -> ((Math.random() * 256).toInt() and 0xFF) - 0x80  // random
+        }
+    }
+
+    // Effect opcode constants (base-36 digit values).
+    // Letters A..Z map to 0x0A..0x23 (digit value 10..35).
+    private object EffectOp {
+        const val OP_NONE = 0x00
+        const val OP_A = 0x0A
+        const val OP_B = 0x0B
+        const val OP_C = 0x0C
+        const val OP_D = 0x0D
+        const val OP_E = 0x0E
+        const val OP_F = 0x0F
+        const val OP_G = 0x10
+        const val OP_H = 0x11
+        const val OP_I = 0x12
+        const val OP_J = 0x13
+        const val OP_K = 0x14
+        const val OP_L = 0x15
+        const val OP_O = 0x18
+        const val OP_Q = 0x1A
+        const val OP_R = 0x1B
+        const val OP_S = 0x1C
+        const val OP_T = 0x1D
+        const val OP_U = 0x1E
+        const val OP_V = 0x1F
+    }
 
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
         inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C3) / 4096.0)
@@ -1114,6 +1180,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun fetchTrackerSample(voice: Voice, inst: TaudInst): Double {
+        if (inst.index == 0) return 0.0
+
         val basePtr = inst.samplePtr
         val sampleLen = inst.sampleLength.coerceAtLeast(1)
         val loopStart = inst.sampleLoopStart.toDouble()
@@ -1123,8 +1191,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
         val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)
         val frac = voice.samplePos - i0.toDouble()
-        val s0 = (sampleBin[(basePtr + i0).coerceAtMost(binMax).toLong()].toUint() - 128) / 128.0
-        val s1 = (sampleBin[(basePtr + i1).coerceAtMost(binMax).toLong()].toUint() - 128) / 128.0
+        var b0 = sampleBin[(basePtr + i0).coerceAtMost(binMax).toLong()].toUint()
+        var b1 = sampleBin[(basePtr + i1).coerceAtMost(binMax).toLong()].toUint()
+        // S$Fx funk repeat: XOR the high bit of bytes whose loop-relative index
+        // is set in funkMask. Only meaningful when the sample has a loop region.
+        if (inst.funkMask != null && inst.sampleLoopEnd > inst.sampleLoopStart) {
+            val ls = inst.sampleLoopStart
+            if (i0 in ls until inst.sampleLoopEnd && inst.funkBit(i0 - ls)) b0 = b0 xor 0x80
+            if (i1 in ls until inst.sampleLoopEnd && inst.funkBit(i1 - ls)) b1 = b1 xor 0x80
+        }
+        val s0 = (b0 - 128) / 128.0
+        val s1 = (b1 - 128) / 128.0
         val sample = s0 + (s1 - s0) * frac
 
         if (voice.forward) {
@@ -1142,8 +1219,71 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return sample
     }
 
+    /**
+     * Trigger a fresh note on [voice]: load the instrument, reset sample position, kick off the envelope.
+     * Pulled out so S$Dx (note delay) can defer the same logic to a later tick.
+     */
+    private fun triggerNote(voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
+        if (instId != 0) voice.instrumentId = instId
+        val inst = instruments[voice.instrumentId]
+        voice.samplePos = inst.samplePlayStart.toDouble()
+        voice.forward = true
+        voice.active = true
+        voice.envIndex = 0
+        voice.envTimeSec = 0.0
+        voice.envVolume = inst.envelopes[0].volume / 255.0
+        voice.noteVal = noteVal
+        voice.basePitch = noteVal
+        voice.playbackRate = computePlaybackRate(inst, noteVal)
+        if (volOverride >= 0) {
+            voice.channelVolume = volOverride.coerceIn(0, 0x3F)
+        }
+        voice.rowVolume = voice.channelVolume
+        voice.noteWasCut = false
+        // Vibrato/tremolo retrigger: reset LFO position when waveform requests it.
+        if (voice.vibratoRetrig) voice.vibratoLfoPos = 0
+        if (voice.tremoloRetrig) voice.tremoloLfoPos = 0
+    }
+
+    private fun applyVolColumn(voice: Voice, value: Int, sel: Int) {
+        // value is the 6-bit cell field; sel is the 2-bit selector. See TAUD_NOTE_EFFECTS.md
+        // §"Volume column effects" for the multi-selector encoding.
+        when (sel) {
+            0 -> { voice.channelVolume = value.coerceIn(0, 0x3F); voice.rowVolume = voice.channelVolume }
+            1 -> voice.volColSlideUp = value
+            2 -> voice.volColSlideDown = value
+            3 -> {
+                if (value == 0) return
+
+                val mag = value and 0x1F
+                voice.rowVolume = if ((value and 0x20) != 0) (voice.rowVolume + mag).coerceAtMost(0x3F)
+                                  else (voice.rowVolume - mag).coerceAtLeast(0)
+                voice.channelVolume = voice.rowVolume
+            }
+        }
+    }
+
+    private fun applyPanColumn(voice: Voice, value: Int, sel: Int) {
+        when (sel) {
+            0 -> { voice.channelPan = (value shl 2) or (value ushr 4); voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63) }
+            1 -> voice.panColSlideRight = value
+            2 -> voice.panColSlideLeft = value
+            3 -> {
+                if (value == 0) return
+
+                val mag = value and 0x1F
+                voice.channelPan = if ((value and 0x20) != 0) (voice.channelPan + mag).coerceAtMost(0xFF)
+                                   else (voice.channelPan - mag).coerceAtLeast(0)
+                voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63)
+            }
+        }
+    }
+
     private fun applyTrackerRow(ts: TrackerState, playhead: Playhead) {
         val cue = cueSheet[ts.cuePos]
+        // Reset row-scope state before scanning channels.
+        if (!ts.patternDelayActive) ts.sexWinningChannel = -1
+
         for (vi in 0..19) {
             val patNum = cue.patterns[vi]
             if (patNum == 0xFFF) continue
@@ -1151,55 +1291,383 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val row = playdata[patIdx][ts.rowIndex]
             val voice = ts.voices[vi]
 
-            voice.rowVolume = row.volume
-            voice.rowPan = row.pan
+            // Reset per-row transient state.
             voice.cutAtTick = -1
-            voice.pitchSlideAmount = 0.0
-            voice.volSlidePerTick = 0
+            voice.noteDelayTick = -1
+            voice.slideMode = 0
+            voice.slideArg = 0
+            voice.arpActive = false
+            voice.tremorOn = 0
+            voice.vibratoActive = false
+            voice.tremoloActive = false
+            voice.retrigActive = false
+            voice.tonePortaTarget = -1
+            voice.tempoSlideDir = 0
+            voice.volColSlideUp = 0; voice.volColSlideDown = 0
+            voice.panColSlideRight = 0; voice.panColSlideLeft = 0
+            voice.rowEffect = row.effect
+            voice.rowEffectArg = row.effectArg
 
-            when (row.effect) {
-                0x01 -> voice.pitchSlideAmount = row.effectArg.toDouble()
-                0x02 -> voice.pitchSlideAmount = -row.effectArg.toDouble()
-                0x0A -> { val a = row.effectArg and 0xFF; voice.volSlidePerTick = ((a ushr 4) and 0xF) - (a and 0xF) }
-                0xEC -> voice.cutAtTick = row.effectArg and 0xFF
-            }
-
+            // ── Note ──
+            val toneG = (row.effect == EffectOp.OP_G)
             when (row.note) {
-                0xFFFF -> {}                  // no-op: continue current note unchanged
-                0x0000 -> voice.active = false // key-off (TODO: trigger envelope release phase)
-                0xFFFE -> voice.active = false // note cut: immediate silence
+                0xFFFF -> {}                                    // no-op
+                0x0000 -> voice.active = false                  // key-off (TODO release envelope)
+                0xFFFE -> voice.active = false                  // note cut
                 else -> {
-                    val inst = instruments[row.instrment]
-                    voice.instrumentId = row.instrment
-                    voice.samplePos = inst.samplePlayStart.toDouble()
-                    voice.forward = true
-                    voice.active = true
-                    voice.envIndex = 0
-                    voice.envTimeSec = 0.0
-                    voice.envVolume = inst.envelopes[0].volume / 255.0
-                    voice.noteVal = row.note
-                    voice.playbackRate = computePlaybackRate(inst, row.note)
+                    if (toneG && voice.active) {
+                        // Tone porta: target the note, do not retrigger sample.
+                        voice.tonePortaTarget = row.note
+                    } else if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD) {
+                        // Note delay: defer trigger to the requested tick.
+                        voice.noteDelayTick = (row.effectArg ushr 8) and 0xF
+                        voice.delayedNote = row.note
+                        voice.delayedInst = row.instrment
+                        voice.delayedVol = if (row.volume >= 0) row.volume else -1
+                    } else {
+                        triggerNote(voice, row.note, row.instrment, -1)
+                    }
                 }
             }
+
+            // ── Volume column (selectors per TAUD_NOTE_EFFECTS.md) ──
+            // The cell already separates value (volume) and selector (volumeEff).
+            applyVolColumn(voice, row.volume, row.volumeEff)
+            applyPanColumn(voice, row.pan, row.panEff)
+
+            // ── Effect column ──
+            applyEffectRow(ts, playhead, voice, vi, row.effect, row.effectArg)
+        }
+    }
+
+    /** Resolve a non-zero argument or recall from the cohort memory and return the effective arg. */
+    private fun resolveArg(arg: Int, mem: Int): Int = if (arg != 0) arg else mem
+
+    private fun applyEffectRow(ts: TrackerState, playhead: Playhead, voice: Voice, vi: Int, op: Int, rawArg: Int) {
+        when (op) {
+            EffectOp.OP_NONE -> {}
+            EffectOp.OP_A -> {
+                val tr = (rawArg ushr 8) and 0xFF
+                if (tr != 0) playhead.tickRate = tr
+            }
+            EffectOp.OP_B -> {
+                // Highest-priority B wins for the row (lowest channel index in spec); first-set wins by ascending channel scan.
+                if (ts.pendingOrderJump < 0) ts.pendingOrderJump = rawArg.coerceIn(0, 1023)
+            }
+            EffectOp.OP_C -> {
+                if (ts.pendingRowJump < 0) ts.pendingRowJump = rawArg.coerceIn(0, 63)
+            }
+            EffectOp.OP_D -> {
+                val arg = resolveArg(rawArg, voice.mem.d).also { if (rawArg != 0) voice.mem.d = it }
+                val hi = (arg ushr 8) and 0xFF
+                val lo = hi and 0x0F
+                val hin = (hi ushr 4) and 0x0F
+                when {
+                    hi == 0xFF -> { voice.rowVolume = (voice.rowVolume + 0xF).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }   // DFF quirk: fine up by F
+                    hin == 0xF && lo != 0 -> { voice.rowVolume = (voice.rowVolume - lo).coerceAtLeast(0); voice.channelVolume = voice.rowVolume }
+                    lo == 0xF && hin != 0 -> { voice.rowVolume = (voice.rowVolume + hin).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }
+                    hin == 0 && lo != 0 -> { voice.slideMode = 5; voice.slideArg = -lo }     // slide down per non-first tick
+                    lo == 0 && hin != 0 -> { voice.slideMode = 5; voice.slideArg = hin }     // slide up per non-first tick
+                }
+            }
+            EffectOp.OP_E -> {
+                val arg = resolveArg(rawArg, voice.mem.ef).also { if (rawArg != 0) voice.mem.ef = it }
+                if ((arg and 0xF000) == 0xF000) {
+                    val mag = arg and 0x0FFF
+                    voice.noteVal = (voice.noteVal - mag).coerceIn(0, 0xFFFE); voice.basePitch = voice.noteVal
+                    voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
+                } else {
+                    voice.slideMode = 1; voice.slideArg = -arg
+                }
+            }
+            EffectOp.OP_F -> {
+                val arg = resolveArg(rawArg, voice.mem.ef).also { if (rawArg != 0) voice.mem.ef = it }
+                if ((arg and 0xF000) == 0xF000) {
+                    val mag = arg and 0x0FFF
+                    voice.noteVal = (voice.noteVal + mag).coerceIn(0, 0xFFFE); voice.basePitch = voice.noteVal
+                    voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
+                } else {
+                    voice.slideMode = 2; voice.slideArg = arg
+                }
+            }
+            EffectOp.OP_G -> {
+                val arg = resolveArg(rawArg, voice.mem.g).also { if (rawArg != 0) voice.mem.g = it }
+                voice.tonePortaSpeed = arg
+                // tonePortaTarget was set in note-handling block above (or remains -1).
+            }
+            EffectOp.OP_H -> {
+                val sp = (rawArg ushr 8) and 0xFF
+                val dp = rawArg and 0xFF
+                if (sp != 0) voice.mem.huSpeed = sp
+                if (dp != 0) voice.mem.huDepth = dp
+                voice.vibratoActive = true
+                voice.vibratoFineShift = 6
+            }
+            EffectOp.OP_I -> {
+                val arg = resolveArg(rawArg, voice.mem.i).also { if (rawArg != 0) voice.mem.i = it }
+                voice.tremorOn = 1
+                voice.tremorOnTime = ((arg ushr 8) and 0xFF) + 1
+                voice.tremorOffTime = (arg and 0xFF) + 1
+            }
+            EffectOp.OP_J -> {
+                val arg = resolveArg(rawArg, voice.mem.j).also { if (rawArg != 0) voice.mem.j = it }
+                voice.arpActive = true
+                voice.arpOff1 = (arg ushr 8) and 0xFF
+                voice.arpOff2 = arg and 0xFF
+            }
+            EffectOp.OP_K, EffectOp.OP_L -> {} // engine no-op by design (converter splits them)
+            EffectOp.OP_O -> {
+                val arg = resolveArg(rawArg, voice.mem.o).also { if (rawArg != 0) voice.mem.o = it }
+                val inst = instruments[voice.instrumentId]
+                var off = arg
+                if (inst.loopMode != 0 && inst.sampleLoopEnd > inst.sampleLoopStart && off > inst.sampleLoopEnd) {
+                    val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
+                    off = inst.sampleLoopStart + ((off - inst.sampleLoopStart) % loopLen)
+                }
+                voice.samplePos = off.toDouble()
+            }
+            EffectOp.OP_Q -> {
+                val arg = resolveArg(rawArg, voice.mem.q)
+                val y = arg and 0xFF
+                if (y != 0) {
+                    voice.mem.q = arg
+                    voice.retrigInterval = y
+                    voice.retrigVolMod = (arg ushr 8) and 0xF
+                    voice.retrigActive = true
+                    // Counter persists across rows per spec.
+                }
+                // y == 0 → entire effect ignored, even memory (spec).
+            }
+            EffectOp.OP_R -> {
+                val sp = (rawArg ushr 8) and 0xFF
+                val dp = rawArg and 0xFF
+                if (sp != 0) voice.mem.rSpeed = sp
+                if (dp != 0) voice.mem.rDepth = dp
+                voice.tremoloActive = true
+            }
+            EffectOp.OP_S -> applySEffect(ts, voice, vi, rawArg)
+            EffectOp.OP_T -> {
+                val hi = (rawArg ushr 8) and 0xFF
+                if (hi != 0) {
+                    val tempoByte = hi
+                    playhead.bpm = (tempoByte + 0x18).coerceIn(24, 280)
+                } else {
+                    val low = rawArg and 0xFF
+                    when (low and 0xF0) {
+                        0x00 -> { voice.tempoSlideDir = -1; voice.tempoSlideAmount = low and 0x0F; voice.mem.tslide = low }
+                        0x10 -> { voice.tempoSlideDir = +1; voice.tempoSlideAmount = low and 0x0F; voice.mem.tslide = low }
+                    }
+                }
+            }
+            EffectOp.OP_U -> {
+                val sp = (rawArg ushr 8) and 0xFF
+                val dp = rawArg and 0xFF
+                if (sp != 0) voice.mem.huSpeed = sp
+                if (dp != 0) voice.mem.huDepth = dp
+                voice.vibratoActive = true
+                voice.vibratoFineShift = 8
+            }
+            EffectOp.OP_V -> {
+                val hi = (rawArg ushr 8) and 0xFF
+                playhead.globalVolume = hi
+            }
+        }
+    }
+
+    private fun applySEffect(ts: TrackerState, voice: Voice, vi: Int, arg: Int) {
+        val sub = (arg ushr 12) and 0xF
+        val x = (arg ushr 8) and 0xF
+        when (sub) {
+            0x1 -> voice.glissandoOn = (x != 0)
+            0x2 -> {
+                voice.noteVal = (voice.noteVal + FINETUNE_OFFSET[x]).coerceIn(0, 0xFFFE)
+                voice.basePitch = voice.noteVal
+                voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
+            }
+            0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
+            0x4 -> { voice.tremoloWave = x and 3; voice.tremoloRetrig = (x and 4) == 0 }
+            0x8 -> {
+                // S$80xx — full 8-bit pan; arg low byte is the value.
+                voice.channelPan = arg and 0xFF
+                voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63)
+            }
+            0xB -> {
+                if (x == 0) voice.loopStartRow = ts.rowIndex
+                else {
+                    if (voice.loopCount == 0) {
+                        voice.loopCount = x
+                        ts.pendingRowJump = voice.loopStartRow
+                    } else if (!ts.patternDelayActive) {
+                        voice.loopCount--
+                        if (voice.loopCount > 0) ts.pendingRowJump = voice.loopStartRow
+                    }
+                }
+            }
+            0xC -> if (x != 0) voice.cutAtTick = x
+            0xD -> {} // handled in note section above (note delay)
+            0xE -> {
+                // Pattern delay — first SEx in ascending channel order wins.
+                if (ts.sexWinningChannel < 0) {
+                    ts.sexWinningChannel = vi
+                    ts.patternDelayRemaining = x
+                }
+            }
+            0xF -> { voice.funkSpeed = x; if (x == 0) voice.funkAccumulator = 0 }
         }
     }
 
     private fun applyTrackerTick(ts: TrackerState, playhead: Playhead) {
         val tickSec = 2.5 / playhead.bpm
         for (voice in ts.voices) {
-            if (!voice.active) continue
+            if (!voice.active && voice.noteDelayTick < 0) continue
             val inst = instruments[voice.instrumentId]
-            if (voice.cutAtTick == ts.tickInRow) { voice.active = false; continue }
-            if (voice.pitchSlideAmount != 0.0) {
-                voice.noteVal = (voice.noteVal + voice.pitchSlideAmount).toInt().coerceIn(0, 0xFFFE)
-                voice.playbackRate = computePlaybackRate(inst, voice.noteVal)
+
+            // Note cut.
+            if (voice.cutAtTick == ts.tickInRow) {
+                voice.rowVolume = 0; voice.channelVolume = 0
+                voice.noteWasCut = true
             }
-            if (voice.volSlidePerTick != 0) {
-                voice.rowVolume = (voice.rowVolume + voice.volSlidePerTick).coerceIn(0, 63)
+
+            // Note delay — fire deferred trigger when the requested tick arrives.
+            if (voice.noteDelayTick == ts.tickInRow) {
+                triggerNote(voice, voice.delayedNote, voice.delayedInst, voice.delayedVol)
+                voice.noteDelayTick = -1
             }
+
+            if (!voice.active) { advanceEnvelope(voice, inst, tickSec); continue }
+
+            // Pitch slides (E/F coarse on tick > 0).
+            if (ts.tickInRow > 0 && (voice.slideMode == 1 || voice.slideMode == 2)) {
+                voice.noteVal = (voice.noteVal + voice.slideArg).coerceIn(0, 0xFFFE)
+                voice.basePitch = voice.noteVal
+            }
+
+            // Tone portamento (G).
+            if (voice.tonePortaTarget >= 0 && ts.tickInRow > 0) {
+                val target = voice.tonePortaTarget
+                val sp = voice.tonePortaSpeed
+                val delta = if (target > voice.noteVal) sp else -sp
+                voice.noteVal += delta
+                if ((delta > 0 && voice.noteVal >= target) || (delta < 0 && voice.noteVal <= target)) {
+                    voice.noteVal = target; voice.tonePortaTarget = -1
+                }
+                voice.basePitch = voice.noteVal
+            }
+
+            // Volume slides (D coarse on tick > 0).
+            if (ts.tickInRow > 0 && voice.slideMode == 5) {
+                voice.rowVolume = (voice.rowVolume + voice.slideArg).coerceIn(0, 0x3F)
+                voice.channelVolume = voice.rowVolume
+            }
+
+            // Volume-column slides (selectors 1/2 — per non-first tick).
+            if (ts.tickInRow > 0) {
+                if (voice.volColSlideUp != 0) {
+                    voice.rowVolume = (voice.rowVolume + voice.volColSlideUp).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume
+                }
+                if (voice.volColSlideDown != 0) {
+                    voice.rowVolume = (voice.rowVolume - voice.volColSlideDown).coerceAtLeast(0); voice.channelVolume = voice.rowVolume
+                }
+                if (voice.panColSlideRight != 0) {
+                    voice.channelPan = (voice.channelPan + voice.panColSlideRight).coerceAtMost(0xFF)
+                    voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63)
+                }
+                if (voice.panColSlideLeft != 0) {
+                    voice.channelPan = (voice.channelPan - voice.panColSlideLeft).coerceAtLeast(0)
+                    voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63)
+                }
+            }
+
+            // Tremor (I) — gates output volume.
+            if (voice.tremorOn != 0) {
+                voice.tremorTickInPhase++
+                val limit = if (voice.tremorPhaseOn) voice.tremorOnTime else voice.tremorOffTime
+                if (voice.tremorTickInPhase >= limit) { voice.tremorTickInPhase = 0; voice.tremorPhaseOn = !voice.tremorPhaseOn }
+                if (!voice.tremorPhaseOn) voice.rowVolume = 0
+            }
+
+            // Vibrato (H/U) — applied as base-pitch overlay.
+            var pitchToMixer = voice.noteVal
+            if (voice.vibratoActive) {
+                val sine = lfoSample(voice.vibratoLfoPos, voice.vibratoWave)
+                val pitchDelta = (sine * voice.mem.huDepth) shr voice.vibratoFineShift
+                pitchToMixer = (voice.noteVal + pitchDelta).coerceIn(0, 0xFFFE)
+                voice.vibratoLfoPos = (voice.vibratoLfoPos + voice.mem.huSpeed * 4) and 0xFF
+            }
+
+            // Glissando (S$1x) — snap pitchToMixer to nearest semitone but leave noteVal smooth.
+            if (voice.glissandoOn) {
+                val semis = ((pitchToMixer * 12 + 2048) / 4096)
+                pitchToMixer = (semis * 4096 / 12).coerceIn(0, 0xFFFE)
+            }
+
+            // Tremolo (R) — modulates output volume around base.
+            if (voice.tremoloActive) {
+                val sine = lfoSample(voice.tremoloLfoPos, voice.tremoloWave)
+                val volDelta = (sine * voice.mem.rDepth) shr 9
+                voice.rowVolume = (voice.channelVolume + volDelta).coerceIn(0, 0x3F)
+                voice.tremoloLfoPos = (voice.tremoloLfoPos + voice.mem.rSpeed * 4) and 0xFF
+            }
+
+            // Arpeggio (J) — overrides pitchToMixer for this tick (overlay on basePitch).
+            if (voice.arpActive) {
+                val voiceIdx = ts.tickInRow % 3
+                val arpDelta = when (voiceIdx) { 1 -> voice.arpOff1 shl 8; 2 -> voice.arpOff2 shl 8; else -> 0 }
+                pitchToMixer = (voice.basePitch + arpDelta).coerceIn(0, 0xFFFE)
+                voice.lastArpVoice = voiceIdx
+            }
+
+            // Q retrigger.
+            if (voice.retrigActive && !voice.noteWasCut) {
+                voice.retrigCounter++
+                if (voice.retrigCounter >= voice.retrigInterval) {
+                    voice.retrigCounter = 0
+                    voice.samplePos = instruments[voice.instrumentId].samplePlayStart.toDouble()
+                    voice.envIndex = 0; voice.envTimeSec = 0.0
+                    voice.rowVolume = applyRetrigVolMod(voice.rowVolume, voice.retrigVolMod)
+                    voice.channelVolume = voice.rowVolume
+                }
+            }
+
+            // Update playback rate from final pitchToMixer.
+            voice.playbackRate = computePlaybackRate(inst, pitchToMixer)
+
             advanceEnvelope(voice, inst, tickSec)
         }
+
+        // Tempo slide — applied once per tick at the playhead level (any channel that armed it).
+        for (voice in ts.voices) {
+            if (voice.tempoSlideDir != 0 && ts.tickInRow > 0) {
+                val tempoByte = (playhead.bpm - 0x18 + voice.tempoSlideDir * voice.tempoSlideAmount).coerceIn(0, 0xFF)
+                playhead.bpm = (tempoByte + 0x18).coerceIn(24, 280)
+            }
+        }
+
+        // Funk repeat (S$Fx) — advance bit-mask per tick on instruments with active funkSpeed.
+        for (voice in ts.voices) {
+            if (voice.funkSpeed == 0 || !voice.active) continue
+            val inst = instruments[voice.instrumentId]
+            if (inst.sampleLoopEnd <= inst.sampleLoopStart) continue
+            voice.funkAccumulator += FUNK_TABLE[voice.funkSpeed and 0xF]
+            while (voice.funkAccumulator >= 0x80) {
+                voice.funkAccumulator -= 0x80
+                val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
+                inst.toggleFunkBit(voice.funkWritePos % loopLen)
+                voice.funkWritePos = (voice.funkWritePos + 1) % loopLen
+            }
+        }
     }
+
+    private fun applyRetrigVolMod(vol: Int, x: Int): Int = when (x and 0xF) {
+        0, 8 -> vol
+        1 -> vol - 0x01; 2 -> vol - 0x02; 3 -> vol - 0x04; 4 -> vol - 0x08; 5 -> vol - 0x10
+        6 -> vol * 2 / 3
+        7 -> vol shr 1
+        9 -> vol + 0x01; 0xA -> vol + 0x02; 0xB -> vol + 0x04; 0xC -> vol + 0x08; 0xD -> vol + 0x10
+        0xE -> vol * 3 / 2
+        0xF -> vol shl 1
+        else -> vol
+    }.coerceIn(0, 0x3F)
 
     private fun advanceTrackerCue(ts: TrackerState, playhead: Playhead) {
         val instr = cueSheet[ts.cuePos].instruction
@@ -1214,8 +1682,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     internal fun generateTrackerAudio(playhead: Playhead): ByteArray? {
         val ts = playhead.trackerState ?: return null
-        val bpm = playhead.bpm
-        val spt = SAMPLING_RATE * 2.5 / bpm
 
         val out = ByteArray(TRACKER_CHUNK * 2)
 
@@ -1225,6 +1691,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
 
         for (n in 0 until TRACKER_CHUNK) {
+            // Recompute samples-per-tick every iteration since T/T-slide can mutate BPM mid-row.
+            val spt = SAMPLING_RATE * 2.5 / playhead.bpm
             ts.samplesIntoTick += 1.0
             if (ts.samplesIntoTick >= spt) {
                 ts.samplesIntoTick -= spt
@@ -1232,30 +1700,73 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.tickInRow++
                 if (ts.tickInRow >= playhead.tickRate) {
                     ts.tickInRow = 0
-                    ts.rowIndex++
-                    if (ts.rowIndex >= 64) {
-                        ts.rowIndex = 0
-                        advanceTrackerCue(ts, playhead)
-                    }
-                    applyTrackerRow(ts, playhead)
+                    advanceRow(ts, playhead)
                 }
             }
 
             var mixL = 0.0
             var mixR = 0.0
+            val gvol = playhead.globalVolume / 255.0
             for (voice in ts.voices) {
                 if (!voice.active) continue
                 val s = fetchTrackerSample(voice, instruments[voice.instrumentId])
-                val vol = voice.envVolume * voice.rowVolume / 63.0 * playhead.masterVolume / 255.0
+                val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * playhead.masterVolume / 255.0
                 mixL += s * vol * (63 - voice.rowPan) / 63.0
                 mixR += s * vol * voice.rowPan / 63.0
             }
 
-            out[n * 2]     = ((mixL.coerceIn(-1.0, 1.0) * 127 + 128).toInt()).toByte()
-            out[n * 2 + 1] = ((mixR.coerceIn(-1.0, 1.0) * 127 + 128).toInt()).toByte()
+            ts.mixLeft[n]  = mixL.toFloat().coerceIn(-1.0f, 1.0f)
+            ts.mixRight[n] = mixR.toFloat().coerceIn(-1.0f, 1.0f)
+        }
+
+        pcm32fToPcm8(ts.mixLeft, ts.mixRight, TRACKER_CHUNK)
+        for (n in 0 until TRACKER_CHUNK) {
+            out[n * 2]     = tadDecodedBin[n * 2L]
+            out[n * 2 + 1] = tadDecodedBin[n * 2L + 1]
         }
 
         return out
+    }
+
+    /**
+     * Advance to the next row. Resolves pending B/C jumps and pattern-delay repeats.
+     * Called once when [TrackerState.tickInRow] has just wrapped past [Playhead.tickRate].
+     */
+    private fun advanceRow(ts: TrackerState, playhead: Playhead) {
+        // Pattern delay (S$Ex): replay the same row patternDelayRemaining more times.
+        if (ts.patternDelayRemaining > 0) {
+            ts.patternDelayRemaining--
+            ts.patternDelayActive = true
+            applyTrackerRow(ts, playhead)
+            return
+        }
+        ts.patternDelayActive = false
+
+        val pendingB = ts.pendingOrderJump
+        val pendingC = ts.pendingRowJump
+        ts.pendingOrderJump = -1
+        ts.pendingRowJump = -1
+
+        when {
+            pendingB >= 0 -> {
+                ts.cuePos = pendingB.coerceAtMost(1023)
+                ts.rowIndex = if (pendingC >= 0) pendingC else 0
+                playhead.position = ts.cuePos
+            }
+            pendingC >= 0 -> {
+                // Pattern break — advance order by one (or honour cue's own instruction), then jump to row.
+                advanceTrackerCue(ts, playhead)
+                ts.rowIndex = pendingC.coerceIn(0, 63)
+            }
+            else -> {
+                ts.rowIndex++
+                if (ts.rowIndex >= 64) {
+                    ts.rowIndex = 0
+                    advanceTrackerCue(ts, playhead)
+                }
+            }
+        }
+        applyTrackerRow(ts, playhead)
     }
 
     internal data class PlayCue(
@@ -1323,21 +1834,118 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal object PlayInstHalt : PlayInstruction(0)
     internal object PlayInstNop : PlayInstruction(0)
 
+    /** Per-channel effect memory cohorts and private slots (TAUD_NOTE_EFFECTS.md §6). */
+    class MemorySlots {
+        // Shared E/F (pitch slide). Stores the raw arg; mode is recovered from arg layout.
+        var ef: Int = 0
+        // G (tone porta) — private speed.
+        var g: Int = 0
+        // Shared H/U vibrato — separate speed and depth fields persist across both.
+        var huSpeed: Int = 0
+        var huDepth: Int = 0
+        // R (tremolo) — private speed and depth.
+        var rSpeed: Int = 0
+        var rDepth: Int = 0
+        // Private slots
+        var d: Int = 0
+        var i: Int = 0
+        var j: Int = 0
+        var o: Int = 0
+        var q: Int = 0
+        var tslide: Int = 0
+    }
+
     class Voice {
         var active = false
         var instrumentId = 0
         var samplePos = 0.0
         var playbackRate = 1.0
         var forward = true
-        var rowVolume = 63
-        var rowPan = 32
+
+        // Volumes: channel volume is the persistent base; rowVolume tracks per-tick output (set per row from channel volume + volume column).
+        var channelVolume = 0x3F           // $00..$3F (default full)
+        var rowVolume = 63                 // $00..$3F effective output volume after slides
+        var channelPan = 0x80              // 8-bit; $80 centre. Cell column packs into 6-bit, S$80xx writes the full 8-bit.
+        var rowPan = 32                    // 6-bit pan used by mixer, derived from channelPan
+
         var envIndex = 0
         var envTimeSec = 0.0
         var envVolume = 1.0
-        var noteVal = 0xFFFF
-        var pitchSlideAmount = 0.0  // 4096-TET units per tick; +up, -down
-        var volSlidePerTick = 0
+
+        // Pitch state (4096-TET units, signed when slid).
+        var noteVal = 0xFFFF               // The currently sounding base note (no per-row vibrato/arp added)
+        var basePitch = 0x4000             // Saved pre-effect pitch for vibrato/arp/glissando overlay
+
+        // Per-row effect state (set in applyTrackerRow, consumed by applyTrackerTick).
+        var rowEffect = 0
+        var rowEffectArg = 0
+        var slideMode = 0                  // 0 = none, 1 = pitch coarse-down, 2 = pitch coarse-up, 3 = porta, 4 = vol-slide modes packed in slideArg
+        var slideArg = 0                   // generic slide arg (volume nibbles or pitch units per tick)
+        var tonePortaTarget = -1           // -1 if inactive
+        var tonePortaSpeed = 0
+        var arpOff1 = 0
+        var arpOff2 = 0
+        var arpActive = false
+        var lastArpVoice = 0               // 0 / 1 / 2 — which arp voice we ended on (J-after-arp pitch carry)
+        var tremorOn = 0                   // 0 = inactive, 1 = active row (use I args)
+        var tremorOnTime = 1
+        var tremorOffTime = 1
+        var tremorPhaseOn = true
+        var tremorTickInPhase = 0
+
+        // Vibrato (H / U) — uses memHU.
+        var vibratoActive = false
+        var vibratoLfoPos = 0              // 8-bit phase
+        var vibratoWave = 0                // 0..3
+        var vibratoRetrig = true
+        var vibratoFineShift = 6           // 6 for H, 8 for U
+
+        // Tremolo (R) — uses memR.
+        var tremoloActive = false
+        var tremoloLfoPos = 0
+        var tremoloWave = 0
+        var tremoloRetrig = true
+
+        // Glissando flag (S$1x).
+        var glissandoOn = false
+
+        // Q retrigger.
+        var retrigCounter = 0
+        var retrigInterval = 0
+        var retrigVolMod = 0
+        var retrigActive = false
+
+        // Note delay (S$Dx) — buffered trigger (-1 = no delay).
+        var noteDelayTick = -1
+        var delayedNote = 0
+        var delayedInst = 0
+        var delayedVol = -1
+
+        // Note cut (S$Cx).
         var cutAtTick = -1
+        var noteWasCut = false             // suppresses Q retrigger after cut
+
+        // Funk repeat (S$Fx) — non-destructive bit XOR mask is per-instrument; per-channel state tracks accumulator + write pointer.
+        var funkSpeed = 0                  // 0 = off
+        var funkAccumulator = 0
+        var funkWritePos = 0
+
+        // Pattern loop (S$Bx) — per-channel state.
+        var loopStartRow = 0
+        var loopCount = 0
+
+        // Tempo slide (T $00xy) — per-channel because T is a per-channel effect, but we apply globally via playhead.
+        var tempoSlideDir = 0              // 0 = none, -1 = down, +1 = up
+        var tempoSlideAmount = 0
+
+        // Volume / pan column slides (selectors 1/2/3 from TAUD_NOTE_EFFECTS.md §"Volume column effects").
+        var volColSlideUp = 0
+        var volColSlideDown = 0
+        var panColSlideRight = 0
+        var panColSlideLeft = 0
+
+        // Effect-recall memory for this voice.
+        val mem = MemorySlots()
     }
 
     class TrackerState {
@@ -1347,6 +1955,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var samplesIntoTick = 0.0
         var firstRow = true
         val voices = Array(20) { Voice() }
+
+        // Pending row-end events (set during a row by B/C; consumed at row end).
+        var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
+        var pendingRowJump = -1            // -1 = none; otherwise the row index for the next pattern
+
+        // Pattern-delay state (S$Ex) — number of additional row-repetitions remaining.
+        var patternDelayRemaining = 0
+        var patternDelayActive = false     // true while inside a delay block (gates SBx decrement)
+
+        // Channel index of the SEx that won this row (lowest channel wins ties).
+        var sexWinningChannel = -1
+
+        // Pre-allocated mix buffers for dither path (reused each audio chunk).
+        val mixLeft  = FloatArray(TRACKER_CHUNK)
+        val mixRight = FloatArray(TRACKER_CHUNK)
     }
 
     class Playhead(
@@ -1358,11 +1981,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var masterVolume: Int = 0,
         var masterPan: Int = 128,
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
-        var bpm: Int = 120,
+        var bpm: Int = 125,                // BPM, derived from tempoByte + 24. Spec default $65 ⇒ 125 BPM.
         var tickRate: Int = 6,
         var pcmUpload: Boolean = false,
         var patBank1: Int = 0,
         var patBank2: Int = 0,
+        var globalVolume: Int = 0x80,      // 8-bit, default $80 (spec §5). Mutated by V $xx00.
 
         var pcmQueue: Queue<ByteArray> = Queue<ByteArray>(),
         var pcmQueueSizeIndex: Int = 0,
@@ -1443,10 +2067,29 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             pcmUploadLength = 0
             isPlaying = false
             pcmQueueSizeIndex = 2
+            // Spec §5 defaults — applied on every reset so song-start state is well-defined.
+            bpm = 125
+            tickRate = 6
+            globalVolume = 0x80
             trackerState?.let { ts ->
                 ts.cuePos = 0; ts.rowIndex = 0; ts.tickInRow = 0
                 ts.samplesIntoTick = 0.0; ts.firstRow = true
-                ts.voices.forEach { it.active = false }
+                ts.pendingOrderJump = -1; ts.pendingRowJump = -1
+                ts.patternDelayRemaining = 0; ts.patternDelayActive = false
+                ts.sexWinningChannel = -1
+                ts.voices.forEach {
+                    it.active = false
+                    it.channelVolume = 0x3F
+                    it.rowVolume = 0x3F
+                    it.channelPan = 0x80
+                    it.rowPan = 32
+                    it.glissandoOn = false
+                    it.loopStartRow = 0
+                    it.loopCount = 0
+                    it.funkSpeed = 0
+                    it.funkAccumulator = 0
+                    it.funkWritePos = 0
+                }
             }
         }
 
@@ -1509,6 +2152,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
     data class TaudInst(
+        var index: Int,
+
         var samplePtr: Int, // 20-bit number
         var sampleLength: Int,
         var samplingRate: Int,
@@ -1519,7 +2164,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var loopMode: Int,
         var envelopes: Array<TaudInstVolEnv> // first int: volume (0..255), second int: offsets (minifloat indices)
     ) {
-        constructor() : this(0, 0, 0, 0, 0, 0, 0, Array(24) { TaudInstVolEnv(0, ThreeFiveMiniUfloat(0)) })
+        constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, Array(24) { TaudInstVolEnv(0, ThreeFiveMiniUfloat(0)) })
+
+        // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
+        // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
+        var funkMask: ByteArray? = null
+        fun toggleFunkBit(loopOffset: Int) {
+            val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)
+            val mask = funkMask ?: ByteArray((len + 7) / 8).also { funkMask = it }
+            val idx = loopOffset.coerceIn(0, len - 1)
+            mask[idx / 8] = (mask[idx / 8].toInt() xor (1 shl (idx and 7))).toByte()
+        }
+        fun funkBit(loopOffset: Int): Boolean {
+            val mask = funkMask ?: return false
+            val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)
+            val idx = loopOffset.coerceIn(0, len - 1)
+            return (mask[idx / 8].toInt() ushr (idx and 7)) and 1 != 0
+        }
 
         fun getByte(offset: Int): Byte = when (offset) {
             0 -> samplePtr.toByte()

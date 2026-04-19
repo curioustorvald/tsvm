@@ -676,24 +676,31 @@ on sample byte read during loop playback:
 
 # Volume column effects
 
-The volume column of each cell can carry a secondary effect, encoded as a one-digit selector followed by a two-hex-digit value (`N.$xx`). The two defined selectors are:
+Each cell carries a 6-bit value field plus a 2-bit selector field for the volume column. The four selectors are:
 
-- **`0.$xx` — Set volume** to `$xx` (clipped to $3F). Equivalent to a note's default volume.
-- **`1.$xy` — Volume slide** by `$xy`, with `$x` as up-slide amount and `$y` as down-slide amount, using the same encoding as D. Fine slides (`1.$Fx` and `1.$xF`) fire on tick 0 only; other values fire on ticks > 0.
+- **`0.$xx` — Set volume** to `$xx` (6-bit, $00..$3F). Equivalent to a note's default volume.
+- **`1.$xx` — Volume slide up** by `$xx` per non-first tick (6-bit). Volume clamps at $3F.
+- **`2.$xx` — Volume slide down** by `$xx` per non-first tick (6-bit). Volume clamps at $00.
+- **`3.$Sx` — Fine volume slide** on tick 0 only. The high bit `$S` of the value selects direction (0 = down, 1 = up); the low 5 bits `$x` ($00..$1F) are the magnitude. Equivalent in scale to `D $xF00` / `D $Fy00` but with a 5-bit cap. Fires once per row regardless of speed.
 
 Volume-column effects do not consume the main effect slot; a cell can carry both (for instance, a tone portamento in the effect slot and a volume slide in the volume column).
+
+When the converter folds an ST3 K, L, M, or N effect into the volume column, the slide-up / slide-down nibbles map to selectors 1 / 2 (clamped to 6 bits — values above $3F clip).
+
+NOTE: **`3.00` — is No-op**
 
 ---
 
 # Panning column effects
 
-The optional panning column carries its own one-digit selectors:
+The panning column uses the same 6-bit value + 2-bit selector layout:
 
-- **`0.$xx` — Set pan** to `$xx` ($00 left, $FF right, $80 centre). Equivalent to S $80xx but without consuming the effect slot.
-- **`1.$xy` — Pan slide** by `$xy`, with `$x` as left-slide amount and `$y` as right-slide amount, using the same encoding as D. There is no fine slide, as ST3 does not have panning slides.
+- **`0.$xx` — Set pan** (6-bit, $00..$3F mapped onto the channel's 8-bit pan space; $01 = full left, $1F = centre-left, $20 = centre-right, $3F = full right). For 8-bit precision use `S $80xx` instead.
+- **`1.$xx` — Pan slide right** by `$xx` per non-first tick.
+- **`2.$xx` — Pan slide left** by `$xx` per non-first tick.
+- **`3.$Sx` — Fine pan slide** on tick 0 only, same direction-bit encoding as the volume column's selector 3.
 
-
-Additional selectors are reserved for future expansion.
+NOTE: **`3.00` — is No-op**
 
 ---
 

@@ -346,6 +346,8 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         drawMenu(fbatch, (panelsX - 1f) * windowWidth, (panelsY - 1f) * windowHeight)
     }
 
+
+
     private fun drawVMtoCanvas(delta: Float, vm: VM?, pposX: Int, pposY: Int) {
         // assuming the reference adapter of 560x448
         val xoff = pposX * windowWidth.toFloat()

@@ -5,18 +5,20 @@ Usage:
     python3 s3m2taud.py input.s3m output.taud [-v]
 
 Limits:
-    - Up to 15 S3M channels (excess disabled; hard error if pattern count
-      × channel count > 256).
+    - Up to 20 S3M channels (excess disabled; hard error if pattern count
+      × channel count > 4095).
     - Sample bin is 770048 bytes; if all samples together exceed this, every
       sample is globally resampled down (with c2spd adjusted) so pitch is
       preserved.
     - AdLib instruments are skipped.
-    - Effects mapped: D (vol-slide), E/F (pitch slide, rough approx),
-      SC (note-cut), A (initial speed), T (initial BPM). Others dropped.
 
-Pitch-slide approximation:
-    Amiga-period mode: taud_arg ≈ s3m_arg * 2  (mid-register heuristic)
-    Linear-slide mode: taud_arg = s3m_arg * 4   (exact)
+Effect support:
+    Full A..Z dispatch per TAUD_NOTE_EFFECTS.md "ProTracker to Taud conversion
+    table" and "ScreamTracker 3 conversion notes". ST3 shared-memory recalls
+    (D/E/F/I/J/K/L/Q/R/S with $00 arg) are eagerly resolved per channel.
+    Cxx is BCD-decoded. K/L are split into H $0000 / G $0000 + volume-column
+    slide. M/N/X/P fold into volume / pan columns. W (global vol slide) and
+    Y (panbrello) are dropped with a -v warning.
 """
 
 import argparse
@@ -92,6 +94,44 @@ NOTE_NOP    = 0xFFFF
 NOTE_KEYOFF = 0x0000
 NOTE_CUT    = 0xFFFE
 TAUD_C3     = 0x4000
+
+# Taud effect opcode bytes (base-36: 0..9 → 0x00..0x09, A..Z → 0x0A..0x23)
+TOP_NONE = 0x00
+TOP_A    = 0x0A   # set tick speed
+TOP_B    = 0x0B   # jump to order
+TOP_C    = 0x0C   # break to row
+TOP_D    = 0x0D   # volume slide
+TOP_E    = 0x0E   # pitch slide down
+TOP_F    = 0x0F   # pitch slide up
+TOP_G    = 0x10   # tone porta
+TOP_H    = 0x11   # vibrato
+TOP_I    = 0x12   # tremor
+TOP_J    = 0x13   # microtonal arpeggio
+TOP_K    = 0x14   # vibrato + vol slide (engine no-op; converter splits)
+TOP_L    = 0x15   # tone porta + vol slide (engine no-op; converter splits)
+TOP_O    = 0x18   # sample offset
+TOP_Q    = 0x1A   # retrigger
+TOP_R    = 0x1B   # tremolo
+TOP_S    = 0x1C   # sub-effects
+TOP_T    = 0x1D   # tempo set/slide
+TOP_U    = 0x1E   # fine vibrato
+TOP_V    = 0x1F   # global volume
+
+# Volume / pan column selectors (2-bit field, packed into top of vol/pan byte).
+SEL_SET  = 0   # 6-bit value: set vol / pan
+SEL_UP   = 1   # 6-bit per-tick slide up / right
+SEL_DOWN = 2   # 6-bit per-tick slide down / left
+SEL_FINE = 3   # 1-bit dir + 5-bit magnitude, fired on tick 0
+
+# 12-TET semitone → Taud J-arpeggio byte (high byte of pitch delta).
+# byte = round(semitone * 4096 / 12 / 256) = round(semitone * 4 / 3).
+J_SEMI_TABLE = [0x00, 0x01, 0x03, 0x04, 0x05, 0x07, 0x08, 0x09,
+                0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x11, 0x13, 0x14]
+
+# ST3's single shared memory slot backs these effects.
+ST3_SHARED_EFFECTS = frozenset({
+    EFF_D, EFF_E, EFF_F, EFF_I, EFF_J, EFF_K, EFF_L, EFF_Q, EFF_R, EFF_S
+})
 
 
 # ── S3M parser ───────────────────────────────────────────────────────────────
@@ -296,31 +336,202 @@ def encode_note(s3m_note: int) -> int:
     return max(1, min(0xFFFD, val))
 
 
-def encode_effect(cmd: int, arg: int, linear: bool) -> tuple:
-    """Return (taud_op, taud_arg16) or (0, 0) for no-op."""
+def _d_arg_to_col(arg: int):
+    """Convert an ST3 D-style two-nibble vol/pan slide arg into a column override.
+
+    Returns (selector, value) or None for no-op. Volume column treats
+    selector 1 as up / 2 as down; pan column reuses 1 = right, 2 = left.
+    """
+    if arg == 0:
+        return None
+    hi = (arg >> 4) & 0xF
+    lo = arg & 0xF
+    if hi == 0xF and lo > 0:
+        return (SEL_FINE, lo & 0x1F)              # fine slide down (dir bit 0)
+    if lo == 0xF and hi > 0:
+        return (SEL_FINE, (hi & 0x1F) | 0x20)     # fine slide up (dir bit 1)
+    if hi > 0 and lo == 0:
+        return (SEL_UP, hi)
+    if lo > 0 and hi == 0:
+        return (SEL_DOWN, lo)
+    # Both nibbles non-zero, neither $F → ambiguous; ST3 prefers up.
+    return (SEL_UP, hi)
+
+
+def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
+    """Return (taud_op, taud_arg16, vol_override, pan_override).
+
+    vol/pan_override is None or (selector, value). The caller is responsible
+    for resolving ST3 zero-arg recalls before this point — see
+    resolve_st3_recalls().
+    """
+    if cmd == 0:
+        return (TOP_NONE, 0, None, None)
+
+    if cmd == EFF_A:
+        if arg == 0:
+            return (TOP_NONE, 0, None, None)
+        return (TOP_A, (arg & 0xFF) << 8, None, None)
+
+    if cmd == EFF_B:
+        return (TOP_B, arg & 0xFF, None, None)
+
+    if cmd == EFF_C:
+        # ST3 stores break-row as BCD: $10 means decimal 10.
+        bcd_row = ((arg >> 4) & 0xF) * 10 + (arg & 0xF)
+        if bcd_row >= PATTERN_ROWS:
+            bcd_row = 0
+        return (TOP_C, bcd_row & 0xFF, None, None)
+
     if cmd == EFF_D:
-        # Volume slide: same nibble layout
-        return (0x0A, arg & 0xFF)
-    if cmd == EFF_E:
-        # Porta down
-        if linear:
-            targ = min(arg * 4, 0xFFFF)
-        else:
-            targ = min(arg * 2, 0xFFFF)
-        return (0x02, targ)
-    if cmd == EFF_F:
-        # Porta up
-        if linear:
-            targ = min(arg * 4, 0xFFFF)
-        else:
-            targ = min(arg * 2, 0xFFFF)
-        return (0x01, targ)
+        # D-style four-form arg passed through verbatim in the high byte.
+        return (TOP_D, (arg & 0xFF) << 8, None, None)
+
+    if cmd in (EFF_E, EFF_F):
+        # ST3 slide unit = 1/16 semitone = $0015 Taud units (per spec PT table).
+        op = TOP_E if cmd == EFF_E else TOP_F
+        hi = (arg >> 4) & 0xF
+        lo = arg & 0xF
+        if hi == 0xF and lo > 0:
+            return (op, 0xF000 | ((lo * 0x15) & 0xFFF), None, None)
+        if hi == 0xE and lo > 0:
+            return (op, 0xF000 | ((lo * 0x05) & 0xFFF), None, None)
+        return (op, (arg * 0x15) & 0xFFFF, None, None)
+
+    if cmd == EFF_G:
+        return (TOP_G, (arg * 0x15) & 0xFFFF, None, None)
+
+    if cmd in (EFF_H, EFF_I, EFF_R, EFF_U):
+        op = {EFF_H: TOP_H, EFF_I: TOP_I, EFF_R: TOP_R, EFF_U: TOP_U}[cmd]
+        hi = (arg >> 4) & 0xF
+        lo = arg & 0xF
+        return (op, ((hi * 0x11) << 8) | (lo * 0x11), None, None)
+
+    if cmd == EFF_J:
+        hi_semi = (arg >> 4) & 0xF
+        lo_semi = arg & 0xF
+        return (TOP_J, (J_SEMI_TABLE[hi_semi] << 8) | J_SEMI_TABLE[lo_semi],
+                None, None)
+
+    if cmd == EFF_K:
+        # K = vibrato continuation + vol slide; engine treats K as no-op.
+        # Split into: H $0000 (recall vibrato from HU memory) + vol-col slide.
+        return (TOP_H, 0x0000, _d_arg_to_col(arg), None)
+
+    if cmd == EFF_L:
+        # L = tone-porta continuation + vol slide; split similarly.
+        return (TOP_G, 0x0000, _d_arg_to_col(arg), None)
+
+    if cmd == EFF_M:
+        return (TOP_NONE, 0, (SEL_SET, min(arg, 0x3F)), None)
+
+    if cmd == EFF_N:
+        return (TOP_NONE, 0, _d_arg_to_col(arg), None)
+
+    if cmd == EFF_O:
+        return (TOP_O, (arg & 0xFF) << 8, None, None)
+
+    if cmd == EFF_P:
+        return (TOP_NONE, 0, None, _d_arg_to_col(arg))
+
+    if cmd == EFF_Q:
+        return (TOP_Q, (arg & 0xFF) << 8, None, None)
+
     if cmd == EFF_S:
         sub = (arg >> 4) & 0xF
         val = arg & 0xF
-        if sub == 0xC:   # SC - note cut
-            return (0xEC, val)
-    return (0x00, 0x0000)
+        if sub in (0x1, 0x2, 0x3, 0x4, 0xB, 0xC, 0xD, 0xE, 0xF):
+            return (TOP_S, (sub << 12) | (val << 8), None, None)
+        if sub == 0x8:
+            # Coarse pan: nibble-repeat into Taud's S $80xx full-8-bit pan.
+            return (TOP_S, 0x8000 | (val * 0x11), None, None)
+        # S0/S5/S6/S7/S9/SA: filter, NNA, sound-control, stereo — drop silently.
+        return (TOP_NONE, 0, None, None)
+
+    if cmd == EFF_T:
+        if arg >= 0x20:
+            return (TOP_T, ((arg - 0x18) & 0xFF) << 8, None, None)
+        # OpenMPT slide forms: $0y down per tick, $1y up per tick.
+        return (TOP_T, arg & 0xFF, None, None)
+
+    if cmd == EFF_V:
+        return (TOP_V, (min(arg * 4, 0xFF) & 0xFF) << 8, None, None)
+
+    if cmd == EFF_W:
+        vprint(f"    dropped W{arg:02X} (global vol slide) at ch{ch} row{row}")
+        return (TOP_NONE, 0, None, None)
+
+    if cmd == EFF_X:
+        return (TOP_NONE, 0, None, (SEL_SET, min(arg >> 2, 0x3F)))
+
+    if cmd == EFF_Y:
+        vprint(f"    dropped Y{arg:02X} (panbrello) at ch{ch} row{row}")
+        return (TOP_NONE, 0, None, None)
+
+    if cmd == EFF_Z:
+        return (TOP_NONE, 0, None, None)
+
+    return (TOP_NONE, 0, None, None)
+
+
+def resolve_st3_recalls(patterns: list, order_list: list, num_channels: int) -> None:
+    """In-place: replace ST3 zero-arg recalls with the last non-zero arg.
+
+    ST3 backs D/E/F/I/J/K/L/Q/R/S with a single per-channel memory slot.
+    Taud's narrower cohort model can't recover this, so we eagerly resolve
+    by walking patterns in order-list order and rewriting recall args.
+
+    Limitation: patterns reused across multiple order entries are mutated
+    once (with the memory state from their first visit); subsequent visits
+    may differ from ST3 if cross-pattern memory state changed in between.
+    """
+    last_arg = [0] * num_channels
+    for order in order_list:
+        if order >= S3M_ORDER_END:
+            break
+        if order >= len(patterns):
+            continue
+        grid = patterns[order]
+        for r in range(PATTERN_ROWS):
+            for ch in range(num_channels):
+                if ch >= len(grid):
+                    continue
+                row = grid[ch][r]
+                if row.effect in ST3_SHARED_EFFECTS:
+                    if row.effect_arg == 0:
+                        row.effect_arg = last_arg[ch]
+                    else:
+                        last_arg[ch] = row.effect_arg
+
+
+def warn_st3_quirks(patterns: list, order_list: list, num_channels: int) -> None:
+    """Emit -v warnings for ST3 quirks Taud handles differently."""
+    seen_pats = set()
+    for order in order_list:
+        if order >= S3M_ORDER_END:
+            break
+        if order >= len(patterns) or order in seen_pats:
+            continue
+        seen_pats.add(order)
+        grid = patterns[order]
+        for ch in range(min(num_channels, len(grid))):
+            saw_sbx = saw_sex = False
+            for r in range(PATTERN_ROWS):
+                row = grid[ch][r]
+                if row.effect == EFF_S:
+                    sub = (row.effect_arg >> 4) & 0xF
+                    if sub == 0xB: saw_sbx = True
+                    elif sub == 0xE: saw_sex = True
+            if saw_sbx and saw_sex:
+                vprint(f"  warning: pattern {order} ch{ch} mixes SBx and SEx "
+                       f"(Taud fixes the ST3 loop-counter bug; loop count may differ)")
+        for r in range(PATTERN_ROWS):
+            sex_channels = [ch for ch in range(min(num_channels, len(grid)))
+                            if grid[ch][r].effect == EFF_S
+                            and ((grid[ch][r].effect_arg >> 4) & 0xF) == 0xE]
+            if len(sex_channels) > 1:
+                vprint(f"  warning: pattern {order} row {r} SEx on multiple "
+                       f"channels {sex_channels} (Taud uses ascending channel order)")
 
 
 # ── Taud builders ────────────────────────────────────────────────────────────
@@ -384,6 +595,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
     # Build instrument bin (256 × 64 bytes)
     inst_bin = bytearray(INSTBIN_SIZE)
     for i, inst in enumerate(instruments):
+        taud_idx = i + 1
         if i >= 256:
             break
         if inst is None or inst.itype != S3M_TYPE_PCM:
@@ -399,7 +611,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         loop_mode = 1 if (inst.flags & 1) else 0
         flags_byte = (ptr_hi << 4) | (loop_mode & 0x3)  # hhhh 00pp
 
-        base = i * 64
+        base = taud_idx * 64
         struct.pack_into('<H', inst_bin, base + 0,  ptr_lo)
         struct.pack_into('<H', inst_bin, base + 2,  s_len)
         struct.pack_into('<H', inst_bin, base + 4,  c2spd)
@@ -413,7 +625,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         inst_bin[base + 17] = 0         # offset minifloat = 0 → hold
 
 
-        vprint(f"  instrument '{inst.name}' ptr: '{ptr}', sampling rate: '{inst.c2spd}'")
+        vprint(f"  instrument[{base // 64}] '{inst.name}' ptr: '{ptr}', sampling rate: '{inst.c2spd}'")
         if inst.c2spd > 65535:
             vprint(f"  warning: sampling rate of '{inst.name}' exceeds 65535 (got '{inst.c2spd}')")
 
@@ -433,24 +645,66 @@ def _default_channel_pan(ch_setting: int) -> int:
 
 
 def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
-                  linear_slides: bool) -> bytes:
-    """Build a 512-byte Taud pattern for one S3M channel."""
+                  linear_slides: bool, inst_vols: dict = None) -> bytes:
+    """Build a 512-byte Taud pattern for one S3M channel.
+
+    Volume column: explicit S3M cell vol → SEL_SET; when a note triggers
+    with no explicit vol, emit SEL_SET using the instrument's default volume
+    (looked up from inst_vols, a 1-based inst index → 0..63 volume dict).
+    M/N/K/L overrides apply only when the cell has no explicit vol and no
+    note trigger. Otherwise SEL_FINE/0 (no-op).
+    Pan column: row 0 emits SEL_SET = default_pan to position the channel;
+    other rows default to SEL_FINE/0 unless an X/P/etc effect overrides.
+    """
+    if inst_vols is None:
+        inst_vols = {}
     out = bytearray(PATTERN_BYTES)
     rows = s3m_grid[ch_idx] if ch_idx < len(s3m_grid) else [S3MRow()] * PATTERN_ROWS
+    last_inst = 0   # 1-based; tracks which instrument is loaded on this channel
     for r, row in enumerate(rows[:PATTERN_ROWS]):
-        note   = encode_note(row.note)
-        inst   = max(0, row.inst - 1)   # S3M 1-based → Taud 0-based
-        vol    = min(row.vol, 63) if row.vol >= 0 else 63
-        pan    = default_pan
-        op, arg = encode_effect(row.effect, row.effect_arg, linear_slides)
-        if row.effect != 0 and op == 0:
-            eff_name = chr(ord('A') + row.effect - 1) if 1 <= row.effect <= 26 else '?'
-            vprint(f"    dropped effect {eff_name}{row.effect_arg:02X} at ch{ch_idx} row{r}")
+        note = encode_note(row.note)
+        inst = row.inst   # S3M 1-based → Taud 1-based
+
+        if row.inst > 0:
+            last_inst = row.inst
+
+        op, arg, vol_override, pan_override = encode_effect(
+            row.effect, row.effect_arg, ch_idx, r)
+
+        # ── Volume column ──
+        note_triggers = (row.note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF))
+        if row.vol >= 0:
+            vol_sel, vol_value = SEL_SET, min(row.vol, 0x3F)
+            if vol_override is not None and vol_override[0] != SEL_SET:
+                vprint(f"    ch{ch_idx} row{r}: dropped vol slide "
+                       f"(cell already carries explicit volume)")
+        elif note_triggers and last_inst > 0:
+            # Note trigger with no explicit vol: use instrument default volume
+            # so prior channel-vol state doesn't bleed through.
+            vol_sel = SEL_SET
+            vol_value = inst_vols.get(last_inst, 0x3F)
+        elif vol_override is not None:
+            vol_sel, vol_value = vol_override
+        else:
+            vol_sel, vol_value = SEL_FINE, 0   # no-op fine slide
+
+        # ── Pan column ──
+        if pan_override is not None:
+            pan_sel, pan_value = pan_override
+        elif r == 0:
+            # Position channel to its default pan once per pattern (row 0).
+            pan_sel, pan_value = SEL_SET, default_pan & 0x3F
+        else:
+            pan_sel, pan_value = SEL_FINE, 0
+
+        vol_byte = (vol_value & 0x3F) | ((vol_sel & 0x3) << 6)
+        pan_byte = (pan_value & 0x3F) | ((pan_sel & 0x3) << 6)
+
         base = r * 8
         struct.pack_into('<H', out, base + 0, note)
         out[base + 2] = inst & 0xFF
-        out[base + 3] = vol & 0x3F
-        out[base + 4] = pan & 0x3F
+        out[base + 3] = vol_byte
+        out[base + 4] = pan_byte
         out[base + 5] = op & 0xFF
         struct.pack_into('<H', out, base + 6, arg & 0xFFFF)
     return bytes(out)
@@ -500,6 +754,7 @@ def build_cue_sheet(order_list: list, num_pats_s3m: int, num_channels: int,
         sheet[c*CUE_SIZE : c*CUE_SIZE+CUE_SIZE] = _encode_cue([], 0)
 
     cue_idx = 0
+    last_active = -1
     for order in order_list:
         if order == S3M_ORDER_END or cue_idx >= NUM_CUES:
             break
@@ -509,11 +764,16 @@ def build_cue_sheet(order_list: list, num_pats_s3m: int, num_channels: int,
         orig = [order * num_channels + v for v in range(num_channels)]
         pats = [pat_remap[p] if pat_remap else p for p in orig]
         sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = _encode_cue(pats, 0)
+        last_active = cue_idx
         cue_idx += 1
 
-    # Halt at end
-    if cue_idx < NUM_CUES:
-        sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = _encode_cue([], 0x01)
+    # Halt on the last active cue (instruction byte at offset 30), so the
+    # engine stops immediately after that pattern completes with no silent gap.
+    if last_active >= 0:
+        sheet[last_active * CUE_SIZE + 30] = 0x01
+    elif cue_idx < NUM_CUES:
+        # Edge case: no active cues at all — halt at cue 0.
+        sheet[30] = 0x01
 
     return bytes(sheet)
 
@@ -555,6 +815,13 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
 
     vprint(f"  channels: {C}, s3m patterns: {P}, taud patterns: {P*C}")
 
+    # Resolve ST3 shared-memory recalls (D/E/F/I/J/K/L/Q/R/S with $00 arg)
+    # before any per-row encoding, so cohort-aware Taud effects see explicit
+    # arguments. Mutates patterns in place.
+    vprint("  resolving ST3 shared-memory recalls…")
+    resolve_st3_recalls(patterns, h.order_list, 32)
+    warn_st3_quirks(patterns, h.order_list, 32)
+
     # Build sample+instrument bin
     vprint("  building sample/instrument bin…")
     sampleinst_raw, _offsets = build_sample_inst_bin(instruments)
@@ -590,11 +857,17 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     # Pattern bin: for each s3m pattern, for each active channel, 512 bytes
     vprint("  building pattern bin…")
     default_pans = [_default_channel_pan(h.channel_settings[ch]) for ch in active_channels]
+    # 1-based inst index → default volume (0..63) for note-trigger vol injection.
+    inst_vols = {
+        i + 1: min(inst.volume, 0x3F)
+        for i, inst in enumerate(instruments)
+        if inst is not None and inst.itype == S3M_TYPE_PCM
+    }
     pat_bin = bytearray()
     for pi in range(P):
         grid = patterns[pi]
         for vi, ch in enumerate(active_channels):
-            pat_bin += build_pattern(grid, ch, default_pans[vi], h.linear_slides)
+            pat_bin += build_pattern(grid, ch, default_pans[vi], h.linear_slides, inst_vols)
     assert len(pat_bin) == num_taud_pats * PATTERN_BYTES
 
     # Deduplicate identical patterns

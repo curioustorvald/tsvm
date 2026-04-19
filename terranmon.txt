@@ -1986,7 +1986,7 @@ Synchronisation between playheads are not guaranteed. Do not play music in multi
 Memory Space
 
 0..770047 RW: Sample bin (752k)
-770048..786431 RW: Instrument bin (256 instruments, 64 bytes each; 16k)
+770048..786431 RW: Instrument bin (256 instruments, 64 bytes each; instrument 0 does nothing; 16k)
 786432..851967 RW: Play data 1 (currently exposed bank; 64k)
 851968..917503 RW: Play data 2 (currently exposed bank; 64k)
 917504..983039 RW: TAD Input Buffer (64k)
@@ -2021,6 +2021,8 @@ Special values:
 note 0xFFFF: no-op
 note 0xFFFE: note cut
 note 0x0000: key-off
+
+inst 0: no instrument change
 
 
 Sound Adapter MMIO
@@ -2208,6 +2210,72 @@ Rows of 16 bytes:
     Byte[7] Reserved for future versions
 
 Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
+
+--------------------------------------------------------------------------------
+
+S3M (ScreamTracker 3) to Taud conversion notes
+(Implemented in s3m2taud.py)
+
+## Instrument indexing
+
+S3M instrument numbers are 1-based on disk and in pattern cells. Taud's cell instrument byte preserves this: 0 means "no instrument change, reuse whatever was last loaded on this channel"; 1..255 select an instrument slot. The converter passes the raw S3M instrument byte through unchanged (no subtract-1). The instrument bin is written at base = instrument_index * 64, with slot 0 left as an empty/silent entry.
+
+## Effect encoding
+
+Taud opcodes are base-36 digit values: digits 0..9 map to bytes 0x00..0x09; letters A..Z map to bytes 0x0A..0x23. Effects are encoded into a 1-byte opcode plus a 2-byte argument.
+
+## ST3 shared-memory recall (pre-pass)
+
+ST3 backs effects D, E, F, I, J, K, L, Q, R, and S with a single per-channel memory slot. A $00 argument on any of these recalls the last non-zero argument. Taud uses narrower per-cohort memory, so the converter walks patterns in order-list order (per channel) and replaces every $00-arg recall with the current slot value before encoding. Patterns reused by multiple order entries are mutated once on their first visit; later visits may diverge from the ST3 original if cross-pattern memory state changed, but this is acceptable for typical usage.
+
+## Cxx BCD decode
+
+ST3 stores pattern-break row numbers as BCD on disk ($10 means decimal row 10, not hex row 16). The converter decodes: row = (byte >> 4) * 10 + (byte & 0xF). Values that decode to 64 or above clamp to row 0.
+
+## Pitch slide unit
+
+ST3's coarse slide unit is 1/16 of a semitone. One semitone in Taud's 4096-TET grid is 4096/12 ≈ 341.33 units. One 1/16 semitone ≈ 21.33 units ≈ $0015. All E/F/G coarse arguments are therefore multiplied by $0015. Fine slide forms ($Fx, $Ex) are packed into Taud's $F0xx fine form after the same per-step scale.
+
+## J arpeggio (12-TET to 4096-TET)
+
+ST3 Jxy nibbles are 12-TET semitone offsets (0..15). Taud's J argument uses the high byte of a 16-bit pitch delta; one byte = 256 units ≈ 0.75 semitones.
+
+Conversion: byte = round(semitones * 4 / 3).
+
+The full lookup table:
+
+    Semitones  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+    Taud byte $00 $01 $03 $04 $05 $07 $08 $09 $0B $0C $0D $0F $10 $11 $13 $14
+
+## K and L effects
+
+The engine treats K and L as no-ops. The converter splits each into two parts:
+K → effect column H $0000 (recall vibrato from HU memory) plus a volume-column slide derived from K's argument
+L → effect column G $0000 plus the same volume-column slide. If the S3M cell already carries an explicit volume-column byte, the slide half is dropped with a -v warning.
+
+## M, N (channel volume), X, P (pan) folding
+
+M (set channel volume) and N (channel-vol slide) fold into the volume column. X (set pan) and P (pan slide) fold into the pan column. These effects consume no space in the effect slot. W (global vol slide) and Y (panbrello) are dropped with a -v warning.
+
+## Volume column defaults
+
+When a note trigger is present in a cell with no explicit S3M volume byte, the converter emits SEL_SET (selector 0) with the instrument's default volume. This prevents the channel's prior volume state from persisting into a fresh note. Cells with no note trigger and no explicit volume emit SEL_FINE value 0 (fine slide of 0 = no-op), which leaves channel volume unchanged.
+
+## Pan column defaults
+
+Row 0 of every pattern emits SEL_SET with the channel's default pan (derived from the S3M channel-setting byte: channels 0-7 → left ($10), channels 8-15 → right ($2F), otherwise centre ($1F)). All other rows emit SEL_FINE value 0 (no-op) unless an X, P, or S$8x effect overrides.
+
+## Cue sheet halt placement
+
+The halt instruction (byte value 0x01 at cue offset 30) is placed on the last active cue entry, not in a separate empty cue appended after it. This ensures playback stops immediately after the last pattern row completes, with no silent 64-row gap.
+
+## Tempo mapping
+
+S3M BPM is stored as a raw decimal value. Taud's initial BPM byte uses a bias of -24 (byte 0x00 = 24 BPM, 0xFF = 279 BPM). Conversion: taud_byte = bpm - 24. The converter also scans row 0 of the first pattern in the order list for A (set speed) and T (set tempo) effects and uses those values in preference to the S3M header defaults.
+
+## Global volume
+
+ST3 global volume is 0..$40; Taud's is 0..$FF. Import scale: Taud_vol = ST3_vol × 4 (clamped to $FF).
 
 --------------------------------------------------------------------------------
 

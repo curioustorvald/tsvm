@@ -2,6 +2,7 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.Audio
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.Input
 import com.badlogic.gdx.Input.Buttons
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
@@ -13,6 +14,7 @@ import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_WELL
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.TINY
 import net.torvald.tsvm.peripheral.AudioAdapter
+import java.util.BitSet
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -25,6 +27,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
     // Per-playhead view mode: 0=detailed pattern, 1=abridged pattern (stub), 2=super-abridged (stub), 3=cuesheet detail
     private val scopeMode = IntArray(4)
+    private val scopeScrollHorz = IntArray(4)
 
     override fun show() {
     }
@@ -33,8 +36,10 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     }
 
     private var guiClickLatched = arrayOf(false, false, false, false, false, false, false, false)
+    private var guiKeypressLatched = BitSet(256)
 
     override fun update() {
+        // mouse clicks
         if (Gdx.input.isButtonPressed(Buttons.LEFT)) {
             if (!guiClickLatched[Buttons.LEFT]) {
                 val mx = Gdx.input.x - x
@@ -45,7 +50,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                         val syTop = h - 7 - 115 * i - 8 * FONT.H
                         val syBot = h - 3 - 115 * i
                         if (my in syTop..syBot) {
-                            scopeMode[3 - i] = (scopeMode[3 - i] + 1) % 4
+                            scopeMode[3 - i] = (scopeMode[3 - i] + 1) and 3
                             break
                         }
                     }
@@ -57,8 +62,77 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         else {
             guiClickLatched[Buttons.LEFT] = false
         }
+        if (Gdx.input.isButtonPressed(Buttons.RIGHT)) {
+            if (!guiClickLatched[Buttons.RIGHT]) {
+                val mx = Gdx.input.x - x
+                val my = Gdx.input.y - y
 
+                if (mx in 117..629) {
+                    for (i in 0..3) {
+                        val syTop = h - 7 - 115 * i - 8 * FONT.H
+                        val syBot = h - 3 - 115 * i
+                        if (my in syTop..syBot) {
+                            scopeMode[3 - i] = (scopeMode[3 - i] - 1) and 3
+                            break
+                        }
+                    }
+                }
+
+                guiClickLatched[Buttons.RIGHT] = true
+            }
+        }
+        else {
+            guiClickLatched[Buttons.RIGHT] = false
+        }
+
+        // keyboard left/right
+        if (Gdx.input.isKeyPressed(Input.Keys.LEFT)) {
+            if (!guiKeypressLatched[Input.Keys.LEFT]) {
+                val mx = Gdx.input.x - x
+                val my = Gdx.input.y - y
+
+                if (mx in 117..629) {
+                    for (i in 0..3) {
+                        val syTop = h - 7 - 115 * i - 8 * FONT.H
+                        val syBot = h - 3 - 115 * i
+                        if (my in syTop..syBot) {
+                            scopeScrollHorz[3 - i] = (scopeScrollHorz[3 - i] - 1).coerceIn(0, 14)
+                            break
+                        }
+                    }
+                }
+
+                guiKeypressLatched[Input.Keys.LEFT] = true
+            }
+        }
+        else {
+            guiKeypressLatched[Input.Keys.LEFT] = false
+        }
+        if (Gdx.input.isKeyPressed(Input.Keys.RIGHT)) {
+            if (!guiKeypressLatched[Input.Keys.RIGHT]) {
+                val mx = Gdx.input.x - x
+                val my = Gdx.input.y - y
+
+                if (mx in 117..629) {
+                    for (i in 0..3) {
+                        val syTop = h - 7 - 115 * i - 8 * FONT.H
+                        val syBot = h - 3 - 115 * i
+                        if (my in syTop..syBot) {
+                            scopeScrollHorz[3 - i] = (scopeScrollHorz[3 - i] + 1).coerceIn(0, 14)
+                            break
+                        }
+                    }
+                }
+
+                guiKeypressLatched[Input.Keys.RIGHT] = true
+            }
+        }
+        else {
+            guiKeypressLatched[Input.Keys.RIGHT] = false
+        }
     }
+
+
 
     private val COL_SOUNDSCOPE_BACK = Color(0x081c08ff.toInt())
     private val COL_SOUNDSCOPE_FORE = Color(0x80f782ff.toInt())
@@ -187,7 +261,9 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private fun bipolarCeil(d: Double) =  (if (d >= 0.0) ceil(d) else floor(d)).toInt()
     private fun bipolarFloor(d: Double) = (if (d >= 0.0) floor(d) else ceil(d)).toInt()
 
-    private val VOX_PER_VIEW = arrayOf(5,13,17)
+    private val VOX_PER_VIEW = arrayOf(6,13,20)
+    private val VOL_SYM = arrayOf('@','^','&',' ')
+    private val PAN_SYM = arrayOf('@','<','>',' ')
 
     private fun drawSoundscope(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float) {
         val gdxadev = ahead.audioDevice
@@ -272,8 +348,8 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 var cx = x
                                 // cursor + cue number
                                 batch.color = if (here) Color.WHITE else COL_SOUNDSCOPE_FORE
-                                TINY.draw(batch, "${if (here) ">" else " "}${ci.toString(16).padStart(3, '0').uppercase()}|", cx, ry)
-                                cx += 5 * TINY.W
+                                TINY.draw(batch, "${ci.toString(16).padStart(3, '0').uppercase()}|", cx, ry)
+                                cx += 4 * TINY.W
 
                                 // voice pattern numbers
                                 for (vi in 0 until 20) {
@@ -328,7 +404,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                              */
 
                             // Pattern index for each voice in current cue
-                            val cuePats = IntArray(VOICES) { vi -> readCuePat12(audio, cuePos, vi) }
+                            val cuePats = IntArray(20) { vi -> readCuePat12(audio, cuePos, vi) }
 
                             // Pattern rows (right area, 8 rows centred on current row)
                             // Layout: > rr NOTE in E.Vo E.Pn Eff ffff [voice1 …]
@@ -349,15 +425,15 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
                                 // cursor + row number (drawn once per row)
                                 batch.color = if (here) Color.WHITE else COL_SOUNDSCOPE_FORE
-                                TINY.draw(batch, if (here) ">" else " ", cx, ry)
-                                cx += TINY.W
+//                                TINY.draw(batch, if (here) ">" else " ", cx, ry)
+//                                cx += TINY.W
                                 TINY.draw(batch, ri.toString().padStart(2, '0').uppercase(), cx, ry)
                                 cx += 2 * TINY.W
 
-                                for (vi in 0 until VOICES) {
+                                for (vi in scopeScrollHorz[index] until (VOICES + scopeScrollHorz[index]).coerceAtMost(19)) {
                                     val pat12 = cuePats[vi]
                                     if (pat12 == 0xFFF) {
-                                        if (vi == 0) {
+                                        if (vi == scopeScrollHorz[index]) {
                                             // disabled voice — dimmed placeholder, same width as a live voice
                                             batch.color = COL_SOUNDSCOPE_FORE
                                             TINY.draw(
@@ -394,6 +470,10 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                             0xFFFE -> "^^^^"
                                             else -> noteVal.toString(16).uppercase().padStart(4, '0')
                                         }
+                                        var instStr = instr.toString(16).padStart(2, '0').uppercase()
+                                        if (instr == 0) {
+                                            instStr = "@@"
+                                        }
 
                                         // note
                                         batch.color = if (here) Color.WHITE else COL_NOTE
@@ -401,13 +481,19 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                         cx += 4 * TINY.W
                                         // instrument
                                         batch.color = if (here) Color.WHITE else COL_INST
-                                        TINY.draw(batch, instr.toString(16).padStart(2, '0').uppercase(), cx, ry)
+                                        TINY.draw(batch, instStr, cx, ry)
                                         cx += 2 * TINY.W
                                         if (scopeMode[index] == 0) {
                                             // volume
                                             batch.color = if (here) Color.WHITE else COL_VOL
-                                            TINY.draw(batch, "$volEff.${vol.toString().padStart(2, '0')}", cx, ry)
-                                            cx += 4 * TINY.W
+                                            var text = if (volByte == 0xC0) "@@@" else "${VOL_SYM[volEff]}${vol.toString().padStart(2, '0')}"
+                                            // is this fine slide?
+                                            if (volEff == 3 && vol != 0) {
+                                                val dir = if (vol and 32 == 1) '+' else '-'
+                                                text = "$dir${(vol and 31).toString().padStart(2,'0').uppercase()}"
+                                            }
+                                            TINY.draw(batch, text, cx, ry)
+                                            cx += 3 * TINY.W
                                         }
                                         else if (scopeMode[index] == 1) {
                                             batch.color = if (here) Color.WHITE else COL_VOL
@@ -416,20 +502,32 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                         }
                                         // pan
                                         if (scopeMode[index] == 0) {
+                                            var text = if (panByte == 0xC0) "@@@" else "${PAN_SYM[panEff]}${pan.toString().padStart(2, '0')}"
+                                            // is this fine slide?
+                                            if (panEff == 3 && pan != 0) {
+                                                val dir = if (pan and 32 == 1) '+' else '-'
+                                                text = "$dir${(pan and 31).toString().padStart(2,'0').uppercase()}"
+                                            }
                                             batch.color = if (here) Color.WHITE else COL_PAN
-                                            TINY.draw(batch, "$panEff.${pan.toString().padStart(2, '0')}", cx, ry)
-                                            cx += 4 * TINY.W
+                                            TINY.draw(batch, text, cx, ry)
+                                            cx += 3 * TINY.W
                                         }
                                         if (scopeMode[index] == 0) {
+                                            var effSymStr = eff.toString(36).uppercase()
+                                            var effArgStr = effArg.toString(16).padStart(4, '0').uppercase()
+
+                                            if (eff == 0 && effArg == 0) {
+                                                effSymStr = "@@"
+                                                effArgStr = "@@@@"
+                                            }
+
                                             // effect opcode
                                             batch.color = if (here) Color.WHITE else COL_EFF
-                                            TINY.draw(batch, eff.toString(16).padStart(2, '0').uppercase(), cx, ry)
-                                            cx += 2 * TINY.W
-                                        }
-                                        if (scopeMode[index] == 0) {
+                                            TINY.draw(batch, effSymStr, cx, ry)
+                                            cx += 1 * TINY.W
                                             // effect argument
                                             batch.color = if (here) Color.WHITE else COL_EFFARG
-                                            TINY.draw(batch, effArg.toString(16).padStart(4, '0').uppercase(), cx, ry)
+                                            TINY.draw(batch, effArgStr, cx, ry)
                                             cx += 4 * TINY.W
                                         }
                                     }
