@@ -299,7 +299,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 0..770047 -> sampleBin[addr]
             in 770048..786431 -> (adi - 770048).let { instruments[it / 64].getByte(it % 64) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
-            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
+            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 917504..983039 -> tadInputBin[addr - 917504]   // TAD input buffer (65536 bytes)
             in 983040..1048575 -> tadDecodedBin[addr - 983040]  // TAD decoded output (65536 bytes)
             else -> peek(addr % 1048576)
@@ -313,7 +313,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 0..770047 -> { sampleBin[addr] = byte }
             in 770048..786431 -> (adi - 770048).let { instruments[it / 64].setByte(it % 64, bi) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
-            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
+            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 917504..983039 -> tadInputBin[addr - 917504] = byte   // TAD input buffer
             in 983040..1048575 -> tadDecodedBin[addr - 983040] = byte  // TAD decoded output
         }
