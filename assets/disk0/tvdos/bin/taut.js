@@ -5,26 +5,29 @@
  */
 
 const win = require("wintex")
+const font = require("font")
+
+font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 
 const sym = {
 /* accidentals */
-accnull:"\u0094\u0095"
-demisharp:"\u0094\u0080",
-sharp:"\u0094\u0081",
-sesquisharp:"\u0082\u0083",
-doublesharp:"\u0094\u0084",
-triplesharp:"\u0081\u0084",
-quadsharp:"\u0085\u0086",
-demiflat:"\u0094\u0087",
-flat:"\u0094\u0088",
+accnull:"\u00A2\u00A3",
+demisharp:"\u0080\u0081",
+sharp:"\u0082\u0083",
+sesquisharp:"\u0084\u0085",
+doublesharp:"\u0086\u0087",
+triplesharp:"\u0088\u0089",
+quadsharp:"\u008A\u008B",
+demiflat:"\u008C\u008D",
+flat:"\u008E\u008F",
 sesquiflat:"\u0090\u0091",
-doubleflat:"\u0089\u008A",
-tripleflat:"\u008B\u008C",
-quadflat:"\u008D\u008E",
+doubleflat:"\u0092\u0093",
+tripleflat:"\u0094\u0095",
+quadflat:"\u0096\u0097",
 
 /* special notes */
-keyoff:"\u0092\u00CD\u00CD\u0093",
-notecut:"\u008F\u008F\u008F\u008F",
+keyoff:"\u00A0\u00CD\u00CD\u00A1",
+notecut:"\u00A4\u00A4\u00A4\u00A4",
 
 /* miscellaneous */
 cent:"\u009B",
@@ -53,74 +56,103 @@ const pitchTablePresets = [
 
 ]
 
-function noteName4096(n) {
+/* converts 4096-TET (1 octave = 4096 tones) to conventional notation, with approximation
+ * @param n note number (0..65535)
+ * @param tets how many tones within octave under chosen pitch preset. Obtained by `preset.table.length`
+ */
+function noteName4096(n, tets) {
   const N = 4096;
 
-  // 12-TET natural note positions (C..B)
-  const d12 = [0, 2, 4, 5, 7, 9, 11];
+  // Precompute bases (integer-rounded)
+  const base = [0x0, 0x2AB, 0x555, 0x6AB, 0x955, 0xC00, 0xEAB] // [0, 2, 4, 5, 7, 9, 11] in 12-TET
   const letters = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
 
-  // Precompute bases (integer-rounded)
-  // base[i] = round(d12[i] * N / 12)
-  const base = d12.map(d => ((d * N + 6) / 12) | 0);
-
-  // Scale everything by 24 (quarter-semitone grid)
-  const pitch24 = n * 24;
-  const N24 = N; // because k multiplies N directly in scaled space
-
-  let best_i = 0;
-  let best_k = 0;
-  let best_score = Infinity;
-
-  const KMAX = 8; // up to quad accidentals (±8 quarter-steps)
-
-  for (let i = 0; i < 7; i++) {
-    const base24 = base[i] * 24;
-    const delta = pitch24 - base24;
-
-    // nearest integer k ≈ delta / N
-    let k = ((delta + (delta >= 0 ? N24 / 2 : -N24 / 2)) / N24) | 0;
-
-    // clamp to allowed accidentals
-    if (k > KMAX) k = KMAX;
-    if (k < -KMAX) k = -KMAX;
-
-    const err = Math.abs(delta - k * N24);
-
-    // scoring: prioritize pitch accuracy, then smaller accidentals
-    const score = err * 1000 + Math.abs(k) * 10;
-
-    if (score < best_score) {
-      best_score = score;
-      best_i = i;
-      best_k = k;
-    }
-  }
 
   // accidental mapping
   function accidental(k) {
     switch (k) {
-      case 0: return sym.accnull;
-      case 1: return sym.demisharp;
-      case 2: return sym.sharp;
-      case 3: return sym.sesquisharp;
-      case 4: return sym.doublesharp;
-      case 5: return sym.triplesharp;
-      case 6: return sym.quadsharp;
-      case -1: return sym.demiflat;
-      case -2: return sym.flat;
-      case -3: return sym.sesquiflat;
-      case -4: return sym.doubleflat;
-      case -5: return sym.tripleflat;
-      case -6: return sym.quadflat;
-      default:
-        // fallback if you extend beyond quad
-        return (k > 0 ? '+' : '-') + k.toString(36);
+      case 0: return sym.accnull; // no accidentals
+      case 1: return sym.demisharp; // common in 24-tet
+      case 2: return sym.sharp; // common
+      case 3: return sym.sesquisharp; // common in 24-tet
+      case 4: return sym.doublesharp; // the 'x' symbol
+      case 5: return sym.triplesharp; // '#x'
+      case 6: return sym.quadsharp; // 'xx'
+      case -1: return sym.demiflat; // common in 24-tet
+      case -2: return sym.flat; // common
+      case -3: return sym.sesquiflat; // common in 24-tet
+      case -4: return sym.doubleflat; // 'bb'
+      case -5: return sym.tripleflat; // 'bbb'
+      case -6: return sym.quadflat; // 'bbbb'
     }
   }
 
   // octave (C-based)
-  const octave = ((n / N)|0) + 1;
+  const octave = ((n / N)|0) - 1; // AudioAdapter defines C3 to be 0x4000
+  const p = ((n % N) + N) % N;
 
-  return letters[best_i] + accidental(best_k) + octave;
+  // `tets` counts the octave endpoint (12-TET = 11)
+  // Pick an accidental unit coherent with the tuning:
+  //   - if the TET is a multiple of 12, sharp = one semitone (so demi/sesqui
+  //     land on real notes when the TET is also a multiple of 24)
+  //   - otherwise, sharp = one TET step — this lets 19/22/31/53-TET etc. spell
+  //     each step as its own letter+accidental instead of collapsing neighbours
+  const nTet = Math.max(1, tets);
+  const accUnit = (nTet % 12 === 0) ? N/12 : N/nTet;
+
+  // accidental offsets; k maps to a pitch shift in accUnit units:
+  // 0, ±0.5 (demi), ±1 (sharp/flat), ±1.5 (sesqui), ±2 (double), ±3 (triple), ±4 (quad)
+  const accValues = [
+    [ 0, 0],
+    [ 2,  accUnit       ], [-2, -accUnit       ],
+    [ 4,  accUnit * 2   ], [-4, -accUnit * 2   ],
+    [ 1,  accUnit * 0.5 ], [-1, -accUnit * 0.5 ],
+    [ 3,  accUnit * 1.5 ], [-3, -accUnit * 1.5 ],
+    [ 5,  accUnit * 3   ], [-5, -accUnit * 3   ],
+    [ 6,  accUnit * 4   ], [-6, -accUnit * 4   ],
+  ];
+
+  // exoticness cost per accidental, scaled so it only breaks ties and slightly
+  // biases toward simpler accidentals.  In high TETs (31, 53, ...) triple/quad
+  // are structurally necessary, so penalties must stay well below one step.
+  function kPenalty(k) {
+    switch (Math.abs(k)) {
+      case 0: return 0;
+      case 2: return 2;   // sharp / flat
+      case 4: return 4;   // double
+      case 5: return 6;   // triple
+      case 6: return 8;   // quad
+      case 1: return 10;  // demi — quarter-tone, usually unused outside 24n-TET
+      case 3: return 12;  // sesqui
+    }
+  }
+
+  let best = null;
+  for (let l = 0; l < 7; l++) {
+    for (const [k, v] of accValues) {
+      // try the letter in the previous, current, and next octave so notes near
+      // the octave boundary can spell as e.g. C(next) instead of B-sharp
+      for (const octShift of [-1, 0, 1]) {
+        const target = base[l] + v + octShift * N;
+        const err = Math.abs(p - target);
+        if (err > N / 2) continue;
+        const cost = err + kPenalty(k);
+        if (best == null || cost < best.cost) {
+          best = { letter: l, k: k, octShift: octShift, cost: cost };
+        }
+      }
+    }
+  }
+
+  return letters[best.letter] + accidental(best.k) + octave;
+}
+
+
+for (let i = 1; i < pitchTablePresets.length; i++) {
+    let preset = pitchTablePresets[i]
+    println("Notes in "+preset.name+":")
+    preset.table.forEach(v => {
+        print(`${noteName4096(0x4000 + v, preset.table.length + 1)} `)
+    })
+    println()
 }
