@@ -2247,13 +2247,18 @@ Created by CuriousTorvald on 2026-04-22
     Uint16  Frequency at the base note (Float16)
     * Repetition of
     Byte[4] Title of the section (fourcc)
-    Uint16  Section length
+    Uint32  Section length
     Byte[*] Section payload
 
 ### Predefined sections
 
-* NOTA. Custom notation definition. Strings separated by comma
-
+* PCom. Project composer/author
+* PCpr. Project copyright string
+* PNam. Project name
+* PNot. Custom notation definition. Strings separated by comma
+* INam. Instrument name table. Strings separated by comma
+* SNam. Sample name table. Strings separated by comma
+* TNam. Pattern name table. Strings separated by comma
 
 --------------------------------------------------------------------------------
 
