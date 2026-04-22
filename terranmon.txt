@@ -2255,7 +2255,21 @@ Created by CuriousTorvald on 2026-04-22
 * PCom. Project composer/author
 * PCpr. Project copyright string
 * PNam. Project name
-* PNot. Custom notation definition. Strings separated by comma
+* PNot. Custom notation definition
+    Uint8   Flags
+        0b nnnn 000t
+            n: notation index (starting from zero) used by a song. You can have 16 different custom notation
+            t: NOT using interval system (you are responsible for defining every notes expressible)
+    Uint8   Reserved
+    Float32 Interval size (octave system = 2.0f). If Flag 't' is set, this must be NaN. 0f and Infinity are considered illegal
+    Uint16  Notes between interval MINUS ONE (or octave); 12-TET will have value 11. 0 is considered illegal
+    Byte[8] Reserved
+    Byte[*]     Name, null terminated. Encoding: UTF-8
+    Byte[*]     Notation table. Comma-separated and null-terminated. Encoding: raw bytes
+    Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE"
+
+    Note: custom notations will use internal index 65535 down to 65520 (index 0 = 65535, index 15 = 65520)
+
 * INam. Instrument name table. Strings separated by comma
 * SNam. Sample name table. Strings separated by comma
 * TNam. Pattern name table. Strings separated by comma
