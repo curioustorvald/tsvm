@@ -136,8 +136,8 @@ function buildRowCell(patternData, row) {
     else if (note == 0xFFFE) sNote = sym.notecut
     else if (note == 0x0000) sNote = sym.keyoff
 
-    let sInst = inst.toString(16).toUpperCase().padStart(3, sym.middot)
-    if (inst == 0) sInst = sym.middot.repeat(3)
+    let sInst = inst.toString(16).toUpperCase().padStart(2, sym.middot)
+    if (inst == 0) sInst = sym.middot.repeat(2)
 
     let sVolEff = volEffSym[voleff >>> 6]
     let sVolArg = voleffarg.toString().padStart(2, sym.middot)
@@ -314,8 +314,8 @@ function loadTaud(filePath, songIndex) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const [SCRH, SCRW] = con.getmaxyx()
-const PTNVIEW_OFFSET_X = 8
-const PTNVIEW_OFFSET_Y = 10
+const PTNVIEW_OFFSET_X = 5
+const PTNVIEW_OFFSET_Y = 9
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
 const COLSIZE = 18
 const VOCSIZE = 4
@@ -349,6 +349,14 @@ function drawStatusBar() {
     print(txt)
 }
 
+function drawSeparators(posY, col_size) {
+    con.color_pair(colSep, 255)
+    for (let c = 0; c < VOCSIZE - 1; c++) {
+        con.move(posY, PTNVIEW_OFFSET_X + col_size * (c+1) - 1)
+        con.prnch(0xB3)
+    }
+}
+
 function drawVoiceHeaders() {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     con.color_pair(colVoiceHdr, 255)
@@ -363,10 +371,12 @@ function drawVoiceHeaders() {
             const patIdx = cue.pats[voice]
             const vlabel = `V${(voice+1).toString().padStart(2,'0')}`
             const plabel = (patIdx === CUE_EMPTY) ? '---' : patIdx.toString(16).toUpperCase().padStart(3,'0')
-            const label = `${vlabel} ptn ${plabel}`
+            const label = `   ${vlabel} ptn ${plabel}   `
             print((label + '                  ').substring(0, COLSIZE - 1))
         }
     }
+
+    drawSeparators(PTNVIEW_OFFSET_Y - 1, COLSIZE)
 }
 
 function drawPatternRowAt(viewRow) {
@@ -376,14 +386,17 @@ function drawPatternRowAt(viewRow) {
     const back = highlight ? colHighlight : colBackPtn
     const cue = song.cues[cueIdx]
 
-    con.move(y, 1)
     con.color_pair(colRowNum, back)
     if (actualRow < ROWS_PER_PAT) {
         if (actualRow % 4 == 0) {con.color_pair(colRowNumEmph1, back)}
-        print(' ' + actualRow.toString().toUpperCase().padStart(2, '0') + '   ')
-    } else {
+        let rowstr = actualRow.toString().toUpperCase().padStart(2, '0')
+        con.move(y, 1); con.prnch(rowstr.charCodeAt(0)); con.move(y, 2); con.prnch(rowstr.charCodeAt(1))
+        con.move(y, SCRW-2); con.prnch(rowstr.charCodeAt(0)); con.move(y, SCRW-1); con.prnch(rowstr.charCodeAt(1))
+    }
+    else {
         print('      ')
     }
+    // TODO scroll indicator on x=SCRW?
 
     for (let c = 0; c < VOCSIZE; c++) {
         const voice = voiceOff + c
@@ -398,11 +411,7 @@ function drawPatternRowAt(viewRow) {
         drawCellAt(y, x, cell, back)
     }
 
-    con.color_pair(colSep, 255)
-    for (let c = 0; c < VOCSIZE - 1; c++) {
-        con.move(y, PTNVIEW_OFFSET_X + COLSIZE * (c+1) - 1)
-        con.prnch(0xB3)
-    }
+    drawSeparators(y, COLSIZE)
 }
 
 function drawPatternView() {
@@ -413,7 +422,7 @@ function drawControlHint() {
     con.move(SCRH, 1)
     print(' '.repeat(SCRW-1))
     con.move(SCRH, 1)
-    print(`\u008424u\u008425u Move rows ${MIDDOT} \u008427u\u008426u Move vox ${MIDDOT} Pg\u008424u\u008425u Move Ptns ${MIDDOT} Hm/Ed Init/Last row ${MIDDOT} q Quit`)
+    print(`\u008424u\u008425u Move rows ${MIDDOT} \u008427u\u008426u Move vox ${MIDDOT} Pg\u008424u\u008425u Move Ptns ${MIDDOT} Hm/Ed Init/Last row ${MIDDOT} q Quit ----`)
 }
 
 function drawAll() {
@@ -472,6 +481,8 @@ function shiftPatternArea(dy) {
 // APPLICATION STUB
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+con.curs_set(0)
+
 let currentPanel = VIEW_TIMELINE
 let cueIdx    = 0
 let cursorRow = 0
@@ -495,7 +506,9 @@ function clampCursor() {
     if (cursorRow < 0) cursorRow = 0
     if (cursorRow >= ROWS_PER_PAT) cursorRow = ROWS_PER_PAT - 1
     if (cursorRow < scrollRow) scrollRow = cursorRow
-    if (cursorRow >= scrollRow + PTNVIEW_HEIGHT) scrollRow = cursorRow - PTNVIEW_HEIGHT + 1
+    // bottom two IF statements will keep the cursor at the centre until viewpoint scroll edge has reached
+    if (cursorRow < scrollRow + (PTNVIEW_HEIGHT>>>1) && scrollRow > 0) scrollRow = cursorRow - (PTNVIEW_HEIGHT>>>1)
+    if (cursorRow >= scrollRow + ((PTNVIEW_HEIGHT+1)>>>1)) scrollRow = cursorRow - ((PTNVIEW_HEIGHT+1)>>>1) + 1
     if (scrollRow < 0) scrollRow = 0
     if (scrollRow + PTNVIEW_HEIGHT > ROWS_PER_PAT)
         scrollRow = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
@@ -584,4 +597,5 @@ while (!exitFlag) {
 sys.free(SCRATCH_PTR)
 con.clear()
 con.move(1, 1)
+con.curs_set(1)
 return 0
