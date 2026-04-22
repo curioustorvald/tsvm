@@ -9,6 +9,8 @@ const font = require("font")
 
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 
+const MIDDOT = "\u00FA"
+
 const sym = {
 /* accidentals */
 accnull:"\u00A2\u00A3",
@@ -39,9 +41,23 @@ doubledntick:"\u009D",
 keyoff:"\u00A0\u00CD\u00CD\u00A1",
 notecut:"\u00A4\u00A4\u00A4\u00A4",
 
+/* special effects */
+volset:MIDDOT,
+volup:"\u008430u",
+voldn:"\u008431u",
+volfineup:"+",
+volfinedn:"-",
+
+panset:MIDDOT,
+panle:"\u008417u",
+panri:"\u008416u",
+panfinele:"\u008427u",
+panfineri:"\u008426u",
+
 /* miscellaneous */
 unticked:"\u009E",
 ticked:"\u009F",
+middot:MIDDOT
 }
 
 const pitchTablePresets = {
@@ -88,13 +104,167 @@ sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym
 
 }
 
-let intv = [120,240,410,530,960]
-intv.forEach(i => {
-    let preset = pitchTablePresets[i]
-    println(preset.name+':')
-    preset.sym.forEach(s => print(s+'3\t'))
-    println()
-})
 
-print(`${sym.keyoff}\t${sym.notecut}`); println()
+const volEffSym = [sym.volset, sym.volup, sym.voldn, sym.volfineup, sym.volfinedn]
+const panEffSym = [sym.panset, sym.panle, sym.panri, sym.panfinele, sym.panfineri]
 
+const colNote = 239
+const colInst = 114
+const colVol = 117
+const colPan = 221
+const colEffOp = 208
+const colEffArg = 231
+const colBackPtn = 255
+
+/**
+ * Prints out pattern data at current cursor position, assuming indexFrom and indexTo does not overflow current screen size
+ */
+function printPattern(patternData, indexFrom, indexTo, drawMode) {
+    const off = 8*indexFrom
+
+    const note = patternData[off] | (patternData[off+1] << 8)
+    const inst = patternData[off+2]
+    const voleff = patternData[off+3]
+    const voleffarg = voleff & 63
+    const paneff = patternData[off+4]
+    const paneffarg = paneff & 63
+    const effop = patternData[off+5]
+    const effarg = patternData[off+6] | (patternData[off+7] << 8)
+
+    let sNote = note.toString(16).toUpperCase().padStart(4,'0')
+    if (note == 0xFFFF) sNote = sym.middot.repeat(4)
+    if (note == 0xFFFE) sNote = sym.notecut
+    if (note == 0x0000) sNote = sym.keyoff
+    let sInst = inst.toString(16).toUpperCase().padStart(2,sym.middot)
+    if (inst == 0) sInst = sym.middot.repeat(3);
+    let sVolEff = volEffSym[voleff >>> 6]
+    let sVolArg = voleffarg.toString().padStart(2,sym.middot)
+    // fine slide notation
+    if (voleff >>> 6 == 3) {
+        if (voleffarg == 0) {
+            sVolEff = sym.middot
+            sVolArg = sym.middot.repeat(2)
+        }
+        else if (voleffarg >= 32) {
+            sVolEff = volEffSym[3]
+            sVolArg = (voleffarg & 31).toString().padStart(2,'0')
+        }
+        else {
+            sVolEff = volEffSym[4]
+            sVolArg = (voleffarg & 31).toString().padStart(2,'0')
+        }
+    }
+    let sPanEff = panEffSym[voleff >>> 6]
+    let sPanArg = paneffarg.toString().padStart(2,sym.middot)
+    // fine slide notation
+    if (paneff >>> 6 == 3) {
+        if (paneffarg == 0) {
+            sPanEff = sym.middot
+            sPanArg = sym.middot.repeat(2)
+        }
+        else if (paneffarg >= 32) {
+            sPanEff = panEffSym[4]
+            sPanArg = (paneffarg & 31).toString().padStart(2,'0')
+        }
+        else {
+            sPanEff = panEffSym[3]
+            sPanArg = (paneffarg & 31).toString().padStart(2,'0')
+        }
+    }
+    let sEffOp = effop.toString(36).toUpperCase()[0]
+    let sEffArg = effarg.toString(16).toUpperCase().padStart(4,'0')
+    if (sEffOp == 0 && sEffArg == 0) {
+        sEffOp = sym.middot
+        sEffArg = sym.middot.repeat(4)
+    }
+
+    let [cy, cx] = con.getyx()
+
+    for (let i = 0; i < indexTo; i++) {
+        con.move(cy + i, cx)
+
+        con.color_pair(colNote, colBackPtn)
+        print(sNote)
+
+        con.color_pair(colInst, colBackPtn)
+        print(sInst)
+
+        con.color_pair(colVol, colBackPtn)
+        print(sVolEff)
+        con.color_pair(colVol, colBackPtn)
+        print(sVolArg)
+
+        con.color_pair(colPan, colBackPtn)
+        print(sPanEff)
+        con.color_pair(colPan, colBackPtn)
+        print(sPanArg)
+
+        con.color_pair(colEffOp, colBackPtn)
+        print(sEffOp)
+        con.color_pair(colEffArg, colBackPtn)
+        print(sEffArg)
+    }
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// GUI DEFINITION
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// drawing constants
+const [SCRH, SCRW] = con.getmaxyx()
+const PTNVIEW_OFFSET_X = 10
+const PTNVIEW_OFFSET_Y = 4
+const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
+const COLSIZE = 18
+const VOCSIZE = 4
+
+const VIEW_TIMELINE = 0
+const VIEW_ORDERS = 1
+const VIEW_INSTRUMENT = 2
+const VIEW_PATTERN_DETAILS = 3
+
+// draw functions
+function drawPatternView() {
+    for (let c = 0; c < VOCSIZE; c++) {
+        con.move(PTNVIEW_OFFSET_Y,PTNVIEW_OFFSET_X+COLSIZE*c)
+        printPattern(fakeData, 0, PTNVIEW_HEIGHT)
+
+        // separator
+        if (c < VOCSIZE - 1) {
+            con.color_pair(252,255)
+            for (let y = 0; y < PTNVIEW_HEIGHT; y++) {
+                con.move(PTNVIEW_OFFSET_Y+y,PTNVIEW_OFFSET_X+COLSIZE*(c+1)-1)
+                con.prnch(0xB3)
+            }
+        }
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// APPLICATION STUB
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// nav constants
+const KEY_LEFT = 21
+const KEY_RIGHT = 22
+const KEY_UP = 19
+const KEY_DOWN = 20
+const KEY_RETURN = 66
+const KEY_BKSP = 67
+const KEY_TAB = 61
+
+// GUI status
+let currentPanel = VIEW_TIMELINE
+
+// app run
+let fakeData = new Uint8Array(512)
+for (let i = 0; i < 512; i++) {
+    fakeData[i] = (Math.random(sys.nanoTime())*256)&255
+}
+
+con.clear()
+if (currentPanel == VIEW_TIMELINE) {
+    drawPatternView()
+}
+con.move(1,1)

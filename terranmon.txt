@@ -2180,6 +2180,8 @@ Created by CuriousTorvald on 2026-04-19
 
 This is a file format for Taud tracker data.
 
+Endianness: Little
+
 # File Structure
 \x1F T S V M a u d
 [HEADER]
@@ -2207,7 +2209,9 @@ Rows of 16 bytes:
     Uint8   Number of voices
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
     Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
-    Uint8   Initial Tickrate(0 is invalid)
+    Uint8   Initial Tickrate (0 is invalid)
+    Uint16  Current Tuning base note (0-4095), assuming octave 3. C3 (the default value) is 0x4000
+    Float32 Frequency at the base note. Default (A440) is 261.6255653
     Byte[7] Reserved for future versions
 
 Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
@@ -2216,6 +2220,8 @@ Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted
 
 **Taud Project Format** is an extension to Taud format
 Created by CuriousTorvald on 2026-04-22
+
+Endianness: Little
 
 # File Structure
 \x1F T S V M a u d
@@ -2242,9 +2248,7 @@ Created by CuriousTorvald on 2026-04-22
 
 ## Project Data
     Byte[8] Magic (\x1E T a u d P r J)
-    Uint16  Pitch table preset
-    Uint16  Current Tuning base note (0-4095), assuming octave 3
-    Uint16  Frequency at the base note (Float16)
+    Byte[8] Reserved
     * Repetition of
     Byte[4] Title of the section (fourcc)
     Uint32  Section length
@@ -2252,13 +2256,39 @@ Created by CuriousTorvald on 2026-04-22
 
 ### Predefined sections
 
-* PCom. Project composer/author
-* PCpr. Project copyright string
-* PNam. Project name
-* PNot. Custom notation definition
+prefixes:
+
+- P: Project
+- I: Instrument
+- p: Pattern
+- S: Sample
+- s: Song
+
+* PCom. Project author. Encoding: UTF-8
+* PCpr. Project copyright string. Encoding: UTF-8
+* PNam. Project name. Encoding: UTF-8
+
+* INam. Instrument name table. Strings separated by comma
+
+* pNam. Pattern name table. Strings separated by comma
+
+* SNam. Sample name table. Strings separated by comma
+
+* sMet. Song metadata table
+    * Repetition of:
+    Uint8  Song index
+    Uint32 Size of this table following this field
+    Uint16 Notation used for this song (takes notation index)
+    Byte[*]     Song name, null terminated. Encoding: UTF-8
+    Byte[*]     Song composer, null terminated. Encoding: UTF-8
+    Byte[*]     Song copyright string, null terminated. Encoding: UTF-8
+
+* nota. Custom notation definition
+    * Repetition of:
+    Uint8   Notation index (starting from zero) used by songs
+    Uint32  Size of this notation following this field
     Uint8   Flags
         0b nnnn 000t
-            n: notation index (starting from zero) used by a song. You can have 16 different custom notation
             t: NOT using interval system (you are responsible for defining every notes expressible)
     Uint8   Reserved
     Float32 Interval size (octave system = 2.0f). If Flag 't' is set, this must be NaN. 0f and Infinity are considered illegal
@@ -2266,13 +2296,11 @@ Created by CuriousTorvald on 2026-04-22
     Byte[8] Reserved
     Byte[*]     Name, null terminated. Encoding: UTF-8
     Byte[*]     Notation table. Comma-separated and null-terminated. Encoding: raw bytes
-    Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE"
+    Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". All relative to the base note (Song table will be referred), in 4096-TET note number. Index zero of this table will be 0x0 if you read the spec right
 
     Note: custom notations will use internal index 65535 down to 65520 (index 0 = 65535, index 15 = 65520)
 
-* INam. Instrument name table. Strings separated by comma
-* SNam. Sample name table. Strings separated by comma
-* TNam. Pattern name table. Strings separated by comma
+
 
 --------------------------------------------------------------------------------
 
