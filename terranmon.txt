@@ -1931,7 +1931,7 @@ This ensures resampling happens after extraction with optimal quality parameters
 
 --------------------------------------------------------------------------------
 
-TSVM Universal Cue format
+**TSVM Universal Cue format**
 Created by CuriousTorvald on 2025-09-22
 
 A universal, simple cue designed to work as both playlist to cue up external files and lookup table for internal bytes.
@@ -1973,7 +1973,7 @@ A universal, simple cue designed to work as both playlist to cue up external fil
 
 --------------------------------------------------------------------------------
 
-Sound Adapter
+**Sound Adapter**
 
 Endianness: little
 
@@ -2175,7 +2175,8 @@ Tracker Note Effects has been moved to `TAUD_NOTE_EFFECTS.md`
 
 --------------------------------------------------------------------------------
 
-Taud serialisation format
+**Taud serialisation format**
+Created by CuriousTorvald on 2026-04-19
 
 This is a file format for Taud tracker data.
 
@@ -2213,8 +2214,52 @@ Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted
 
 --------------------------------------------------------------------------------
 
-S3M (ScreamTracker 3) to Taud conversion notes
+**Taud Project Format** is an extension to Taud format
+Created by CuriousTorvald on 2026-04-22
+
+# File Structure
+\x1F T S V M a u d
+[HEADER] (modified)
+[SAMPLE+INSTRUMENT BIN IMAGE (GZip or Zstd compressed. Read 4-byte magic to determine)]
+[SONG TABLE]
+[PATTERN BIN for SONG 0]
+[CUE SHEET for SONG 0]
+[PATTERN BIN for SONG 1]
+[CUE SHEET for SONG 1]
+[PATTERN BIN for SONG 2]
+[CUE SHEET for SONG 2]
+...
+[PROJECT DATA] (new!)
+
+## Header
+    Byte[8] Magic
+    Uint8   Format version (always 129)
+    Uint8   Number of songs in SONG TABLE
+    Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
+    Uint16  Offset to Project Data (low twobyte)
+    Byte[14]Tracker/Converter signature
+    Uint16  Offset to Project Data (high twobyte)
+
+## Project Data
+    Byte[8] Magic (\x1E T a u d P r J)
+    Uint16  Pitch table preset
+    Uint16  Current Tuning base note (0-4095), assuming octave 3
+    Uint16  Frequency at the base note (Float16)
+    * Repetition of
+    Byte[4] Title of the section (fourcc)
+    Uint16  Section length
+    Byte[*] Section payload
+
+### Predefined sections
+
+* NOTA. Custom notation definition. Strings separated by comma
+
+
+--------------------------------------------------------------------------------
+
+**S3M (ScreamTracker 3) to Taud conversion notes**
 (Implemented in s3m2taud.py)
+Created by CuriousTorvald on 2026-04-20
 
 ## Instrument indexing
 
