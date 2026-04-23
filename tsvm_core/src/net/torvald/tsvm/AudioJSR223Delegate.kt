@@ -89,6 +89,27 @@ class AudioJSR223Delegate(private val vm: VM) {
     }
     fun getCuePosition(playhead: Int) = getPlayhead(playhead)?.position
 
+    fun getTrackerRow(playhead: Int) = getPlayhead(playhead)?.trackerState?.rowIndex ?: 0
+
+    fun setVoiceMute(playhead: Int, voice: Int, muted: Boolean) {
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.muted = muted
+    }
+    fun getVoiceMute(playhead: Int, voice: Int): Boolean =
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.muted ?: false
+
+    /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
+    fun setTrackerRow(playhead: Int, row: Int) {
+        getPlayhead(playhead)?.trackerState?.let { ts ->
+            ts.rowIndex = row.coerceIn(0, 63)
+            ts.tickInRow = 0
+            ts.samplesIntoTick = 0.0
+            ts.firstRow = true
+            ts.pendingOrderJump = -1
+            ts.pendingRowJump = -1
+            ts.voices.forEach { it.active = false }
+        }
+    }
+
     /** Upload 64 bytes defining instrument `slot` (0-255). */
     fun uploadInstrument(slot: Int, bytes: IntArray) {
         getFirstSnd()?.instruments?.get(slot and 0xFF)?.let { inst ->

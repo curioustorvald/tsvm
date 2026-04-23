@@ -1708,7 +1708,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             var mixR = 0.0
             val gvol = playhead.globalVolume / 255.0
             for (voice in ts.voices) {
-                if (!voice.active) continue
+                if (!voice.active || voice.muted) continue
                 val s = fetchTrackerSample(voice, instruments[voice.instrumentId])
                 val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * playhead.masterVolume / 255.0
                 mixL += s * vol * (63 - voice.rowPan) / 63.0
@@ -1857,6 +1857,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     class Voice {
         var active = false
+        var muted = false
         var instrumentId = 0
         var samplePos = 0.0
         var playbackRate = 1.0

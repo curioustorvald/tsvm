@@ -347,7 +347,7 @@ const VIEW_INSTRUMENT = 2
 const VIEW_PATTERN_DETAILS = 3
 
 const colPlayback  = 6
-const colHighlight = 6
+const colHighlight = 81
 const colRowNum    = 249
 const colRowNumEmph1 = 180
 const colStatus    = 253
@@ -381,15 +381,18 @@ function drawSeparators(posY, col_size) {
 
 function drawVoiceHeaders() {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
-    con.color_pair(colVoiceHdr, 255)
     const cue = song.cues[cueIdx]
     for (let c = 0; c < VOCSIZE; c++) {
         const voice = voiceOff + c
         const x = PTNVIEW_OFFSET_X + COLSIZE * c
         con.move(PTNVIEW_OFFSET_Y - 1, x)
         if (voice >= song.numVoices) {
+            con.color_pair(colVoiceHdr, 255)
             print(`                  `.substring(0, COLSIZE - 1))
         } else {
+            const isCursor = (voice === cursorVox)
+            const isMuted  = voiceMutes[voice]
+            con.color_pair(isMuted ? 249 : colVoiceHdr, isCursor ? colHighlight : 255)
             const ptnIdx = cue.ptns[voice]
             const vlabel = `V${(voice+1).dec02()}`
             const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
@@ -444,7 +447,33 @@ function drawControlHint() {
     con.move(SCRH, 1)
     print(' '.repeat(SCRW-1))
     con.move(SCRH, 1)
-    print(`\u008424u\u008425u Row ${MIDDOT} \u008427u\u008426u Vox ${MIDDOT} Pg\u008424u\u008425u Ptn ${MIDDOT} Hm/Ed Row ${MIDDOT} F5 Song F6 Cue F7 Row F8/Spc Stop`)
+    print(`\u008424u\u008425u Row ${MIDDOT} \u008427u\u008426u Vox ${MIDDOT} Pg\u008424u\u008425u Ptn ${MIDDOT} F5 Song F6 Cue F7 Row F8/Spc Stop ${MIDDOT} m Mute s Solo`)
+}
+
+function toggleMute(vox) {
+    voiceMutes[vox] = !voiceMutes[vox]
+    audio.setVoiceMute(PLAYHEAD, vox, voiceMutes[vox])
+    drawVoiceHeaders()
+}
+
+function toggleSolo(vox) {
+    let inSolo = true
+    for (let i = 0; i < song.numVoices; i++) {
+        if (i !== vox && !voiceMutes[i]) { inSolo = false; break }
+    }
+    if (inSolo) {
+        for (let i = 0; i < song.numVoices; i++) {
+            voiceMutes[i] = false
+            audio.setVoiceMute(PLAYHEAD, i, false)
+        }
+    } else {
+        for (let i = 0; i < song.numVoices; i++) {
+            const m = (i !== vox)
+            voiceMutes[i] = m
+            audio.setVoiceMute(PLAYHEAD, i, m)
+        }
+    }
+    drawVoiceHeaders()
 }
 
 function drawVoiceDetail() {
@@ -502,6 +531,13 @@ const TEXT_PLANES   = [TEXT_CHAR_OFF, TEXT_BACK_OFF, TEXT_FORE_OFF]
 // One scratch strip, reused across shifts
 const SCRATCH_PTR = sys.malloc(SCRW * PTNVIEW_HEIGHT)
 
+// Horizontal salvage: 3 carried voice columns minus the missing trailing separator.
+// For shift-left: source x=23..75 (old cols 1,2,3); dest x=5..57 (new cols 0,1,2).
+// For shift-right: source x=5..57 (old cols 0,1,2); dest x=23..75 (new cols 1,2,3).
+// The separator at the boundary of the exposed column is already in place after
+// the shift (it was never overwritten), so no extra separator fix-up is needed.
+const SALVAGE_HORIZ_LEN = (VOCSIZE - 1) * COLSIZE - 1  // 53 chars
+
 /**
  * Shift the pattern-view rows by `dy` lines (positive = down, negative = up)
  * using bulk peri→main→peri memcpy for speed.  Does not touch status bar,
@@ -522,6 +558,55 @@ function shiftPatternArea(dy) {
         const dstAddr = GPU_MEM - chanOff - (dstTopY - 1) * SCRW
         sys.memcpy(srcAddr, SCRATCH_PTR, stripBytes)
         sys.memcpy(SCRATCH_PTR, dstAddr, stripBytes)
+    }
+}
+
+/**
+ * Shift the voice columns left (dVoice > 0) or right (dVoice < 0) by one column
+ * using per-row peri→main→peri memcpy.  Only the pattern-view rows are touched;
+ * voice headers and status bar must be redrawn by the caller.
+ */
+function shiftPatternAreaHorizontal(dVoice) {
+    // Column of the first char to copy (1-indexed); dest is COLSIZE chars earlier/later.
+    const srcX = PTNVIEW_OFFSET_X + (dVoice > 0 ? COLSIZE : 0)
+    const dstX = PTNVIEW_OFFSET_X + (dVoice > 0 ? 0 : COLSIZE)
+    const srcOff = srcX - 1  // 0-indexed offset from column 1 for address arithmetic
+    const dstOff = dstX - 1
+
+    for (let p = 0; p < 3; p++) {
+        const chanOff = TEXT_PLANES[p]
+        for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
+            const rowBase = GPU_MEM - chanOff - (PTNVIEW_OFFSET_Y + vr - 1) * SCRW
+            sys.memcpy(rowBase - srcOff, SCRATCH_PTR, SALVAGE_HORIZ_LEN)
+            sys.memcpy(SCRATCH_PTR, rowBase - dstOff, SALVAGE_HORIZ_LEN)
+        }
+    }
+}
+
+/**
+ * Redraw every row of one voice column (slot 0..VOCSIZE-1) after a horizontal shift.
+ * Also redraws separators for the whole row so any separator at the exposed boundary
+ * (which the VRAM shift left correct) is confirmed visually consistent.
+ */
+function drawVoiceColumnAt(slot) {
+    const voice  = voiceOff + slot
+    const x      = PTNVIEW_OFFSET_X + COLSIZE * slot
+    const cue    = song.cues[cueIdx]
+    const ptnIdx = (voice < song.numVoices) ? cue.ptns[voice] : CUE_EMPTY
+
+    for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
+        const actualRow = scrollRow + vr
+        const y         = PTNVIEW_OFFSET_Y + vr
+        const highlight = (actualRow === cursorRow)
+        const back      = highlight ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight) : colBackPtn
+
+        let cell = EMPTY_CELL
+        if (actualRow < ROWS_PER_PAT && voice < song.numVoices &&
+                ptnIdx !== CUE_EMPTY && ptnIdx < song.numPats) {
+            cell = buildRowCell(song.patterns[ptnIdx], actualRow)
+        }
+        drawCellAt(y, x, cell, back)
+        drawSeparators(y, COLSIZE)
     }
 }
 
@@ -551,6 +636,8 @@ if (fullPathObj === undefined) {
 }
 
 const song = loadTaud(fullPathObj.full, 0)
+
+const voiceMutes = new Array(NUM_VOICES).fill(false)
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLAYBACK STATE
@@ -686,6 +773,10 @@ function clampCursor() {
 }
 
 function clampVoice() {
+    if (cursorVox < 0) cursorVox = 0
+    if (cursorVox >= song.numVoices) cursorVox = song.numVoices - 1
+    if (cursorVox < voiceOff) voiceOff = cursorVox
+    if (cursorVox >= voiceOff + VOCSIZE) voiceOff = cursorVox - VOCSIZE + 1
     const maxOff = Math.max(0, song.numVoices - VOCSIZE)
     if (voiceOff < 0) voiceOff = 0
     if (voiceOff > maxOff) voiceOff = maxOff
@@ -720,8 +811,20 @@ while (!exitFlag) {
 
         if (playbackMode !== PLAYMODE_NONE) {
             if (keysym === "<F8>" || keysym === " ") { stopPlayback(); drawAll() }
-            else if (keysym === "<LEFT>")  { voiceOff -= 1; clampVoice(); drawAll() }
-            else if (keysym === "<RIGHT>") { voiceOff += 1; clampVoice(); drawAll() }
+            else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
+                const oldVoiceOff = voiceOff
+                cursorVox += (keysym === "<LEFT>") ? -1 : 1
+                clampVoice()
+                const dVoice = voiceOff - oldVoiceOff
+                if (dVoice !== 0) {
+                    shiftPatternAreaHorizontal(dVoice)
+                    drawVoiceColumnAt(dVoice > 0 ? VOCSIZE - 1 : 0)
+                }
+                drawVoiceHeaders()
+                drawStatusBar()
+            }
+            else if (keysym === "m" || keysym === "M") { toggleMute(cursorVox) }
+            else if (keysym === "s" || keysym === "S") { toggleSolo(cursorVox) }
             return
         }
 
@@ -735,12 +838,28 @@ while (!exitFlag) {
         let rowMove = false       // pure row-cursor movement; can be fast-path
         let fullRedraw = false    // voice/cue change; needs full viewport refresh
 
+        if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
+            const oldVoiceOff = voiceOff
+            cursorVox += (keysym === "<LEFT>") ? -1 : 1
+            clampVoice()
+            const dVoice = voiceOff - oldVoiceOff
+            if (dVoice !== 0) {
+                shiftPatternAreaHorizontal(dVoice)
+                drawVoiceColumnAt(dVoice > 0 ? VOCSIZE - 1 : 0)
+            }
+            drawVoiceHeaders()
+            drawStatusBar()
+            drawVoiceDetail()
+            return
+        }
+
+        if (keysym === "m" || keysym === "M") { toggleMute(cursorVox); return }
+        if (keysym === "s" || keysym === "S") { toggleSolo(cursorVox); return }
+
         if (keysym === "<UP>")             { cursorRow -= 1;               rowMove = true }
         else if (keysym === "<DOWN>")      { cursorRow += 1;               rowMove = true }
         else if (keysym === "<HOME>")      { cursorRow  = 0;               rowMove = true }
         else if (keysym === "<END>")       { cursorRow  = ROWS_PER_PAT-1;  rowMove = true }
-        else if (keysym === "<LEFT>")      { voiceOff  -= 1;               fullRedraw = true }
-        else if (keysym === "<RIGHT>")     { voiceOff  += 1;               fullRedraw = true }
         else if (keysym === "<PAGE_UP>")   { cueIdx    -= 1;               fullRedraw = true }
         else if (keysym === "<PAGE_DOWN>") { cueIdx    += 1;               fullRedraw = true }
         else return
