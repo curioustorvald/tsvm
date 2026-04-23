@@ -190,6 +190,9 @@ function buildRowCell(ptnDat, row) {
         sVolEff = ''
         sVolArg = sym.middot.repeat(2)
     }
+    else if (voleff >>> 6 == 1 || voleff >>> 6 == 2) {
+        sVolArg = (voleffarg & 15).hex1()
+    }
     else if (voleff >>> 6 == 3) {
         if (voleffarg == 0) {
             sVolEff = sym.middot
@@ -210,6 +213,9 @@ function buildRowCell(ptnDat, row) {
     if (paneff === 0) {
         sPanEff = ''
         sPanArg = sym.middot.repeat(2)
+    }
+    else if (paneff >>> 6 == 1 || paneff >>> 6 == 2) {
+        sPanArg = (paneffarg & 15).hex1()
     }
     else if (paneff >>> 6 == 3) {
         if (paneffarg == 0) {

@@ -40,7 +40,8 @@ const COL_HL_EXT = {
     "tap": 190,
     "txt": 223,
     "md": 223,
-    "log": 223
+    "log": 223,
+    "taud":109,
 }
 
 const EXEC_FUNS = {
@@ -62,7 +63,8 @@ const EXEC_FUNS = {
     "bas": (f) => _G.shell.execute(`basic "${f}"`),
     "txt": (f) => _G.shell.execute(`less "${f}"`),
     "md": (f) => _G.shell.execute(`less "${f}"`),
-    "log": (f) => _G.shell.execute(`less "${f}"`)
+    "log": (f) => _G.shell.execute(`less "${f}"`),
+    "taud": (f) => _G.shell.execute(`taut "${f}"`),
 }
 
 let windowMode = 0 // 0 == left, 1 == right
