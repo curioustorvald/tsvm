@@ -2200,8 +2200,8 @@ Endianness: Little
     Uint8   Format version (always 1)
     Uint8   Number of songs in SONG TABLE
     Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
-    Uint16  Reserved for future versions
-    Byte[16]Tracker/Converter signature
+    Uint32  Reserved for Taud Project Format. Fill with zero
+    Byte[14]Tracker/Converter signature
 
 ## SONG TABLE
 Rows of 16 bytes:
@@ -2210,7 +2210,7 @@ Rows of 16 bytes:
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
     Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
     Uint8   Initial Tickrate (0 is invalid)
-    Uint16  Current Tuning base note (1-4094), assuming octave 3. C3 (the default value) is 0x4000. If zero, assume the default value
+    Uint16  Current Tuning base note (1..65533), assuming octave 3. C3 (the default value) is 0x4000. If zero, assume the default value
     Float32 Frequency at the base note. Default (A440) is 261.6255653. If zero, assume the default value
     Byte[1] Reserved for future versions
 
@@ -2239,12 +2239,11 @@ Endianness: Little
 
 ## Header
     Byte[8] Magic
-    Uint8   Format version (always 129)
+    Uint8   Format version (always 129; high-bit set and number 0x01)
     Uint8   Number of songs in SONG TABLE
     Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
-    Uint16  Offset to Project Data (low twobyte)
+    Uint32  Offset to Project Data (low twobyte)
     Byte[14]Tracker/Converter signature
-    Uint16  Offset to Project Data (high twobyte)
 
 ## Project Data
     Byte[8] Magic (\x1E T a u d P r J)
@@ -2268,11 +2267,11 @@ prefixes:
 * PCpr. Project copyright string. Encoding: UTF-8
 * PNam. Project name. Encoding: UTF-8
 
-* INam. Instrument name table. Strings separated by comma
+* INam. Instrument name table. Strings separated by 0x1E
 
-* pNam. Pattern name table. Strings separated by comma
+* pNam. Pattern name table. Strings separated by 0x1E
 
-* SNam. Sample name table. Strings separated by comma
+* SNam. Sample name table. Strings separated by 0x1E
 
 * sMet. Song metadata table
     * Repetition of:
@@ -2288,15 +2287,15 @@ prefixes:
     Uint8   Notation index (starting from zero) used by songs
     Uint32  Size of this notation following this field
     Uint8   Flags
-        0b nnnn 000t
+        0b 0000 000t
             t: NOT using interval system (you are responsible for defining every notes expressible)
     Uint8   Reserved
     Float32 Interval size (octave system = 2.0f). If Flag 't' is set, this must be NaN. 0f and Infinity are considered illegal
     Uint16  Notes between interval MINUS ONE (or octave); 12-TET will have value 11. 0 is considered illegal
     Byte[8] Reserved
     Byte[*]     Name, null terminated. Encoding: UTF-8
-    Byte[*]     Notation table. Comma-separated and null-terminated. Encoding: raw bytes
-    Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". All relative to the base note (Song table will be referred), in 4096-TET note number. Index zero of this table will be 0x0 if you read the spec right
+    Byte[*]     Notation table. 0xFF-separated and null-terminated. Encoding: raw bytes
+    Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". This is a lookup table of relative pitch offsets (against the base tuning note) in 4096-TET space. Index zero of this table will be 0x0 if you read the spec right
 
     Note: custom notations will use internal index 65535 down to 65520 (index 0 = 65535, index 15 = 65520)
 

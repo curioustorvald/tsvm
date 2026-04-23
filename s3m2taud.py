@@ -87,7 +87,7 @@ NUM_PATTERNS_MAX = 4095
 NUM_CUES         = 1024
 CUE_SIZE         = 32   # packed 12-bit×20 voices + instruction + pad
 NUM_VOICES       = 20
-SIGNATURE        = b"s3m2taud/TSVM   "    # 16 bytes
+SIGNATURE        = b"s3m2taud/TSVM "    # 14 bytes
 
 # Taud note constants
 NOTE_NOP    = 0xFFFF
@@ -860,13 +860,13 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
     num_taud_pats = P * C
 
-    # Header (32 bytes): magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(2)+sig(16)
-    sig = (SIGNATURE + b' ' * 16)[:16]
+    # Header (32 bytes): magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(4)+sig(14)
+    sig = (SIGNATURE + b' ' * 14)[:14]
     header = (
         TAUD_MAGIC +
         bytes([TAUD_VERSION, 1]) +
         struct.pack('<I', comp_size) +
-        b'\x00\x00' +
+        b'\x00\x00\x00\x00' +
         sig
     )
     assert len(header) == TAUD_HEADER_SIZE
@@ -893,7 +893,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique ({orig_count - num_taud_pats} deduplicated)")
 
-    # Song table row (16 bytes): offset(4)+voices(1)+patsLo(1)+patsHi(1)+bpm(1)+tick(1)+pad(7)
+    # Song table row (16 bytes): offset(4)+voices(1)+patsLo(1)+patsHi(1)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+pad(1)
     # Built after dedup so num_taud_pats reflects the unique count.
     num_taud_pats_lo = num_taud_pats & 0xFF
     num_taud_pats_hi = (num_taud_pats >> 8) & 0xFF
@@ -904,7 +904,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
         num_taud_pats_hi,
         bpm_stored,
         speed,
-    ) + b'\x00' * 7
+    ) + b'\x40\x00' + b'\x13\xd0\x82\x43' + b'\x00'
     assert len(song_table) == TAUD_SONG_ENTRY
 
     # Cue sheet (using remapped pattern indices)

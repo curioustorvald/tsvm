@@ -16,8 +16,8 @@ const NUM_PATTERNS_MAX  = 256
 const NUM_CUES          = 1024
 const CUE_SIZE          = 32     // bytes per cue entry (packed 12-bit×20 voices + instruction + pad)
 
-// Signature written into the file (16 bytes, space-padded)
-const CAPTURE_SIGNATURE = "LibTaud/TSVM    "
+// Signature written into the file (14 bytes, space-padded)
+const CAPTURE_SIGNATURE = "LibTaud/TSVM  "
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
@@ -205,8 +205,8 @@ function captureTrackerDataToFile(outFile) {
         (compressedSize >>>  8) & 0xFF,
         (compressedSize >>> 16) & 0xFF,
         (compressedSize >>> 24) & 0xFF,
-        // reserved (2)
-        0x00, 0x00,
+        // reserved (4)
+        0x00, 0x00, 0x00, 0x00,
     ].concat(sigBytes)  // 8 + 2 + 4 + 2 + 16 = 32 bytes
 
     // -- 6. Build song-table row (16 bytes) -----------------------------------
@@ -219,7 +219,9 @@ function captureTrackerDataToFile(outFile) {
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
         bpmStored,                             // BPM with −24 bias
         tickRate,                              // initial tick-rate
-        0,0,0,0,0,0,0,        // 7 bytes padding
+        0x40,0,      // basenote
+        0x13,0xd0,0x82,0x43, // basefreq
+        0,        // padding
     ]
 
     // -- 7. Write header (creates / truncates file) ---------------------------
