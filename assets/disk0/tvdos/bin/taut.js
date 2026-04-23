@@ -6,6 +6,7 @@
 
 const win = require("wintex")
 const font = require("font")
+const taud = require("taud")
 
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 
@@ -116,31 +117,51 @@ const colEffOp = 208
 const colEffArg = 231
 const colBackPtn = 255
 
+Number.prototype.hex02 = function() {
+    return this.toString(16).toUpperCase().padStart(2,'0')
+}
+Number.prototype.hex03 = function() {
+    return this.toString(16).toUpperCase().padStart(3,'0')
+}
+Number.prototype.hex04 = function() {
+    return this.toString(16).toUpperCase().padStart(4,'0')
+}
+Number.prototype.hexD2 = function() {
+    return this.toString(16).toUpperCase().padStart(2, sym.middot)
+}
+Number.prototype.dec02 = function() {
+    return this.toString(10).toUpperCase().padStart(2,'0')
+}
+Number.prototype.decD2 = function() {
+    return this.toString(10).toUpperCase().padStart(2, sym.middot)
+}
+
+
 /**
  * Builds the coloured string fragments for a single row of pattern data.
  */
-function buildRowCell(patternData, row) {
+function buildRowCell(ptnDat, row) {
     const off = 8 * row
 
-    const note = patternData[off] | (patternData[off+1] << 8)
-    const inst = patternData[off+2]
-    const voleff = patternData[off+3]
+    const note = ptnDat[off] | (ptnDat[off+1] << 8)
+    const inst = ptnDat[off+2]
+    const voleff = ptnDat[off+3]
     const voleffarg = voleff & 63
-    const paneff = patternData[off+4]
+    const paneff = ptnDat[off+4]
     const paneffarg = paneff & 63
-    const effop = patternData[off+5]
-    const effarg = patternData[off+6] | (patternData[off+7] << 8)
+    const effop = ptnDat[off+5]
+    const effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
 
-    let sNote = note.toString(16).toUpperCase().padStart(4,'0')
+    let sNote = note.hex04()
     if (note == 0xFFFF) sNote = sym.middot.repeat(4)
     else if (note == 0xFFFE) sNote = sym.notecut
     else if (note == 0x0000) sNote = sym.keyoff
 
-    let sInst = inst.toString(16).toUpperCase().padStart(2, sym.middot)
+    let sInst = inst.hexD2()
     if (inst == 0) sInst = sym.middot.repeat(2)
 
     let sVolEff = volEffSym[voleff >>> 6]
-    let sVolArg = voleffarg.toString().padStart(2, sym.middot)
+    let sVolArg = voleffarg.decD2()
     if (voleff === 0) {
         sVolEff = sym.middot
         sVolArg = sym.middot.repeat(2)
@@ -152,16 +173,16 @@ function buildRowCell(patternData, row) {
         }
         else if (voleffarg >= 32) {
             sVolEff = volEffSym[3]
-            sVolArg = (voleffarg & 31).toString().padStart(2,'0')
+            sVolArg = (voleffarg & 31).dec02()
         }
         else {
             sVolEff = volEffSym[4]
-            sVolArg = (voleffarg & 31).toString().padStart(2,'0')
+            sVolArg = (voleffarg & 31).dec02()
         }
     }
 
     let sPanEff = panEffSym[paneff >>> 6]
-    let sPanArg = paneffarg.toString().padStart(2, sym.middot)
+    let sPanArg = paneffarg.decD2()
     if (paneff === 0) {
         sPanEff = sym.middot
         sPanArg = sym.middot.repeat(2)
@@ -173,16 +194,16 @@ function buildRowCell(patternData, row) {
         }
         else if (paneffarg >= 32) {
             sPanEff = panEffSym[4]
-            sPanArg = (paneffarg & 31).toString().padStart(2,'0')
+            sPanArg = (paneffarg & 31).dec02()
         }
         else {
             sPanEff = panEffSym[3]
-            sPanArg = (paneffarg & 31).toString().padStart(2,'0')
+            sPanArg = (paneffarg & 31).dec02()
         }
     }
 
     let sEffOp = (effop > 0) ? effop.toString(36).toUpperCase()[0] : sym.middot
-    let sEffArg = effarg.toString(16).toUpperCase().padStart(4,'0')
+    let sEffArg = effarg.hex04()
     if (effop === 0 && effarg === 0) {
         sEffOp = sym.middot
         sEffArg = sym.middot.repeat(4)
@@ -272,30 +293,30 @@ function loadTaud(filePath, songIndex) {
 
     const patterns = new Array(numPats)
     for (let p = 0; p < numPats; p++) {
-        const pat = new Uint8Array(PATTERN_SIZE)
+        const ptn = new Uint8Array(PATTERN_SIZE)
         for (let k = 0; k < PATTERN_SIZE; k++) {
-            pat[k] = sys.peek(ptr + songOff + p * PATTERN_SIZE + k) & 0xFF
+            ptn[k] = sys.peek(ptr + songOff + p * PATTERN_SIZE + k) & 0xFF
         }
-        patterns[p] = pat
+        patterns[p] = ptn
     }
 
     const cueBase = songOff + numPats * PATTERN_SIZE
     const cues = new Array(NUM_CUES)
     let lastActiveCue = -1
     for (let c = 0; c < NUM_CUES; c++) {
-        const pats = new Array(NUM_VOICES)
+        const ptns = new Array(NUM_VOICES)
         for (let i = 0; i < 10; i++) {
             const lo = sys.peek(ptr + cueBase + c * CUE_SIZE + i)      & 0xFF
             const mi = sys.peek(ptr + cueBase + c * CUE_SIZE + 10 + i) & 0xFF
             const hi = sys.peek(ptr + cueBase + c * CUE_SIZE + 20 + i) & 0xFF
-            pats[i*2]   = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
-            pats[i*2+1] = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
+            ptns[i*2]   = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
+            ptns[i*2+1] = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
         }
         const instr = sys.peek(ptr + cueBase + c * CUE_SIZE + 30) & 0xFF
-        cues[c] = { pats, instr }
+        cues[c] = { ptns, instr }
 
         for (let v = 0; v < NUM_VOICES; v++) {
-            if (pats[v] !== CUE_EMPTY) { lastActiveCue = c; break }
+            if (ptns[v] !== CUE_EMPTY) { lastActiveCue = c; break }
         }
     }
 
@@ -325,7 +346,8 @@ const VIEW_ORDERS = 1
 const VIEW_INSTRUMENT = 2
 const VIEW_PATTERN_DETAILS = 3
 
-const colHighlight = 81
+const colPlayback  = 6
+const colHighlight = 6
 const colRowNum    = 249
 const colRowNumEmph1 = 180
 const colStatus    = 253
@@ -343,7 +365,7 @@ function drawStatusBar() {
     fillLine(1, colStatus, 255)
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
     const vHi    = Math.min(voiceOff + VOCSIZE, song.numVoices)
-    const txt = ` ${song.filePath}   Cue ${cueIdx.toString(16).toUpperCase().padStart(3,'0')}/${maxCue.toString(16).toUpperCase().padStart(3,'0')}   Row ${cursorRow.toString(16).toUpperCase().padStart(2,'0')}   V${(voiceOff+1).toString().padStart(2,'0')}-${vHi.toString().padStart(2,'0')}/${song.numVoices.toString().padStart(2,'0')}   BPM ${song.bpm} Spd ${song.tickRate} `
+    const txt = ` ${song.filePath}   Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${song.bpm} Spd ${song.tickRate} `
     con.move(1, 1)
     con.color_pair(colStatus, 255)
     print(txt)
@@ -368,9 +390,9 @@ function drawVoiceHeaders() {
         if (voice >= song.numVoices) {
             print(`                  `.substring(0, COLSIZE - 1))
         } else {
-            const patIdx = cue.pats[voice]
-            const vlabel = `V${(voice+1).toString().padStart(2,'0')}`
-            const plabel = (patIdx === CUE_EMPTY) ? '---' : patIdx.toString(16).toUpperCase().padStart(3,'0')
+            const ptnIdx = cue.ptns[voice]
+            const vlabel = `V${(voice+1).dec02()}`
+            const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
             const label = `   ${vlabel} ptn ${plabel}   `
             print((label + '                  ').substring(0, COLSIZE - 1))
         }
@@ -383,13 +405,13 @@ function drawPatternRowAt(viewRow) {
     const actualRow = scrollRow + viewRow
     const y = PTNVIEW_OFFSET_Y + viewRow
     const highlight = (actualRow === cursorRow)
-    const back = highlight ? colHighlight : colBackPtn
+    const back = highlight ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight) : colBackPtn
     const cue = song.cues[cueIdx]
 
     con.color_pair(colRowNum, back)
     if (actualRow < ROWS_PER_PAT) {
         if (actualRow % 4 == 0) {con.color_pair(colRowNumEmph1, back)}
-        let rowstr = actualRow.toString().toUpperCase().padStart(2, '0')
+        let rowstr = actualRow.dec02()
         con.move(y, 1); con.prnch(rowstr.charCodeAt(0)); con.move(y, 2); con.prnch(rowstr.charCodeAt(1))
         con.move(y, SCRW-2); con.prnch(rowstr.charCodeAt(0)); con.move(y, SCRW-1); con.prnch(rowstr.charCodeAt(1))
     }
@@ -403,9 +425,9 @@ function drawPatternRowAt(viewRow) {
         const x = PTNVIEW_OFFSET_X + COLSIZE * c
         let cell = EMPTY_CELL
         if (actualRow < ROWS_PER_PAT && voice < song.numVoices) {
-            const patIdx = cue.pats[voice]
-            if (patIdx !== CUE_EMPTY && patIdx < song.numPats) {
-                cell = buildRowCell(song.patterns[patIdx], actualRow)
+            const ptnIdx = cue.ptns[voice]
+            if (ptnIdx !== CUE_EMPTY && ptnIdx < song.numPats) {
+                cell = buildRowCell(song.patterns[ptnIdx], actualRow)
             }
         }
         drawCellAt(y, x, cell, back)
@@ -422,7 +444,33 @@ function drawControlHint() {
     con.move(SCRH, 1)
     print(' '.repeat(SCRW-1))
     con.move(SCRH, 1)
-    print(`\u008424u\u008425u Move rows ${MIDDOT} \u008427u\u008426u Move vox ${MIDDOT} Pg\u008424u\u008425u Move Ptns ${MIDDOT} Hm/Ed Init/Last row ${MIDDOT} q Quit ----`)
+    print(`\u008424u\u008425u Row ${MIDDOT} \u008427u\u008426u Vox ${MIDDOT} Pg\u008424u\u008425u Ptn ${MIDDOT} Hm/Ed Row ${MIDDOT} F5 Song F6 Cue F7 Row F8/Spc Stop`)
+}
+
+function drawVoiceDetail() {
+    const cue = song.cues[cueIdx]
+    const ptnIdx = cue.ptns[cursorVox]
+    if (ptnIdx === CUE_EMPTY || ptnIdx >= song.numPats) return
+    const ptn = song.patterns[ptnIdx]
+    const ptnOff = 8 * cursorRow
+    const ptnDat = ptn.slice(ptnOff, ptnOff + 8)
+
+    const note = ptnDat[0] | (ptnDat[1] << 8)
+    const inst = ptnDat[2]
+    const voleff = ptnDat[3]
+    const voleffop = (voleff >>> 6) & 3
+    const voleffarg = voleff & 63
+    const paneff = ptnDat[4]
+    const paneffop = (paneff >>> 6) & 3
+    const paneffarg = paneff & 63
+    const effop = ptnDat[5]
+    const effarg = ptnDat[6] | (ptnDat[7] << 8)
+
+    con.move(6,1)
+    print(`Pattern $${ptnIdx.hex02()}\tRow ${cursorRow.dec02()}\tVoice ${cursorVox}`)
+    con.move(7,1)
+    print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\tVolEff ${voleffop}.${voleffarg.dec02()}\t`+
+    `PanEff ${paneffop}.${paneffarg.dec02()}\tFx ${effop.toString(36).toUpperCase()}.${effarg.hex04()}`)
 }
 
 function drawAll() {
@@ -430,6 +478,7 @@ function drawAll() {
     drawStatusBar()
     drawVoiceHeaders()
     drawPatternView()
+    drawVoiceDetail()
     drawControlHint()
     con.move(1, 1)
 }
@@ -488,6 +537,7 @@ let cueIdx    = 0
 let cursorRow = 0
 let scrollRow = 0
 let voiceOff  = 0
+let cursorVox = 0
 
 if (exec_args[1] === undefined) {
     println(`Usage: ${exec_args[0]} path_to.taud`)
@@ -502,11 +552,132 @@ if (fullPathObj === undefined) {
 
 const song = loadTaud(fullPathObj.full, 0)
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PLAYBACK STATE
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const PLAYHEAD = 0
+
+const PLAYMODE_NONE = 0
+const PLAYMODE_SONG = 1
+const PLAYMODE_CUE  = 2
+const PLAYMODE_ROW  = 3
+
+let playbackMode = PLAYMODE_NONE
+let playStartCue = 0
+let playStartRow = 0
+let pbCue = 0
+let pbRow = 0
+
+function startPlaySong() {
+    audio.stop(PLAYHEAD)
+    audio.setCuePosition(PLAYHEAD, cueIdx)
+    audio.setTrackerRow(PLAYHEAD, 0)
+    cursorRow = 0
+    clampCursor()
+    pbCue = cueIdx
+    pbRow = 0
+    playbackMode = PLAYMODE_SONG
+    audio.play(PLAYHEAD)
+}
+
+function startPlayCue() {
+    audio.stop(PLAYHEAD)
+    audio.setCuePosition(PLAYHEAD, cueIdx)
+    audio.setTrackerRow(PLAYHEAD, 0)
+    playStartCue = cueIdx
+    cursorRow = 0
+    clampCursor()
+    pbCue = cueIdx
+    pbRow = 0
+    playbackMode = PLAYMODE_CUE
+    audio.play(PLAYHEAD)
+}
+
+function startPlayRow() {
+    audio.stop(PLAYHEAD)
+    audio.setCuePosition(PLAYHEAD, cueIdx)
+    audio.setTrackerRow(PLAYHEAD, cursorRow)
+    playStartCue = cueIdx
+    playStartRow = cursorRow
+    pbCue = cueIdx
+    pbRow = cursorRow
+    playbackMode = PLAYMODE_ROW
+    audio.play(PLAYHEAD)
+}
+
+function stopPlayback() {
+    audio.stop(PLAYHEAD)
+    playbackMode = PLAYMODE_NONE
+}
+
+function updatePlayback() {
+    if (!audio.isPlaying(PLAYHEAD)) {
+        playbackMode = PLAYMODE_NONE
+        if (cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
+            drawPatternRowAt(cursorRow - scrollRow)
+        drawStatusBar()
+        return
+    }
+
+    const nowCue = audio.getCuePosition(PLAYHEAD)
+    const nowRow = audio.getTrackerRow(PLAYHEAD)
+
+    if (playbackMode === PLAYMODE_CUE && nowCue !== playStartCue) {
+        stopPlayback()
+        drawAll()
+        return
+    }
+    if (playbackMode === PLAYMODE_ROW && (nowRow !== playStartRow || nowCue !== playStartCue)) {
+        stopPlayback()
+        if (cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
+            drawPatternRowAt(cursorRow - scrollRow)
+        drawStatusBar()
+        return
+    }
+
+    if (nowCue === pbCue && nowRow === pbRow) return
+
+    pbCue = nowCue
+    pbRow = nowRow
+
+    if (nowCue !== cueIdx) {
+        cueIdx = nowCue
+        cursorRow = nowRow
+        clampCursor()
+        drawAll()
+    } else {
+        const oldCursor = cursorRow
+        const oldScroll = scrollRow
+        cursorRow = nowRow
+        clampCursor()
+        const dScroll = scrollRow - oldScroll
+        if (dScroll === 0) {
+            drawPatternRowAt(oldCursor - scrollRow)
+            drawPatternRowAt(cursorRow - scrollRow)
+        } else if (Math.abs(dScroll) >= PTNVIEW_HEIGHT) {
+            drawPatternView()
+        } else {
+            shiftPatternArea(-dScroll)
+            if (dScroll > 0) {
+                for (let i = 0; i < dScroll; i++) drawPatternRowAt(PTNVIEW_HEIGHT - 1 - i)
+            } else {
+                for (let i = 0; i < -dScroll; i++) drawPatternRowAt(i)
+            }
+            if (oldCursor >= scrollRow && oldCursor < scrollRow + PTNVIEW_HEIGHT)
+                drawPatternRowAt(oldCursor - scrollRow)
+            drawPatternRowAt(cursorRow - scrollRow)
+        }
+        drawStatusBar()
+        drawVoiceDetail()
+    }
+}
+
 function clampCursor() {
     if (cursorRow < 0) cursorRow = 0
     if (cursorRow >= ROWS_PER_PAT) cursorRow = ROWS_PER_PAT - 1
     if (cursorRow < scrollRow) scrollRow = cursorRow
-    // bottom two IF statements will keep the cursor at the centre until viewpoint scroll edge has reached
+    // these two IF statements will keep the cursor at the centre until viewpoint scroll edge has reached
     if (cursorRow < scrollRow + (PTNVIEW_HEIGHT>>>1) && scrollRow > 0) scrollRow = cursorRow - (PTNVIEW_HEIGHT>>>1)
     if (cursorRow >= scrollRow + ((PTNVIEW_HEIGHT+1)>>>1)) scrollRow = cursorRow - ((PTNVIEW_HEIGHT+1)>>>1) + 1
     if (scrollRow < 0) scrollRow = 0
@@ -529,22 +700,42 @@ function clampCue() {
 clampCursor(); clampVoice(); clampCue()
 drawAll()
 
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+audio.stop(PLAYHEAD)
+taud.uploadTaudFile(fullPathObj.full, 0, PLAYHEAD)
+audio.setMasterVolume(PLAYHEAD, 255)
+audio.setMasterPan(PLAYHEAD, 128)
+
 let exitFlag = false
 while (!exitFlag) {
     input.withEvent(event => {
         if (event[0] !== "key_down") return
         const keysym = event[1]
 
+        if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
+            exitFlag = true
+            return
+        }
+
+        if (playbackMode !== PLAYMODE_NONE) {
+            if (keysym === "<F8>" || keysym === " ") { stopPlayback(); drawAll() }
+            else if (keysym === "<LEFT>")  { voiceOff -= 1; clampVoice(); drawAll() }
+            else if (keysym === "<RIGHT>") { voiceOff += 1; clampVoice(); drawAll() }
+            return
+        }
+
+        if (keysym === "<F5>") { startPlaySong(); drawAll(); return }
+        if (keysym === "<F6>") { startPlayCue();  drawAll(); return }
+        if (keysym === "<F7>") { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return }
+        if (keysym === "<F8>" || keysym === " ") { stopPlayback(); return }
+
         const oldCursor = cursorRow
         const oldScroll = scrollRow
         let rowMove = false       // pure row-cursor movement; can be fast-path
         let fullRedraw = false    // voice/cue change; needs full viewport refresh
 
-        if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
-            exitFlag = true
-            return
-        }
-        else if (keysym === "<UP>")        { cursorRow -= 1;               rowMove = true }
+        if (keysym === "<UP>")             { cursorRow -= 1;               rowMove = true }
         else if (keysym === "<DOWN>")      { cursorRow += 1;               rowMove = true }
         else if (keysym === "<HOME>")      { cursorRow  = 0;               rowMove = true }
         else if (keysym === "<END>")       { cursorRow  = ROWS_PER_PAT-1;  rowMove = true }
@@ -591,9 +782,13 @@ while (!exitFlag) {
         }
 
         drawStatusBar()
+        drawVoiceDetail()
     })
+
+    if (playbackMode !== PLAYMODE_NONE) updatePlayback()
 }
 
+audio.stop(PLAYHEAD)
 sys.free(SCRATCH_PTR)
 con.clear()
 con.move(1, 1)
