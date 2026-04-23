@@ -904,7 +904,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
         num_taud_pats_hi,
         bpm_stored,
         speed,
-    ) + b'\x40\x00' + b'\x13\xd0\x82\x43' + b'\x00'
+    ) + b'\x00\x4C' + b'\x00\x00\xDC\x43' + b'\x00'
     assert len(song_table) == TAUD_SONG_ENTRY
 
     # Cue sheet (using remapped pattern indices)

@@ -219,8 +219,8 @@ function captureTrackerDataToFile(outFile) {
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
         bpmStored,                             // BPM with −24 bias
         tickRate,                              // initial tick-rate
-        0x40,0,      // basenote
-        0x13,0xd0,0x82,0x43, // basefreq
+        0x00,0x4C,              // basenote (0x4C00 -- A3)
+        0x00,0x00,0xDC,0x43, // basefreq (440 Hz)
         0,        // padding
     ]
 

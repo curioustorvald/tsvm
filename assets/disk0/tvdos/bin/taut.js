@@ -10,6 +10,9 @@ const taud = require("taud")
 
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 
+const BUILD_DATE = "260423"
+const TRACKER_SIGNATURE = "TsvmTaut"+BUILD_DATE // 14-byte string
+
 const MIDDOT = "\u00FA"
 const BIGDOT = "\u00F9"
 const BULLET = "\u00847u"
