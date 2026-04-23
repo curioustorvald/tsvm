@@ -8,9 +8,10 @@ const win = require("wintex")
 const font = require("font")
 const taud = require("taud")
 
+font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 
-const BUILD_DATE = "260423"
+const BUILD_DATE = "260424"
 const TRACKER_SIGNATURE = "TsvmTaut"+BUILD_DATE // 14-byte string
 
 const MIDDOT = "\u00FA"
@@ -71,7 +72,7 @@ middot:MIDDOT
 const fxNames = {
 A:"Set tick speed",
 B:"Jump to order",
-C:"Break pattern to",
+C:"Break pattern",
 D:"Volume slide",
 E:"Pitch down",
 F:"Pitch up",
@@ -80,13 +81,13 @@ H:"Vibrato",
 U:"Fine vibrato",
 I:"Tremor",
 J:"Arpeggio",
-K:"Vibrato + vol slide",
-L:"Portamento + vol slide",
+K:"Vibra+v.slide",
+L:"Porta+v.slide",
 O:"Sample offset",
 Q:"Retrigger",
 R:"Tremolo",
 T:"Tempo",
-V:"Gloval volume",
+V:"Global volume",
 S:"Special",
 S1:"Glissando ctrl",
 S2:"Sample finetune",
@@ -154,8 +155,8 @@ sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
 10122:{index:10122,name:"Pythagorean Augmented Fourth", table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x828,0x95C,0xA90,0xC14,0xD48,0xECC],
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
-10123:{index:10123,name:"Shierlu",                         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],
-sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
+10123:{index:10123,name:"Shi'er lu",                         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],
+sym:[` \u00E0\u00E1`,` \u00E2\u00E3`,` \u00E4\u00E5`,` \u00E6\u00E7`,` \u00E8\u00E9`,` \u00EA\u00EB`,` \u00EC\u00ED`,` \u00EE\u00EF`,` \u00F0\u00F1`,` \u00F2\u00F3`,` \u00F4\u00F5`,` \u00F6\u00F7`]},
 
 
 
@@ -165,9 +166,9 @@ sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym
 const volEffSym = [sym.volset, sym.volup, sym.voldn, sym.volfineup, sym.volfinedn]
 const panEffSym = [sym.panset, sym.panle, sym.panri, sym.panfinele, sym.panfineri]
 
-const colNote = 239
+const colNote = 254
 const colInst = 114
-const colVol = 117
+const colVol = 155
 const colPan = 221
 const colEffOp = 213
 const colEffArg = 231
@@ -548,8 +549,8 @@ function drawPatternView() {
 
 function drawControlHint() {
     let hintElem = [
-        [`\u008427u\u008425u\u008424u\u008426u`,'Ptn'],
-        [`Pg\u008424u\u008425u`,'Cue'],
+        [`\u008428u\u008429u`,'Ptn'],
+        [`Pg\u008418u`,'Cue'],
     ['sep'],
         ['F5','Song'],
         ['F6','Cue'],
@@ -965,6 +966,7 @@ while (!exitFlag) {
                 drawVoiceHeaders()
                 drawSeparators(separatorStyle)
                 drawStatusBar()
+                drawVoiceDetail()
             }
             else if (keysym === "m" || keysym === "M") { toggleMute(cursorVox) }
             else if (keysym === "s" || keysym === "S") { toggleSolo(cursorVox) }
