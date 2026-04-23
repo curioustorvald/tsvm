@@ -121,6 +121,8 @@ const colEffOp = 213
 const colEffArg = 231
 const colBackPtn = 255
 
+const PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
+
 Number.prototype.hex02 = function() {
     return this.toString(16).toUpperCase().padStart(2,'0')
 }
@@ -144,6 +146,24 @@ Number.prototype.decD2 = function() {
 }
 
 
+function noteToStr(note) {
+    if (note === 0xFFFF) return sym.middot.repeat(4)
+    if (note === 0xFFFE) return sym.notecut
+    if (note === 0x0000) return sym.keyoff
+    const table = pitchTablePresets[PITCH_PRESET_IDX].table
+    const syms  = pitchTablePresets[PITCH_PRESET_IDX].sym
+    if (table.length === 0) return note.hex04()
+    const pitchInOct = note & 0xFFF
+    const octave = (note >> 12) - 1
+    let best = 0, bestDist = 0x1000
+    for (let i = 0; i < table.length; i++) {
+        const d = Math.abs(pitchInOct - table[i])
+        if (d < bestDist) { bestDist = d; best = i }
+    }
+    if ((0x1000 - pitchInOct) < bestDist) return syms[0] + (octave + 1)
+    return syms[best] + octave
+}
+
 /**
  * Builds the coloured string fragments for a single row of pattern data.
  */
@@ -159,10 +179,7 @@ function buildRowCell(ptnDat, row) {
     const effop = ptnDat[off+5]
     const effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
 
-    let sNote = note.hex04()
-    if (note == 0xFFFF) sNote = sym.middot.repeat(4)
-    else if (note == 0xFFFE) sNote = sym.notecut
-    else if (note == 0x0000) sNote = sym.keyoff
+    const sNote = noteToStr(note)
 
     let sInst = inst.hexD2()
     if (inst == 0) sInst = sym.middot.repeat(2)
