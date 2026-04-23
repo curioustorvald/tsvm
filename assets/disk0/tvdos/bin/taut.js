@@ -174,7 +174,7 @@ const colEffOp = 213
 const colEffArg = 231
 const colBackPtn = 255
 
-const PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
+const PITCH_PRESET_IDX = 10123 // TODO read from the Project Data section of the .taud
 
 Number.prototype.hex02 = function() {
     return this.toString(16).toUpperCase().padStart(2,'0')
