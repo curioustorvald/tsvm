@@ -490,9 +490,8 @@ function drawPatternView() {
 
 function drawControlHint() {
     let hintElem = [
-        [`\u008424u\u008425u`,'Row'],
-        [`\u008427u\u008426u`,'Vox'],
-        [`Pg\u008424u\u008425u`,'Ptn'],
+        [`\u008427u\u008425u\u008424u\u008426u`,'Ptn'],
+        [`Pg\u008424u\u008425u`,'Cue'],
     ['sep'],
         ['F5','Song'],
         ['F6','Cue'],
@@ -500,7 +499,9 @@ function drawControlHint() {
         ['F8/Sp','Stop'],
     ['sep'],
         ['m','Mute'],
-        ['s','Solo']
+        ['s','Solo'],
+    ['sep'],
+        ['q','Quit'],
     ]
 
     // erase current line
@@ -851,7 +852,9 @@ function clampVoice() {
     if (cursorVox < 0) cursorVox = 0
     if (cursorVox >= song.numVoices) cursorVox = song.numVoices - 1
     if (cursorVox < voiceOff) voiceOff = cursorVox
-    if (cursorVox >= voiceOff + VOCSIZE) voiceOff = cursorVox - VOCSIZE + 1
+    // keep cursor centred until view reaches an edge (mirrors clampCursor logic)
+    if (cursorVox < voiceOff + (VOCSIZE>>>1) && voiceOff > 0) voiceOff = cursorVox - (VOCSIZE>>>1)
+    if (cursorVox >= voiceOff + ((VOCSIZE+1)>>>1)) voiceOff = cursorVox - ((VOCSIZE+1)>>>1) + 1
     const maxOff = Math.max(0, song.numVoices - VOCSIZE)
     if (voiceOff < 0) voiceOff = 0
     if (voiceOff > maxOff) voiceOff = maxOff
@@ -878,6 +881,8 @@ while (!exitFlag) {
     input.withEvent(event => {
         if (event[0] !== "key_down") return
         const keysym = event[1]
+        const shiftDown = (event.indexOf(59) > 0 || event.indexOf(60) > 0)
+        const moveDelta = shiftDown ? 4 : 1
 
         if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
             exitFlag = true
@@ -916,7 +921,7 @@ while (!exitFlag) {
 
         if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
             const oldVoiceOff = voiceOff
-            cursorVox += (keysym === "<LEFT>") ? -1 : 1
+            cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
             clampVoice()
             const dVoice = voiceOff - oldVoiceOff
             if (dVoice !== 0) {
@@ -933,12 +938,12 @@ while (!exitFlag) {
         if (keysym === "m" || keysym === "M") { toggleMute(cursorVox); return }
         if (keysym === "s" || keysym === "S") { toggleSolo(cursorVox); return }
 
-        if (keysym === "<UP>")             { cursorRow -= 1;               rowMove = true }
-        else if (keysym === "<DOWN>")      { cursorRow += 1;               rowMove = true }
+        if (keysym === "<UP>")             { cursorRow -= moveDelta;       rowMove = true }
+        else if (keysym === "<DOWN>")      { cursorRow += moveDelta;     rowMove = true }
         else if (keysym === "<HOME>")      { cursorRow  = 0;               rowMove = true }
         else if (keysym === "<END>")       { cursorRow  = ROWS_PER_PAT-1;  rowMove = true }
-        else if (keysym === "<PAGE_UP>")   { cueIdx    -= 1;               fullRedraw = true }
-        else if (keysym === "<PAGE_DOWN>") { cueIdx    += 1;               fullRedraw = true }
+        else if (keysym === "<PAGE_UP>")   { cueIdx    -= moveDelta;     fullRedraw = true }
+        else if (keysym === "<PAGE_DOWN>") { cueIdx    += moveDelta;    fullRedraw = true }
         else return
 
         clampCursor(); clampVoice(); clampCue()
