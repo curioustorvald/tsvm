@@ -11,6 +11,10 @@ const taud = require("taud")
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 
 const MIDDOT = "\u00FA"
+const BIGDOT = "\u00F9"
+const BULLET = "\u00847u"
+const VERT = "\u00B3"
+const TWOVERT = "\u00BA"
 
 const sym = {
 /* accidentals */
@@ -113,7 +117,7 @@ const colNote = 239
 const colInst = 114
 const colVol = 117
 const colPan = 221
-const colEffOp = 208
+const colEffOp = 213
 const colEffArg = 231
 const colBackPtn = 255
 
@@ -347,7 +351,7 @@ const VIEW_INSTRUMENT = 2
 const VIEW_PATTERN_DETAILS = 3
 
 const colPlayback  = 6
-const colHighlight = 81
+const colHighlight = 41
 const colRowNum    = 249
 const colRowNumEmph1 = 180
 const colStatus    = 253
@@ -444,10 +448,39 @@ function drawPatternView() {
 }
 
 function drawControlHint() {
+    let hintElem = [
+        [`\u008424u\u008425u`,'Row'],
+        [`\u008427u\u008426u`,'Vox'],
+        [`Pg\u008424u\u008425u`,'Ptn'],
+    ['sep'],
+        ['F5','Song'],
+        ['F6','Cue'],
+        ['F7','Row'],
+        ['F8/Sp','Stop'],
+    ['sep'],
+        ['m','Mute'],
+        ['s','Solo']
+    ]
+
+    // erase current line
     con.move(SCRH, 1)
     print(' '.repeat(SCRW-1))
+
+    // start writing
     con.move(SCRH, 1)
-    print(`\u008424u\u008425u Row ${MIDDOT} \u008427u\u008426u Vox ${MIDDOT} Pg\u008424u\u008425u Ptn ${MIDDOT} F5 Song F6 Cue F7 Row F8/Spc Stop ${MIDDOT} m Mute s Solo`)
+    hintElem.forEach((pair, i, list) => {
+        con.color_pair(colStatus,255)
+        if (pair[0] == 'sep') {
+            print(` ${BIGDOT} `)
+        }
+        else {
+            if (i > 0 && list[i-1][0] != 'sep') print(' ');
+            con.color_pair(colVoiceHdr,255)
+            print(pair[0]+' ')
+            con.color_pair(colStatus,255)
+            print(pair[1])
+        }
+    })
 }
 
 function toggleMute(vox) {

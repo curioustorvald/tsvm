@@ -22,7 +22,7 @@ uniform float noiseMagnitude = 0.0;
 
 // Signal mode: 0 = S-Video, 1 = Composite, 2 = CGA Composite
 // Can be changed at runtime without recompilation
-uniform int signalMode = 1;      // Default should be 1 for composite
+uniform int signalMode = 0;      // Default should be 1 for composite
 
 // CGA-specific settings
 uniform float cgaHue;            // Hue adjustment for CGA (default: 0.0, range: -PI to PI)
