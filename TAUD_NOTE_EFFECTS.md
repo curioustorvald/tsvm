@@ -679,9 +679,9 @@ on sample byte read during loop playback:
 Each cell carries a 6-bit value field plus a 2-bit selector field for the volume column. The four selectors are:
 
 - **`0.$xx` — Set volume** to `$xx` (6-bit, $00..$3F). Equivalent to a note's default volume.
-- **`1.$xx` — Volume slide up** by `$xx` per non-first tick (6-bit). Volume clamps at $3F.
-- **`2.$xx` — Volume slide down** by `$xx` per non-first tick (6-bit). Volume clamps at $00.
-- **`3.$Sx` — Fine volume slide** on tick 0 only. The high bit `$S` of the value selects direction (0 = down, 1 = up); the low 5 bits `$x` ($00..$1F) are the magnitude. Equivalent in scale to `D $xF00` / `D $Fy00` but with a 5-bit cap. Fires once per row regardless of speed.
+- **`1.$xx` — Volume slide up** by `$xx` per non-first tick (4-bit). Volume clamps at $3F.
+- **`2.$xx` — Volume slide down** by `$xx` per non-first tick (4-bit). Volume clamps at $00.
+- **`3.$Sx` — Fine volume slide** on tick 0 only. The high bit `$S` of the value selects direction (0 = down, 1 = up); the low 4 bits `$x` ($0..$F) are the magnitude. Equivalent in scale to `D $xF00` / `D $Fy00` but with a 5-bit cap. Fires once per row regardless of speed.
 
 Volume-column effects do not consume the main effect slot; a cell can carry both (for instance, a tone portamento in the effect slot and a volume slide in the volume column).
 
@@ -696,8 +696,8 @@ NOTE: **`3.00` — is No-op**
 The panning column uses the same 6-bit value + 2-bit selector layout:
 
 - **`0.$xx` — Set pan** (6-bit, $00..$3F mapped onto the channel's 8-bit pan space; $01 = full left, $1F = centre-left, $20 = centre-right, $3F = full right). For 8-bit precision use `S $80xx` instead.
-- **`1.$xx` — Pan slide right** by `$xx` per non-first tick.
-- **`2.$xx` — Pan slide left** by `$xx` per non-first tick.
+- **`1.$xx` — Pan slide right** by `$xx` per non-first tick (4-bit).
+- **`2.$xx` — Pan slide left** by `$xx` per non-first tick (4-bit).
 - **`3.$Sx` — Fine pan slide** on tick 0 only, same direction-bit encoding as the volume column's selector 3.
 
 NOTE: **`3.00` — is No-op**

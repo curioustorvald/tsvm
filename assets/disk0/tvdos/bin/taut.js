@@ -47,13 +47,13 @@ keyoff:"\u00A0\u00CD\u00CD\u00A1",
 notecut:"\u00A4\u00A4\u00A4\u00A4",
 
 /* special effects */
-volset:MIDDOT,
+volset:'',//MIDDOT,
 volup:"\u008430u",
 voldn:"\u008431u",
 volfineup:"+",
 volfinedn:"-",
 
-panset:MIDDOT,
+panset:'',//MIDDOT,
 panle:"\u008417u",
 panri:"\u008416u",
 panfinele:"\u008427u",
@@ -133,6 +133,9 @@ Number.prototype.hex04 = function() {
 Number.prototype.hexD2 = function() {
     return this.toString(16).toUpperCase().padStart(2, sym.middot)
 }
+Number.prototype.hex1 = function() {
+    return this.toString(16).toUpperCase()
+}
 Number.prototype.dec02 = function() {
     return this.toString(10).toUpperCase().padStart(2,'0')
 }
@@ -165,44 +168,44 @@ function buildRowCell(ptnDat, row) {
     if (inst == 0) sInst = sym.middot.repeat(2)
 
     let sVolEff = volEffSym[voleff >>> 6]
-    let sVolArg = voleffarg.decD2()
+    let sVolArg = voleffarg.hexD2()
     if (voleff === 0) {
-        sVolEff = sym.middot
+        sVolEff = ''
         sVolArg = sym.middot.repeat(2)
     }
     else if (voleff >>> 6 == 3) {
         if (voleffarg == 0) {
             sVolEff = sym.middot
-            sVolArg = sym.middot.repeat(2)
+            sVolArg = sym.middot.repeat(1)
         }
         else if (voleffarg >= 32) {
             sVolEff = volEffSym[3]
-            sVolArg = (voleffarg & 31).dec02()
+            sVolArg = (voleffarg & 15).hex1()
         }
         else {
             sVolEff = volEffSym[4]
-            sVolArg = (voleffarg & 31).dec02()
+            sVolArg = (voleffarg & 15).hex1()
         }
     }
 
     let sPanEff = panEffSym[paneff >>> 6]
-    let sPanArg = paneffarg.decD2()
+    let sPanArg = paneffarg.hexD2()
     if (paneff === 0) {
-        sPanEff = sym.middot
+        sPanEff = ''
         sPanArg = sym.middot.repeat(2)
     }
     else if (paneff >>> 6 == 3) {
         if (paneffarg == 0) {
             sPanEff = sym.middot
-            sPanArg = sym.middot.repeat(2)
+            sPanArg = sym.middot.repeat(1)
         }
         else if (paneffarg >= 32) {
             sPanEff = panEffSym[4]
-            sPanArg = (paneffarg & 31).dec02()
+            sPanArg = (paneffarg & 15).hex1()
         }
         else {
             sPanEff = panEffSym[3]
-            sPanArg = (paneffarg & 31).dec02()
+            sPanArg = (paneffarg & 15).hex1()
         }
     }
 
@@ -219,9 +222,9 @@ function buildRowCell(ptnDat, row) {
 const EMPTY_CELL = {
     sNote:   sym.middot.repeat(4),
     sInst:   sym.middot.repeat(3),
-    sVolEff: sym.middot,
+    sVolEff: '',
     sVolArg: sym.middot.repeat(2),
-    sPanEff: sym.middot,
+    sPanEff: '',
     sPanArg: sym.middot.repeat(2),
     sEffOp:  sym.middot,
     sEffArg: sym.middot.repeat(4)
@@ -339,11 +342,11 @@ function loadTaud(filePath, songIndex) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const [SCRH, SCRW] = con.getmaxyx()
-const PTNVIEW_OFFSET_X = 5
+const PTNVIEW_OFFSET_X = 3
 const PTNVIEW_OFFSET_Y = 9
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
-const COLSIZE = 18
-const VOCSIZE = 4
+const COLSIZE = 15
+const VOCSIZE = 5
 
 const VIEW_TIMELINE = 0
 const VIEW_ORDERS = 1
@@ -358,6 +361,8 @@ const colStatus    = 253
 const colVoiceHdr  = 230
 const colSep       = 252
 
+let separatorStyle = 0
+
 function fillLine(y, c, back) {
     con.color_pair(c, back)
     for (let x = 1; x <= SCRW; x++) {
@@ -369,17 +374,36 @@ function drawStatusBar() {
     fillLine(1, colStatus, 255)
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
     const vHi    = Math.min(voiceOff + VOCSIZE, song.numVoices)
-    const txt = ` ${song.filePath}   Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${song.bpm} Spd ${song.tickRate} `
+    const txt = `${song.filePath}   Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${song.bpm} Spd ${song.tickRate} `
     con.move(1, 1)
     con.color_pair(colStatus, 255)
     print(txt)
 }
 
-function drawSeparators(posY, col_size) {
-    con.color_pair(colSep, 255)
-    for (let c = 0; c < VOCSIZE - 1; c++) {
-        con.move(posY, PTNVIEW_OFFSET_X + col_size * (c+1) - 1)
-        con.prnch(0xB3)
+/**
+ * @param style 0: condensed timeline, 1: vertical bars between voices
+ */
+function drawSeparators(style) {
+    if (style == 1) {
+        con.color_pair(colSep, 255)
+        for (let c = 0; c < VOCSIZE - 1; c++) {
+            for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_HEIGHT; y++) {
+                con.move(y, PTNVIEW_OFFSET_X + COLSIZE * (c+1) - 1)
+                con.prnch(0xB3)
+            }
+        }
+    }
+    else {
+        // paint the first column of pattern view with colour
+        for (let x = PTNVIEW_OFFSET_X; x < SCRW - 3; x += COLSIZE) {
+            for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
+                let memOffset = (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1)
+                let bgColOffset = GPU_MEM - TEXT_BACK_OFF - memOffset
+                sys.poke(bgColOffset, colHighlight)
+            }
+        }
+
+        con.color_pair(colSep, 255)
     }
 }
 
@@ -400,12 +424,12 @@ function drawVoiceHeaders() {
             const ptnIdx = cue.ptns[voice]
             const vlabel = `V${(voice+1).dec02()}`
             const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
-            const label = `   ${vlabel} ptn ${plabel}   `
+            const label = `  ${vlabel} ptn ${plabel}    `
             print((label + '                  ').substring(0, COLSIZE - 1))
         }
     }
 
-    drawSeparators(PTNVIEW_OFFSET_Y - 1, COLSIZE)
+    drawSeparators(separatorStyle)
 }
 
 function drawPatternRowAt(viewRow) {
@@ -440,7 +464,7 @@ function drawPatternRowAt(viewRow) {
         drawCellAt(y, x, cell, back)
     }
 
-    drawSeparators(y, COLSIZE)
+    drawSeparators(separatorStyle)
 }
 
 function drawPatternView() {
@@ -529,10 +553,10 @@ function drawVoiceDetail() {
     const effarg = ptnDat[6] | (ptnDat[7] << 8)
 
     con.move(6,1)
-    print(`Pattern $${ptnIdx.hex02()}\tRow ${cursorRow.dec02()}\tVoice ${cursorVox}`)
+    print(`Pattern $${ptnIdx.hex02()}\tRow ${cursorRow.dec02()}\tVoice ${cursorVox+1}`)
     con.move(7,1)
-    print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\tVolEff ${voleffop}.${voleffarg.dec02()}\t`+
-    `PanEff ${paneffop}.${paneffarg.dec02()}\tFx ${effop.toString(36).toUpperCase()}.${effarg.hex04()}`)
+    print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\tVolEff ${voleffop}.$${voleffarg.hex02()}\t`+
+    `PanEff ${paneffop}.$${paneffarg.hex02()}\tFx ${effop.toString(36).toUpperCase()}.${effarg.hex04()}`)
 }
 
 function drawAll() {
@@ -541,6 +565,7 @@ function drawAll() {
     drawVoiceHeaders()
     drawPatternView()
     drawVoiceDetail()
+    drawSeparators(separatorStyle)
     drawControlHint()
     con.move(1, 1)
 }
@@ -639,7 +664,6 @@ function drawVoiceColumnAt(slot) {
             cell = buildRowCell(song.patterns[ptnIdx], actualRow)
         }
         drawCellAt(y, x, cell, back)
-        drawSeparators(y, COLSIZE)
     }
 }
 
@@ -789,6 +813,7 @@ function updatePlayback() {
             drawPatternRowAt(cursorRow - scrollRow)
         }
         drawStatusBar()
+        drawSeparators(separatorStyle)
         drawVoiceDetail()
     }
 }
@@ -854,6 +879,7 @@ while (!exitFlag) {
                     drawVoiceColumnAt(dVoice > 0 ? VOCSIZE - 1 : 0)
                 }
                 drawVoiceHeaders()
+                drawSeparators(separatorStyle)
                 drawStatusBar()
             }
             else if (keysym === "m" || keysym === "M") { toggleMute(cursorVox) }
@@ -881,6 +907,7 @@ while (!exitFlag) {
                 drawVoiceColumnAt(dVoice > 0 ? VOCSIZE - 1 : 0)
             }
             drawVoiceHeaders()
+            drawSeparators(separatorStyle)
             drawStatusBar()
             drawVoiceDetail()
             return
@@ -933,6 +960,7 @@ while (!exitFlag) {
             drawPatternRowAt(cursorRow - scrollRow)
         }
 
+        drawSeparators(separatorStyle)
         drawStatusBar()
         drawVoiceDetail()
     })
