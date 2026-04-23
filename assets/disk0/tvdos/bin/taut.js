@@ -350,7 +350,7 @@ const VIEW_ORDERS = 1
 const VIEW_INSTRUMENT = 2
 const VIEW_PATTERN_DETAILS = 3
 
-const colPlayback  = 6
+const colPlayback  = 40
 const colHighlight = 41
 const colRowNum    = 249
 const colRowNumEmph1 = 180
