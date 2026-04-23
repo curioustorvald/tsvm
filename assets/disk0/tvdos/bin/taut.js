@@ -893,7 +893,7 @@ while (!exitFlag) {
             if (keysym === "<F8>" || keysym === " ") { stopPlayback(); drawAll() }
             else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
                 const oldVoiceOff = voiceOff
-                cursorVox += (keysym === "<LEFT>") ? -1 : 1
+                cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
                 clampVoice()
                 const dVoice = voiceOff - oldVoiceOff
                 if (dVoice !== 0) {
