@@ -65,6 +65,55 @@ ticked:"\u009F",
 middot:MIDDOT
 }
 
+const fxNames = {
+A:"Set tick speed",
+B:"Jump to order",
+C:"Break pattern to",
+D:"Volume slide",
+E:"Pitch down",
+F:"Pitch up",
+G:"Portamento",
+H:"Vibrato",
+U:"Fine vibrato",
+I:"Tremor",
+J:"Arpeggio",
+K:"Vibrato + vol slide",
+L:"Portamento + vol slide",
+O:"Sample offset",
+Q:"Retrigger",
+R:"Tremolo",
+T:"Tempo",
+V:"Gloval volume",
+S:"Special",
+S1:"Glissando ctrl",
+S2:"Sample finetune",
+S3:"Vibrato LFO",
+S4:"Tremolo LFO",
+S8:"Channel pan",
+SB:"Pattern loop",
+SC:"Note cut",
+SD:"Note delay",
+SE:"Pattern delay",
+SF:"Funk it"
+}
+
+const panFxNames = {
+0:"Set",
+1:"Pan slide L",
+2:"Pan slide R",
+3:"Fine pan slide",
+30:"Fine pan slide L",
+31:"Fine pan slide R"
+}
+const volFxNames = {
+0:"Set",
+1:"Vol slide UP",
+2:"Vol slide DN",
+3:"Fine vol slide",
+30:"Fine vol slide DN",
+31:"Fine vol slide UP"
+}
+
 const pitchTablePresets = {
 // index: pitch table number to be recorded on .taudproj file
 0:{index:0,name:"null", table:[], sym:[]}, // when null is specified, hex numbers will be displayed instead
@@ -577,10 +626,18 @@ function drawVoiceDetail() {
     const effarg = ptnDat[6] | (ptnDat[7] << 8)
 
     con.move(6,1)
-    print(`Pattern $${ptnIdx.hex02()}\tRow ${cursorRow.dec02()}\tVoice ${cursorVox+1}`)
-    con.move(7,1)
     print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\tVolEff ${voleffop}.$${voleffarg.hex02()}\t`+
-    `PanEff ${paneffop}.$${paneffarg.hex02()}\tFx ${effop.toString(36).toUpperCase()}.${effarg.hex04()}`)
+    `PanEff ${paneffop}.$${paneffarg.hex02()}`)
+    con.move(7,1)
+    let fx = effop.toString(36).toUpperCase()
+    if (fx == '0') {
+        print(`Fx`+' '.repeat(32))
+    }
+    else {
+        if (fx == 'S') fx += (effarg >>> 12).hex1()
+        let fxName = fxNames[fx]
+        print(`Fx ${fxName} $${effarg.hex04()}                               `)
+    }
 }
 
 function drawAll() {
@@ -613,12 +670,8 @@ const TEXT_PLANES   = [TEXT_CHAR_OFF, TEXT_BACK_OFF, TEXT_FORE_OFF]
 // One scratch strip, reused across shifts
 const SCRATCH_PTR = sys.malloc(SCRW * PTNVIEW_HEIGHT)
 
-// Horizontal salvage: 3 carried voice columns minus the missing trailing separator.
-// For shift-left: source x=23..75 (old cols 1,2,3); dest x=5..57 (new cols 0,1,2).
-// For shift-right: source x=5..57 (old cols 0,1,2); dest x=23..75 (new cols 1,2,3).
-// The separator at the boundary of the exposed column is already in place after
-// the shift (it was never overwritten), so no extra separator fix-up is needed.
-const SALVAGE_HORIZ_LEN = (VOCSIZE - 1) * COLSIZE - 1  // 53 chars
+// Horizontal salvage
+const SALVAGE_HORIZ_LEN = (VOCSIZE - 1) * COLSIZE
 
 /**
  * Shift the pattern-view rows by `dy` lines (positive = down, negative = up)
