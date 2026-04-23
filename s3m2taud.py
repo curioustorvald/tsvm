@@ -660,13 +660,21 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
         inst_vols = {}
     out = bytearray(PATTERN_BYTES)
     rows = s3m_grid[ch_idx] if ch_idx < len(s3m_grid) else [S3MRow()] * PATTERN_ROWS
-    last_inst = 0   # 1-based; tracks which instrument is loaded on this channel
+    last_inst = 0             # 1-based; tracks which instrument is loaded on this channel
+    last_note = S3M_NOTE_EMPTY  # last raw S3M note byte that was a real pitch
+    last_vol  = None            # last SEL_SET volume value (0-63), for retrigger recall
     for r, row in enumerate(rows[:PATTERN_ROWS]):
         note = encode_note(row.note)
         inst = row.inst   # S3M 1-based → Taud 1-based
 
         if row.inst > 0:
             last_inst = row.inst
+
+        # ── Instrument-only retrigger ──
+        # Instrument-only row: recall the last volume without touching the note.
+        retrigger = (row.inst > 0
+                     and row.note == S3M_NOTE_EMPTY
+                     and last_note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF))
 
         op, arg, vol_override, pan_override = encode_effect(
             row.effect, row.effect_arg, ch_idx, r)
@@ -683,10 +691,20 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
             # so prior channel-vol state doesn't bleed through.
             vol_sel = SEL_SET
             vol_value = inst_vols.get(last_inst, 0x3F)
+        elif retrigger and last_vol is not None:
+            # Instrument-only row: re-emit the last known volume so the sample
+            # restarts at the correct level without an explicit note trigger.
+            vol_sel, vol_value = SEL_SET, last_vol
         elif vol_override is not None:
             vol_sel, vol_value = vol_override
         else:
             vol_sel, vol_value = SEL_FINE, 0   # no-op fine slide
+
+        # Track note and volume for future retrigger lookups.
+        if row.note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF):
+            last_note = row.note
+        if vol_sel == SEL_SET:
+            last_vol = vol_value
 
         # ── Pan column ──
         if pan_override is not None:

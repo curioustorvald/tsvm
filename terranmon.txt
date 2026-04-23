@@ -2210,9 +2210,9 @@ Rows of 16 bytes:
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
     Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
     Uint8   Initial Tickrate (0 is invalid)
-    Uint16  Current Tuning base note (0-4095), assuming octave 3. C3 (the default value) is 0x4000
-    Float32 Frequency at the base note. Default (A440) is 261.6255653
-    Byte[7] Reserved for future versions
+    Uint16  Current Tuning base note (1-4094), assuming octave 3. C3 (the default value) is 0x4000. If zero, assume the default value
+    Float32 Frequency at the base note. Default (A440) is 261.6255653. If zero, assume the default value
+    Byte[1] Reserved for future versions
 
 Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
