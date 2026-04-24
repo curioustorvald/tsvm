@@ -159,11 +159,11 @@ Coarse and fine modes are distinguished by the high nibble of the argument:
 - `E $F000..$FFFF` — fine slide: on tick 0 only, subtracts `arg & $0FFF` from pitch.
 - `E $0000` — recalls the last E-or-F argument and applies it as a down-slide, preserving the original form (coarse or fine).
 
-**Compatibility.** This is **the single intentionally ST3-incompatible command in Taud**. ST3 pitch slides operate on Amiga periods or linear slide units; Taud operates directly on 4096-TET pitch units. Conversion from ST3 linear-mode slides uses 1 ST3 slide unit ≈ $0005 Taud units (1/64 semitone):
+**Compatibility.** This is **the single intentionally ST3-incompatible command in Taud**. ST3 pitch slides operate on Amiga periods or linear slide units; Taud operates directly on 4096-TET pitch units. Coarse and fine forms use different unit sizes:
 
-- ST3 `Exx` coarse (where `xx < $E0`) → Taud `E $00xx × $0015` (one ST3 coarse unit = 1/16 semitone ≈ $0015 Taud units).
-- ST3 `EFx` fine → Taud `E $F0xx × $0015` with appropriate range packing.
-- ST3 `EEx` extra-fine → Taud `E $F0xx × $0005` (one ST3 extra-fine unit = 1/64 semitone ≈ $0005 Taud units).
+- ST3 `Exx` coarse (where `xx < $E0`) → Taud `E round($00xx × 64/3)` (1 ST3 coarse unit = 1/16 semitone = 64/3 ≈ 21.33 Taud units, rounded).
+- ST3 `EFx` fine → Taud `E $F0 round(x × 16/3)` (1 ST3 fine unit = 1/64 semitone = 16/3 ≈ 5.33 Taud units, applied once per row).
+- ST3 `EEx` extra-fine → Taud `E $F0 round(x × 16/3)` (same unit as fine, applied once per row).
 
 ST3 Amiga-mode slides do not have a clean conversion and should be treated as linear-mode equivalents during import.
 
@@ -196,7 +196,7 @@ Glissando control (S $1x) snaps the output pitch to the nearest semitone after e
 
 **Plain.** Raises the channel's pitch by the argument per tick, with the same mode-selection scheme as E. Coarse, fine, and memory behaviour are identical in form but inverted in direction.
 
-**Compatibility.** Same as E. ST3 `Fxx` coarse, `FFx` fine, and `FEx` extra-fine convert with the same scaling factors ($0015 and $0005). F and E share one memory slot in Taud.
+**Compatibility.** Same as E. ST3 `Fxx` coarse converts using `round(x × 64/3)`; `FFx` fine and `FEx` extra-fine convert using `round(x × 16/3)`. F and E share one memory slot in Taud.
 
 **Implementation.** As for E, but add instead of subtract. No upper pitch cap is defined by the effect itself, but the sample-rate conversion at the mixer will saturate well before arithmetic overflow at reasonable playing ranges.
 
@@ -206,7 +206,7 @@ Glissando control (S $1x) snaps the output pitch to the nearest semitone after e
 
 **Plain.** Slides the channel's current pitch toward the note specified in the same row, at $xxxx Taud units per tick (after tick 0), stopping when the target is reached. A row with G and a note does **not** re-trigger the sample — the note's pitch becomes the portamento target and the already-sounding sample continues at its current pitch.
 
-**Compatibility.** ST3 `Gxx` uses an 8-bit value in period-table units; convert to Taud using the same $0015-per-unit scale as E/F coarse (1/16 semitone per ST3 slide unit). ST3 linear mode is the expected import source; Amiga-mode G sources should be treated as linear. G has its **own** memory slot in both ST3 and Taud, so conversion is straightforward and does not suffer the shared-memory problem of E/F.
+**Compatibility.** ST3 `Gxx` uses an 8-bit value in period-table units; convert to Taud using the same `round(× 64/3)` scale as E/F coarse (1/16 semitone per ST3 slide unit). ST3 linear mode is the expected import source; Amiga-mode G sources should be treated as linear. G has its **own** memory slot in both ST3 and Taud, so conversion is straightforward and does not suffer the shared-memory problem of E/F.
 
 **Implementation.**
 
@@ -517,7 +517,7 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 ---
 
-## X $xx00 — Set Panning
+## X $xx00 — Fine Set Panning
 
 **Plain.** **Unimplemented**. On IT, sets the panning position of the current channel, $00 being full-left and $FF being full-right.
 
@@ -756,7 +756,7 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 | PT effect | Taud effect | Notes |
 |---|---|---|
 | `0 $xy` | `J $xxyy` | Arpeggio; nibble-repeat each byte. See the 12-TET → Taud table above for conversion losses |
-| `1 $xx` | `F $0xxx × $0015` | Portamento up; ST3 slide unit = 1/16 semitone |
+| `1 $xx` | `F round($0xxx × 64/3)` | Portamento up; ST3 coarse slide unit = 1/16 semitone |
 | `2 $xx` | `E $0xxx × $0015` | Portamento down |
 | `5 $xy` | `L $xy00` | Combined portamento + volume slide |
 | `6 $xy` | `K $xy00` | Combined vibrato + volume slide |
@@ -803,7 +803,7 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 
 **Global volume scale.** ST3's 0..$40 maps to Taud's 0..$FF with a ×4 scale on import, truncated ÷4 on export.
 
-**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud's is purely linear in 4096-TET units. ST3 songs in linear mode convert cleanly via the $0015-per-unit coarse and $0005-per-unit extra-fine constants; Amiga-mode slides change character slightly because the non-linearity of period math is not replicated.
+**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud's is purely linear in 4096-TET units. ST3 songs in linear mode convert cleanly: coarse forms (Exx/Fxx/Gxx) use `round(× 64/3)` (1/16 semitone per unit), fine/extra-fine forms (EFx/EEx/FFx/FEx) use `round(× 16/3)` (1/64 semitone per unit). Amiga-mode slides change character slightly because the non-linearity of period math is not replicated.
 
 **Default tempo byte.** Taud's default $65 equals 125 BPM under the $18 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$65` after subtracting $18. Converters must remap on both import and export.
 

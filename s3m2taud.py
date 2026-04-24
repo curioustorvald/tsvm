@@ -390,18 +390,16 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_D, (arg & 0xFF) << 8, None, None)
 
     if cmd in (EFF_E, EFF_F):
-        # ST3 slide unit = 1/16 semitone = $0015 Taud units (per spec PT table).
+        # Coarse: 1/16 semitone = 64/3 Taud units. Fine/extra-fine: 1/64 semitone = 16/3.
         op = TOP_E if cmd == EFF_E else TOP_F
         hi = (arg >> 4) & 0xF
         lo = arg & 0xF
-        if hi == 0xF and lo > 0:
-            return (op, 0xF000 | ((lo * 0x15) & 0xFFF), None, None)
-        if hi == 0xE and lo > 0:
-            return (op, 0xF000 | ((lo * 0x05) & 0xFFF), None, None)
-        return (op, (arg * 0x15) & 0xFFFF, None, None)
+        if hi in (0xE, 0xF) and lo > 0:
+            return (op, 0xF000 | (round(lo * 16 / 3) & 0xFFF), None, None)
+        return (op, round(arg * 64 / 3) & 0xFFFF, None, None)
 
     if cmd == EFF_G:
-        return (TOP_G, (arg * 0x15) & 0xFFFF, None, None)
+        return (TOP_G, round(arg * 64 / 3) & 0xFFFF, None, None)
 
     if cmd in (EFF_H, EFF_I, EFF_R, EFF_U):
         op = {EFF_H: TOP_H, EFF_I: TOP_I, EFF_R: TOP_R, EFF_U: TOP_U}[cmd]
@@ -901,16 +899,15 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
 
     # Song table row (16 bytes): offset(4)+voices(1)+patsLo(1)+patsHi(1)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+pad(1)
     # Built after dedup so num_taud_pats reflects the unique count.
-    num_taud_pats_lo = num_taud_pats & 0xFF
-    num_taud_pats_hi = (num_taud_pats >> 8) & 0xFF
-    song_table = struct.pack('<IBBBBB',
+    song_table = struct.pack('<IBHBBHf',
         song_offset,
         C,
-        num_taud_pats_lo,
-        num_taud_pats_hi,
+        num_taud_pats,
         bpm_stored,
         speed,
-    ) + b'\x00\x90' + b'\x00\xAC\xD02\x46' + b'\x00'
+        0x9000, # C8
+        8363.0, # Hz
+    ) + b'\x00'
     assert len(song_table) == TAUD_SONG_ENTRY
 
     # Cue sheet (using remapped pattern indices)

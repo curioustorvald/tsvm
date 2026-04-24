@@ -70,52 +70,74 @@ middot:MIDDOT
 }
 
 const fxNames = {
-A:"Tick speed",
+'0':"No effect    ",
+'1':"UNIMPLEMENTED",
+'2':"UNIMPLEMENTED",
+'3':"UNIMPLEMENTED",
+'4':"UNIMPLEMENTED",
+'5':"UNIMPLEMENTED",
+'6':"UNIMPLEMENTED",
+'7':"UNIMPLEMENTED",
+'8':"UNIMPLEMENTED",
+'9':"UNIMPLEMENTED",
+A:"Tick speed   ",
 B:"Jump to order",
 C:"Break pattern",
-D:"Volume slide",
-E:"Pitch down",
-F:"Pitch up",
-G:"Portamento",
-H:"Vibrato",
-U:"Fine vibrato",
-I:"Tremor",
-J:"Arpeggio",
-K:"Vibra+v.slide",
-L:"Porta+v.slide",
+D:"Volume slide ",
+E:"Pitch down   ",
+F:"Pitch up     ",
+G:"Portamento   ",
+H:"Vibrato      ",
+I:"Tremor       ",
+J:"Arpeggio     ",
+K:"UNIMPLEMENTED",
+L:"UNIMPLEMENTED",
+M:"UNIMPLEMENTED",
+N:"UNIMPLEMENTED",
 O:"Sample offset",
-Q:"Retrigger",
-R:"Tremolo",
-T:"Tempo",
-V:"Global volume",
-S:"Special",
-S1:"Gliss. ctrl",
-S2:"Sample tune",
-S3:"Vibrato LFO",
-S4:"Tremolo LFO",
-S8:"Channel pan",
-SB:"Pattern loop",
-SC:"Note cut",
-SD:"Note delay",
+P:"UNIMPLEMENTED",
+Q:"Retrigger    ",
+R:"Tremolo      ",
+S:"Special      ",
+S0:"UNIMPLEMENTED",
+S1:"Gliss. ctrl  ",
+S2:"Sample tune  ",
+S3:"Vibrato LFO  ",
+S4:"Tremolo LFO  ",
+S5:"Panbrello LFO",
+S6:"UNIMPLEMENTED",
+S7:"UNIMPLEMENTED",
+S8:"Channel pan  ",
+S9:"UNIMPLEMENTED",
+SA:"UNIMPLEMENTED",
+SB:"Pattern loop ",
+SC:"Note cut     ",
+SD:"Note delay   ",
 SE:"Pattern delay",
-SF:"Funk it"
+SF:"Funk it      ",
+T:"Tempo        ",
+U:"Fine vibrato ",
+V:"Global volume",
+W:"UNIMPLEMENTED",
+X:"UNIMPLEMENTED",
+Y:"Panbrello    ",
+Z:"UNIMPLEMENTED",
 }
-
 const panFxNames = {
-0:"Set",
-1:"Pan slide L",
-2:"Pan slide R",
-3:"Fine pan slide",
-30:"Fine pan slide L",
-31:"Fine pan slide R"
+0:"Panning Set  ",
+1:"Pan slide L  ",
+2:"Pan slide R  ",
+3:"Fpan slide   ",
+30:"Fpan slide L ",
+31:"Fpan slide R "
 }
 const volFxNames = {
-0:"Set",
-1:"Vol slide UP",
-2:"Vol slide DN",
-3:"Fine vol slide",
-30:"Fine vol slide DN",
-31:"Fine vol slide UP"
+0:"Volume Set   ",
+1:"Vol slide UP ",
+2:"Vol slide DN ",
+3:"fVol slide   ",
+30:"fVol slide DN",
+31:"fVol slide UP"
 }
 
 const pitchTablePresets = {
@@ -636,14 +658,9 @@ function drawVoiceDetail() {
     `PanEff ${paneffop}.$${paneffarg.hex02()}`)
     con.move(7,1)
     let fx = effop.toString(36).toUpperCase()
-    if (fx == '0') {
-        print(`\u00F8`+' '.repeat(32))
-    }
-    else {
-        if (fx == 'S') fx += (effarg >>> 12).hex1()
-        let fxName = fxNames[fx]
-        print(`\u00F8 ${fxName}\t$${effarg.hex04()}                   `)
-    }
+    if (fx == 'S') fx += (effarg >>> 12).hex1()
+    let fxName = fxNames[fx]
+    print(`\u00F8 ${fxName}\t$${effarg.hex04()}                   `)
 }
 
 function drawAll() {
