@@ -2211,16 +2211,21 @@ Endianness: Little
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
     Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
     Uint8   Initial Tickrate (0 is invalid)
-    Uint16  Current Tuning base note (1..65533). A3 (the default value) is 0x4C00. If zero, assume the default value
-    Float32 Frequency at the base note. Default (A440) is 440.0. If zero, assume the default value
+    Uint16  Current Tuning base note (1..65533). A3 (western default) is 0x4C00. C8 (tracker default) is 0x9000. If zero, assume the tracker default value
+    Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Byte[1] Reserved for future versions
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
     * Known standard tunings
-    A440. ISO standard. Tracker default
+    A440. ISO standard
+    A435. Former French standard (year 1859)
+    A452. Old Philharmonic pitch (19th century Britain)
     C256. Power of two
-    C311. East Asian tuning (ROK National Gugak Center standard)
+    C262. Modern Chinese a-ak tuning convention
+    C311. Korean hyang-ak tuning standard (ROK National Gugak Center)
+
+    For your reference, tracker default tuning at A3 is 439.526 Hz (8363*2^(3/4) / 32)
 
 ## Pattern Bin and Cue Sheet
     Raw Pattern Bin/Cue Sheet images

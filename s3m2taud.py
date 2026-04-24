@@ -17,8 +17,9 @@ Effect support:
     table" and "ScreamTracker 3 conversion notes". ST3 shared-memory recalls
     (D/E/F/I/J/K/L/Q/R/S with $00 arg) are eagerly resolved per channel.
     Cxx is BCD-decoded. K/L are split into H $0000 / G $0000 + volume-column
-    slide. M/N/X/P fold into volume / pan columns. W (global vol slide) and
-    Y (panbrello) are dropped with a -v warning.
+    slide. M/N/X/P fold into volume / pan columns. W (global vol slide) is
+    dropped with a -v warning. X converts to pan column. Y (panbrello) converts
+    to Taud Y. S5 selects the panbrello LFO waveform.
 """
 
 import argparse
@@ -116,6 +117,7 @@ TOP_S    = 0x1C   # sub-effects
 TOP_T    = 0x1D   # tempo set/slide
 TOP_U    = 0x1E   # fine vibrato
 TOP_V    = 0x1F   # global volume
+TOP_Y    = 0x22   # panbrello
 
 # Volume / pan column selectors (2-bit field, packed into top of vol/pan byte).
 SEL_SET  = 0   # 6-bit value: set vol / pan
@@ -442,10 +444,13 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         val = arg & 0xF
         if sub in (0x1, 0x2, 0x3, 0x4, 0xB, 0xC, 0xD, 0xE, 0xF):
             return (TOP_S, (sub << 12) | (val << 8), None, None)
+        if sub == 0x5:
+            # Panbrello LFO waveform — maps directly to Taud S$5x00.
+            return (TOP_S, 0x5000 | (val << 8), None, None)
         if sub == 0x8:
             # Coarse pan: nibble-repeat into Taud's S $80xx full-8-bit pan.
             return (TOP_S, 0x8000 | (val * 0x11), None, None)
-        # S0/S5/S6/S7/S9/SA: filter, NNA, sound-control, stereo — drop silently.
+        # S0/S6/S7/S9/SA: filter, NNA, sound-control, stereo — drop silently.
         return (TOP_NONE, 0, None, None)
 
     if cmd == EFF_T:
@@ -465,8 +470,9 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_NONE, 0, None, (SEL_SET, min(arg >> 2, 0x3F)))
 
     if cmd == EFF_Y:
-        vprint(f"    dropped Y{arg:02X} (panbrello) at ch{ch} row{row}")
-        return (TOP_NONE, 0, None, None)
+        hi = (arg >> 4) & 0xF
+        lo = arg & 0xF
+        return (TOP_Y, ((hi * 0x11) << 8) | (lo * 0x11), None, None)
 
     if cmd == EFF_Z:
         return (TOP_NONE, 0, None, None)
@@ -904,7 +910,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
         num_taud_pats_hi,
         bpm_stored,
         speed,
-    ) + b'\x00\x4C' + b'\x00\x00\xDC\x43' + b'\x00'
+    ) + b'\x00\x90' + b'\x00\xAC\xD02\x46' + b'\x00'
     assert len(song_table) == TAUD_SONG_ENTRY
 
     # Cue sheet (using remapped pattern indices)
