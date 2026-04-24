@@ -493,27 +493,27 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 ---
 
-## W $xxyy — Panbrello (panning vibrato) with speed $xx and depth $yy
+## Y $xxyy — Panbrello (panning vibrato) with speed $xx and depth $yy
 
-**Plain.** Modulates panning with an LFO, symmetrically with H's pitch modulation. `$xx` is LFO speed, `$yy` depth; the waveform is selected by S $4x.
+**Plain.** Modulates panning with an LFO, symmetrically with H's pitch modulation. `$xx` is LFO speed, `$yy` depth; the waveform is selected by S $5x.
 
-**Compatibility.** IT `Wxy` uses nibbles; convert by nibble-repeat. IT's volume cap is $40; Taud's is $3F — very deep vibrato that would have briefly clipped at $40 in IT may clip slightly earlier in Taud. W has its own memory slot.
+**Compatibility.** IT `Yxy` uses nibbles; convert by nibble-repeat. IT's panning cap is $40; Taud's is $3F — very deep vibrato that would have briefly clipped at $40 in IT may clip slightly earlier in Taud. Y has its own memory slot.
 
 **Implementation.** Identical machinery to H with a larger shift to fit the narrower volume range:
 
 ```
-on row parse (W):
-    if (arg >> 8)  != 0: memory_W.speed = arg >> 8
-    if (arg & $FF) != 0: memory_W.depth = arg & $FF
+on row parse (Y):
+    if (arg >> 8)  != 0: memory_Y.speed = arg >> 8
+    if (arg & $FF) != 0: memory_Y.depth = arg & $FF
 
 on every tick (including tick 0):
     sine = ModSinusTable[(lfo_pos >> 2) & $3F]
-    vol_delta = (sine × memory_W.depth) >> 9
+    vol_delta = (sine × memory_Y.depth) >> 9
     applied_vol = clamp(base_vol + vol_delta, 0, $3F)
-    lfo_pos = (lfo_pos + memory_W.speed × 4) & $FF
+    lfo_pos = (lfo_pos + memory_Y.speed × 4) & $FF
 ```
 
-Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retrigger behaviour tracks the S $4x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
+Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retrigger behaviour tracks the S $5x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
 
 ---
 
@@ -595,11 +595,11 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 ## S $5x00 — Panbrello LFO waveform
 
-**Plain.** Selects the shape of the panbrello (W) oscillator; value encoding is identical to S $3x.
+**Plain.** Selects the shape of the panbrello (Y) oscillator; value encoding is identical to S $3x.
 
 **Compatibility.** IT `S5x` maps directly.
 
-**Implementation.** As for S $3x, but applied to W's separate state (`panbrello_waveform`, `panbrello_retrigger`, and panbrello `lfo_pos`).
+**Implementation.** As for S $3x, but applied to Y's separate state (`panbrello_waveform`, `panbrello_retrigger`, and panbrello `lfo_pos`).
 
 
 ---

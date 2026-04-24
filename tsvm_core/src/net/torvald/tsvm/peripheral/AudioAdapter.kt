@@ -10,7 +10,6 @@ import net.torvald.UnsafePtr
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
-import net.torvald.tsvm.getHashStr
 import net.torvald.tsvm.toInt
 import java.io.ByteArrayInputStream
 import kotlin.math.pow
@@ -1089,7 +1088,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     //                K=0x14 K, L=0x15 L, O=0x18 sample offset,
     //                Q=0x1A retrig, R=0x1B tremolo, S=0x1C subcommands,
     //                T=0x1D tempo, U=0x1E fine vibrato, V=0x1F global vol,
-    //                W=0x20 panbrello).
+    //                Y=0x22 panbrello).
     //   K (0x14) and L (0x15) are intentionally no-op in the engine — the
     //   converter is required to split them into a recall-only H/G plus a
     //   volume-column slide cell.
@@ -1154,6 +1153,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val OP_U = 0x1E
         const val OP_V = 0x1F
         const val OP_W = 0x20
+        const val OP_X = 0x21
+        const val OP_Y = 0x22
+        const val OP_Z = 0x23
     }
 
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
@@ -1475,11 +1477,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val hi = (rawArg ushr 8) and 0xFF
                 playhead.globalVolume = hi
             }
-            EffectOp.OP_W -> {
+            EffectOp.OP_Y -> {
                 val sp = (rawArg ushr 8) and 0xFF
                 val dp = rawArg and 0xFF
-                if (sp != 0) voice.mem.wSpeed = sp
-                if (dp != 0) voice.mem.wDepth = dp
+                if (sp != 0) voice.mem.ySpeed = sp
+                if (dp != 0) voice.mem.yDepth = dp
                 voice.panbrelloActive = true
             }
         }
@@ -1621,12 +1623,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.tremoloLfoPos = (voice.tremoloLfoPos + voice.mem.rSpeed * 4) and 0xFF
             }
 
-            // Panbrello (W) — modulates panning around base.
+            // Panbrello (Y) — modulates panning around base.
             if (voice.panbrelloActive) {
                 val sine = lfoSample(voice.panbrelloLfoPos, voice.panbrelloWave)
-                val panDelta = (sine * voice.mem.wDepth) shr 9
+                val panDelta = (sine * voice.mem.yDepth) shr 9
                 voice.rowPan = ((voice.channelPan ushr 2) + panDelta).coerceIn(0, 0x3F)
-                voice.panbrelloLfoPos = (voice.panbrelloLfoPos + voice.mem.wSpeed * 4) and 0xFF
+                voice.panbrelloLfoPos = (voice.panbrelloLfoPos + voice.mem.ySpeed * 4) and 0xFF
             }
 
             // Arpeggio (J) — overrides pitchToMixer for this tick (overlay on basePitch).
@@ -1866,9 +1868,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // R (tremolo) — private speed and depth.
         var rSpeed: Int = 0
         var rDepth: Int = 0
-        // W (panbrello) — private speed and depth.
-        var wSpeed: Int = 0
-        var wDepth: Int = 0
+        // Y (panbrello) — private speed and depth.
+        var ySpeed: Int = 0
+        var yDepth: Int = 0
         // Private slots
         var d: Int = 0
         var i: Int = 0
@@ -1930,7 +1932,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var tremoloWave = 0
         var tremoloRetrig = true
 
-        // Panbrello (W) — uses memW.
+        // Panbrello (Y) — uses memY.
         var panbrelloActive = false
         var panbrelloLfoPos = 0
         var panbrelloWave = 0
