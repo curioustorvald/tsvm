@@ -487,7 +487,7 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 **Plain.** Sets the global mix bus volume (0..$FF). $00 is silence; $FF is full. The default is $80.
 
-**Compatibility.** ST3's global volume is 0..$40; convert with `taud_v = st3_v × 4`, clamped at $FF. On export, `st3_v = taud_v >> 2`, clamped at $40.
+**Compatibility.** ST3's global volume is 0..$40; convert with `taud_v = st3_v × 4`, clamped at $FF. On export, `st3_v = taud_v >> 2`, clamped at $40. IT's global volume is 0..$80; convert with `taud_v = it_v × 2`, clamped at $FF.
 
 **Implementation.** Write the high byte to `global_volume` on the row the command appears. The low byte is reserved. ST3's `kST3NoMutedChannels` rule applies: V on a muted channel is ignored by ST3; for strict-compatible playback Taud follows suit, but new Taud compositions should avoid muting channels that carry global effects.
 
@@ -514,6 +514,16 @@ on every tick (including tick 0):
 ```
 
 Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retrigger behaviour tracks the S $5x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
+
+---
+
+## X $xx00 — Set Panning
+
+**Plain.** **Unimplemented**. On IT, sets the panning position of the current channel, $00 being full-left and $FF being full-right.
+
+**Compatibility.** Convert directly into panning effect `0.$xx`, rounded down to nearest 6-bit value.
+
+**Implementation.** Not applicable.
 
 ---
 

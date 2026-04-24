@@ -70,7 +70,7 @@ middot:MIDDOT
 }
 
 const fxNames = {
-A:"Set tick speed",
+A:"Tick speed",
 B:"Jump to order",
 C:"Break pattern",
 D:"Volume slide",
@@ -89,8 +89,8 @@ R:"Tremolo",
 T:"Tempo",
 V:"Global volume",
 S:"Special",
-S1:"Glissando ctrl",
-S2:"Sample finetune",
+S1:"Gliss. ctrl",
+S2:"Sample tune",
 S3:"Vibrato LFO",
 S4:"Tremolo LFO",
 S8:"Channel pan",
@@ -629,18 +629,20 @@ function drawVoiceDetail() {
     const effop = ptnDat[5]
     const effarg = ptnDat[6] | (ptnDat[7] << 8)
 
+    // TODO draw cumulative internal status in the very time play cursor is on
+
     con.move(6,1)
     print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\tVolEff ${voleffop}.$${voleffarg.hex02()}\t`+
     `PanEff ${paneffop}.$${paneffarg.hex02()}`)
     con.move(7,1)
     let fx = effop.toString(36).toUpperCase()
     if (fx == '0') {
-        print(`Fx`+' '.repeat(32))
+        print(`\u00F8`+' '.repeat(32))
     }
     else {
         if (fx == 'S') fx += (effarg >>> 12).hex1()
         let fxName = fxNames[fx]
-        print(`Fx ${fxName} $${effarg.hex04()}                               `)
+        print(`\u00F8 ${fxName}\t$${effarg.hex04()}                   `)
     }
 }
 

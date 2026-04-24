@@ -68,3 +68,5 @@ assets/disk0/*.mov
 assets/diskMediabin/*
 
 video_encoder/*
+
+assets/disk0/tvdos/bin/tautfont.png
