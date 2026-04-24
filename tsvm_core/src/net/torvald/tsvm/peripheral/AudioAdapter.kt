@@ -1088,7 +1088,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     //                H=0x11 vibrato, I=0x12 tremor, J=0x13 arpeggio,
     //                K=0x14 K, L=0x15 L, O=0x18 sample offset,
     //                Q=0x1A retrig, R=0x1B tremolo, S=0x1C subcommands,
-    //                T=0x1D tempo, U=0x1E fine vibrato, V=0x1F global vol).
+    //                T=0x1D tempo, U=0x1E fine vibrato, V=0x1F global vol,
+    //                W=0x20 panbrello).
     //   K (0x14) and L (0x15) are intentionally no-op in the engine — the
     //   converter is required to split them into a recall-only H/G plus a
     //   volume-column slide cell.
@@ -1152,6 +1153,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val OP_T = 0x1D
         const val OP_U = 0x1E
         const val OP_V = 0x1F
+        const val OP_W = 0x20
     }
 
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
@@ -1241,9 +1243,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
         voice.rowVolume = voice.channelVolume
         voice.noteWasCut = false
-        // Vibrato/tremolo retrigger: reset LFO position when waveform requests it.
+        // Vibrato/tremolo/panbrello retrigger: reset LFO position when waveform requests it.
         if (voice.vibratoRetrig) voice.vibratoLfoPos = 0
         if (voice.tremoloRetrig) voice.tremoloLfoPos = 0
+        if (voice.panbrelloRetrig) voice.panbrelloLfoPos = 0
     }
 
     private fun applyVolColumn(voice: Voice, value: Int, sel: Int) {
@@ -1301,6 +1304,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.tremorOn = 0
             voice.vibratoActive = false
             voice.tremoloActive = false
+            voice.panbrelloActive = false
             voice.retrigActive = false
             voice.tempoSlideDir = 0
             voice.volColSlideUp = 0; voice.volColSlideDown = 0
@@ -1471,6 +1475,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val hi = (rawArg ushr 8) and 0xFF
                 playhead.globalVolume = hi
             }
+            EffectOp.OP_W -> {
+                val sp = (rawArg ushr 8) and 0xFF
+                val dp = rawArg and 0xFF
+                if (sp != 0) voice.mem.wSpeed = sp
+                if (dp != 0) voice.mem.wDepth = dp
+                voice.panbrelloActive = true
+            }
         }
     }
 
@@ -1486,6 +1497,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
             0x4 -> { voice.tremoloWave = x and 3; voice.tremoloRetrig = (x and 4) == 0 }
+            0x5 -> { voice.panbrelloWave = x and 3; voice.panbrelloRetrig = (x and 4) == 0 }
             0x8 -> {
                 // S$80xx — full 8-bit pan; arg low byte is the value.
                 voice.channelPan = arg and 0xFF
@@ -1607,6 +1619,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val volDelta = (sine * voice.mem.rDepth) shr 9
                 voice.rowVolume = (voice.channelVolume + volDelta).coerceIn(0, 0x3F)
                 voice.tremoloLfoPos = (voice.tremoloLfoPos + voice.mem.rSpeed * 4) and 0xFF
+            }
+
+            // Panbrello (W) — modulates panning around base.
+            if (voice.panbrelloActive) {
+                val sine = lfoSample(voice.panbrelloLfoPos, voice.panbrelloWave)
+                val panDelta = (sine * voice.mem.wDepth) shr 9
+                voice.rowPan = ((voice.channelPan ushr 2) + panDelta).coerceIn(0, 0x3F)
+                voice.panbrelloLfoPos = (voice.panbrelloLfoPos + voice.mem.wSpeed * 4) and 0xFF
             }
 
             // Arpeggio (J) — overrides pitchToMixer for this tick (overlay on basePitch).
@@ -1846,6 +1866,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // R (tremolo) — private speed and depth.
         var rSpeed: Int = 0
         var rDepth: Int = 0
+        // W (panbrello) — private speed and depth.
+        var wSpeed: Int = 0
+        var wDepth: Int = 0
         // Private slots
         var d: Int = 0
         var i: Int = 0
@@ -1906,6 +1929,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var tremoloLfoPos = 0
         var tremoloWave = 0
         var tremoloRetrig = true
+
+        // Panbrello (W) — uses memW.
+        var panbrelloActive = false
+        var panbrelloLfoPos = 0
+        var panbrelloWave = 0
+        var panbrelloRetrig = true
 
         // Glissando flag (S$1x).
         var glissandoOn = false

@@ -1,6 +1,6 @@
 # Taud Tracker Effect Command Reference
 
-Taud is a tracker-style music format derived from ScreamTracker 3's pattern command set, extended to 16-bit effect arguments and a 4096-tone equal-temperament pitch grid. This document defines every effect command a Taud engine must implement. Each command entry has three parts: a plain explanation for composers, compatibility notes for converting patterns from ScreamTracker 3 (ST3) or ProTracker (PT), and implementation details for engine writers.
+Taud is a tracker-style music format derived from ScreamTracker 3's pattern command set, extended to 16-bit effect arguments and a 4096-tone equal-temperament pitch grid. This document defines every effect command a Taud engine must implement. Each command entry has three parts: a plain explanation for composers, compatibility notes for converting patterns from ScreamTracker 3 (ST3), ImpulseTracker (IT) or ProTracker (PT), and implementation details for engine writers.
 
 ---
 
@@ -493,6 +493,30 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 ---
 
+## W $xxyy — Panbrello (panning vibrato) with speed $xx and depth $yy
+
+**Plain.** Modulates panning with an LFO, symmetrically with H's pitch modulation. `$xx` is LFO speed, `$yy` depth; the waveform is selected by S $4x.
+
+**Compatibility.** IT `Wxy` uses nibbles; convert by nibble-repeat. IT's volume cap is $40; Taud's is $3F — very deep vibrato that would have briefly clipped at $40 in IT may clip slightly earlier in Taud. W has its own memory slot.
+
+**Implementation.** Identical machinery to H with a larger shift to fit the narrower volume range:
+
+```
+on row parse (W):
+    if (arg >> 8)  != 0: memory_W.speed = arg >> 8
+    if (arg & $FF) != 0: memory_W.depth = arg & $FF
+
+on every tick (including tick 0):
+    sine = ModSinusTable[(lfo_pos >> 2) & $3F]
+    vol_delta = (sine × memory_W.depth) >> 9
+    applied_vol = clamp(base_vol + vol_delta, 0, $3F)
+    lfo_pos = (lfo_pos + memory_W.speed × 4) & $FF
+```
+
+Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retrigger behaviour tracks the S $4x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
+
+---
+
 # The S subcommand family
 
 S is a multiplexing opcode; the **high nibble of the high byte** selects the sub-effect, and the remainder is the sub-argument.
@@ -566,6 +590,17 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 **Compatibility.** ST3 `S4x` maps directly. ProTracker `E7x` maps to Taud `S $4x00`.
 
 **Implementation.** As for S $3x, but applied to R's separate state (`tremolo_waveform`, `tremolo_retrigger`, and tremolo `lfo_pos`).
+
+---
+
+## S $5x00 — Panbrello LFO waveform
+
+**Plain.** Selects the shape of the panbrello (W) oscillator; value encoding is identical to S $3x.
+
+**Compatibility.** IT `S5x` maps directly.
+
+**Implementation.** As for S $3x, but applied to W's separate state (`panbrello_waveform`, `panbrello_retrigger`, and panbrello `lfo_pos`).
+
 
 ---
 
