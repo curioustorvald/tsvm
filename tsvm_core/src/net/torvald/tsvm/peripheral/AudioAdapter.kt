@@ -2121,6 +2121,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.funkSpeed = 0
                     it.funkAccumulator = 0
                     it.funkWritePos = 0
+                    it.muted = false
                 }
             }
         }

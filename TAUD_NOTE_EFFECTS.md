@@ -753,33 +753,33 @@ NOTE: **`3.00` — is No-op**
 
 This table maps each PT effect to its Taud equivalent. Arguments follow PT's two-nibble form and expand to Taud's 16-bit form as shown.
 
-| PT effect | Taud effect | Notes |
-|---|---|---|
+| PT effect | Taud effect | Notes                                                                                     |
+|---|---|-------------------------------------------------------------------------------------------|
 | `0 $xy` | `J $xxyy` | Arpeggio; nibble-repeat each byte. See the 12-TET → Taud table above for conversion losses |
-| `1 $xx` | `F round($0xxx × 64/3)` | Portamento up; ST3 coarse slide unit = 1/16 semitone |
-| `2 $xx` | `E $0xxx × $0015` | Portamento down |
-| `5 $xy` | `L $xy00` | Combined portamento + volume slide |
-| `6 $xy` | `K $xy00` | Combined vibrato + volume slide |
-| `7 $xy` | `R $xxyy` | Tremolo; nibble-repeat |
-| `8 $xx` | `S $80xx` or panning column `0.$xx` | Fine pan |
-| `9 $xx` | `O $xx00` | Sample offset |
-| `A $xy` | Volume column `1.$xy` | Volume slide |
-| `B $xx` | `B $00xx` | Position jump |
-| `C $xx` | Volume column `0.$xx` | Set volume |
-| `D $xx` | `C $00xx` (after BCD decode) | Pattern break |
-| `E $3x` | `S $1x00` | Glissando control |
-| `E $4x` | `S $3x00` | Vibrato waveform |
-| `E $5x` | `S $2x00` | Set fine-tune |
-| `E $6x` | `S $Bx00` | Pattern loop |
-| `E $7x` | `S $4x00` | Tremolo waveform |
-| `E $8x` | `S $80xx` or panning column `0.$xx` | Coarse pan (nibble-repeat) |
-| `E $9x` | `Q $0x00` | Retrigger |
-| `E $Cx` | `S $Cx00` | Note cut |
-| `E $Dx` | `S $Dx00` | Note delay |
-| `E $Ex` | `S $Ex00` | Pattern delay |
-| `E $Fx` | `S $Fx00` | Funk repeat |
-| `F $xx` (xx < $20) | `A $xx00` | Set speed |
-| `F $xx` (xx ≥ $20) | `T $(xx−$18)00` | Set tempo |
+| `1 $xx` | `F round($0xxx × 64/3)` | Portamento up; ST3 coarse slide unit = 1/16 semitone                                      |
+| `2 $xx` | `E round($0xxx × 64/3)` | Portamento down                                                                           |
+| `5 $xy` | `L $xy00` | Combined portamento + volume slide (see compatibility note)                               |
+| `6 $xy` | `K $xy00` | Combined vibrato + volume slide (see compatibility note)                                                           |
+| `7 $xy` | `R $xxyy` | Tremolo; nibble-repeat                                                                    |
+| `8 $xx` | `S $80xx` or panning column `0.$xx` | Fine pan                                                                                  |
+| `9 $xx` | `O $xx00` | Sample offset                                                                             |
+| `A $xy` | Volume column `1.$xy` | Volume slide                                                                              |
+| `B $xx` | `B $00xx` | Position jump                                                                             |
+| `C $xx` | Volume column `0.$xx` | Set volume                                                                                |
+| `D $xx` | `C $00xx` (after BCD decode) | Pattern break                                                                             |
+| `E $3x` | `S $1x00` | Glissando control                                                                         |
+| `E $4x` | `S $3x00` | Vibrato waveform                                                                          |
+| `E $5x` | `S $2x00` | Set fine-tune                                                                             |
+| `E $6x` | `S $Bx00` | Pattern loop                                                                              |
+| `E $7x` | `S $4x00` | Tremolo waveform                                                                          |
+| `E $8x` | `S $80xx` or panning column `0.$xx` | Coarse pan (nibble-repeat)                                                                |
+| `E $9x` | `Q $0x00` | Retrigger                                                                                 |
+| `E $Cx` | `S $Cx00` | Note cut                                                                                  |
+| `E $Dx` | `S $Dx00` | Note delay                                                                                |
+| `E $Ex` | `S $Ex00` | Pattern delay                                                                             |
+| `E $Fx` | `S $Fx00` | Funk repeat                                                                               |
+| `F $xx` (xx < $20) | `A $xx00` | Set speed                                                                                 |
+| `F $xx` (xx ≥ $20) | `T $(xx−$18)00` | Set tempo                                                                                 |
 
 ---
 

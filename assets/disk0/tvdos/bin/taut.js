@@ -7,6 +7,7 @@
 const win = require("wintex")
 const font = require("font")
 const taud = require("taud")
+const keys = require("keysym")
 
 font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
@@ -472,7 +473,7 @@ function drawStatusBar() {
     fillLine(1, colStatus, 255)
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
     const vHi    = Math.min(voiceOff + VOCSIZE, song.numVoices)
-    const txt = `${song.filePath}   Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${song.bpm} Spd ${song.tickRate} `
+    const txt = `${song.filePath}   Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${audio.getBPM(PLAYHEAD)} Spd ${audio.getTickRate(PLAYHEAD)} `
     con.move(1, 1)
     con.color_pair(colStatus, 255)
     print(txt)
@@ -574,10 +575,10 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Ptn'],
         [`Pg\u008418u`,'Cue'],
     ['sep'],
-        ['F5','Song'],
-        ['F6','Cue'],
-        ['F7','Row'],
-        ['F8/Sp','Stop'],
+        ['Y','Song'],
+        ['U','Cue'],
+        ['I','Row'],
+        ['O/Sp','Stop'],
     ['sep'],
         ['m','Mute'],
         ['s','Solo'],
@@ -796,6 +797,12 @@ const song = loadTaud(fullPathObj.full, 0)
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
 
+function resetAudioDevice() {
+    audio.resetParams(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
+    audio.stop(PLAYHEAD)
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLAYBACK STATE
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -951,9 +958,7 @@ function clampCue() {
 clampCursor(); clampVoice(); clampCue()
 drawAll()
 
-audio.resetParams(PLAYHEAD)
-audio.purgeQueue(PLAYHEAD)
-audio.stop(PLAYHEAD)
+resetAudioDevice()
 taud.uploadTaudFile(fullPathObj.full, 0, PLAYHEAD)
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
@@ -963,7 +968,9 @@ while (!exitFlag) {
     input.withEvent(event => {
         if (event[0] !== "key_down") return
         const keysym = event[1]
-        const shiftDown = (event.indexOf(59) > 0 || event.indexOf(60) > 0)
+        const keyJustHit = (1 == event[2])
+        const shiftDown = (event.includes(59) || event.includes(60))
+
         const moveDelta = shiftDown ? 4 : 1
 
         if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
@@ -972,7 +979,7 @@ while (!exitFlag) {
         }
 
         if (playbackMode !== PLAYMODE_NONE) {
-            if (keysym === "<F8>" || keysym === " ") { stopPlayback(); drawAll() }
+            if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); drawAll() }
             else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
                 const oldVoiceOff = voiceOff
                 cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
@@ -987,15 +994,15 @@ while (!exitFlag) {
                 drawStatusBar()
                 drawVoiceDetail()
             }
-            else if (keysym === "m" || keysym === "M") { toggleMute(cursorVox) }
-            else if (keysym === "s" || keysym === "S") { toggleSolo(cursorVox) }
+            else if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox) }
+            else if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox) }
             return
         }
 
-        if (keysym === "<F5>") { startPlaySong(); drawAll(); return }
-        if (keysym === "<F6>") { startPlayCue();  drawAll(); return }
-        if (keysym === "<F7>") { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return }
-        if (keysym === "<F8>" || keysym === " ") { stopPlayback(); return }
+        if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); drawAll(); return }
+        if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  drawAll(); return }
+        if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return } // allow multiple plays by holding the keys down
+        if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); return }
 
         const oldCursor = cursorRow
         const oldScroll = scrollRow
@@ -1018,8 +1025,8 @@ while (!exitFlag) {
             return
         }
 
-        if (keysym === "m" || keysym === "M") { toggleMute(cursorVox); return }
-        if (keysym === "s" || keysym === "S") { toggleSolo(cursorVox); return }
+        if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox); return }
+        if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox); return }
 
         if (keysym === "<UP>")             { cursorRow -= moveDelta;       rowMove = true }
         else if (keysym === "<DOWN>")      { cursorRow += moveDelta;     rowMove = true }

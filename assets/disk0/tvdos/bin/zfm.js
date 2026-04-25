@@ -1,4 +1,6 @@
 const win = require("wintex")
+const keys = require("keysym")
+
 const COL_TEXT = 253
 const COL_BACK = 255
 const COL_BACK_SEL = 81
@@ -673,7 +675,7 @@ while (!exit) {
         let keysym = event[1]
         let keyJustHit = (1 == event[2])
 
-        if (keyJustHit && event[3] != 66) { // release the latch right away if the key is not Return
+        if (keyJustHit && event[3] != keys.ENTER) { // release the latch right away if the key is not Return
             firstRunLatch = false
         }
 
