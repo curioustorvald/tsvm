@@ -818,7 +818,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
             const y    = PTNVIEW_OFFSET_Y + i
             const line = lines[i]
             con.move(y, dx)
-            con.color_pair(colVoiceHdr, 255)
+            con.color_pair(colNote, 255)
             print((line.label + '      ').substring(0, 6) + ' ')
             con.color_pair(line.fg, 255)
             print((line.value + ' '.repeat(detailW)).substring(0, detailW - 8))
@@ -1668,6 +1668,7 @@ while (!exitFlag) {
         if (event[0] !== "key_down") return
         const keysym     = event[1]
         const keyJustHit = (1 == event[2])
+        const shiftDown  = (event.includes(59) || event.includes(60))
 
         if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
             exitFlag = true
@@ -1675,7 +1676,10 @@ while (!exitFlag) {
         }
 
         if (keyJustHit && keysym === "<TAB>") {
-            currentPanel = (currentPanel + 1) % panels.length
+            currentPanel = (currentPanel + (shiftDown ? -1 : 1))
+            if (currentPanel < 0) currentPanel += panels.length
+            currentPanel = currentPanel % panels.length
+
             drawAll()
             return
         }
