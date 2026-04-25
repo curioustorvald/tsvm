@@ -192,8 +192,8 @@ const panEffSym = [sym.panset, sym.panle, sym.panri, sym.panfinele, sym.panfiner
 const colNote = 254
 const colInst = 114
 const colVol = 155
-const colPan = 221
-const colEffOp = 213
+const colPan = 219
+const colEffOp = 220
 const colEffArg = 231
 const colBackPtn = 255
 
@@ -803,6 +803,24 @@ function resetAudioDevice() {
     audio.stop(PLAYHEAD)
 }
 
+function redrawFull() {
+    con.clear()
+    drawStatusBar()
+    drawControlHint()
+    redrawPanel()
+    con.move(1, 1)
+}
+
+function redrawPanel() {
+    switch (currentPanel) {
+        case VIEW_TIMELINE:
+            drawPatternView()
+            drawVoiceHeaders()
+            drawSeparators(separatorStyle)
+            drawVoiceDetail()
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLAYBACK STATE
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -876,7 +894,7 @@ function updatePlayback() {
 
     if (playbackMode === PLAYMODE_CUE && nowCue !== playStartCue) {
         stopPlayback()
-        drawAll()
+        redrawPanel()
         return
     }
     if (playbackMode === PLAYMODE_ROW && (nowRow !== playStartRow || nowCue !== playStartCue)) {
@@ -896,7 +914,7 @@ function updatePlayback() {
         cueIdx = nowCue
         cursorRow = nowRow
         clampCursor()
-        drawAll()
+        redrawPanel()
     } else {
         const oldCursor = cursorRow
         const oldScroll = scrollRow
@@ -979,7 +997,7 @@ while (!exitFlag) {
         }
 
         if (playbackMode !== PLAYMODE_NONE) {
-            if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); drawAll() }
+            if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel() }
             else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
                 const oldVoiceOff = voiceOff
                 cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
@@ -999,8 +1017,8 @@ while (!exitFlag) {
             return
         }
 
-        if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); drawAll(); return }
-        if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  drawAll(); return }
+        if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); redrawPanel(); return }
+        if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  redrawPanel(); return }
         if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return } // allow multiple plays by holding the keys down
         if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); return }
 
@@ -1081,6 +1099,7 @@ while (!exitFlag) {
 }
 
 audio.stop(PLAYHEAD)
+resetAudioDevice()
 sys.free(SCRATCH_PTR)
 con.clear()
 con.move(1, 1)
