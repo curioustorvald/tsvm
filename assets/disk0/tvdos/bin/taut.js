@@ -444,8 +444,11 @@ const [SCRH, SCRW] = con.getmaxyx()
 const PTNVIEW_OFFSET_X = 3
 const PTNVIEW_OFFSET_Y = 9
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
-const COLSIZE = 15
-const VOCSIZE = 5
+
+const COLSIZE_TIMELINE_FULL = 15
+const VOCSIZE_TIMELINE_FULL = 5
+
+const VOCSIZE_ORDERS = 18
 
 const VIEW_TIMELINE = 0
 const VIEW_ORDERS = 1
@@ -469,11 +472,14 @@ function fillLine(y, c, back) {
     }
 }
 
+const PANEL_NAMES = ['Timeline', 'Orders  ']
+
 function drawStatusBar() {
     fillLine(1, colStatus, 255)
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
-    const vHi    = Math.min(voiceOff + VOCSIZE, song.numVoices)
-    const txt = `${song.filePath}   Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${audio.getBPM(PLAYHEAD)} Spd ${audio.getTickRate(PLAYHEAD)} `
+    const vHi    = Math.min(voiceOff + VOCSIZE_TIMELINE_FULL, song.numVoices)
+    const pname  = PANEL_NAMES[currentPanel] || '?       '
+    const txt = `${song.filePath}  [${pname}]  Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${audio.getBPM(PLAYHEAD)} Spd ${audio.getTickRate(PLAYHEAD)} `
     con.move(1, 1)
     con.color_pair(colStatus, 255)
     print(txt)
@@ -485,16 +491,16 @@ function drawStatusBar() {
 function drawSeparators(style) {
     if (style == 1) {
         con.color_pair(colSep, 255)
-        for (let c = 0; c < VOCSIZE - 1; c++) {
+        for (let c = 0; c < VOCSIZE_TIMELINE_FULL - 1; c++) {
             for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_HEIGHT; y++) {
-                con.move(y, PTNVIEW_OFFSET_X + COLSIZE * (c+1) - 1)
+                con.move(y, PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * (c+1) - 1)
                 con.prnch(0xB3)
             }
         }
     }
     else {
         // paint the first column of pattern view with colour
-        for (let x = PTNVIEW_OFFSET_X; x < SCRW - 3; x += COLSIZE) {
+        for (let x = PTNVIEW_OFFSET_X; x < SCRW - 3; x += COLSIZE_TIMELINE_FULL) {
             for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
                 let memOffset = (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1)
                 let bgColOffset = GPU_MEM - TEXT_BACK_OFF - memOffset
@@ -509,13 +515,13 @@ function drawSeparators(style) {
 function drawVoiceHeaders() {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     const cue = song.cues[cueIdx]
-    for (let c = 0; c < VOCSIZE; c++) {
+    for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
         const voice = voiceOff + c
-        const x = PTNVIEW_OFFSET_X + COLSIZE * c
+        const x = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c
         con.move(PTNVIEW_OFFSET_Y - 1, x)
         if (voice >= song.numVoices) {
             con.color_pair(colVoiceHdr, 255)
-            print(`                  `.substring(0, COLSIZE - 1))
+            print(`                  `.substring(0, COLSIZE_TIMELINE_FULL - 1))
         } else {
             const isCursor = (voice === cursorVox)
             const isMuted  = voiceMutes[voice]
@@ -524,7 +530,7 @@ function drawVoiceHeaders() {
             const vlabel = `V${(voice+1).dec02()}`
             const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
             const label = `  ${vlabel} ptn ${plabel}    `
-            print((label + '                  ').substring(0, COLSIZE - 1))
+            print((label + '                  ').substring(0, COLSIZE_TIMELINE_FULL - 1))
         }
     }
 
@@ -550,9 +556,9 @@ function drawPatternRowAt(viewRow) {
     }
     // TODO scroll indicator on x=SCRW?
 
-    for (let c = 0; c < VOCSIZE; c++) {
+    for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
         const voice = voiceOff + c
-        const x = PTNVIEW_OFFSET_X + COLSIZE * c
+        const x = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c
         let cell = EMPTY_CELL
         if (actualRow < ROWS_PER_PAT && voice < song.numVoices) {
             const ptnIdx = cue.ptns[voice]
@@ -571,7 +577,7 @@ function drawPatternView() {
 }
 
 function drawControlHint() {
-    let hintElem = [
+    let hintElemTimeline = [
         [`\u008428u\u008429u`,'Ptn'],
         [`Pg\u008418u`,'Cue'],
     ['sep'],
@@ -583,8 +589,19 @@ function drawControlHint() {
         ['m','Mute'],
         ['s','Solo'],
     ['sep'],
+        ['Tab','Panel'],
+        //['q','Quit'],
+    ]
+    let hintElemOrders = [
+        [`\u008428u\u008429u`,'Order'],
+        [`Ent`,'Go to cue'],
+    ['sep'],
+        ['Tab','Panel'],
+    ['sep'],
         ['q','Quit'],
     ]
+
+    let hintElems = [hintElemTimeline, hintElemOrders]
 
     // erase current line
     con.move(SCRH, 1)
@@ -592,7 +609,8 @@ function drawControlHint() {
 
     // start writing
     con.move(SCRH, 1)
-    hintElem.forEach((pair, i, list) => {
+
+    hintElems[currentPanel].forEach((pair, i, list) => {
         con.color_pair(colStatus,255)
         if (pair[0] == 'sep') {
             print(` ${BIGDOT} `)
@@ -667,11 +685,8 @@ function drawVoiceDetail() {
 function drawAll() {
     con.clear()
     drawStatusBar()
-    drawVoiceHeaders()
-    drawPatternView()
-    drawVoiceDetail()
-    drawSeparators(separatorStyle)
     drawControlHint()
+    redrawPanel()
     con.move(1, 1)
 }
 
@@ -695,7 +710,7 @@ const TEXT_PLANES   = [TEXT_CHAR_OFF, TEXT_BACK_OFF, TEXT_FORE_OFF]
 const SCRATCH_PTR = sys.malloc(SCRW * PTNVIEW_HEIGHT)
 
 // Horizontal salvage
-const SALVAGE_HORIZ_LEN = (VOCSIZE - 1) * COLSIZE
+const SALVAGE_HORIZ_LEN = (VOCSIZE_TIMELINE_FULL - 1) * COLSIZE_TIMELINE_FULL
 
 /**
  * Shift the pattern-view rows by `dy` lines (positive = down, negative = up)
@@ -726,9 +741,9 @@ function shiftPatternArea(dy) {
  * voice headers and status bar must be redrawn by the caller.
  */
 function shiftPatternAreaHorizontal(dVoice) {
-    // Column of the first char to copy (1-indexed); dest is COLSIZE chars earlier/later.
-    const srcX = PTNVIEW_OFFSET_X + (dVoice > 0 ? COLSIZE : 0)
-    const dstX = PTNVIEW_OFFSET_X + (dVoice > 0 ? 0 : COLSIZE)
+    // Column of the first char to copy (1-indexed); dest is COLSIZE_TIMELINE_FULL chars earlier/later.
+    const srcX = PTNVIEW_OFFSET_X + (dVoice > 0 ? COLSIZE_TIMELINE_FULL : 0)
+    const dstX = PTNVIEW_OFFSET_X + (dVoice > 0 ? 0 : COLSIZE_TIMELINE_FULL)
     const srcOff = srcX - 1  // 0-indexed offset from column 1 for address arithmetic
     const dstOff = dstX - 1
 
@@ -743,13 +758,13 @@ function shiftPatternAreaHorizontal(dVoice) {
 }
 
 /**
- * Redraw every row of one voice column (slot 0..VOCSIZE-1) after a horizontal shift.
+ * Redraw every row of one voice column (slot 0..VOCSIZE_TIMELINE_FULL-1) after a horizontal shift.
  * Also redraws separators for the whole row so any separator at the exposed boundary
  * (which the VRAM shift left correct) is confirmed visually consistent.
  */
 function drawVoiceColumnAt(slot) {
     const voice  = voiceOff + slot
-    const x      = PTNVIEW_OFFSET_X + COLSIZE * slot
+    const x      = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * slot
     const cue    = song.cues[cueIdx]
     const ptnIdx = (voice < song.numVoices) ? cue.ptns[voice] : CUE_EMPTY
 
@@ -781,6 +796,8 @@ let cursorRow = 0
 let scrollRow = 0
 let voiceOff  = 0
 let cursorVox = 0
+let ordersCursor = 0
+let ordersScroll = 0
 
 if (exec_args[1] === undefined) {
     println(`Usage: ${exec_args[0]} path_to.taud`)
@@ -803,23 +820,187 @@ function resetAudioDevice() {
     audio.stop(PLAYHEAD)
 }
 
-function redrawFull() {
-    con.clear()
-    drawStatusBar()
-    drawControlHint()
-    redrawPanel()
-    con.move(1, 1)
-}
+function redrawFull() { drawAll() }
 
 function redrawPanel() {
-    switch (currentPanel) {
-        case VIEW_TIMELINE:
-            drawPatternView()
-            drawVoiceHeaders()
-            drawSeparators(separatorStyle)
-            drawVoiceDetail()
+    panels[currentPanel].drawContents()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PANELS
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+function drawTimelineContents(wo) {
+    drawVoiceHeaders()
+    drawPatternView()
+    drawSeparators(separatorStyle)
+    drawVoiceDetail()
+}
+
+function drawOrdersHeader() {
+    fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
+    con.move(PTNVIEW_OFFSET_Y - 1, 1)
+    con.color_pair(colVoiceHdr, 255)
+    let hdr = '    '
+    for (let c = 0; c < VOCSIZE_ORDERS; c++) {
+        const v = voiceOff + c
+        hdr += v < song.numVoices ? `V${(v+1).dec02()} ` : '    '
+    }
+    print(hdr)
+}
+
+function drawOrdersContents(wo) {
+    drawOrdersHeader()
+    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+
+    for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
+        const ci   = ordersScroll + vr
+        const y    = PTNVIEW_OFFSET_Y + vr
+        const isSel = (ci === ordersCursor)
+        const isCur = playbackMode !== PLAYMODE_NONE && ci === cueIdx
+        const back  = isSel ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight)
+                             : (isCur ? colPlayback : colBackPtn)
+
+        con.move(y, 1)
+        if (ci > maxCue) {
+            con.color_pair(colBackPtn, colBackPtn)
+            print(' '.repeat(SCRW - 1))
+        } else {
+            const cue    = song.cues[ci]
+            const rowstr = ci.hex03()
+            con.color_pair(ci % 4 === 0 ? colRowNumEmph1 : colRowNum, back)
+            con.prnch(rowstr.charCodeAt(0)); con.move(y, 2)
+            con.prnch(rowstr.charCodeAt(1)); con.move(y, 3)
+            con.prnch(rowstr.charCodeAt(2))
+            con.move(y, 5)
+            for (let c = 0; c < VOCSIZE_ORDERS; c++) {
+                const v   = voiceOff + c
+                const ptn = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
+                con.color_pair(ptn === CUE_EMPTY ? colSep : colNote, back)
+                print(ptn === CUE_EMPTY ? '--- ' : ptn.hex03() + ' ')
+            }
+            const endX = 5 + VOCSIZE_ORDERS * 4
+            if (endX <= SCRW) { con.color_pair(colBackPtn, back); print(' '.repeat(SCRW - endX)) }
+        }
     }
 }
+
+function timelineInput(wo, event) {
+    const keysym    = event[1]
+    const keyJustHit = (1 == event[2])
+    const shiftDown  = (event.includes(59) || event.includes(60))
+    const moveDelta  = shiftDown ? 4 : 1
+
+    if (playbackMode !== PLAYMODE_NONE) {
+        if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel() }
+        else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
+            const oldVoiceOff = voiceOff
+            cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
+            clampVoice()
+            const dVoice = voiceOff - oldVoiceOff
+            if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
+            drawVoiceHeaders(); drawSeparators(separatorStyle); drawStatusBar(); drawVoiceDetail()
+        }
+        else if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox) }
+        else if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox) }
+        return
+    }
+
+    if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); redrawPanel(); return }
+    if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  redrawPanel(); return }
+    if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return }
+    if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); return }
+
+    const oldCursor = cursorRow
+    const oldScroll = scrollRow
+    let rowMove = false
+    let fullRedraw = false
+
+    if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
+        const oldVoiceOff = voiceOff
+        cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
+        clampVoice()
+        const dVoice = voiceOff - oldVoiceOff
+        if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
+        drawVoiceHeaders(); drawSeparators(separatorStyle); drawStatusBar(); drawVoiceDetail()
+        return
+    }
+
+    if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox); return }
+    if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox); return }
+
+    if      (keysym === "<UP>")        { cursorRow -= moveDelta;      rowMove = true }
+    else if (keysym === "<DOWN>")      { cursorRow += moveDelta;      rowMove = true }
+    else if (keysym === "<HOME>")      { cursorRow  = 0;              rowMove = true }
+    else if (keysym === "<END>")       { cursorRow  = ROWS_PER_PAT-1; rowMove = true }
+    else if (keysym === "<PAGE_UP>")   { cueIdx    -= moveDelta;      fullRedraw = true }
+    else if (keysym === "<PAGE_DOWN>") { cueIdx    += moveDelta;      fullRedraw = true }
+    else return
+
+    clampCursor(); clampVoice(); clampCue()
+
+    if (fullRedraw) { drawAll(); return }
+    if (!rowMove || cursorRow === oldCursor) return
+
+    const dScroll = scrollRow - oldScroll
+    if (dScroll === 0) {
+        drawPatternRowAt(oldCursor - scrollRow)
+        drawPatternRowAt(cursorRow - scrollRow)
+    } else if (Math.abs(dScroll) >= PTNVIEW_HEIGHT) {
+        drawPatternView()
+    } else {
+        shiftPatternArea(-dScroll)
+        if (dScroll > 0) { for (let i = 0; i < dScroll;  i++) drawPatternRowAt(PTNVIEW_HEIGHT - 1 - i) }
+        else             { for (let i = 0; i < -dScroll; i++) drawPatternRowAt(i) }
+        if (oldCursor >= scrollRow && oldCursor < scrollRow + PTNVIEW_HEIGHT) drawPatternRowAt(oldCursor - scrollRow)
+        drawPatternRowAt(cursorRow - scrollRow)
+    }
+    drawSeparators(separatorStyle); drawStatusBar(); drawVoiceDetail()
+}
+
+function ordersInput(wo, event) {
+    const keysym     = event[1]
+    const keyJustHit = (1 == event[2])
+    const shiftDown  = (event.includes(59) || event.includes(60))
+    const moveDelta  = shiftDown ? 4 : 1
+    const maxCue     = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+
+    if (keysym === '<UP>') {
+        ordersCursor = Math.max(0, ordersCursor - moveDelta)
+        if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
+        drawOrdersContents(wo)
+    } else if (keysym === '<DOWN>') {
+        ordersCursor = Math.min(maxCue, ordersCursor + moveDelta)
+        if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
+        drawOrdersContents(wo)
+    } else if (keysym === '<PAGE_UP>') {
+        ordersCursor = Math.max(0, ordersCursor - PTNVIEW_HEIGHT)
+        ordersScroll = Math.max(0, ordersScroll - PTNVIEW_HEIGHT)
+        drawOrdersContents(wo)
+    } else if (keysym === '<PAGE_DOWN>') {
+        ordersCursor = Math.min(maxCue, ordersCursor + PTNVIEW_HEIGHT)
+        if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
+        drawOrdersContents(wo)
+    } else if (keysym === '<LEFT>' || keysym === '<RIGHT>') {
+        const oldVoiceOff = voiceOff
+        cursorVox += (keysym === '<LEFT>') ? -moveDelta : moveDelta
+        clampVoice()
+        if (voiceOff !== oldVoiceOff) drawOrdersContents(wo)
+    } else if (keyJustHit && keysym === '\n') {
+        cueIdx = ordersCursor
+        clampCue()
+        currentPanel = VIEW_TIMELINE
+        drawAll()
+        return
+    } else {
+        return
+    }
+    drawStatusBar()
+}
+
+const panelTimeline = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, timelineInput, drawTimelineContents, undefined, ()=>{})
+const panelOrders   = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, ordersInput,   drawOrdersContents,   undefined, ()=>{})
+const panels = [panelTimeline, panelOrders]
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLAYBACK STATE
@@ -883,7 +1064,8 @@ function stopPlayback() {
 function updatePlayback() {
     if (!audio.isPlaying(PLAYHEAD)) {
         playbackMode = PLAYMODE_NONE
-        if (cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
+        if (currentPanel === VIEW_TIMELINE &&
+                cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
         drawStatusBar()
         return
@@ -894,12 +1076,13 @@ function updatePlayback() {
 
     if (playbackMode === PLAYMODE_CUE && nowCue !== playStartCue) {
         stopPlayback()
-        redrawPanel()
+        if (currentPanel === VIEW_TIMELINE) redrawPanel()
         return
     }
     if (playbackMode === PLAYMODE_ROW && (nowRow !== playStartRow || nowCue !== playStartCue)) {
         stopPlayback()
-        if (cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
+        if (currentPanel === VIEW_TIMELINE &&
+                cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
         drawStatusBar()
         return
@@ -914,32 +1097,34 @@ function updatePlayback() {
         cueIdx = nowCue
         cursorRow = nowRow
         clampCursor()
-        redrawPanel()
+        if (currentPanel === VIEW_TIMELINE) redrawPanel()
     } else {
         const oldCursor = cursorRow
         const oldScroll = scrollRow
         cursorRow = nowRow
         clampCursor()
-        const dScroll = scrollRow - oldScroll
-        if (dScroll === 0) {
-            drawPatternRowAt(oldCursor - scrollRow)
-            drawPatternRowAt(cursorRow - scrollRow)
-        } else if (Math.abs(dScroll) >= PTNVIEW_HEIGHT) {
-            drawPatternView()
-        } else {
-            shiftPatternArea(-dScroll)
-            if (dScroll > 0) {
-                for (let i = 0; i < dScroll; i++) drawPatternRowAt(PTNVIEW_HEIGHT - 1 - i)
-            } else {
-                for (let i = 0; i < -dScroll; i++) drawPatternRowAt(i)
-            }
-            if (oldCursor >= scrollRow && oldCursor < scrollRow + PTNVIEW_HEIGHT)
+        if (currentPanel === VIEW_TIMELINE) {
+            const dScroll = scrollRow - oldScroll
+            if (dScroll === 0) {
                 drawPatternRowAt(oldCursor - scrollRow)
-            drawPatternRowAt(cursorRow - scrollRow)
+                drawPatternRowAt(cursorRow - scrollRow)
+            } else if (Math.abs(dScroll) >= PTNVIEW_HEIGHT) {
+                drawPatternView()
+            } else {
+                shiftPatternArea(-dScroll)
+                if (dScroll > 0) {
+                    for (let i = 0; i < dScroll; i++) drawPatternRowAt(PTNVIEW_HEIGHT - 1 - i)
+                } else {
+                    for (let i = 0; i < -dScroll; i++) drawPatternRowAt(i)
+                }
+                if (oldCursor >= scrollRow && oldCursor < scrollRow + PTNVIEW_HEIGHT)
+                    drawPatternRowAt(oldCursor - scrollRow)
+                drawPatternRowAt(cursorRow - scrollRow)
+            }
+            drawSeparators(separatorStyle)
+            drawVoiceDetail()
         }
         drawStatusBar()
-        drawSeparators(separatorStyle)
-        drawVoiceDetail()
     }
 }
 
@@ -960,9 +1145,9 @@ function clampVoice() {
     if (cursorVox >= song.numVoices) cursorVox = song.numVoices - 1
     if (cursorVox < voiceOff) voiceOff = cursorVox
     // keep cursor centred until view reaches an edge (mirrors clampCursor logic)
-    if (cursorVox < voiceOff + (VOCSIZE>>>1) && voiceOff > 0) voiceOff = cursorVox - (VOCSIZE>>>1)
-    if (cursorVox >= voiceOff + ((VOCSIZE+1)>>>1)) voiceOff = cursorVox - ((VOCSIZE+1)>>>1) + 1
-    const maxOff = Math.max(0, song.numVoices - VOCSIZE)
+    if (cursorVox < voiceOff + (VOCSIZE_TIMELINE_FULL>>>1) && voiceOff > 0) voiceOff = cursorVox - (VOCSIZE_TIMELINE_FULL>>>1)
+    if (cursorVox >= voiceOff + ((VOCSIZE_TIMELINE_FULL+1)>>>1)) voiceOff = cursorVox - ((VOCSIZE_TIMELINE_FULL+1)>>>1) + 1
+    const maxOff = Math.max(0, song.numVoices - VOCSIZE_TIMELINE_FULL)
     if (voiceOff < 0) voiceOff = 0
     if (voiceOff > maxOff) voiceOff = maxOff
 }
@@ -985,114 +1170,21 @@ let exitFlag = false
 while (!exitFlag) {
     input.withEvent(event => {
         if (event[0] !== "key_down") return
-        const keysym = event[1]
+        const keysym     = event[1]
         const keyJustHit = (1 == event[2])
-        const shiftDown = (event.includes(59) || event.includes(60))
-
-        const moveDelta = shiftDown ? 4 : 1
 
         if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
             exitFlag = true
             return
         }
 
-        if (playbackMode !== PLAYMODE_NONE) {
-            if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel() }
-            else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
-                const oldVoiceOff = voiceOff
-                cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
-                clampVoice()
-                const dVoice = voiceOff - oldVoiceOff
-                if (dVoice !== 0) {
-                    shiftPatternAreaHorizontal(dVoice)
-                    drawVoiceColumnAt(dVoice > 0 ? VOCSIZE - 1 : 0)
-                }
-                drawVoiceHeaders()
-                drawSeparators(separatorStyle)
-                drawStatusBar()
-                drawVoiceDetail()
-            }
-            else if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox) }
-            else if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox) }
-            return
-        }
-
-        if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); redrawPanel(); return }
-        if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  redrawPanel(); return }
-        if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return } // allow multiple plays by holding the keys down
-        if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); return }
-
-        const oldCursor = cursorRow
-        const oldScroll = scrollRow
-        let rowMove = false       // pure row-cursor movement; can be fast-path
-        let fullRedraw = false    // voice/cue change; needs full viewport refresh
-
-        if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
-            const oldVoiceOff = voiceOff
-            cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
-            clampVoice()
-            const dVoice = voiceOff - oldVoiceOff
-            if (dVoice !== 0) {
-                shiftPatternAreaHorizontal(dVoice)
-                drawVoiceColumnAt(dVoice > 0 ? VOCSIZE - 1 : 0)
-            }
-            drawVoiceHeaders()
-            drawSeparators(separatorStyle)
-            drawStatusBar()
-            drawVoiceDetail()
-            return
-        }
-
-        if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox); return }
-        if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox); return }
-
-        if (keysym === "<UP>")             { cursorRow -= moveDelta;       rowMove = true }
-        else if (keysym === "<DOWN>")      { cursorRow += moveDelta;     rowMove = true }
-        else if (keysym === "<HOME>")      { cursorRow  = 0;               rowMove = true }
-        else if (keysym === "<END>")       { cursorRow  = ROWS_PER_PAT-1;  rowMove = true }
-        else if (keysym === "<PAGE_UP>")   { cueIdx    -= moveDelta;     fullRedraw = true }
-        else if (keysym === "<PAGE_DOWN>") { cueIdx    += moveDelta;    fullRedraw = true }
-        else return
-
-        clampCursor(); clampVoice(); clampCue()
-
-        if (fullRedraw) {
+        if (keysym === "<TAB>") {
+            currentPanel = (currentPanel + 1) % panels.length
             drawAll()
             return
         }
 
-        if (!rowMove || cursorRow === oldCursor) return
-
-        const dScroll = scrollRow - oldScroll
-        if (dScroll === 0) {
-            // in-viewport cursor move: just flip the two affected rows
-            drawPatternRowAt(oldCursor - scrollRow)
-            drawPatternRowAt(cursorRow - scrollRow)
-        }
-        else if (Math.abs(dScroll) >= PTNVIEW_HEIGHT) {
-            // huge jump, nothing salvageable
-            drawPatternView()
-        }
-        else {
-            // scroll: shift VRAM, then redraw only newly exposed edge rows
-            shiftPatternArea(-dScroll)
-            if (dScroll > 0) {
-                for (let i = 0; i < dScroll; i++)
-                    drawPatternRowAt(PTNVIEW_HEIGHT - 1 - i)
-            } else {
-                for (let i = 0; i < -dScroll; i++)
-                    drawPatternRowAt(i)
-            }
-            // The old cursor row, if still visible, carried its highlight along with the shift — unhighlight it
-            if (oldCursor >= scrollRow && oldCursor < scrollRow + PTNVIEW_HEIGHT)
-                drawPatternRowAt(oldCursor - scrollRow)
-            // The new cursor row always needs highlight
-            drawPatternRowAt(cursorRow - scrollRow)
-        }
-
-        drawSeparators(separatorStyle)
-        drawStatusBar()
-        drawVoiceDetail()
+        panels[currentPanel].processInput(event)
     })
 
     if (playbackMode !== PLAYMODE_NONE) updatePlayback()
