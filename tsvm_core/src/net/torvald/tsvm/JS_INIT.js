@@ -479,21 +479,21 @@ con.getmaxyx = function() {
 con.getyx = function() {
     return graphics.getCursorYX();
 };
-con.curs_up = function() {
+con.curs_up = function(n = 1) {
     let [y,x] = con.getyx();
-    con.move(y-1,x);
+    con.move(y-n,x);
 };
-con.curs_down = function() {
+con.curs_down = function(n = 1) {
     let [y,x] = con.getyx();
-    con.move(y+1,x);
+    con.move(y+n,x);
 };
-con.curs_left = function() {
+con.curs_left = function(n = 1) {
     let [y,x] = con.getyx();
-    con.move(y,x-1);
+    con.move(y,x-n);
 };
-con.curs_right = function() {
+con.curs_right = function(n = 1) {
     let [y,x] = con.getyx();
-    con.move(y,x+1);
+    con.move(y,x+n);
 };
 con.hitterminate = function() { // ^C
     sys.poke(-40, 1);

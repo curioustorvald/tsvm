@@ -67,7 +67,10 @@ panfineri:"\u008426u",
 /* miscellaneous */
 unticked:"\u009E",
 ticked:"\u009F",
-middot:MIDDOT
+middot:MIDDOT,
+doubledot:"\u008419u",
+stop:"\u008420u\u008421u",
+play:"\u008422u\u008423u",
 }
 
 const fxNames = {
@@ -345,8 +348,8 @@ function drawCellAt(y, x, cell, back) {
 
 // Styles: -1 = spaced (dddd ii vv pp effff, 19 chars)
 //          0 = compact/current (15 chars)
-//          1 = non-NOP preference note/fx + vol/pan (9 chars: 1+5+1+2)
-//          2 = non-NOP preference note/fx only (6 chars: 1+5)
+//          1 = non-NOP preference note/fx + vol/pan (7 chars: 5+2, letters start on border)
+//          2 = non-NOP preference note/fx only (5 chars, letters start on border)
 function drawCellAtStyled(y, x, cell, back, style) {
     if (style === 0) { drawCellAt(y, x, cell, back); return }
     if (style === -1) {
@@ -363,16 +366,15 @@ function drawCellAtStyled(y, x, cell, back, style) {
         con.color_pair(colEffArg,  back); print(cell.sEffArg)
         return
     }
-    // Styles 1 and 2: 1sp prefix + note-or-fx field (5 chars) [+ 1sp + vol-or-pan (2 chars)]
+    // Styles 1 and 2: note-or-fx field (5 chars) starts on the border column [+ vol-or-pan (2 chars)]
     const noteEmpty = (cell._note === 0xFFFF)
     const fxEmpty   = (cell._effop === 0 && cell._effarg === 0)
     const volEmpty  = (cell._voleff === 0)
     const panEmpty  = (cell._paneff === 0)
     con.move(y, x)
-    con.color_pair(colBackPtn, back); print(' ')
     if (!noteEmpty) {
-        con.color_pair(colNote,    back); print(cell.sNote)
         con.color_pair(colBackPtn, back); print(' ')
+        con.color_pair(colNote,    back); print(cell.sNote)
     } else if (!fxEmpty) {
         con.color_pair(colEffOp,  back); print(cell.sEffOp)
         con.color_pair(colEffArg, back); print(cell.sEffArg)
@@ -380,7 +382,7 @@ function drawCellAtStyled(y, x, cell, back, style) {
         con.color_pair(colNote, back); print(sym.middot.repeat(5))
     }
     if (style === 1) {
-        con.color_pair(colBackPtn, back); print(' ')
+        //con.color_pair(colBackPtn, back); print(' ')
         if (!volEmpty) {
             con.color_pair(colVol, back); print(cell.sVolEff); print(cell.sVolArg)
         } else if (!panEmpty) {
@@ -404,6 +406,8 @@ const ROWS_PER_PAT     = 64
 const NUM_CUES         = 1024
 const CUE_SIZE         = 32
 const NUM_VOICES       = 20
+const NUM_INSTRUMENTS  = 256
+const INSTRUMENT_SIZE  = 64
 const CUE_EMPTY        = 0xFFF
 
 function _peekU32LE(ptr, off) {
@@ -476,12 +480,22 @@ function loadTaud(filePath, songIndex) {
         }
     }
 
+    const instrBase = cueBase + NUM_CUES * CUE_SIZE
+    const instruments = new Array(NUM_INSTRUMENTS)
+    for (let n = 0; n < NUM_INSTRUMENTS; n++) {
+        const instr = new Uint8Array(INSTRUMENT_SIZE)
+        for (let k = 0; k < INSTRUMENT_SIZE; k++) {
+            instr[k] = sys.peek(ptr + instrBase + n * INSTRUMENT_SIZE + k) & 0xFF
+        }
+        instruments[n] = instr
+    }
+
     sys.free(ptr)
 
     return {
         filePath, version, numSongs, numVoices, numPats,
         bpm: (bpmStored + 24) & 0xFF, tickRate,
-        patterns, cues, lastActiveCue
+        patterns, cues, lastActiveCue, instruments
     }
 }
 
@@ -495,8 +509,10 @@ const PTNVIEW_OFFSET_X = 3
 const PTNVIEW_OFFSET_Y = 9
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
 
-const COLSIZE_TIMELINE_FULL = 15
-const VOCSIZE_TIMELINE_FULL = 5
+const TIMELINE_COLSIZES = [15, 7, 5]
+let timelineRowStyle      = 0
+let COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[0]
+let VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
 
 const VOCSIZE_ORDERS = 18
 
@@ -505,7 +521,7 @@ const VIEW_ORDERS = 1
 const VIEW_INSTRUMENT = 2
 const VIEW_PATTERN_DETAILS = 3
 
-const colPlayback  = 40
+const colPlayback  = 86
 const colHighlight = 41
 const colRowNum    = 250
 const colRowNumEmph1 = 180
@@ -529,7 +545,8 @@ function fillLine(y, c, back) {
     }
 }
 
-const PANEL_NAMES = ['  Timeline ', '   Orders  ', '  Patterns ', '  Samples  ', 'Instruments']
+const TAB_GAP = 2
+const PANEL_NAMES = ['Timeline', 'Orders', 'Patterns', 'Samples', 'Instruments', 'Project', 'File']
 
 function drawAlwaysOnElems() {
     drawStatusBar()
@@ -547,14 +564,14 @@ function drawStatusBar() {
 }
 
 function drawTabIndicator() {
-    const XOFF = 3
+    const XOFF = 2
     const YOFF = PTNVIEW_OFFSET_Y - 4
-    const TABSIZE = 16
 
     // TODO make it fancier
 
+    con.move(YOFF, XOFF)
     for (let i = 0; i < PANEL_NAMES.length; i++) {
-        con.move(YOFF, XOFF + TABSIZE*i)
+        if (i > 0) con.curs_right(TAB_GAP);
         let panStr = PANEL_NAMES[i]
         print((currentPanel === i) ? `[${panStr}]` : ` ${panStr} `)
     }
@@ -597,7 +614,7 @@ function drawVoiceHeaders() {
         con.move(PTNVIEW_OFFSET_Y - 1, x)
         if (voice >= song.numVoices) {
             con.color_pair(colVoiceHdr, 255)
-            print(`                  `.substring(0, COLSIZE_TIMELINE_FULL - 1))
+            print(`                     `.substring(0, COLSIZE_TIMELINE_FULL))
         } else {
             const isCursor = (voice === cursorVox)
             const isMuted  = voiceMutes[voice]
@@ -605,15 +622,18 @@ function drawVoiceHeaders() {
             const ptnIdx = cue.ptns[voice]
             const vlabel = `V${(voice+1).dec02()}`
             const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
-            const label = `  ${vlabel} ptn ${plabel}    `
-            print((label + '                  ').substring(0, COLSIZE_TIMELINE_FULL - 1))
+            const label =
+                (timelineRowStyle == 0) ? `  ${vlabel} ptn ${plabel}    ` :
+                (timelineRowStyle == 1) ? ` ${vlabel.substring(1)}:${plabel}` :
+                ` ${vlabel}`
+            print((label + '                     ').substring(0, COLSIZE_TIMELINE_FULL))
         }
     }
 
     drawSeparators(separatorStyle)
 }
 
-function drawPatternRowAt(viewRow, style = 0) {
+function drawPatternRowAt(viewRow, style = timelineRowStyle) {
     const actualRow = scrollRow + viewRow
     const y = PTNVIEW_OFFSET_Y + viewRow
     const highlight = (actualRow === cursorRow)
@@ -625,7 +645,10 @@ function drawPatternRowAt(viewRow, style = 0) {
         if (actualRow % 4 == 0) {con.color_pair(colRowNumEmph1, back)}
         let rowstr = actualRow.dec02()
         con.move(y, 1); con.prnch(rowstr.charCodeAt(0)); con.move(y, 2); con.prnch(rowstr.charCodeAt(1))
-        con.move(y, SCRW-2); con.prnch(rowstr.charCodeAt(0)); con.move(y, SCRW-1); con.prnch(rowstr.charCodeAt(1))
+
+        if (timelineRowStyle != 1) {
+            con.move(y, SCRW-2); con.prnch(rowstr.charCodeAt(0)); con.move(y, SCRW-1); con.prnch(rowstr.charCodeAt(1))
+        }
     }
     else {
         print('      ')
@@ -648,7 +671,7 @@ function drawPatternRowAt(viewRow, style = 0) {
     drawSeparators(separatorStyle)
 }
 
-function drawPatternView(style = 0) {
+function drawPatternView(style = timelineRowStyle) {
     for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) drawPatternRowAt(vr, style)
 }
 
@@ -859,7 +882,7 @@ const TEXT_PLANES   = [TEXT_CHAR_OFF, TEXT_BACK_OFF, TEXT_FORE_OFF]
 const SCRATCH_PTR = sys.malloc(SCRW * PTNVIEW_HEIGHT)
 
 // Horizontal salvage
-const SALVAGE_HORIZ_LEN = (VOCSIZE_TIMELINE_FULL - 1) * COLSIZE_TIMELINE_FULL
+let SALVAGE_HORIZ_LEN = (VOCSIZE_TIMELINE_FULL - 1) * COLSIZE_TIMELINE_FULL
 
 /**
  * Shift the pattern-view rows by `dy` lines (positive = down, negative = up)
@@ -928,10 +951,18 @@ function drawVoiceColumnAt(slot) {
                 ptnIdx !== CUE_EMPTY && ptnIdx < song.numPats) {
             cell = buildRowCell(song.patterns[ptnIdx], actualRow)
         }
-        drawCellAt(y, x, cell, back)
+        drawCellAtStyled(y, x, cell, back, timelineRowStyle)
     }
 }
 
+function setTimelineRowStyle(style) {
+    timelineRowStyle      = style
+    COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[style]
+    VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
+    SALVAGE_HORIZ_LEN     = (VOCSIZE_TIMELINE_FULL - 1) * COLSIZE_TIMELINE_FULL
+    clampVoice()
+    drawAll()
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // APPLICATION STUB
@@ -967,7 +998,6 @@ if (fullPathObj === undefined) {
 }
 
 const song = loadTaud(fullPathObj.full, 0)
-const TAUD_PREVIEW_PATH = fullPathObj.full + '.preview'
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
 
@@ -1026,9 +1056,7 @@ function drawOrdersContents(wo) {
             const cue    = song.cues[ci]
             const rowstr = ci.hex03()
             con.color_pair(ci % 4 === 0 ? colRowNumEmph1 : colRowNum, back)
-            con.prnch(rowstr.charCodeAt(0)); con.move(y, 2)
-            con.prnch(rowstr.charCodeAt(1)); con.move(y, 3)
-            con.prnch(rowstr.charCodeAt(2))
+            print(rowstr)
             con.move(y, 5)
             for (let c = 0; c < VOCSIZE_ORDERS; c++) {
                 const v   = voiceOff + c
@@ -1047,6 +1075,10 @@ function timelineInput(wo, event) {
     const keyJustHit = (1 == event[2])
     const shiftDown  = (event.includes(59) || event.includes(60))
     const moveDelta  = shiftDown ? 4 : 1
+
+    if (keyJustHit && shiftDown && event.includes(keys.W)) { setTimelineRowStyle(0); return }
+    if (keyJustHit && shiftDown && event.includes(keys.E)) { setTimelineRowStyle(1); return }
+    if (keyJustHit && shiftDown && event.includes(keys.R)) { setTimelineRowStyle(2); return }
 
     if (playbackMode !== PLAYMODE_NONE) {
         if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel() }
@@ -1201,17 +1233,21 @@ function clampPatternIdx() {
         patternListScroll = Math.max(0, song.numPats - PTNVIEW_HEIGHT)
 }
 
-function clampPatternGrid() {
-    if (patternGridRow < 0) patternGridRow = 0
-    if (patternGridRow >= ROWS_PER_PAT) patternGridRow = ROWS_PER_PAT - 1
-    if (patternGridRow < patternGridScroll) patternGridScroll = patternGridRow
-    if (patternGridRow < patternGridScroll + (PTNVIEW_HEIGHT >>> 1) && patternGridScroll > 0)
-        patternGridScroll = patternGridRow - (PTNVIEW_HEIGHT >>> 1)
-    if (patternGridRow >= patternGridScroll + ((PTNVIEW_HEIGHT + 1) >>> 1))
-        patternGridScroll = patternGridRow - ((PTNVIEW_HEIGHT + 1) >>> 1) + 1
+function scrollPatternGridTo(row) {
+    if (row < patternGridScroll) patternGridScroll = row
+    if (row < patternGridScroll + (PTNVIEW_HEIGHT >>> 1) && patternGridScroll > 0)
+        patternGridScroll = row - (PTNVIEW_HEIGHT >>> 1)
+    if (row >= patternGridScroll + ((PTNVIEW_HEIGHT + 1) >>> 1))
+        patternGridScroll = row - ((PTNVIEW_HEIGHT + 1) >>> 1) + 1
     if (patternGridScroll < 0) patternGridScroll = 0
     if (patternGridScroll + PTNVIEW_HEIGHT > ROWS_PER_PAT)
         patternGridScroll = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
+}
+
+function clampPatternGrid() {
+    if (patternGridRow < 0) patternGridRow = 0
+    if (patternGridRow >= ROWS_PER_PAT) patternGridRow = ROWS_PER_PAT - 1
+    scrollPatternGridTo(patternGridRow)
     if (patternGridCol < 0) patternGridCol = 0
     if (patternGridCol > 5) patternGridCol = 5
 }
@@ -1468,13 +1504,50 @@ const PLAYMODE_SONG = 1
 const PLAYMODE_CUE  = 2
 const PLAYMODE_ROW  = 3
 
+// Scratch cue slot used for pattern-only preview; beyond any real cue the song uses
+const PREVIEW_CUE_IDX = NUM_CUES - 1
+
 let playbackMode = PLAYMODE_NONE
 let playStartCue = 0
 let playStartRow = 0
 let pbCue = 0
 let pbRow = 0
+let previewActive = false  // true while a pattern-only preview is loaded in PREVIEW_CUE_IDX
+
+// Encode a cue object (from song.cues[]) back to its 32-byte wire format
+function encodeCue(cue) {
+    const bin = new Uint8Array(CUE_SIZE)
+    for (let i = 0; i < 10; i++) {
+        const p0 = cue.ptns[i*2], p1 = cue.ptns[i*2+1]
+        bin[i]    = ((p0 & 0xF) << 4)        | (p1 & 0xF)
+        bin[10+i] = (((p0 >> 4) & 0xF) << 4) | ((p1 >> 4) & 0xF)
+        bin[20+i] = (((p0 >> 8) & 0xF) << 4) | ((p1 >> 8) & 0xF)
+    }
+    bin[30] = cue.instr || 0
+    return bin
+}
+
+// Build a preview cue with voice 0 = pidx, all other voices = CUE_EMPTY
+function buildPreviewCue(pidx) {
+    const bin = new Uint8Array(CUE_SIZE)
+    for (let b = 0; b < 30; b++) bin[b] = 0xFF
+    bin[0]  = ((pidx & 0xF) << 4)        | 0xF
+    bin[10] = (((pidx >> 4) & 0xF) << 4) | 0xF
+    bin[20] = (((pidx >> 8) & 0xF) << 4) | 0xF
+    return bin
+}
+
+// Restore the scratch cue slot and original BPM/tickRate before full-song playback
+function restoreFullSongParams() {
+    if (!previewActive) return
+    audio.uploadCue(PREVIEW_CUE_IDX, encodeCue(song.cues[PREVIEW_CUE_IDX]))
+    audio.setBPM(PLAYHEAD, song.bpm)
+    audio.setTickRate(PLAYHEAD, song.tickRate)
+    previewActive = false
+}
 
 function startPlaySong() {
+    restoreFullSongParams()
     audio.stop(PLAYHEAD)
     audio.setCuePosition(PLAYHEAD, cueIdx)
     audio.setTrackerRow(PLAYHEAD, 0)
@@ -1487,6 +1560,7 @@ function startPlaySong() {
 }
 
 function startPlayCue() {
+    restoreFullSongParams()
     audio.stop(PLAYHEAD)
     audio.setCuePosition(PLAYHEAD, cueIdx)
     audio.setTrackerRow(PLAYHEAD, 0)
@@ -1500,6 +1574,7 @@ function startPlayCue() {
 }
 
 function startPlayRow(fromRow, fromCue) {
+    restoreFullSongParams()
     if (fromRow === undefined) fromRow = cursorRow
     if (fromCue === undefined) fromCue = cueIdx
     audio.stop(PLAYHEAD)
@@ -1513,42 +1588,49 @@ function startPlayRow(fromRow, fromCue) {
     audio.play(PLAYHEAD)
 }
 
-// Find first cue containing patternIdx; return it or -1 if not used
-function _findCueForPattern(pidx) {
-    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
-    for (let c = 0; c <= maxCue; c++) {
-        const cue = song.cues[c]
-        for (let v = 0; v < song.numVoices; v++) {
-            if (cue.ptns[v] === pidx) return c
-        }
-    }
-    return -1
-}
-
 function startPlayPattern() {
     if (song.numPats === 0) return
-    const found = _findCueForPattern(patternIdx)
-    if (found < 0) return
-    cueIdx = found; clampCue()
-    startPlayCue()
+    audio.stop(PLAYHEAD)
+    audio.setBPM(PLAYHEAD, song.bpm)
+    audio.setTickRate(PLAYHEAD, song.tickRate)
+    audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
+    audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
+    audio.setTrackerRow(PLAYHEAD, 0)
+    playStartCue = PREVIEW_CUE_IDX
+    pbCue = PREVIEW_CUE_IDX
+    pbRow = 0
+    playbackMode = PLAYMODE_CUE
+    previewActive = true
+    audio.play(PLAYHEAD)
 }
 
 function startPlayPatternRow() {
     if (song.numPats === 0) return
-    const found = _findCueForPattern(patternIdx)
-    if (found < 0) return
-    cueIdx = found; clampCue()
-    startPlayRow(patternGridRow, found)
+    audio.stop(PLAYHEAD)
+    audio.setBPM(PLAYHEAD, song.bpm)
+    audio.setTickRate(PLAYHEAD, song.tickRate)
+    audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
+    audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
+    audio.setTrackerRow(PLAYHEAD, patternGridRow)
+    playStartCue = PREVIEW_CUE_IDX
+    playStartRow = patternGridRow
+    pbCue = PREVIEW_CUE_IDX
+    pbRow = patternGridRow
+    playbackMode = PLAYMODE_ROW
+    previewActive = true
+    audio.play(PLAYHEAD)
 }
 
 function stopPlayback() {
     audio.stop(PLAYHEAD)
     playbackMode = PLAYMODE_NONE
+    clampPatternGrid()
 }
 
 function updatePlayback() {
     if (!audio.isPlaying(PLAYHEAD)) {
         playbackMode = PLAYMODE_NONE
+        clampPatternGrid()
         if (currentPanel === VIEW_TIMELINE &&
                 cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
@@ -1581,13 +1663,13 @@ function updatePlayback() {
     pbCue = nowCue
     pbRow = nowRow
 
-    if (nowCue !== cueIdx) {
+    if (!previewActive && nowCue !== cueIdx) {
         cueIdx = nowCue
         cursorRow = nowRow
         clampCursor()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
         else if (currentPanel === 2 && song.numPats > 0) { simStateKey = ''; redrawPanel() }
-    } else {
+    } else if (previewActive || nowCue === cueIdx) {
         const oldCursor = cursorRow
         const oldScroll = scrollRow
         cursorRow = nowRow
@@ -1617,6 +1699,7 @@ function updatePlayback() {
             const activeRow = getActiveRowForDetail()
             simState    = simulateRowState(song.patterns[patternIdx], activeRow)
             simStateKey = `${patternIdx}:${activeRow}:${playbackMode}`
+            scrollPatternGridTo(pbRow)
             drawPatternGrid()
             drawVoiceDetail(true, song.patterns[patternIdx], activeRow, simState)
         }
