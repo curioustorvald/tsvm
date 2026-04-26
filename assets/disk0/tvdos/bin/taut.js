@@ -75,7 +75,7 @@ play:"\u008422u\u008423u",
 
 const fxNames = {
 '0':"No effect    ",
-'1':"UNIMPLEMENTED",
+'1':"Mixer config ", // Taud: 1 01xx: set stereo panning law
 '2':"UNIMPLEMENTED",
 '3':"UNIMPLEMENTED",
 '4':"UNIMPLEMENTED",
@@ -94,26 +94,26 @@ G:"Portamento   ",
 H:"Vibrato      ",
 I:"Tremor       ",
 J:"Arpeggio     ",
-K:"UNIMPLEMENTED",
-L:"UNIMPLEMENTED",
-M:"UNIMPLEMENTED",
-N:"UNIMPLEMENTED",
+K:"UNIMPLEMENTED", // Volume slide+Vibrato. Use H0000 and VolEff instead
+L:"UNIMPLEMENTED", // Volume slide+Portamento. Use G0000 and VolEff instead
+M:"UNIMPLEMENTED", // IT: Set channel volume. Use VolEff instead
+N:"UNIMPLEMENTED", // IT: Channel volume slide. Use VolEff instead
 O:"Sample offset",
-P:"UNIMPLEMENTED",
+P:"UNIMPLEMENTED", // IT: panning slide. Use PanEff instead
 Q:"Retrigger    ",
 R:"Tremolo      ",
 S:"Special      ",
-S0:"UNIMPLEMENTED",
+S0:"UNIMPLEMENTED", // PT: Set audio filter.
 S1:"Gliss. ctrl  ",
 S2:"Sample tune  ",
 S3:"Vibrato LFO  ",
 S4:"Tremolo LFO  ",
 S5:"Panbrello LFO",
-S6:"UNIMPLEMENTED",
-S7:"UNIMPLEMENTED",
-S8:"Channel pan  ",
-S9:"UNIMPLEMENTED",
-SA:"UNIMPLEMENTED",
+S6:"UNIMPLEMENTED", // IT: Fine pattern delay.
+S7:"UNIMPLEMENTED", // IT: misc. functions
+S8:"Channel pan  ", // Taud: 8-bit channel panning.
+S9:"UNIMPLEMENTED", // IT: Sound control.
+SA:"UNIMPLEMENTED", // SC3: Stereo control. IT: Sample offset high twobyte.
 SB:"Pattern loop ",
 SC:"Note cut     ",
 SD:"Note delay   ",
@@ -122,10 +122,10 @@ SF:"Funk it      ",
 T:"Tempo        ",
 U:"Fine vibrato ",
 V:"Global volume",
-W:"UNIMPLEMENTED",
-X:"UNIMPLEMENTED",
+W:"UNIMPLEMENTED", // IT: Global volume slide.
+X:"UNIMPLEMENTED", // IT: 8-bit channel panning. Use PanEff or S80xx instead
 Y:"Panbrello    ",
-Z:"UNIMPLEMENTED",
+Z:"UNIMPLEMENTED", // IT: MIDI macro.
 }
 const panFxNames = {
 0:"Set to",

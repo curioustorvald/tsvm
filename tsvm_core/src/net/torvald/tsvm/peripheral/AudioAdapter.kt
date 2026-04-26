@@ -12,8 +12,11 @@ import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.toInt
 import java.io.ByteArrayInputStream
+import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.PI
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
@@ -1133,6 +1136,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // Letters A..Z map to 0x0A..0x23 (digit value 10..35).
     private object EffectOp {
         const val OP_NONE = 0x00
+        const val OP_1 = 0x01
         const val OP_A = 0x0A
         const val OP_B = 0x0B
         const val OP_C = 0x0C
@@ -1352,6 +1356,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun applyEffectRow(ts: TrackerState, playhead: Playhead, voice: Voice, vi: Int, op: Int, rawArg: Int) {
         when (op) {
             EffectOp.OP_NONE -> {}
+            EffectOp.OP_1 -> {
+                // 1 $01xx — Set stereo panning law. High byte selects subcommand; only $01 is defined.
+                if ((rawArg ushr 8) == 0x01) ts.panLaw = rawArg and 0xFF
+            }
             EffectOp.OP_A -> {
                 val tr = (rawArg ushr 8) and 0xFF
                 if (tr != 0) playhead.tickRate = tr
@@ -1733,8 +1741,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (!voice.active || voice.muted) continue
                 val s = fetchTrackerSample(voice, instruments[voice.instrumentId])
                 val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * playhead.masterVolume / 255.0
-                mixL += s * vol * (63 - voice.rowPan) / 63.0
-                mixR += s * vol * voice.rowPan / 63.0
+                val pan = voice.channelPan
+                val lGain: Double
+                val rGain: Double
+                when (ts.panLaw) {
+                    1 -> { // equal-power: constant loudness at centre (0.707 each)
+                        lGain = cos(PI * pan / 512.0)
+                        rGain = sin(PI * pan / 512.0)
+                    }
+                    else -> { // linear balance (tracker default): centre gives 0 dB on both channels
+                        lGain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
+                        rGain = if (pan < 0x80) pan / 128.0 else 1.0
+                    }
+                }
+                mixL += s * vol * lGain
+                mixR += s * vol * rGain
             }
 
             ts.mixLeft[n]  = mixL.toFloat().coerceIn(-1.0f, 1.0f)
@@ -1988,6 +2009,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var firstRow = true
         val voices = Array(20) { Voice() }
 
+        // Global mixer config (effect 1).
+        var panLaw = 0  // 0 = linear balance (default), 1 = equal-power
+
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
         var pendingRowJump = -1            // -1 = none; otherwise the row index for the next pattern
@@ -2109,6 +2133,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.pendingOrderJump = -1; ts.pendingRowJump = -1
                 ts.patternDelayRemaining = 0; ts.patternDelayActive = false
                 ts.sexWinningChannel = -1
+                ts.panLaw = 0
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F

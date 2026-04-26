@@ -749,6 +749,27 @@ NOTE: **`3.00` — is No-op**
 
 ---
 
+# Effects That Modifies Global Behaviour
+
+Effects in this section modifies the behaviour of the mixer. Primary intention of the commands is to provide switches for legacy tracker and modern DAW behaviours.
+
+## 1 $01xx — Set stereo panning law
+
+**Plain.** Sets how the mixer should treat the panning. Available modes are:
+
+- 0: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
+- 1: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
+
+**Implementation.**
+- Mode 0: 
+  - L_gain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
+  - R_gain = if (pan < 0x80) pan / 128.0 else 1.0
+- Mode 1:
+  - L_gain = cos(pi*x / 512.0)
+  - R_gain = sin(pi*x / 512.0)
+
+---
+
 # ProTracker to Taud conversion table
 
 This table maps each PT effect to its Taud equivalent. Arguments follow PT's two-nibble form and expand to Taud's 16-bit form as shown.
