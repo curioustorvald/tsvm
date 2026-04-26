@@ -146,7 +146,7 @@ const panFxNames = {
 3:"Fine slide",
 30:"Fine slide L",
 31:"Fine slide R",
-999:"--",
+999:"---",
 }
 const volFxNames = {
 0:"Set to",
@@ -155,7 +155,7 @@ const volFxNames = {
 3:"Fine slide",
 30:"Fine slide DN",
 31:"Fine slide UP",
-999:"--",
+999:"---",
 }
 
 const pitchTablePresets = {
@@ -940,7 +940,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
 
         const lines = []
         lines.push({ label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`,         fg: colNote   })
-        lines.push({ label: 'Inst ', value: inst === 0 ? '--' : inst.hex02(),    fg: colInst   })
+        lines.push({ label: 'Inst ', value: inst === 0 ? '---' : ('$'+inst.hex02()),    fg: colInst   })
         lines.push({ label: 'Vx   ', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol    })
         lines.push({ label: 'Px   ', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan    })
         lines.push({ label: 'Fx    ', value: fxName.trimEnd(),                    fg: colEffOp  })
@@ -950,7 +950,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         if (cumState !== null) {
             lines.push({ label: '------', value: '',                                                                  fg: colSep    })
             lines.push({ label: 'L.Note', value: noteToStr(cumState.lastNote),                                        fg: colNote   })
-            lines.push({ label: 'L.Inst', value: cumState.lastInst === 0 ? '--' : cumState.lastInst.hex02(),          fg: colInst   })
+            lines.push({ label: 'L.Inst', value: cumState.lastInst === 0 ? '---' : ('$'+cumState.lastInst.hex02()),          fg: colInst   })
             lines.push({ label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                       fg: colVol    })
             lines.push({ label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                       fg: colPan    })
             const _apo  = Math.abs(cumState.pitchOff)
@@ -1112,6 +1112,8 @@ function setTimelineRowStyle(style) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
+graphics.setBackground(34, 38, 51)
+graphics.setGraphicsMode(0)
 
 let currentPanel = VIEW_TIMELINE
 let cueIdx           = 0
@@ -1438,7 +1440,7 @@ function simulateRowState(ptnDat, uptoRow) {
     let lastNote = 0xFFFF, lastInst = 0
     let volAbs = 0x3F, panAbs = 0x20
     let pitchOff = 0, portaTarget = -1
-    let speed = 6
+    let speed = 6 // FIXME of course it's not always 6
     let memEF = 0, memG = 0
     let memHU = { speed: 0, depth: 0 }
     let memR  = { speed: 0, depth: 0 }
