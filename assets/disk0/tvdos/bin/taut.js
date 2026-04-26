@@ -564,8 +564,9 @@ const colVoiceHdr  = 230
 const colSep       = 252
 const colPushBtnBack = 143
 const colTabBarBack = 187
-const colTabBarOrn = 135
+const colTabBarOrn = 91//135
 const colBrand = 211
+const colPopupBack = 91
 
 
 // protip: avoid using colour zero
@@ -2003,6 +2004,146 @@ function clampOrdersHoriz() {
     }
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// GOTO POPUP
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const GOTO_POPUP_W = 26
+const GOTO_POPUP_H = 5
+
+const popupDrawFrame = (wo) => {
+    // draw header
+    con.move(wo.y, wo.x)
+    con.color_pair(colTabBarOrn, colTabBarBack)
+    print(`\u00FB`.repeat(wo.width))
+
+    // imprint title
+    let titleWidth = wo.title.length
+    con.move(wo.y, wo.x + (((wo.width - titleWidth - 2) & 254) >>> 1))
+    let col = (wo.isHighlighted) ? 161 : 240
+    con.color_pair(col, colTabBarBack)
+    print(` ${wo.title} `)
+
+    // fill content area
+    for (let r = 1; r < wo.height - 1; r++) {
+        con.move(wo.y + r, wo.x)
+        con.color_pair(230, colPopupBack)
+        print(' '.repeat(wo.width))
+    }
+}
+
+function drawGotoPopup(popup, buf) {
+    con.color_pair(230, colPopupBack)
+    popup.drawFrame()
+
+    const prompts = ['Cue (hex):', 'Cue (hex):', 'Pattern (hex):']
+    const promptStr = prompts[currentPanel] || 'Number:'
+
+    con.move(popup.y + 2, popup.x + 2)
+    con.color_pair(colStatus, colPopupBack)
+    print(promptStr + ' ')
+    con.color_pair(230, 240)
+    print('[' + buf.padEnd(3, '_') + ']')
+
+    con.color_pair(colStatus, 255) // reset colour
+}
+
+function applyGoto(num) {
+    if (currentPanel === 0) {
+        cueIdx = num; clampCue()
+    } else if (currentPanel === 1) {
+        const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+        ordersCursor = Math.max(0, Math.min(maxCue, num))
+        if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
+        if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT)
+            ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
+    } else if (currentPanel === 2) {
+        patternIdx = num; clampPatternIdx()
+    }
+}
+
+function openConfirmQuit() {
+    const pw = 24
+    const ph = 5
+    const px = ((SCRW - pw) / 2 | 0) + 1
+    const py = ((SCRH - ph) / 2 | 0)
+
+    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Quit?', popupDrawFrame)
+    popup.isHighlighted = true
+    popup.titleBack = colPopupBack
+
+    con.color_pair(230, colPopupBack)
+    popup.drawFrame()
+
+    con.move(py + 2, px + 2)
+    con.color_pair(colStatus, colPopupBack)
+    print('Exit taut? ')
+    con.color_pair(230, 240)
+    print('[Y/N]')
+
+    con.color_pair(colStatus, 255) // reset colour
+
+    let result = false
+    let done = false
+    while (!done) {
+        input.withEvent(ev => {
+            if (ev[0] !== 'key_down') return
+            if (1 !== ev[2]) return
+            const ks = ev[1]
+            if (ks === 'y' || ks === 'Y' || ks === '\n') { result = true;  done = true }
+            else if (ks === 'n' || ks === 'N' || ks === '<ESC>') { done = true }
+        })
+    }
+
+    if (!result) drawAll()
+    return result
+}
+
+function openGotoPopup() {
+    const pw = GOTO_POPUP_W
+    const ph = GOTO_POPUP_H
+    const px = ((SCRW - pw) / 2 | 0) + 1
+    const py = ((SCRH - ph) / 2 | 0)
+
+    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Go To', popupDrawFrame)
+    popup.isHighlighted = true
+    popup.titleBack = colTabBarBack
+
+    let buf = ''
+    let done = false
+    drawGotoPopup(popup, buf)
+
+    let eventJustReceived = true
+
+    while (!done) {
+        input.withEvent(ev => {
+            if (ev[0] !== 'key_down') return
+            const ks = ev[1]
+            if (1 !== ev[2]) return // not key just hit
+
+            if (eventJustReceived) { // filter Shift-G input
+                eventJustReceived = false
+                return
+            }
+
+            if (ks === '<ESC>') {
+                done = true
+            } else if (ks === '\n') {
+                if (buf.length > 0) applyGoto(parseInt(buf, 16))
+                done = true
+            } else if (ks === '\u0008') {
+                buf = buf.slice(0, -1)
+                drawGotoPopup(popup, buf)
+            } else if (ks.length === 1 && '0123456789abcdefABCDEF'.includes(ks) && buf.length < 3) {
+                buf += ks.toUpperCase()
+                drawGotoPopup(popup, buf)
+            }
+        })
+    }
+
+    drawAll()
+}
+
 clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
 drawAll()
 
@@ -2019,8 +2160,8 @@ while (!exitFlag) {
         const keyJustHit = (1 == event[2])
         const shiftDown  = (event.includes(59) || event.includes(60))
 
-        if (keysym === "<ESC>" || keysym === "q" || keysym === "Q") {
-            exitFlag = true
+        if (keyJustHit && keysym === "q") {
+            if (openConfirmQuit()) exitFlag = true
             return
         }
 
@@ -2030,6 +2171,11 @@ while (!exitFlag) {
             currentPanel = currentPanel % panels.length
 
             drawAll()
+            return
+        }
+
+        if (keyJustHit && shiftDown && event.includes(keys.G)) {
+            openGotoPopup()
             return
         }
 
