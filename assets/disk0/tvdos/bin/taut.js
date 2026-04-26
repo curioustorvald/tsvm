@@ -1440,7 +1440,7 @@ function simulateRowState(ptnDat, uptoRow) {
     let lastNote = 0xFFFF, lastInst = 0
     let volAbs = 0x3F, panAbs = 0x20
     let pitchOff = 0, portaTarget = -1
-    let speed = 6 // FIXME of course it's not always 6
+    let speed = audio.getTickRate(PLAYHEAD) // not always going to be correct but it should be mostly
     let memEF = 0, memG = 0
     let memHU = { speed: 0, depth: 0 }
     let memR  = { speed: 0, depth: 0 }
@@ -1472,10 +1472,10 @@ function simulateRowState(ptnDat, uptoRow) {
         }
         if (inst !== 0) lastInst = inst
 
-        // Volume column: set OR slide
+        // Volume column: set OR slide (0xC0 = 3.00 nop is the empty sentinel, not 0x00)
         const volop    = (voleff >>> 6) & 3
         const volefarg = voleff & 63
-        if (voleff !== 0) {
+        if (voleff !== 0xC0) {
             if (volop === 0) {
                 volAbs = volefarg
             } else if (volop === 1) {
@@ -1488,10 +1488,10 @@ function simulateRowState(ptnDat, uptoRow) {
             }
         }
 
-        // Pan column: set OR slide
+        // Pan column: set OR slide (0xC0 = 3.00 nop is the empty sentinel, not 0x00)
         const panop    = (paneff >>> 6) & 3
         const panefarg = paneff & 63
-        if (paneff !== 0) {
+        if (paneff !== 0xC0) {
             if (panop === 0) {
                 panAbs = panefarg
             } else if (panop === 1) {
