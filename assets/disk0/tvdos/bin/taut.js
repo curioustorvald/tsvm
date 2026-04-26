@@ -128,20 +128,22 @@ Y:"Panbrello    ",
 Z:"UNIMPLEMENTED",
 }
 const panFxNames = {
-0:"Panning Set  ",
-1:"Pan slide L  ",
-2:"Pan slide R  ",
-3:"Fpan slide   ",
-30:"Fpan slide L ",
-31:"Fpan slide R "
+0:"Set to",
+1:"Slide L",
+2:"Slide R",
+3:"Fine slide",
+30:"Fine slide L",
+31:"Fine slide R",
+999:"--",
 }
 const volFxNames = {
-0:"Volume Set   ",
-1:"Vol slide UP ",
-2:"Vol slide DN ",
-3:"fVol slide   ",
-30:"fVol slide DN",
-31:"fVol slide UP"
+0:"Set to",
+1:"Slide UP",
+2:"Slide DN",
+3:"Fine slide",
+30:"Fine slide DN",
+31:"Fine slide UP",
+999:"--",
 }
 
 const pitchTablePresets = {
@@ -514,7 +516,9 @@ let timelineRowStyle      = 0
 let COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[0]
 let VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
 
-const VOCSIZE_ORDERS = 18
+const ORDERS_CMD_X   = 5
+const ORDERS_VOICE_X = 9
+const VOCSIZE_ORDERS = Math.floor((SCRW - 8) / 4)
 
 const VIEW_TIMELINE = 0
 const VIEW_ORDERS = 1
@@ -523,6 +527,7 @@ const VIEW_PATTERN_DETAILS = 3
 
 const colPlayback  = 86
 const colHighlight = 41
+const colColumnSep = 6
 const colRowNum    = 250
 const colRowNumEmph1 = 180
 const colStatus    = 253
@@ -597,7 +602,10 @@ function drawSeparators(style) {
             for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
                 let memOffset = (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1)
                 let bgColOffset = GPU_MEM - TEXT_BACK_OFF - memOffset
-                sys.poke(bgColOffset, colHighlight)
+                let oldBgCol = sys.peek(bgColOffset)
+                if (oldBgCol == 255) {
+                    sys.poke(bgColOffset, colColumnSep)
+                }
             }
         }
 
@@ -633,6 +641,10 @@ function drawVoiceHeaders() {
     drawSeparators(separatorStyle)
 }
 
+// Sub-field layout for style-0 cells (shared by drawPatternRowAt and drawVoiceColumnAt)
+const TL_FIELD_OFFSETS = [0, 4, 6, 8, 10, 11]
+const TL_FIELD_FGS     = [colNote, colInst, colVol, colPan, colEffOp, colEffArg]
+
 function drawPatternRowAt(viewRow, style = timelineRowStyle) {
     const actualRow = scrollRow + viewRow
     const y = PTNVIEW_OFFSET_Y + viewRow
@@ -666,6 +678,13 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
             }
         }
         drawCellAtStyled(y, x, cell, back, style)
+        if (style === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
+            const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
+                              cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
+            con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
+            con.color_pair(TL_FIELD_FGS[timelineColCursor], colPlayback)
+            print(fieldStr)
+        }
     }
 
     drawSeparators(separatorStyle)
@@ -677,7 +696,7 @@ function drawPatternView(style = timelineRowStyle) {
 
 function drawControlHint() {
     let hintElemTimeline = [
-        [`\u008428u\u008429u`,'Ptn'],
+        [`\u008428u\u008429u`,'Nav'],
         [`Pg\u008418u`,'Cue'],
     ['sep'],
         ['Y','Song'],
@@ -692,7 +711,7 @@ function drawControlHint() {
         //['q','Quit'],
     ]
     let hintElemOrders = [
-        [`\u008428u\u008429u`,'Order'],
+        [`\u008428u\u008429u`,'Nav'],
         [`Ent`,'Go to cue'],
     ['sep'],
         ['U','Cue'],
@@ -808,11 +827,18 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         const dx      = PATEDITOR_DETAIL_X
         const detailW = SCRW - dx + 1
 
+        let voleffop1 = (voleffop == 3) ? 30 + (voleffarg >>> 5) : voleffop
+        let paneffop1 = (paneffop == 3) ? 30 + (paneffarg >>> 5) : paneffop
+        let voleffarg1 = '$'+((voleffop == 3) ? voleffarg & 15 : voleffarg).hex02()
+        let paneffarg1 = '$'+((paneffop == 3) ? paneffarg & 15 : paneffarg).hex02()
+        if (voleff == 0xC0) { voleffop1 = 999; voleffarg1 = '' }
+        if (paneff == 0xC0) { paneffop1 = 999; paneffarg1 = '' }
+
         const lines = []
         lines.push({ label: 'Note  ', value: `${noteToStr(note)} ($${note.hex04()})`,         fg: colNote   })
         lines.push({ label: 'Inst  ', value: inst === 0 ? '--' : inst.hex02(),    fg: colInst   })
-        lines.push({ label: 'VolEff', value: `${voleffop}.$${voleffarg.hex02()}`, fg: colVol    })
-        lines.push({ label: 'PanEff', value: `${paneffop}.$${paneffarg.hex02()}`, fg: colPan    })
+        lines.push({ label: 'VolEff', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol    })
+        lines.push({ label: 'PanEff', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan    })
         lines.push({ label: 'FxOp  ', value: fx,                                  fg: colEffOp  })
         lines.push({ label: 'FxArg ', value: `$${effarg.hex04()}`,                fg: colEffArg })
         lines.push({ label: 'Fx    ', value: fxName.trimEnd(),                    fg: colEffOp  })
@@ -952,6 +978,13 @@ function drawVoiceColumnAt(slot) {
             cell = buildRowCell(song.patterns[ptnIdx], actualRow)
         }
         drawCellAtStyled(y, x, cell, back, timelineRowStyle)
+        if (timelineRowStyle === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
+            const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
+                              cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
+            con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
+            con.color_pair(TL_FIELD_FGS[timelineColCursor], colPlayback)
+            print(fieldStr)
+        }
     }
 }
 
@@ -971,13 +1004,16 @@ function setTimelineRowStyle(style) {
 con.curs_set(0)
 
 let currentPanel = VIEW_TIMELINE
-let cueIdx    = 0
-let cursorRow = 0
-let scrollRow = 0
-let voiceOff  = 0
-let cursorVox = 0
-let ordersCursor = 0
-let ordersScroll = 0
+let cueIdx           = 0
+let cursorRow        = 0
+let scrollRow        = 0
+let voiceOff         = 0
+let cursorVox        = 0
+let timelineColCursor = 0   // sub-field within cursorVox (0=note,1=inst,2=vol,3=pan,4=fxop,5=fxarg)
+let ordersCursor    = 0
+let ordersScroll    = 0
+let ordersColCursor = 0   // 0=Cmd, 1..numVoices=voice columns
+let ordersVoiceOff  = 0   // horizontal scroll for voice columns
 let patternIdx        = 0
 let patternListScroll = 0
 let patternGridRow    = 0
@@ -1028,12 +1064,14 @@ function drawOrdersHeader() {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     con.move(PTNVIEW_OFFSET_Y - 1, 1)
     con.color_pair(colVoiceHdr, 255)
-    let hdr = '    '
+    print('    ')
+    con.color_pair(colVoiceHdr, ordersColCursor === 0 ? colHighlight : 255)
+    print('Cmd ')
     for (let c = 0; c < VOCSIZE_ORDERS; c++) {
-        const v = voiceOff + c
-        hdr += v < song.numVoices ? `V${(v+1).dec02()} ` : '    '
+        const v = ordersVoiceOff + c
+        con.color_pair(colVoiceHdr, ordersColCursor === v + 1 ? colHighlight : 255)
+        print(v < song.numVoices ? `V${(v+1).dec02()} ` : '    ')
     }
-    print(hdr)
 }
 
 function drawOrdersContents(wo) {
@@ -1041,8 +1079,8 @@ function drawOrdersContents(wo) {
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
 
     for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
-        const ci   = ordersScroll + vr
-        const y    = PTNVIEW_OFFSET_Y + vr
+        const ci    = ordersScroll + vr
+        const y     = PTNVIEW_OFFSET_Y + vr
         const isSel = (ci === ordersCursor)
         const isCur = playbackMode !== PLAYMODE_NONE && ci === cueIdx
         const back  = isSel ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight)
@@ -1053,18 +1091,28 @@ function drawOrdersContents(wo) {
             con.color_pair(colBackPtn, colBackPtn)
             print(' '.repeat(SCRW - 1))
         } else {
-            const cue    = song.cues[ci]
-            const rowstr = ci.hex03()
+            const cue = song.cues[ci]
             con.color_pair(ci % 4 === 0 ? colRowNumEmph1 : colRowNum, back)
-            print(rowstr)
-            con.move(y, 5)
+            print(ci.hex03())
+            con.color_pair(colBackPtn, back)
+            print(' ')
+            // CMD column — crosshair highlight at (ordersCursor, col 0)
+            const cmdBack = (isSel && ordersColCursor === 0) ? colPlayback : back
+            con.color_pair(cue.instr ? colNote : colSep, cmdBack)
+            print(cue.instr ? cue.instr.hex02() : '--')
+            con.color_pair(colBackPtn, back)
+            print('  ')
+            // Voice columns
             for (let c = 0; c < VOCSIZE_ORDERS; c++) {
-                const v   = voiceOff + c
-                const ptn = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
-                con.color_pair(ptn === CUE_EMPTY ? colSep : colNote, back)
-                print(ptn === CUE_EMPTY ? '--- ' : ptn.hex03() + ' ')
+                const v     = ordersVoiceOff + c
+                const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
+                const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
+                con.color_pair(ptn === CUE_EMPTY ? colSep : colNote, vBack)
+                print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
+                con.color_pair(colBackPtn, back)
+                print(' ')
             }
-            const endX = 5 + VOCSIZE_ORDERS * 4
+            const endX = ORDERS_VOICE_X + VOCSIZE_ORDERS * 4
             if (endX <= SCRW) { con.color_pair(colBackPtn, back); print(' '.repeat(SCRW - endX)) }
         }
     }
@@ -1083,8 +1131,10 @@ function timelineInput(wo, event) {
     if (playbackMode !== PLAYMODE_NONE) {
         if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel() }
         else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
+            const dir = (keysym === "<LEFT>") ? -1 : 1
             const oldVoiceOff = voiceOff
-            cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
+            cursorVox += dir * moveDelta
+            timelineColCursor = 0
             clampVoice()
             const dVoice = voiceOff - oldVoiceOff
             if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
@@ -1106,12 +1156,24 @@ function timelineInput(wo, event) {
     let fullRedraw = false
 
     if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
+        const dir = (keysym === "<LEFT>") ? -1 : 1
         const oldVoiceOff = voiceOff
-        cursorVox += (keysym === "<LEFT>") ? -moveDelta : moveDelta
+        const prevVox = cursorVox
+        let triedCross = false
+        if (shiftDown) {
+            cursorVox += dir * moveDelta
+            timelineColCursor = dir > 0 ? 0 : 5
+        } else {
+            timelineColCursor += dir
+            if (timelineColCursor < 0)      { timelineColCursor = 5; cursorVox--; triedCross = true }
+            else if (timelineColCursor > 5) { timelineColCursor = 0; cursorVox++; triedCross = true }
+        }
         clampVoice()
+        if (triedCross && cursorVox === prevVox) timelineColCursor = dir < 0 ? 0 : 5
         const dVoice = voiceOff - oldVoiceOff
         if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
         drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+        drawPatternRowAt(cursorRow - scrollRow)
         return
     }
 
@@ -1185,10 +1247,9 @@ function ordersInput(wo, event) {
         if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
         drawOrdersContents(wo)
     } else if (keysym === '<LEFT>' || keysym === '<RIGHT>') {
-        const oldVoiceOff = voiceOff
-        cursorVox += (keysym === '<LEFT>') ? -moveDelta : moveDelta
-        clampVoice()
-        if (voiceOff !== oldVoiceOff) drawOrdersContents(wo)
+        ordersColCursor += (keysym === '<LEFT>') ? -1 : 1
+        clampOrdersHoriz()
+        drawOrdersContents(wo)
     } else if (keyJustHit && keysym === '\n') {
         cueIdx = ordersCursor
         clampCue()
@@ -1737,7 +1798,18 @@ function clampCue() {
     if (cueIdx > maxCue) cueIdx = maxCue
 }
 
-clampCursor(); clampVoice(); clampCue(); clampPatternIdx(); clampPatternGrid()
+function clampOrdersHoriz() {
+    if (ordersColCursor < 0) ordersColCursor = 0
+    if (ordersColCursor > song.numVoices) ordersColCursor = song.numVoices
+    if (ordersColCursor >= 1) {
+        const v = ordersColCursor - 1
+        if (v < ordersVoiceOff) ordersVoiceOff = v
+        if (v >= ordersVoiceOff + VOCSIZE_ORDERS) ordersVoiceOff = v - VOCSIZE_ORDERS + 1
+        if (ordersVoiceOff < 0) ordersVoiceOff = 0
+    }
+}
+
+clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
 drawAll()
 
 resetAudioDevice()
