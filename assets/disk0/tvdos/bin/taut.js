@@ -537,7 +537,7 @@ function loadTaud(filePath, songIndex) {
 
 const [SCRH, SCRW] = con.getmaxyx()
 const PTNVIEW_OFFSET_X = 3
-const PTNVIEW_OFFSET_Y = 9
+const PTNVIEW_OFFSET_Y = 5
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
 
 const TIMELINE_COLSIZES = [15, 7, 5]
@@ -563,6 +563,10 @@ const colStatus    = 253
 const colVoiceHdr  = 230
 const colSep       = 252
 const colPushBtnBack = 143
+const colTabBarBack = 187
+const colTabBarOrn = 135
+const colBrand = 211
+
 
 // protip: avoid using colour zero
 const colWHITE = 239
@@ -589,8 +593,8 @@ function fillLine(y, c, back) {
     }
 }
 
-const TAB_GAP = 2
-const PANEL_NAMES = ['Timeline', 'Orders', 'Patterns', 'Samples', 'Instruments', 'Project', 'File']
+const TAB_GAP = 3
+const PANEL_NAMES = ['Timeline', 'Cues', 'Patterns', 'Samples', 'Instrmnt', 'Project', 'File']
 
 function drawAlwaysOnElems() {
     drawStatusBar()
@@ -624,7 +628,7 @@ function drawStatusBar() {
         else
             con.color_pair(colStatus, 255)
 
-        con.move(1, SCRW - 5*(j+1))
+        con.move(1, SCRW - 5*(j+1) + 1)
         print(`  ${transportControlSymbol[j]}  `)
 
         if (active)
@@ -632,7 +636,7 @@ function drawStatusBar() {
         else
             con.color_pair(colVoiceHdr, 255)
 
-        con.move(2, SCRW - 5*(j+1))
+        con.move(2, SCRW - 5*(j+1) + 1)
         print(`  ${transportControlHint[j]}  `)
     })
 
@@ -660,23 +664,37 @@ function drawStatusBar() {
     con.color_pair(colStatus, 255); print(` Tickspeed `)
     con.color_pair(colEffOp, 255); print(`${sSpd}`)
 
+    // app title
+    let s1 = "Microtone"
+    let s2 = "tracker for tsvm"
+    con.move(1, (SCRW - (s1.length & 254)) >>> 1)
+    con.color_pair(colBrand, 255); print('Micro')
+    con.color_pair(colStatus, 255); print('tone')
+    con.move(2, (SCRW - (s2.length & 254)) >>> 1)
+    con.color_pair(colSep, 255); print('tracker for ')
+    con.color_pair(74, 255); print('tsvm')
 }
 
 function drawTabBar() {
-    con.color_pair(colStatus, 255)
+    con.color_pair(colTabBarOrn, colTabBarBack)
+    con.move(3,1)
+    print(`\u00FB`.repeat(SCRW))
 
     const XOFF = 2
-    const YOFF = PTNVIEW_OFFSET_Y - 4
-
-    // TODO make it fancier
+    const YOFF = 3
 
     con.move(YOFF, XOFF)
     for (let i = 0; i < PANEL_NAMES.length; i++) {
         if (i > 0) con.curs_right(TAB_GAP);
-        let panStr = PANEL_NAMES[i]
-        print((currentPanel === i) ? `[${panStr}]` : ` ${panStr} `)
+        let tabName = PANEL_NAMES[i]
+
+        let col = (currentPanel === i) ? 161 : 240
+
+        con.color_pair(col, colTabBarBack); print(` ${tabName} `)
     }
 
+
+    con.color_pair(colStatus, 255)
 }
 
 /**
@@ -795,19 +813,22 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Nav'],
         [`Pg\u008418u`,'Cue'],
     ['sep'],
+        ['WER','ViewMode'],
+    ['sep'],
         ['m','Mute'],
         ['s','Solo'],
     ['sep'],
         ['Tab','Panel'],
-        ['q','Quit'],
+//    ['sep'],
+//        ['q','Quit'],
     ]
     let hintElemOrders = [
         [`\u008428u\u008429u`,'Nav'],
         [`Ent`,'Go to cue'],
     ['sep'],
         ['Tab','Panel'],
-    ['sep'],
-        ['q','Quit'],
+//    ['sep'],
+//        ['q','Quit'],
     ]
 
     let hintElemPatterns = [
@@ -815,8 +836,8 @@ function drawControlHint() {
         [`Pg\u008418u`,'Ptn'],
     ['sep'],
         ['Tab','Panel'],
-    ['sep'],
-        ['q','Quit'],
+//    ['sep'],
+//        ['q','Quit'],
     ]
 
     let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns]
@@ -902,11 +923,10 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
     const fxName = fxNames[fx] || '?            '
 
     if (!isVerticalLayout) {
-        con.move(6, 1)
-        print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\t${sym.vx} ${voleffop}.$${voleffarg.hex02()}\t` +
-              `${sym.px} ${paneffop}.$${paneffarg.hex02()}`)
-        con.move(7, 1)
-        print(`${sym.fx} ${fxName}\t$${effarg.hex04()}                   `)
+        return
+        con.move(PTNVIEW_OFFSET_Y-2, 1)
+        print(`Pitch $${note.hex04()}  Inst $${inst.hex02()}  ${sym.vx} ${voleffop}.$${voleffarg.hex02()}  ` +
+              `${sym.px} ${paneffop}.$${paneffarg.hex02()}  ${sym.fx} ${fxName} $${effarg.hex04()}`)
     } else {
         const dx      = PATEDITOR_DETAIL_X
         const detailW = SCRW - dx + 1
@@ -1928,6 +1948,8 @@ while (!exitFlag) {
 audio.stop(PLAYHEAD)
 resetAudioDevice()
 sys.free(SCRATCH_PTR)
+font.resetLowRom()
+font.resetHighRom()
 con.clear()
 con.move(1, 1)
 con.curs_set(1)
