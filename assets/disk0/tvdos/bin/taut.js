@@ -64,17 +64,29 @@ panri:"\u008416u",
 panfinele:"\u008427u",
 panfineri:"\u008426u",
 
+/* Fx/Vx/Px */
+fx:'\u00F8',
+px:'\u00AC',
+vx:'\u00AD',
+
+/* transport control */
+playall:'\u00A8',
+playcue:'\u00A9',
+playrow:'\u00AA',
+stop:'\u00AB',
+
 /* miscellaneous */
-unticked:"\u009E",
-ticked:"\u009F",
+unticked:"\u00AE",
+ticked:"\u00AF",
 middot:MIDDOT,
 doubledot:"\u008419u",
-stop:"\u008420u\u008421u",
-play:"\u008422u\u008423u",
+statusstop:"\u008420u\u008421u",
+statusplay:"\u008422u\u008423u",
+playhead:"\u00A7",
 }
 
 const fxNames = {
-'0':"No effect    ",
+'0':"--           ",
 '1':"Mixer config ", // Taud: 1 01xx: set stereo panning law
 '2':"UNIMPLEMENTED",
 '3':"UNIMPLEMENTED",
@@ -194,7 +206,7 @@ sym:[` \u00E0\u00E1`,` \u00E2\u00E3`,` \u00E4\u00E5`,` \u00E6\u00E7`,` \u00E8\u0
 const volEffSym = [sym.volset, sym.volup, sym.voldn, sym.volfineup, sym.volfinedn]
 const panEffSym = [sym.panset, sym.panle, sym.panri, sym.panfinele, sym.panfineri]
 
-const colNote = 254
+const colNote = 239
 const colInst = 114
 const colVol = 155
 const colPan = 219
@@ -202,7 +214,33 @@ const colEffOp = 220
 const colEffArg = 231
 const colBackPtn = 255
 
-const PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
+let PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
+
+// pitchSymLut[pitchInOct] = [symString, octaveOffset]
+// octaveOffset is 1 when pitchInOct is closer to the next octave's root (wraps up) than to any table entry.
+// Call rebuildPitchLut() whenever PITCH_PRESET_IDX changes.
+const pitchSymLut = new Array(0x1000)
+
+function rebuildPitchLut() {
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    if (!preset || preset.table.length === 0) return
+    const table = preset.table
+    const syms  = preset.sym
+    for (let p = 0; p < 0x1000; p++) {
+        let best = 0, bestDist = 0x1000
+        for (let i = 0; i < table.length; i++) {
+            const d = Math.abs(p - table[i])
+            if (d < bestDist) { bestDist = d; best = i }
+        }
+        // Distance to the next octave's root (0x1000) vs nearest table entry.
+        if ((0x1000 - p) < bestDist) {
+            pitchSymLut[p] = [syms[0], 1]
+        } else {
+            pitchSymLut[p] = [syms[best], 0]
+        }
+    }
+}
+rebuildPitchLut()
 
 Number.prototype.hex02 = function() {
     return this.toString(16).toUpperCase().padStart(2,'0')
@@ -231,18 +269,9 @@ function noteToStr(note) {
     if (note === 0xFFFF) return sym.middot.repeat(4)
     if (note === 0xFFFE) return sym.notecut
     if (note === 0x0000) return sym.keyoff
-    const table = pitchTablePresets[PITCH_PRESET_IDX].table
-    const syms  = pitchTablePresets[PITCH_PRESET_IDX].sym
-    if (table.length === 0) return note.hex04()
-    const pitchInOct = note & 0xFFF
-    const octave = (note >> 12) - 1
-    let best = 0, bestDist = 0x1000
-    for (let i = 0; i < table.length; i++) {
-        const d = Math.abs(pitchInOct - table[i])
-        if (d < bestDist) { bestDist = d; best = i }
-    }
-    if ((0x1000 - pitchInOct) < bestDist) return syms[0] + (octave + 1)
-    return syms[best] + octave
+    if (pitchTablePresets[PITCH_PRESET_IDX].table.length === 0) return note.hex04()
+    const [s, o] = pitchSymLut[note & 0xFFF]
+    return s + ((note >> 12) - 1 + o)
 }
 
 /**
@@ -533,6 +562,11 @@ const colRowNumEmph1 = 180
 const colStatus    = 253
 const colVoiceHdr  = 230
 const colSep       = 252
+const colPushBtnBack = 143
+
+// protip: avoid using colour zero
+const colWHITE = 239
+const colBLACK = 240
 
 let separatorStyle = 0
 
@@ -542,6 +576,11 @@ const PATEDITOR_GRID_X   = 7
 const PATEDITOR_CELL_X   = 10
 const PATEDITOR_SEP2_X   = 30
 const PATEDITOR_DETAIL_X = 32
+
+const PLAYMODE_NONE = 0
+const PLAYMODE_SONG = 1
+const PLAYMODE_CUE  = 2
+const PLAYMODE_ROW  = 3
 
 function fillLine(y, c, back) {
     con.color_pair(c, back)
@@ -555,20 +594,77 @@ const PANEL_NAMES = ['Timeline', 'Orders', 'Patterns', 'Samples', 'Instruments',
 
 function drawAlwaysOnElems() {
     drawStatusBar()
-    drawTabIndicator()
+    drawTabBar()
 }
 
+const transportControlReverse = [PLAYMODE_NONE, PLAYMODE_ROW, PLAYMODE_CUE, PLAYMODE_SONG]
+const transportControlSymbol = [sym.stop, sym.playrow, sym.playcue, sym.playall]
+const transportControlColour = [160,20,20,20]
+const transportControlHint = ["O","I","U","Y"]
 function drawStatusBar() {
     fillLine(1, colStatus, 255)
-    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
-    const vHi    = Math.min(voiceOff + VOCSIZE_TIMELINE_FULL, song.numVoices)
-    const txt = `${song.filePath}  Cue ${cueIdx.hex03()}/${maxCue.hex03()}   Row ${cursorRow.dec02()}   V${(voiceOff+1).dec02()}-${vHi.dec02()}/${song.numVoices.dec02()}   BPM ${audio.getBPM(PLAYHEAD)} Spd ${audio.getTickRate(PLAYHEAD)} `
-    con.move(1, 1)
+    fillLine(2, colStatus, 255)
+
+    const sCueIdx = cueIdx.hex03()
+    const sCueMax = (song.lastActiveCue < 0 ? 0 : song.lastActiveCue).hex03()
+    const vMax = song.numVoices.dec02()
+    const vHi = Math.min(voiceOff + VOCSIZE_TIMELINE_FULL, song.numVoices).dec02()
+    const vLow = (voiceOff+1).dec02()
+    const songPath = song.filePath
+    const sRow = cursorRow.dec02()
+    const sBPM = ''+audio.getBPM(PLAYHEAD)
+    const sSpd = ''+audio.getTickRate(PLAYHEAD)
+
+    // transport control and its control hints
+    transportControlReverse.forEach((thisMode, j) => {
+        let active = (playbackMode == thisMode)
+
+        if (active)
+            con.color_pair(transportControlColour[j], colPushBtnBack)
+        else
+            con.color_pair(colStatus, 255)
+
+        con.move(1, SCRW - 5*(j+1))
+        print(`  ${transportControlSymbol[j]}  `)
+
+        if (active)
+            con.color_pair(transportControlColour[j], colPushBtnBack)
+        else
+            con.color_pair(colVoiceHdr, 255)
+
+        con.move(2, SCRW - 5*(j+1))
+        print(`  ${transportControlHint[j]}  `)
+    })
+
+    // current audio device status
+    // play/stop sym
     con.color_pair(colStatus, 255)
-    print(txt)
+    con.move(1,1)
+    print(`${sym.playhead}${PLAYHEAD}`)
+    con.move(2,1)
+    print((playbackMode == PLAYMODE_NONE) ? sym.statusstop : sym.statusplay)
+
+    // cue row
+    con.move(1,4)
+    con.color_pair(colStatus, 255); print(`Cue `)
+    con.color_pair(colVol, 255); print(`${sCueIdx}`)
+    con.color_pair(colStatus, 255); print(`/`)
+    con.color_pair(colVol, 255); print(`${sCueMax}`)
+    con.color_pair(colStatus, 255); print(`  Row `)
+    con.color_pair(colVoiceHdr, 255); print(`${sRow}`)
+
+    // bpm spd
+    con.move(2,4)
+    con.color_pair(colStatus, 255); print(`BPM `)
+    con.color_pair(colPan, 255); print(`${sBPM}`)
+    con.color_pair(colStatus, 255); print(` Tickspeed `)
+    con.color_pair(colEffOp, 255); print(`${sSpd}`)
+
 }
 
-function drawTabIndicator() {
+function drawTabBar() {
+    con.color_pair(colStatus, 255)
+
     const XOFF = 2
     const YOFF = PTNVIEW_OFFSET_Y - 4
 
@@ -699,23 +795,15 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Nav'],
         [`Pg\u008418u`,'Cue'],
     ['sep'],
-        ['Y','Song'],
-        ['U','Cue'],
-        ['I','Row'],
-        ['O/Sp','Stop'],
-    ['sep'],
         ['m','Mute'],
         ['s','Solo'],
     ['sep'],
         ['Tab','Panel'],
-        //['q','Quit'],
+        ['q','Quit'],
     ]
     let hintElemOrders = [
         [`\u008428u\u008429u`,'Nav'],
         [`Ent`,'Go to cue'],
-    ['sep'],
-        ['U','Cue'],
-        ['O/Sp','Stop'],
     ['sep'],
         ['Tab','Panel'],
     ['sep'],
@@ -725,10 +813,6 @@ function drawControlHint() {
     let hintElemPatterns = [
         [`\u008428u\u008429u`,'Nav'],
         [`Pg\u008418u`,'Ptn'],
-    ['sep'],
-        ['U','Ptn'],
-        ['I','Row'],
-        ['O/Sp','Stop'],
     ['sep'],
         ['Tab','Panel'],
     ['sep'],
@@ -819,10 +903,10 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
 
     if (!isVerticalLayout) {
         con.move(6, 1)
-        print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\tVolEff ${voleffop}.$${voleffarg.hex02()}\t` +
-              `PanEff ${paneffop}.$${paneffarg.hex02()}`)
+        print(`Pitch $${note.hex04()}\tInst $${inst.hex02()}\t${sym.vx} ${voleffop}.$${voleffarg.hex02()}\t` +
+              `${sym.px} ${paneffop}.$${paneffarg.hex02()}`)
         con.move(7, 1)
-        print(`\u0084248u ${fxName}\t$${effarg.hex04()}                   `)
+        print(`${sym.fx} ${fxName}\t$${effarg.hex04()}                   `)
     } else {
         const dx      = PATEDITOR_DETAIL_X
         const detailW = SCRW - dx + 1
@@ -835,13 +919,13 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         if (paneff == 0xC0) { paneffop1 = 999; paneffarg1 = '' }
 
         const lines = []
-        lines.push({ label: 'Note  ', value: `${noteToStr(note)} ($${note.hex04()})`,         fg: colNote   })
-        lines.push({ label: 'Inst  ', value: inst === 0 ? '--' : inst.hex02(),    fg: colInst   })
-        lines.push({ label: 'VolEff', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol    })
-        lines.push({ label: 'PanEff', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan    })
-        lines.push({ label: 'FxOp  ', value: fx,                                  fg: colEffOp  })
-        lines.push({ label: 'FxArg ', value: `$${effarg.hex04()}`,                fg: colEffArg })
+        lines.push({ label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`,         fg: colNote   })
+        lines.push({ label: 'Inst ', value: inst === 0 ? '--' : inst.hex02(),    fg: colInst   })
+        lines.push({ label: 'Vx   ', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol    })
+        lines.push({ label: 'Px   ', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan    })
         lines.push({ label: 'Fx    ', value: fxName.trimEnd(),                    fg: colEffOp  })
+        lines.push({ label: 'FxOp ', value: fx,                                  fg: colEffOp  })
+        lines.push({ label: 'FxArg', value: `$${effarg.hex04()}`,                fg: colEffArg })
 
         if (cumState !== null) {
             lines.push({ label: '------', value: '',                                                                  fg: colSep    })
@@ -849,9 +933,9 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
             lines.push({ label: 'L.Inst', value: cumState.lastInst === 0 ? '--' : cumState.lastInst.hex02(),          fg: colInst   })
             lines.push({ label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                       fg: colVol    })
             lines.push({ label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                       fg: colPan    })
-            lines.push({ label: 'EF    ', value: `$${cumState.memEF.hex04()}`,                                        fg: colEffArg })
+            lines.push({ label: `E${MIDDOT}F   `, value: `$${cumState.memEF.hex04()}`,                                        fg: colEffArg })
             lines.push({ label: 'G     ', value: `$${cumState.memG.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: 'HU    ', value: `$${cumState.memHU.speed.hex02()}/$${cumState.memHU.depth.hex02()}`, fg: colEffArg })
+            lines.push({ label: `H${MIDDOT}U   `, value: `$${cumState.memHU.speed.hex02()}/$${cumState.memHU.depth.hex02()}`, fg: colEffArg })
             lines.push({ label: 'R     ', value: `$${cumState.memR.speed.hex02()}/$${cumState.memR.depth.hex02()}`,   fg: colEffArg })
             lines.push({ label: 'Y     ', value: `$${cumState.memY.speed.hex02()}/$${cumState.memY.depth.hex02()}`,   fg: colEffArg })
             lines.push({ label: 'D     ', value: `$${cumState.memD.hex04()}`,                                         fg: colEffArg })
@@ -867,7 +951,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
             const y    = PTNVIEW_OFFSET_Y + i
             const line = lines[i]
             con.move(y, dx)
-            con.color_pair(colNote, 255)
+            con.color_pair(colStatus, 255)
             print((line.label + '      ').substring(0, 6) + ' ')
             con.color_pair(line.fg, 255)
             print((line.value + ' '.repeat(detailW)).substring(0, detailW - 8))
@@ -1098,7 +1182,7 @@ function drawOrdersContents(wo) {
             print(' ')
             // CMD column — crosshair highlight at (ordersCursor, col 0)
             const cmdBack = (isSel && ordersColCursor === 0) ? colPlayback : back
-            con.color_pair(cue.instr ? colNote : colSep, cmdBack)
+            con.color_pair(cue.instr ? colStatus : colSep, cmdBack)
             print(cue.instr ? cue.instr.hex02() : '--')
             con.color_pair(colBackPtn, back)
             print('  ')
@@ -1107,7 +1191,7 @@ function drawOrdersContents(wo) {
                 const v     = ordersVoiceOff + c
                 const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
                 const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
-                con.color_pair(ptn === CUE_EMPTY ? colSep : colNote, vBack)
+                con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
                 print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
                 con.color_pair(colBackPtn, back)
                 print(' ')
@@ -1129,7 +1213,7 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.R)) { setTimelineRowStyle(2); return }
 
     if (playbackMode !== PLAYMODE_NONE) {
-        if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel() }
+        if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel(); drawAlwaysOnElems() }
         else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
             const dir = (keysym === "<LEFT>") ? -1 : 1
             const oldVoiceOff = voiceOff
@@ -1148,7 +1232,7 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); redrawPanel(); return }
     if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  redrawPanel(); return }
     if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return }
-    if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); return }
+    if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); drawAlwaysOnElems(); return }
 
     const oldCursor = cursorRow
     const oldScroll = scrollRow
@@ -1389,7 +1473,7 @@ function drawPatternListColumn() {
             con.color_pair(255, colBackPtn)
             print('    ')
         } else {
-            con.color_pair(isCur ? colNote : colRowNum, isCur ? colHighlight : 255)
+            con.color_pair(isCur ? colStatus : colRowNum, isCur ? colHighlight : 255)
             print(pi.hex03())
             con.color_pair(colSep, 255)
             print(' ')
@@ -1498,14 +1582,14 @@ function patternsInput(wo, event) {
 
     if (playbackMode !== PLAYMODE_NONE) {
         if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " ") {
-            stopPlayback(); simStateKey = ''; drawPatternsContents(wo)
+            stopPlayback(); simStateKey = ''; drawPatternsContents(wo); drawAlwaysOnElems()
         }
         return
     }
 
     if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayPattern(); drawPatternsContents(wo); return }
     if (              shiftDown && event.includes(keys.I)) { startPlayPatternRow(); drawPatternGrid(); return }
-    if ((keyJustHit && shiftDown && event.includes(keys.O)) || keysym === " ") { stopPlayback(); return }
+    if ((keyJustHit && shiftDown && event.includes(keys.O)) || keysym === " ") { stopPlayback(); drawAlwaysOnElems(); return }
 
     if (song.numPats === 0) return
 
@@ -1559,11 +1643,6 @@ const panels = [panelTimeline, panelOrders, panelPatterns]
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const PLAYHEAD = 0
-
-const PLAYMODE_NONE = 0
-const PLAYMODE_SONG = 1
-const PLAYMODE_CUE  = 2
-const PLAYMODE_ROW  = 3
 
 // Scratch cue slot used for pattern-only preview; beyond any real cue the song uses
 const PREVIEW_CUE_IDX = NUM_CUES - 1
@@ -1707,6 +1786,7 @@ function updatePlayback() {
         stopPlayback()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
         else if (currentPanel === 2 && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        drawAlwaysOnElems()
         return
     }
     if (playbackMode === PLAYMODE_ROW && (nowRow !== playStartRow || nowCue !== playStartCue)) {
