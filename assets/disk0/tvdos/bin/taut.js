@@ -296,7 +296,7 @@ function buildRowCell(ptnDat, row) {
 
     let sVolEff = volEffSym[voleff >>> 6]
     let sVolArg = voleffarg.hexD2()
-    if (voleff === 0) {
+    if (voleff === 0xC0) {
         sVolEff = ''
         sVolArg = sym.middot.repeat(2)
     }
@@ -320,7 +320,7 @@ function buildRowCell(ptnDat, row) {
 
     let sPanEff = panEffSym[paneff >>> 6]
     let sPanArg = paneffarg.hexD2()
-    if (paneff === 0) {
+    if (paneff === 0xC0) {
         sPanEff = ''
         sPanArg = sym.middot.repeat(2)
     }
@@ -953,6 +953,12 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
             lines.push({ label: 'L.Inst', value: cumState.lastInst === 0 ? '--' : cumState.lastInst.hex02(),          fg: colInst   })
             lines.push({ label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                       fg: colVol    })
             lines.push({ label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                       fg: colPan    })
+            const _apo  = Math.abs(cumState.pitchOff)
+            const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : '='
+            const _absN = (cumState.lastNote !== 0xFFFF && cumState.pitchOff !== 0)
+                ? noteToStr(Math.max(0, Math.min(0xFFFE, cumState.lastNote + cumState.pitchOff))) + ' '
+                : ''
+            lines.push({ label: 'Pitch ', value: `${_absN}(${_psgn}$${_apo.hex04()})`,                               fg: colNote   })
             lines.push({ label: `E${MIDDOT}F   `, value: `$${cumState.memEF.hex04()}`,                                        fg: colEffArg })
             lines.push({ label: 'G     ', value: `$${cumState.memG.hex04()}`,                                         fg: colEffArg })
             lines.push({ label: `H${MIDDOT}U   `, value: `$${cumState.memHU.speed.hex02()}/$${cumState.memHU.depth.hex02()}`, fg: colEffArg })
@@ -1424,17 +1430,22 @@ function getActiveRowForDetail() {
 
 // Walk pattern rows 0..uptoRow and accumulate effect-memory cohort state
 function simulateRowState(ptnDat, uptoRow) {
+    const OP_A = 10
     const OP_D = 13, OP_E = 14, OP_F = 15, OP_G = 16
     const OP_H = 17, OP_I = 18, OP_J = 19, OP_O = 24
     const OP_Q = 26, OP_R = 27, OP_T = 29, OP_U = 30, OP_Y = 34
 
     let lastNote = 0xFFFF, lastInst = 0
     let volAbs = 0x3F, panAbs = 0x20
+    let pitchOff = 0, portaTarget = -1
+    let speed = 6
     let memEF = 0, memG = 0
     let memHU = { speed: 0, depth: 0 }
     let memR  = { speed: 0, depth: 0 }
     let memY  = { speed: 0, depth: 0 }
     let memD = 0, memI = 0, memJ = 0, memO = 0, memQ = 0, memTSlide = 0
+
+    const clampV = v => Math.max(0, Math.min(0x3F, v | 0))
 
     const limit = Math.min(uptoRow, ROWS_PER_PAT - 1)
     for (let row = 0; row <= limit; row++) {
@@ -1446,17 +1457,99 @@ function simulateRowState(ptnDat, uptoRow) {
         const effop  = ptnDat[off+5]
         const effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
 
-        if (note !== 0xFFFF && note !== 0xFFFE) lastNote = note
+        // Notes on a portamento row (G) become the slide target; they don't retrigger
+        const isGRow = (effop === OP_G)
+        if (note !== 0xFFFF && note !== 0xFFFE) {
+            if (!isGRow) {
+                lastNote = note
+                pitchOff = 0
+                portaTarget = -1
+            } else {
+                portaTarget = note
+            }
+        }
         if (inst !== 0) lastInst = inst
 
-        const volop = (voleff >>> 6) & 3
-        if (voleff !== 0 && volop === 0) volAbs = voleff & 63
-        const panop = (paneff >>> 6) & 3
-        if (paneff !== 0 && panop === 0) panAbs = paneff & 63
+        // Volume column: set OR slide
+        const volop    = (voleff >>> 6) & 3
+        const volefarg = voleff & 63
+        if (voleff !== 0) {
+            if (volop === 0) {
+                volAbs = volefarg
+            } else if (volop === 1) {
+                volAbs = clampV(volAbs + (volefarg & 15) * (speed - 1))
+            } else if (volop === 2) {
+                volAbs = clampV(volAbs - (volefarg & 15) * (speed - 1))
+            } else if (volop === 3 && volefarg !== 0) {
+                if (volefarg >= 32) volAbs = clampV(volAbs + (volefarg & 15))  // fine slide up
+                else                volAbs = clampV(volAbs - (volefarg & 15))  // fine slide down
+            }
+        }
+
+        // Pan column: set OR slide
+        const panop    = (paneff >>> 6) & 3
+        const panefarg = paneff & 63
+        if (paneff !== 0) {
+            if (panop === 0) {
+                panAbs = panefarg
+            } else if (panop === 1) {
+                panAbs = clampV(panAbs + (panefarg & 15) * (speed - 1))
+            } else if (panop === 2) {
+                panAbs = clampV(panAbs - (panefarg & 15) * (speed - 1))
+            } else if (panop === 3 && panefarg !== 0) {
+                if (panefarg >= 32) panAbs = clampV(panAbs + (panefarg & 15))
+                else                panAbs = clampV(panAbs - (panefarg & 15))
+            }
+        }
 
         if (effop !== 0 || effarg !== 0) {
-            if      (effop === OP_E || effop === OP_F) { if (effarg !== 0) memEF = effarg }
-            else if (effop === OP_G)                   { if (effarg !== 0) memG  = effarg }
+            if (effop === OP_A) {
+                if ((effarg >>> 8) !== 0) speed = (effarg >>> 8)
+            }
+            else if (effop === OP_D) {
+                const raw = (effarg !== 0) ? (memD = effarg) : memD
+                if (raw !== 0) {
+                    const hb    = (raw >>> 8) & 0xFF
+                    const hiNib = (hb >>> 4) & 0xF
+                    const loNib = hb & 0xF
+                    if (hiNib === 0xF) {
+                        // $Fy00 fine slide down, but $F000/$FF00 → fine slide up by $F
+                        if (hb === 0xFF || loNib === 0) volAbs = clampV(volAbs + 0xF)
+                        else                             volAbs = clampV(volAbs - loNib)
+                    } else if (loNib === 0xF) {
+                        volAbs = clampV(volAbs + hiNib)      // $xF00 fine slide up
+                    } else if (hiNib === 0 && loNib !== 0) {
+                        volAbs = clampV(volAbs - loNib * (speed - 1))  // $0y00 coarse down
+                    } else if (hiNib !== 0 && loNib === 0) {
+                        volAbs = clampV(volAbs + hiNib * (speed - 1))  // $x000 coarse up
+                    }
+                }
+            }
+            else if (effop === OP_E || effop === OP_F) {
+                const raw = (effarg !== 0) ? (memEF = effarg) : memEF
+                if (raw !== 0) {
+                    const fine = (raw & 0xF000) === 0xF000
+                    const amt  = fine ? (raw & 0x0FFF) : raw * (speed - 1)
+                    if (effop === OP_E) pitchOff -= amt
+                    else                pitchOff += amt
+                }
+            }
+            else if (effop === OP_G) {
+                if (effarg !== 0) memG = effarg
+                if (portaTarget !== -1 && memG !== 0 && lastNote !== 0xFFFF) {
+                    const curPitch = lastNote + pitchOff
+                    const diff     = portaTarget - curPitch
+                    if (diff !== 0) {
+                        const absDiff = Math.abs(diff)
+                        const maxStep = memG * (speed - 1)
+                        pitchOff += Math.sign(diff) * Math.min(absDiff, maxStep)
+                        if (absDiff <= maxStep) {
+                            pitchOff = portaTarget - lastNote
+                            portaTarget = -1
+                        }
+                    }
+                }
+            }
             else if (effop === OP_H || effop === OP_U) {
                 const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
                 if (spd !== 0) memHU.speed = spd; if (dep !== 0) memHU.depth = dep
@@ -1469,7 +1562,6 @@ function simulateRowState(ptnDat, uptoRow) {
                 const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
                 if (spd !== 0) memY.speed = spd; if (dep !== 0) memY.depth = dep
             }
-            else if (effop === OP_D) { if (effarg !== 0) memD = effarg }
             else if (effop === OP_I) { if (effarg !== 0) memI = effarg }
             else if (effop === OP_J) { if (effarg !== 0) memJ = effarg }
             else if (effop === OP_O) { if (effarg !== 0) memO = effarg }
@@ -1478,7 +1570,7 @@ function simulateRowState(ptnDat, uptoRow) {
         }
     }
 
-    return { lastNote, lastInst, volAbs, panAbs,
+    return { lastNote, lastInst, volAbs, panAbs, pitchOff,
              memEF, memG, memHU, memR, memY,
              memD, memI, memJ, memO, memQ, memTSlide }
 }

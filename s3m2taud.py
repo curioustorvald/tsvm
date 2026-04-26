@@ -19,7 +19,8 @@ Effect support:
     Cxx is BCD-decoded. K/L are split into H $0000 / G $0000 + volume-column
     slide. M/N/X/P fold into volume / pan columns. W (global vol slide) is
     dropped with a -v warning. X converts to pan column. Y (panbrello) converts
-    to Taud Y. S5 selects the panbrello LFO waveform.
+    to Taud Y. S5 selects the panbrello LFO waveform. S8x converts to a pan
+    column SET of round(x * 4.2), mapping nibble 0-15 directly to pan 0-63.
 """
 
 import argparse
@@ -446,8 +447,8 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
             # Panbrello LFO waveform — maps directly to Taud S$5x00.
             return (TOP_S, 0x5000 | (val << 8), None, None)
         if sub == 0x8:
-            # Coarse pan: nibble-repeat into Taud's S $80xx full-8-bit pan.
-            return (TOP_S, 0x8000 | (val * 0x11), None, None)
+            # S8x → PanEff 0.yy where yy = round(x * 4.2), mapping nibble 0-15 to pan 0-63.
+            return (TOP_NONE, 0, None, (SEL_SET, round(val * 4.2)))
         # S0/S6/S7/S9/SA: filter, NNA, sound-control, stereo — drop silently.
         return (TOP_NONE, 0, None, None)
 

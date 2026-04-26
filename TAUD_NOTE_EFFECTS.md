@@ -618,7 +618,9 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 **Plain.** Sets the channel pan to `$xx`, with $00 being full left and $FF being full right. $80 is centre.
 
-**Compatibility.** ST3 `S8x` uses a 4-bit value; convert by nibble-repeat: ST3 `S83` → Taud `S $8033`. Panning column command `0.$xx` has the same semantics and is the preferred form when a pan column is available in the pattern. ProTracker `8xx` (fine pan) and `E8x` (coarse pan) both map into Taud's 8-bit pan — the ProTracker 8-bit form maps directly; the 4-bit form nibble-repeats.
+**Compatibility.** ST3 `S8x` uses a 4-bit value.  
+1. convert by nibble-repeat: ST3 `S83` → Taud `S $8033`. Panning column command `0.$xx` has the same semantics and is the preferred form when a pan column is available in the pattern. ProTracker `8xx` (fine pan) and `E8x` (coarse pan) both map into Taud's 8-bit pan — the ProTracker 8-bit form maps directly; the 4-bit form nibble-repeats.
+2. convert to PanEff: ST3 `S8x` → PanEff `0.yy`, where `yy = round(4.2 * x)`
 
 **Implementation.** Write `channel_pan = arg & $FF`. The pan value is applied at the mixer: `left_gain = (($FF − pan) × $100) >> 8`, `right_gain = (pan × $100) >> 8`, with both applied before the global volume stage.
 
