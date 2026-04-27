@@ -550,9 +550,8 @@ const ORDERS_VOICE_X = 9
 const VOCSIZE_ORDERS = Math.floor((SCRW - 8) / 4)
 
 const VIEW_TIMELINE = 0
-const VIEW_ORDERS = 1
-const VIEW_INSTRUMENT = 2
-const VIEW_PATTERN_DETAILS = 3
+const VIEW_CUES = 1
+const VIEW_PATTERN_DETAILS = 2
 
 const colPlayback  = 86
 const colHighlight = 41
@@ -1149,6 +1148,7 @@ if (fullPathObj === undefined) {
 const song = loadTaud(fullPathObj.full, 0)
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
+let timelineMuteSnapshot = null
 
 function resetAudioDevice() {
     audio.resetParams(PLAYHEAD)
@@ -1889,7 +1889,7 @@ function updatePlayback() {
         if (currentPanel === VIEW_TIMELINE &&
                 cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
-        else if (currentPanel === 2 && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
         drawAlwaysOnElems()
         return
     }
@@ -1900,7 +1900,7 @@ function updatePlayback() {
     if (playbackMode === PLAYMODE_CUE && nowCue !== playStartCue) {
         stopPlayback()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
-        else if (currentPanel === 2 && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
         drawAlwaysOnElems()
         return
     }
@@ -1909,7 +1909,7 @@ function updatePlayback() {
         if (currentPanel === VIEW_TIMELINE &&
                 cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
-        else if (currentPanel === 2 && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
         drawAlwaysOnElems()
         return
     }
@@ -1924,7 +1924,7 @@ function updatePlayback() {
         cursorRow = nowRow
         clampCursor()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
-        else if (currentPanel === 2 && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
     } else if (previewActive || nowCue === cueIdx) {
         const oldCursor = cursorRow
         const oldScroll = scrollRow
@@ -1950,7 +1950,7 @@ function updatePlayback() {
             }
             drawSeparators(separatorStyle)
             drawVoiceDetail()
-        } else if (currentPanel === 2 && song.numPats > 0) {
+        } else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) {
             simStateKey = ''
             const activeRow = getActiveRowForDetail()
             simState    = simulateRowState(song.patterns[patternIdx], activeRow)
@@ -2049,15 +2049,15 @@ function drawGotoPopup(popup, buf) {
 }
 
 function applyGoto(num) {
-    if (currentPanel === 0) {
+    if (currentPanel === VIEW_TIMELINE) {
         cueIdx = num; clampCue()
-    } else if (currentPanel === 1) {
+    } else if (currentPanel === VIEW_CUES) {
         const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
         ordersCursor = Math.max(0, Math.min(maxCue, num))
         if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
         if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT)
             ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
-    } else if (currentPanel === 2) {
+    } else if (currentPanel === VIEW_PATTERN_DETAILS) {
         patternIdx = num; clampPatternIdx()
     }
 }
@@ -2166,9 +2166,26 @@ while (!exitFlag) {
         }
 
         if (keyJustHit && keysym === "<TAB>") {
+            const prevPanel = currentPanel
             currentPanel = (currentPanel + (shiftDown ? -1 : 1))
             if (currentPanel < 0) currentPanel += panels.length
             currentPanel = currentPanel % panels.length
+
+            if (currentPanel === VIEW_PATTERN_DETAILS) {
+                // Entering Patterns: save mute state and ensure voice 0 (preview voice) is audible
+                timelineMuteSnapshot = voiceMutes.slice()
+                if (voiceMutes[0]) {
+                    voiceMutes[0] = false
+                    audio.setVoiceMute(PLAYHEAD, 0, false)
+                }
+            } else if (currentPanel === VIEW_TIMELINE && timelineMuteSnapshot !== null) {
+                // Returning to Timeline: restore saved mute state
+                for (let i = 0; i < song.numVoices; i++) {
+                    voiceMutes[i] = timelineMuteSnapshot[i]
+                    audio.setVoiceMute(PLAYHEAD, i, voiceMutes[i])
+                }
+                timelineMuteSnapshot = null
+            }
 
             drawAll()
             return

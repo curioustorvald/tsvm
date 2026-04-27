@@ -2106,9 +2106,8 @@ Play Head Flags
           NOTE: changing from PCM mode to Tracker mode or vice versa will also reset the parameters as described above
     Byte 2
         - PCM Mode: Write non-zero value to start uploading; always 0 when read
-
     Byte 3 (Tracker Mode)
-        - BPM (24 to 280. Play Data will change this register)
+        - BPM (24 to 279. Play Data will change this register)
     Byte 4 (Tracker Mode)
         - Tick Rate (Play Data will change this register)
 
