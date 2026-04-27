@@ -147,7 +147,7 @@ _TVDOS.variables = {
     LANG: "EN",
     KEYBOARD: "us_qwerty",
     PATH: "\\tvdos\\bin;\\home",
-    PATHEXT: ".com;.bat;.app;.js",
+    PATHEXT: ".com;.bat;.app;.js;.alias",
     HELPPATH: "\\tvdos\\help",
     OS_NAME: "TSVM Disk Operating System",
     OS_VERSION: _TVDOS.VERSION
@@ -423,11 +423,11 @@ _TVDOS.DRV.FS.SERIAL.sread = (fd) => {
 }
 _TVDOS.DRV.FS.SERIAL.bread = (fd) => {
     let str = _TVDOS.DRV.FS.SERIAL.sread(fd)
-    let bytes = new Int8Array(str.length)
+    let bytes = []//new Int8Array(str.length)
     for (let i = 0; i < str.length; i++) {
 //        let p = str.charCodeAt(i)
 //        bytes[i] = (p > 127) ? p - 255 : p
-        bytes[i] = str.charCodeAt(i)
+        bytes.push(str.charCodeAt(i))
     }
     return bytes
 }

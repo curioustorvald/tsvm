@@ -45,7 +45,7 @@ exports.SpriteSheet = function(tilew, tileh, tex) {
         return ty;
     };
 };
-exports.drawTexPattern = function(texture, x, y, width, height, framebuffer, fgcol, bgcol) {
+exports.drawTexPattern = function(texture, x, y, width = texture.width, height = texture.height, framebuffer = false, fgcol, bgcol) {
     if (!(texture instanceof exports.Texture) && !(texture instanceof exports.MonoTex)) throw Error("Texture is not a GL Texture types");
 
     let paint = (!framebuffer) ? graphics.plotPixel : graphics.plotPixel2

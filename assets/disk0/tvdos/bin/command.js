@@ -753,6 +753,25 @@ shell.execute = function(line) {
                         shell.execute(line)
                     })
                 }
+                else if ("ALIAS" == extension) {
+                    // parse alias
+                    // $0: all arguments
+                    // $1..9: specific arguments
+                    var lines = programCode.split('\n').filter(function(it) { return it.length > 0 }) // this return is not shell's return!
+                    lines.forEach(function(line) {
+                        var newLine = line
+
+                        // replace $1..$9
+                        for (let j = 1; j < 9; j++) {
+                            newLine = newLine.replaceAll('$'+j, tokens[j])
+                        }
+
+                        // replace $0
+                        newLine = newLine.replaceAll('$0', tokens.slice(1).join(' '))
+
+                        shell.execute(newLine)
+                    })
+                }
                 else if ("APP" == extension) {
                     let appexec = `A:${_TVDOS.variables.DOSDIR}\\sbin\\appexec.js`
                     let foundFile = searchFile.fullPath

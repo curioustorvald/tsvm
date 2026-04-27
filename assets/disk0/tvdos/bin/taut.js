@@ -8,9 +8,7 @@ const win = require("wintex")
 const font = require("font")
 const taud = require("taud")
 const keys = require("keysym")
-
-font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
-font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
+const gl = require("gl")
 
 const BUILD_DATE = "260424"
 const TRACKER_SIGNATURE = "TsvmTaut"+BUILD_DATE // 14-byte string
@@ -674,14 +672,16 @@ function drawStatusBar() {
     con.color_pair(colEffOp, 255); print(`${sSpd}`)
 
     // app title
-    let s1 = "Microtone"
+    /*let s1 = "Microtone"
     let s2 = "tracker for tsvm"
     con.move(1, (SCRW - (s1.length & 254)) >>> 1)
     con.color_pair(colBrand, 255); print('Micro')
     con.color_pair(colStatus, 255); print('tone')
     con.move(2, (SCRW - (s2.length & 254)) >>> 1)
     con.color_pair(colSep, 255); print('tracker for ')
-    con.color_pair(74, 255); print('tsvm')
+    con.color_pair(74, 255); print('tsvm')*/
+    gl.drawTexImage(logoTexture, (graphics.getPixelDimension()[0]-logoTexture.width) >>> 1, 6)
+
 }
 
 function drawTabBar() {
@@ -1163,6 +1163,12 @@ if (fullPathObj === undefined) {
     return 1
 }
 
+const logofile = files.open("A:/tvdos/bin/tauthdr.r8")
+const logoBytes = logofile.bread(); logofile.close()
+const logoTexture = new gl.Texture(88, 12, logoBytes)
+
+font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
+font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
 const song = loadTaud(fullPathObj.full, 0)
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
@@ -2137,7 +2143,7 @@ function applyGoto(num) {
 }
 
 function openConfirmQuit() {
-    const pw = 24
+    const pw = 25
     const ph = 5
     const px = ((SCRW - pw) / 2 | 0) + 1
     const py = ((SCRH - ph) / 2 | 0)
@@ -2151,7 +2157,7 @@ function openConfirmQuit() {
 
     con.move(py + 2, px + 2)
     con.color_pair(colStatus, colPopupBack)
-    print('Exit taut? ')
+    print('Exit Microtone? ')
     con.color_pair(230, 240)
     print('[Y/N]')
 
@@ -2159,11 +2165,13 @@ function openConfirmQuit() {
 
     let result = false
     let done = false
+    let eventJustReceived = true
     while (!done) {
         input.withEvent(ev => {
             if (ev[0] !== 'key_down') return
             if (1 !== ev[2]) return
             const ks = ev[1]
+
             if (ks === 'y' || ks === 'Y' || ks === '\n') { result = true;  done = true }
             else if (ks === 'n' || ks === 'N' || ks === '<ESC>') { done = true }
         })
@@ -2195,12 +2203,12 @@ function openGotoPopup() {
             const ks = ev[1]
             if (1 !== ev[2]) return // not key just hit
 
-            if (eventJustReceived) { // filter Shift-G input
+            if (eventJustReceived) { // filter lingering input
                 eventJustReceived = false
                 return
             }
 
-            if (ks === '<ESC>') {
+            if (ks === '<ESC>' || ks === 'x') {
                 done = true
             } else if (ks === '\n') {
                 if (buf.length > 0) applyGoto(parseInt(buf, 16))
@@ -2299,6 +2307,7 @@ resetAudioDevice()
 sys.free(SCRATCH_PTR)
 font.resetLowRom()
 font.resetHighRom()
+graphics.clearPixels(255)
 con.clear()
 con.move(1, 1)
 con.curs_set(1)
