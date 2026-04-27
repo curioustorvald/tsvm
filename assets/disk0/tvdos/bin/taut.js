@@ -552,6 +552,10 @@ const VOCSIZE_ORDERS = Math.floor((SCRW - 8) / 4)
 const VIEW_TIMELINE = 0
 const VIEW_CUES = 1
 const VIEW_PATTERN_DETAILS = 2
+const VIEW_SAMPLES  = 3
+const VIEW_INSTRMNT = 4
+const VIEW_PROJECT  = 5
+const VIEW_FILE     = 6
 
 const colPlayback  = 86
 const colHighlight = 41
@@ -840,7 +844,8 @@ function drawControlHint() {
 //        ['q','Quit'],
     ]
 
-    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns]
+    const hintElemExternal = [['Tab','Panel']]
+    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemExternal, hintElemExternal, hintElemExternal, hintElemExternal]
 
     // erase current line
     con.move(SCRH, 1)
@@ -1156,6 +1161,22 @@ function resetAudioDevice() {
     audio.stop(PLAYHEAD)
 }
 
+function applyMuteTransition(toPanel) {
+    if (toPanel === VIEW_PATTERN_DETAILS) {
+        timelineMuteSnapshot = voiceMutes.slice()
+        if (voiceMutes[0]) {
+            voiceMutes[0] = false
+            audio.setVoiceMute(PLAYHEAD, 0, false)
+        }
+    } else if (toPanel === VIEW_TIMELINE && timelineMuteSnapshot !== null) {
+        for (let i = 0; i < song.numVoices; i++) {
+            voiceMutes[i] = timelineMuteSnapshot[i]
+            audio.setVoiceMute(PLAYHEAD, i, voiceMutes[i])
+        }
+        timelineMuteSnapshot = null
+    }
+}
+
 function redrawFull() { drawAll() }
 
 function redrawPanel() {
@@ -1273,7 +1294,7 @@ function timelineInput(wo, event) {
         const oldVoiceOff = voiceOff
         const prevVox = cursorVox
         let triedCross = false
-        if (shiftDown) {
+        if (shiftDown || timelineRowStyle > 0) {
             cursorVox += dir * moveDelta
             timelineColCursor = dir > 0 ? 0 : 5
         } else {
@@ -1750,8 +1771,33 @@ function patternsInput(wo, event) {
 
 const panelTimeline = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, timelineInput, drawTimelineContents, undefined, ()=>{})
 const panelOrders   = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, ordersInput,   drawOrdersContents,   undefined, ()=>{})
-const panelPatterns   = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, patternsInput,   drawPatternsContents,   undefined, ()=>{})
-const panels = [panelTimeline, panelOrders, panelPatterns]
+const panelPatterns = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, patternsInput, drawPatternsContents, undefined, ()=>{})
+
+// External sub-program panels: drawContents launches the sub-program synchronously.
+// The sub-program draws rows 4+ and does NOT touch rows 1-3 (drawn by taut.js before launch).
+// On exit, the sub-program sets _G.taut_nextPanel to request a tab switch.
+function makeExternalPanelDraw(progName) {
+    return function(wo) {
+        _G.taut_nextPanel = undefined
+        _G.shell.execute(`${progName} ${fullPathObj.full} ${currentPanel}`)
+    }
+}
+
+function drawProjectContents(wo) {
+    fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
+    for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colBackPtn, 255)
+    con.move(PTNVIEW_OFFSET_Y + 2, 3)
+    con.color_pair(colStatus, 255)
+    print('[Project settings — not yet implemented]')
+}
+function externalPanelInput(wo, event) {}
+
+const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_sampleedit'), undefined, ()=>{})
+const panelInstrmnt = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_instredit'),  undefined, ()=>{})
+const panelProject  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, drawProjectContents,                       undefined, ()=>{})
+const panelFile     = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_fileop'),       undefined, ()=>{})
+
+const panels = [panelTimeline, panelOrders, panelPatterns, panelSamples, panelInstrmnt, panelProject, panelFile]
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLAYBACK STATE
@@ -1925,6 +1971,11 @@ function updatePlayback() {
         clampCursor()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
         else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_CUES) {
+            if (cueIdx < ordersScroll) ordersScroll = cueIdx
+            if (cueIdx >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, cueIdx - PTNVIEW_HEIGHT + 1)
+            drawOrdersContents()
+        }
     } else if (previewActive || nowCue === cueIdx) {
         const oldCursor = cursorRow
         const oldScroll = scrollRow
@@ -2152,7 +2203,17 @@ taud.uploadTaudFile(fullPathObj.full, 0, PLAYHEAD)
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
 
+function isExternalPanel(p) {
+    return p === VIEW_SAMPLES || p === VIEW_INSTRMNT || p === VIEW_FILE
+}
+
+// Launching a sub-program from inside an input.withEvent callback causes the triggering
+// Tab event to leak into the sub-program's own withEvent call (the event hasn't been
+// consumed yet when the callback is still executing). We avoid this by deferring the
+// actual shell.execute until after withEvent returns.
 let exitFlag = false
+let pendingExternalDraw = false
+
 while (!exitFlag) {
     input.withEvent(event => {
         if (event[0] !== "key_down") return
@@ -2166,28 +2227,18 @@ while (!exitFlag) {
         }
 
         if (keyJustHit && keysym === "<TAB>") {
-            const prevPanel = currentPanel
             currentPanel = (currentPanel + (shiftDown ? -1 : 1))
             if (currentPanel < 0) currentPanel += panels.length
             currentPanel = currentPanel % panels.length
-
-            if (currentPanel === VIEW_PATTERN_DETAILS) {
-                // Entering Patterns: save mute state and ensure voice 0 (preview voice) is audible
-                timelineMuteSnapshot = voiceMutes.slice()
-                if (voiceMutes[0]) {
-                    voiceMutes[0] = false
-                    audio.setVoiceMute(PLAYHEAD, 0, false)
-                }
-            } else if (currentPanel === VIEW_TIMELINE && timelineMuteSnapshot !== null) {
-                // Returning to Timeline: restore saved mute state
-                for (let i = 0; i < song.numVoices; i++) {
-                    voiceMutes[i] = timelineMuteSnapshot[i]
-                    audio.setVoiceMute(PLAYHEAD, i, voiceMutes[i])
-                }
-                timelineMuteSnapshot = null
+            applyMuteTransition(currentPanel)
+            if (isExternalPanel(currentPanel)) {
+                // Redraw header now so the tab highlight is visible immediately,
+                // but defer the actual sub-program launch to after withEvent returns.
+                con.clear(); drawAlwaysOnElems(); drawControlHint()
+                pendingExternalDraw = true
+            } else {
+                drawAll()
             }
-
-            drawAll()
             return
         }
 
@@ -2198,6 +2249,24 @@ while (!exitFlag) {
 
         panels[currentPanel].processInput(event)
     })
+
+    // Launch external sub-program OUTSIDE the withEvent callback so the triggering
+    // Tab event is fully consumed before the sub-program's event loop begins.
+    if (pendingExternalDraw) {
+        pendingExternalDraw = false
+        redrawPanel()
+        while (_G.taut_nextPanel !== undefined && _G.taut_nextPanel !== null) {
+            currentPanel = _G.taut_nextPanel
+            _G.taut_nextPanel = undefined
+            applyMuteTransition(currentPanel)
+            if (isExternalPanel(currentPanel)) {
+                con.clear(); drawAlwaysOnElems(); drawControlHint()
+                redrawPanel()
+            } else {
+                drawAll()
+            }
+        }
+    }
 
     if (playbackMode !== PLAYMODE_NONE) updatePlayback()
 }
