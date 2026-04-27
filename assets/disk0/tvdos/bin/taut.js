@@ -83,6 +83,9 @@ doubledot:"\u008419u",
 statusstop:"\u008420u\u008421u",
 statusplay:"\u008422u\u008423u",
 playhead:"\u00A7",
+
+leftshade:'\u00B0',
+rightshade:'\u00B2',
 }
 
 const fxNames = {
@@ -566,11 +569,13 @@ const colStatus    = 253
 const colVoiceHdr  = 230
 const colSep       = 252
 const colPushBtnBack = 143
-const colTabBarBack = 187
-const colTabBarOrn = 91//135
+const colTabBarBack = 225
+const colTabBarBack2 = 135
+const colTabBarOrn = 136
 const colBrand = 211
-const colPopupBack = 91
-
+const colPopupBack = 52
+const colTabActive = 239
+const colTabInactive = 45
 
 // protip: avoid using colour zero
 const colWHITE = 239
@@ -692,9 +697,16 @@ function drawTabBar() {
         if (i > 0) con.curs_right(TAB_GAP);
         let tabName = PANEL_NAMES[i]
 
-        let col = (currentPanel === i) ? 161 : 240
+        let colFore = (currentPanel === i) ? colTabActive : colTabInactive
+        let colBack = (currentPanel === i) ? colTabBarBack2 : colTabBarBack
+        let colFore2 = (currentPanel === i) ? colTabBarBack2 : colTabBarBack
+        let colBack2 = (currentPanel === i) ? colTabBarBack : colTabBarBack
+        let spcL = (currentPanel === i) ? sym.leftshade : ' '
+        let spcR = (currentPanel === i) ? sym.rightshade : ' '
 
-        con.color_pair(col, colTabBarBack); print(` ${tabName} `)
+        con.color_pair(colFore2, colBack2); print(spcL)
+        con.color_pair(colFore, colBack); print(tabName)
+        con.color_pair(colFore2, colBack2); print(spcR)
     }
 
 
@@ -1117,7 +1129,8 @@ function setTimelineRowStyle(style) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
-graphics.setBackground(34, 38, 51)
+graphics.setBackground(0x23,0x39,0x58)
+//graphics.setBackground(0x12,0x32,0x5f)
 graphics.setGraphicsMode(0)
 
 let currentPanel = VIEW_TIMELINE
@@ -1778,6 +1791,11 @@ const panelPatterns = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HE
 // On exit, the sub-program sets _G.taut_nextPanel to request a tab switch.
 function makeExternalPanelDraw(progName) {
     return function(wo) {
+        // stop any playback first
+        stopPlayback()
+        // update the top bar
+        drawAlwaysOnElems()
+
         _G.taut_nextPanel = undefined
         _G.shell.execute(`${progName} ${fullPathObj.full} ${currentPanel}`)
     }
@@ -2071,9 +2089,14 @@ const popupDrawFrame = (wo) => {
     // imprint title
     let titleWidth = wo.title.length
     con.move(wo.y, wo.x + (((wo.width - titleWidth - 2) & 254) >>> 1))
-    let col = (wo.isHighlighted) ? 161 : 240
-    con.color_pair(col, colTabBarBack)
-    print(` ${wo.title} `)
+
+    let colFore = colTabActive
+    let colBack = colTabBarBack2
+    let colFore2 = colTabBarBack2
+    let colBack2 = colTabBarBack
+    con.color_pair(colFore2, colBack2); print(sym.leftshade)
+    con.color_pair(colFore, colBack); print(wo.title)
+    con.color_pair(colFore2, colBack2); print(sym.rightshade)
 
     // fill content area
     for (let r = 1; r < wo.height - 1; r++) {

@@ -20,7 +20,7 @@ const PANEL_H = SCRH - PANEL_Y
 
 const colStatus  = 253
 const colContent = 240
-const colHdr     = 239
+const colHdr     = 230
 
 function drawFileOpContents(wo) {
     for (let y = PANEL_Y; y < SCRH; y++) {
