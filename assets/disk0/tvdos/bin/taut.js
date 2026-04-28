@@ -2096,13 +2096,14 @@ const popupDrawFrame = (wo) => {
     let titleWidth = wo.title.length
     con.move(wo.y, wo.x + (((wo.width - titleWidth - 2) & 254) >>> 1))
 
-    let colFore = colTabActive
+    /*let colFore = colTabActive
     let colBack = colTabBarBack2
     let colFore2 = colTabBarBack2
     let colBack2 = colTabBarBack
     con.color_pair(colFore2, colBack2); print(sym.leftshade)
     con.color_pair(colFore, colBack); print(wo.title)
-    con.color_pair(colFore2, colBack2); print(sym.rightshade)
+    con.color_pair(colFore2, colBack2); print(sym.rightshade)*/
+    con.color_pair(colTabInactive, colTabBarBack); print(` ${wo.title} `)
 
     // fill content area
     for (let r = 1; r < wo.height - 1; r++) {
