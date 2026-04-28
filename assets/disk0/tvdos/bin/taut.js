@@ -537,6 +537,7 @@ function loadTaud(filePath, songIndex) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const [SCRH, SCRW] = con.getmaxyx()
+const [SCRPW, SCRPH] = graphics.getPixelDimension()
 const PTNVIEW_OFFSET_X = 3
 const PTNVIEW_OFFSET_Y = 5
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
@@ -612,6 +613,7 @@ const transportControlReverse = [PLAYMODE_NONE, PLAYMODE_ROW, PLAYMODE_CUE, PLAY
 const transportControlSymbol = [sym.stop, sym.playrow, sym.playcue, sym.playall]
 const transportControlColour = [160,20,20,20]
 const transportControlHint = ["O","I","U","Y"]
+let transportControlOldPos = 3 // index for transportControlReverse
 function drawStatusBar() {
     fillLine(1, colStatus, 255)
     fillLine(2, colStatus, 255)
@@ -627,25 +629,38 @@ function drawStatusBar() {
     const sSpd = ''+audio.getTickRate(PLAYHEAD)
 
     // transport control and its control hints
+    let transportControlNewPos = transportControlOldPos
     transportControlReverse.forEach((thisMode, j) => {
         let active = (playbackMode == thisMode)
 
         if (active)
-            con.color_pair(transportControlColour[j], colPushBtnBack)
+            con.color_pair(transportControlColour[j], 255)
         else
             con.color_pair(colStatus, 255)
 
-        con.move(1, SCRW - 5*(j+1) + 1)
-        print(`  ${transportControlSymbol[j]}  `)
+        con.move(1, SCRW - 5*(j+1) + 1 + 2)
+        print(transportControlSymbol[j])
 
         if (active)
-            con.color_pair(transportControlColour[j], colPushBtnBack)
+            con.color_pair(transportControlColour[j], 255)
         else
             con.color_pair(colVoiceHdr, 255)
 
-        con.move(2, SCRW - 5*(j+1) + 1)
-        print(`  ${transportControlHint[j]}  `)
+        con.move(2, SCRW - 5*(j+1) + 1 + 2)
+        print(transportControlHint[j])
+
+        if (active) transportControlNewPos = j;
     })
+    // draw button background
+    if (transportControlOldPos != transportControlNewPos) {
+        // erase button from old pos
+        gl.drawTexImage(buttonNullTexture, SCRPW - 35*(transportControlOldPos+1), 0)
+        // paint button in new pos
+        gl.drawTexImage(buttonTexture, SCRPW - 35*(transportControlNewPos+1), 0)
+        // update pos tracking
+        transportControlOldPos = transportControlNewPos
+    }
+
 
     // current audio device status
     // play/stop sym
@@ -680,7 +695,7 @@ function drawStatusBar() {
     con.move(2, (SCRW - (s2.length & 254)) >>> 1)
     con.color_pair(colSep, 255); print('tracker for ')
     con.color_pair(74, 255); print('tsvm')*/
-    gl.drawTexImage(logoTexture, (graphics.getPixelDimension()[0]-logoTexture.width) >>> 1, 6)
+    gl.drawTexImage(logoTexture, (SCRPW-logoTexture.width) >>> 1, 6)
 
 }
 
@@ -1166,6 +1181,12 @@ if (fullPathObj === undefined) {
 const logofile = files.open("A:/tvdos/bin/tauthdr.r8")
 const logoBytes = logofile.bread(); logofile.close()
 const logoTexture = new gl.Texture(88, 12, logoBytes)
+const buttonfile = files.open("A:/tvdos/bin/tautbtn.r8")
+const buttonBytes = buttonfile.bread(); buttonfile.close()
+const buttonTexture = new gl.Texture(35, 28, buttonBytes)
+const buttonNullfile = files.open("A:/tvdos/bin/tautbtn0.r8")
+const buttonNullBytes = buttonNullfile.bread(); buttonNullfile.close()
+const buttonNullTexture = new gl.Texture(35, 28, buttonNullBytes)
 
 font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")

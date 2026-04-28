@@ -2177,7 +2177,7 @@ Tracker Note Effects has been moved to `TAUD_NOTE_EFFECTS.md`
 **Taud serialisation format**
 Created by CuriousTorvald on 2026-04-19
 
-This is a file format for Taud tracker data. Taud can be extended with project data in backward-and-forward-compatible manner.
+This is a file format for Taud tracker data. Taud can be extended with Microtone (taut.js) project data in backward-and-forward-compatible manner.
 
 Endianness: Little
 
