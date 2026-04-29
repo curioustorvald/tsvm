@@ -327,9 +327,11 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
                 width = (v & (top_bit - 1)) + 1
                 continue
 
-        # Real sample delta. For full-form the top bit was the escape flag so the
-        # signed delta is in the lower (init_width-1) bits — same as C's (int8)value.
-        delta = _sign_extend(v, min(width, init_width - 1))
+        # Delta is always cast to the native sample type regardless of current bit-width.
+        # IT SDK: d1 += (signed char)value  — i.e. always 8-bit (or 16-bit) signed cast.
+        # Upper-half short-form values (v > escape midpoint) are larger *positive* deltas,
+        # not negatives; _sign_extend(v, width) would wrongly negate them.
+        delta = _sign_extend(v, init_width - 1)
         if is_16bit:
             d1 = _wrap16(d1 + delta)
             if is_it215:
