@@ -311,10 +311,12 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
                 continue
 
         elif width < init_width:
-            # Mid form: top `range_count` representable values are escape codes
-            border = (1 << width) - range_count
-            if v >= border:
-                new_w = (v - border) + 1    # 1..range_count
+            # Mid form: escape codes are in the top half of the unsigned range.
+            # border = (2^(width-1)) - range_count  (= (0x100 >> (9-width)) - 8 per reference).
+            # Escape if v > border; new width = v - border (adjusted for skip-over-self).
+            border = (1 << (width - 1)) - range_count
+            if v > border:
+                new_w = v - border          # 1..range_count
                 if new_w >= width:
                     new_w += 1
                 width = new_w
