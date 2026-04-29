@@ -302,40 +302,33 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
         v = read_bits(width)
 
         if width <= 6:
-            # Short form: top bit == escape trigger
+            # Short form: top bit == escape trigger; read escape_bits for new width.
+            # Reference: cubic.org/itsex.c (Jeffrey Lim, IT author) — no skip-self.
             if v == (1 << (width - 1)):
-                new_w = read_bits(escape_bits) + 1
-                if new_w >= width:
-                    new_w += 1
-                width = new_w
+                width = read_bits(escape_bits) + 1
                 continue
 
         elif width < init_width:
-            # Mid form: escape codes are in the top half of the unsigned range.
-            # border = (2^(width-1)) - range_count  (= (0x100 >> (9-width)) - 8 per reference).
-            # Escape if v > border; new width = v - border (adjusted for skip-over-self).
-            border = (1 << (width - 1)) - range_count
+            # Mid form. border = (all-ones mask) >> (init_width - width).
+            # For 8-bit: 0xFF>>(9-w) → 63 (w=7), 127 (w=8).
+            # Escape when v > border; new width = v - border directly, no skip-self.
+            # Reference: cubic.org/itsex.c, OpenMPT ITTools.cpp.
+            mask   = (1 << (init_width - 1)) - 1   # 0xFF (8-bit) or 0xFFFF (16-bit)
+            border = mask >> (init_width - width)
             if v > border:
-                new_w = v - border          # 1..range_count
-                if new_w >= width:
-                    new_w += 1
-                width = new_w
+                width = v - border
                 continue
 
         else:
-            # Full form: top bit (bit init_width-1) is escape flag
+            # Full form: top bit (bit init_width-1) is escape flag.
+            # new width = lower bits + 1, no skip-self.
             top_bit = 1 << (init_width - 1)
             if v & top_bit:
-                new_w = (v & (top_bit - 1)) + 1
-                if new_w >= width:
-                    new_w += 1
-                width = new_w
+                width = (v & (top_bit - 1)) + 1
                 continue
 
-        # Real sample: sign-extend delta and accumulate.
-        # Full-form (width == init_width): top bit was the escape flag, so the
-        # actual signed delta occupies the lower (init_width-1) bits — equivalent
-        # to C's (int8)val / (int16)val.  All other widths use their full width.
+        # Real sample delta. For full-form the top bit was the escape flag so the
+        # signed delta is in the lower (init_width-1) bits — same as C's (int8)value.
         delta = _sign_extend(v, min(width, init_width - 1))
         if is_16bit:
             d1 = _wrap16(d1 + delta)
