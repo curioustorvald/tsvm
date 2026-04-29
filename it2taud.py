@@ -330,8 +330,11 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
                 width = new_w
                 continue
 
-        # Real sample: sign-extend delta and accumulate
-        delta = _sign_extend(v, width)
+        # Real sample: sign-extend delta and accumulate.
+        # Full-form (width == init_width): top bit was the escape flag, so the
+        # actual signed delta occupies the lower (init_width-1) bits — equivalent
+        # to C's (int8)val / (int16)val.  All other widths use their full width.
+        delta = _sign_extend(v, min(width, init_width - 1))
         if is_16bit:
             d1 = _wrap16(d1 + delta)
             if is_it215:
