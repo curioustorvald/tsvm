@@ -531,7 +531,7 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
 
         # Parse IT envelopes (new-format only, ≥cmwt 0x200)
         # Vol envelope at ptr+0x130; pan envelope at ptr+0x182
-        ticks_per_sec = max(h.initial_tempo / 60.0 * h.initial_speed, 1.0)
+        ticks_per_sec = max(h.initial_tempo * 2.0 / 5.0, 1.0)   # tick rate = bpm×2/5 (50 Hz at 125 BPM); speed is ticks-per-row, irrelevant here
         inst.vol_envelope, inst.vol_env_sustain = _parse_it_envelope(
             data, ptr + 0x130, False, ticks_per_sec)
         inst.pan_envelope, inst.pan_env_sustain = _parse_it_envelope(
