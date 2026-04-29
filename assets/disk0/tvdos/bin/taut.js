@@ -615,8 +615,8 @@ const transportControlColour = [160,20,20,20]
 const transportControlHint = ["O","I","U","Y"]
 let transportControlOldPos = 3 // index for transportControlReverse
 function drawStatusBar() {
-    fillLine(1, colStatus, 255)
-    fillLine(2, colStatus, 255)
+    fillLine(1, colWHITE, 255)
+    fillLine(2, colWHITE, 255)
 
     const sCueIdx = cueIdx.hex03()
     const sCueMax = (song.lastActiveCue < 0 ? 0 : song.lastActiveCue).hex03()
@@ -636,7 +636,7 @@ function drawStatusBar() {
         if (active)
             con.color_pair(transportControlColour[j], 255)
         else
-            con.color_pair(colStatus, 255)
+            con.color_pair(colWHITE, 255)
 
         con.move(1, SCRW - 5*(j+1) + 1 + 2)
         print(transportControlSymbol[j])
@@ -664,7 +664,7 @@ function drawStatusBar() {
 
     // current audio device status
     // play/stop sym
-    con.color_pair(colStatus, 255)
+    con.color_pair(colWHITE, 255)
     con.move(1,1)
     print(`${sym.playhead}${PLAYHEAD}`)
     con.move(2,1)
@@ -672,29 +672,21 @@ function drawStatusBar() {
 
     // cue row
     con.move(1,4)
-    con.color_pair(colStatus, 255); print(`Cue `)
+    con.color_pair(colWHITE, 255); print(`Cue `)
     con.color_pair(colVol, 255); print(`${sCueIdx}`)
-    con.color_pair(colStatus, 255); print(`/`)
+    con.color_pair(colWHITE, 255); print(`/`)
     con.color_pair(colVol, 255); print(`${sCueMax}`)
-    con.color_pair(colStatus, 255); print(`  Row `)
+    con.color_pair(colWHITE, 255); print(`  Row `)
     con.color_pair(colVoiceHdr, 255); print(`${sRow}`)
 
     // bpm spd
     con.move(2,4)
-    con.color_pair(colStatus, 255); print(`BPM `)
+    con.color_pair(colWHITE, 255); print(`BPM `)
     con.color_pair(colPan, 255); print(`${sBPM}`)
-    con.color_pair(colStatus, 255); print(` Tickspeed `)
+    con.color_pair(colWHITE, 255); print(` Tickspeed `)
     con.color_pair(colEffOp, 255); print(`${sSpd}`)
 
     // app title
-    /*let s1 = "Microtone"
-    let s2 = "tracker for tsvm"
-    con.move(1, (SCRW - (s1.length & 254)) >>> 1)
-    con.color_pair(colBrand, 255); print('Micro')
-    con.color_pair(colStatus, 255); print('tone')
-    con.move(2, (SCRW - (s2.length & 254)) >>> 1)
-    con.color_pair(colSep, 255); print('tracker for ')
-    con.color_pair(74, 255); print('tsvm')*/
     gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 7)
 
 }
