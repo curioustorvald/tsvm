@@ -644,7 +644,7 @@ function drawStatusBar() {
         if (active)
             con.color_pair(transportControlColour[j], 255)
         else
-            con.color_pair(colVoiceHdr, 255)
+            con.color_pair(235, 255)
 
         con.move(2, SCRW - 5*(j+1) + 1 + 2)
         print(transportControlHint[j])
@@ -673,21 +673,21 @@ function drawStatusBar() {
     // cue row
     con.move(1,4)
     con.color_pair(colWHITE, 255); print(`Cue `)
-    con.color_pair(colVol, 255); print(`${sCueIdx}`)
+    con.color_pair(20, 255); print(`${sCueIdx}`)
     con.color_pair(colWHITE, 255); print(`/`)
-    con.color_pair(colVol, 255); print(`${sCueMax}`)
+    con.color_pair(20, 255); print(`${sCueMax}`)
     con.color_pair(colWHITE, 255); print(`  Row `)
-    con.color_pair(colVoiceHdr, 255); print(`${sRow}`)
+    con.color_pair(130, 255); print(`${sRow}`)
 
     // bpm spd
     con.move(2,4)
     con.color_pair(colWHITE, 255); print(`BPM `)
-    con.color_pair(colPan, 255); print(`${sBPM}`)
+    con.color_pair(161, 255); print(`${sBPM}`)
     con.color_pair(colWHITE, 255); print(` Tickspeed `)
-    con.color_pair(colEffOp, 255); print(`${sSpd}`)
+    con.color_pair(235, 255); print(`${sSpd}`)
 
     // app title
-    gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 7)
+    gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 8)
 
 }
 
