@@ -651,15 +651,15 @@ function drawStatusBar() {
 
         if (active) transportControlNewPos = j;
     })
-    // draw button background
-    if (transportControlOldPos != transportControlNewPos) {
-        // erase button from old pos
-        gl.drawTexImage(buttonNullTexture, SCRPW - 35*(transportControlOldPos+1), 0)
-        // paint button in new pos
-        gl.drawTexImage(buttonTexture, SCRPW - 35*(transportControlNewPos+1), 0)
-        // update pos tracking
-        transportControlOldPos = transportControlNewPos
-    }
+
+    // draw tob bar background
+    gl.drawTexPattern(buttonTexture, 0, 0, SCRPW, 28)
+    graphics.plotPixel(0, 0, 255)
+    graphics.plotPixel(0, 1, 254)
+    graphics.plotPixel(SCRPW-1, 0, 255)
+    graphics.plotPixel(SCRPW-1, 1, 254)
+    // update pos tracking
+    transportControlOldPos = transportControlNewPos
 
 
     // current audio device status
@@ -695,7 +695,7 @@ function drawStatusBar() {
     con.move(2, (SCRW - (s2.length & 254)) >>> 1)
     con.color_pair(colSep, 255); print('tracker for ')
     con.color_pair(74, 255); print('tsvm')*/
-    gl.drawTexImage(logoTexture, (SCRPW-logoTexture.width) >>> 1, 6)
+    gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 7)
 
 }
 
@@ -1183,10 +1183,10 @@ const logoBytes = logofile.bread(); logofile.close()
 const logoTexture = new gl.Texture(88, 12, logoBytes)
 const buttonfile = files.open("A:/tvdos/bin/tautbtn.r8")
 const buttonBytes = buttonfile.bread(); buttonfile.close()
-const buttonTexture = new gl.Texture(35, 28, buttonBytes)
-const buttonNullfile = files.open("A:/tvdos/bin/tautbtn0.r8")
-const buttonNullBytes = buttonNullfile.bread(); buttonNullfile.close()
-const buttonNullTexture = new gl.Texture(35, 28, buttonNullBytes)
+const buttonTexture = new gl.Texture(2, 28, buttonBytes)
+//const buttonNullfile = files.open("A:/tvdos/bin/tautbtn0.r8")
+//const buttonNullBytes = buttonNullfile.bread(); buttonNullfile.close()
+//const buttonNullTexture = new gl.Texture(35, 28, buttonNullBytes)
 
 font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
