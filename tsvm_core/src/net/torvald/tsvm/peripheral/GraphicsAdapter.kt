@@ -1961,7 +1961,7 @@ void main() {
 
 
         val DEFAULT_PALETTE = intArrayOf( // 0b rrrrrrrr gggggggg bbbbbbbb aaaaaaaa
-            255,
+            136,
             17663,
             35071,
             48127,
