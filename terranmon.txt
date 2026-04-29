@@ -2201,14 +2201,15 @@ Endianness: Little
 [HEADER]
 [SAMPLE+INSTRUMENT BIN IMAGE (GZip or Zstd compressed. Read 4-byte magic to determine)]
 [SONG TABLE]
-[PATTERN BIN for SONG 0]
-[CUE SHEET for SONG 0]
-[PATTERN BIN for SONG 1]
-[CUE SHEET for SONG 1]
-[PATTERN BIN for SONG 2]
-[CUE SHEET for SONG 2]
+[PATTERN BIN for SONG 0 (GZip or Zstd compressed)]
+[CUE SHEET for SONG 0 (GZip or Zstd compressed)]
+[PATTERN BIN for SONG 1 (GZip or Zstd compressed)]
+[CUE SHEET for SONG 1 (GZip or Zstd compressed)]
+[PATTERN BIN for SONG 2 (GZip or Zstd compressed)]
+[CUE SHEET for SONG 2 (GZip or Zstd compressed)]
 ...
 [PROJECT DATA] (optional)
+    [DATA BLOCKS WITH FOURCC HEADER (see Project Data section)]
 
 ## Header
     Byte[8] Magic
@@ -2242,7 +2243,7 @@ Endianness: Little
     For your reference, tracker default tuning at A3 is 439.526 Hz (8363*2^(3/4) / 32)
 
 ## Pattern Bin and Cue Sheet
-    Raw Pattern Bin/Cue Sheet images
+    Pattern Bin/Cue Sheet images (GZip or
 
 ## Project Data
 
