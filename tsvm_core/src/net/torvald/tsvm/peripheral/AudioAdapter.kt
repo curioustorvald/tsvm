@@ -1166,24 +1166,68 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C3) / 4096.0)
 
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
-        if (voice.envIndex >= 23) {
-            voice.envVolume = inst.envelopes[23].volume / 255.0
-            return
-        }
-        val offset = inst.envelopes[voice.envIndex].offset.toFloat().toDouble()
-        if (offset == 0.0) {
-            voice.envVolume = inst.envelopes[voice.envIndex].volume / 255.0
-            return
-        }
-        voice.envTimeSec += tickSec
-        if (voice.envTimeSec >= offset) {
-            voice.envTimeSec -= offset
-            voice.envIndex = (voice.envIndex + 1).coerceAtMost(23)
-            voice.envVolume = inst.envelopes[voice.envIndex].volume / 255.0
+        // Volume envelope
+        // sustain byte: bit7=enabled, bits[5:3]=end_idx, bits[2:0]=start_idx
+        val vSus      = inst.volEnvSustain
+        val vSusOn    = (vSus and 0x80) != 0 && !voice.keyOff
+        val vSusStart = vSus and 7
+        val vSusEnd   = (vSus ushr 3) and 7
+
+        if (voice.envIndex >= 7) {
+            voice.envVolume = (inst.volEnvelopes[7].value / 63.0).coerceIn(0.0, 1.0)
+        } else if (vSusOn && voice.envIndex == vSusEnd && vSusStart == vSusEnd) {
+            // slb == sle: hold at this node until key-off (no cycling)
+            voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
         } else {
-            val cur = inst.envelopes[voice.envIndex].volume / 255.0
-            val nxt = inst.envelopes[(voice.envIndex + 1).coerceAtMost(23)].volume / 255.0
-            voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / offset)
+            val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
+            if (vOffset == 0.0) {
+                voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+            } else {
+                voice.envTimeSec += tickSec
+                if (voice.envTimeSec >= vOffset) {
+                    voice.envTimeSec -= vOffset
+                    val nextIdx = if (vSusOn && voice.envIndex == vSusEnd) vSusStart
+                                  else (voice.envIndex + 1).coerceAtMost(7)
+                    voice.envIndex = nextIdx
+                    voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                } else {
+                    val cur = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                    val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(7)].value / 63.0).coerceIn(0.0, 1.0)
+                    voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / vOffset)
+                }
+            }
+        }
+
+        // Pan envelope (only when active for this instrument)
+        if (!voice.hasPanEnv) return
+        val pSus      = inst.panEnvSustain
+        val pSusOn    = (pSus and 0x80) != 0 && !voice.keyOff
+        val pSusStart = pSus and 7
+        val pSusEnd   = (pSus ushr 3) and 7
+
+        if (voice.envPanIndex >= 7) {
+            voice.envPan = inst.panEnvelopes[7].value / 255.0
+        } else if (pSusOn && voice.envPanIndex == pSusEnd && pSusStart == pSusEnd) {
+            // slb == sle: hold at this pan node until key-off
+            voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+        } else {
+            val pOffset = inst.panEnvelopes[voice.envPanIndex].offset.toDouble()
+            if (pOffset == 0.0) {
+                voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+            } else {
+                voice.envPanTimeSec += tickSec
+                if (voice.envPanTimeSec >= pOffset) {
+                    voice.envPanTimeSec -= pOffset
+                    val nextIdx = if (pSusOn && voice.envPanIndex == pSusEnd) pSusStart
+                                  else (voice.envPanIndex + 1).coerceAtMost(7)
+                    voice.envPanIndex = nextIdx
+                    voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+                } else {
+                    val cur = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+                    val nxt = inst.panEnvelopes[(voice.envPanIndex + 1).coerceAtMost(7)].value / 255.0
+                    voice.envPan = cur + (nxt - cur) * (voice.envPanTimeSec / pOffset)
+                }
+            }
         }
     }
 
@@ -1238,9 +1282,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.samplePos = inst.samplePlayStart.toDouble()
         voice.forward = true
         voice.active = true
+        voice.keyOff = false
         voice.envIndex = 0
         voice.envTimeSec = 0.0
-        voice.envVolume = inst.envelopes[0].volume / 255.0
+        voice.envVolume = (inst.volEnvelopes[0].value / 63.0).coerceIn(0.0, 1.0)
+        voice.envPanIndex = 0
+        voice.envPanTimeSec = 0.0
+        voice.envPan = inst.panEnvelopes[0].value / 255.0
+        voice.hasPanEnv = inst.panEnvelopes.any { it.offset.toFloat() > 0.0f }
         voice.noteVal = noteVal
         voice.basePitch = noteVal
         voice.playbackRate = computePlaybackRate(inst, noteVal)
@@ -1322,7 +1371,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val toneG = (row.effect == EffectOp.OP_G)
             when (row.note) {
                 0xFFFF -> {}                                    // no-op
-                0x0000 -> voice.active = false                  // key-off (TODO release envelope)
+                0x0000 -> { voice.keyOff = true; voice.active = false }  // key-off; breaks sustain loop
                 0xFFFE -> voice.active = false                  // note cut
                 else -> {
                     if (toneG && voice.active) {
@@ -1652,8 +1701,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.retrigCounter++
                 if (voice.retrigCounter >= voice.retrigInterval) {
                     voice.retrigCounter = 0
-                    voice.samplePos = instruments[voice.instrumentId].samplePlayStart.toDouble()
+                    val retrigInst = instruments[voice.instrumentId]
+                    voice.samplePos = retrigInst.samplePlayStart.toDouble()
+                    voice.keyOff = false
                     voice.envIndex = 0; voice.envTimeSec = 0.0
+                    voice.envPanIndex = 0; voice.envPanTimeSec = 0.0
+                    voice.envPan = retrigInst.panEnvelopes[0].value / 255.0
                     voice.rowVolume = applyRetrigVolMod(voice.rowVolume, voice.retrigVolMod)
                     voice.channelVolume = voice.rowVolume
                 }
@@ -1741,7 +1794,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (!voice.active || voice.muted) continue
                 val s = fetchTrackerSample(voice, instruments[voice.instrumentId])
                 val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * playhead.masterVolume / 255.0
-                val pan = voice.channelPan
+                val pan = if (voice.hasPanEnv) {
+                    val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
+                    (voice.channelPan + envPanRaw - 128).coerceIn(0, 255)
+                } else voice.channelPan
                 val lGain: Double
                 val rGain: Double
                 when (ts.panLaw) {
@@ -1915,9 +1971,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var channelPan = 0x80              // 8-bit; $80 centre. Cell column packs into 6-bit, S$80xx writes the full 8-bit.
         var rowPan = 32                    // 6-bit pan used by mixer, derived from channelPan
 
+        var keyOff = false
         var envIndex = 0
         var envTimeSec = 0.0
         var envVolume = 1.0
+        var envPanIndex = 0
+        var envPanTimeSec = 0.0
+        var envPan = 0.5                   // 0.0=full-left, 1.0=full-right, 0.5=centre
+        var hasPanEnv = false
 
         // Pitch state (4096-TET units, signed when slid).
         var noteVal = 0xFFFF               // The currently sounding base note (no per-row vibrato/arp added)
@@ -2208,7 +2269,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     }
 
-    data class TaudInstVolEnv(var volume: Int, var offset: ThreeFiveMiniUfloat)
+    data class TaudInstEnvPoint(var value: Int, var offset: ThreeFiveMiniUfloat)
     data class TaudInst(
         var index: Int,
 
@@ -2220,9 +2281,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var sampleLoopEnd: Int,
         // flags
         var loopMode: Int,
-        var envelopes: Array<TaudInstVolEnv> // first int: volume (0..255), second int: offsets (minifloat indices)
+        var volEnvSustain: Int,           // byte 13: 00 eee sss (0 = no sustain loop)
+        var panEnvSustain: Int,           // byte 14: 00 eee sss (0 = no sustain loop)
+        var volEnvelopes: Array<TaudInstEnvPoint>, // 8 points, value 0x00-0x3F
+        var panEnvelopes: Array<TaudInstEnvPoint>  // 8 points, value 0x00-0xFF (0x80 = centre)
     ) {
-        constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, Array(24) { TaudInstVolEnv(0, ThreeFiveMiniUfloat(0)) })
+        constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            Array(8) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
+            Array(8) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) })
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -2260,9 +2326,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             11 -> sampleLoopEnd.ushr(8).toByte()
 
             12 -> (samplePtr.ushr(16).and(15).shl(4) or loopMode.and(3)).toByte()
-            13,14,15 -> 0
-            in 16..63 step 2 -> envelopes[(offset - 16) / 2].volume.toByte()
-            in 17..63 step 2 -> envelopes[(offset - 17) / 2].offset.index.toByte()
+            13 -> volEnvSustain.toByte()
+            14 -> panEnvSustain.toByte()
+            15 -> 0
+            in 16..30 step 2 -> volEnvelopes[(offset - 16) / 2].value.toByte()
+            in 17..31 step 2 -> volEnvelopes[(offset - 17) / 2].offset.index.toByte()
+            in 32..46 step 2 -> panEnvelopes[(offset - 32) / 2].value.toByte()
+            in 33..47 step 2 -> panEnvelopes[(offset - 33) / 2].offset.index.toByte()
+            in 48..63 -> 0
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -2290,10 +2361,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                             else samplePtr and 0x0ffff
                 loopMode = byte and 3
             }
-            13, 14, 15 -> {}
+            13 -> { volEnvSustain = byte }
+            14 -> { panEnvSustain = byte }
+            15 -> {}
 
-            in 16..63 step 2 -> envelopes[(offset - 16) / 2].volume = byte
-            in 17..63 step 2 -> envelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
+            in 16..30 step 2 -> volEnvelopes[(offset - 16) / 2].value = byte
+            in 17..31 step 2 -> volEnvelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
+            in 32..46 step 2 -> panEnvelopes[(offset - 32) / 2].value = byte
+            in 33..47 step 2 -> panEnvelopes[(offset - 33) / 2].offset = ThreeFiveMiniUfloat(byte)
+            in 48..63 -> {}
             else -> throw InternalError("Bad offset $offset")
         }
     }
