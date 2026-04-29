@@ -45,9 +45,9 @@ mix = sample × note_vol × channel_vol × global_vol >> normalisation_shift
 
 with saturation applied before the 8-bit stereo output.
 
-## 4. Rows, ticks, patterns, orders
+## 4. Rows, ticks, patterns, cues
 
-A pattern is a rectangular grid of rows and channels; each cell holds one note event. Playback divides each row into `speed` ticks (effect A); tempo (effect T) sets the duration of one tick. At 125 BPM and speed 6, one row takes 120 ms and one tick 20 ms. Songs play patterns in an order sequence; effects B and C navigate this sequence.
+A pattern is a rectangular grid of rows and channels; each cell holds one note event. Playback divides each row into `speed` ticks (effect A); tempo (effect T) sets the duration of one tick. At 125 BPM and speed 6, one row takes 120 ms and one tick 20 ms. Songs play patterns in a cue sequence; effects B and C navigate this sequence.
 
 ## 5. Default parameters at song start
 
@@ -58,7 +58,7 @@ A pattern is a rectangular grid of rows and channels; each cell holds one note e
 | Global volume | $80 (mid-scale) |
 | Channel volume | $3F (full) |
 | Pan (all channels) | $80 (centre) |
-| Order index | $0000 |
+| cue index | $0000 |
 
 ## 6. Effect memory groups
 
@@ -89,25 +89,25 @@ Opcodes are single base-36 digits (0-9, then A-Z); arguments are 16-bit hexadeci
 
 ---
 
-## B $xxyy — Jump to order $xxyy
+## B $xxyy — Jump to cue $xxyy
 
-**Plain.** Finishes the current row, then continues playback at row 0 of the pattern at order position $xxyy. Use this to create song-level jumps, loops, or branching structures.
+**Plain.** Finishes the current row, then continues playback at row 0 of the pattern at cue position $xxyy. Use this to create song-level jumps, loops, or branching structures.
 
-**Compatibility.** ST3 `Bxx` jumps to an 8-bit order and maps to Taud `B $00xx`. The extended 16-bit range means Taud songs may have up to $10000 order entries.
+**Compatibility.** ST3 `Bxx` jumps to an 8-bit cue and maps to Taud `B $00xx`. The extended 16-bit range means Taud songs may have up to $10000 cue entries.
 
-**Implementation.** On the last tick of the current row, set the next order index to the argument and the next row to 0. If the argument exceeds the song length, wrap to the song's defined restart position (order $0000 by default). Jumps are detected by a visited `(order, row)` set so that pathological loops do not prevent song-length computation, though they do not interrupt actual playback. There is no memory for B.
+**Implementation.** On the last tick of the current row, set the next cue index to the argument and the next row to 0. If the argument exceeds the song length, wrap to the song's defined restart position (cue $0000 by default). Jumps are detected by a visited `(cue, row)` set so that pathological loops do not prevent song-length computation, though they do not interrupt actual playback. There is no memory for B.
 
-**Simultaneous B and C on the same row.** If a B command appears in the same row as a C command (on any channel), both fire: B chooses the order, C chooses the row within that order. If the two commands appear on different channels, channel priority is **ascending channel index** — the lowest-numbered channel carrying either effect wins its parameter. If both appear on the same channel row (only possible if one is a volume-column equivalent), the effect column takes precedence.
+**Simultaneous B and C on the same row.** If a B command appears in the same row as a C command (on any channel), both fire: B chooses the cue, C chooses the row within that cue. If the two commands appear on different channels, channel priority is **ascending channel index** — the lowest-numbered channel carrying either effect wins its parameter. If both appear on the same channel row (only possible if one is a volume-column equivalent), the effect column takes precedence.
 
 ---
 
 ## C $xxyy — Break pattern to row $xxyy
 
-**Plain.** Finishes the current row, then skips ahead to row $xxyy of the **next** pattern in the order sequence.
+**Plain.** Finishes the current row, then skips ahead to row $xxyy of the **next** pattern in the cue sequence.
 
 **Compatibility.** ST3 stores `Cxx` as **BCD** (so on-disk `$10` means decimal row 10); Taud stores the argument as plain binary. When converting from ST3, decode with `row = (byte >> 4) × 10 + (byte & $0F)`. Valid ST3 source bytes are those representing decimal 0..63; out-of-range BCD bytes should clamp to row 0 on import. When exporting back to ST3, encode with `byte = ((row / 10) << 4) | (row % 10)`, clamped at row 63.
 
-**Implementation.** On the last tick of the current row, advance the order index by 1 (or honour a co-occurring B), then set the next row to the argument. If the argument exceeds the destination pattern's row count, start the destination pattern at row 0. There is no memory for C.
+**Implementation.** On the last tick of the current row, advance the cue index by 1 (or honour a co-occurring B), then set the next row to the argument. If the argument exceeds the destination pattern's row count, start the destination pattern at row 0. There is no memory for C.
 
 ---
 
@@ -149,9 +149,9 @@ D's 16-bit argument encodes four mutually exclusive modes using the top nibble a
 
 ---
 
-## E $xxxx — Pitch slide down by $xxxx (linear)
+## E $xxxx — Pitch slide down by $xxxx
 
-**Plain.** Lowers the channel's pitch by the argument per tick. Taud's pitch slides are **linear in the 4096-TET grid** — the slide value is subtracted directly from the stored pitch, without any period-table indirection. A coarse slide uses the full value range; a fine slide applies only once per row; an extra-fine slide is not provided (the 16-bit argument already gives microtonal precision below 1/64 semitone).
+**Plain.** Lowers the channel's pitch by the argument per tick. By default (linear mode, `f` bit unset in effect `1`) the coarse slide value is subtracted directly from the stored pitch in the 4096-TET grid. When Amiga mode is active (`f` bit set), coarse slides are instead applied in Amiga period space: the stored value is converted back to Amiga period units and subtracted from the equivalent period, producing the characteristic non-linear pitch drift of ProTracker-style slides. Fine slides (`E $Fxxx`) are always applied in linear pitch-unit space regardless of mode. A coarse slide uses the full value range; a fine slide applies only once per row.
 
 Coarse and fine modes are distinguished by the high nibble of the argument:
 
@@ -165,7 +165,7 @@ Coarse and fine modes are distinguished by the high nibble of the argument:
 - ST3 `EFx` fine → Taud `E $F0 round(x × 16/3)` (1 ST3 fine unit = 1/64 semitone = 16/3 ≈ 5.33 Taud units, applied once per row).
 - ST3 `EEx` extra-fine → Taud `E $F0 round(x × 16/3)` (same unit as fine, applied once per row).
 
-ST3 Amiga-mode slides do not have a clean conversion and should be treated as linear-mode equivalents during import.
+ST3 Amiga-mode coarse slides do not have a clean conversion and should be treated as linear-mode equivalents during import (same `round(× 64/3)` scale). The Amiga-mode flag (`f` bit in effect `1` or the song-table flags byte) is set in the output file to signal the mixer to apply the stored values in period space rather than directly in pitch space. This preserves the characteristic non-linearity of Amiga slides (lower pitches slide more slowly in semitone terms) without requiring a different numeric encoding. Fine and extra-fine slides (`E $Fxxx`) are always applied in linear pitch-unit space regardless of the Amiga-mode flag, as they are ST3-specific extensions absent from ProTracker.
 
 Because E and F share memory in Taud (narrower than ST3's broad shared memory), an ST3 song that used `E00` or `F00` to recall a D, G, or Q argument will break on import; the converter must eagerly resolve ST3 recalls into explicit Taud arguments rather than relying on memory.
 
@@ -185,18 +185,24 @@ on row start:
 
 on tick > 0:
     if mode_this_row == COARSE:
-        pitch -= slide_amount_this_row
+        if amiga_mode:
+            # period = AMIGA_BASE_PERIOD × 2^(−(pitch − C3) / 4096)
+            # period += slide_amount_this_row × (3/64)   # convert Taud units → Amiga period units
+            # pitch = C3 + 4096 × log2(AMIGA_BASE_PERIOD / period)
+            pitch = amiga_slide_down(pitch, slide_amount_this_row)
+        else:
+            pitch -= slide_amount_this_row
 ```
 
 Glissando control (S $1x) snaps the output pitch to the nearest semitone after every slide application; see S $1x.
 
 ---
 
-## F $xxxx — Pitch slide up by $xxxx (linear)
+## F $xxxx — Pitch slide up by $xxxx
 
-**Plain.** Raises the channel's pitch by the argument per tick, with the same mode-selection scheme as E. Coarse, fine, and memory behaviour are identical in form but inverted in direction.
+**Plain.** Raises the channel's pitch by the argument per tick, with the same mode-selection scheme as E. Coarse, fine, memory behaviour, and Amiga-mode handling are identical in form but inverted in direction.
 
-**Compatibility.** Same as E. ST3 `Fxx` coarse converts using `round(x × 64/3)`; `FFx` fine and `FEx` extra-fine convert using `round(x × 16/3)`. F and E share one memory slot in Taud.
+**Compatibility.** Same as E. ST3 `Fxx` coarse converts using `round(x × 64/3)`; `FFx` fine and `FEx` extra-fine convert using `round(x × 16/3)`. F and E share one memory slot in Taud. Amiga-mode behaviour is controlled by the same `f` flag as E; coarse F slides are applied in period space when the flag is set, while fine slides remain linear.
 
 **Implementation.** As for E, but add instead of subtract. No upper pitch cap is defined by the effect itself, but the sample-rate conversion at the mixer will saturate well before arithmetic overflow at reasonable playing ranges.
 
@@ -527,6 +533,21 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 ---
 
+## 8 $xyzz — Bitcrusher
+
+**Plain.** Applies Bitcrusher to the current voice.
+
+- x: clipping mode. 0: clamp, 1: fold, 2: modulus
+- y: bit depth (1..15). 8..15 has no effect on TSVM audio adapter (already operates on 8 bits)
+- z: sample skip (0..255). 0: no skip, 1: use every 2nd samples, 2: use every 3rd samples, ..., 255: use every 256th samples
+- `8 0000` will disable the bitcrusher
+
+**Compatibility.** Unique to Taud. No compatible equivalent exists.
+
+**Implementation.** TODO
+
+---
+
 # The S subcommand family
 
 S is a multiplexing opcode; the **high nibble of the high byte** selects the sub-effect, and the remainder is the sub-argument.
@@ -755,20 +776,33 @@ NOTE: **`3.00` — is No-op**
 
 Effects in this section modifies the behaviour of the mixer. Primary intention of the commands is to provide switches for legacy tracker and modern DAW behaviours.
 
-## 1 $01xx — Set stereo panning law
+## 1 $xx00 — Global behaviour flags
 
-**Plain.** Sets how the mixer should treat the panning. Available modes are:
+**Plain.** Sets how the mixer should treat the panning. Available flags are:
 
-- 0: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
-- 1: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
+    0b 0000 00fp
+
+- p unset: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
+- p set: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
+
+- f unset: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode.
+- f set: Amiga tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode.
 
 **Implementation.**
-- Mode 0: 
+- Panning-linear: 
   - L_gain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
   - R_gain = if (pan < 0x80) pan / 128.0 else 1.0
-- Mode 1:
+- Panning-equal-power:
   - L_gain = cos(pi*x / 512.0)
   - R_gain = sin(pi*x / 512.0)
+- Amiga tone (coarse E/F pitch slides only; fine slides are always linear):
+  - AMIGA_BASE_PERIOD = 214.0  (period at the Taud reference pitch C3 for a standard 8363 Hz instrument, NTSC clock)
+  - AMIGA_PERIOD_SCALE = 3.0 / 64.0  (converts stored Taud coarse-slide units back to Amiga period units)
+  - period = AMIGA_BASE_PERIOD × 2^(−(noteVal − C3) / 4096)
+  - period_new = period − slideArg × AMIGA_PERIOD_SCALE  (slideArg < 0 for E, > 0 for F)
+  - noteVal_new = C3 + 4096 × log2(AMIGA_BASE_PERIOD / period_new)
+
+**Initialisation from the song table.** The same flags byte is stored in the song-table entry (see file format §Song Table). A Taud player should write this byte to MMIO playhead register 7 before starting playback; the mixer then applies it as the initial state on every reset, and subsequent in-pattern `1` effects may override it.
 
 ---
 
@@ -833,7 +867,7 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 
 **Global volume scale.** ST3's 0..$40 maps to Taud's 0..$FF with a ×4 scale on import, truncated ÷4 on export.
 
-**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud's is purely linear in 4096-TET units. ST3 songs in linear mode convert cleanly: coarse forms (Exx/Fxx/Gxx) use `round(× 64/3)` (1/16 semitone per unit), fine/extra-fine forms (EFx/EEx/FFx/FEx) use `round(× 16/3)` (1/64 semitone per unit). Amiga-mode slides change character slightly because the non-linearity of period math is not replicated.
+**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud's default is purely linear in 4096-TET units. ST3 songs in linear mode convert cleanly: coarse forms (Exx/Fxx/Gxx) use `round(× 64/3)` (1/16 semitone per unit), fine/extra-fine forms (EFx/EEx/FFx/FEx) use `round(× 16/3)` (1/64 semitone per unit). ST3 songs in Amiga mode use the **same numeric conversion** for coarse E/F (the exact period-step count is not preserved), but the converter sets bit 1 (`f`) of the song-table flags byte and Taud's mixer re-applies the stored coarse slide values in Amiga period space at playback, recovering the non-linear pitch character. G is always treated as linear regardless of mode. Fine/extra-fine slides are always linear.
 
 **Default tempo byte.** Taud's default $65 equals 125 BPM under the $18 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$65` after subtracting $18. Converters must remap on both import and export.
 

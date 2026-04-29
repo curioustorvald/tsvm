@@ -2121,6 +2121,13 @@ Play Head Flags
           NOTE: changing from PCM mode to Tracker mode or vice versa will also reset the parameters as described above
     Byte 2
         - PCM Mode: Write non-zero value to start uploading; always 0 when read
+        - Tracker Mode: Global mixer flags. Maps directly to Taud effect symbol '1'
+            0b 0000 00fp
+            p: panning mode (0: linear, 1: equal-power)
+            f: pitchshift mode (0: tone-linear, 1: Amiga)
+                Tracker command may change the mixer state, but the changes WILL NOT BE REFLECTED BACK.
+                Starting a new song will use whatever written to this register. In other words, changes
+                made by songs will not persist.
     Byte 3 (Tracker Mode)
         - BPM (24 to 279. Play Data will change this register)
     Byte 4 (Tracker Mode)
@@ -2226,24 +2233,24 @@ Endianness: Little
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
     Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
     Uint8   Initial Tickrate (0 is invalid)
-    Uint16  Current Tuning base note (1..65533). A3 (western default) is 0x4C00. C8 (tracker default) is 0x9000. If zero, assume the tracker default value
+    Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
-    Byte[1] Reserved for future versions
+    Uint8   Flags for Global Behaviour (effect symbol '1')
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
-    * Known standard tunings
-    A440. ISO standard
-    A435. Former French standard (year 1859)
-    A452. Old Philharmonic pitch (19th century Britain)
-    C256. Power of two
-    C262. Modern Chinese a-ak tuning convention
-    C311. Korean hyang-ak tuning standard (ROK National Gugak Center)
+    * Known standard tunings:
+    A4 @ 440 Hz. ISO standard
+    A4 @ 435 Hz. Former French standard (year 1859)
+    A4 @ 452 Hz. Old Philharmonic pitch (19th century Britain)
+    C4 @ 256 Hz. Power of two
+    C4 @ 262 Hz. Modern Chinese a-ak tuning convention
+    C4 @ 311 Hz. Korean hyang-ak tuning standard (ROK National Gugak Center)
 
-    For your reference, tracker default tuning at A3 is 439.526 Hz (8363*2^(3/4) / 32)
+    For your reference, tracker default tuning at A4 is 439.526 Hz (8363*2^(3/4) / 32)
 
 ## Pattern Bin and Cue Sheet
-    Pattern Bin/Cue Sheet images (GZip or
+    Pattern Bin/Cue Sheet images
 
 ## Project Data
 
@@ -2294,19 +2301,16 @@ prefixes:
     Byte[*]     Song composer, null terminated. Encoding: UTF-8
     Byte[*]     Song copyright string, null terminated. Encoding: UTF-8
 
-* nota. Custom notation definition
+* nota. Custom notation definition (version 'a')
     * Repetition of:
     Uint8   Notation index (starting from zero) used by songs
     Uint32  Size of this notation following this field
-    Uint8   Flags
-        0b 0000 000t
-            t: NOT using interval system (you are responsible for defining every notes expressible)
-    Uint8   Reserved
-    Float32 Interval size (octave system = 2.0f). If Flag 't' is set, this must be NaN. 0f and Infinity are considered illegal
-    Uint16  Notes between interval MINUS ONE (or octave); 12-TET will have value 11. 0 is considered illegal
+    Uint16   Reserved for flags
+    Float32 Interval size (octave system = 2.0f). If you are not using an interval system (which means you are responsible for defining every note expressible), this must be NaN. 0f and Infinity are considered illegal
+    Uint16  Notes between interval MINUS ONE (or octave); 12-TET will have value 11
     Byte[8] Reserved
     Byte[*]     Name, null terminated. Encoding: UTF-8
-    Byte[*]     Notation table. 0xFF-separated and null-terminated. Encoding: raw bytes
+    Byte[*]     Notation table. 0xFF-separated and null-terminated. Encoding: Taud charset
     Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". This is a lookup table of relative pitch offsets (against the base tuning note) in 4096-TET space. Index zero of this table will be 0x0 if you read the spec right
 
     Note: custom notations will use internal index 65535 down to 65520 (index 0 = 65535, index 15 = 65520)
@@ -2318,7 +2322,12 @@ prefixes:
         4. Frequency-Offset Table from the previous step will be applied against the "Base Note at C3" to construct the notes within the notation. Value at index zero of the Frequency Table must be 0
         5. The progress will continue outside the "root interval" (C3..C4) to build a complete note-to-frequency table
 
-        Note: if your sample is pre-tuned for your system, keep the project setting as A4,440Hz. If you are not working with the conventional octave system, you still need to specify the Interval Size
+        Note: if your sample is pre-tuned for your system, keep the project setting as the defaults. If you are not working with the conventional octave system, you still need to specify the Interval Size
+
+    * Suggested notation serialisation format (for notation editor, etc.)
+    Byte[8] Magic (\x1E T a u d n o t)
+    Uint8   Version (Ascii 'a')
+    Bytes   Notation definitions (see above)
 
 --------------------------------------------------------------------------------
 

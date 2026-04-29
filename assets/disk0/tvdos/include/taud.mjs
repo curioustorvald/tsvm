@@ -219,9 +219,9 @@ function captureTrackerDataToFile(outFile) {
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
         bpmStored,                             // BPM with −24 bias
         tickRate,                              // initial tick-rate
-        0x00,0x90,              // basenote (0x9000 -- C8)
+        0x00,0xA0,              // basenote (0xA000 -- C9)
         0x00,0xAC,0x02,0x46, // basefreq (8363 Hz)
-        0,        // padding
+        sys.peek(baseAddr - 7), // mixer flags
     ]
 
     // -- 7. Write header (creates / truncates file) ---------------------------

@@ -13,6 +13,7 @@ import net.torvald.tsvm.VM
 import net.torvald.tsvm.toInt
 import java.io.ByteArrayInputStream
 import kotlin.math.cos
+import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -124,6 +125,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
         const val TRACKER_C3 = 0x4000
+        // Amiga period at TRACKER_C3 for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
+        // Used to implement Amiga-mode pitch slides (effect '1' f-bit or song-table flag).
+        const val AMIGA_BASE_PERIOD = 214.0
+        // Scale factor that converts a Taud coarse-slide unit back to one Amiga period unit.
+        // Taud coarse unit = round(ST3_unit × 64/3), so the inverse is × 3/64.
+        const val AMIGA_PERIOD_SCALE = 3.0 / 64.0
     }
 
     internal val sampleBin = UnsafeHelper.allocate(770048L, this)
@@ -1165,6 +1172,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
         inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C3) / 4096.0)
 
+    // Applies one tick of Amiga-mode pitch slide.  slideArg uses the same sign convention as
+    // linear mode: negative = pitch down (E effect), positive = pitch up (F effect).
+    // The Taud coarse-slide value is converted back to Amiga period units via AMIGA_PERIOD_SCALE.
+    private fun amigaSlide(noteVal: Int, slideArg: Int): Int {
+        val period = AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - TRACKER_C3).toDouble() / 4096.0)
+        // Negate slideArg: pitch down (slideArg < 0) → period up, pitch up (slideArg > 0) → period down.
+        val newPeriod = (period - slideArg * AMIGA_PERIOD_SCALE).coerceAtLeast(1.0)
+        return (TRACKER_C3 + 4096.0 * log2(AMIGA_BASE_PERIOD / newPeriod)).roundToInt()
+    }
+
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
         // Volume envelope
         // sustain byte: bit7=enabled, bits[5:3]=end_idx, bits[2:0]=start_idx
@@ -1406,8 +1423,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         when (op) {
             EffectOp.OP_NONE -> {}
             EffectOp.OP_1 -> {
-                // 1 $01xx — Set stereo panning law. High byte selects subcommand; only $01 is defined.
-                if ((rawArg ushr 8) == 0x01) ts.panLaw = rawArg and 0xFF
+                // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
+                // bit 0 (p): 0=linear pan, 1=equal-power pan
+                // bit 1 (f): 0=linear pitch slides, 1=Amiga-mode pitch slides
+                val flags = rawArg ushr 8
+                ts.panLaw = flags and 1
+                ts.amigaMode = (flags and 2) != 0
             }
             EffectOp.OP_A -> {
                 val tr = (rawArg ushr 8) and 0xFF
@@ -1609,7 +1630,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // Pitch slides (E/F coarse on tick > 0).
             if (ts.tickInRow > 0 && (voice.slideMode == 1 || voice.slideMode == 2)) {
-                voice.noteVal = (voice.noteVal + voice.slideArg).coerceIn(0, 0xFFFE)
+                voice.noteVal = if (ts.amigaMode)
+                    amigaSlide(voice.noteVal, voice.slideArg).coerceIn(0, 0xFFFE)
+                else
+                    (voice.noteVal + voice.slideArg).coerceIn(0, 0xFFFE)
                 voice.basePitch = voice.noteVal
             }
 
@@ -2071,7 +2095,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val voices = Array(20) { Voice() }
 
         // Global mixer config (effect 1).
-        var panLaw = 0  // 0 = linear balance (default), 1 = equal-power
+        var panLaw = 0      // 0 = linear balance (default), 1 = equal-power
+        var amigaMode = false  // false = linear pitch slides, true = Amiga period-space slides
 
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
@@ -2111,6 +2136,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     ) {
         var trackerState: TrackerState? = TrackerState()  // default mode is tracker (isPcmMode=false)
 
+        // Initial global behaviour flags (song-table byte, written via MMIO register 7 in tracker mode).
+        // Applied to TrackerState on every resetParams(); in-pattern effect '1' can override later.
+        var initialGlobalFlags: Int = 0
+
         // flags
         var isPcmMode: Boolean = false
             set(value) {
@@ -2140,7 +2169,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             4 -> masterVolume.toByte()
             5 -> masterPan.toByte()
             6 -> (isPcmMode.toInt(7) or isPlaying.toInt(4) or pcmQueueSizeIndex.and(15)).toByte()
-            7 -> 0
+            7 -> initialGlobalFlags.toByte()
             8 -> (bpm - 24).toByte()
             9 -> tickRate.toByte()
             else -> throw InternalError("Bad offset $index")
@@ -2165,7 +2194,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     pcmQueueSizeIndex = (it and 0b00001111)
                     if (it and 0b00100000 != 0) purgeQueue()
                 } }
-                7 -> if (isPcmMode) { pcmUpload = true } else {}
+                7 -> if (isPcmMode) { pcmUpload = true } else {
+                    initialGlobalFlags = byte
+                    trackerState?.let { ts -> ts.panLaw = byte and 1; ts.amigaMode = (byte and 2) != 0 }
+                }
                 8 -> { bpm = byte + 24 }
                 9 -> { tickRate = byte }
                 else -> throw InternalError("Bad offset $index")
@@ -2194,7 +2226,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.pendingOrderJump = -1; ts.pendingRowJump = -1
                 ts.patternDelayRemaining = 0; ts.patternDelayActive = false
                 ts.sexWinningChannel = -1
-                ts.panLaw = 0
+                ts.panLaw = initialGlobalFlags and 1
+                ts.amigaMode = (initialGlobalFlags and 2) != 0
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F

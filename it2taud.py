@@ -920,7 +920,8 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
 # ── IT recall resolution ──────────────────────────────────────────────────────
 
 def resolve_it_recalls(patterns_rows: list, order_list: list,
-                       num_channels: int, link_gef: bool) -> None:
+                       num_channels: int, link_gef: bool,
+                       old_effects: bool = False) -> None:
     """Walk in order, resolve zero-arg recalls per-effect-per-channel.
 
     IT effect memory groups:
@@ -928,10 +929,18 @@ def resolve_it_recalls(patterns_rows: list, order_list: list,
       - E / F (/ G when link_gef): shared pitch-slide cohort
       - G: own slot (or part of EF cohort when link_gef)
       - All others: private slots
+
+    old_effects=True (IT_FLAG_OLD_EFFECTS): E00/F00 are ST3-style stops —
+    they do NOT recall and are suppressed to TOP_NONE. All other effects
+    still recall normally even in old_effects mode.
     """
     # last_mem[ch][eff_key] = last_non_zero_arg
     # eff_key: integer 1-26 for most effects; we merge cohorts by normalising.
     last_mem = [{} for _ in range(num_channels)]
+
+    # Effects that stop rather than recall when arg=0 in old_effects mode (ST3 compat).
+    # E/F: pitch slide stop. J: arpeggio stop (J00 = return to normal pitch in ST3).
+    OLD_EFF_STOPS = frozenset({EFF_E, EFF_F, EFF_J})
 
     def cohort_key(cmd):
         if cmd in (EFF_D, EFF_K, EFF_L):
@@ -957,7 +966,12 @@ def resolve_it_recalls(patterns_rows: list, order_list: list,
                     continue
                 key = cohort_key(cell.effect)
                 if cell.effect_arg == 0:
-                    cell.effect_arg = last_mem[ch].get(key, 0)
+                    if old_effects and cell.effect in OLD_EFF_STOPS:
+                        # E00/F00 in old_effects = stop slide — suppress entirely.
+                        # Taud's E $0000 also recalls, so convert to no-op here.
+                        cell.effect = 0
+                    else:
+                        cell.effect_arg = last_mem[ch].get(key, 0)
                 else:
                     last_mem[ch][key] = cell.effect_arg
 
@@ -1141,7 +1155,12 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         c2spd    = min(s.c5_speed, 65535)
         ls       = min(s.loop_beg, 65535)
         le       = min(s.loop_end, 65535)
-        loop_mode = 1 if s.has_loop else 0
+        if s.has_loop and (s.flags & IT_SMP_PINGPONG):
+            loop_mode = 2   # backandforth
+        elif s.has_loop:
+            loop_mode = 1   # forward loop
+        else:
+            loop_mode = 0   # no loop
         flags_byte = (ptr_hi << 4) | (loop_mode & 0x3)
 
         base = taud_idx * 64
@@ -1371,7 +1390,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                   patterns_rows: list, decompress: bool) -> bytes:
     # ── Resolve IT recalls ───────────────────────────────────────────────────
     vprint("  resolving IT recalls…")
-    resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef)
+    resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
+                       old_effects=h.old_effects)
 
     # ── Check SBx chunk crossing (warn only) ─────────────────────────────────
     for pi, (grid, rows) in enumerate(patterns_rows):
@@ -1524,12 +1544,15 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    song_table = struct.pack('<IBHBBHf',
+    # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted)
+    flags_byte = 0x00 if h.linear_slides else 0x02
+    song_table = struct.pack('<IBHBBHfB',
         song_offset, C, num_taud_pats,
         bpm_stored, speed,
-        0x9000,   # C8
+        0xA000,   # C9
         8363.0,
-    ) + b'\x00'
+        flags_byte,
+    )
     assert len(song_table) == TAUD_SONG_ENTRY
 
     return header + compressed + song_table + bytes(pat_bin) + bytes(sheet)

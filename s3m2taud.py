@@ -79,7 +79,7 @@ EFF_Z = 26  # sync
 TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
 TAUD_VERSION     = 1
 TAUD_HEADER_SIZE = 32    # magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(2)+sig(16)
-TAUD_SONG_ENTRY  = 16   # offset(4)+voices(1)+pats_lo(1)+pats_hi(1)+bpm(1)+tick(1)+pad(7)
+TAUD_SONG_ENTRY  = 16   # offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+flags(1)
 SAMPLEBIN_SIZE   = 770048
 INSTBIN_SIZE     = 16384   # 256 instruments × 64 bytes
 SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE  # 786432
@@ -898,17 +898,20 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique ({orig_count - num_taud_pats} deduplicated)")
 
-    # Song table row (16 bytes): offset(4)+voices(1)+patsLo(1)+patsHi(1)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+pad(1)
+    # Song table row (16 bytes): offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+flags(1)
     # Built after dedup so num_taud_pats reflects the unique count.
-    song_table = struct.pack('<IBHBBHf',
+    # flags byte: bit 1 (f) = Amiga pitch-slide mode (mirrors the S3M linear_slides flag inverted)
+    flags_byte = 0x00 if h.linear_slides else 0x02
+    song_table = struct.pack('<IBHBBHfB',
         song_offset,
         C,
         num_taud_pats,
         bpm_stored,
         speed,
-        0x9000, # C8
+        0xA000, # C9
         8363.0, # Hz
-    ) + b'\x00'
+        flags_byte,
+    )
     assert len(song_table) == TAUD_SONG_ENTRY
 
     # Cue sheet (using remapped pattern indices)

@@ -88,14 +88,14 @@ rightshade:'\u00B2',
 
 const fxNames = {
 '0':"--           ",
-'1':"Mixer config ", // Taud: 1 01xx: set stereo panning law
+'1':"Mixer config ",
 '2':"UNIMPLEMENTED",
 '3':"UNIMPLEMENTED",
 '4':"UNIMPLEMENTED",
 '5':"UNIMPLEMENTED",
 '6':"UNIMPLEMENTED",
 '7':"UNIMPLEMENTED",
-'8':"UNIMPLEMENTED",
+'8':"Bitcrusher   ",
 '9':"UNIMPLEMENTED",
 A:"Tick speed   ",
 B:"Jump to order",
@@ -674,8 +674,8 @@ function drawStatusBar() {
     con.move(1,4)
     con.color_pair(colWHITE, 255); print(`Cue `)
     con.color_pair(20, 255); print(`${sCueIdx}`)
-    con.color_pair(colWHITE, 255); print(`/`)
-    con.color_pair(20, 255); print(`${sCueMax}`)
+//    con.color_pair(colWHITE, 255); print(`/`)
+//    con.color_pair(20, 255); print(`${sCueMax}`)
     con.color_pair(colWHITE, 255); print(`  Row `)
     con.color_pair(130, 255); print(`${sRow}`)
 
@@ -683,7 +683,7 @@ function drawStatusBar() {
     con.move(2,4)
     con.color_pair(colWHITE, 255); print(`BPM `)
     con.color_pair(161, 255); print(`${sBPM}`)
-    con.color_pair(colWHITE, 255); print(` Tickspeed `)
+    con.color_pair(colWHITE, 255); print(`  Tick `)
     con.color_pair(235, 255); print(`${sSpd}`)
 
     // app title
