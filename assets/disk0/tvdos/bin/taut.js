@@ -216,6 +216,8 @@ const colEffArg = 231
 const colBackPtn = 255
 
 let PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
+let beatDivPrimary = 4 // TODO read from the Project Data section of the .taud
+let beatDivSecondary = 16
 
 // pitchSymLut[pitchInOct] = [symString, octaveOffset]
 // octaveOffset is 1 when pitchInOct is closer to the next octave's root (wraps up) than to any table entry.
@@ -563,7 +565,8 @@ const colPlayback  = 86
 const colHighlight = 41
 const colColumnSep = 6
 const colRowNum    = 250
-const colRowNumEmph1 = 180
+const colRowNumEmph1 = 225
+const colRowNumEmph2 = 217
 const colStatus    = 253
 const colVoiceHdr  = 230
 const colSep       = 252
@@ -670,6 +673,13 @@ function drawStatusBar() {
     con.move(2,1)
     print((playbackMode == PLAYMODE_NONE) ? sym.statusstop : sym.statusplay)
 
+    // beat indicator
+    let beatCursorRow = cursorRow
+    while (beatCursorRow > beatDivSecondary) { beatCursorRow -= beatDivSecondary } // test this behaviour with primary=4, secondary=22 or something
+    let beatInd = (playbackMode != PLAYMODE_NONE && beatCursorRow % beatDivPrimary < (beatDivPrimary >>> 1)) ?
+     ((beatCursorRow % beatDivSecondary < (beatDivPrimary >>> 1)) ? '\u00846u' : '\u00847u') :
+     ''
+
     // cue row
     con.move(1,4)
     con.color_pair(colWHITE, 255); print(`Cue `)
@@ -677,7 +687,7 @@ function drawStatusBar() {
 //    con.color_pair(colWHITE, 255); print(`/`)
 //    con.color_pair(20, 255); print(`${sCueMax}`)
     con.color_pair(colWHITE, 255); print(`  Row `)
-    con.color_pair(130, 255); print(`${sRow}`)
+    con.color_pair(130, 255); print(`${sRow}${beatInd}`)
 
     // bpm spd
     con.move(2,4)
@@ -791,7 +801,11 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
 
     con.color_pair(colRowNum, back)
     if (actualRow < ROWS_PER_PAT) {
-        if (actualRow % 4 == 0) {con.color_pair(colRowNumEmph1, back)}
+        let actualRowForBeatCalc = actualRow
+        while (actualRowForBeatCalc >= beatDivSecondary) { actualRowForBeatCalc -= beatDivSecondary }
+
+        if (actualRowForBeatCalc % beatDivPrimary == 0) {con.color_pair(colRowNumEmph1, back)}
+        if (actualRowForBeatCalc % beatDivSecondary == 0) {con.color_pair(colRowNumEmph2, back)}
         let rowstr = actualRow.dec02()
         con.move(y, 1); con.prnch(rowstr.charCodeAt(0)); con.move(y, 2); con.prnch(rowstr.charCodeAt(1))
 

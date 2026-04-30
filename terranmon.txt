@@ -2296,6 +2296,8 @@ prefixes:
         10121: Pythagorean Diminished Fifth
         10122: Pythagorean Augmented Fourth
         10123: Shi'er lü (East Asian traditional tuning)
+    Uint8  Primary beat division (default: 4 rows)
+    Uint8  Secondary beat division (default: 16 rows)
 
     Byte[*]     Song name, null terminated. Encoding: UTF-8
     Byte[*]     Song composer, null terminated. Encoding: UTF-8
