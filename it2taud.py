@@ -3,6 +3,7 @@
 
 Usage:
     python3 it2taud.py input.it output.taud [-v] [--no-decompress]
+                                            [--no-pf-envelope]
 
 Limits:
     - Up to 20 IT channels (excess dropped; hard error if chunk count
@@ -11,9 +12,17 @@ Limits:
       Taud patterns. Pattern-loop (SBx) crossing a chunk boundary is
       warned; B/C effects are remapped to new cue indices.
     - IT2.14/IT2.15 compressed samples are decoded unless --no-decompress.
-    - IT instrument volume/pan envelopes (up to 8 nodes, sustain loops) are
+    - IT instrument volume/pan envelopes (up to 12 nodes, sustain loops) are
       converted to Taud format. NNA actions are ignored. Each IT instrument
       resolves to its C-5 canonical sample.
+    - IT pitch/filter envelope (no Taud equivalent) is BAKED onto a per-
+      instrument copy of the canonical sample (--no-pf-envelope to disable).
+      Pitch mode uses time-varying linear-interpolated resampling; filter
+      mode uses a 2-pole resonant low-pass biquad (RBJ cookbook),
+      approximate to IT's actual filter. Looped samples are rendered as
+      `entry + N×loop_len` with the loop reapplied to the tail. Caveat:
+      the envelope is locked to the sample's playback rate, so playing
+      the instrument an octave up advances the envelope twice as fast.
     - AdLib / OPL instruments are skipped.
 
 Effect support:
@@ -503,13 +512,206 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
     return samples
 
 
+# ── Pitch / filter envelope baker ─────────────────────────────────────────────
+# IT instruments carry a third envelope (pitch or filter, distinguished by
+# flag bit 7) that has no Taud equivalent. We render its effect onto a
+# per-instrument copy of the canonical sample so the instrument can play
+# through Taud's normal sample path with the modulation already baked in.
+#
+# Caveat: the baked envelope's time axis is locked to the sample's playback
+# rate, so playing the instrument an octave up advances the envelope twice
+# as fast (IT's envelope is wall-clock-time, regardless of note pitch). For
+# typical drum/lead use cases this is musically acceptable.
+
+def _clone_sample(src: 'ITSample') -> 'ITSample':
+    dst = ITSample()
+    for slot in ITSample.__slots__:
+        setattr(dst, slot, getattr(src, slot))
+    dst.sample_data = bytes(src.sample_data)
+    return dst
+
+
+def _plan_baked_length(src: 'ITSample', nodes: list, flags: dict,
+                       ticks_per_sec: float) -> tuple:
+    """Determine baked output length and loop boundaries.
+
+    Non-looped src → (src.length, 0, 0).
+    Looped src    → (entry + N×loop_len, entry, entry + N×loop_len),
+                    with N the smallest integer that covers the envelope's
+                    active duration in seconds. N is clamped to [1, 16].
+    """
+    if not nodes:
+        return src.length, 0, 0
+    last_tick = nodes[-1][1]
+    env_dur_sec = last_tick / ticks_per_sec if ticks_per_sec > 0 else 0.0
+    env_dur_samples = int(env_dur_sec * src.c5_speed)
+
+    if not src.has_loop or src.loop_end <= src.loop_beg:
+        return src.length, 0, 0
+
+    entry = max(0, src.loop_beg)
+    loop_len = src.loop_end - src.loop_beg
+    if loop_len <= 0:
+        return src.length, 0, 0
+
+    samples_needed = max(0, env_dur_samples - entry)
+    n = max(1, (samples_needed + loop_len - 1) // loop_len)
+    n = min(n, 16)
+    out_len = entry + n * loop_len
+    return out_len, entry, out_len
+
+
+def _read_src_sample(sd: bytes, pos: float, src: 'ITSample') -> float:
+    """Linear-interpolated read of `sd` (unsigned u8 PCM) at fractional `pos`,
+    returning a signed float in roughly [-128, +127]. Honours `src.has_loop`
+    by wrapping into [loop_beg, loop_end) once `pos >= loop_end`. Past the
+    end of a non-looped sample, returns 0.0 (silence)."""
+    if not sd:
+        return 0.0
+    if src.has_loop and src.loop_end > src.loop_beg:
+        if pos >= src.loop_end:
+            span = src.loop_end - src.loop_beg
+            pos = src.loop_beg + ((pos - src.loop_beg) % span)
+    if pos < 0.0:
+        return 0.0
+    if pos >= len(sd) - 1:
+        if pos >= len(sd):
+            return 0.0
+        return float(sd[len(sd) - 1] - 128)
+    i0 = int(pos)
+    frac = pos - i0
+    a = sd[i0] - 128
+    b = sd[i0 + 1] - 128
+    return a + (b - a) * frac
+
+
+def _bake_pitch_envelope(src: 'ITSample', nodes: list, flags: dict,
+                         ticks_per_sec: float) -> 'ITSample':
+    if not src.sample_data:
+        return src
+    out_len, lb, le = _plan_baked_length(src, nodes, flags, ticks_per_sec)
+    tick_per_sample = ticks_per_sec / max(1, src.c5_speed)
+    sd = src.sample_data
+    out = bytearray(out_len)
+    read_pos = 0.0
+    t_tick = 0.0
+    for i in range(out_len):
+        env_v = _env_value_at(t_tick, nodes, flags)
+        rate = 2.0 ** (env_v / 12.0)
+        v = _read_src_sample(sd, read_pos, src)
+        b = int(round(v)) + 128
+        if b < 0: b = 0
+        elif b > 255: b = 255
+        out[i] = b
+        read_pos += rate
+        t_tick += tick_per_sample
+
+    dst = _clone_sample(src)
+    dst.sample_data = bytes(out)
+    dst.length = out_len
+    dst.loop_beg = lb
+    dst.loop_end = le
+    if lb < le:
+        dst.has_loop = True
+        dst.flags = (dst.flags | IT_SMP_LOOP) & ~IT_SMP_PINGPONG
+    else:
+        dst.has_loop = False
+        dst.flags = dst.flags & ~(IT_SMP_LOOP | IT_SMP_PINGPONG)
+    return dst
+
+
+def _bake_filter_envelope(src: 'ITSample', nodes: list, flags: dict,
+                          ticks_per_sec: float, ifr: int) -> 'ITSample':
+    """Time-varying 2-pole resonant low-pass biquad (RBJ cookbook).
+    Approximates IT's filter; not bit-exact to IT's Pentium routine."""
+    if not src.sample_data:
+        return src
+    out_len, lb, le = _plan_baked_length(src, nodes, flags, ticks_per_sec)
+    tick_per_sample = ticks_per_sec / max(1, src.c5_speed)
+    sr = max(1, src.c5_speed)
+    nyq = sr * 0.5 - 1.0
+
+    # Resonance (0..127) → Q ∈ [0.5, 6.0]
+    Q = 0.5 + (max(0, min(ifr, 127)) / 127.0) * 5.5
+
+    sd = src.sample_data
+    out = bytearray(out_len)
+    x1 = x2 = 0.0
+    y1 = y2 = 0.0
+    t_tick = 0.0
+    src_len = len(sd)
+    for i in range(out_len):
+        env_v = _env_value_at(t_tick, nodes, flags)
+        # Map env value -32..+32 to cutoff: 110 Hz (closed) to ~28 kHz (open)
+        cutoff = 110.0 * (2.0 ** ((env_v + 32.0) * 0.125))
+        if cutoff > nyq: cutoff = nyq
+        if cutoff < 1.0: cutoff = 1.0
+        w0 = 2.0 * math.pi * cutoff / sr
+        cosw = math.cos(w0)
+        sinw = math.sin(w0)
+        alpha = sinw / (2.0 * Q)
+        b0 = (1.0 - cosw) * 0.5
+        b1 = 1.0 - cosw
+        b2 = b0
+        a0 = 1.0 + alpha
+        a1 = -2.0 * cosw
+        a2 = 1.0 - alpha
+
+        # Read source with looping
+        in_pos = i
+        if src.has_loop and src.loop_end > src.loop_beg and in_pos >= src.loop_end:
+            span = src.loop_end - src.loop_beg
+            in_pos = src.loop_beg + ((in_pos - src.loop_beg) % span)
+        if 0 <= in_pos < src_len:
+            x0 = float(sd[in_pos] - 128)
+        else:
+            x0 = 0.0
+
+        y0 = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0
+        x2 = x1; x1 = x0
+        y2 = y1; y1 = y0
+
+        b = int(round(y0)) + 128
+        if b < 0: b = 0
+        elif b > 255: b = 255
+        out[i] = b
+        t_tick += tick_per_sample
+
+    dst = _clone_sample(src)
+    dst.sample_data = bytes(out)
+    dst.length = out_len
+    dst.loop_beg = lb
+    dst.loop_end = le
+    if lb < le:
+        dst.has_loop = True
+        dst.flags = (dst.flags | IT_SMP_LOOP) & ~IT_SMP_PINGPONG
+    else:
+        dst.has_loop = False
+        dst.flags = dst.flags & ~(IT_SMP_LOOP | IT_SMP_PINGPONG)
+    return dst
+
+
+def _bake_pf_envelope(src: 'ITSample', inst, ticks_per_sec: float) -> 'ITSample':
+    if not inst.pf_nodes or not inst.pf_flags or not inst.pf_flags.get('enabled'):
+        return src
+    if inst.pf_flags['is_filter']:
+        return _bake_filter_envelope(src, inst.pf_nodes, inst.pf_flags,
+                                     ticks_per_sec, inst.ifr)
+    return _bake_pitch_envelope(src, inst.pf_nodes, inst.pf_flags, ticks_per_sec)
+
+
 # ── IT instrument parser ──────────────────────────────────────────────────────
 
 class ITInstrument:
     __slots__ = ('name', 'dfp', 'gv', 'canonical_sample', 'canonical_volume',
-                 'vol_envelope', 'pan_envelope', 'vol_env_sustain', 'pan_env_sustain')
-    # vol_envelope / pan_envelope: list of 8 (value, minifloat_idx) tuples, or None
+                 'vol_envelope', 'pan_envelope', 'vol_env_sustain', 'pan_env_sustain',
+                 'pf_nodes', 'pf_flags', 'ifc', 'ifr')
+    # vol_envelope / pan_envelope: list of 12 (value, minifloat_idx) tuples, or None
     # vol_env_sustain / pan_env_sustain: int (0 = disabled, else (end<<3)|start)
+    # pf_nodes: raw list of (int8 value, uint16 tick) tuples (up to 25), or None
+    # pf_flags: dict {enabled, has_env_loop, has_sus_loop, lpb, lpe, slb, sle,
+    #                 is_filter, carry}, or None
+    # ifc / ifr: initial filter cutoff / resonance (0..127, or 0 if not set)
 
 def parse_instruments(data: bytes, h: ITHeader) -> list:
     insts = []
@@ -542,25 +744,35 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
         inst.canonical_sample = c5_smp   # 1-based sample index, 0 = none
         inst.canonical_volume  = min(inst.gv, 64)
 
+        # Initial filter cutoff/resonance (high bit = enabled, low 7 bits = value)
+        ifc_raw = data[ptr + 0x39]
+        ifr_raw = data[ptr + 0x3A]
+        inst.ifc = ifc_raw & 0x7F if (ifc_raw & 0x80) else 0
+        inst.ifr = ifr_raw & 0x7F if (ifr_raw & 0x80) else 0
+
         # Parse IT envelopes (new-format only, ≥cmwt 0x200)
-        # Vol envelope at ptr+0x130; pan envelope at ptr+0x182
+        # Vol envelope at ptr+0x130; pan envelope at ptr+0x182; pf envelope at ptr+0x1D4
         ticks_per_sec = max(h.initial_tempo * 2.0 / 5.0, 1.0)   # tick rate = bpm×2/5 (50 Hz at 125 BPM); speed is ticks-per-row, irrelevant here
         inst.vol_envelope, inst.vol_env_sustain = _parse_it_envelope(
             data, ptr + 0x130, False, ticks_per_sec)
         inst.pan_envelope, inst.pan_env_sustain = _parse_it_envelope(
             data, ptr + 0x182, True,  ticks_per_sec)
+        inst.pf_nodes, inst.pf_flags = _parse_it_pf_envelope_raw(
+            data, ptr + 0x1D4)
         insts.append(inst)
     return insts
 
 
 def _parse_it_envelope(data: bytes, env_ptr: int, is_pan: bool,
                        ticks_per_sec: float) -> tuple:
-    """Parse one IT envelope block into 8 Taud (value, minifloat_idx) points.
+    """Parse one IT envelope block into 12 Taud (value, minifloat_idx) points.
 
     Returns (points_list, sustain_byte) where points_list is a list of
-    8 (value, minifloat_idx) tuples, or None if envelope not enabled.
+    12 (value, minifloat_idx) tuples, or None if envelope not enabled.
     sustain_byte: bit7=enabled (u), bit6=sustain (t: 1=breaks on key-off,
     0=loops forever), bits[5:3]=end_idx, bits[2:0]=start_idx; 0=disabled.
+    Note: sustain byte still uses 3-bit indices (0..7), so loop nodes
+    referencing indices 8..11 cannot be encoded and fall back to no loop.
 
     IT has two loop types: envelope loop (continues forever) and sustain loop
     (breaks on key-off). Taud distinguishes them via the 't' flag. Priority
@@ -609,23 +821,26 @@ def _parse_it_envelope(data: bytes, env_ptr: int, is_pan: bool,
     if not nodes:
         return None, 0
 
-    # Decimate to 8 nodes if needed, preserving first/last
-    decimated = len(nodes) > 8
+    # Decimate to 12 nodes if needed, preserving first/last
+    decimated = len(nodes) > 12
     if not decimated:
         selected = nodes[:]
-        if has_loop and use_lb < len(selected) and use_le < len(selected):
+        # Sustain byte encodes 3-bit indices; loop nodes ≥8 cannot be referenced.
+        if has_loop and use_lb < min(len(selected), 8) and use_le < min(len(selected), 8):
             taud_slb, taud_sle = use_lb, use_le
         else:
             taud_slb = taud_sle = -1
+            if has_loop and (use_lb >= 8 or use_le >= 8):
+                vprint(f"    loop indices ≥8 cannot be encoded in 3-bit sustain field")
     else:
-        selected = [nodes[round(k * (len(nodes) - 1) / 7)] for k in range(8)]
+        selected = [nodes[round(k * (len(nodes) - 1) / 11)] for k in range(12)]
         taud_slb = taud_sle = -1   # loop indices lost in decimation
         if has_loop:
-            vprint(f"    loop indices lost due to decimation ({len(nodes)} nodes → 8)")
+            vprint(f"    loop indices lost due to decimation ({len(nodes)} nodes → 12)")
 
-    # Build 8 Taud envelope points with delta-time minifloats
+    # Build 12 Taud envelope points with delta-time minifloats
     points = []
-    for k in range(8):
+    for k in range(12):
         if k < len(selected):
             val, tick = selected[k]
             if is_pan:
@@ -654,6 +869,87 @@ def _parse_it_envelope(data: bytes, env_ptr: int, is_pan: bool,
         sus_byte = 0
 
     return points, sus_byte
+
+
+def _parse_it_pf_envelope_raw(data: bytes, env_ptr: int) -> tuple:
+    """Parse the IT pitch/filter envelope keeping all nodes (no decimation).
+
+    Returns (nodes, flags) where:
+      nodes: list of (int8 value, uint16 tick) tuples (up to 25 entries),
+             values in -32..+32 semitones (pitch) or filter modulation units.
+      flags: dict {enabled, has_env_loop, has_sus_loop, lpb, lpe, slb, sle,
+                   is_filter, carry}
+    Returns (None, None) if the envelope is not enabled or out of range.
+    """
+    if env_ptr + 82 > len(data):
+        return None, None
+    flags_byte = data[env_ptr]
+    if not (flags_byte & 0x01):
+        return None, None
+    num_nodes = max(1, min(data[env_ptr + 1], 25))
+    flags = {
+        'enabled':      True,
+        'has_env_loop': bool(flags_byte & 0x02),
+        'has_sus_loop': bool(flags_byte & 0x04),
+        'carry':        bool(flags_byte & 0x08),
+        'is_filter':    bool(flags_byte & 0x80),
+        'lpb': data[env_ptr + 2],
+        'lpe': data[env_ptr + 3],
+        'slb': data[env_ptr + 4],
+        'sle': data[env_ptr + 5],
+    }
+    nodes = []
+    for n in range(num_nodes):
+        nptr = env_ptr + 6 + n * 3
+        if nptr + 2 >= len(data):
+            break
+        val  = struct.unpack_from('b', data, nptr)[0]
+        tick = struct.unpack_from('<H', data, nptr + 1)[0]
+        nodes.append((val, tick))
+    if not nodes:
+        return None, None
+    # Clamp loop indices into valid range
+    for k in ('lpb', 'lpe', 'slb', 'sle'):
+        flags[k] = min(flags[k], len(nodes) - 1)
+    return nodes, flags
+
+
+def _env_value_at(t_tick: float, nodes: list, flags: dict) -> float:
+    """Return interpolated envelope value at time `t_tick` (IT envelope ticks).
+
+    Honours env-loop wrap. Sus-loop is treated as 'play through once then hold
+    last value' (no key-off model). Returns nodes[0].value if t_tick is before
+    the first node, nodes[-1].value if past the last node and no env loop.
+    """
+    if not nodes:
+        return 0.0
+    first_tick = nodes[0][1]
+    if t_tick <= first_tick:
+        return float(nodes[0][0])
+
+    if flags['has_env_loop']:
+        lpb_tick = nodes[flags['lpb']][1]
+        lpe_tick = nodes[flags['lpe']][1]
+        loop_span = lpe_tick - lpb_tick
+        if loop_span > 0 and t_tick >= lpe_tick:
+            t_tick = lpb_tick + ((t_tick - lpb_tick) % loop_span)
+        elif loop_span <= 0 and t_tick >= lpe_tick:
+            return float(nodes[flags['lpe']][0])
+
+    last_tick = nodes[-1][1]
+    if t_tick >= last_tick:
+        return float(nodes[-1][0])
+
+    # Linear interpolate between bracketing nodes
+    for k in range(len(nodes) - 1):
+        a_val, a_t = nodes[k]
+        b_val, b_t = nodes[k + 1]
+        if a_t <= t_tick <= b_t:
+            if b_t == a_t:
+                return float(a_val)
+            frac = (t_tick - a_t) / (b_t - a_t)
+            return a_val + (b_val - a_val) * frac
+    return float(nodes[-1][0])
 
 
 # ── IT pattern parser ─────────────────────────────────────────────────────────
@@ -1133,7 +1429,7 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
     """samples_or_proxy: list of ITSample | None, indexed 1-based (index 0 unused).
 
     envelopes_by_slot: optional dict mapping taud_slot → (vol_env, vol_sus, pan_env, pan_sus, inst_gv)
-    where vol_env/pan_env are lists of 8 (value, minifloat_idx) tuples (or None),
+    where vol_env/pan_env are lists of 12 (value, minifloat_idx) tuples (or None),
     and inst_gv is instrument global volume (0..255, byte 15).
 
     Returns (bin_bytes[SAMPLEINST_SIZE], offsets_dict).
@@ -1198,33 +1494,33 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         struct.pack_into('<H', inst_bin, base + 10, le)
         inst_bin[base + 12] = flags_byte
 
-        # Write envelope data (new 8-point format)
+        # Write envelope data (12-point format: vol at +16..+39, pan at +40..+63)
         env_data = envelopes_by_slot.get(taud_idx) if envelopes_by_slot else None
         if env_data and env_data[0]:
             vol_env, vol_sus, pan_env, pan_sus, inst_gv = env_data
             inst_bin[base + 13] = vol_sus & 0xFF
             inst_bin[base + 14] = pan_sus & 0xFF
             inst_bin[base + 15] = inst_gv & 0xFF
-            for k, (val, mf) in enumerate(vol_env[:8]):
+            for k, (val, mf) in enumerate(vol_env[:12]):
                 inst_bin[base + 16 + k*2]     = val & 0xFF
                 inst_bin[base + 16 + k*2 + 1] = mf  & 0xFF
             if pan_env:
-                for k, (val, mf) in enumerate(pan_env[:8]):
-                    inst_bin[base + 32 + k*2]     = val & 0xFF
-                    inst_bin[base + 32 + k*2 + 1] = mf  & 0xFF
+                for k, (val, mf) in enumerate(pan_env[:12]):
+                    inst_bin[base + 40 + k*2]     = val & 0xFF
+                    inst_bin[base + 40 + k*2 + 1] = mf  & 0xFF
             else:
-                for k in range(8):
-                    inst_bin[base + 32 + k*2]     = 0x80  # pan centre
-                    inst_bin[base + 32 + k*2 + 1] = 0x00  # hold
+                for k in range(12):
+                    inst_bin[base + 40 + k*2]     = 0x80  # pan centre
+                    inst_bin[base + 40 + k*2 + 1] = 0x00  # hold
         else:
             # No instrument envelope: single-point vol, neutral pan, full gv
             inst_gv = env_data[4] if env_data else 255
             inst_bin[base + 15] = inst_gv & 0xFF
             inst_bin[base + 16] = min(s.vol, 63)   # value 0-63
             inst_bin[base + 17] = 0                 # offset 0 = hold
-            for k in range(8):
-                inst_bin[base + 32 + k*2]     = 0x80  # pan centre
-                inst_bin[base + 32 + k*2 + 1] = 0x00  # hold
+            for k in range(12):
+                inst_bin[base + 40 + k*2]     = 0x80  # pan centre
+                inst_bin[base + 40 + k*2 + 1] = 0x00  # hold
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
     return bytes(sample_bin) + bytes(inst_bin), offsets
@@ -1416,7 +1712,8 @@ def _active_channels(h: ITHeader, patterns_rows: list) -> list:
     return active
 
 def assemble_taud(h: ITHeader, samples: list, instruments: list,
-                  patterns_rows: list, decompress: bool) -> bytes:
+                  patterns_rows: list, decompress: bool,
+                  no_pf_envelope: bool = False) -> bytes:
     # ── Resolve IT recalls ───────────────────────────────────────────────────
     vprint("  resolving IT recalls…")
     resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
@@ -1481,9 +1778,11 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     if h.use_instruments:
         # Build a proxy sample list where Taud inst slot = IT inst index,
         # resolved to the canonical sample. Slot 0 unused.
+        ticks_per_sec = max(h.initial_tempo * 2.0 / 5.0, 1.0)
         proxy = [None] * (max(len(instruments), 256) + 1)
         inst_vols = {}
         envelopes_by_slot = {}
+        bake_count = 0
         for ii, inst in enumerate(instruments):
             taud_slot = ii + 1
             if taud_slot >= 256: break
@@ -1491,7 +1790,18 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             si = inst.canonical_sample - 1   # 0-based sample index
             if si < 0 or si >= len(samples) or samples[si] is None:
                 continue
-            proxy[taud_slot] = samples[si]
+            src_smp = samples[si]
+            if (not no_pf_envelope and inst.pf_nodes
+                    and inst.pf_flags and inst.pf_flags.get('enabled')):
+                baked = _bake_pf_envelope(src_smp, inst, ticks_per_sec)
+                if baked is not src_smp:
+                    bake_count += 1
+                    mode = 'filter' if inst.pf_flags['is_filter'] else 'pitch'
+                    vprint(f"  baked pf envelope on inst[{ii+1}] '{inst.name}' "
+                           f"(mode={mode}, src_len={src_smp.length}, "
+                           f"out_len={baked.length})")
+                src_smp = baked
+            proxy[taud_slot] = src_smp
             vol64 = min(inst.canonical_volume, 64)
             inst_vols[taud_slot] = min(vol64, 0x3F)
             # IT global volume range is 0..128; rescale to Taud's 0..255.
@@ -1501,6 +1811,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 inst.pan_envelope, inst.pan_env_sustain,
                 inst_gv_255,
             )
+        if bake_count:
+            vprint(f"  pf envelope baking: {bake_count} instrument(s)")
         sampleinst_raw, _ = build_sample_inst_bin_it(proxy, envelopes_by_slot)
     else:
         # Samples referenced directly; proxy is samples list (0-based, slot 0 unused)
@@ -1602,6 +1914,8 @@ def main():
     ap.add_argument('-v', '--verbose', action='store_true')
     ap.add_argument('--no-decompress', action='store_true',
                     help='Treat compressed IT samples as silent (debug)')
+    ap.add_argument('--no-pf-envelope', action='store_true',
+                    help='Skip baking IT pitch/filter envelope onto sample copies')
     args = ap.parse_args()
     VERBOSE = args.verbose
 
@@ -1621,7 +1935,8 @@ def main():
     patterns_rows = parse_patterns(data, h)
 
     taud = assemble_taud(h, samples, instruments, patterns_rows,
-                         decompress=not args.no_decompress)
+                         decompress=not args.no_decompress,
+                         no_pf_envelope=args.no_pf_envelope)
 
     with open(args.output, 'wb') as f:
         f.write(taud)
