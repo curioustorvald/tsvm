@@ -196,7 +196,7 @@ sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
 10122:{index:10122,name:"Pythagorean Augmented Fourth", table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x828,0x95C,0xA90,0xC14,0xD48,0xECC],
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
-10123:{index:10123,name:"Shi'er lu",                         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],
+10123:{index:10123,name:"\u00FC\u00FD\u00FE",         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],
 sym:[` \u00E0\u00E1`,` \u00E2\u00E3`,` \u00E4\u00E5`,` \u00E6\u00E7`,` \u00E8\u00E9`,` \u00EA\u00EB`,` \u00EC\u00ED`,` \u00EE\u00EF`,` \u00F0\u00F1`,` \u00F2\u00F3`,` \u00F4\u00F5`,` \u00F6\u00F7`]},
 
 
@@ -218,6 +218,7 @@ const colBackPtn = 255
 let PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
 let beatDivPrimary = 4 // TODO read from the Project Data section of the .taud
 let beatDivSecondary = 16
+let hasUnsavedChanges = false
 
 // pitchSymLut[pitchInOct] = [symString, octaveOffset]
 // octaveOffset is 1 when pitchInOct is closer to the next octave's root (wraps up) than to any table entry.
@@ -850,18 +851,22 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Nav'],
         [`Pg\u008418u`,'Cue'],
     ['sep'],
-        ['WER','ViewMode'],
+        ['WER','View'],
+    ['sep'],
+        ['Sp','Edit'],
     ['sep'],
         ['m','Mute'],
         ['s','Solo'],
     ['sep'],
-        ['Tab','Panel'],
+        ['Tab','Panel']
 //    ['sep'],
 //        ['q','Quit'],
     ]
     let hintElemOrders = [
         [`\u008428u\u008429u`,'Nav'],
         [`Ent`,'Go to cue'],
+    ['sep'],
+        ['Sp','Edit'],
     ['sep'],
         ['Tab','Panel'],
 //    ['sep'],
@@ -872,13 +877,83 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Nav'],
         [`Pg\u008418u`,'Ptn'],
     ['sep'],
+        ['Sp','Edit'],
+    ['sep'],
         ['Tab','Panel'],
 //    ['sep'],
 //        ['q','Quit'],
     ]
 
+    let hintElemEditNoteValue = [ // only enabled in viewmode 'E' or in pattern editor
+        [`\u008428u\u008429u`,'Nav'],
+        [`Pg\u008418u`,'Cue'],
+    ['sep'],
+        [`A${sym.doubledot}G`,'Note'],
+        [`0${sym.doubledot}9`,'Oct'],
+        ['[]',`Tone\u008418u`],
+    ['sep'],
+        ['#',sym.sharp],
+        ['@','Acc'],
+    ['sep'],
+        ['=','KOff'],
+        ['^','KCut'],
+//    ['sep'],
+//        ['Sp','ExitEdit'],
+    ]
+    let hintElemEditInstValue = [
+        [`\u008428u\u008429u`,'Nav'],
+        [`Pg\u008418u`,'Cue'],
+    ['sep'],
+        [`0${sym.doubledot}9 A${sym.doubledot}F`,'Instrument'],
+    ['sep'],
+        ['Sp','ExitEdit'],
+    ]
+    let hintElemEditVolEff = [
+        [`\u008428u\u008429u`,'Nav'],
+        [`Pg\u008418u`,'Cue'],
+    ['sep'],
+        ['h','Set'],
+        ['j','SlideDn'],
+        ['k','SlideUp'],
+        ['u','FineDn'],
+        ['i','FineUp'],
+        [`0${sym.doubledot}9 A${sym.doubledot}F`,'Val'],
+//    ['sep'],
+//        ['Sp','ExitEdit'],
+    ]
+    let hintElemEditPanEff = [
+        [`\u008428u\u008429u`,'Nav'],
+        [`Pg\u008418u`,'Cue'],
+    ['sep'],
+        ['h','Set'],
+        ['j','SlideL'],
+        ['k','SlideR'],
+        ['u','FineL'],
+        ['i','FineR'],
+        [`0${sym.doubledot}9 A${sym.doubledot}F`,'Val'],
+//    ['sep'],
+//        ['Sp','ExitEdit'],
+    ]
+    let hintElemEditFxSym = [
+        [`\u008428u\u008429u`,'Nav'],
+        [`Pg\u008418u`,'Cue'],
+    ['sep'],
+        [`0${sym.doubledot}9 A${sym.doubledot}F`,`FxSym`],
+    ['sep'],
+        ['Sp','ExitEdit'],
+    ]
+    let hintElemEditFxVal = [
+        [`\u008428u\u008429u`,'Nav'],
+        [`Pg\u008418u`,'Cue'],
+    ['sep'],
+        [`0${sym.doubledot}9 A${sym.doubledot}F`,`FxVal`],
+    ['sep'],
+        ['Sp','ExitEdit'],
+    ]
+
     const hintElemExternal = [['Tab','Panel']]
     let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemExternal, hintElemExternal, hintElemExternal, hintElemExternal]
+    let hintElemPat = [hintElemEditNoteValue, hintElemEditInstValue, hintElemEditVolEff, hintElemEditPanEff, hintElemEditFxSym, hintElemEditFxVal]
 
     // erase current line
     con.move(SCRH, 1)
@@ -1837,9 +1912,36 @@ function makeExternalPanelDraw(progName) {
 function drawProjectContents(wo) {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colBackPtn, 255)
-    con.move(PTNVIEW_OFFSET_Y + 2, 3)
-    con.color_pair(colStatus, 255)
-    print('[Project settings — not yet implemented]')
+
+    let mixerflag = initialTrackerMixerflags
+    let flagstrbuf = ''
+    let flagstr = [
+        ['Linear pan','Equal-energy pan'],
+        ['Linear tone','Amiga tone'],
+    ]
+    for (let i = 0; i < flagstr.length; i++) {
+        let s = flagstr[i][(mixerflag >>> i) & 1 != 0]
+        if (i > 0) flagstrbuf += ', ';
+        flagstrbuf += s
+    }
+
+
+    let projMeta = {
+        Filename: fullPathObj.string.split('\\').last(),
+        Patterns: `${song.numPats}/4095 ($${song.numPats.hex03()})`,
+        Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
+        Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
+        Flags: `${flagstrbuf} ($${mixerflag.hex02()})`,
+    }
+
+    Object.entries(projMeta).forEach(([key, value], index) => {
+        con.move(PTNVIEW_OFFSET_Y + index, 2)
+        con.color_pair(colStatus, 255); print(key)
+        con.move(PTNVIEW_OFFSET_Y + index, 12)
+        con.color_pair(colVoiceHdr, colBLACK); print(value)
+    })
+
+    con.color_pair(colStatus, 255) // reset colour
 }
 function externalPanelInput(wo, event) {}
 
@@ -2148,7 +2250,7 @@ function drawGotoPopup(popup, buf) {
     const promptStr = prompts[currentPanel] || 'Number:'
 
     con.move(popup.y + 2, popup.x + 2)
-    con.color_pair(colStatus, colPopupBack)
+    con.color_pair(colWHITE, colPopupBack)
     print(promptStr + ' ')
     con.color_pair(230, 240)
     print('[' + buf.padEnd(3, '_') + ']')
@@ -2171,8 +2273,8 @@ function applyGoto(num) {
 }
 
 function openConfirmQuit() {
-    const pw = 25
-    const ph = 5
+    const pw = 25 + hasUnsavedChanges * 4
+    const ph = 5 + hasUnsavedChanges
     const px = ((SCRW - pw) / 2 | 0) + 1
     const py = ((SCRH - ph) / 2 | 0)
 
@@ -2184,10 +2286,16 @@ function openConfirmQuit() {
     popup.drawFrame()
 
     con.move(py + 2, px + 2)
-    con.color_pair(colStatus, colPopupBack)
+    con.color_pair(colWHITE, colPopupBack)
     print('Exit Microtone? ')
     con.color_pair(230, 240)
     print('[Y/N]')
+
+    if (hasUnsavedChanges) {
+        con.move(py + 3, px + 2)
+        con.color_pair(colWHITE, colPopupBack)
+        print('You have unsaved changes.')
+    }
 
     con.color_pair(colStatus, 255) // reset colour
 
@@ -2261,6 +2369,7 @@ resetAudioDevice()
 taud.uploadTaudFile(fullPathObj.full, 0, PLAYHEAD)
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
+const initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
 
 function isExternalPanel(p) {
     return p === VIEW_SAMPLES || p === VIEW_INSTRMNT || p === VIEW_FILE

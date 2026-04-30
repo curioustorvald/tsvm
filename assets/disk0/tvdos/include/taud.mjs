@@ -43,9 +43,9 @@ function _pokeU32LE(ptr, off, v) {
  *
  * @param inFile             Full path with drive letter, e.g. "A:/music/song.taud"
  * @param songIndex          0-based index of the song in the SONG TABLE
- * @param targetPlaydataSlot Playhead number (0-3) to configure
+ * @param playhead Playhead number (0-3) to configure
  */
-function uploadTaudFile(inFile, songIndex, targetPlaydataSlot) {
+function uploadTaudFile(inFile, songIndex, playhead) {
     const drive    = inFile[0].toUpperCase()
     const diskPath = inFile.substring(2)
 
@@ -107,6 +107,7 @@ function uploadTaudFile(inFile, songIndex, targetPlaydataSlot) {
     let numPatsHi  = sys.peek(filePtr + entryOff + 6) & 0xFF
     let bpmStored  = sys.peek(filePtr + entryOff + 7) & 0xFF
     let tickRate   = sys.peek(filePtr + entryOff + 8) & 0xFF
+    let mixerflags = sys.peek(filePtr + entryOff + 15) & 0xFF
 
     let bpm        = bpmStored + 24
     let patsToLoad = numPatsLo | (numPatsHi << 8)
@@ -130,9 +131,10 @@ function uploadTaudFile(inFile, songIndex, targetPlaydataSlot) {
     }
 
     // -- 8. Configure playhead ------------------------------------------------
-    audio.setTrackerMode(targetPlaydataSlot)
-    audio.setBPM(targetPlaydataSlot, bpm)
-    audio.setTickRate(targetPlaydataSlot, tickRate > 0 ? tickRate : 6)
+    audio.setTrackerMode(playhead)
+    audio.setBPM(playhead, bpm)
+    audio.setTickRate(playhead, tickRate > 0 ? tickRate : 6)
+    audio.setTrackerMixerFlags(playhead, mixerflags)
 
 
     fileHandle.close()

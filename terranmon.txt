@@ -2022,13 +2022,12 @@ Instrument bin: Registry for 256 instruments, formatted as:
     Uint8  Instrument Global Volume (0..255)
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
         * FastTracker2 has range of 0..64; multiply by (255/64) then round to int
-  Bit16x8 Volume envelopes
+    Bit16x12 Volume envelopes
        Byte 1: Volume (00..3F)
        Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
-  Bit16x8 Panning envelopes
+    Bit16x12 Panning envelopes
       Byte 1: Pan (00..FF)
       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
-  Bit16x8 Reserved
 
 Play Data: play data are series of tracker-like instructions, visualised as:
 

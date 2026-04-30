@@ -1202,8 +1202,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.envTimeSec = 0.0
             voice.envIndex = vSusStart
             voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
-        } else if (voice.envIndex >= 7) {
-            voice.envVolume = (inst.volEnvelopes[7].value / 63.0).coerceIn(0.0, 1.0)
+        } else if (voice.envIndex >= 11) {
+            voice.envVolume = (inst.volEnvelopes[11].value / 63.0).coerceIn(0.0, 1.0)
         } else {
             val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
             if (vOffset == 0.0) {
@@ -1213,12 +1213,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (voice.envTimeSec >= vOffset) {
                     voice.envTimeSec -= vOffset
                     val nextIdx = if (vSusOn && voice.envIndex == vSusEnd) vSusStart
-                                  else (voice.envIndex + 1).coerceAtMost(7)
+                                  else (voice.envIndex + 1).coerceAtMost(11)
                     voice.envIndex = nextIdx
                     voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
                 } else {
                     val cur = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
-                    val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(7)].value / 63.0).coerceIn(0.0, 1.0)
+                    val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(11)].value / 63.0).coerceIn(0.0, 1.0)
                     voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / vOffset)
                 }
             }
@@ -1242,8 +1242,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.envPanTimeSec = 0.0
             voice.envPanIndex = pSusStart
             voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
-        } else if (voice.envPanIndex >= 7) {
-            voice.envPan = inst.panEnvelopes[7].value / 255.0
+        } else if (voice.envPanIndex >= 11) {
+            voice.envPan = inst.panEnvelopes[11].value / 255.0
         } else {
             val pOffset = inst.panEnvelopes[voice.envPanIndex].offset.toDouble()
             if (pOffset == 0.0) {
@@ -1253,12 +1253,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (voice.envPanTimeSec >= pOffset) {
                     voice.envPanTimeSec -= pOffset
                     val nextIdx = if (pSusOn && voice.envPanIndex == pSusEnd) pSusStart
-                                  else (voice.envPanIndex + 1).coerceAtMost(7)
+                                  else (voice.envPanIndex + 1).coerceAtMost(11)
                     voice.envPanIndex = nextIdx
                     voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
                 } else {
                     val cur = inst.panEnvelopes[voice.envPanIndex].value / 255.0
-                    val nxt = inst.panEnvelopes[(voice.envPanIndex + 1).coerceAtMost(7)].value / 255.0
+                    val nxt = inst.panEnvelopes[(voice.envPanIndex + 1).coerceAtMost(11)].value / 255.0
                     voice.envPan = cur + (nxt - cur) * (voice.envPanTimeSec / pOffset)
                 }
             }
@@ -2336,12 +2336,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var volEnvSustain: Int,           // byte 13: ut eee sss (u=enable, t=sustain (1=breaks on key-off, 0=loops forever))
         var panEnvSustain: Int,           // byte 14: ut eee sss (u=enable, t=sustain (1=breaks on key-off, 0=loops forever))
         var instGlobalVolume: Int,        // byte 15: instrument global volume (0..255, 255 = unity)
-        var volEnvelopes: Array<TaudInstEnvPoint>, // 8 points, value 0x00-0x3F
-        var panEnvelopes: Array<TaudInstEnvPoint>  // 8 points, value 0x00-0xFF (0x80 = centre)
+        var volEnvelopes: Array<TaudInstEnvPoint>, // 12 points, value 0x00-0x3F
+        var panEnvelopes: Array<TaudInstEnvPoint>  // 12 points, value 0x00-0xFF (0x80 = centre)
     ) {
         constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
-            Array(8) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
-            Array(8) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) })
+            Array(12) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
+            Array(12) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) })
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -2382,11 +2382,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             13 -> volEnvSustain.toByte()
             14 -> panEnvSustain.toByte()
             15 -> instGlobalVolume.toByte()
-            in 16..30 step 2 -> volEnvelopes[(offset - 16) / 2].value.toByte()
-            in 17..31 step 2 -> volEnvelopes[(offset - 17) / 2].offset.index.toByte()
-            in 32..46 step 2 -> panEnvelopes[(offset - 32) / 2].value.toByte()
-            in 33..47 step 2 -> panEnvelopes[(offset - 33) / 2].offset.index.toByte()
-            in 48..63 -> 0
+            in 16..38 step 2 -> volEnvelopes[(offset - 16) / 2].value.toByte()
+            in 17..39 step 2 -> volEnvelopes[(offset - 17) / 2].offset.index.toByte()
+            in 40..62 step 2 -> panEnvelopes[(offset - 40) / 2].value.toByte()
+            in 41..63 step 2 -> panEnvelopes[(offset - 41) / 2].offset.index.toByte()
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -2418,11 +2417,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             14 -> { panEnvSustain = byte }
             15 -> { instGlobalVolume = byte and 0xFF }
 
-            in 16..30 step 2 -> volEnvelopes[(offset - 16) / 2].value = byte
-            in 17..31 step 2 -> volEnvelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
-            in 32..46 step 2 -> panEnvelopes[(offset - 32) / 2].value = byte
-            in 33..47 step 2 -> panEnvelopes[(offset - 33) / 2].offset = ThreeFiveMiniUfloat(byte)
-            in 48..63 -> {}
+            in 16..38 step 2 -> volEnvelopes[(offset - 16) / 2].value = byte
+            in 17..39 step 2 -> volEnvelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
+            in 40..62 step 2 -> panEnvelopes[(offset - 40) / 2].value = byte
+            in 41..63 step 2 -> panEnvelopes[(offset - 41) / 2].offset = ThreeFiveMiniUfloat(byte)
             else -> throw InternalError("Bad offset $offset")
         }
     }

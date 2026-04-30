@@ -131,6 +131,14 @@ class AudioJSR223Delegate(private val vm: VM) {
         }
     }
 
+    fun setTrackerMixerFlags(playhead: Int, flags: Int) {
+        getFirstSnd()?.playheads?.get(playhead)?.initialGlobalFlags = flags
+    }
+
+    fun getTrackerMixerFlags(playhead: Int): Int? {
+        return getFirstSnd()?.playheads?.get(playhead)?.initialGlobalFlags
+    }
+
     fun putPcmDataByPtr(playhead: Int, ptr: Int, length: Int, destOffset: Int) {
         getFirstSnd()?.let {
             val vkMult = if (ptr >= 0) 1 else -1
