@@ -2005,17 +2005,23 @@ Instrument bin: Registry for 256 instruments, formatted as:
         0b hhhh 00pp
             h: sample pointer high bit
            pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
-    Bit8   Volume envelope sustain loops
-        0b u0 eee sss
-            s: sustain loop start index
-            e: sustain loop end index
-            u: set to enable the loop
-    Bit8   Panning envelope sustain loops
-        0b u0 eee sss
-            s: sustain loop start index
-            e: sustain loop end index
-            u: set to enable the loop
-    Bit8   Reserved
+    Bit8   Volume envelope sustain/loops
+        * Sustain is implemented by enabling 't' flag. FastTracker has no 'Sus Loop' but only 'Sus Point'; use same value for start and end index
+        0b ut eee sss
+            s: sustain/loop start index
+            e: sustain/loop end index
+            t: the loop must sustain (key-off escapes the loop)
+            u: set to enable the sustain/loop
+    Bit8   Panning envelope sustain/loops
+        * Sustain is implemented by enabling 't' flag
+        0b ut eee sss
+            s: sustain/loop start index
+            e: sustain/loop end index
+            t: the loop must sustain (key-off escapes the loop)
+            u: set to enable the sustain/loop
+    Uint8  Instrument Global Volume (0..255)
+        * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
+        * FastTracker2 has range of 0..64; multiply by (255/64) then round to int
   Bit16x8 Volume envelopes
        Byte 1: Volume (00..3F)
        Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.

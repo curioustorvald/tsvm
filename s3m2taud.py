@@ -624,6 +624,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         struct.pack_into('<H', inst_bin, base + 8,  ls)
         struct.pack_into('<H', inst_bin, base + 10, le)
         inst_bin[base + 12] = flags_byte
+        inst_bin[base + 15] = 0xFF      # instrument global volume (S3M has none → full)
         # Volume envelope: hold at instrument volume (clamped to 0x3F)
         env_vol = min(inst.volume, 63)
         inst_bin[base + 16] = env_vol   # volume

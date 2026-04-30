@@ -675,7 +675,7 @@ function drawStatusBar() {
 
     // beat indicator
     let beatCursorRow = cursorRow
-    while (beatCursorRow > beatDivSecondary) { beatCursorRow -= beatDivSecondary } // test this behaviour with primary=4, secondary=22 or something
+    while (beatCursorRow >= beatDivSecondary) { beatCursorRow -= beatDivSecondary }
     let beatInd = (playbackMode != PLAYMODE_NONE && beatCursorRow % beatDivPrimary < (beatDivPrimary >>> 1)) ?
      ((beatCursorRow % beatDivSecondary < (beatDivPrimary >>> 1)) ? '\u00846u' : '\u00847u') :
      ''

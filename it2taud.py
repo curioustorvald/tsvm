@@ -559,12 +559,13 @@ def _parse_it_envelope(data: bytes, env_ptr: int, is_pan: bool,
 
     Returns (points_list, sustain_byte) where points_list is a list of
     8 (value, minifloat_idx) tuples, or None if envelope not enabled.
-    sustain_byte: bit7=enabled, bits[5:3]=end_idx, bits[2:0]=start_idx; 0=disabled.
+    sustain_byte: bit7=enabled (u), bit6=sustain (t: 1=breaks on key-off,
+    0=loops forever), bits[5:3]=end_idx, bits[2:0]=start_idx; 0=disabled.
 
-    IT has two loop types: envelope loop (always on) and sustain loop (breaks on
-    key-off). Taud only has sustain loop semantics. Priority: sustain > env loop.
-    When slb==sle the AudioAdapter holds at that node (no cycling); for slb!=sle
-    it cycles between them.
+    IT has two loop types: envelope loop (continues forever) and sustain loop
+    (breaks on key-off). Taud distinguishes them via the 't' flag. Priority
+    when both exist: sustain (because IT plays sustain while held, then env
+    loop after release; Taud can only express one).
     """
     if env_ptr + 82 > len(data):
         return None, 0
@@ -580,17 +581,20 @@ def _parse_it_envelope(data: bytes, env_ptr: int, is_pan: bool,
     has_env_loop = bool(flags & 0x02)
     has_sus_loop = bool(flags & 0x04)
 
-    # Choose which IT loop to map to Taud sustain (priority: sus > env)
+    # Choose which IT loop to map to Taud (priority: sus > env). The 't' flag
+    # distinguishes them: t=1 for sustain (breaks on key-off), t=0 for env loop.
     if has_sus_loop:
         use_lb, use_le = it_slb, it_sle
         has_loop = True
+        is_sustain = True
     elif has_env_loop:
         use_lb, use_le = it_lpb, it_lpe
         has_loop = True
-        vprint(f"    envelope loop mapped as sustain loop (approximation: breaks on key-off)")
+        is_sustain = False
     else:
         use_lb = use_le = -1
         has_loop = False
+        is_sustain = False
 
     # Read IT nodes: (int8 value, uint16 tick_pos LE)
     nodes = []
@@ -640,10 +644,12 @@ def _parse_it_envelope(data: bytes, env_ptr: int, is_pan: bool,
             mf_idx   = 0
         points.append((taud_val, mf_idx))
 
-    # Build sustain byte: bit7=enabled, bits[5:3]=end_idx, bits[2:0]=start_idx.
-    # 0 = disabled (no bit7). All (slb, sle) pairs including (0,0) are valid when bit7=1.
+    # Build sustain byte: bit7=enable (u), bit6=sustain (t), bits[5:3]=end,
+    # bits[2:0]=start. 0=disabled. t=1 → breaks on key-off (IT sustain loop);
+    # t=0 → loops forever (IT envelope loop).
     if taud_slb >= 0 and taud_sle >= 0:
-        sus_byte = 0x80 | ((taud_sle & 7) << 3) | (taud_slb & 7)
+        t_bit = 0x40 if is_sustain else 0x00
+        sus_byte = 0x80 | t_bit | ((taud_sle & 7) << 3) | (taud_slb & 7)
     else:
         sus_byte = 0
 
@@ -1126,8 +1132,9 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
                               envelopes_by_slot: dict = None) -> tuple:
     """samples_or_proxy: list of ITSample | None, indexed 1-based (index 0 unused).
 
-    envelopes_by_slot: optional dict mapping taud_slot → (vol_env, vol_sus, pan_env, pan_sus)
-    where vol_env/pan_env are lists of 8 (value, minifloat_idx) tuples (or None).
+    envelopes_by_slot: optional dict mapping taud_slot → (vol_env, vol_sus, pan_env, pan_sus, inst_gv)
+    where vol_env/pan_env are lists of 8 (value, minifloat_idx) tuples (or None),
+    and inst_gv is instrument global volume (0..255, byte 15).
 
     Returns (bin_bytes[SAMPLEINST_SIZE], offsets_dict).
     """
@@ -1194,9 +1201,10 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         # Write envelope data (new 8-point format)
         env_data = envelopes_by_slot.get(taud_idx) if envelopes_by_slot else None
         if env_data and env_data[0]:
-            vol_env, vol_sus, pan_env, pan_sus = env_data
+            vol_env, vol_sus, pan_env, pan_sus, inst_gv = env_data
             inst_bin[base + 13] = vol_sus & 0xFF
             inst_bin[base + 14] = pan_sus & 0xFF
+            inst_bin[base + 15] = inst_gv & 0xFF
             for k, (val, mf) in enumerate(vol_env[:8]):
                 inst_bin[base + 16 + k*2]     = val & 0xFF
                 inst_bin[base + 16 + k*2 + 1] = mf  & 0xFF
@@ -1209,7 +1217,9 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
                     inst_bin[base + 32 + k*2]     = 0x80  # pan centre
                     inst_bin[base + 32 + k*2 + 1] = 0x00  # hold
         else:
-            # No instrument envelope: single-point vol, neutral pan
+            # No instrument envelope: single-point vol, neutral pan, full gv
+            inst_gv = env_data[4] if env_data else 255
+            inst_bin[base + 15] = inst_gv & 0xFF
             inst_bin[base + 16] = min(s.vol, 63)   # value 0-63
             inst_bin[base + 17] = 0                 # offset 0 = hold
             for k in range(8):
@@ -1484,9 +1494,12 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             proxy[taud_slot] = samples[si]
             vol64 = min(inst.canonical_volume, 64)
             inst_vols[taud_slot] = min(vol64, 0x3F)
+            # IT global volume range is 0..128; rescale to Taud's 0..255.
+            inst_gv_255 = min(255, round(inst.gv * 255 / 128))
             envelopes_by_slot[taud_slot] = (
                 inst.vol_envelope, inst.vol_env_sustain,
                 inst.pan_envelope, inst.pan_env_sustain,
+                inst_gv_255,
             )
         sampleinst_raw, _ = build_sample_inst_bin_it(proxy, envelopes_by_slot)
     else:

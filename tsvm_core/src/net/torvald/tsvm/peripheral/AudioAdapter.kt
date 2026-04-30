@@ -1184,17 +1184,26 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
         // Volume envelope
-        // sustain byte: bit7=enabled, bits[5:3]=end_idx, bits[2:0]=start_idx
-        val vSus      = inst.volEnvSustain
-        val vSusOn    = (vSus and 0x80) != 0 && !voice.keyOff
-        val vSusStart = vSus and 7
-        val vSusEnd   = (vSus ushr 3) and 7
+        // sustain byte: bit7=enable (u), bit6=sustain (t: 1=breaks on key-off,
+        // 0=loops forever), bits[5:3]=end_idx, bits[2:0]=start_idx
+        val vSus       = inst.volEnvSustain
+        val vEnabled   = (vSus and 0x80) != 0
+        val vIsSustain = (vSus and 0x40) != 0
+        // Loop is "active" when enabled AND (it's a forever-loop OR key not yet released)
+        val vSusOn     = vEnabled && (!vIsSustain || !voice.keyOff)
+        val vSusStart  = vSus and 7
+        val vSusEnd    = (vSus ushr 3) and 7
 
-        if (voice.envIndex >= 7) {
-            voice.envVolume = (inst.volEnvelopes[7].value / 63.0).coerceIn(0.0, 1.0)
-        } else if (vSusOn && voice.envIndex == vSusEnd && vSusStart == vSusEnd) {
+        if (vSusOn && voice.envIndex == vSusEnd && vSusStart == vSusEnd) {
             // slb == sle: hold at this node until key-off (no cycling)
             voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+        } else if (vSusOn && voice.envIndex == vSusEnd) {
+            // At sustain-loop end: snap back to start regardless of stored offset.
+            voice.envTimeSec = 0.0
+            voice.envIndex = vSusStart
+            voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+        } else if (voice.envIndex >= 7) {
+            voice.envVolume = (inst.volEnvelopes[7].value / 63.0).coerceIn(0.0, 1.0)
         } else {
             val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
             if (vOffset == 0.0) {
@@ -1217,16 +1226,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Pan envelope (only when active for this instrument)
         if (!voice.hasPanEnv) return
-        val pSus      = inst.panEnvSustain
-        val pSusOn    = (pSus and 0x80) != 0 && !voice.keyOff
-        val pSusStart = pSus and 7
-        val pSusEnd   = (pSus ushr 3) and 7
+        val pSus       = inst.panEnvSustain
+        val pEnabled   = (pSus and 0x80) != 0
+        val pIsSustain = (pSus and 0x40) != 0
+        val pSusOn     = pEnabled && (!pIsSustain || !voice.keyOff)
+        val pSusStart  = pSus and 7
+        val pSusEnd    = (pSus ushr 3) and 7
 
-        if (voice.envPanIndex >= 7) {
-            voice.envPan = inst.panEnvelopes[7].value / 255.0
-        } else if (pSusOn && voice.envPanIndex == pSusEnd && pSusStart == pSusEnd) {
+        if (pSusOn && voice.envPanIndex == pSusEnd && pSusStart == pSusEnd) {
             // slb == sle: hold at this pan node until key-off
             voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+        } else if (pSusOn && voice.envPanIndex == pSusEnd) {
+            // At sustain-loop end: snap back to start regardless of stored offset
+            // (encoder writes mf=0 on the last node by convention).
+            voice.envPanTimeSec = 0.0
+            voice.envPanIndex = pSusStart
+            voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+        } else if (voice.envPanIndex >= 7) {
+            voice.envPan = inst.panEnvelopes[7].value / 255.0
         } else {
             val pOffset = inst.panEnvelopes[voice.envPanIndex].offset.toDouble()
             if (pOffset == 0.0) {
@@ -1816,8 +1833,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val gvol = playhead.globalVolume / 255.0
             for (voice in ts.voices) {
                 if (!voice.active || voice.muted) continue
-                val s = fetchTrackerSample(voice, instruments[voice.instrumentId])
-                val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * playhead.masterVolume / 255.0
+                val voiceInst = instruments[voice.instrumentId]
+                val s = fetchTrackerSample(voice, voiceInst)
+                val instGv = voiceInst.instGlobalVolume / 255.0
+                val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (voice.hasPanEnv) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (voice.channelPan + envPanRaw - 128).coerceIn(0, 255)
@@ -2314,12 +2333,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var sampleLoopEnd: Int,
         // flags
         var loopMode: Int,
-        var volEnvSustain: Int,           // byte 13: 00 eee sss (0 = no sustain loop)
-        var panEnvSustain: Int,           // byte 14: 00 eee sss (0 = no sustain loop)
+        var volEnvSustain: Int,           // byte 13: ut eee sss (u=enable, t=sustain (1=breaks on key-off, 0=loops forever))
+        var panEnvSustain: Int,           // byte 14: ut eee sss (u=enable, t=sustain (1=breaks on key-off, 0=loops forever))
+        var instGlobalVolume: Int,        // byte 15: instrument global volume (0..255, 255 = unity)
         var volEnvelopes: Array<TaudInstEnvPoint>, // 8 points, value 0x00-0x3F
         var panEnvelopes: Array<TaudInstEnvPoint>  // 8 points, value 0x00-0xFF (0x80 = centre)
     ) {
-        constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
             Array(8) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
             Array(8) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) })
 
@@ -2361,7 +2381,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             12 -> (samplePtr.ushr(16).and(15).shl(4) or loopMode.and(3)).toByte()
             13 -> volEnvSustain.toByte()
             14 -> panEnvSustain.toByte()
-            15 -> 0
+            15 -> instGlobalVolume.toByte()
             in 16..30 step 2 -> volEnvelopes[(offset - 16) / 2].value.toByte()
             in 17..31 step 2 -> volEnvelopes[(offset - 17) / 2].offset.index.toByte()
             in 32..46 step 2 -> panEnvelopes[(offset - 32) / 2].value.toByte()
@@ -2396,7 +2416,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             13 -> { volEnvSustain = byte }
             14 -> { panEnvSustain = byte }
-            15 -> {}
+            15 -> { instGlobalVolume = byte and 0xFF }
 
             in 16..30 step 2 -> volEnvelopes[(offset - 16) / 2].value = byte
             in 17..31 step 2 -> volEnvelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
