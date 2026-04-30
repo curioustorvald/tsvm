@@ -1,0 +1,839 @@
+#!/usr/bin/env python3
+"""mod2taud.py — Convert ProTracker (.mod) to TSVM Taud (.taud)
+
+Usage:
+    python3 mod2taud.py input.mod output.taud [-v]
+
+Limits:
+    - Up to 20 MOD channels (excess disabled; hard error if pattern count
+      × channel count > 4095).
+    - Sample bin is 770048 bytes; if all samples together exceed this, every
+      sample is globally resampled down (with c2spd adjusted) so pitch is
+      preserved.
+
+Effect support:
+    Full PT effect dispatch per TAUD_NOTE_EFFECTS.md "ProTracker to Taud
+    conversion table". PT recalls (effect $00 args) are eagerly resolved
+    per channel using PT's per-effect private memory model. Cxx folds
+    into the volume column (0.$xx). Axy / EAx / EBx fold into the volume
+    column. 8xx and E8x fold into the pan column. Periods convert to Taud
+    units via log2 against PT period 428 (≡ Taud C3). Sample finetune is
+    pre-baked into the per-instrument c2spd. Amiga-mode flag is set in
+    the song-table flags byte so the engine applies coarse pitch slides
+    in period space.
+"""
+
+import argparse
+import gzip
+import math
+import struct
+import sys
+
+VERBOSE = False
+
+def vprint(*a, **kw):
+    if VERBOSE:
+        print(*a, **kw, file=sys.stderr)
+
+
+# ── MOD constants ────────────────────────────────────────────────────────────
+
+MOD_NUM_SAMPLES = 31
+MOD_PATTERN_ROWS = 64
+
+# PT effect numbers (single hex digit 0..F). Effect $E uses sub-nibbles.
+PT_E_BASE = 0xE
+PT_F = 0xF
+
+# PT effects that have private memory and therefore recall their last
+# non-zero argument when re-issued with $00. Top-level effects:
+PT_MEM_TOP = frozenset({0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0xA})
+# E sub-effects with memory (key is sub-nibble of the E command):
+PT_MEM_E_SUB = frozenset({0x1, 0x2, 0xA, 0xB})
+
+
+# ── Taud constants (identical to s3m2taud) ───────────────────────────────────
+
+TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
+TAUD_VERSION     = 1
+TAUD_HEADER_SIZE = 32
+TAUD_SONG_ENTRY  = 16
+SAMPLEBIN_SIZE   = 770048
+INSTBIN_SIZE     = 16384
+SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
+PATTERN_ROWS     = 64
+PATTERN_BYTES    = PATTERN_ROWS * 8
+NUM_PATTERNS_MAX = 4095
+NUM_CUES         = 1024
+CUE_SIZE         = 32
+NUM_VOICES       = 20
+SIGNATURE        = b"mod2taud/TSVM "    # 14 bytes
+
+# Taud note constants
+NOTE_NOP    = 0xFFFF
+NOTE_KEYOFF = 0x0000
+NOTE_CUT    = 0xFFFE
+TAUD_C3     = 0x4000
+
+# PT period 428 (PT "C-2") corresponds to OpenMPT/IT C-4 which s3m2taud
+# anchors to Taud C3 (0x4000). We use the same anchor so MOD/S3M imports
+# share a pitch reference.
+PT_REFERENCE_PERIOD = 428.0
+
+# Taud effect opcode bytes
+TOP_NONE = 0x00
+TOP_A    = 0x0A
+TOP_B    = 0x0B
+TOP_C    = 0x0C
+TOP_D    = 0x0D
+TOP_E    = 0x0E
+TOP_F    = 0x0F
+TOP_G    = 0x10
+TOP_H    = 0x11
+TOP_I    = 0x12
+TOP_J    = 0x13
+TOP_K    = 0x14
+TOP_L    = 0x15
+TOP_O    = 0x18
+TOP_Q    = 0x1A
+TOP_R    = 0x1B
+TOP_S    = 0x1C
+TOP_T    = 0x1D
+TOP_U    = 0x1E
+TOP_V    = 0x1F
+TOP_Y    = 0x22
+
+SEL_SET  = 0
+SEL_UP   = 1
+SEL_DOWN = 2
+SEL_FINE = 3
+
+# 12-TET semitone → Taud J-arpeggio byte (high byte of pitch delta).
+J_SEMI_TABLE = [0x00, 0x01, 0x03, 0x04, 0x05, 0x07, 0x08, 0x09,
+                0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x11, 0x13, 0x14]
+
+
+# ── MOD parser ───────────────────────────────────────────────────────────────
+
+class ModSample:
+    __slots__ = ('name','length','finetune','volume','loop_begin','loop_end',
+                 'sample_data','c2spd','flags')
+
+class ModRow:
+    __slots__ = ('period','inst','effect','effect_arg','vol_set')
+    def __init__(self):
+        self.period     = 0      # 0 = empty / no trigger
+        self.inst       = 0      # 0 = no instrument set
+        self.effect     = 0      # PT effect digit ($0..$F)
+        self.effect_arg = 0
+        # PT has no volume column; Cxx folds into vol_set during parsing.
+        # -1 = no explicit volume.
+        self.vol_set    = -1
+
+
+def _parse_magic(magic: bytes) -> int:
+    """Return number of channels declared by the 4-byte MOD magic."""
+    if magic in (b'M.K.', b'M!K!', b'FLT4', b'M&K!', b'N.T.'):
+        return 4
+    if magic == b'FLT8':
+        return 8
+    if magic == b'OCTA' or magic == b'CD81':
+        return 8
+    # xCHN (1..9 channels)
+    if len(magic) == 4 and magic[1:] == b'CHN' and 0x31 <= magic[0] <= 0x39:
+        return magic[0] - 0x30
+    # xxCH (10..32 channels)
+    if len(magic) == 4 and magic[2:] == b'CH' and magic[:2].isdigit():
+        return int(magic[:2].decode('ascii'))
+    # xxCN (e.g., 16CN — rare)
+    if len(magic) == 4 and magic[2:] == b'CN' and magic[:2].isdigit():
+        return int(magic[:2].decode('ascii'))
+    return 0
+
+
+def parse_mod(data: bytes):
+    if len(data) < 0x43C:
+        sys.exit("error: file too short to be a ProTracker module")
+
+    title = data[0x00:0x14].rstrip(b'\x00').decode('latin-1', errors='replace')
+
+    # 31 sample headers
+    samples = []
+    for i in range(MOD_NUM_SAMPLES):
+        base = 0x14 + i * 30
+        s = ModSample()
+        s.name        = data[base:base+22].rstrip(b'\x00').decode('latin-1', errors='replace')
+        s.length      = struct.unpack_from('>H', data, base + 22)[0] * 2
+        s.finetune    = data[base + 24] & 0x0F     # signed nibble 0..15
+        s.volume      = data[base + 25]            # 0..64
+        s.loop_begin  = struct.unpack_from('>H', data, base + 26)[0] * 2
+        loop_len_w    = struct.unpack_from('>H', data, base + 28)[0]
+        loop_len      = loop_len_w * 2
+        s.loop_end    = s.loop_begin + loop_len
+        # Flag bit 0 = looped (loop_len > 2 by convention; loop_len_w == 1 means no loop)
+        s.flags       = 1 if loop_len_w > 1 else 0
+        if not s.flags:
+            s.loop_begin = 0
+            s.loop_end   = 0
+        s.sample_data = b''
+        s.c2spd       = round(8363.0 * (2.0 ** (_signed4(s.finetune) / 96.0)))
+        samples.append(s)
+
+    song_length = data[0x3B6]
+    # 0x3B7 = restart byte (unused by us)
+    order_table = list(data[0x3B8:0x438])
+
+    magic = data[0x438:0x43C]
+    n_channels = _parse_magic(magic)
+    if n_channels == 0:
+        # Some very old MODs have only 15 samples and no magic. Detect 15-sample MOD.
+        # Header is 0x14 (title) + 15*30 (samples) = 0x14 + 0x1C2 = 0x1D6.
+        # Order table at 0x1D6, then 0x1D6+0x80 = 0x256, then patterns directly.
+        # We don't auto-detect that; require a magic.
+        sys.exit(f"error: unrecognised MOD magic {magic!r} at 0x438; "
+                 f"expected M.K., M!K!, FLT4, FLT8, xCHN or xxCH")
+
+    # Order list: only the first song_length entries are part of the song.
+    # Pattern count = 1 + max(order_table[0..127]) (scan all 128).
+    n_patterns = 1 + max(order_table)
+
+    pat_data_off = 0x43C
+    cell_size    = 4
+    pattern_size = MOD_PATTERN_ROWS * n_channels * cell_size
+
+    # Parse patterns
+    patterns = []   # patterns[pat_idx][channel][row] -> ModRow
+    for pi in range(n_patterns):
+        grid = [[ModRow() for _ in range(MOD_PATTERN_ROWS)] for _ in range(n_channels)]
+        base = pat_data_off + pi * pattern_size
+        if base + pattern_size > len(data):
+            vprint(f"  warning: pattern {pi} truncated; padding with empty rows")
+            patterns.append(grid)
+            continue
+        for r in range(MOD_PATTERN_ROWS):
+            row_off = base + r * n_channels * cell_size
+            for ch in range(n_channels):
+                cell_off = row_off + ch * cell_size
+                b0 = data[cell_off]
+                b1 = data[cell_off + 1]
+                b2 = data[cell_off + 2]
+                b3 = data[cell_off + 3]
+                period = ((b0 & 0x0F) << 8) | b1
+                inst   = (b0 & 0xF0) | ((b2 >> 4) & 0x0F)
+                effect = b2 & 0x0F
+                arg    = b3
+                cell = grid[ch][r]
+                cell.period     = period
+                cell.inst       = inst
+                cell.effect     = effect
+                cell.effect_arg = arg
+        patterns.append(grid)
+
+    # Sample data follows pattern data
+    sample_off = pat_data_off + n_patterns * pattern_size
+    for s in samples:
+        if s.length == 0:
+            continue
+        n = min(s.length, max(0, len(data) - sample_off))
+        if n <= 0:
+            break
+        raw = data[sample_off:sample_off + n]
+        # PT samples are signed 8-bit; convert to unsigned by XOR 0x80.
+        s.sample_data = bytes((b ^ 0x80) for b in raw)
+        s.length      = len(s.sample_data)
+        if s.flags:
+            s.loop_begin = min(s.loop_begin, s.length)
+            s.loop_end   = min(s.loop_end,   s.length)
+        sample_off += n
+
+    return {
+        'title':      title,
+        'samples':    samples,
+        'order_list': order_table[:song_length],
+        'order_full': order_table,
+        'n_channels': n_channels,
+        'n_patterns': n_patterns,
+        'patterns':   patterns,
+        'magic':      magic,
+    }
+
+
+def _signed4(nibble: int) -> int:
+    """Convert a 4-bit unsigned nibble to signed -8..+7."""
+    return nibble - 16 if nibble >= 8 else nibble
+
+
+# ── Note encoding (period → Taud) ────────────────────────────────────────────
+
+def period_to_taud_note(period: int) -> int:
+    if period <= 0:
+        return NOTE_NOP
+    val = round(TAUD_C3 + 4096.0 * math.log2(PT_REFERENCE_PERIOD / period))
+    return max(1, min(0xFFFD, val))
+
+
+# ── Volume / pan column helper (shared semantics with s3m2taud) ──────────────
+
+def _d_arg_to_col(arg: int):
+    if arg == 0:
+        return None
+    hi = (arg >> 4) & 0xF
+    lo = arg & 0xF
+    if hi == 0xF and lo > 0:
+        return (SEL_FINE, lo & 0x1F)              # fine slide down
+    if lo == 0xF and hi > 0:
+        return (SEL_FINE, (hi & 0x1F) | 0x20)     # fine slide up
+    if hi > 0 and lo == 0:
+        return (SEL_UP, hi)
+    if lo > 0 and hi == 0:
+        return (SEL_DOWN, lo)
+    # Both nibbles non-zero, neither $F → ambiguous; PT prefers up.
+    return (SEL_UP, hi)
+
+
+# ── PT effect → Taud effect ──────────────────────────────────────────────────
+
+def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
+    """Return (taud_op, taud_arg16, vol_override, pan_override).
+
+    The caller is responsible for resolving PT zero-arg recalls before this
+    point — see resolve_pt_recalls(). cmd is the raw PT digit ($0..$F).
+    """
+    # $0 with arg 0 is a true no-op; $0 with arg != 0 is arpeggio.
+    if cmd == 0x0:
+        if arg == 0:
+            return (TOP_NONE, 0, None, None)
+        hi = (arg >> 4) & 0xF
+        lo = arg & 0xF
+        return (TOP_J, (J_SEMI_TABLE[hi] << 8) | J_SEMI_TABLE[lo], None, None)
+
+    if cmd == 0x1:
+        return (TOP_F, round(arg * 64 / 3) & 0xFFFF, None, None)
+
+    if cmd == 0x2:
+        return (TOP_E, round(arg * 64 / 3) & 0xFFFF, None, None)
+
+    if cmd == 0x3:
+        return (TOP_G, round(arg * 64 / 3) & 0xFFFF, None, None)
+
+    if cmd == 0x4:
+        hi = (arg >> 4) & 0xF
+        lo = arg & 0xF
+        return (TOP_H, ((hi * 0x11) << 8) | (lo * 0x11), None, None)
+
+    if cmd == 0x5:
+        # Tone porta + vol slide → Taud L (engine splits internally).
+        return (TOP_G, 0x0000, _d_arg_to_col(arg), None)
+
+    if cmd == 0x6:
+        # Vibrato + vol slide → Taud K.
+        return (TOP_H, 0x0000, _d_arg_to_col(arg), None)
+
+    if cmd == 0x7:
+        hi = (arg >> 4) & 0xF
+        lo = arg & 0xF
+        return (TOP_R, ((hi * 0x11) << 8) | (lo * 0x11), None, None)
+
+    if cmd == 0x8:
+        # PT 8xx is fine pan (or unused/sync in some trackers). Map to pan
+        # column 0.$yy where yy is the upper 6 bits of the 8-bit pan.
+        return (TOP_NONE, 0, None, (SEL_SET, (arg >> 2) & 0x3F))
+
+    if cmd == 0x9:
+        return (TOP_O, (arg & 0xFF) << 8, None, None)
+
+    if cmd == 0xA:
+        return (TOP_NONE, 0, _d_arg_to_col(arg), None)
+
+    if cmd == 0xB:
+        return (TOP_B, arg & 0xFF, None, None)
+
+    if cmd == 0xC:
+        # Caller folds Cxx into vol_set during parsing; this branch is a
+        # safety net in case a Cxx slips through.
+        return (TOP_NONE, 0, (SEL_SET, min(arg, 0x3F)), None)
+
+    if cmd == 0xD:
+        # PT pattern break is BCD on disk.
+        bcd_row = ((arg >> 4) & 0xF) * 10 + (arg & 0xF)
+        if bcd_row >= PATTERN_ROWS:
+            bcd_row = 0
+        return (TOP_C, bcd_row & 0xFF, None, None)
+
+    if cmd == 0xE:
+        sub = (arg >> 4) & 0xF
+        x   = arg & 0xF
+        if sub == 0x0:
+            # E0x = filter on/off (Amiga LED filter); no Taud equivalent.
+            return (TOP_NONE, 0, None, None)
+        if sub == 0x1:
+            # Fine pitch up.
+            return (TOP_F, 0xF000 | (round(x * 16 / 3) & 0xFFF), None, None)
+        if sub == 0x2:
+            # Fine pitch down.
+            return (TOP_E, 0xF000 | (round(x * 16 / 3) & 0xFFF), None, None)
+        if sub == 0x3:
+            return (TOP_S, 0x1000 | (x << 8), None, None)
+        if sub == 0x4:
+            return (TOP_S, 0x3000 | (x << 8), None, None)
+        if sub == 0x5:
+            return (TOP_S, 0x2000 | (x << 8), None, None)
+        if sub == 0x6:
+            return (TOP_S, 0xB000 | (x << 8), None, None)
+        if sub == 0x7:
+            return (TOP_S, 0x4000 | (x << 8), None, None)
+        if sub == 0x8:
+            # Coarse pan (4-bit). Map nibble 0..15 to pan 0..63 via × 4.2.
+            return (TOP_NONE, 0, None, (SEL_SET, round(x * 4.2)))
+        if sub == 0x9:
+            return (TOP_Q, (x & 0xF) << 8, None, None)
+        if sub == 0xA:
+            # Fine vol slide up.
+            return (TOP_NONE, 0, (SEL_FINE, (x & 0xF) | 0x20), None)
+        if sub == 0xB:
+            # Fine vol slide down.
+            return (TOP_NONE, 0, (SEL_FINE, x & 0xF), None)
+        if sub == 0xC:
+            return (TOP_S, 0xC000 | (x << 8), None, None)
+        if sub == 0xD:
+            return (TOP_S, 0xD000 | (x << 8), None, None)
+        if sub == 0xE:
+            return (TOP_S, 0xE000 | (x << 8), None, None)
+        if sub == 0xF:
+            return (TOP_S, 0xF000 | (x << 8), None, None)
+        return (TOP_NONE, 0, None, None)
+
+    if cmd == 0xF:
+        if arg < 0x20:
+            if arg == 0:
+                return (TOP_NONE, 0, None, None)
+            return (TOP_A, (arg & 0xFF) << 8, None, None)
+        return (TOP_T, ((arg - 0x18) & 0xFF) << 8, None, None)
+
+    return (TOP_NONE, 0, None, None)
+
+
+def resolve_pt_recalls(patterns: list, order_list: list, n_channels: int) -> None:
+    """In-place: replace PT zero-arg recalls with each effect's last non-zero arg.
+
+    PT memory is per-effect-private. Walking patterns in order-list order,
+    we track each channel's last non-zero arg per memorising effect and
+    rewrite recall args to make them explicit.
+    """
+    # mem[ch][key] = last_non_zero_arg
+    # key is either an int (top-level 0..F) or a tuple ('E', sub) for E-subs.
+    mem = [dict() for _ in range(n_channels)]
+    for order in order_list:
+        if order >= 0xFF:
+            break
+        if order >= len(patterns):
+            continue
+        grid = patterns[order]
+        for r in range(MOD_PATTERN_ROWS):
+            for ch in range(n_channels):
+                if ch >= len(grid):
+                    continue
+                row = grid[ch][r]
+                cmd = row.effect
+                arg = row.effect_arg
+                if cmd in PT_MEM_TOP:
+                    if arg == 0:
+                        row.effect_arg = mem[ch].get(cmd, 0)
+                    else:
+                        mem[ch][cmd] = arg
+                elif cmd == 0xE:
+                    sub = (arg >> 4) & 0xF
+                    x   = arg & 0xF
+                    if sub in PT_MEM_E_SUB:
+                        key = ('E', sub)
+                        if x == 0:
+                            recalled = mem[ch].get(key, 0)
+                            row.effect_arg = (sub << 4) | (recalled & 0xF)
+                        else:
+                            mem[ch][key] = x
+
+
+# ── Sample resampling and Taud sample/instrument bin (port of s3m2taud) ──────
+
+def _resample_linear(data: bytes, ratio: float) -> bytes:
+    if not data:
+        return data
+    n_out = max(1, int(len(data) * ratio))
+    out   = bytearray(n_out)
+    for i in range(n_out):
+        src  = i / ratio
+        i0   = int(src)
+        frac = src - i0
+        i1   = min(i0 + 1, len(data) - 1)
+        v    = data[i0] * (1.0 - frac) + data[i1] * frac
+        out[i] = int(v + 0.5) & 0xFF
+    return bytes(out)
+
+
+def build_sample_inst_bin(samples: list) -> tuple:
+    """Returns (bin_bytes[786432], offsets_dict). 1-based indexing."""
+    pcm = [(i, s) for i, s in enumerate(samples) if s.sample_data]
+
+    total = sum(len(s.sample_data) for _, s in pcm)
+    ratio = 1.0
+    if total > SAMPLEBIN_SIZE:
+        ratio = SAMPLEBIN_SIZE / total
+        vprint(f"  info: sample bin overflow ({total} bytes); resampling all by {ratio:.4f}")
+        for _, s in pcm:
+            new_data    = _resample_linear(s.sample_data, ratio)
+            s.sample_data = new_data
+            s.length      = len(new_data)
+            s.loop_begin  = max(0, int(s.loop_begin * ratio))
+            s.loop_end    = max(0, min(int(s.loop_end * ratio), s.length))
+            s.c2spd       = max(1, int(s.c2spd * ratio))
+
+    sample_bin = bytearray(SAMPLEBIN_SIZE)
+    offsets    = {}
+    pos        = 0
+    for idx, s in pcm:
+        n = min(len(s.sample_data), SAMPLEBIN_SIZE - pos)
+        if n <= 0:
+            vprint(f"  warning: sample bin full, dropping '{s.name}'")
+            offsets[idx] = 0
+            s.length = 0
+            continue
+        sample_bin[pos:pos+n] = s.sample_data[:n]
+        offsets[idx] = pos
+        if n < len(s.sample_data):
+            vprint(f"  warning: '{s.name}' truncated from {len(s.sample_data)} to {n}")
+            s.length   = n
+            s.loop_end = min(s.loop_end, n)
+        pos += n
+
+    inst_bin = bytearray(INSTBIN_SIZE)
+    for i, s in enumerate(samples):
+        taud_idx = i + 1     # 1-based instrument number
+        if i >= 256:
+            break
+        if not s.sample_data:
+            continue
+        ptr      = offsets.get(i, 0)
+        ptr_lo   = ptr & 0xFFFF
+        ptr_hi   = (ptr >> 16)
+        s_len    = min(s.length, 65535)
+        c2spd    = min(s.c2spd, 65535)
+        ps       = 0
+        ls       = min(s.loop_begin, 65535)
+        le       = min(s.loop_end,   65535)
+        loop_mode = 1 if (s.flags & 1) else 0
+        flags_byte = (ptr_hi << 4) | (loop_mode & 0x3)
+
+        base = taud_idx * 64
+        struct.pack_into('<H', inst_bin, base + 0,  ptr_lo)
+        struct.pack_into('<H', inst_bin, base + 2,  s_len)
+        struct.pack_into('<H', inst_bin, base + 4,  c2spd)
+        struct.pack_into('<H', inst_bin, base + 6,  ps)
+        struct.pack_into('<H', inst_bin, base + 8,  ls)
+        struct.pack_into('<H', inst_bin, base + 10, le)
+        inst_bin[base + 12] = flags_byte
+        inst_bin[base + 15] = 0xFF                 # global volume — full
+        env_vol = min(s.volume, 63)
+        inst_bin[base + 16] = env_vol              # envelope hold value
+        inst_bin[base + 17] = 0                    # offset minifloat = 0 → hold
+
+        vprint(f"  instrument[{taud_idx}] '{s.name}' ptr={ptr} c2spd={s.c2spd} "
+               f"vol={s.volume} loop=({ls},{le},{'on' if loop_mode else 'off'})")
+
+    return bytes(sample_bin) + bytes(inst_bin), offsets
+
+
+# ── Pattern build ────────────────────────────────────────────────────────────
+
+# PT hard-pans channels in LRRL order: 0=L 1=R 2=R 3=L (and tile for >4).
+def _default_channel_pan(ch_idx: int) -> int:
+    side = (ch_idx % 4)
+    return 16 if side in (0, 3) else 47
+
+
+def build_pattern(grid: list, ch_idx: int, default_pan: int,
+                  inst_vols: dict) -> bytes:
+    """Build a 512-byte Taud pattern for one MOD channel.
+
+    Volume column rules (mirrors s3m2taud):
+      explicit Cxx vol > note-trigger inst default > instrument-only retrigger
+      recall > vol_override from effect > no-op.
+    """
+    out = bytearray(PATTERN_BYTES)
+    rows = grid[ch_idx] if ch_idx < len(grid) else [ModRow()] * MOD_PATTERN_ROWS
+    last_inst = 0
+    last_period = 0
+    last_vol  = None
+    for r, row in enumerate(rows[:MOD_PATTERN_ROWS]):
+        note_taud = period_to_taud_note(row.period)
+        note_triggers = (row.period > 0)
+
+        if row.inst > 0:
+            last_inst = row.inst
+
+        retrigger = (row.inst > 0
+                     and row.period == 0
+                     and last_period > 0)
+
+        op, arg, vol_override, pan_override = encode_effect(
+            row.effect, row.effect_arg, ch_idx, r)
+
+        # ── Volume column ──
+        if row.vol_set >= 0:
+            vol_sel, vol_value = SEL_SET, min(row.vol_set, 0x3F)
+            if vol_override is not None and vol_override[0] != SEL_SET:
+                vprint(f"    ch{ch_idx} row{r}: dropped vol slide "
+                       f"(cell already carries explicit Cxx volume)")
+        elif note_triggers and last_inst > 0:
+            vol_sel = SEL_SET
+            vol_value = inst_vols.get(last_inst, 0x3F)
+        elif retrigger and last_vol is not None:
+            vol_sel, vol_value = SEL_SET, last_vol
+        elif vol_override is not None:
+            vol_sel, vol_value = vol_override
+        else:
+            vol_sel, vol_value = SEL_FINE, 0
+
+        if note_triggers:
+            last_period = row.period
+        if vol_sel == SEL_SET:
+            last_vol = vol_value
+
+        # ── Pan column ──
+        if pan_override is not None:
+            pan_sel, pan_value = pan_override
+        elif r == 0:
+            pan_sel, pan_value = SEL_SET, default_pan & 0x3F
+        else:
+            pan_sel, pan_value = SEL_FINE, 0
+
+        vol_byte = (vol_value & 0x3F) | ((vol_sel & 0x3) << 6)
+        pan_byte = (pan_value & 0x3F) | ((pan_sel & 0x3) << 6)
+
+        base = r * 8
+        struct.pack_into('<H', out, base + 0, note_taud)
+        out[base + 2] = row.inst & 0xFF
+        out[base + 3] = vol_byte
+        out[base + 4] = pan_byte
+        out[base + 5] = op & 0xFF
+        struct.pack_into('<H', out, base + 6, arg & 0xFFFF)
+    return bytes(out)
+
+
+def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:
+    seen   = {}
+    remap  = {}
+    canon  = []
+    for i in range(num_pats):
+        pat = pat_bin[i * PATTERN_BYTES : (i + 1) * PATTERN_BYTES]
+        if pat in seen:
+            remap[i] = seen[pat]
+        else:
+            ci = len(canon)
+            seen[pat] = ci
+            remap[i] = ci
+            canon.append(pat)
+    return b''.join(canon), remap, len(canon)
+
+
+def _encode_cue(patterns12: list, instruction: int) -> bytearray:
+    pats = list(patterns12) + [0xFFF] * NUM_VOICES
+    pats = pats[:NUM_VOICES]
+    entry = bytearray(CUE_SIZE)
+    for i in range(10):
+        v0, v1 = pats[i*2], pats[i*2+1]
+        entry[i]      = ((v0 & 0xF) << 4) | (v1 & 0xF)
+        entry[10 + i] = (((v0 >> 4) & 0xF) << 4) | ((v1 >> 4) & 0xF)
+        entry[20 + i] = (((v0 >> 8) & 0xF) << 4) | ((v1 >> 8) & 0xF)
+    entry[30] = instruction & 0xFF
+    return entry
+
+
+def build_cue_sheet(order_list: list, n_pats_mod: int, n_channels: int,
+                    pat_remap: dict = None) -> bytes:
+    sheet = bytearray(NUM_CUES * CUE_SIZE)
+    for c in range(NUM_CUES):
+        sheet[c*CUE_SIZE : c*CUE_SIZE+CUE_SIZE] = _encode_cue([], 0)
+
+    cue_idx = 0
+    last_active = -1
+    for order in order_list:
+        if order == 0xFF or cue_idx >= NUM_CUES:
+            break
+        if order == 0xFE:
+            continue
+        if order >= n_pats_mod:
+            continue
+        orig = [order * n_channels + v for v in range(n_channels)]
+        pats = [pat_remap[p] if pat_remap else p for p in orig]
+        sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = _encode_cue(pats, 0)
+        last_active = cue_idx
+        cue_idx += 1
+
+    if last_active >= 0:
+        sheet[last_active * CUE_SIZE + 30] = 0x01
+    elif cue_idx < NUM_CUES:
+        sheet[30] = 0x01
+
+    return bytes(sheet)
+
+
+def find_initial_bpm_speed(patterns: list, order_list: list) -> tuple:
+    """Scan first pattern in order for Fxx in row 0 of any channel."""
+    speed = 6
+    tempo = 125
+    for order in order_list:
+        if order >= 0xFF:
+            break
+        if order >= len(patterns):
+            continue
+        grid = patterns[order]
+        for ch_rows in grid:
+            row = ch_rows[0]
+            if row.effect == 0xF and row.effect_arg > 0:
+                if row.effect_arg < 0x20:
+                    speed = row.effect_arg
+                else:
+                    tempo = row.effect_arg
+        break
+    return speed, tempo
+
+
+def assemble_taud(mod: dict) -> bytes:
+    samples    = mod['samples']
+    patterns   = mod['patterns']
+    order_list = mod['order_list']
+    n_channels = mod['n_channels']
+    n_patterns = mod['n_patterns']
+
+    if n_channels > NUM_VOICES:
+        vprint(f"  warning: MOD has {n_channels} channels; truncating to {NUM_VOICES}")
+        n_channels = NUM_VOICES
+
+    if n_patterns * n_channels > NUM_PATTERNS_MAX:
+        sys.exit(
+            f"error: {n_patterns} MOD patterns × {n_channels} channels = "
+            f"{n_patterns*n_channels} > {NUM_PATTERNS_MAX} Taud pattern limit.\n"
+            f"  Reduce the MOD to ≤ {NUM_PATTERNS_MAX // max(n_channels,1)} patterns."
+        )
+
+    vprint(f"  channels: {n_channels}, mod patterns: {n_patterns}, "
+           f"taud patterns: {n_patterns * n_channels}")
+
+    # Fold Cxx into row.vol_set so the volume column carries explicit set-volume.
+    # This is done in-place before recall resolution so Cxx with arg 0 still
+    # resolves to vol 0 (silence) rather than recalling another effect's memory.
+    for grid in patterns:
+        for ch in range(min(n_channels, len(grid))):
+            for row in grid[ch]:
+                if row.effect == 0xC:
+                    row.vol_set = min(row.effect_arg, 0x3F)
+                    row.effect = 0
+                    row.effect_arg = 0
+
+    vprint("  resolving PT per-effect recalls…")
+    resolve_pt_recalls(patterns, order_list, n_channels)
+
+    vprint("  building sample/instrument bin…")
+    sampleinst_raw, _offsets = build_sample_inst_bin(samples)
+    assert len(sampleinst_raw) == SAMPLEINST_SIZE
+
+    compressed = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
+    comp_size  = len(compressed)
+    vprint(f"  sample+inst bin: {SAMPLEINST_SIZE} → {comp_size} bytes (gzip)")
+
+    speed, tempo = find_initial_bpm_speed(patterns, order_list)
+    tempo = max(24, min(280, tempo))
+    bpm_stored = (tempo - 24) & 0xFF
+    vprint(f"  initial speed={speed}, tempo(BPM)={tempo}")
+
+    song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
+
+    sig = (SIGNATURE + b' ' * 14)[:14]
+    header = (
+        TAUD_MAGIC +
+        bytes([TAUD_VERSION, 1]) +
+        struct.pack('<I', comp_size) +
+        b'\x00\x00\x00\x00' +
+        sig
+    )
+    assert len(header) == TAUD_HEADER_SIZE
+
+    vprint("  building pattern bin…")
+    inst_vols = {
+        i + 1: min(s.volume, 0x3F)
+        for i, s in enumerate(samples)
+        if s.sample_data
+    }
+    pat_bin = bytearray()
+    for pi in range(n_patterns):
+        grid = patterns[pi]
+        for ch in range(n_channels):
+            default_pan = _default_channel_pan(ch)
+            pat_bin += build_pattern(grid, ch, default_pan, inst_vols)
+    assert len(pat_bin) == n_patterns * n_channels * PATTERN_BYTES
+
+    vprint("  deduplicating patterns…")
+    orig_count = n_patterns * n_channels
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
+    vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
+           f"({orig_count - num_taud_pats} deduplicated)")
+
+    # ProTracker is Amiga-period-based by definition, so we set the f bit so
+    # the engine applies coarse pitch slides in period space (recovers PT's
+    # characteristic non-linear pitch character).
+    flags_byte = 0x02
+    song_table = struct.pack('<IBHBBHfB',
+        song_offset,
+        n_channels,
+        num_taud_pats,
+        bpm_stored,
+        speed,
+        0xA000,
+        8363.0,
+        flags_byte,
+    )
+    assert len(song_table) == TAUD_SONG_ENTRY
+
+    vprint("  building cue sheet…")
+    cue_sheet = build_cue_sheet(order_list, n_patterns, n_channels, pat_remap)
+    assert len(cue_sheet) == NUM_CUES * CUE_SIZE
+
+    return header + compressed + song_table + bytes(pat_bin) + cue_sheet
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    global VERBOSE
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('input',  help='Input .mod file')
+    ap.add_argument('output', help='Output .taud file')
+    ap.add_argument('-v', '--verbose', action='store_true',
+                    help='Print conversion details to stderr')
+    args = ap.parse_args()
+
+    VERBOSE = args.verbose
+
+    with open(args.input, 'rb') as f:
+        data = f.read()
+
+    vprint(f"parsing '{args.input}' ({len(data)} bytes)…")
+    mod = parse_mod(data)
+    vprint(f"  title: '{mod['title']}'")
+    vprint(f"  magic: {mod['magic']!r} ({mod['n_channels']} channels)")
+    vprint(f"  orders={len(mod['order_list'])}, patterns={mod['n_patterns']}, "
+           f"samples={sum(1 for s in mod['samples'] if s.sample_data)}")
+
+    taud = assemble_taud(mod)
+
+    with open(args.output, 'wb') as f:
+        f.write(taud)
+
+    print(f"wrote {len(taud)} bytes to '{args.output}'")
+    if VERBOSE:
+        print(f"  magic ok: {taud[:8].hex()}", file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()
