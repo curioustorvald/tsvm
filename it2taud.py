@@ -42,11 +42,22 @@ import math
 import struct
 import sys
 
-VERBOSE = False
-
-def vprint(*a, **kw):
-    if VERBOSE:
-        print(*a, **kw, file=sys.stderr)
+from taud_common import (
+    set_verbose, vprint,
+    TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
+    SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE,
+    PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C3,
+    TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
+    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
+    SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
+    EFF_A, EFF_B, EFF_C, EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
+    EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
+    EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
+    J_SEMI_TABLE,
+    d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+    normalise_sample,
+)
 
 
 # ── IT constants ─────────────────────────────────────────────────────────────
@@ -91,14 +102,6 @@ VC_VIB_LO,    VC_VIB_HI    = 203, 212   # vibrato       H (depth 1..10)
 
 VC_TPORTA_TABLE = (0, 1, 4, 8, 16, 32, 64, 96, 128, 255)
 
-# IT effect letters (1-based, same numbering as S3M so we can reuse encode_effect)
-EFF_A = 1;  EFF_B = 2;  EFF_C = 3;  EFF_D = 4;  EFF_E = 5
-EFF_F = 6;  EFF_G = 7;  EFF_H = 8;  EFF_I = 9;  EFF_J = 10
-EFF_K = 11; EFF_L = 12; EFF_M = 13; EFF_N = 14; EFF_O = 15
-EFF_P = 16; EFF_Q = 17; EFF_R = 18; EFF_S = 19; EFF_T = 20
-EFF_U = 21; EFF_V = 22; EFF_W = 23; EFF_X = 24; EFF_Y = 25
-EFF_Z = 26
-
 # IT effects that recall last non-zero arg (per-effect-private, with cohort exceptions).
 # V (Set Global Volume) recalls in IT compat mode — the first V $00 resolves to the
 # header's global_vol, not literal 0. Without this, songs starting with V $00 silence.
@@ -109,39 +112,9 @@ IT_MEM_EFFECTS = frozenset({
 })
 
 
-# ── Taud constants ────────────────────────────────────────────────────────────
+# ── Taud constants (it-specific) ──────────────────────────────────────────────
 
-TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
-TAUD_VERSION     = 1
-TAUD_HEADER_SIZE = 32
-TAUD_SONG_ENTRY  = 16
-SAMPLEBIN_SIZE   = 770048
-INSTBIN_SIZE     = 16384
-SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
-PATTERN_ROWS     = 64
-PATTERN_BYTES    = PATTERN_ROWS * 8
-NUM_PATTERNS_MAX = 4095
-NUM_CUES         = 1024
-CUE_SIZE         = 32
-NUM_VOICES       = 20
 SIGNATURE        = b'it2taud/TSVM  '   # 14 bytes
-
-NOTE_NOP    = 0xFFFF
-NOTE_KEYOFF = 0x0000
-NOTE_CUT    = 0xFFFE
-TAUD_C3     = 0x4000
-
-TOP_NONE = 0x00
-TOP_A    = 0x0A; TOP_B = 0x0B; TOP_C = 0x0C; TOP_D = 0x0D
-TOP_E    = 0x0E; TOP_F = 0x0F; TOP_G = 0x10; TOP_H = 0x11
-TOP_I    = 0x12; TOP_J = 0x13; TOP_K = 0x14; TOP_L = 0x15
-TOP_O    = 0x18; TOP_Q = 0x1A; TOP_R = 0x1B; TOP_S = 0x1C
-TOP_T    = 0x1D; TOP_U = 0x1E; TOP_V = 0x1F; TOP_Y = 0x22
-
-SEL_SET  = 0; SEL_UP = 1; SEL_DOWN = 2; SEL_FINE = 3
-
-J_SEMI_TABLE = [0x00, 0x01, 0x03, 0x04, 0x05, 0x07, 0x08, 0x09,
-                0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x11, 0x13, 0x14]
 
 # ThreeFiveMiniUfloat LUT — 256 entries, seconds 0.0..126.0 (must match Kotlin)
 _MINUFLOAT_LUT = [
@@ -399,40 +372,6 @@ def it214_decompress(blob: bytes, smp_offset: int, num_samples: int,
         return bytes(s & 0xFF for s in out_samples)
 
 
-# ── Sample normaliser (same as s3m2taud but signed derived from cvt byte) ────
-
-def _normalise_sample(raw: bytes, signed: bool, is_16bit: bool,
-                      is_stereo: bool, name: str) -> bytes:
-    """Return unsigned 8-bit mono sample bytes."""
-    out = []
-    stride = (2 if is_16bit else 1) * (2 if is_stereo else 1)
-    i = 0
-    while i + stride <= len(raw):
-        if is_16bit:
-            if is_stereo:
-                l16 = struct.unpack_from('<h', raw, i)[0]
-                r16 = struct.unpack_from('<h', raw, i+2)[0]
-                s = (l16 + r16) >> 1
-            else:
-                s = struct.unpack_from('<h', raw, i)[0]
-            v = (s >> 8) + 128
-        else:
-            if is_stereo:
-                l8 = raw[i]; r8 = raw[i+1]
-                raw_s = (l8 + r8) // 2
-            else:
-                raw_s = raw[i]
-            if signed:
-                v = (raw_s ^ 0x80) & 0xFF
-            else:
-                v = raw_s
-        out.append(v & 0xFF)
-        i += stride
-    if is_16bit or is_stereo:
-        vprint(f"  info: '{name}' converted to unsigned 8-bit mono ({len(out)} samples)")
-    return bytes(out)
-
-
 # ── IT sample parser ──────────────────────────────────────────────────────────
 
 class ITSample:
@@ -489,7 +428,7 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
                         is_it215 = bool(s.cvt & 0x04)
                         raw = it214_decompress(data, s.smp_point, s.length,
                                                s.is_16bit, is_it215)
-                        s.sample_data = _normalise_sample(raw, True,
+                        s.sample_data = normalise_sample(raw, True,
                                                           s.is_16bit, s.is_stereo, s.name)
                         s.length = len(s.sample_data)
                         s.loop_beg = min(s.loop_beg, s.length)
@@ -503,7 +442,7 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
                     s.sample_data = bytes(min(s.length, 256))
                 else:
                     raw = data[s.smp_point : s.smp_point + byte_len]
-                    s.sample_data = _normalise_sample(raw, s.is_signed,
+                    s.sample_data = normalise_sample(raw, s.is_signed,
                                                       s.is_16bit, s.is_stereo, s.name)
                     s.length    = len(s.sample_data)
                     s.loop_beg  = min(s.loop_beg, s.length)
@@ -1085,21 +1024,6 @@ def decode_volcol(vc: int):
 
 # ── Effect translator ─────────────────────────────────────────────────────────
 
-def _d_arg_to_col(arg: int):
-    if arg == 0:
-        return None
-    hi = (arg >> 4) & 0xF
-    lo = arg & 0xF
-    if hi == 0xF and lo > 0:
-        return (SEL_FINE, lo & 0x1F)
-    if lo == 0xF and hi > 0:
-        return (SEL_FINE, (hi & 0x1F) | 0x20)
-    if hi > 0 and lo == 0:
-        return (SEL_UP, hi)
-    if lo > 0 and hi == 0:
-        return (SEL_DOWN, lo)
-    return (SEL_UP, hi)
-
 def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
     """Return (taud_op, taud_arg16, vol_override, pan_override).
 
@@ -1153,22 +1077,22 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_J, (J_SEMI_TABLE[hi_semi] << 8) | J_SEMI_TABLE[lo_semi], None, None)
 
     if cmd == EFF_K:
-        return (TOP_H, 0x0000, _d_arg_to_col(arg), None)
+        return (TOP_H, 0x0000, d_arg_to_col(arg), None)
 
     if cmd == EFF_L:
-        return (TOP_G, 0x0000, _d_arg_to_col(arg), None)
+        return (TOP_G, 0x0000, d_arg_to_col(arg), None)
 
     if cmd == EFF_M:
         return (TOP_NONE, 0, (SEL_SET, min(arg, 0x3F)), None)
 
     if cmd == EFF_N:
-        return (TOP_NONE, 0, _d_arg_to_col(arg), None)
+        return (TOP_NONE, 0, d_arg_to_col(arg), None)
 
     if cmd == EFF_O:
         return (TOP_O, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_P:
-        return (TOP_NONE, 0, None, _d_arg_to_col(arg))
+        return (TOP_NONE, 0, None, d_arg_to_col(arg))
 
     if cmd == EFF_Q:
         return (TOP_Q, (arg & 0xFF) << 8, None, None)
@@ -1410,20 +1334,6 @@ def _find_post_pat_cue(pi: int, order_list: list, chunk_map: list,
 
 # ── Sample / instrument bin (same as s3m2taud) ────────────────────────────────
 
-def _resample_linear(data: bytes, ratio: float) -> bytes:
-    if not data:
-        return data
-    n_out = max(1, int(len(data) * ratio))
-    out   = bytearray(n_out)
-    for i in range(n_out):
-        src  = i / ratio
-        i0   = int(src)
-        frac = src - i0
-        i1   = min(i0 + 1, len(data) - 1)
-        v    = data[i0] * (1.0 - frac) + data[i1] * frac
-        out[i] = int(v + 0.5) & 0xFF
-    return bytes(out)
-
 def build_sample_inst_bin_it(samples_or_proxy: list,
                               envelopes_by_slot: dict = None) -> tuple:
     """samples_or_proxy: list of ITSample | None, indexed 1-based (index 0 unused).
@@ -1443,7 +1353,7 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         ratio = SAMPLEBIN_SIZE / total
         vprint(f"  info: sample bin overflow ({total} bytes); resampling all by {ratio:.4f}")
         for _, s in pcm_list:
-            new_data    = _resample_linear(s.sample_data, ratio)
+            new_data    = resample_linear(s.sample_data, ratio)
             s.sample_data  = new_data
             s.length       = len(new_data)
             s.loop_beg     = max(0, int(s.loop_beg * ratio))
@@ -1639,32 +1549,6 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
         struct.pack_into('<H', out, base + 6, arg16 & 0xFFFF)
 
     return bytes(out)
-
-
-# ── Cue sheet helpers (adapted from s3m2taud) ─────────────────────────────────
-
-def _encode_cue(patterns12: list, instruction: int) -> bytearray:
-    pats = list(patterns12) + [0xFFF] * NUM_VOICES
-    pats = pats[:NUM_VOICES]
-    entry = bytearray(CUE_SIZE)
-    for i in range(10):
-        v0, v1 = pats[i*2], pats[i*2+1]
-        entry[i]      = ((v0 & 0xF) << 4) | (v1 & 0xF)
-        entry[10 + i] = (((v0 >> 4) & 0xF) << 4) | ((v1 >> 4) & 0xF)
-        entry[20 + i] = (((v0 >> 8) & 0xF) << 4) | ((v1 >> 8) & 0xF)
-    entry[30] = instruction & 0xFF
-    return entry
-
-def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:
-    seen = {}; remap = {}; canonical = []
-    for i in range(num_pats):
-        pat = pat_bin[i*PATTERN_BYTES:(i+1)*PATTERN_BYTES]
-        if pat in seen:
-            remap[i] = seen[pat]
-        else:
-            ci = len(canonical)
-            seen[pat] = ci; remap[i] = ci; canonical.append(pat)
-    return b''.join(canonical), remap, len(canonical)
 
 
 # ── Main assembly ─────────────────────────────────────────────────────────────
@@ -1863,14 +1747,14 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
     sheet       = bytearray(NUM_CUES * CUE_SIZE)
     for c in range(NUM_CUES):
-        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = _encode_cue([], 0)
+        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
 
     last_active = -1
     for cue_idx, ci in enumerate(taud_cue_list):
         if cue_idx >= NUM_CUES: break
         base_pat = cue_idx * C
         pats = [pat_remap[base_pat + vi] for vi in range(C)]
-        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = _encode_cue(pats, 0)
+        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pats, 0)
         last_active = cue_idx
 
     if last_active >= 0:
@@ -1906,7 +1790,6 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    global VERBOSE
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('input',  help='Input .it file')
@@ -1917,7 +1800,7 @@ def main():
     ap.add_argument('--no-pf-envelope', action='store_true',
                     help='Skip baking IT pitch/filter envelope onto sample copies')
     args = ap.parse_args()
-    VERBOSE = args.verbose
+    set_verbose(args.verbose)
 
     with open(args.input, 'rb') as f:
         data = f.read()
@@ -1942,7 +1825,7 @@ def main():
         f.write(taud)
 
     print(f"wrote {len(taud)} bytes to '{args.output}'")
-    if VERBOSE:
+    if args.verbose:
         print(f"  magic ok: {taud[:8].hex()}", file=sys.stderr)
         sig_off = TAUD_HEADER_SIZE - 14
         print(f"  signature: {taud[sig_off:sig_off+14]}", file=sys.stderr)

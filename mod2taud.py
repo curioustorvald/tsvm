@@ -29,11 +29,18 @@ import math
 import struct
 import sys
 
-VERBOSE = False
-
-def vprint(*a, **kw):
-    if VERBOSE:
-        print(*a, **kw, file=sys.stderr)
+from taud_common import (
+    set_verbose, vprint,
+    TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
+    SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE,
+    PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C3,
+    TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
+    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
+    SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
+    J_SEMI_TABLE,
+    d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+)
 
 
 # ── MOD constants ────────────────────────────────────────────────────────────
@@ -52,65 +59,14 @@ PT_MEM_TOP = frozenset({0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0xA})
 PT_MEM_E_SUB = frozenset({0x1, 0x2, 0xA, 0xB})
 
 
-# ── Taud constants (identical to s3m2taud) ───────────────────────────────────
+# ── Taud constants (mod-specific) ────────────────────────────────────────────
 
-TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
-TAUD_VERSION     = 1
-TAUD_HEADER_SIZE = 32
-TAUD_SONG_ENTRY  = 16
-SAMPLEBIN_SIZE   = 770048
-INSTBIN_SIZE     = 16384
-SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
-PATTERN_ROWS     = 64
-PATTERN_BYTES    = PATTERN_ROWS * 8
-NUM_PATTERNS_MAX = 4095
-NUM_CUES         = 1024
-CUE_SIZE         = 32
-NUM_VOICES       = 20
 SIGNATURE        = b"mod2taud/TSVM "    # 14 bytes
-
-# Taud note constants
-NOTE_NOP    = 0xFFFF
-NOTE_KEYOFF = 0x0000
-NOTE_CUT    = 0xFFFE
-TAUD_C3     = 0x4000
 
 # PT period 428 (PT "C-2") corresponds to OpenMPT/IT C-4 which s3m2taud
 # anchors to Taud C3 (0x4000). We use the same anchor so MOD/S3M imports
 # share a pitch reference.
 PT_REFERENCE_PERIOD = 428.0
-
-# Taud effect opcode bytes
-TOP_NONE = 0x00
-TOP_A    = 0x0A
-TOP_B    = 0x0B
-TOP_C    = 0x0C
-TOP_D    = 0x0D
-TOP_E    = 0x0E
-TOP_F    = 0x0F
-TOP_G    = 0x10
-TOP_H    = 0x11
-TOP_I    = 0x12
-TOP_J    = 0x13
-TOP_K    = 0x14
-TOP_L    = 0x15
-TOP_O    = 0x18
-TOP_Q    = 0x1A
-TOP_R    = 0x1B
-TOP_S    = 0x1C
-TOP_T    = 0x1D
-TOP_U    = 0x1E
-TOP_V    = 0x1F
-TOP_Y    = 0x22
-
-SEL_SET  = 0
-SEL_UP   = 1
-SEL_DOWN = 2
-SEL_FINE = 3
-
-# 12-TET semitone → Taud J-arpeggio byte (high byte of pitch delta).
-J_SEMI_TABLE = [0x00, 0x01, 0x03, 0x04, 0x05, 0x07, 0x08, 0x09,
-                0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x11, 0x13, 0x14]
 
 
 # ── MOD parser ───────────────────────────────────────────────────────────────
@@ -272,25 +228,6 @@ def period_to_taud_note(period: int) -> int:
     return max(1, min(0xFFFD, val))
 
 
-# ── Volume / pan column helper (shared semantics with s3m2taud) ──────────────
-
-def _d_arg_to_col(arg: int):
-    if arg == 0:
-        return None
-    hi = (arg >> 4) & 0xF
-    lo = arg & 0xF
-    if hi == 0xF and lo > 0:
-        return (SEL_FINE, lo & 0x1F)              # fine slide down
-    if lo == 0xF and hi > 0:
-        return (SEL_FINE, (hi & 0x1F) | 0x20)     # fine slide up
-    if hi > 0 and lo == 0:
-        return (SEL_UP, hi)
-    if lo > 0 and hi == 0:
-        return (SEL_DOWN, lo)
-    # Both nibbles non-zero, neither $F → ambiguous; PT prefers up.
-    return (SEL_UP, hi)
-
-
 # ── PT effect → Taud effect ──────────────────────────────────────────────────
 
 def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
@@ -323,11 +260,11 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
 
     if cmd == 0x5:
         # Tone porta + vol slide → Taud L (engine splits internally).
-        return (TOP_G, 0x0000, _d_arg_to_col(arg), None)
+        return (TOP_G, 0x0000, d_arg_to_col(arg), None)
 
     if cmd == 0x6:
         # Vibrato + vol slide → Taud K.
-        return (TOP_H, 0x0000, _d_arg_to_col(arg), None)
+        return (TOP_H, 0x0000, d_arg_to_col(arg), None)
 
     if cmd == 0x7:
         hi = (arg >> 4) & 0xF
@@ -343,7 +280,7 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_O, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0xA:
-        return (TOP_NONE, 0, _d_arg_to_col(arg), None)
+        return (TOP_NONE, 0, d_arg_to_col(arg), None)
 
     if cmd == 0xB:
         return (TOP_B, arg & 0xFF, None, None)
@@ -455,21 +392,6 @@ def resolve_pt_recalls(patterns: list, order_list: list, n_channels: int) -> Non
 
 # ── Sample resampling and Taud sample/instrument bin (port of s3m2taud) ──────
 
-def _resample_linear(data: bytes, ratio: float) -> bytes:
-    if not data:
-        return data
-    n_out = max(1, int(len(data) * ratio))
-    out   = bytearray(n_out)
-    for i in range(n_out):
-        src  = i / ratio
-        i0   = int(src)
-        frac = src - i0
-        i1   = min(i0 + 1, len(data) - 1)
-        v    = data[i0] * (1.0 - frac) + data[i1] * frac
-        out[i] = int(v + 0.5) & 0xFF
-    return bytes(out)
-
-
 def build_sample_inst_bin(samples: list) -> tuple:
     """Returns (bin_bytes[786432], offsets_dict). 1-based indexing."""
     pcm = [(i, s) for i, s in enumerate(samples) if s.sample_data]
@@ -480,7 +402,7 @@ def build_sample_inst_bin(samples: list) -> tuple:
         ratio = SAMPLEBIN_SIZE / total
         vprint(f"  info: sample bin overflow ({total} bytes); resampling all by {ratio:.4f}")
         for _, s in pcm:
-            new_data    = _resample_linear(s.sample_data, ratio)
+            new_data    = resample_linear(s.sample_data, ratio)
             s.sample_data = new_data
             s.length      = len(new_data)
             s.loop_begin  = max(0, int(s.loop_begin * ratio))
@@ -619,40 +541,11 @@ def build_pattern(grid: list, ch_idx: int, default_pan: int,
     return bytes(out)
 
 
-def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:
-    seen   = {}
-    remap  = {}
-    canon  = []
-    for i in range(num_pats):
-        pat = pat_bin[i * PATTERN_BYTES : (i + 1) * PATTERN_BYTES]
-        if pat in seen:
-            remap[i] = seen[pat]
-        else:
-            ci = len(canon)
-            seen[pat] = ci
-            remap[i] = ci
-            canon.append(pat)
-    return b''.join(canon), remap, len(canon)
-
-
-def _encode_cue(patterns12: list, instruction: int) -> bytearray:
-    pats = list(patterns12) + [0xFFF] * NUM_VOICES
-    pats = pats[:NUM_VOICES]
-    entry = bytearray(CUE_SIZE)
-    for i in range(10):
-        v0, v1 = pats[i*2], pats[i*2+1]
-        entry[i]      = ((v0 & 0xF) << 4) | (v1 & 0xF)
-        entry[10 + i] = (((v0 >> 4) & 0xF) << 4) | ((v1 >> 4) & 0xF)
-        entry[20 + i] = (((v0 >> 8) & 0xF) << 4) | ((v1 >> 8) & 0xF)
-    entry[30] = instruction & 0xFF
-    return entry
-
-
 def build_cue_sheet(order_list: list, n_pats_mod: int, n_channels: int,
                     pat_remap: dict = None) -> bytes:
     sheet = bytearray(NUM_CUES * CUE_SIZE)
     for c in range(NUM_CUES):
-        sheet[c*CUE_SIZE : c*CUE_SIZE+CUE_SIZE] = _encode_cue([], 0)
+        sheet[c*CUE_SIZE : c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
 
     cue_idx = 0
     last_active = -1
@@ -665,7 +558,7 @@ def build_cue_sheet(order_list: list, n_pats_mod: int, n_channels: int,
             continue
         orig = [order * n_channels + v for v in range(n_channels)]
         pats = [pat_remap[p] if pat_remap else p for p in orig]
-        sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = _encode_cue(pats, 0)
+        sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = encode_cue(pats, 0)
         last_active = cue_idx
         cue_idx += 1
 
@@ -804,7 +697,6 @@ def assemble_taud(mod: dict) -> bytes:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    global VERBOSE
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('input',  help='Input .mod file')
@@ -813,7 +705,7 @@ def main():
                     help='Print conversion details to stderr')
     args = ap.parse_args()
 
-    VERBOSE = args.verbose
+    set_verbose(args.verbose)
 
     with open(args.input, 'rb') as f:
         data = f.read()
@@ -831,7 +723,7 @@ def main():
         f.write(taud)
 
     print(f"wrote {len(taud)} bytes to '{args.output}'")
-    if VERBOSE:
+    if args.verbose:
         print(f"  magic ok: {taud[:8].hex()}", file=sys.stderr)
 
 

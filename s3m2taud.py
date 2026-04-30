@@ -29,11 +29,22 @@ import math
 import struct
 import sys
 
-VERBOSE = False
-
-def vprint(*a, **kw):
-    if VERBOSE:
-        print(*a, **kw, file=sys.stderr)
+from taud_common import (
+    set_verbose, vprint,
+    TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
+    SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE,
+    PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C3,
+    TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
+    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
+    SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
+    EFF_A, EFF_B, EFF_C, EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
+    EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
+    EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
+    J_SEMI_TABLE,
+    d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+    normalise_sample,
+)
 
 
 # ── S3M constants ────────────────────────────────────────────────────────────
@@ -45,91 +56,7 @@ S3M_NOTE_OFF     = 0xFE
 S3M_ORDER_SKIP   = 0xFE
 S3M_ORDER_END    = 0xFF
 
-# S3M effect letters (1-based: 1='A', 2='B', …)
-EFF_A = 1   # set speed
-EFF_B = 2   # jump to order
-EFF_C = 3   # pattern break
-EFF_D = 4   # volume slide
-EFF_E = 5   # porta down
-EFF_F = 6   # porta up
-EFF_G = 7   # tone porta
-EFF_H = 8   # vibrato
-EFF_I = 9   # tremor
-EFF_J = 10  # arpeggio
-EFF_K = 11  # vibrato+volslide
-EFF_L = 12  # porta+volslide
-EFF_M = 13  # channel vol
-EFF_N = 14  # chan vol slide
-EFF_O = 15  # sample offset
-EFF_P = 16  # pan slide
-EFF_Q = 17  # retrigger
-EFF_R = 18  # tremolo
-EFF_S = 19  # special (sub-cmds)
-EFF_T = 20  # set BPM
-EFF_U = 21  # fine vibrato
-EFF_V = 22  # global vol
-EFF_W = 23  # global vol slide
-EFF_X = 24  # set pan
-EFF_Y = 25  # panbrello
-EFF_Z = 26  # sync
-
-
-# ── Taud constants ───────────────────────────────────────────────────────────
-
-TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
-TAUD_VERSION     = 1
-TAUD_HEADER_SIZE = 32    # magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(2)+sig(16)
-TAUD_SONG_ENTRY  = 16   # offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+flags(1)
-SAMPLEBIN_SIZE   = 770048
-INSTBIN_SIZE     = 16384   # 256 instruments × 64 bytes
-SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE  # 786432
-PATTERN_ROWS     = 64
-PATTERN_BYTES    = PATTERN_ROWS * 8   # 512
-NUM_PATTERNS_MAX = 4095
-NUM_CUES         = 1024
-CUE_SIZE         = 32   # packed 12-bit×20 voices + instruction + pad
-NUM_VOICES       = 20
 SIGNATURE        = b"s3m2taud/TSVM "    # 14 bytes
-
-# Taud note constants
-NOTE_NOP    = 0xFFFF
-NOTE_KEYOFF = 0x0000
-NOTE_CUT    = 0xFFFE
-TAUD_C3     = 0x4000
-
-# Taud effect opcode bytes (base-36: 0..9 → 0x00..0x09, A..Z → 0x0A..0x23)
-TOP_NONE = 0x00
-TOP_A    = 0x0A   # set tick speed
-TOP_B    = 0x0B   # jump to order
-TOP_C    = 0x0C   # break to row
-TOP_D    = 0x0D   # volume slide
-TOP_E    = 0x0E   # pitch slide down
-TOP_F    = 0x0F   # pitch slide up
-TOP_G    = 0x10   # tone porta
-TOP_H    = 0x11   # vibrato
-TOP_I    = 0x12   # tremor
-TOP_J    = 0x13   # microtonal arpeggio
-TOP_K    = 0x14   # vibrato + vol slide (engine no-op; converter splits)
-TOP_L    = 0x15   # tone porta + vol slide (engine no-op; converter splits)
-TOP_O    = 0x18   # sample offset
-TOP_Q    = 0x1A   # retrigger
-TOP_R    = 0x1B   # tremolo
-TOP_S    = 0x1C   # sub-effects
-TOP_T    = 0x1D   # tempo set/slide
-TOP_U    = 0x1E   # fine vibrato
-TOP_V    = 0x1F   # global volume
-TOP_Y    = 0x22   # panbrello
-
-# Volume / pan column selectors (2-bit field, packed into top of vol/pan byte).
-SEL_SET  = 0   # 6-bit value: set vol / pan
-SEL_UP   = 1   # 6-bit per-tick slide up / right
-SEL_DOWN = 2   # 6-bit per-tick slide down / left
-SEL_FINE = 3   # 1-bit dir + 5-bit magnitude, fired on tick 0
-
-# 12-TET semitone → Taud J-arpeggio byte (high byte of pitch delta).
-# byte = round(semitone * 4096 / 12 / 256) = round(semitone * 4 / 3).
-J_SEMI_TABLE = [0x00, 0x01, 0x03, 0x04, 0x05, 0x07, 0x08, 0x09,
-                0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x11, 0x13, 0x14]
 
 # ST3's single shared memory slot backs these effects.
 ST3_SHARED_EFFECTS = frozenset({
@@ -234,43 +161,12 @@ def parse_instruments(data: bytes, h: S3MHeader) -> list:
                 inst.sample_data = bytes(min(sample_len, 256))
             else:
                 raw = data[sample_off:sample_off + sample_len]
-                inst.sample_data = _normalise_sample(raw, inst.signed, is_16bit, is_stereo, inst.name)
+                inst.sample_data = normalise_sample(raw, inst.signed, is_16bit, is_stereo, inst.name)
                 inst.length      = len(inst.sample_data)
                 inst.loop_begin  = min(inst.loop_begin, inst.length)
                 inst.loop_end    = min(inst.loop_end,   inst.length)
         insts.append(inst)
     return insts
-
-
-def _normalise_sample(raw: bytes, signed: bool, is_16bit: bool, is_stereo: bool, name: str) -> bytes:
-    """Return unsigned 8-bit mono sample bytes."""
-    out = []
-    stride = (2 if is_16bit else 1) * (2 if is_stereo else 1)
-    i = 0
-    while i + stride <= len(raw):
-        if is_16bit:
-            if is_stereo:
-                l16 = struct.unpack_from('<h', raw, i)[0]
-                r16 = struct.unpack_from('<h', raw, i+2)[0]
-                s = (l16 + r16) >> 1
-            else:
-                s = struct.unpack_from('<h', raw, i)[0]
-            v = (s >> 8) + 128
-        else:
-            if is_stereo:
-                l8 = raw[i]; r8 = raw[i+1]
-                raw_s = (l8 + r8) // 2
-            else:
-                raw_s = raw[i]
-            if signed:
-                v = ((raw_s ^ 0x80) & 0xFF)   # signed→unsigned
-            else:
-                v = raw_s
-        out.append(v & 0xFF)
-        i += stride
-    if is_16bit or is_stereo:
-        vprint(f"  info: '{name}' converted to unsigned 8-bit mono ({len(out)} samples)")
-    return bytes(out)
 
 
 # ── S3M pattern parser ───────────────────────────────────────────────────────
@@ -339,28 +235,6 @@ def encode_note(s3m_note: int) -> int:
     return max(1, min(0xFFFD, val))
 
 
-def _d_arg_to_col(arg: int):
-    """Convert an ST3 D-style two-nibble vol/pan slide arg into a column override.
-
-    Returns (selector, value) or None for no-op. Volume column treats
-    selector 1 as up / 2 as down; pan column reuses 1 = right, 2 = left.
-    """
-    if arg == 0:
-        return None
-    hi = (arg >> 4) & 0xF
-    lo = arg & 0xF
-    if hi == 0xF and lo > 0:
-        return (SEL_FINE, lo & 0x1F)              # fine slide down (dir bit 0)
-    if lo == 0xF and hi > 0:
-        return (SEL_FINE, (hi & 0x1F) | 0x20)     # fine slide up (dir bit 1)
-    if hi > 0 and lo == 0:
-        return (SEL_UP, hi)
-    if lo > 0 and hi == 0:
-        return (SEL_DOWN, lo)
-    # Both nibbles non-zero, neither $F → ambiguous; ST3 prefers up.
-    return (SEL_UP, hi)
-
-
 def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
     """Return (taud_op, taud_arg16, vol_override, pan_override).
 
@@ -417,23 +291,23 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
     if cmd == EFF_K:
         # K = vibrato continuation + vol slide; engine treats K as no-op.
         # Split into: H $0000 (recall vibrato from HU memory) + vol-col slide.
-        return (TOP_H, 0x0000, _d_arg_to_col(arg), None)
+        return (TOP_H, 0x0000, d_arg_to_col(arg), None)
 
     if cmd == EFF_L:
         # L = tone-porta continuation + vol slide; split similarly.
-        return (TOP_G, 0x0000, _d_arg_to_col(arg), None)
+        return (TOP_G, 0x0000, d_arg_to_col(arg), None)
 
     if cmd == EFF_M:
         return (TOP_NONE, 0, (SEL_SET, min(arg, 0x3F)), None)
 
     if cmd == EFF_N:
-        return (TOP_NONE, 0, _d_arg_to_col(arg), None)
+        return (TOP_NONE, 0, d_arg_to_col(arg), None)
 
     if cmd == EFF_O:
         return (TOP_O, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_P:
-        return (TOP_NONE, 0, None, _d_arg_to_col(arg))
+        return (TOP_NONE, 0, None, d_arg_to_col(arg))
 
     if cmd == EFF_Q:
         return (TOP_Q, (arg & 0xFF) << 8, None, None)
@@ -541,22 +415,6 @@ def warn_st3_quirks(patterns: list, order_list: list, num_channels: int) -> None
 
 # ── Taud builders ────────────────────────────────────────────────────────────
 
-def _resample_linear(data: bytes, ratio: float) -> bytes:
-    """Resample bytes by ratio (< 1 = downsample) using linear interpolation."""
-    if not data:
-        return data
-    n_out = max(1, int(len(data) * ratio))
-    out   = bytearray(n_out)
-    for i in range(n_out):
-        src = i / ratio
-        i0  = int(src)
-        frac = src - i0
-        i1   = min(i0 + 1, len(data) - 1)
-        v    = data[i0] * (1.0 - frac) + data[i1] * frac
-        out[i] = int(v + 0.5) & 0xFF
-    return bytes(out)
-
-
 def build_sample_inst_bin(instruments: list) -> tuple:
     """
     Returns (bin_bytes[786432], offsets_list, updated_insts).
@@ -571,7 +429,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         ratio = SAMPLEBIN_SIZE / total
         vprint(f"  info: sample bin overflow ({total} bytes); resampling all by {ratio:.4f}")
         for _, inst in pcm_insts:
-            new_data = _resample_linear(inst.sample_data, ratio)
+            new_data = resample_linear(inst.sample_data, ratio)
             old_len  = len(inst.sample_data)
             inst.sample_data  = new_data
             inst.length       = len(new_data)
@@ -734,48 +592,13 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
     return bytes(out)
 
 
-def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:
-    """
-    Consolidate identical 512-byte Taud patterns into a single copy.
-    Returns (deduped_bin, remap, num_unique) where remap[original_idx] = canonical_idx.
-    """
-    seen = {}       # pattern_bytes -> canonical_index
-    remap = {}      # original_index -> canonical_index
-    canonical = []
-    for i in range(num_pats):
-        pat = pat_bin[i * PATTERN_BYTES : (i + 1) * PATTERN_BYTES]
-        if pat in seen:
-            remap[i] = seen[pat]
-        else:
-            ci = len(canonical)
-            seen[pat] = ci
-            remap[i] = ci
-            canonical.append(pat)
-    return b''.join(canonical), remap, len(canonical)
-
-
-def _encode_cue(patterns12: list, instruction: int) -> bytearray:
-    """Encode a 32-byte cue entry for up to 20 voices with 12-bit pattern numbers."""
-    # patterns12: list of up to NUM_VOICES 12-bit values (0xFFF = disabled)
-    pats = list(patterns12) + [0xFFF] * NUM_VOICES
-    pats = pats[:NUM_VOICES]
-    entry = bytearray(CUE_SIZE)
-    for i in range(10):      # 10 bytes: 2 voices per byte
-        v0, v1 = pats[i*2], pats[i*2+1]
-        entry[i]      = ((v0 & 0xF) << 4) | (v1 & 0xF)        # low nybbles
-        entry[10 + i] = (((v0 >> 4) & 0xF) << 4) | ((v1 >> 4) & 0xF)  # mid nybbles
-        entry[20 + i] = (((v0 >> 8) & 0xF) << 4) | ((v1 >> 8) & 0xF)  # high nybbles
-    entry[30] = instruction & 0xFF
-    return entry
-
-
 def build_cue_sheet(order_list: list, num_pats_s3m: int, num_channels: int,
                     pat_remap: dict = None) -> bytes:
     """Build the 1024×32-byte cue sheet with 12-bit packed pattern numbers."""
     sheet = bytearray(NUM_CUES * CUE_SIZE)
     # Fill entire sheet with the "all disabled" cue (patterns=0xFFF, instr=0)
     for c in range(NUM_CUES):
-        sheet[c*CUE_SIZE : c*CUE_SIZE+CUE_SIZE] = _encode_cue([], 0)
+        sheet[c*CUE_SIZE : c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
 
     cue_idx = 0
     last_active = -1
@@ -786,7 +609,7 @@ def build_cue_sheet(order_list: list, num_pats_s3m: int, num_channels: int,
             continue
         orig = [order * num_channels + v for v in range(num_channels)]
         pats = [pat_remap[p] if pat_remap else p for p in orig]
-        sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = _encode_cue(pats, 0)
+        sheet[cue_idx*CUE_SIZE : cue_idx*CUE_SIZE+CUE_SIZE] = encode_cue(pats, 0)
         last_active = cue_idx
         cue_idx += 1
 
@@ -926,7 +749,6 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    global VERBOSE
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('input',  help='Input .s3m file')
@@ -935,7 +757,7 @@ def main():
                     help='Print conversion details to stderr')
     args = ap.parse_args()
 
-    VERBOSE = args.verbose
+    set_verbose(args.verbose)
 
     with open(args.input, 'rb') as f:
         data = f.read()
@@ -954,7 +776,7 @@ def main():
         f.write(taud)
 
     print(f"wrote {len(taud)} bytes to '{args.output}'")
-    if VERBOSE:
+    if args.verbose:
         print(f"  magic ok: {taud[:8].hex()}", file=sys.stderr)
 
 
