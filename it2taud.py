@@ -90,11 +90,13 @@ EFF_P = 16; EFF_Q = 17; EFF_R = 18; EFF_S = 19; EFF_T = 20
 EFF_U = 21; EFF_V = 22; EFF_W = 23; EFF_X = 24; EFF_Y = 25
 EFF_Z = 26
 
-# IT effects that recall last non-zero arg (per-effect-private, with cohort exceptions)
+# IT effects that recall last non-zero arg (per-effect-private, with cohort exceptions).
+# V (Set Global Volume) recalls in IT compat mode — the first V $00 resolves to the
+# header's global_vol, not literal 0. Without this, songs starting with V $00 silence.
 IT_MEM_EFFECTS = frozenset({
     EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
     EFF_K, EFF_L, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R,
-    EFF_S, EFF_T, EFF_U, EFF_W, EFF_X, EFF_Y,
+    EFF_S, EFF_T, EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y,
 })
 
 
@@ -286,11 +288,13 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
 
     if is_16bit:
         init_width   = 17
-        range_count  = 16    # escape range size for mid/full forms
+        range_count  = 16    # escape range size in mid form
+        border_sub   = 8     # = range_count / 2; centres escape range on signed midpoint
         escape_bits  = 4     # bits to read in short-form escape
     else:
         init_width   = 9
         range_count  = 8
+        border_sub   = 4
         escape_bits  = 3
 
     width = init_width
@@ -298,55 +302,62 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
     out = []
     n = 0
 
+    mask = (1 << (init_width - 1)) - 1   # 0xFF (8-bit) or 0xFFFF (16-bit)
+
     while n < num_samples:
         v = read_bits(width)
 
-        if width <= 6:
-            # Short form: top bit == escape trigger; read escape_bits for new width.
-            # Reference: cubic.org/itsex.c (Jeffrey Lim, IT author) — no skip-self.
+        is_data = False
+        if width < 7:
+            # Mode A (short): single escape code at v == 1<<(width-1).
             if v == (1 << (width - 1)):
-                width = read_bits(escape_bits) + 1
+                new_w = read_bits(escape_bits) + 1
+                width = new_w if new_w < width else new_w + 1   # skip-self
                 continue
-
+            # Else: data, sign-extend from `width` bits.
+            delta = _sign_extend(v, width)
+            is_data = True
         elif width < init_width:
-            # Mid form. border = (all-ones mask) >> (init_width - width).
-            # For 8-bit: 0xFF>>(9-w) → 63 (w=7), 127 (w=8).
-            # Escape when v > border; new width = v - border directly, no skip-self.
-            # Reference: cubic.org/itsex.c, OpenMPT ITTools.cpp.
-            mask   = (1 << (init_width - 1)) - 1   # 0xFF (8-bit) or 0xFFFF (16-bit)
-            border = mask >> (init_width - width)
-            if v > border:
-                width = v - border
+            # Mode B (mid): `range_count` escape codes centred on signed midpoint.
+            # border = (mask >> (init_width-width)) - border_sub, where border_sub
+            # = range_count / 2. Reference: libxmp it_compress.c, OpenMPT ITTools.cpp.
+            # 8-bit:  width=7 → border=63-4=59, width=8 → border=127-4=123
+            # 16-bit: width=7..16 with border_sub=8.
+            border = (mask >> (init_width - width)) - border_sub
+            if border < v <= border + range_count:
+                new_w = v - border
+                width = new_w if new_w < width else new_w + 1   # skip-self
                 continue
-
+            if v > border + range_count:
+                v -= range_count   # collapse escape range out
+            delta = _sign_extend(v, width)
+            is_data = True
         else:
-            # Full form: top bit (bit init_width-1) is escape flag.
-            # new width = lower bits + 1, no skip-self.
+            # Mode C (full): top bit (bit init_width-1) signals width change.
             top_bit = 1 << (init_width - 1)
             if v & top_bit:
                 width = (v & (top_bit - 1)) + 1
                 continue
+            # Else: data is (init_width-1) bits wide, sign-extend from there.
+            delta = _sign_extend(v, init_width - 1)
+            is_data = True
 
-        # Delta is always cast to the native sample type regardless of current bit-width.
-        # IT SDK: d1 += (signed char)value  — i.e. always 8-bit (or 16-bit) signed cast.
-        # Upper-half short-form values (v > escape midpoint) are larger *positive* deltas,
-        # not negatives; _sign_extend(v, width) would wrongly negate them.
-        delta = _sign_extend(v, init_width - 1)
-        if is_16bit:
-            d1 = _wrap16(d1 + delta)
-            if is_it215:
-                d2 = _wrap16(d2 + d1)
-                out.append(d2)
+        if is_data:
+            if is_16bit:
+                d1 = _wrap16(d1 + delta)
+                if is_it215:
+                    d2 = _wrap16(d2 + d1)
+                    out.append(d2)
+                else:
+                    out.append(d1)
             else:
-                out.append(d1)
-        else:
-            d1 = _wrap8(d1 + delta)
-            if is_it215:
-                d2 = _wrap8(d2 + d1)
-                out.append(d2)
-            else:
-                out.append(d1)
-        n += 1
+                d1 = _wrap8(d1 + delta)
+                if is_it215:
+                    d2 = _wrap8(d2 + d1)
+                    out.append(d2)
+                else:
+                    out.append(d1)
+            n += 1
 
     return out
 
@@ -424,7 +435,8 @@ class ITSample:
 
 def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
     samples = []
-    is_it215 = (h.cmwt >= 0x0215)
+    # IT2.15 compression is signaled PER-SAMPLE via cvt bit 2 (0x04), not globally
+    # via the file's cwt. Reference: OpenMPT ITTools.cpp, libxmp it_load.c.
     for i, ptr in enumerate(h.smp_ptrs):
         if ptr == 0 or ptr + 0x50 > len(data):
             vprint(f"  warning: sample {i+1} pointer {ptr:#x} out of range, skipping")
@@ -465,6 +477,7 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
                     vprint(f"  warning: '{s.name}' is IT2.14 compressed, --no-decompress → silent")
                 else:
                     try:
+                        is_it215 = bool(s.cvt & 0x04)
                         raw = it214_decompress(data, s.smp_point, s.length,
                                                s.is_16bit, is_it215)
                         s.sample_data = _normalise_sample(raw, True,
@@ -921,7 +934,8 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
 
 def resolve_it_recalls(patterns_rows: list, order_list: list,
                        num_channels: int, link_gef: bool,
-                       old_effects: bool = False) -> None:
+                       old_effects: bool = False,
+                       initial_global_vol: int = 128) -> None:
     """Walk in order, resolve zero-arg recalls per-effect-per-channel.
 
     IT effect memory groups:
@@ -933,10 +947,15 @@ def resolve_it_recalls(patterns_rows: list, order_list: list,
     old_effects=True (IT_FLAG_OLD_EFFECTS): E00/F00 are ST3-style stops —
     they do NOT recall and are suppressed to TOP_NONE. All other effects
     still recall normally even in old_effects mode.
+
+    V memory is primed with initial_global_vol so a song-leading V $0000
+    resolves to the header's global volume, not literal zero.
     """
     # last_mem[ch][eff_key] = last_non_zero_arg
     # eff_key: integer 1-26 for most effects; we merge cohorts by normalising.
     last_mem = [{} for _ in range(num_channels)]
+    for ch in range(num_channels):
+        last_mem[ch][EFF_V] = initial_global_vol
 
     # Effects that stop rather than recall when arg=0 in old_effects mode (ST3 compat).
     # E/F: pitch slide stop. J: arpeggio stop (J00 = return to normal pitch in ST3).
@@ -1391,7 +1410,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     # ── Resolve IT recalls ───────────────────────────────────────────────────
     vprint("  resolving IT recalls…")
     resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
-                       old_effects=h.old_effects)
+                       old_effects=h.old_effects,
+                       initial_global_vol=h.global_vol)
 
     # ── Check SBx chunk crossing (warn only) ─────────────────────────────────
     for pi, (grid, rows) in enumerate(patterns_rows):

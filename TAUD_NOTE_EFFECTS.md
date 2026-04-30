@@ -493,7 +493,7 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 **Plain.** Sets the global mix bus volume (0..$FF). $00 is silence; $FF is full. The default is $80.
 
-**Compatibility.** ST3's global volume is 0..$40; convert with `taud_v = st3_v × 4`, clamped at $FF. On export, `st3_v = taud_v >> 2`, clamped at $40. IT's global volume is 0..$80; convert with `taud_v = it_v × 2`, clamped at $FF.
+**Compatibility.** ST3's global volume is 0..$40; convert with `taud_v = st3_v × 4`, clamped at $FF. On export, `st3_v = taud_v >> 2`, clamped at $40. IT's global volume is 0..$80; convert with `taud_v = it_v × 2`, clamped at $FF. On IT, the very first `V 00` command must be resolved as the song's initial global volume.
 
 **Implementation.** Write the high byte to `global_volume` on the row the command appears. The low byte is reserved. ST3's `kST3NoMutedChannels` rule applies: V on a muted channel is ignored by ST3; for strict-compatible playback Taud follows suit, but new Taud compositions should avoid muting channels that carry global effects.
 
