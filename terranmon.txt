@@ -1973,20 +1973,20 @@ A universal, simple cue designed to work as both playlist to cue up external fil
 
 --------------------------------------------------------------------------------
 
-**Sound Adapter**
+**Audio Adapter**
 
 Endianness: little
 
 
-TSVM Sound Adapter is consisted of 4 playheads, each playhead is capable of playing one PCM or Tracker track.
+TSVM Audio Adapter is consisted of 4 playheads, each playhead is capable of playing one PCM or Tracker track.
 
 Synchronisation between playheads are not guaranteed. Do not play music in multiple tracks.
 
 
 Memory Space
 
-0..770047 RW: Sample bin (752k)
-770048..786431 RW: Instrument bin (256 instruments, 64 bytes each; instrument 0 does nothing; 16k)
+0..737279 RW: Sample bin (720k)
+737280..786431 RW: Instrument bin (256 instruments, 192 bytes each; instrument 0 does nothing; 48k)
 786432..851967 RW: Play data 1 (currently exposed bank; 64k)
 851968..917503 RW: Play data 2 (currently exposed bank; 64k)
 917504..983039 RW: TAD Input Buffer (64k)
@@ -1995,39 +1995,82 @@ Memory Space
 Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample
 
 Instrument bin: Registry for 256 instruments, formatted as:
-    Uint16 Sample Pointer
+    Uint32 Sample Pointer
     Uint16 Sample length
-    Uint16 Sampling rate at C3 (note number 0x4000)
+    Uint16 Sampling rate at C4 (note number 0x5000. XM: if "relative note" and finetune is used, this value should be directly modified against sample's default sampling rate)
     Uint16 Play Start (usually 0 but not always)
     Uint16 Loop Start (can be smaller than Play Start)
     Uint16 Loop End
     Bit8   Sample Flags
-        0b hhhh 00pp
-            h: sample pointer high bit
+        0b 0000 00pp
            pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
-    Bit8   Volume envelope sustain/loops
+    Bit16   Volume envelope sustain/loops and flags
         * Sustain is implemented by enabling 't' flag. FastTracker has no 'Sus Loop' but only 'Sus Point'; use same value for start and end index
-        0b ut eee sss
+        0b 0ut sssss pcb eeeee
             s: sustain/loop start index
             e: sustain/loop end index
+
+            b: use envelope
+            c: envelope carry
+            p: (IT) fadeout is zero; (XM) fadeout is cut
+
             t: the loop must sustain (key-off escapes the loop)
             u: set to enable the sustain/loop
-    Bit8   Panning envelope sustain/loops
+    Bit16   Panning envelope sustain/loops and flags
         * Sustain is implemented by enabling 't' flag
-        0b ut eee sss
+        0b 0ut sssss pcb eeeee
             s: sustain/loop start index
             e: sustain/loop end index
+
+            b: use envelope
+            c: envelope carry
+            p: use default pan
+
             t: the loop must sustain (key-off escapes the loop)
             u: set to enable the sustain/loop
+    Bit16   Pitch/Filter envelope sustain/loops and flags
+        * Sustain is implemented by enabling 't' flag
+        0b 0ut sssss mcb eeeee
+            s: sustain/loop start index
+            e: sustain/loop end index
+
+            b: use envelope
+            c: envelope carry
+            m: mode (0: on pitch, 1: on filter)
+
+            t: the loop must sustain (key-off escapes the loop)
+            u: set to enable the sustain/loop
+    Bit16x25 Volume envelopes
+       Byte 1: Volume (00..3F)
+       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
+    Bit16x25 Panning envelopes
+      Byte 1: Pan (00..FF)
+      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
+    Bit16x25 Pitch/Filter envelopes
+      Byte 1: Value (00..FF)
+      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
     Uint8  Instrument Global Volume (0..255)
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
         * FastTracker2 has range of 0..64; multiply by (255/64) then round to int
-    Bit16x12 Volume envelopes
-       Byte 1: Volume (00..3F)
-       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
-    Bit16x12 Panning envelopes
-      Byte 1: Pan (00..FF)
-      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
+    Uint8  Volume Fadeout low bits (IT: 1..256; XM: 0..255)
+    Bit8   Fadeout and vibrato
+        0b dddd ffff
+            f: Volume Fadeout high bits
+            d: Vibrato depth
+    Uint8  Volume swing (0..255 full range)
+    Uint8  Vibrato speed
+    Uint8  Vibrato sweep
+    Uint8  Default pan value (0..255 full range)
+    Uint16 Pitch-pan centre (4096-TET note value)
+    Sint8  Pitch-pan separation (-128..127 full range)
+    Uint8  Pan swing (0..255 full range)
+    Uint8  Default cutoff (0..255 full range)
+    Uint8  Default resonance (0..255 full range)
+    Byte[8] Reserved
+
+    TODO: after *2taud.py is done, extend with 25 envelopes and add Pitch/Filter features. 192 bytes per instrument granted (48k space). This is a breaking change.
+    TODO: add sample finetune (u16) support -- XM compatibility
+    TODO: use it2taud.py to implement pitch/filter -- don't delete rerender code yet
 
 Play Data: play data are series of tracker-like instructions, visualised as:
 
@@ -2045,7 +2088,7 @@ note 0x0000: key-off
 inst 0: no instrument change
 
 
-Sound Adapter MMIO
+Audio Adapter MMIO
 
 0..1 RW:  Play head #0 position
     PCM mode: number of buffers uploaded and received by the adapter (writing does nothing)
