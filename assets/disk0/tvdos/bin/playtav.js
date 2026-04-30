@@ -158,9 +158,6 @@ audio.purgeQueue(AUDIO_DEVICE)
 audio.setPcmMode(AUDIO_DEVICE)
 audio.setMasterVolume(AUDIO_DEVICE, 255)
 
-// set colour zero as half-opaque black
-graphics.setPalette(0, 0, 0, 0, 7)
-
 // Parse SSF-TC subtitle packet and add to event buffer (0x31)
 function parseSubtitlePacketTC(packetSize) {
     // Read subtitle index (24-bit, little-endian)
@@ -2463,6 +2460,6 @@ finally {
     audio.purgeQueue(AUDIO_DEVICE)
 }
 
-graphics.setPalette(0, 0, 0, 0, 0)
+graphics.resetPalette()
 con.move(cy, cx) // restore cursor
 return errorlevel

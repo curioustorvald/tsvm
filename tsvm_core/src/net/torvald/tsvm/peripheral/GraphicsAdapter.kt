@@ -1439,7 +1439,7 @@ in vec2 v_texCoords;
 uniform sampler2D u_texture;
 uniform vec4 pal[256];
 
-float intensitySteps = 4.0;
+float intensitySteps = 32.0;
 uniform vec4 lcdBaseCol;
 
 void main(void) {
@@ -1961,7 +1961,7 @@ void main() {
 
 
         val DEFAULT_PALETTE = intArrayOf( // 0b rrrrrrrr gggggggg bbbbbbbb aaaaaaaa
-            136,
+            119,
             17663,
             35071,
             48127,

@@ -566,7 +566,7 @@ const colHighlight = 41
 const colColumnSep = 6
 const colRowNum    = 250
 const colRowNumEmph1 = 225
-const colRowNumEmph2 = 217
+const colRowNumEmph2 = 155
 const colStatus    = 253
 const colVoiceHdr  = 230
 const colSep       = 252
@@ -697,7 +697,7 @@ function drawStatusBar() {
     con.color_pair(235, 255); print(`${sSpd}`)
 
     // app title
-    gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 8)
+    gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 7)
 
 }
 
@@ -1186,7 +1186,7 @@ if (fullPathObj === undefined) {
 
 const logofile = files.open("A:/tvdos/bin/tauthdr.r8")
 const logoBytes = logofile.bread(); logofile.close()
-const logoTexture = new gl.Texture(88, 12, logoBytes)
+const logoTexture = new gl.Texture(90, 14, logoBytes)
 const buttonfile = files.open("A:/tvdos/bin/tautbtn.r8")
 const buttonBytes = buttonfile.bread(); buttonfile.close()
 const buttonTexture = new gl.Texture(2, 28, buttonBytes)

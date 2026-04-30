@@ -20,9 +20,9 @@ uniform sampler2D u_texture;     // Input texture
 uniform vec2 flip = vec2(0.0, 0.0); // UV flip control (0,1 = flip Y)
 uniform float noiseMagnitude = 0.0;
 
-// Signal mode: 0 = S-Video, 1 = Composite, 2 = CGA Composite
+// Signal mode: -1 = disable, 0 = S-Video, 1 = Composite, 2 = CGA Composite
 // Can be changed at runtime without recompilation
-uniform int signalMode = 0;      // Default should be 1 for composite
+uniform int signalMode = 0;
 
 // CGA-specific settings
 uniform float cgaHue;            // Hue adjustment for CGA (default: 0.0, range: -PI to PI)
@@ -268,6 +268,11 @@ vec3 decodeCGAComposite(vec2 uv, vec2 texelSize, float pixelX, float pixelY) {
     return rgb;
 }
 
+vec3 decodePassthru(vec2 uv, vec2 texelSize) {
+    vec3 srcRGB = sampleTexture(uv);
+    return srcRGB;
+}
+
 // === TRINITRON PHOSPHOR MASK ===
 vec3 trinitronMask(vec2 screenPos) {
     float strength = getPhosphorStrength();
@@ -324,6 +329,8 @@ void main() {
         rgb = decodeCGAComposite(uv, texelSize, pixelX, pixelY);
     } else if (signalMode == 1) {
         rgb = decodeComposite(uv, texelSize, basePhase);
+    } else if (signalMode == -1) {
+        rgb = decodePassthru(uv, texelSize);
     } else {
         rgb = decodeSVideo(uv, texelSize, basePhase);
     }
