@@ -2064,8 +2064,8 @@ Instrument bin: Registry for 256 instruments, formatted as:
     Uint16 Pitch-pan centre (4096-TET note value)
     Sint8  Pitch-pan separation (-128..127 full range)
     Uint8  Pan swing (0..255 full range)
-    Uint8  Default cutoff (0..255 full range. Effect range equals to that of ImpulseTracker -- 128 in IT is equal to 255 in Taud)
-    Uint8  Default resonance (0..255 full range. Effect range equals to that of ImpulseTracker -- 128 in IT is equal to 255 in Taud)
+    Uint8  Default cutoff (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
+    Uint8  Default resonance (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
     Uint16 Sample detune (in 4096-TET unit) (XM finetune scale need to be rescaled accordingly)
     Byte[6] Reserved
 
