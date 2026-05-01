@@ -10,7 +10,7 @@ const TAUD_MAGIC        = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]  // \x1F TSV
 const TAUD_VERSION      = 1
 const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + rsvd(2) + sig(16)
 const TAUD_SONG_ENTRY   = 16     // bytes per song-table row (offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+pad(7))
-const SAMPLEINST_SIZE   = 786432 // 770047 sample + 16384 instrument
+const SAMPLEINST_SIZE   = 786432 // 737280 sample + 49152 instrument (256 × 192)
 const PATTERN_SIZE      = 512    // bytes per pattern (64 rows × 8 bytes)
 const NUM_PATTERNS_MAX  = 256
 const NUM_CUES          = 1024
@@ -95,6 +95,7 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     // Write decompressed data to peripheral memory (backwards addressing:
     // peripheral byte k lives at memBase - k).
     for (let i = 0; i < SAMPLEINST_SIZE; i++) {
+        // TODO use sys.memcpy
         sys.poke(memBase - i, sys.peek(decompPtr + i))
     }
     sys.free(decompPtr)

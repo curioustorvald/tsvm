@@ -30,8 +30,8 @@ TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
 TAUD_VERSION     = 1
 TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(4)+sig(14)
 TAUD_SONG_ENTRY  = 16       # offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+flags(1)
-SAMPLEBIN_SIZE   = 770048
-INSTBIN_SIZE     = 16384    # 256 instruments × 64 bytes
+SAMPLEBIN_SIZE   = 737280
+INSTBIN_SIZE     = 49152    # 256 instruments × 192 bytes
 SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
 PATTERN_ROWS     = 64
 PATTERN_BYTES    = PATTERN_ROWS * 8     # 512
@@ -44,7 +44,7 @@ NUM_VOICES       = 20
 NOTE_NOP    = 0xFFFF
 NOTE_KEYOFF = 0x0000
 NOTE_CUT    = 0xFFFE
-TAUD_C3     = 0x4000
+TAUD_C4     = 0x5000   # reference C for instrument sampling rate (was TAUD_C3 = 0x4000)
 
 # Taud effect opcodes (base-36: 0..9 → 0x00..0x09, A..Z → 0x0A..0x23)
 TOP_NONE = 0x00

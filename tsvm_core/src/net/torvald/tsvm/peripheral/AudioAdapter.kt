@@ -124,16 +124,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         internal val DBGPRN = false
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
-        const val TRACKER_C3 = 0x4000
-        // Amiga period at TRACKER_C3 for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
-        // Used to implement Amiga-mode pitch slides (effect '1' f-bit or song-table flag).
-        const val AMIGA_BASE_PERIOD = 214.0
+        const val TRACKER_C3 = 0x4000   // legacy alias (one octave below the new reference)
+        const val TRACKER_C4 = 0x5000   // reference C for instrument samplingRate (terranmon.txt:2000)
+        // Amiga period at TRACKER_C4 for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
+        // Reference shifted from C3→C4 (one octave up), so the period halves: 214 → 107.
+        const val AMIGA_BASE_PERIOD = 107.0
         // Scale factor that converts a Taud coarse-slide unit back to one Amiga period unit.
         // Taud coarse unit = round(ST3_unit × 64/3), so the inverse is × 3/64.
         const val AMIGA_PERIOD_SCALE = 3.0 / 64.0
     }
 
-    internal val sampleBin = UnsafeHelper.allocate(770048L, this)
+    internal val sampleBin = UnsafeHelper.allocate(737280L, this)
     internal val instruments = Array(256) { TaudInst(it) }
     internal val playdata = Array(4096) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
@@ -305,8 +306,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
-            in 0..770047 -> sampleBin[addr]
-            in 770048..786431 -> (adi - 770048).let { instruments[it / 64].getByte(it % 64) }
+            in 0..737279 -> sampleBin[addr]
+            in 737280..786431 -> (adi - 737280).let { instruments[it / 192].getByte(it % 192) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 917504..983039 -> tadInputBin[addr - 917504]   // TAD input buffer (65536 bytes)
@@ -319,8 +320,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val adi = addr.toInt()
         val bi = byte.toUint()
         when (adi) {
-            in 0..770047 -> { sampleBin[addr] = byte }
-            in 770048..786431 -> (adi - 770048).let { instruments[it / 64].setByte(it % 64, bi) }
+            in 0..737279 -> { sampleBin[addr] = byte }
+            in 737280..786431 -> (adi - 737280).let { instruments[it / 192].setByte(it % 192, bi) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 917504..983039 -> tadInputBin[addr - 917504] = byte   // TAD input buffer
@@ -1170,56 +1171,65 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
-        inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C3) / 4096.0)
+        inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C4) / 4096.0)
 
     // Applies one tick of Amiga-mode pitch slide.  slideArg uses the same sign convention as
     // linear mode: negative = pitch down (E effect), positive = pitch up (F effect).
     // The Taud coarse-slide value is converted back to Amiga period units via AMIGA_PERIOD_SCALE.
     private fun amigaSlide(noteVal: Int, slideArg: Int): Int {
-        val period = AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - TRACKER_C3).toDouble() / 4096.0)
+        val period = AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - TRACKER_C4).toDouble() / 4096.0)
         // Negate slideArg: pitch down (slideArg < 0) → period up, pitch up (slideArg > 0) → period down.
         val newPeriod = (period - slideArg * AMIGA_PERIOD_SCALE).coerceAtLeast(1.0)
-        return (TRACKER_C3 + 4096.0 * log2(AMIGA_BASE_PERIOD / newPeriod)).roundToInt()
+        return (TRACKER_C4 + 4096.0 * log2(AMIGA_BASE_PERIOD / newPeriod)).roundToInt()
     }
 
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
-        // Volume envelope
-        // sustain byte: bit7=enable (u), bit6=sustain (t: 1=breaks on key-off,
-        // 0=loops forever), bits[5:3]=end_idx, bits[2:0]=start_idx
-        val vSus       = inst.volEnvSustain
-        val vEnabled   = (vSus and 0x80) != 0
-        val vIsSustain = (vSus and 0x40) != 0
-        // Loop is "active" when enabled AND (it's a forever-loop OR key not yet released)
-        val vSusOn     = vEnabled && (!vIsSustain || !voice.keyOff)
-        val vSusStart  = vSus and 7
-        val vSusEnd    = (vSus ushr 3) and 7
+        // 16-bit envelope-flag layout (terranmon.txt:2007-2030):
+        //   0b 0ut sssss pcb eeeee
+        //     bit 14 = u (enable sustain/loop)
+        //     bit 13 = t (sustain — 1=breaks on key-off, 0=loops forever)
+        //     bits 12..8 = sustain/loop start index (0..24)
+        //     bit  7 = p (channel-specific flag — fadeout zero / use default pan)
+        //     bit  6 = c (envelope carry)
+        //     bit  5 = b (use envelope at all)
+        //     bits 4..0 = sustain/loop end index (0..24)
+        val maxIdx = 24
 
-        if (vSusOn && voice.envIndex == vSusEnd && vSusStart == vSusEnd) {
-            // slb == sle: hold at this node until key-off (no cycling)
-            voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
-        } else if (vSusOn && voice.envIndex == vSusEnd) {
-            // At sustain-loop end: snap back to start regardless of stored offset.
-            voice.envTimeSec = 0.0
-            voice.envIndex = vSusStart
-            voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
-        } else if (voice.envIndex >= 11) {
-            voice.envVolume = (inst.volEnvelopes[11].value / 63.0).coerceIn(0.0, 1.0)
-        } else {
-            val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
-            if (vOffset == 0.0) {
+        // Volume envelope
+        val vSus       = inst.volEnvSustain
+        val vUseEnv    = (vSus ushr 5) and 1 != 0
+        if (vUseEnv) {
+            val vEnabled   = (vSus ushr 14) and 1 != 0
+            val vIsSustain = (vSus ushr 13) and 1 != 0
+            val vSusOn     = vEnabled && (!vIsSustain || !voice.keyOff)
+            val vSusStart  = (vSus ushr 8) and 0x1F
+            val vSusEnd    = vSus and 0x1F
+
+            if (vSusOn && voice.envIndex == vSusEnd && vSusStart == vSusEnd) {
                 voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+            } else if (vSusOn && voice.envIndex == vSusEnd) {
+                voice.envTimeSec = 0.0
+                voice.envIndex = vSusStart
+                voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+            } else if (voice.envIndex >= maxIdx) {
+                voice.envVolume = (inst.volEnvelopes[maxIdx].value / 63.0).coerceIn(0.0, 1.0)
             } else {
-                voice.envTimeSec += tickSec
-                if (voice.envTimeSec >= vOffset) {
-                    voice.envTimeSec -= vOffset
-                    val nextIdx = if (vSusOn && voice.envIndex == vSusEnd) vSusStart
-                                  else (voice.envIndex + 1).coerceAtMost(11)
-                    voice.envIndex = nextIdx
+                val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
+                if (vOffset == 0.0) {
                     voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
                 } else {
-                    val cur = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
-                    val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(11)].value / 63.0).coerceIn(0.0, 1.0)
-                    voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / vOffset)
+                    voice.envTimeSec += tickSec
+                    if (voice.envTimeSec >= vOffset) {
+                        voice.envTimeSec -= vOffset
+                        val nextIdx = if (vSusOn && voice.envIndex == vSusEnd) vSusStart
+                                      else (voice.envIndex + 1).coerceAtMost(maxIdx)
+                        voice.envIndex = nextIdx
+                        voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                    } else {
+                        val cur = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                        val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(maxIdx)].value / 63.0).coerceIn(0.0, 1.0)
+                        voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / vOffset)
+                    }
                 }
             }
         }
@@ -1227,23 +1237,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Pan envelope (only when active for this instrument)
         if (!voice.hasPanEnv) return
         val pSus       = inst.panEnvSustain
-        val pEnabled   = (pSus and 0x80) != 0
-        val pIsSustain = (pSus and 0x40) != 0
+        val pUseEnv    = (pSus ushr 5) and 1 != 0
+        if (!pUseEnv) return
+        val pEnabled   = (pSus ushr 14) and 1 != 0
+        val pIsSustain = (pSus ushr 13) and 1 != 0
         val pSusOn     = pEnabled && (!pIsSustain || !voice.keyOff)
-        val pSusStart  = pSus and 7
-        val pSusEnd    = (pSus ushr 3) and 7
+        val pSusStart  = (pSus ushr 8) and 0x1F
+        val pSusEnd    = pSus and 0x1F
 
         if (pSusOn && voice.envPanIndex == pSusEnd && pSusStart == pSusEnd) {
-            // slb == sle: hold at this pan node until key-off
             voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
         } else if (pSusOn && voice.envPanIndex == pSusEnd) {
-            // At sustain-loop end: snap back to start regardless of stored offset
-            // (encoder writes mf=0 on the last node by convention).
             voice.envPanTimeSec = 0.0
             voice.envPanIndex = pSusStart
             voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
-        } else if (voice.envPanIndex >= 11) {
-            voice.envPan = inst.panEnvelopes[11].value / 255.0
+        } else if (voice.envPanIndex >= maxIdx) {
+            voice.envPan = inst.panEnvelopes[maxIdx].value / 255.0
         } else {
             val pOffset = inst.panEnvelopes[voice.envPanIndex].offset.toDouble()
             if (pOffset == 0.0) {
@@ -1253,12 +1262,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (voice.envPanTimeSec >= pOffset) {
                     voice.envPanTimeSec -= pOffset
                     val nextIdx = if (pSusOn && voice.envPanIndex == pSusEnd) pSusStart
-                                  else (voice.envPanIndex + 1).coerceAtMost(11)
+                                  else (voice.envPanIndex + 1).coerceAtMost(maxIdx)
                     voice.envPanIndex = nextIdx
                     voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
                 } else {
                     val cur = inst.panEnvelopes[voice.envPanIndex].value / 255.0
-                    val nxt = inst.panEnvelopes[(voice.envPanIndex + 1).coerceAtMost(11)].value / 255.0
+                    val nxt = inst.panEnvelopes[(voice.envPanIndex + 1).coerceAtMost(maxIdx)].value / 255.0
                     voice.envPan = cur + (nxt - cur) * (voice.envPanTimeSec / pOffset)
                 }
             }
@@ -1272,7 +1281,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val sampleLen = inst.sampleLength.coerceAtLeast(1)
         val loopStart = inst.sampleLoopStart.toDouble()
         val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
-        val binMax = 770047  // sampleBin is 770048 bytes (0..770047)
+        val binMax = 737279  // sampleBin is 737280 bytes (0..737279)
 
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
         val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)
@@ -1323,7 +1332,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envPanIndex = 0
         voice.envPanTimeSec = 0.0
         voice.envPan = inst.panEnvelopes[0].value / 255.0
-        voice.hasPanEnv = inst.panEnvelopes.any { it.offset.toFloat() > 0.0f }
+        // Pan envelope is active when the `b` (use envelope) flag is set in panEnvSustain.
+        voice.hasPanEnv = (inst.panEnvSustain ushr 5) and 1 != 0
         voice.noteVal = noteVal
         voice.basePitch = noteVal
         voice.playbackRate = computePlaybackRate(inst, noteVal)
@@ -2322,26 +2332,75 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     data class TaudInstEnvPoint(var value: Int, var offset: ThreeFiveMiniUfloat)
+    /**
+     * 192-byte instrument record (terranmon.txt:1997-2070).
+     * Layout:
+     *   0..3   u32 sample pointer
+     *   4..5   u16 sample length
+     *   6..7   u16 sampling rate at TRACKER_C4 (0x5000)
+     *   8..9   u16 play start
+     *   10..11 u16 loop start
+     *   12..13 u16 loop end
+     *   14     u8  sample flags (low 2 bits = loop mode 0..3)
+     *   15..16 u16 volume envelope flags    (0b 0ut sssss pcb eeeee)
+     *   17..18 u16 panning envelope flags
+     *   19..20 u16 pitch/filter envelope flags
+     *   21..70  Bit16×25 volume envelope points (value 0x00-0x3F + minifloat dt)
+     *   71..120 Bit16×25 panning envelope points (value 0x00-0xFF, 0x80=centre)
+     *   121..170 Bit16×25 pitch/filter envelope points
+     *   171    u8 instrument global volume
+     *   172    u8 volume fadeout low bits
+     *   173    u8 fadeout high (low nibble) + vibrato depth (high nibble)
+     *   174    u8 volume swing
+     *   175    u8 vibrato speed
+     *   176    u8 vibrato sweep
+     *   177    u8 default pan
+     *   178..179 u16 pitch-pan centre (4096-TET)
+     *   180    s8 pitch-pan separation
+     *   181    u8 pan swing
+     *   182    u8 default cutoff
+     *   183    u8 default resonance
+     *   184..191 byte[8] reserved
+     */
     data class TaudInst(
         var index: Int,
 
-        var samplePtr: Int, // 20-bit number
+        var samplePtr: Int,                 // 32-bit sample bin offset
         var sampleLength: Int,
-        var samplingRate: Int,
+        var samplingRate: Int,              // rate at TRACKER_C4
         var samplePlayStart: Int,
         var sampleLoopStart: Int,
         var sampleLoopEnd: Int,
-        // flags
-        var loopMode: Int,
-        var volEnvSustain: Int,           // byte 13: ut eee sss (u=enable, t=sustain (1=breaks on key-off, 0=loops forever))
-        var panEnvSustain: Int,           // byte 14: ut eee sss (u=enable, t=sustain (1=breaks on key-off, 0=loops forever))
-        var instGlobalVolume: Int,        // byte 15: instrument global volume (0..255, 255 = unity)
-        var volEnvelopes: Array<TaudInstEnvPoint>, // 12 points, value 0x00-0x3F
-        var panEnvelopes: Array<TaudInstEnvPoint>  // 12 points, value 0x00-0xFF (0x80 = centre)
+        var loopMode: Int,                  // byte 14, low 2 bits
+        var volEnvSustain: Int,             // bytes 15-16 (16-bit, see flag layout)
+        var panEnvSustain: Int,             // bytes 17-18
+        var pfEnvSustain: Int,              // bytes 19-20 (pitch/filter)
+        var instGlobalVolume: Int,          // byte 171
+        var volEnvelopes: Array<TaudInstEnvPoint>,   // 25 points
+        var panEnvelopes: Array<TaudInstEnvPoint>,   // 25 points
+        var pfEnvelopes: Array<TaudInstEnvPoint>,    // 25 points (pitch/filter)
+        var volumeFadeoutLow: Int,          // byte 172
+        var fadeoutHighVibDepth: Int,       // byte 173
+        var volumeSwing: Int,               // byte 174
+        var vibratoSpeed: Int,              // byte 175
+        var vibratoSweep: Int,              // byte 176
+        var defaultPan: Int,                // byte 177
+        var pitchPanCentre: Int,            // bytes 178-179
+        var pitchPanSeparation: Int,        // byte 180 (signed)
+        var panSwing: Int,                  // byte 181
+        var defaultCutoff: Int,             // byte 182
+        var defaultResonance: Int           // byte 183
     ) {
-        constructor(index: Int) : this(index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
-            Array(12) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
-            Array(12) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) })
+        constructor(index: Int) : this(
+            index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
+            Array(25) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
+            Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
+            Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
+            0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0
+        )
+
+        // Reserved padding at offsets 184..191 (8 bytes per instrument).
+        private val reserved = ByteArray(8)
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -2359,68 +2418,116 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             return (mask[idx / 8].toInt() ushr (idx and 7)) and 1 != 0
         }
 
+        private fun envPointGet(env: Array<TaudInstEnvPoint>, base: Int, offset: Int): Byte {
+            val rel = offset - base
+            val pt  = env[rel / 2]
+            return if (rel and 1 == 0) pt.value.toByte() else pt.offset.index.toByte()
+        }
+
+        private fun envPointSet(env: Array<TaudInstEnvPoint>, base: Int, offset: Int, byte: Int) {
+            val rel = offset - base
+            val pt  = env[rel / 2]
+            if (rel and 1 == 0) pt.value = byte
+            else pt.offset = ThreeFiveMiniUfloat(byte)
+        }
+
         fun getByte(offset: Int): Byte = when (offset) {
             0 -> samplePtr.toByte()
             1 -> samplePtr.ushr(8).toByte()
+            2 -> samplePtr.ushr(16).toByte()
+            3 -> samplePtr.ushr(24).toByte()
 
-            2 -> sampleLength.toByte()
-            3 -> sampleLength.ushr(8).toByte()
+            4 -> sampleLength.toByte()
+            5 -> sampleLength.ushr(8).toByte()
 
-            4 -> samplingRate.toByte()
-            5 -> samplingRate.ushr(8).toByte()
+            6 -> samplingRate.toByte()
+            7 -> samplingRate.ushr(8).toByte()
 
-            6 -> samplePlayStart.toByte()
-            7 -> samplePlayStart.ushr(8).toByte()
+            8 -> samplePlayStart.toByte()
+            9 -> samplePlayStart.ushr(8).toByte()
 
-            8 -> sampleLoopStart.toByte()
-            9 -> sampleLoopStart.ushr(8).toByte()
+            10 -> sampleLoopStart.toByte()
+            11 -> sampleLoopStart.ushr(8).toByte()
 
-            10 -> sampleLoopEnd.toByte()
-            11 -> sampleLoopEnd.ushr(8).toByte()
+            12 -> sampleLoopEnd.toByte()
+            13 -> sampleLoopEnd.ushr(8).toByte()
 
-            12 -> (samplePtr.ushr(16).and(15).shl(4) or loopMode.and(3)).toByte()
-            13 -> volEnvSustain.toByte()
-            14 -> panEnvSustain.toByte()
-            15 -> instGlobalVolume.toByte()
-            in 16..38 step 2 -> volEnvelopes[(offset - 16) / 2].value.toByte()
-            in 17..39 step 2 -> volEnvelopes[(offset - 17) / 2].offset.index.toByte()
-            in 40..62 step 2 -> panEnvelopes[(offset - 40) / 2].value.toByte()
-            in 41..63 step 2 -> panEnvelopes[(offset - 41) / 2].offset.index.toByte()
+            14 -> (loopMode and 3).toByte()
+            15 -> volEnvSustain.toByte()
+            16 -> volEnvSustain.ushr(8).toByte()
+            17 -> panEnvSustain.toByte()
+            18 -> panEnvSustain.ushr(8).toByte()
+            19 -> pfEnvSustain.toByte()
+            20 -> pfEnvSustain.ushr(8).toByte()
+
+            in 21..70  -> envPointGet(volEnvelopes, 21,  offset)
+            in 71..120 -> envPointGet(panEnvelopes, 71,  offset)
+            in 121..170 -> envPointGet(pfEnvelopes,  121, offset)
+
+            171 -> instGlobalVolume.toByte()
+            172 -> volumeFadeoutLow.toByte()
+            173 -> fadeoutHighVibDepth.toByte()
+            174 -> volumeSwing.toByte()
+            175 -> vibratoSpeed.toByte()
+            176 -> vibratoSweep.toByte()
+            177 -> defaultPan.toByte()
+            178 -> pitchPanCentre.toByte()
+            179 -> pitchPanCentre.ushr(8).toByte()
+            180 -> pitchPanSeparation.toByte()
+            181 -> panSwing.toByte()
+            182 -> defaultCutoff.toByte()
+            183 -> defaultResonance.toByte()
+            in 184..191 -> reserved[offset - 184]
             else -> throw InternalError("Bad offset $offset")
         }
 
         fun setByte(offset: Int, byte: Int) = when (offset) {
-            0 -> { samplePtr = (samplePtr and 0xfff00) or byte }
-            1 -> { samplePtr = (samplePtr and 0x000ff) or (byte shl 8) }
+            0 -> { samplePtr = (samplePtr and 0xFFFFFF00.toInt()) or byte }
+            1 -> { samplePtr = (samplePtr and 0xFFFF00FF.toInt()) or (byte shl 8) }
+            2 -> { samplePtr = (samplePtr and 0xFF00FFFF.toInt()) or (byte shl 16) }
+            3 -> { samplePtr = (samplePtr and 0x00FFFFFF) or (byte shl 24) }
 
-            2 -> { sampleLength = (sampleLength and 0xff00) or byte }
-            3 -> { sampleLength = (sampleLength and 0x00ff) or (byte shl 8) }
+            4 -> { sampleLength = (sampleLength and 0xff00) or byte }
+            5 -> { sampleLength = (sampleLength and 0x00ff) or (byte shl 8) }
 
-            4 -> { samplingRate = (samplingRate and 0xff00) or byte }
-            5 -> { samplingRate = (samplingRate and 0x00ff) or (byte shl 8) }
+            6 -> { samplingRate = (samplingRate and 0xff00) or byte }
+            7 -> { samplingRate = (samplingRate and 0x00ff) or (byte shl 8) }
 
-            6 -> { samplePlayStart = (samplePlayStart and 0xff00) or byte }
-            7 -> { samplePlayStart = (samplePlayStart and 0x00ff) or (byte shl 8) }
+            8 -> { samplePlayStart = (samplePlayStart and 0xff00) or byte }
+            9 -> { samplePlayStart = (samplePlayStart and 0x00ff) or (byte shl 8) }
 
-            8 -> { sampleLoopStart = (sampleLoopStart and 0xff00) or byte }
-            9 -> { sampleLoopStart = (sampleLoopStart and 0x00ff) or (byte shl 8) }
+            10 -> { sampleLoopStart = (sampleLoopStart and 0xff00) or byte }
+            11 -> { sampleLoopStart = (sampleLoopStart and 0x00ff) or (byte shl 8) }
 
-            10 -> { sampleLoopEnd = (sampleLoopEnd and 0xff00) or byte }
-            11 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
+            12 -> { sampleLoopEnd = (sampleLoopEnd and 0xff00) or byte }
+            13 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
 
-            12 -> {
-                samplePtr = if (byte and 0b1111_0000 != 0) samplePtr or ((byte ushr 4) shl 16)
-                            else samplePtr and 0x0ffff
-                loopMode = byte and 3
-            }
-            13 -> { volEnvSustain = byte }
-            14 -> { panEnvSustain = byte }
-            15 -> { instGlobalVolume = byte and 0xFF }
+            14 -> { loopMode = byte and 3 }
+            15 -> { volEnvSustain = (volEnvSustain and 0xff00) or byte }
+            16 -> { volEnvSustain = (volEnvSustain and 0x00ff) or (byte shl 8) }
+            17 -> { panEnvSustain = (panEnvSustain and 0xff00) or byte }
+            18 -> { panEnvSustain = (panEnvSustain and 0x00ff) or (byte shl 8) }
+            19 -> { pfEnvSustain = (pfEnvSustain and 0xff00) or byte }
+            20 -> { pfEnvSustain = (pfEnvSustain and 0x00ff) or (byte shl 8) }
 
-            in 16..38 step 2 -> volEnvelopes[(offset - 16) / 2].value = byte
-            in 17..39 step 2 -> volEnvelopes[(offset - 17) / 2].offset = ThreeFiveMiniUfloat(byte)
-            in 40..62 step 2 -> panEnvelopes[(offset - 40) / 2].value = byte
-            in 41..63 step 2 -> panEnvelopes[(offset - 41) / 2].offset = ThreeFiveMiniUfloat(byte)
+            in 21..70  -> envPointSet(volEnvelopes, 21,  offset, byte)
+            in 71..120 -> envPointSet(panEnvelopes, 71,  offset, byte)
+            in 121..170 -> envPointSet(pfEnvelopes,  121, offset, byte)
+
+            171 -> { instGlobalVolume = byte and 0xFF }
+            172 -> { volumeFadeoutLow = byte and 0xFF }
+            173 -> { fadeoutHighVibDepth = byte and 0xFF }
+            174 -> { volumeSwing = byte and 0xFF }
+            175 -> { vibratoSpeed = byte and 0xFF }
+            176 -> { vibratoSweep = byte and 0xFF }
+            177 -> { defaultPan = byte and 0xFF }
+            178 -> { pitchPanCentre = (pitchPanCentre and 0xff00) or byte }
+            179 -> { pitchPanCentre = (pitchPanCentre and 0x00ff) or (byte shl 8) }
+            180 -> { pitchPanSeparation = byte.toByte().toInt() }   // signed
+            181 -> { panSwing = byte and 0xFF }
+            182 -> { defaultCutoff = byte and 0xFF }
+            183 -> { defaultResonance = byte and 0xFF }
+            in 184..191 -> { reserved[offset - 184] = byte.toByte() }
             else -> throw InternalError("Bad offset $offset")
         }
     }

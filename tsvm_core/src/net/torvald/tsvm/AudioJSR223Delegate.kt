@@ -110,10 +110,10 @@ class AudioJSR223Delegate(private val vm: VM) {
         }
     }
 
-    /** Upload 64 bytes defining instrument `slot` (0-255). */
+    /** Upload up to 192 bytes defining instrument `slot` (0-255). */
     fun uploadInstrument(slot: Int, bytes: IntArray) {
         getFirstSnd()?.instruments?.get(slot and 0xFF)?.let { inst ->
-            for (i in 0 until minOf(64, bytes.size)) inst.setByte(i, bytes[i] and 0xFF)
+            for (i in 0 until minOf(192, bytes.size)) inst.setByte(i, bytes[i] and 0xFF)
         }
     }
 

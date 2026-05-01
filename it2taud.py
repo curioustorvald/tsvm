@@ -47,7 +47,7 @@ from taud_common import (
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
-    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C3,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
     TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
@@ -976,10 +976,10 @@ def encode_note_it(it_note: int) -> int:
     if it_note == IT_NOTE_CUT:
         return NOTE_CUT
     if 0 <= it_note <= 119:
-        # IT middle C is C-5 (note 60); Taud reference is C-3 (TAUD_C3 = 0x4000).
-        # IT C-5 anchors to Taud C-3, so offset = it_note - 60.
+        # IT middle C is C-5 (note 60); Taud reference is C-4 (TAUD_C4 = 0x5000).
+        # IT C-5 anchors to Taud C-4, so offset = it_note - 60.
         semis = it_note - 60
-        val = round(TAUD_C3 + semis * 4096 / 12)
+        val = round(TAUD_C4 + semis * 4096 / 12)
         return max(1, min(0xFFFD, val))
     return NOTE_NOP
 
@@ -1375,14 +1375,18 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             s.length = n; s.loop_end = min(s.loop_end, n)
         pos += n
 
+    # New 192-byte instrument layout (terranmon.txt:1997-2070).
+    # Vol env @ 21..70 (25 pts), Pan env @ 71..120 (25 pts), P/F env @ 121..170 (25 pts).
+    # Envelope flag bits (16-bit, 0b 0ut sssss pcb eeeee):
+    #   bit 14=u(enable), 13=t(sustain), 12..8=sus_start, 7=p, 6=c(carry),
+    #   5=b(use envelope), 4..0=sus_end.
+    USE_ENV_BIT = 0x0020   # b
     inst_bin = bytearray(INSTBIN_SIZE)
     for i, s in enumerate(samples_or_proxy):
         taud_idx = i  # samples_or_proxy is 0-based here; slot 0 unused
         if i == 0 or i >= 256 or s is None:
             continue
-        ptr      = offsets.get(i, 0)
-        ptr_lo   = ptr & 0xFFFF
-        ptr_hi   = ptr >> 16
+        ptr      = offsets.get(i, 0) & 0xFFFFFFFF
         s_len    = min(s.length, 65535)
         c2spd    = min(s.c5_speed, 65535)
         ls       = min(s.loop_beg, 65535)
@@ -1393,44 +1397,67 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             loop_mode = 1   # forward loop
         else:
             loop_mode = 0   # no loop
-        flags_byte = (ptr_hi << 4) | (loop_mode & 0x3)
+        flags_byte = loop_mode & 0x3
 
-        base = taud_idx * 64
-        struct.pack_into('<H', inst_bin, base + 0,  ptr_lo)
-        struct.pack_into('<H', inst_bin, base + 2,  s_len)
-        struct.pack_into('<H', inst_bin, base + 4,  c2spd)
-        struct.pack_into('<H', inst_bin, base + 6,  0)
-        struct.pack_into('<H', inst_bin, base + 8,  ls)
-        struct.pack_into('<H', inst_bin, base + 10, le)
-        inst_bin[base + 12] = flags_byte
+        base = taud_idx * 192
+        struct.pack_into('<I', inst_bin, base + 0,  ptr)
+        struct.pack_into('<H', inst_bin, base + 4,  s_len)
+        struct.pack_into('<H', inst_bin, base + 6,  c2spd)
+        struct.pack_into('<H', inst_bin, base + 8,  0)        # play start
+        struct.pack_into('<H', inst_bin, base + 10, ls)
+        struct.pack_into('<H', inst_bin, base + 12, le)
+        inst_bin[base + 14] = flags_byte
 
-        # Write envelope data (12-point format: vol at +16..+39, pan at +40..+63)
+        # Write envelope data
         env_data = envelopes_by_slot.get(taud_idx) if envelopes_by_slot else None
         if env_data and env_data[0]:
             vol_env, vol_sus, pan_env, pan_sus, inst_gv = env_data
-            inst_bin[base + 13] = vol_sus & 0xFF
-            inst_bin[base + 14] = pan_sus & 0xFF
-            inst_bin[base + 15] = inst_gv & 0xFF
-            for k, (val, mf) in enumerate(vol_env[:12]):
-                inst_bin[base + 16 + k*2]     = val & 0xFF
-                inst_bin[base + 16 + k*2 + 1] = mf  & 0xFF
+            # Old caller passed an 8-bit sustain byte (0b ut eee sss for 12-point indices).
+            # Convert to new 16-bit layout (5-bit sus indices in bits 12..8 / 4..0).
+            def _convert_old_sus(b: int, has_env: bool) -> int:
+                if not has_env:
+                    return 0
+                sus_start = b & 0x07
+                sus_end   = (b >> 3) & 0x07
+                t_bit     = (b >> 6) & 0x01
+                u_bit     = (b >> 7) & 0x01
+                out = USE_ENV_BIT
+                out |= (sus_start & 0x1F) << 8
+                out |= (sus_end   & 0x1F)
+                out |= (t_bit << 13)
+                out |= (u_bit << 14)
+                return out
+
+            vol_flags = _convert_old_sus(vol_sus, True)
+            pan_flags = _convert_old_sus(pan_sus, bool(pan_env))
+            struct.pack_into('<H', inst_bin, base + 15, vol_flags)
+            struct.pack_into('<H', inst_bin, base + 17, pan_flags)
+            struct.pack_into('<H', inst_bin, base + 19, 0)    # pitch/filter env unused
+
+            inst_bin[base + 171] = inst_gv & 0xFF
+            for k, (val, mf) in enumerate(vol_env[:25]):
+                inst_bin[base + 21 + k*2]     = val & 0xFF
+                inst_bin[base + 21 + k*2 + 1] = mf  & 0xFF
             if pan_env:
-                for k, (val, mf) in enumerate(pan_env[:12]):
-                    inst_bin[base + 40 + k*2]     = val & 0xFF
-                    inst_bin[base + 40 + k*2 + 1] = mf  & 0xFF
+                for k, (val, mf) in enumerate(pan_env[:25]):
+                    inst_bin[base + 71 + k*2]     = val & 0xFF
+                    inst_bin[base + 71 + k*2 + 1] = mf  & 0xFF
             else:
-                for k in range(12):
-                    inst_bin[base + 40 + k*2]     = 0x80  # pan centre
-                    inst_bin[base + 40 + k*2 + 1] = 0x00  # hold
+                for k in range(25):
+                    inst_bin[base + 71 + k*2]     = 0x80   # pan centre
+                    inst_bin[base + 71 + k*2 + 1] = 0x00   # hold
         else:
-            # No instrument envelope: single-point vol, neutral pan, full gv
+            # No instrument envelope: single-point vol, neutral pan, full gv.
             inst_gv = env_data[4] if env_data else 255
-            inst_bin[base + 15] = inst_gv & 0xFF
-            inst_bin[base + 16] = min(s.vol, 63)   # value 0-63
-            inst_bin[base + 17] = 0                 # offset 0 = hold
-            for k in range(12):
-                inst_bin[base + 40 + k*2]     = 0x80  # pan centre
-                inst_bin[base + 40 + k*2 + 1] = 0x00  # hold
+            struct.pack_into('<H', inst_bin, base + 15, USE_ENV_BIT)
+            struct.pack_into('<H', inst_bin, base + 17, 0)
+            struct.pack_into('<H', inst_bin, base + 19, 0)
+            inst_bin[base + 171] = inst_gv & 0xFF
+            inst_bin[base + 21] = min(s.vol, 63)   # value 0-63
+            inst_bin[base + 22] = 0                 # offset 0 = hold
+            for k in range(25):
+                inst_bin[base + 71 + k*2]     = 0x80
+                inst_bin[base + 71 + k*2 + 1] = 0x00
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
     return bytes(sample_bin) + bytes(inst_bin), offsets
@@ -1553,6 +1580,68 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
 
 # ── Main assembly ─────────────────────────────────────────────────────────────
 
+def relocate_late_note_delays(patterns_rows: list, order_list: list,
+                              num_channels: int, initial_speed: int) -> None:
+    """Move SDx-delayed notes to the next row when x ≥ tick speed.
+
+    IT triggers a Note Delay during the current row; if x reaches the tick
+    speed, the trigger never lands. When the next row in the same channel is
+    empty, relocate the note (with delay = x − speed) so it actually plays.
+    """
+    visited = set()
+    for order in order_list:
+        if order >= IT_ORD_END:
+            break
+        if order >= len(patterns_rows) or order in visited:
+            continue
+        visited.add(order)
+        grid, rows = patterns_rows[order]
+        speed = initial_speed
+        for r in range(rows):
+            for ch in range(min(num_channels, len(grid))):
+                cell = grid[ch][r]
+                if cell.effect == EFF_A and cell.effect_arg > 0:
+                    speed = cell.effect_arg
+                    break
+            if r + 1 >= rows or speed <= 0:
+                continue
+            for ch in range(min(num_channels, len(grid))):
+                cell = grid[ch][r]
+                if cell.effect != EFF_S or cell.note < 0:
+                    continue
+                if ((cell.effect_arg >> 4) & 0xF) != 0xD:
+                    continue
+                x = cell.effect_arg & 0xF
+                if x < speed:
+                    continue
+                nxt = grid[ch][r + 1]
+                if (nxt.note >= 0 or nxt.inst or nxt.effect or nxt.effect_arg
+                        or nxt.vol != -1 or nxt.volcol != -1
+                        or nxt.pan_set is not None or nxt.aux_effect is not None):
+                    continue
+                new_delay = x - speed
+                nxt.note       = cell.note
+                nxt.inst       = cell.inst
+                nxt.vol        = cell.vol
+                nxt.volcol     = cell.volcol
+                nxt.pan_set    = cell.pan_set
+                nxt.aux_effect = cell.aux_effect
+                if new_delay > 0:
+                    nxt.effect     = EFF_S
+                    nxt.effect_arg = 0xD0 | (new_delay & 0xF)
+                cell.note       = -1
+                cell.inst       = 0
+                cell.vol        = -1
+                cell.volcol     = -1
+                cell.pan_set    = None
+                cell.aux_effect = None
+                cell.effect     = 0
+                cell.effect_arg = 0
+                vprint(f"  fix: pat{order} ch{ch} row{r}: SD{x:X} ≥ speed{speed}, "
+                       f"moved note to row{r+1}"
+                       + (f" with SD{new_delay:X}" if new_delay > 0 else ""))
+
+
 def find_initial_bpm_speed(patterns_rows: list, order_list: list,
                             default_speed: int, default_tempo: int) -> tuple:
     speed = default_speed or 6
@@ -1603,6 +1692,10 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
                        old_effects=h.old_effects,
                        initial_global_vol=h.global_vol)
+
+    init_speed, _ = find_initial_bpm_speed(patterns_rows, h.order_list,
+                                           h.initial_speed, h.initial_tempo)
+    relocate_late_note_delays(patterns_rows, h.order_list, 64, init_speed)
 
     # ── Check SBx chunk crossing (warn only) ─────────────────────────────────
     for pi, (grid, rows) in enumerate(patterns_rows):

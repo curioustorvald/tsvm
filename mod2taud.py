@@ -7,7 +7,7 @@ Usage:
 Limits:
     - Up to 20 MOD channels (excess disabled; hard error if pattern count
       × channel count > 4095).
-    - Sample bin is 770048 bytes; if all samples together exceed this, every
+    - Sample bin is 737280 bytes; if all samples together exceed this, every
       sample is globally resampled down (with c2spd adjusted) so pitch is
       preserved.
 
@@ -34,7 +34,7 @@ from taud_common import (
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
-    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C3,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
     TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
@@ -64,7 +64,7 @@ PT_MEM_E_SUB = frozenset({0x1, 0x2, 0xA, 0xB})
 SIGNATURE        = b"mod2taud/TSVM "    # 14 bytes
 
 # PT period 428 (PT "C-2") corresponds to OpenMPT/IT C-4 which s3m2taud
-# anchors to Taud C3 (0x4000). We use the same anchor so MOD/S3M imports
+# anchors to Taud C4 (0x5000). We use the same anchor so MOD/S3M imports
 # share a pitch reference.
 PT_REFERENCE_PERIOD = 428.0
 
@@ -224,7 +224,7 @@ def _signed4(nibble: int) -> int:
 def period_to_taud_note(period: int) -> int:
     if period <= 0:
         return NOTE_NOP
-    val = round(TAUD_C3 + 4096.0 * math.log2(PT_REFERENCE_PERIOD / period))
+    val = round(TAUD_C4 + 4096.0 * math.log2(PT_REFERENCE_PERIOD / period))
     return max(1, min(0xFFFD, val))
 
 
@@ -350,6 +350,61 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
     return (TOP_NONE, 0, None, None)
 
 
+def relocate_late_note_delays(patterns: list, order_list: list,
+                              n_channels: int, initial_speed: int) -> None:
+    """Move EDx-delayed notes to the next row when x ≥ tick speed.
+
+    PT triggers a Note Delay during the current row; if x reaches the tick
+    speed, the trigger never lands. When the next row in the same channel is
+    empty, relocate the note (with delay = x − speed) so it actually plays.
+    """
+    visited = set()
+    for order in order_list:
+        if order >= 0xFF:
+            break
+        if order >= len(patterns) or order in visited:
+            continue
+        visited.add(order)
+        grid = patterns[order]
+        speed = initial_speed
+        for r in range(MOD_PATTERN_ROWS):
+            for ch in range(min(n_channels, len(grid))):
+                row = grid[ch][r]
+                if row.effect == 0xF and 0 < row.effect_arg < 0x20:
+                    speed = row.effect_arg
+                    break
+            if r + 1 >= MOD_PATTERN_ROWS or speed <= 0:
+                continue
+            for ch in range(min(n_channels, len(grid))):
+                row = grid[ch][r]
+                if row.effect != 0xE or row.period == 0:
+                    continue
+                if ((row.effect_arg >> 4) & 0xF) != 0xD:
+                    continue
+                x = row.effect_arg & 0xF
+                if x < speed:
+                    continue
+                nxt = grid[ch][r + 1]
+                if (nxt.period or nxt.inst or nxt.effect or nxt.effect_arg
+                        or nxt.vol_set != -1):
+                    continue
+                new_delay = x - speed
+                nxt.period     = row.period
+                nxt.inst       = row.inst
+                nxt.vol_set    = row.vol_set
+                if new_delay > 0:
+                    nxt.effect     = 0xE
+                    nxt.effect_arg = 0xD0 | (new_delay & 0xF)
+                row.period     = 0
+                row.inst       = 0
+                row.effect     = 0
+                row.effect_arg = 0
+                row.vol_set    = -1
+                vprint(f"  fix: pat{order} ch{ch} row{r}: ED{x:X} ≥ speed{speed}, "
+                       f"moved note to row{r+1}"
+                       + (f" with ED{new_delay:X}" if new_delay > 0 else ""))
+
+
 def resolve_pt_recalls(patterns: list, order_list: list, n_channels: int) -> None:
     """In-place: replace PT zero-arg recalls with each effect's last non-zero arg.
 
@@ -427,6 +482,7 @@ def build_sample_inst_bin(samples: list) -> tuple:
             s.loop_end = min(s.loop_end, n)
         pos += n
 
+    # New 192-byte instrument layout (terranmon.txt:1997-2070).
     inst_bin = bytearray(INSTBIN_SIZE)
     for i, s in enumerate(samples):
         taud_idx = i + 1     # 1-based instrument number
@@ -434,29 +490,31 @@ def build_sample_inst_bin(samples: list) -> tuple:
             break
         if not s.sample_data:
             continue
-        ptr      = offsets.get(i, 0)
-        ptr_lo   = ptr & 0xFFFF
-        ptr_hi   = (ptr >> 16)
+        ptr      = offsets.get(i, 0) & 0xFFFFFFFF
         s_len    = min(s.length, 65535)
         c2spd    = min(s.c2spd, 65535)
         ps       = 0
         ls       = min(s.loop_begin, 65535)
         le       = min(s.loop_end,   65535)
         loop_mode = 1 if (s.flags & 1) else 0
-        flags_byte = (ptr_hi << 4) | (loop_mode & 0x3)
+        flags_byte = loop_mode & 0x3
+        env_vol   = min(s.volume, 63)
+        vol_env_flags = 0x0020   # use-envelope bit
 
-        base = taud_idx * 64
-        struct.pack_into('<H', inst_bin, base + 0,  ptr_lo)
-        struct.pack_into('<H', inst_bin, base + 2,  s_len)
-        struct.pack_into('<H', inst_bin, base + 4,  c2spd)
-        struct.pack_into('<H', inst_bin, base + 6,  ps)
-        struct.pack_into('<H', inst_bin, base + 8,  ls)
-        struct.pack_into('<H', inst_bin, base + 10, le)
-        inst_bin[base + 12] = flags_byte
-        inst_bin[base + 15] = 0xFF                 # global volume — full
-        env_vol = min(s.volume, 63)
-        inst_bin[base + 16] = env_vol              # envelope hold value
-        inst_bin[base + 17] = 0                    # offset minifloat = 0 → hold
+        base = taud_idx * 192
+        struct.pack_into('<I', inst_bin, base + 0,  ptr)
+        struct.pack_into('<H', inst_bin, base + 4,  s_len)
+        struct.pack_into('<H', inst_bin, base + 6,  c2spd)
+        struct.pack_into('<H', inst_bin, base + 8,  ps)
+        struct.pack_into('<H', inst_bin, base + 10, ls)
+        struct.pack_into('<H', inst_bin, base + 12, le)
+        inst_bin[base + 14] = flags_byte
+        struct.pack_into('<H', inst_bin, base + 15, vol_env_flags)
+        struct.pack_into('<H', inst_bin, base + 17, 0)
+        struct.pack_into('<H', inst_bin, base + 19, 0)
+        inst_bin[base + 21] = env_vol
+        inst_bin[base + 22] = 0
+        inst_bin[base + 171] = 0xFF
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr={ptr} c2spd={s.c2spd} "
                f"vol={s.volume} loop=({ls},{le},{'on' if loop_mode else 'off'})")
@@ -625,6 +683,9 @@ def assemble_taud(mod: dict) -> bytes:
 
     vprint("  resolving PT per-effect recalls…")
     resolve_pt_recalls(patterns, order_list, n_channels)
+
+    init_speed, _ = find_initial_bpm_speed(patterns, order_list)
+    relocate_late_note_delays(patterns, order_list, n_channels, init_speed)
 
     vprint("  building sample/instrument bin…")
     sampleinst_raw, _offsets = build_sample_inst_bin(samples)
