@@ -151,7 +151,12 @@ D's 16-bit argument encodes four mutually exclusive modes using the top nibble a
 
 ## E $xxxx — Pitch slide down by $xxxx
 
-**Plain.** Lowers the channel's pitch by the argument per tick. By default (linear mode, `f` bit unset in effect `1`) the coarse slide value is subtracted directly from the stored pitch in the 4096-TET grid. When Amiga mode is active (`f` bit set), coarse slides are instead applied in Amiga period space: the stored value is converted back to Amiga period units and subtracted from the equivalent period, producing the characteristic non-linear pitch drift of ProTracker-style slides. Fine slides (`E $Fxxx`) are always applied in linear pitch-unit space regardless of mode. A coarse slide uses the full value range; a fine slide applies only once per row.
+**Plain.** Lowers the channel's pitch by the argument per tick. The coarse argument has **two distinct interpretations** chosen by the song-table `f` flag (effect `1`, bit 1):
+
+- **Linear mode** (`f` unset, default): the argument is a value in the 4096-TET pitch grid, subtracted directly from the stored pitch. `E $0155` ≈ one semitone per tick.
+- **Amiga (cycle-based) mode** (`f` set): the argument is a **raw ProTracker/ST3 period unit count** — the same byte the original tracker stored on disk, *unscaled*. The engine converts the channel's stored 4096-TET pitch back to an Amiga period, subtracts the argument from that period directly, then converts the result back to 4096-TET. `E $0001` therefore corresponds to PT `201` and produces the characteristic non-linear pitch drift of ProTracker-style slides (lower pitches drift more slowly in semitone terms than higher pitches).
+
+Because Amiga period units fit in a single byte (PT/ST3 max value $FF), the coarse range in Amiga mode never approaches the $F000 fine-slide marker, so the same argument-format selector still distinguishes coarse from fine. **Fine slides (`E $Fxxx`) follow the same dual-interpretation rule as coarse**: in linear mode the low 12 bits are 4096-TET units; in Amiga mode they are raw tracker period units (the PT `E2x` / ST3 `EFx` or `EEx` digit), applied once per row at tick 0 in period space. A coarse slide uses the full value range; a fine slide applies only once per row.
 
 Coarse and fine modes are distinguished by the high nibble of the argument:
 
@@ -159,13 +164,18 @@ Coarse and fine modes are distinguished by the high nibble of the argument:
 - `E $F000..$FFFF` — fine slide: on tick 0 only, subtracts `arg & $0FFF` from pitch.
 - `E $0000` — recalls the last E-or-F argument and applies it as a down-slide, preserving the original form (coarse or fine).
 
-**Compatibility.** This is **the single intentionally ST3-incompatible command in Taud**. ST3 pitch slides operate on Amiga periods or linear slide units; Taud operates directly on 4096-TET pitch units. Coarse and fine forms use different unit sizes:
+**Compatibility.** ST3 pitch slides operate on Amiga periods or linear slide units; Taud's storage depends on the song-table mode flag:
 
-- ST3 `Exx` coarse (where `xx < $E0`) → Taud `E round($00xx × 64/3)` (1 ST3 coarse unit = 1/16 semitone = 64/3 ≈ 21.33 Taud units, rounded).
-- ST3 `EFx` fine → Taud `E $F0 round(x × 16/3)` (1 ST3 fine unit = 1/64 semitone = 16/3 ≈ 5.33 Taud units, applied once per row).
-- ST3 `EEx` extra-fine → Taud `E $F0 round(x × 16/3)` (same unit as fine, applied once per row).
+- **Linear-source ST3 song** (`linear_slides` set in S3M flags → Taud `f` bit clear):
+  - ST3 `Exx` coarse (where `xx < $E0`) → Taud `E round($00xx × 64/3)` (1 ST3 coarse unit = 1/16 semitone = 64/3 ≈ 21.33 Taud units, rounded).
+  - ST3 `EFx` fine → Taud `E $F0 round(x × 16/3)` (1 ST3 fine unit = 1/64 semitone = 16/3 ≈ 5.33 Taud units, applied once per row).
+  - ST3 `EEx` extra-fine → Taud `E $F0 round(x × 16/3)` (same unit as fine, applied once per row).
 
-ST3 Amiga-mode coarse slides do not have a clean conversion and should be treated as linear-mode equivalents during import (same `round(× 64/3)` scale). The Amiga-mode flag (`f` bit in effect `1` or the song-table flags byte) is set in the output file to signal the mixer to apply the stored values in period space rather than directly in pitch space. This preserves the characteristic non-linearity of Amiga slides (lower pitches slide more slowly in semitone terms) without requiring a different numeric encoding. Fine and extra-fine slides (`E $Fxxx`) are always applied in linear pitch-unit space regardless of the Amiga-mode flag, as they are ST3-specific extensions absent from ProTracker.
+- **Amiga-source ST3/PT song** (`linear_slides` clear → Taud `f` bit set):
+  - ST3 `Exx` coarse / PT `2xx` → Taud `E $00xx` **verbatim**, with no `× 64/3` scaling. The engine reads the stored byte as Amiga period units and applies it in period space, recovering the original tracker's exact period-step count.
+  - ST3 `EFx` fine / `EEx` extra-fine / PT `E2x` → Taud `E $F00x` **verbatim** (raw period-unit nibble in the low 4 bits), with no `× 16/3` scaling. The engine performs the once-per-row fine slide in Amiga period space, mirroring the coarse arithmetic.
+
+The Amiga-mode flag therefore controls **two** decoder behaviours simultaneously: (a) which numeric scale the converter should have used when emitting coarse arguments, and (b) which arithmetic the engine performs on those arguments per tick. Converters MUST set bit 1 (`f`) of the song-table flags byte whenever they emit raw period-unit coarse arguments, and MUST NOT mix the two scales within one Taud song.
 
 Because E and F share memory in Taud (narrower than ST3's broad shared memory), an ST3 song that used `E00` or `F00` to recall a D, G, or Q argument will break on import; the converter must eagerly resolve ST3 recalls into explicit Taud arguments rather than relying on memory.
 
@@ -176,8 +186,13 @@ on row start:
     raw = arg
     if raw == 0: raw = memory_EF
     else: memory_EF = raw
-    if (raw & $F000) == $F000:          # fine
-        pitch -= (raw & $0FFF)
+    if (raw & $F000) == $F000:          # fine, applied once on tick 0
+        mag = raw & $0FFF
+        if amiga_mode:
+            # mag is a raw tracker period-unit count; subtract pitch ⇒ add period.
+            pitch = amiga_slide_down(pitch, mag)
+        else:
+            pitch -= mag
         mode_this_row = FINE
     else:                                # coarse
         slide_amount_this_row = raw
@@ -186,9 +201,10 @@ on row start:
 on tick > 0:
     if mode_this_row == COARSE:
         if amiga_mode:
-            # period = AMIGA_BASE_PERIOD × 2^(−(pitch − C3) / 4096)
-            # period += slide_amount_this_row × (3/64)   # convert Taud units → Amiga period units
-            # pitch = C3 + 4096 × log2(AMIGA_BASE_PERIOD / period)
+            # slide_amount_this_row is a raw tracker period-unit count (no × 64/3 scaling).
+            # period = AMIGA_BASE_PERIOD × 2^(−(pitch − C4) / 4096)
+            # period_new = period + slide_amount_this_row     # E subtracts pitch ⇒ adds period
+            # pitch = C4 + 4096 × log2(AMIGA_BASE_PERIOD / period_new)
             pitch = amiga_slide_down(pitch, slide_amount_this_row)
         else:
             pitch -= slide_amount_this_row
@@ -200,9 +216,9 @@ Glissando control (S $1x) snaps the output pitch to the nearest semitone after e
 
 ## F $xxxx — Pitch slide up by $xxxx
 
-**Plain.** Raises the channel's pitch by the argument per tick, with the same mode-selection scheme as E. Coarse, fine, memory behaviour, and Amiga-mode handling are identical in form but inverted in direction.
+**Plain.** Raises the channel's pitch by the argument per tick, with the same mode-selection scheme as E. Coarse, fine, memory behaviour, and Amiga-mode handling are identical in form but inverted in direction. The same dual-interpretation rule applies to **both** coarse and fine arguments: 4096-TET units in linear mode, raw tracker period units in Amiga mode.
 
-**Compatibility.** Same as E. ST3 `Fxx` coarse converts using `round(x × 64/3)`; `FFx` fine and `FEx` extra-fine convert using `round(x × 16/3)`. F and E share one memory slot in Taud. Amiga-mode behaviour is controlled by the same `f` flag as E; coarse F slides are applied in period space when the flag is set, while fine slides remain linear.
+**Compatibility.** Same as E. In linear-source songs, ST3 `Fxx` coarse converts using `round(x × 64/3)` and `FFx`/`FEx` fine/extra-fine use `round(x × 16/3)`. In Amiga-source songs (PT or S3M with `linear_slides` clear), both forms are stored verbatim: `Fxx` coarse → `F $00xx`, and `FFx`/`FEx` fine/extra-fine / PT `E1x` → `F $F00x`. F and E share one memory slot in Taud. Amiga-mode behaviour is controlled by the same `f` flag as E; under that flag, both coarse (per-tick) and fine (tick-0 only) F slides are applied in period space.
 
 **Implementation.** As for E, but add instead of subtract. No upper pitch cap is defined by the effect itself, but the sample-rate conversion at the mixer will saturate well before arithmetic overflow at reasonable playing ranges.
 
@@ -552,9 +568,9 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 S is a multiplexing opcode; the **high nibble of the high byte** selects the sub-effect, and the remainder is the sub-argument.
 
-## S $1x00 — Glissando control
+## S $1x00 — ST3/IT Glissando control
 
-**Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output is quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter still advances smoothly; only the audible pitch steps. **This command is implemented sorely for ST3 compatibility.**
+**Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output is quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter still advances smoothly; only the audible pitch steps. **This command is implemented sorely for ST3/IT compatibility.** and therefore only works in 12-TET context.
 
 **Compatibility.** ST3 `S10`/`S11` maps directly. In Taud, "nearest semitone" uses the best integer approximation: round `pitch / $155` to the nearest integer, multiply by $155; equivalently, `snapped = (pitch + $AB) / $155 × $155`. Because $155 is an approximation of 4096/12, accumulated rounding across many octaves will drift by up to a few cents; this is documented behaviour and intentional given the microtonal grid.
 
@@ -693,9 +709,9 @@ The crucial bug fix relative to ST3: the loop-counter decrement happens **once p
 
 **Plain.** Delays the triggering of the note (and any co-row instrument, offset, and volume event) until tick `$x`. Until then, any currently playing note continues.
 
-**Compatibility.** ST3 `SDx` maps directly. ProTracker `EDx` also maps directly. `SD0` plays the note normally on tick 0. If `$x ≥ speed`, the note never plays on this row and does not carry over to the next row.
+**Compatibility.** ST3 `SDx` maps directly. ProTracker `EDx` also maps directly. `SD0` plays the note normally on tick 0. If `$x ≥ speed`, the note never plays on this row and does not carry over to the next row. Some trackers allow playback of "malformed" note delays (`$x` greater than current tick speed). Taud discards those notes. If such note events have been encountered during conversion, they must be corrected on the converter.
 
-**Implementation.** On row parse, defer the note-trigger event (including sample selection, volume, offset, and any volume-column effect) until tick `$x`. On tick `$x`, execute the deferred trigger. When combined with pattern delay (S $Ex00), the deferred trigger re-fires at the start of each row repetition — matching ST3's `kRowDelayWithNoteDelay` behaviour.
+**Implementation.** On row parse, defer the note-trigger event (including sample selection, volume, offset, and any volume-column effect) until tick `$x`. On tick `$x`, execute the deferred trigger. When combined with pattern delay (S $Ex00), the deferred trigger re-fires at the start of each row repetition — matching ST3's `kRowDelayWithNoteDelay` behaviour. If `$x` is greater than current tick speed, the note must be discarded (see compatibility notes above)
 
 ---
 
@@ -785,8 +801,8 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 - p unset: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
 - p set: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
 
-- f unset: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode.
-- f set: Amiga tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode.
+- f unset: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
+- f set: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 
 **Implementation.**
 - Panning-linear: 
@@ -795,12 +811,11 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 - Panning-equal-power:
   - L_gain = cos(pi*x / 512.0)
   - R_gain = sin(pi*x / 512.0)
-- Amiga tone (coarse E/F pitch slides only; fine slides are always linear):
-  - AMIGA_BASE_PERIOD = 214.0  (period at the Taud reference pitch C3 for a standard 8363 Hz instrument, NTSC clock)
-  - AMIGA_PERIOD_SCALE = 3.0 / 64.0  (converts stored Taud coarse-slide units back to Amiga period units)
-  - period = AMIGA_BASE_PERIOD × 2^(−(noteVal − C3) / 4096)
-  - period_new = period − slideArg × AMIGA_PERIOD_SCALE  (slideArg < 0 for E, > 0 for F)
-  - noteVal_new = C3 + 4096 × log2(AMIGA_BASE_PERIOD / period_new)
+- Amiga tone (both coarse and fine E/F pitch slides). The `slideArg` is a **raw tracker period-unit count** (no scaling), with sign matching linear mode (negative for E, positive for F). Coarse slides apply on every non-first tick; fine slides apply once on tick 0 — the per-step arithmetic is identical:
+  - AMIGA_BASE_PERIOD = 428.0  (period at the Taud reference pitch C4 for a standard 8363 Hz instrument, NTSC clock — identical to PT "C-2" period 428)
+  - period = AMIGA_BASE_PERIOD × 2^(−(noteVal − C4) / 4096)
+  - period_new = period − slideArg                     (E subtracts pitch ⇒ adds period; F adds pitch ⇒ subtracts period)
+  - noteVal_new = C4 + 4096 × log2(AMIGA_BASE_PERIOD / period_new)
 
 **Initialisation from the song table.** The same flags byte is stored in the song-table entry (see file format §Song Table). A Taud player should write this byte to MMIO playhead register 7 before starting playback; the mixer then applies it as the initial state on every reset, and subsequent in-pattern `1` effects may override it.
 
@@ -813,9 +828,9 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 | PT effect | Taud effect | Notes |
 |---------|-----------|-------|
 | `0 $xy` | `J $xxyy` | Arpeggio; nibble-repeat each byte. See the 12-TET → Taud table above for conversion losses |
-| `1 $xx` | `F round($0xxx × 64/3)` | Portamento up; ST3 coarse slide unit = 1/16 semitone |
-| `2 $xx` | `E round($0xxx × 64/3)` | Portamento down |
-| `3 $xx` | `G round($0xxx × 64/3)` | Portamento to note |
+| `1 $xx` | `F $00xx` (Amiga mode, `f` set) | Portamento up; raw PT period units, applied in period space |
+| `2 $xx` | `E $00xx` (Amiga mode, `f` set) | Portamento down; raw PT period units, applied in period space |
+| `3 $xx` | `G round($0xxx × 64/3)` | Portamento to note; G is always linear (4096-TET units) regardless of mode |
 | `4 $xy` | `H $xxyy` | Vibrato; nibble-repeat each byte. |
 | `5 $xy` | `L $xy00` | Combined portamento + volume slide (see compatibility note) |
 | `6 $xy` | `K $xy00` | Combined vibrato + volume slide (see compatibility note) |
@@ -827,8 +842,8 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 | `C $xx` | Volume column `0.$xx` | Set volume |
 | `D $xx` | `C $00xx` (after BCD decode) | Pattern break |
 | `E $0x` | `S $000x` | (UNIMPLEMENTED) Set filter |
-| `E $1x` | `E $F000 + round($0xxx × 16/3)` | Fine pitch slide up |
-| `E $2x` | `E $F000 + round($0xxx × 16/3)` | Fine pitch slide down |
+| `E $1x` | `F $F00x` (Amiga mode, `f` set) | Fine pitch slide up; raw PT period units, applied in period space at tick 0 |
+| `E $2x` | `E $F00x` (Amiga mode, `f` set) | Fine pitch slide down; raw PT period units, applied in period space at tick 0 |
 | `E $3x` | `S $1x00` | Glissando control |
 | `E $4x` | `S $3x00` | Vibrato waveform |
 | `E $5x` | `S $2x00` | Set fine-tune |
@@ -867,7 +882,11 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 
 **Global volume scale.** ST3's 0..$40 maps to Taud's 0..$FF with a ×4 scale on import, truncated ÷4 on export.
 
-**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud's default is purely linear in 4096-TET units. ST3 songs in linear mode convert cleanly: coarse forms (Exx/Fxx/Gxx) use `round(× 64/3)` (1/16 semitone per unit), fine/extra-fine forms (EFx/EEx/FFx/FEx) use `round(× 16/3)` (1/64 semitone per unit). ST3 songs in Amiga mode use the **same numeric conversion** for coarse E/F (the exact period-step count is not preserved), but the converter sets bit 1 (`f`) of the song-table flags byte and Taud's mixer re-applies the stored coarse slide values in Amiga period space at playback, recovering the non-linear pitch character. G is always treated as linear regardless of mode. Fine/extra-fine slides are always linear.
+**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud carries both interpretations and selects between them via the song-table `f` flag. Conversion rules:
+
+- **ST3 linear mode** (`linear_slides` set in S3M flags): coarse forms (Exx/Fxx) use `round(× 64/3)` (1/16 semitone per ST3 unit); fine/extra-fine (EFx/EEx/FFx/FEx) use `round(× 16/3)` (1/64 semitone per ST3 unit). Taud `f` flag is **clear**; the engine subtracts the stored 4096-TET argument directly from the channel pitch.
+- **ST3 Amiga mode** (`linear_slides` clear): both coarse (Exx/Fxx) and fine/extra-fine (EFx/EEx/FFx/FEx) are stored **verbatim** as raw ST3 period units — coarse as `E/F $00xx`, fine as `E/F $F00x` — with no scaling. Taud `f` flag is **set**; the engine applies both forms in Amiga period space at playback, exactly recovering the source's period-step count and the non-linear pitch character.
+- G (tone portamento) is always converted with `round(× 64/3)` and treated as linear, regardless of mode.
 
 **Default tempo byte.** Taud's default $65 equals 125 BPM under the $18 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$65` after subtracting $18. Converters must remap on both import and export.
 

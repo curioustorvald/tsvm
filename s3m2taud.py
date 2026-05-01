@@ -235,12 +235,19 @@ def encode_note(s3m_note: int) -> int:
     return max(1, min(0xFFFD, val))
 
 
-def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
+def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,
+                  amiga_mode: bool = False) -> tuple:
     """Return (taud_op, taud_arg16, vol_override, pan_override).
 
     vol/pan_override is None or (selector, value). The caller is responsible
     for resolving ST3 zero-arg recalls before this point — see
     resolve_st3_recalls().
+
+    amiga_mode mirrors the inverse of the S3M ``linear_slides`` flag.  When
+    set, E/F coarse pitch-slide arguments are emitted as raw ST3 period units
+    (the engine applies them directly in period space); when clear they are
+    quantised to 4096-TET units via ``round(× 64/3)``.  Fine/extra-fine
+    slides and tone portamento (G) are always linear regardless of mode.
     """
     if cmd == 0:
         return (TOP_NONE, 0, None, None)
@@ -265,12 +272,20 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_D, (arg & 0xFF) << 8, None, None)
 
     if cmd in (EFF_E, EFF_F):
-        # Coarse: 1/16 semitone = 64/3 Taud units. Fine/extra-fine: 1/64 semitone = 16/3.
+        # Coarse: 1/16 semitone = 64/3 Taud units in linear mode; raw ST3 period
+        # units in Amiga mode (engine consumes them in period space).
+        # Fine/extra-fine (Exx with hi ∈ {E,F}): 1/64 semitone = 16/3 Taud units
+        # in linear mode; raw ST3 period units in Amiga mode (engine consumes
+        # them in period space, applied once per row at tick 0).
         op = TOP_E if cmd == EFF_E else TOP_F
         hi = (arg >> 4) & 0xF
         lo = arg & 0xF
         if hi in (0xE, 0xF) and lo > 0:
+            if amiga_mode:
+                return (op, 0xF000 | (lo & 0xFFF), None, None)
             return (op, 0xF000 | (round(lo * 16 / 3) & 0xFFF), None, None)
+        if amiga_mode:
+            return (op, arg & 0xFFFF, None, None)
         return (op, round(arg * 64 / 3) & 0xFFFF, None, None)
 
     if cmd == EFF_G:
@@ -515,7 +530,8 @@ def _default_channel_pan(ch_setting: int) -> int:
 
 
 def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
-                  linear_slides: bool, inst_vols: dict = None) -> bytes:
+                  linear_slides: bool, inst_vols: dict = None,
+                  amiga_mode: bool = False) -> bytes:
     """Build a 512-byte Taud pattern for one S3M channel.
 
     Volume column: explicit S3M cell vol → SEL_SET; when a note triggers
@@ -547,7 +563,7 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
                      and last_note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF))
 
         op, arg, vol_override, pan_override = encode_effect(
-            row.effect, row.effect_arg, ch_idx, r)
+            row.effect, row.effect_arg, ch_idx, r, amiga_mode=amiga_mode)
 
         # ── Volume column ──
         note_triggers = (row.note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF))
@@ -556,11 +572,15 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
             if vol_override is not None and vol_override[0] != SEL_SET:
                 vprint(f"    ch{ch_idx} row{r}: dropped vol slide "
                        f"(cell already carries explicit volume)")
-        elif note_triggers and last_inst > 0:
-            # Note trigger with no explicit vol: use instrument default volume
-            # so prior channel-vol state doesn't bleed through.
+        elif note_triggers and row.inst > 0:
+            # Note trigger with a fresh instrument: use that instrument's
+            # default volume.
             vol_sel = SEL_SET
             vol_value = inst_vols.get(last_inst, 0x3F)
+        elif note_triggers and last_vol is not None:
+            # Note trigger without instrument: keep the channel's current
+            # volume rather than resetting to the instrument default.
+            vol_sel, vol_value = SEL_SET, last_vol
         elif retrigger and last_vol is not None:
             # Instrument-only row: re-emit the last known volume so the sample
             # restarts at the correct level without an explicit note trigger.
@@ -778,7 +798,8 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     for pi in range(P):
         grid = patterns[pi]
         for vi, ch in enumerate(active_channels):
-            pat_bin += build_pattern(grid, ch, default_pans[vi], h.linear_slides, inst_vols)
+            pat_bin += build_pattern(grid, ch, default_pans[vi], h.linear_slides,
+                                      inst_vols, amiga_mode=not h.linear_slides)
     assert len(pat_bin) == num_taud_pats * PATTERN_BYTES
 
     # Deduplicate identical patterns

@@ -770,7 +770,8 @@ def decode_volcol(vc: int):
 
 # ── Effect translator ─────────────────────────────────────────────────────────
 
-def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
+def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
+                     amiga_mode: bool = False) -> tuple:
     """Return (taud_op, taud_arg16, vol_override, pan_override).
 
     Differs from s3m2taud.encode_effect in:
@@ -778,6 +779,12 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
       - V: IT global vol 0-128 scaled ×2
       - X: IT full 8-bit pan → 6-bit
       - S6x, S7x, SAx, SFx handled (mostly dropped)
+
+    amiga_mode mirrors the inverse of the IT ``linear_slides`` flag.  When
+    set, E/F coarse pitch-slide arguments are emitted as raw IT period units
+    (the engine applies them directly in period space); when clear they are
+    quantised to 4096-TET units via ``round(× 64/3)``.  Fine/extra-fine
+    slides and tone portamento (G) are always linear regardless of mode.
     """
     if cmd == 0:
         return (TOP_NONE, 0, None, None)
@@ -801,11 +808,20 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_D, (arg & 0xFF) << 8, None, None)
 
     if cmd in (EFF_E, EFF_F):
+        # Coarse: 1/16 semitone = 64/3 Taud units in linear mode; raw IT period
+        # units in Amiga mode (engine consumes them in period space).
+        # Fine/extra-fine (Exx with hi ∈ {E,F}): 1/64 semitone = 16/3 Taud units
+        # in linear mode; raw IT period units in Amiga mode (engine consumes
+        # them in period space, applied once per row at tick 0).
         op = TOP_E if cmd == EFF_E else TOP_F
         hi = (arg >> 4) & 0xF
         lo = arg & 0xF
         if hi in (0xE, 0xF) and lo > 0:
+            if amiga_mode:
+                return (op, 0xF000 | (lo & 0xFFF), None, None)
             return (op, 0xF000 | (round(lo * 16 / 3) & 0xFFF), None, None)
+        if amiga_mode:
+            return (op, arg & 0xFFFF, None, None)
         return (op, round(arg * 64 / 3) & 0xFFFF, None, None)
 
     if cmd == EFF_G:
@@ -1236,7 +1252,7 @@ def _it_default_pan(raw_pan: int) -> int:
     return min(0x3F, round(p * 63 / 64))
 
 def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
-                     inst_vols: dict) -> bytes:
+                     inst_vols: dict, amiga_mode: bool = False) -> bytes:
     """Build a 512-byte Taud pattern for one IT channel from a 64-row chunk grid."""
     out = bytearray(PATTERN_BYTES)
     rows = chunk_grid[ch_idx] if ch_idx < len(chunk_grid) else [ITRow()] * PATTERN_ROWS
@@ -1263,7 +1279,7 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
 
         # Encode main effect
         op, arg16, vol_override, pan_override = encode_effect_it(
-            cell.effect, cell.effect_arg, ch_idx, r)
+            cell.effect, cell.effect_arg, ch_idx, r, amiga_mode=amiga_mode)
 
         # ── Note ────────────────────────────────────────────────────────────
         note_taud = NOTE_NOP
@@ -1280,9 +1296,11 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
         # > retrigger recall > vol-col slide > main-effect vol override > nop
         if cell.volcol >= 0 and cell.volcol <= VC_VOL_HI:
             vol_sel, vol_value = SEL_SET, min(cell.volcol, 0x3F)
-        elif note_triggers and last_inst > 0:
+        elif note_triggers and cell.inst > 0:
             vol_sel = SEL_SET
             vol_value = inst_vols.get(last_inst, 0x3F)
+        elif note_triggers and last_vol is not None:
+            vol_sel, vol_value = SEL_SET, last_vol
         elif (cell.inst > 0 and cell.note < 0
               and last_note_it >= 0 and last_vol is not None):
             # Instrument-only retrigger: restate last volume
@@ -1604,7 +1622,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     for ci in taud_cue_list:
         cg = chunks[ci]
         for vi, ch in enumerate(active_channels):
-            pat_bin += build_pattern_it(cg, ch, default_pans[vi], inst_vols)
+            pat_bin += build_pattern_it(cg, ch, default_pans[vi], inst_vols,
+                                          amiga_mode=not h.linear_slides)
 
     orig_count   = len(taud_cue_list) * C
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)

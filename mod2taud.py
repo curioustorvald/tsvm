@@ -244,11 +244,17 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         lo = arg & 0xF
         return (TOP_J, (J_SEMI_TABLE[hi] << 8) | J_SEMI_TABLE[lo], None, None)
 
+    # PT is Amiga-cycle-based by definition (the Taud Amiga-mode flag is set in
+    # the song table, see end of build_taud()).  E/F coarse pitch-slide arguments
+    # are therefore stored as raw PT period units; the engine consumes them
+    # directly in period space.  G (tone portamento) is treated as linear even
+    # in Amiga mode per the Taud spec, so its argument is still quantised to
+    # 4096-TET units.  Fine slides (E1x/E2x below) likewise remain linear.
     if cmd == 0x1:
-        return (TOP_F, round(arg * 64 / 3) & 0xFFFF, None, None)
+        return (TOP_F, arg & 0xFFFF, None, None)
 
     if cmd == 0x2:
-        return (TOP_E, round(arg * 64 / 3) & 0xFFFF, None, None)
+        return (TOP_E, arg & 0xFFFF, None, None)
 
     if cmd == 0x3:
         return (TOP_G, round(arg * 64 / 3) & 0xFFFF, None, None)
@@ -304,11 +310,11 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
             # E0x = filter on/off (Amiga LED filter); no Taud equivalent.
             return (TOP_NONE, 0, None, None)
         if sub == 0x1:
-            # Fine pitch up.
-            return (TOP_F, 0xF000 | (round(x * 16 / 3) & 0xFFF), None, None)
+            # Fine pitch up — raw PT period units in Amiga mode (file is always Amiga).
+            return (TOP_F, 0xF000 | (x & 0xFFF), None, None)
         if sub == 0x2:
-            # Fine pitch down.
-            return (TOP_E, 0xF000 | (round(x * 16 / 3) & 0xFFF), None, None)
+            # Fine pitch down — raw PT period units in Amiga mode.
+            return (TOP_E, 0xF000 | (x & 0xFFF), None, None)
         if sub == 0x3:
             return (TOP_S, 0x1000 | (x << 8), None, None)
         if sub == 0x4:
@@ -563,9 +569,11 @@ def build_pattern(grid: list, ch_idx: int, default_pan: int,
             if vol_override is not None and vol_override[0] != SEL_SET:
                 vprint(f"    ch{ch_idx} row{r}: dropped vol slide "
                        f"(cell already carries explicit Cxx volume)")
-        elif note_triggers and last_inst > 0:
+        elif note_triggers and row.inst > 0:
             vol_sel = SEL_SET
             vol_value = inst_vols.get(last_inst, 0x3F)
+        elif note_triggers and last_vol is not None:
+            vol_sel, vol_value = SEL_SET, last_vol
         elif retrigger and last_vol is not None:
             vol_sel, vol_value = SEL_SET, last_vol
         elif vol_override is not None:

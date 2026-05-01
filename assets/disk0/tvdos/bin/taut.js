@@ -310,7 +310,7 @@ function buildRowCell(ptnDat, row) {
     else if (voleff >>> 6 == 3) {
         if (voleffarg == 0) {
             sVolEff = sym.middot
-            sVolArg = sym.middot.repeat(1)
+            sVolArg = sym.middot
         }
         else if (voleffarg >= 32) {
             sVolEff = volEffSym[3]
@@ -334,7 +334,7 @@ function buildRowCell(ptnDat, row) {
     else if (paneff >>> 6 == 3) {
         if (paneffarg == 0) {
             sPanEff = sym.middot
-            sPanArg = sym.middot.repeat(1)
+            sPanArg = sym.middot
         }
         else if (paneffarg >= 32) {
             sPanEff = panEffSym[4]
@@ -359,7 +359,7 @@ function buildRowCell(ptnDat, row) {
 
 const EMPTY_CELL = {
     sNote:   sym.middot.repeat(4),
-    sInst:   sym.middot.repeat(3),
+    sInst:   sym.middot.repeat(2),
     sVolEff: '',
     sVolArg: sym.middot.repeat(2),
     sPanEff: '',

@@ -1997,7 +1997,7 @@ Sample bin: just raw sample data thrown in there. You need to keep track of star
 Instrument bin: Registry for 256 instruments, formatted as:
     Uint32 Sample Pointer
     Uint16 Sample length
-    Uint16 Sampling rate at C4 (note number 0x5000. XM: if "relative note" and finetune is used, this value should be directly modified against sample's default sampling rate)
+    Uint16 Sampling rate at C4 (note number 0x5000)
     Uint16 Play Start (usually 0 but not always)
     Uint16 Loop Start (can be smaller than Play Start)
     Uint16 Loop End
@@ -2064,12 +2064,12 @@ Instrument bin: Registry for 256 instruments, formatted as:
     Uint16 Pitch-pan centre (4096-TET note value)
     Sint8  Pitch-pan separation (-128..127 full range)
     Uint8  Pan swing (0..255 full range)
-    Uint8  Default cutoff (0..255 full range)
-    Uint8  Default resonance (0..255 full range)
-    Byte[8] Reserved
+    Uint8  Default cutoff (0..255 full range. Effect range equals to that of ImpulseTracker -- 128 in IT is equal to 255 in Taud)
+    Uint8  Default resonance (0..255 full range. Effect range equals to that of ImpulseTracker -- 128 in IT is equal to 255 in Taud)
+    Uint16 Sample detune (in 4096-TET unit) (XM finetune scale need to be rescaled accordingly)
+    Byte[6] Reserved
 
     TODO: after *2taud.py is done, extend with 25 envelopes and add Pitch/Filter features. 192 bytes per instrument granted (48k space). This is a breaking change.
-    TODO: add sample finetune (u16) support -- XM compatibility
     TODO: use it2taud.py to implement pitch/filter -- don't delete rerender code yet
 
 Play Data: play data are series of tracker-like instructions, visualised as:
@@ -2275,7 +2275,7 @@ Endianness: Little
     Byte[14]Tracker/Converter signature
 
 ## Song Table
-    * Rows of 16 bytes:
+    * Rows of 32 bytes:
     Uint32  Song offset
     Uint8   Number of voices
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
@@ -2284,6 +2284,11 @@ Endianness: Little
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
+    Uint8   Song global volume
+        * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
+    Uint8   Song mixing volume
+        * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
+    Byte[14] Reserved
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
@@ -2298,7 +2303,7 @@ Endianness: Little
     For your reference, tracker default tuning at A4 is 439.526 Hz (8363*2^(3/4) / 32)
 
 ## Pattern Bin and Cue Sheet
-    Pattern Bin/Cue Sheet images
+    RAM image of Pattern Bin/Cue Sheet
 
 ## Project Data
 
