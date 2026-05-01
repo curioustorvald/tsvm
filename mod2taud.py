@@ -522,9 +522,10 @@ def build_sample_inst_bin(samples: list) -> tuple:
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
         inst_bin[base + 171] = 0xFF # instrument global volume
-        inst_bin[base + 176] = 0xFF # default pan = off
-        inst_bin[base + 181] = 0xFF # filter cutoff = off
-        inst_bin[base + 182] = 0xFF # filter resonance = off
+        inst_bin[base + 177] = 0x80 # default pan = centre (unused; pan env "p" flag not set)
+        inst_bin[base + 182] = 0xFF # filter cutoff = off
+        inst_bin[base + 183] = 0xFF # filter resonance = off
+        inst_bin[base + 186] = 1 # NNA: note cut
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr={ptr} c2spd={s.c2spd} "
                f"vol={s.volume} loop=({ls},{le},{'on' if loop_mode else 'off'})")
