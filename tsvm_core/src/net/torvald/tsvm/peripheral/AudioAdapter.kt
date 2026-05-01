@@ -124,6 +124,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         internal val DBGPRN = false
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
+        // Mixer-private background-voice pool size per playhead. NNA "Continue/Note Off/Note Fade"
+        // ghosts displaced foreground voices into this pool; oldest is evicted on overflow.
+        const val MAX_BG_VOICES = 64
         const val MIDDLE_C = 0x5000   // reference C for instrument samplingRate (terranmon.txt:2000)
         // Amiga period at MIDDLE_C for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
         // PT "C-2" period 428 ↔ TSVM MIDDLE_C ↔ 8363 Hz; mod2taud uses the same convention.
@@ -1193,7 +1196,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Volume envelope
         val vSus       = inst.volEnvSustain
         val vUseEnv    = (vSus ushr 5) and 1 != 0
-        if (vUseEnv) {
+        if (vUseEnv && voice.volEnvOn) {
             val vEnabled   = (vSus ushr 14) and 1 != 0
             val vIsSustain = (vSus ushr 13) and 1 != 0
             val vSusOn     = vEnabled && (!vIsSustain || !voice.keyOff)
@@ -1230,7 +1233,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
 
         // Pan envelope (only when active for this instrument)
-        if (!voice.hasPanEnv) return
+        if (!voice.hasPanEnv || !voice.panEnvOn) return
         val pSus       = inst.panEnvSustain
         val pUseEnv    = (pSus ushr 5) and 1 != 0
         if (!pUseEnv) return
@@ -1274,7 +1277,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * as advanceEnvelope. Result is stored in `voice.envPfValue` (0.0..1.0; 0.5 = unity).
      */
     private fun advancePfEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
-        if (!voice.hasPfEnv) return
+        if (!voice.hasPfEnv || !voice.pfEnvOn) return
         val maxIdx = 24
         val pSus       = inst.pfEnvSustain
         val pUseEnv    = (pSus ushr 5) and 1 != 0
@@ -1529,10 +1532,108 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
         voice.rowVolume = voice.channelVolume
         voice.noteWasCut = false
+        voice.noteFading = false
+        // S $73..$7C state resets on each fresh trigger so per-note overrides don't leak.
+        voice.nnaOverride = -1
+        voice.volEnvOn = true
+        voice.panEnvOn = true
+        voice.pfEnvOn = true
         // Vibrato/tremolo/panbrello retrigger: reset LFO position when waveform requests it.
         if (voice.vibratoRetrig) voice.vibratoLfoPos = 0
         if (voice.tremoloRetrig) voice.tremoloLfoPos = 0
         if (voice.panbrelloRetrig) voice.panbrelloLfoPos = 0
+    }
+
+    /**
+     * On a fresh foreground trigger, optionally migrate the existing voice into the
+     * mixer-private background pool per the New Note Action setting (instrument default
+     * unless overridden by S $73..$76). Note Cut: no ghost, foreground retriggers in place.
+     * Note Off: ghost gets keyOff (sustain release + fadeout). Continue: ghost as-is.
+     * Note Fade: ghost begins fadeout immediately without releasing sustain.
+     */
+    private fun maybeSpawnBackgroundForNNA(ts: TrackerState, voice: Voice, channel: Int) {
+        if (!voice.active) return
+        val nna = if (voice.nnaOverride >= 0) voice.nnaOverride
+                  else instruments[voice.instrumentId].newNoteAction
+        if (nna == 1) return  // Note Cut — foreground sample is replaced; no background needed.
+
+        val bg = ghostVoice(voice, channel)
+        when (nna) {
+            0 -> bg.keyOff = true       // Note Off — release sustain; fadeout starts naturally.
+            3 -> bg.noteFading = true   // Note Fade — fadeout immediately, sustain still loops.
+            // 2 (Continue) — ghost continues unchanged.
+        }
+        ts.backgroundVoices.addLast(bg)
+        while (ts.backgroundVoices.size > MAX_BG_VOICES) {
+            ts.backgroundVoices.removeFirst()
+        }
+    }
+
+    /** Snapshot the playback-relevant state of [src] into a fresh Voice tagged for [channel]. */
+    private fun ghostVoice(src: Voice, channel: Int): Voice {
+        val v = Voice()
+        v.active = true
+        v.muted = src.muted
+        v.instrumentId = src.instrumentId
+        v.samplePos = src.samplePos
+        v.playbackRate = src.playbackRate
+        v.forward = src.forward
+        v.channelVolume = src.channelVolume
+        v.rowVolume = src.rowVolume
+        v.channelPan = src.channelPan
+        v.rowPan = src.rowPan
+        v.keyOff = src.keyOff
+        v.envIndex = src.envIndex
+        v.envTimeSec = src.envTimeSec
+        v.envVolume = src.envVolume
+        v.envPanIndex = src.envPanIndex
+        v.envPanTimeSec = src.envPanTimeSec
+        v.envPan = src.envPan
+        v.hasPanEnv = src.hasPanEnv
+        v.hasPfEnv = src.hasPfEnv
+        v.envPfIndex = src.envPfIndex
+        v.envPfTimeSec = src.envPfTimeSec
+        v.envPfValue = src.envPfValue
+        v.envPfIsFilter = src.envPfIsFilter
+        v.fadeoutVolume = src.fadeoutVolume
+        v.autoVibPhase = src.autoVibPhase
+        v.autoVibTicksSinceTrigger = src.autoVibTicksSinceTrigger
+        v.currentCutoff = src.currentCutoff
+        v.currentResonance = src.currentResonance
+        v.filterActive = src.filterActive
+        v.filterA0 = src.filterA0
+        v.filterB0 = src.filterB0
+        v.filterB1 = src.filterB1
+        v.filterY1 = src.filterY1
+        v.filterY2 = src.filterY2
+        v.filterCutoffCached = src.filterCutoffCached
+        v.filterResonanceCached = src.filterResonanceCached
+        v.randomVolBias = src.randomVolBias
+        v.randomPanBias = src.randomPanBias
+        v.noteVal = src.noteVal
+        v.basePitch = src.basePitch
+        v.volEnvOn = src.volEnvOn
+        v.panEnvOn = src.panEnvOn
+        v.pfEnvOn = src.pfEnvOn
+        v.noteFading = src.noteFading
+        v.sourceChannel = channel
+        return v
+    }
+
+    /** Past-note action (S $70..$72): apply [action] to all background voices spawned by [channel]. */
+    private fun applyPastNoteAction(ts: TrackerState, channel: Int, action: Int) {
+        when (action) {
+            0 -> {  // Past Note Cut — drop them.
+                val iter = ts.backgroundVoices.iterator()
+                while (iter.hasNext()) if (iter.next().sourceChannel == channel) iter.remove()
+            }
+            1 -> ts.backgroundVoices.forEach { bg ->  // Past Note Off — sustain release.
+                if (bg.sourceChannel == channel) bg.keyOff = true
+            }
+            2 -> ts.backgroundVoices.forEach { bg ->  // Past Note Fade — start fadeout.
+                if (bg.sourceChannel == channel) bg.noteFading = true
+            }
+        }
     }
 
     private fun applyVolColumn(voice: Voice, value: Int, sel: Int) {
@@ -1554,8 +1655,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun applyPanColumn(voice: Voice, value: Int, sel: Int) {
+        // S $80xx (8-bit pan SET in the effect column) wins over PanEff SET (6-bit) on the same
+        // row — skip the SET branch here so the effect column's higher-precision write is final.
+        // Slide selectors (1/2/3) still apply, since their per-tick behaviour is independent.
+        val rowHasS80 = voice.rowEffect == EffectOp.OP_S &&
+                        ((voice.rowEffectArg ushr 12) and 0xF) == 0x8
         when (sel) {
-            0 -> { voice.channelPan = (value shl 2) or (value ushr 4); voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63) }
+            0 -> if (!rowHasS80) { voice.channelPan = (value shl 2) or (value ushr 4); voice.rowPan = (voice.channelPan shr 2).coerceIn(0, 63) }
             1 -> voice.panColSlideRight = value
             2 -> voice.panColSlideLeft = value
             3 -> {
@@ -1609,12 +1715,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         // Tone porta: target the note, do not retrigger sample.
                         voice.tonePortaTarget = row.note
                     } else if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD) {
-                        // Note delay: defer trigger to the requested tick.
+                        // Note delay: defer trigger to the requested tick. NNA fires when the
+                        // deferred trigger actually executes, not now.
                         voice.noteDelayTick = (row.effectArg ushr 8) and 0xF
                         voice.delayedNote = row.note
                         voice.delayedInst = row.instrment
                         voice.delayedVol = if (row.volume >= 0) row.volume else -1
                     } else {
+                        maybeSpawnBackgroundForNNA(ts, voice, vi)
                         triggerNote(voice, row.note, row.instrment, -1)
                     }
                 }
@@ -1800,6 +1908,25 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
             0x4 -> { voice.tremoloWave = x and 3; voice.tremoloRetrig = (x and 4) == 0 }
             0x5 -> { voice.panbrelloWave = x and 3; voice.panbrelloRetrig = (x and 4) == 0 }
+            0x7 -> when (x) {
+                // Past-note actions on the channel's background ghosts.
+                0x0 -> applyPastNoteAction(ts, vi, 0)   // Past Note Cut
+                0x1 -> applyPastNoteAction(ts, vi, 1)   // Past Note Off
+                0x2 -> applyPastNoteAction(ts, vi, 2)   // Past Note Fade
+                // NNA override for the live note (used at next NNA event on this voice).
+                // Codes follow the per-voice nnaOverride convention (0=Off, 1=Cut, 2=Continue, 3=Fade).
+                0x3 -> voice.nnaOverride = 1            // NNA Note Cut
+                0x4 -> voice.nnaOverride = 2            // NNA Note Continue
+                0x5 -> voice.nnaOverride = 0            // NNA Note Off
+                0x6 -> voice.nnaOverride = 3            // NNA Note Fade
+                // Envelope on/off — mixer ignores and per-tick freezes the disabled envelope.
+                0x7 -> voice.volEnvOn = false
+                0x8 -> voice.volEnvOn = true
+                0x9 -> voice.panEnvOn = false
+                0xA -> voice.panEnvOn = true
+                0xB -> voice.pfEnvOn = false
+                0xC -> voice.pfEnvOn = true
+            }
             0x8 -> {
                 // S$80xx — full 8-bit pan; arg low byte is the value.
                 voice.channelPan = arg and 0xFF
@@ -1832,7 +1959,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private fun applyTrackerTick(ts: TrackerState, playhead: Playhead) {
         val tickSec = 2.5 / playhead.bpm
-        for (voice in ts.voices) {
+        for (vi in 0 until ts.voices.size) {
+            val voice = ts.voices[vi]
             if (!voice.active && voice.noteDelayTick < 0) continue
             val inst = instruments[voice.instrumentId]
 
@@ -1843,7 +1971,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
 
             // Note delay — fire deferred trigger when the requested tick arrives.
+            // NNA fires now (not at row parse) so that delayed retriggers ghost correctly.
             if (voice.noteDelayTick == ts.tickInRow) {
+                maybeSpawnBackgroundForNNA(ts, voice, vi)
                 triggerNote(voice, voice.delayedNote, voice.delayedInst, voice.delayedVol)
                 voice.noteDelayTick = -1
             }
@@ -1969,7 +2099,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // Pitch envelope contribution: env value 0..1, 0.5 = unity. -32..+32
             // semitone range maps to ±32 × 4096/12 ≈ ±10923 4096-TET units.
-            val pitchEnvDelta = if (voice.hasPfEnv && !voice.envPfIsFilter)
+            val pitchEnvDelta = if (voice.hasPfEnv && voice.pfEnvOn && !voice.envPfIsFilter)
                 ((voice.envPfValue - 0.5) * 2.0 * 32.0 * 4096.0 / 12.0).toInt()
             else 0
 
@@ -1979,7 +2109,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Filter envelope (filter mode): scale current cutoff by env value (0..1, 0.5 = unity).
             // If the instrument has no initial cutoff (255 = off), the envelope drives the filter
             // from the maximum active value (254) so the filter can become audible during the note.
-            if (voice.hasPfEnv && voice.envPfIsFilter) {
+            if (voice.hasPfEnv && voice.pfEnvOn && voice.envPfIsFilter) {
                 val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
                 voice.currentCutoff = (baseCut * (voice.envPfValue * 2.0)).toInt().coerceIn(0, 254)
             }
@@ -1987,9 +2117,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Refresh biquad filter coefficients once per tick (only recomputes when changed).
             refreshVoiceFilter(voice)
 
-            // Volume fadeout: after key-off, decrement by inst.volumeFadeout / 1024 per tick.
+            // Volume fadeout: after key-off OR Note-Fade NNA, decrement by inst.volumeFadeout / 1024 per tick.
             // The 10-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHigh.
-            if (voice.keyOff) {
+            if (voice.keyOff || voice.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
                     voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
@@ -2019,6 +2149,42 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
                 inst.toggleFunkBit(voice.funkWritePos % loopLen)
                 voice.funkWritePos = (voice.funkWritePos + 1) % loopLen
+            }
+        }
+
+        // Background (NNA-ghost) voices: passive maintenance only — envelopes, fadeout, filter,
+        // and pitch recompute. No row-driven effects (vibrato/tremolo/arp/Q/etc.) ever target
+        // background voices; they continue from the moment of ghosting until they fade or end.
+        val bgIt = ts.backgroundVoices.iterator()
+        while (bgIt.hasNext()) {
+            val bg = bgIt.next()
+            if (!bg.active) { bgIt.remove(); continue }
+            val inst = instruments[bg.instrumentId]
+            advanceEnvelope(bg, inst, tickSec)
+            advancePfEnvelope(bg, inst, tickSec)
+            if (bg.keyOff || bg.noteFading) {
+                val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
+                if (fadeStep > 0) {
+                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
+                }
+            }
+            // Auto-vibrato keeps running on backgrounds — it's an instrument-intrinsic LFO.
+            val autoVibDelta = advanceAutoVibrato(bg, inst)
+            val pitchEnvDelta = if (bg.hasPfEnv && bg.pfEnvOn && !bg.envPfIsFilter)
+                ((bg.envPfValue - 0.5) * 2.0 * 32.0 * 4096.0 / 12.0).toInt()
+            else 0
+            val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0, 0xFFFE)
+            bg.playbackRate = computePlaybackRate(inst, finalPitch)
+            // Filter-mode pf envelope: same scaling rule as foreground.
+            if (bg.hasPfEnv && bg.pfEnvOn && bg.envPfIsFilter) {
+                val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
+                bg.currentCutoff = (baseCut * (bg.envPfValue * 2.0)).toInt().coerceIn(0, 254)
+            }
+            refreshVoiceFilter(bg)
+            // Reap fully-faded ghosts so the pool stays drained.
+            if ((bg.keyOff || bg.noteFading) && bg.fadeoutVolume <= 0.0) {
+                bg.active = false
+                bgIt.remove()
             }
         }
     }
@@ -2079,9 +2245,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val instGv = voiceInst.instGlobalVolume / 255.0
                 // Volume swing bias (random per-trigger, ±randomVolBias of 0..255 units folded into the 0..63 row volume).
                 val swingScale = 1.0 + voice.randomVolBias / 255.0
-                val vol = voice.envVolume * voice.fadeoutVolume * voice.rowVolume / 63.0 *
+                // Volume envelope is bypassed (treated as unity) when S $77 has disabled it.
+                val effEnvVol = if (voice.volEnvOn) voice.envVolume else 1.0
+                val vol = effEnvVol * voice.fadeoutVolume * voice.rowVolume / 63.0 *
                           swingScale * gvol * instGv * playhead.masterVolume / 255.0
-                val pan = if (voice.hasPanEnv) {
+                val pan = if (voice.hasPanEnv && voice.panEnvOn) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (voice.channelPan + envPanRaw - 128 + voice.randomPanBias).coerceIn(0, 255)
                 } else (voice.channelPan + voice.randomPanBias).coerceIn(0, 255)
@@ -2093,6 +2261,33 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         rGain = sin(PI * pan / 512.0)
                     }
                     else -> { // linear balance (tracker default): centre gives 0 dB on both channels
+                        lGain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
+                        rGain = if (pan < 0x80) pan / 128.0 else 1.0
+                    }
+                }
+                mixL += s * vol * lGain
+                mixR += s * vol * rGain
+            }
+            // Background (NNA-ghost) voices — same per-sample mixing path as foreground, but
+            // they live in a mixer-private pool that no row event can address.
+            for (bg in ts.backgroundVoices) {
+                if (!bg.active || bg.muted) continue
+                val bgInst = instruments[bg.instrumentId]
+                val s = applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst))
+                val instGv = bgInst.instGlobalVolume / 255.0
+                val swingScale = 1.0 + bg.randomVolBias / 255.0
+                val effEnvVol = if (bg.volEnvOn) bg.envVolume else 1.0
+                val vol = effEnvVol * bg.fadeoutVolume * bg.rowVolume / 63.0 *
+                          swingScale * gvol * instGv * playhead.masterVolume / 255.0
+                val pan = if (bg.hasPanEnv && bg.panEnvOn) {
+                    val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)
+                    (bg.channelPan + envPanRaw - 128 + bg.randomPanBias).coerceIn(0, 255)
+                } else (bg.channelPan + bg.randomPanBias).coerceIn(0, 255)
+                val lGain: Double
+                val rGain: Double
+                when (ts.panLaw) {
+                    1 -> { lGain = cos(PI * pan / 512.0); rGain = sin(PI * pan / 512.0) }
+                    else -> {
                         lGain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
                         rGain = if (pan < 0x80) pan / 128.0 else 1.0
                     }
@@ -2251,6 +2446,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var samplePos = 0.0
         var playbackRate = 1.0
         var forward = true
+
+        // -1 for live foreground voices held by TrackerState.voices[]; 0..19 for background
+        // (mixer-private) ghosts spawned by NNA on the matching channel index.
+        var sourceChannel = -1
+        // -1 = use instrument-default NNA; otherwise overrides the next NNA event on this voice
+        // (see S $73..$76). Cleared on every fresh trigger.
+        var nnaOverride = -1
+        // Per-voice envelope gates (S $77..$7C). When false the corresponding envelope is frozen
+        // *and* its value is treated as unity by the mixer / pitch path.
+        var volEnvOn = true
+        var panEnvOn = true
+        var pfEnvOn = true
+        // Note-Fade NNA flag — triggers volume fadeout without sustain release (vs keyOff which
+        // also breaks the volume envelope's sustain loop). Both paths feed the same fade decay.
+        var noteFading = false
 
         // Volumes: channel volume is the persistent base; rowVolume tracks per-tick output (set per row from channel volume + volume column).
         var channelVolume = 0x3F           // $00..$3F (default full)
@@ -2411,6 +2621,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Pre-allocated mix buffers for dither path (reused each audio chunk).
         val mixLeft  = FloatArray(TRACKER_CHUNK)
         val mixRight = FloatArray(TRACKER_CHUNK)
+
+        // Mixer-private background voices: NNA-ghosted copies of displaced foreground voices.
+        // Not addressable from row events; only S $70..$72 and the mixer/per-tick maintenance
+        // touch them. ArrayDeque so we can evict oldest (head) when the pool is full.
+        val backgroundVoices = ArrayDeque<Voice>()
     }
 
     class Playhead(
@@ -2540,7 +2755,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.funkAccumulator = 0
                     it.funkWritePos = 0
                     it.muted = false
+                    it.nnaOverride = -1
+                    it.volEnvOn = true; it.panEnvOn = true; it.pfEnvOn = true
+                    it.noteFading = false
                 }
+                ts.backgroundVoices.clear()
             }
         }
 

@@ -25,8 +25,9 @@ Effect support:
     A-Z dispatch per TAUD_NOTE_EFFECTS.md. IT-specific: Cxx is binary
     (not BCD like ST3). V scales by ×2 (IT 0-128 → Taud 0-255). X is
     the full 8-bit IT pan. Y panbrello nibble-repeats. Z (MIDI macro)
-    dropped. S6x tick-delay dropped. SAx high-offset dropped. S7x NNA
-    toggles dropped. Vol-column pitch-slide / tone-porta / vibrato sub-
+    dropped. S6x tick-delay dropped. SAx high-offset dropped. S7x NNA /
+    past-note / envelope toggles forwarded directly (IT sub-codes match
+    Taud one-to-one). Vol-column pitch-slide / tone-porta / vibrato sub-
     commands forwarded to main effect slot when empty; dropped otherwise.
     Per-effect private memory cohorts resolved eagerly (D/K/L share;
     E/F optionally linked with G per flag bit 5).
@@ -879,7 +880,9 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
             vprint(f"    dropped S6{val:X} (tick delay) at ch{ch} row{row}")
             return (TOP_NONE, 0, None, None)
         if sub == 0x7:
-            return (TOP_NONE, 0, None, None)  # NNA/envelope — drop silently
+            # NNA / past-note / envelope on-off — IT S7x maps directly to Taud S $7x00
+            # (same sub-code table). No payload to translate.
+            return (TOP_S, 0x7000 | (val << 8), None, None)
         if sub == 0x9:
             return (TOP_NONE, 0, None, None)  # sound control — drop silently
         if sub == 0xA:

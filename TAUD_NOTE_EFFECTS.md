@@ -692,13 +692,28 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 **Compatibility.** IT `S7x` maps directly.
 
-**Implementation.** TODO
+**Implementation.** Engines maintain a *mixer-private* background-voice pool per playhead, separate from the addressable foreground voices. When a fresh note retriggers a still-active foreground voice, the engine reads the effective NNA — the per-voice override set by `S $73..$76` if present, otherwise the instrument's default NNA (instrument record byte 186, low two bits) — and acts on the displaced voice as follows:
+
+- **Note Cut (1):** discard the foreground state in place; no ghost is created.
+- **Note Off (0):** clone the foreground voice into the background pool and set its key-off flag, releasing any sustain loop. The clone's volume envelope plays out and fadeout decays from full.
+- **Continue (2):** clone the foreground voice into the background pool unchanged; envelopes and sample position continue from where they were.
+- **Note Fade (3):** clone the foreground voice into the background pool and immediately begin fadeout decay without releasing sustain. The volume envelope keeps looping its sustain region while fadeoutVolume drains to zero.
+
+Note Fade and Note Off are distinct: Note Fade does **not** set key-off, so the volume envelope's sustain loop continues to cycle; Note Off does set key-off, breaking sustain. Both share the same fadeout slope (`volumeFadeoutLow + (fadeoutHigh & 0x0F << 8)` units per tick out of 1024).
+
+The background pool is reaped when a ghost's `fadeoutVolume` drops to zero or its sample finishes (non-looping). Pool size is implementation-defined; the reference engine caps it at 64 ghosts per playhead and evicts the oldest on overflow. Background voices receive only passive per-tick maintenance (envelope advance, fadeout decay, auto-vibrato, filter coefficient refresh) — no row-driven effects (vibrato/tremolo/arpeggio/Q-retrigger/cut/delay) ever target them, since they are not addressable from the pattern.
+
+`S $70..$72` (Past Note Cut/Off/Fade) operate on every ghost whose `sourceChannel` matches the issuing channel: $70 drops them outright, $71 sets key-off on each, $72 begins fadeout on each.
+
+`S $73..$76` write the per-voice NNA override on the **currently active foreground voice** so that *its* next NNA event uses the overridden action. The override is cleared on every fresh trigger.
+
+`S $77..$7C` toggle the volume / panning / pitch-or-filter envelope on the currently active voice. While disabled, the envelope is frozen (no advancement) and the mixer treats its contribution as unity (envVolume / envPan / envPfValue all replaced by the neutral 1.0 / 0.5 / 0.5).
 
 ---
 
 ## S $80xx — Set channel pan position
 
-**Plain.** Sets the channel pan to `$xx`, with $00 being full left and $FF being full right. $80 is centre.
+**Plain.** Sets the channel pan to `$xx`, with $00 being full left and $FF being full right. $80 is centre. When this command and panning column's Set Pan are both present, this command takes precedence.
 
 **Compatibility.** IT `Xxx` maps directly. ST3 `S8x` uses a 4-bit value.  
 1. convert by nibble-repeat: ST3 `S83` → Taud `S $8033`. Panning column command `0.$xx` has the same semantics and is the preferred form when a pan column is available in the pattern. ProTracker `8xx` (fine pan) and `E8x` (coarse pan) both map into Taud's 8-bit pan — the ProTracker 8-bit form maps directly; the 4-bit form nibble-repeats.
@@ -829,7 +844,7 @@ The panning column uses the same 6-bit value + 2-bit selector layout:
 - **`2.$xx` — Pan slide left** by `$xx` per non-first tick (4-bit).
 - **`3.$Sx` — Fine pan slide** on tick 0 only, same direction-bit encoding as the volume column's selector 3.
 
-NOTE: **`3.00` — is No-op**
+NOTE: **`3.00` — is No-op**. When Set Pan and S $80xx are both present, S-command takes precedence.
 
 ---
 

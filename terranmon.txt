@@ -2088,12 +2088,14 @@ Instrument bin: Registry for 256 instruments, formatted as:
 
 TODO:
     [x] implement Instrument Flag, Vibrato Depth, Vibrato Rate, other samplewise/instrumentwise changes to it2taud and audio engine
-    [ ] implement new note action on the audio engine (IT uses "background channels", maybe we can do the same but make "background channels" mixer-private)
-    [ ] on playback, panning changes randomly on Taud made by s3m2taud.py and mod2taud.py
-    [ ] implement S6x and S7x command
+    [x] implement new note action on the audio engine (IT uses "background channels", maybe we can do the same but make "background channels" mixer-private)
+    [x] (same context as above) implement S7x command
+    [ ] on playback, panning changes randomly on Taud made by s3m2taud.py and mod2taud.py, but not by it2taud.py (maybe something's off with the instrument exports?)
+    [ ] implement S6x command
+    [ ] `S B000` and `S B100` not working as intended -- on first playback it jumps to the next cue same row, on subsequent playbacks the commands are completely ignored
     [ ] implement Wxx command (global volume slide)
     [ ] implement sample loop sustain
-    [ ] Amiga mode freq shift now "underdelivers" (pitch bend not "strong" enough)
+    [ ] Amiga mode freq shift now "underdelivers" (pitch bend not "strong" enough) -- appear to be fixed (2nd_pm.taud is the only one behaves incorrectly)
     [ ] cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
     [ ] figure out how IT (8 bits) and FT2 (12 bits) handles volume fadeout numbers, and come up with a compatible Taud spec, then implement
     [ ] implement bitcrusher (eff sym '8')
