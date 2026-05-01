@@ -18,6 +18,26 @@ Documentation for TSVM and TVDOS are available on `./doc/*.tex` as machine-reada
 
 Documentatino for TSVM architecture is available on `terranmon.txt`
 
+## Reference Materials
+
+Third-party source-code references that inform TSVM implementations live in
+`reference_materials/<topic>/`. Each topic folder has a `README.md` that
+summarises the takeaway and points back into the verbatim source files.
+**Consult these before reimplementing tracker / codec / DSP behaviour from
+memory** — TSVM aims to match the audible behaviour of the originals.
+
+Current topics:
+
+- `reference_materials/tracker_filter/` — Impulse Tracker / OpenMPT / Schism
+  Tracker resonant low-pass filter source. Defines the cutoff formula, the
+  resonance damping curve, and the **IIR-only 2-pole topology** (NOT a
+  biquad — no feedforward x[n−1] / x[n−2] terms) that `AudioAdapter.kt` uses
+  for Taud playback.
+
+When fetching new references, copy the relevant upstream files verbatim into
+a topic folder, write a `README.md` summarising the relevant maths /
+algorithms with file:line citations, and add an entry here.
+
 ## Architecture
 
 ### Core Components

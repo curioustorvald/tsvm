@@ -124,10 +124,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         internal val DBGPRN = false
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
-        const val TRACKER_C3 = 0x4000   // legacy alias (one octave below the new reference)
-        const val TRACKER_C4 = 0x5000   // reference C for instrument samplingRate (terranmon.txt:2000)
-        // Amiga period at TRACKER_C4 for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
-        // PT "C-2" period 428 ↔ TSVM TRACKER_C4 ↔ 8363 Hz; mod2taud uses the same convention.
+        const val MIDDLE_C = 0x5000   // reference C for instrument samplingRate (terranmon.txt:2000)
+        // Amiga period at MIDDLE_C for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
+        // PT "C-2" period 428 ↔ TSVM MIDDLE_C ↔ 8363 Hz; mod2taud uses the same convention.
+        // Trackers may use different labelling conventions (e.g. C5) for Middle C.
+        // For non-tracker context, Middle C shall be labelled as C4.
         const val AMIGA_BASE_PERIOD = 428.0
     }
 
@@ -1168,7 +1169,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
-        inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - TRACKER_C4) / 4096.0)
+        inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - MIDDLE_C) / 4096.0)
 
     // Applies one tick of Amiga-mode pitch slide.  When the song is in Amiga tone mode, E/F coarse
     // slide arguments are stored as raw tracker period units (the original ProTracker/ST3 byte),
@@ -1176,9 +1177,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // linear mode: negative = pitch down (E effect), positive = pitch up (F effect), so a positive
     // slideArg subtracts from the period (pitch rises).
     private fun amigaSlide(noteVal: Int, slideArg: Int): Int {
-        val period = AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - TRACKER_C4).toDouble() / 4096.0)
+        val period = AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - MIDDLE_C).toDouble() / 4096.0)
         val newPeriod = (period - slideArg).coerceAtLeast(1.0)
-        return (TRACKER_C4 + 4096.0 * log2(AMIGA_BASE_PERIOD / newPeriod)).roundToInt()
+        return (MIDDLE_C + 4096.0 * log2(AMIGA_BASE_PERIOD / newPeriod)).roundToInt()
     }
 
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
@@ -1318,11 +1319,28 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     /**
-     * Recompute the biquad LPF coefficients for `voice` when its cutoff or
-     * resonance has changed since the last refresh. Cutoff 0..255 maps
-     * exponentially from ~110 Hz to ~14 kHz; resonance 0..255 maps linearly
-     * to Q ∈ [0.5, 6.0]. The filter is disabled at full-open (cutoff ≥ 0xFE
-     * with no resonance), avoiding the per-sample cost when transparent.
+     * Recompute the IT-compatible 2-pole resonant low-pass coefficients for
+     * `voice` when its cutoff or resonance has changed since the last refresh.
+     *
+     * Taud's filter range mirrors Impulse Tracker's at double resolution:
+     * Taud 0..254 maps to IT 0..127, while Taud 255 means "filter off" (the
+     * IT high-bit-clear sentinel). The filter is bypassed when cutoff = 255.
+     *
+     * The coefficient math and topology mirror OpenMPT/Schism Tracker (see
+     * reference_materials/tracker_filter/openmpt_Snd_flt.cpp and
+     * schism_filters.c). Notably this is NOT a biquad: the recurrence has no
+     * feedforward x[n-1] / x[n-2] terms.
+     *
+     *   frequency = 110 Hz × 2^(itCutoff / 24 + 0.25)         (IT 0..127)
+     *   dmpfac    = 10 ^ (-itResonance × 0.009375)            (= 24/128/20 dB)
+     *   r         = mixingFreq / (2π × frequency)
+     *   d         = dmpfac × r + dmpfac − 1
+     *   e         = r²
+     *   denom     = 1 + d + e
+     *   A0        = 1 / denom
+     *   B0        = (d + 2e) / denom
+     *   B1        = −e / denom
+     *   y[n]      = A0 × x[n] + B0 × y[n−1] + B1 × y[n−2]
      */
     private fun refreshVoiceFilter(voice: Voice) {
         val cut = voice.currentCutoff.coerceIn(0, 255)
@@ -1331,49 +1349,42 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.filterCutoffCached = cut
         voice.filterResonanceCached = res
 
-        if (cut >= 0xFE && res == 0) {
+        if (cut >= 255) {
             voice.filterActive = false
             return
         }
 
-        // Exponential cutoff: 110 Hz × 2^(cut × log2(14000/110) / 255).
-        // log2(14000/110) ≈ 6.992, so exponent ≈ cut × 0.0274.
-        val cutoffHz = 110.0 * 2.0.pow(cut * 6.992 / 255.0)
-        val nyquist  = SAMPLING_RATE * 0.5 - 1.0
-        val f0 = cutoffHz.coerceIn(20.0, nyquist)
-        val Q  = 0.5 + (res / 255.0) * 5.5
+        val itCutoff    = cut * 0.5                                     // 0..127
+        val itResonance = if (res >= 255) 0.0 else res * 0.5            // 0..127
 
-        val w0 = 2.0 * PI * f0 / SAMPLING_RATE
-        val cosW = cos(w0)
-        val sinW = sin(w0)
-        val alpha = sinW / (2.0 * Q)
+        val nyquist   = SAMPLING_RATE * 0.5 - 1.0
+        val frequency = (110.0 * 2.0.pow(itCutoff / 24.0 + 0.25)).coerceAtMost(nyquist)
+        val dmpfac    = 10.0.pow(-itResonance * (24.0 / 128.0) / 20.0)
 
-        val b0 = (1.0 - cosW) * 0.5
-        val b1 = 1.0 - cosW
-        val b2 = b0
-        val a0 = 1.0 + alpha
-        val a1 = -2.0 * cosW
-        val a2 = 1.0 - alpha
+        val r = SAMPLING_RATE / (2.0 * PI * frequency)
+        val d = dmpfac * r + dmpfac - 1.0
+        val e = r * r
+        val denom = 1.0 + d + e
 
-        voice.filterB0 = b0 / a0
-        voice.filterB1 = b1 / a0
-        voice.filterB2 = b2 / a0
-        voice.filterA1 = a1 / a0
-        voice.filterA2 = a2 / a0
+        voice.filterA0 = 1.0 / denom
+        voice.filterB0 = (d + e + e) / denom
+        voice.filterB1 = -e / denom
         voice.filterActive = true
     }
 
-    /** Apply the cached biquad LPF to one mono sample. Caller must have called
-     *  refreshVoiceFilter at the start of the tick. */
+    /** Apply the cached IT-style 2-pole LPF to one mono sample. Caller must
+     *  have called refreshVoiceFilter at the start of the tick. The history
+     *  taps are clipped to ±2.0 to tame resonance ringing on extreme settings,
+     *  matching OpenMPT's ClipFilter helper. */
     private fun applyVoiceFilter(voice: Voice, x0: Double): Double {
         if (!voice.filterActive) return x0
-        val y0 = voice.filterB0 * x0 +
-                 voice.filterB1 * voice.filterX1 +
-                 voice.filterB2 * voice.filterX2 -
-                 voice.filterA1 * voice.filterY1 -
-                 voice.filterA2 * voice.filterY2
-        voice.filterX2 = voice.filterX1; voice.filterX1 = x0
-        voice.filterY2 = voice.filterY1; voice.filterY1 = y0
+        val y1Clipped = voice.filterY1.coerceIn(-2.0, 2.0)
+        val y2Clipped = voice.filterY2.coerceIn(-2.0, 2.0)
+        val y0 = voice.filterA0 * x0 +
+                 voice.filterB0 * y1Clipped +
+                 voice.filterB1 * y2Clipped
+        voice.filterY2 = voice.filterY1
+        voice.filterY1 = y0
         return y0
     }
 
@@ -1499,9 +1510,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
         }
         // Filter cutoff/resonance defaults — adjusted per-tick by the pf envelope when in filter mode.
-        voice.currentCutoff = if (inst.defaultCutoff > 0) inst.defaultCutoff else 0xFF
+        // 255 = filter off (IT high-bit-clear); 0..254 = active range matching IT 0..127 at double resolution.
+        voice.currentCutoff = inst.defaultCutoff
         voice.currentResonance = inst.defaultResonance
-        voice.filterX1 = 0.0; voice.filterX2 = 0.0
         voice.filterY1 = 0.0; voice.filterY2 = 0.0
         voice.filterCutoffCached = -1   // force coefficient refresh on first tick
         voice.filterResonanceCached = -1
@@ -1942,7 +1953,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.fadeoutVolume = 1.0
                     voice.autoVibPhase = 0
                     voice.autoVibTicksSinceTrigger = 0
-                    voice.filterX1 = 0.0; voice.filterX2 = 0.0
                     voice.filterY1 = 0.0; voice.filterY2 = 0.0
                     voice.rowVolume = applyRetrigVolMod(voice.rowVolume, voice.retrigVolMod)
                     voice.channelVolume = voice.rowVolume
@@ -1962,9 +1972,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.playbackRate = computePlaybackRate(inst, finalPitch)
 
             // Filter envelope (filter mode): scale current cutoff by env value (0..1, 0.5 = unity).
+            // If the instrument has no initial cutoff (255 = off), the envelope drives the filter
+            // from the maximum active value (254) so the filter can become audible during the note.
             if (voice.hasPfEnv && voice.envPfIsFilter) {
-                val baseCut = if (inst.defaultCutoff > 0) inst.defaultCutoff else 0xFF
-                voice.currentCutoff = (baseCut * (voice.envPfValue * 2.0)).toInt().coerceIn(0, 0xFF)
+                val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
+                voice.currentCutoff = (baseCut * (voice.envPfValue * 2.0)).toInt().coerceIn(0, 254)
             }
 
             // Refresh biquad filter coefficients once per tick (only recomputes when changed).
@@ -2264,19 +2276,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var autoVibPhase = 0               // 8-bit phase counter
         var autoVibTicksSinceTrigger = 0   // for sweep ramp-up
 
-        // Filter / cutoff state — drives the per-voice 2-pole resonant LPF.
-        var currentCutoff = 0xFF           // 0..255 (0xFF = open / unfiltered)
-        var currentResonance = 0           // 0..255
-        // Biquad state (updated per output sample) and cached coefficients
-        // (recomputed per tick when cutoff/resonance change).
+        // Filter / cutoff state — drives the per-voice IT-compatible 2-pole resonant LPF.
+        // Convention: 255 = filter off (matches IT's high-bit-clear sentinel);
+        //             0..254 = active range mirroring IT 0..127 at double resolution.
+        var currentCutoff = 0xFF
+        var currentResonance = 0xFF
+        // IT 2-pole IIR-only state (updated per output sample) and cached coefficients
+        // (recomputed per tick when cutoff/resonance change). Recurrence:
+        //   y[n] = A0 × x[n] + B0 × y[n-1] + B1 × y[n-2]
         var filterActive = false
-        var filterB0 = 1.0
+        var filterA0 = 1.0
+        var filterB0 = 0.0
         var filterB1 = 0.0
-        var filterB2 = 0.0
-        var filterA1 = 0.0
-        var filterA2 = 0.0
-        var filterX1 = 0.0
-        var filterX2 = 0.0
         var filterY1 = 0.0
         var filterY2 = 0.0
         // Snapshot of cutoff/resonance the cached coefficients correspond to.
@@ -2591,7 +2602,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * Layout:
      *   0..3   u32 sample pointer
      *   4..5   u16 sample length
-     *   6..7   u16 sampling rate at TRACKER_C4 (0x5000)
+     *   6..7   u16 sampling rate at Middle C (0x5000) // NOTE: Taud treats middle C as C4, but some trackers show you C4 even if they are internally C5. Best practice: copy the value as-is.
      *   8..9   u16 play start
      *   10..11 u16 loop start
      *   12..13 u16 loop end
@@ -2621,7 +2632,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         var samplePtr: Int,                 // 32-bit sample bin offset
         var sampleLength: Int,
-        var samplingRate: Int,              // rate at TRACKER_C4
+        var samplingRate: Int,              // rate at MIDDLE_C
         var samplePlayStart: Int,
         var sampleLoopStart: Int,
         var sampleLoopEnd: Int,

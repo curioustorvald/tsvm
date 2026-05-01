@@ -2,6 +2,7 @@ package net.torvald.tsvm
 
 import com.badlogic.gdx.ApplicationAdapter
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.Input
 import com.badlogic.gdx.graphics.*
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
@@ -205,6 +206,8 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private var updateAkku = 0.0
     private var updateRate = 1f / 60f
 
+    private var crtShaderSignalMode = 0
+
     override fun render() {
         gdxClearAndSetBlend(.094f, .094f, .094f, 0f)
         setCameraPosition(0f, 0f)
@@ -250,6 +253,19 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         vm.update(delta)
 
         if (vm.resetDown) rebootRequested = true
+
+        if ((Gdx.input.isKeyPressed(Input.Keys.SHIFT_LEFT) || Gdx.input.isKeyPressed(Input.Keys.SHIFT_RIGHT)) &&
+            (Gdx.input.isKeyPressed(Input.Keys.CONTROL_LEFT) || Gdx.input.isKeyPressed(Input.Keys.CONTROL_RIGHT))) {
+            if (Gdx.input.isKeyPressed(Input.Keys.S)) {
+                crtShaderSignalMode = -1 // RGB
+            }
+            else if (Gdx.input.isKeyPressed(Input.Keys.D)) {
+                crtShaderSignalMode = 0 // S-video
+            }
+            else if (Gdx.input.isKeyPressed(Input.Keys.F)) {
+                crtShaderSignalMode = 1 // Composite
+            }
+        }
     }
 
     fun poke(addr: Long, value: Byte) = vm.poke(addr, value)
@@ -292,6 +308,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
             batch.shader.setUniformf("resolution", viewportWidth.toFloat(), viewportHeight.toFloat())
             batch.shader.setUniformf("interlacer", (framecount % 2).toFloat())
             batch.shader.setUniformf("time", (framecount % 640).toFloat())
+            batch.shader.setUniformi("signalMode", crtShaderSignalMode)
             batch.setBlendFunctionSeparate(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA, GL20.GL_SRC_ALPHA, GL20.GL_ONE)
             batch.draw(gpuFBO.colorBufferTexture, 0f, 0f)
         }

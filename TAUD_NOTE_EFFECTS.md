@@ -648,6 +648,41 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 **Implementation.** As for S $3x, but applied to Y's separate state (`panbrello_waveform`, `panbrello_retrigger`, and panbrello `lfo_pos`).
 
+---
+
+## S $6x00 — Fine pattern delay
+
+**Plain.** Extends the current row by $x ticks. If multiple S6x commands are on the same row, the sum of their parameters is used.
+
+**Compatibility.** IT `S6x` maps directly.
+
+**Implementation.** TODO
+
+---
+
+## S $7x00 — Note/Instrument actions
+
+**Plain.** Performs following action to the note.
+
+| $x | Operation | Description |
+|---|---|---|
+| $0 | Past Note Cut | Cuts all notes playing as a result of New Note Actions on the current channel |
+| $1 | Past Note Off | Sends a Note Off to all notes playing as a result of New Note Actions on the current channel |
+| $2 | Past Note Fade | Fades out all notes playing as a result of New Note Actions on the current channel |
+| $3 | NNA Note Cut | Sets the currently active note's New Note Action to Note Cut |
+| $4 | NNA Note Continue | Sets the currently active note's New Note Action to Continue |
+| $5 | NNA Note Off | Sets the currently active note's New Note Action to Note Off |
+| $6 | NNA Note Fade | Sets the currently active note's New Note Action to Note Fade |
+| $7 | Volume Envelope Off | Disables the currently active note's volume envelope |
+| $8 | Volume Envelope On | Enables the currently active note's volume envelope |
+| $9 | Panning Envelope Off | Disables the currently active note's panning envelope |
+| $A | Panning Envelope On | Enables the currently active note's panning envelope |
+| $B | Pitch Envelope Off | Disables the currently active note's pitch or filter envelope |
+| $C | Pitch Envelope On | Enables the currently active note's pitch envelope  |
+
+**Compatibility.** IT `S7x` maps directly.
+
+**Implementation.** TODO
 
 ---
 

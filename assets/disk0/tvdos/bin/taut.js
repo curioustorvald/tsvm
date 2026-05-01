@@ -2370,6 +2370,8 @@ taud.uploadTaudFile(fullPathObj.full, 0, PLAYHEAD)
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
 const initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
+//const initialGlobalVolume =
+//const initialMixingVolume =
 
 function isExternalPanel(p) {
     return p === VIEW_SAMPLES || p === VIEW_INSTRMNT || p === VIEW_FILE

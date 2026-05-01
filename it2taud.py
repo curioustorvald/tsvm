@@ -507,8 +507,10 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
         # Initial filter cutoff/resonance (high bit = enabled, low 7 bits = value)
         ifc_raw = data[ptr + 0x39]
         ifr_raw = data[ptr + 0x3A]
-        inst.ifc = ifc_raw & 0x7F if (ifc_raw & 0x80) else 0
-        inst.ifr = ifr_raw & 0x7F if (ifr_raw & 0x80) else 0
+        # Taud uses full 0..255 range (double IT's resolution): IT 0..127 → Taud 0..254,
+        # IT "off" (high bit clear) → Taud 255.
+        inst.ifc = (ifc_raw & 0x7F) * 2 if (ifc_raw & 0x80) else 255
+        inst.ifr = (ifr_raw & 0x7F) * 2 if (ifr_raw & 0x80) else 255
 
         # Parse IT envelopes (new-format only, ≥cmwt 0x200)
         # Vol envelope at ptr+0x130; pan envelope at ptr+0x182; pf envelope at ptr+0x1D4
@@ -1234,8 +1236,8 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         struct.pack_into('b', inst_bin, base + 180,
                          max(-128, min(127, idata.get('pps', 0))))
         inst_bin[base + 181] = idata.get('pan_swing', 0) & 0xFF
-        inst_bin[base + 182] = idata.get('ifc',       0) & 0xFF
-        inst_bin[base + 183] = idata.get('ifr',       0) & 0xFF
+        inst_bin[base + 182] = idata.get('ifc',     255) & 0xFF
+        inst_bin[base + 183] = idata.get('ifr',     255) & 0xFF
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
